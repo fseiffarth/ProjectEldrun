@@ -204,6 +204,31 @@ pub async fn openvpn_disconnect(config: String) -> Result<(), String> {
     openvpn::disconnect(&config)
 }
 
+/// Tear down **every** registered tunnel on the **app-close path**, reporting whether
+/// they all went down. This is the checked twin of the exit-time `disconnect_all`: it
+/// touches the same set of tunnels, so that once it succeeds nothing is left for
+/// `RunEvent::Exit` to kill — which is what used to raise the polkit prompt *after* the
+/// window had already vanished. A refused prompt is an error here and leaves the tunnel
+/// registered, so the frontend can keep the window open and tell the user to close the
+/// tunnel first, instead of quitting with the machine's routing still rewritten.
+///
+/// It enumerates the backend registries directly rather than taking a config from the
+/// frontend's `openvpn_active`: `active_configs` filters by a liveness probe, so a
+/// tunnel whose probe reads false would be skipped here yet still killed (and prompted
+/// for) by the exit-time `disconnect_all`. On Linux this raises the `pkexec` password
+/// prompt while the window is still on screen (the whole point); elsewhere it is the
+/// ordinary best-effort teardown.
+#[tauri::command]
+pub async fn openvpn_disconnect_all_on_quit() -> Result<(), String> {
+    // Offload for the same reason `openvpn_connect` does: the teardown is fully
+    // synchronous and blocks for as long as `pkexec` sits on the polkit prompt —
+    // i.e. until the user types a password. Awaiting that directly on the async
+    // runtime starves a worker while the window is still on screen and waiting.
+    tokio::task::spawn_blocking(openvpn::disconnect_all_checked)
+        .await
+        .map_err(|e| format!("openvpn teardown task failed: {e}"))?
+}
+
 /// Whether the OpenVPN tunnel for `config` is currently up.
 #[tauri::command]
 pub async fn openvpn_status(config: String) -> Result<bool, String> {
@@ -233,4 +258,16 @@ pub async fn openvpn_store_config(config: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn openvpn_list_configs() -> Result<Vec<openvpn::StoredConfig>, String> {
     Ok(openvpn::list_configs())
+}
+
+/// Remove a stored `.ovpn` config from Eldrun's store, and with it every
+/// credential saved for it — a keychain entry keyed by a config that no longer
+/// exists is exactly the stale half `vpn_forget_password` exists to prevent.
+/// Order matters: the removal is the guarded step (must be a stored path, tunnel
+/// must be down), so it goes first — a refused removal leaves the credentials
+/// alone. Deletes Eldrun's copy only, never the user's original file.
+#[tauri::command]
+pub fn openvpn_remove_config(config: String) -> Result<(), String> {
+    openvpn::remove_config(&config)?;
+    vpn_forget_password(config)
 }

@@ -45,6 +45,10 @@ export function VpnIndicator() {
   // to connect on launch, since auto-connect promises never to prompt. Refreshed each
   // time the menu opens — the credentials can be saved or forgotten between openings.
   const [silent, setSilent] = useState<Record<string, boolean>>({});
+  // Config path whose Remove is awaiting its second, confirming click. Removal
+  // also forgets the config's saved credentials, and those are not recoverable
+  // by re-browsing the file — hence armed, not single-click.
+  const [removeArm, setRemoveArm] = useState<string | null>(null);
   const closeTimer = useRef<number | undefined>(undefined);
 
   // Seat from the backend on mount, and re-seat when the window regains focus: a
@@ -61,6 +65,7 @@ export function VpnIndicator() {
   // of those configs could connect with no prompt (the gate on arming auto-connect).
   useEffect(() => {
     if (!open) return;
+    setRemoveArm(null);
     let cancelled = false;
     void invoke<StoredVpnConfig[]>("openvpn_list_configs")
       .then(async (list) => {
@@ -162,6 +167,30 @@ export function VpnIndicator() {
     await connect(stored);
   }, [connect]);
 
+  /**
+   * Remove a stored config: delete Eldrun's copy and forget its saved
+   * credentials (the backend does both, in that order — a refused removal
+   * leaves the credentials alone). Only offered on idle rows; a live tunnel's
+   * config can't be removed, only disconnected first. A removed config can't
+   * stay armed to connect on launch — an armed path with no file behind it
+   * would silently fail at every startup.
+   */
+  const remove = useCallback(
+    async (config: string) => {
+      setError("");
+      try {
+        await invoke("openvpn_remove_config", { config });
+      } catch (e) {
+        setError(String(e));
+        return;
+      }
+      if (armed === config) void setVpnAutoConnect(config, false);
+      setConfigs((prev) => prev.filter((c) => c.path !== config));
+      setRemoveArm(null);
+    },
+    [armed],
+  );
+
   const live = Object.entries(byConfig).filter(
     ([, state]) => state === "connected" || state === "connecting",
   );
@@ -247,7 +276,10 @@ export function VpnIndicator() {
       </button>
       {open && (
         <div className="tab-new-menu vpn-indicator-menu" role="menu">
+          {/* Pinned title; the region below it scrolls so the scrollbar starts
+              beneath the header (unified `.menu-scroll-region` shape). */}
           <div className="tab-new-menu-group-label">OpenVPN</div>
+          <div className="menu-scroll-region">
           <div className="vpn-indicator-note">
             A tunnel routes <strong>this whole computer's</strong> traffic, not just
             Eldrun's — including your browser — for as long as it is up.
@@ -286,25 +318,75 @@ export function VpnIndicator() {
           {idle.length > 0 && (
             <>
               <div className="tab-new-menu-group-label">Connect</div>
-              {idle.map((c) => (
-                <div key={c.path} className="vpn-indicator-row">
-                  <div className="vpn-indicator-head">
-                    <ConnLamp status="off" label={`OpenVPN · ${c.name}`} />
-                    <span className="vpn-indicator-config" title={c.path}>
-                      {c.name}
-                    </span>
+              {idle.map((c) => {
+                const usedBy = projects
+                  .filter((p) => p.remote?.openvpn?.config === c.path)
+                  .map((p) => p.name);
+                return (
+                  <div key={c.path} className="vpn-indicator-row">
+                    <div className="vpn-indicator-head">
+                      <ConnLamp status="off" label={`OpenVPN · ${c.name}`} />
+                      <span className="vpn-indicator-config" title={c.path}>
+                        {c.name}
+                      </span>
+                    </div>
+                    {removeArm === c.path ? (
+                      // Armed remove: the second click is destructive (the saved
+                      // credentials go with the config and can't be re-browsed
+                      // back), so it is spelled out and separately cancellable.
+                      <>
+                        <div className="vpn-indicator-hint">
+                          Removes this config from Eldrun and forgets its saved
+                          credentials.
+                          {usedBy.length > 0 && (
+                            <>
+                              {" "}
+                              Used by <b>{usedBy.join(", ")}</b> — connecting that
+                              project will ask for a config again.
+                            </>
+                          )}
+                        </div>
+                        <div className="vpn-indicator-actions">
+                          <button
+                            type="button"
+                            className="vpn-indicator-remove"
+                            onClick={() => void remove(c.path)}
+                          >
+                            Remove config
+                          </button>
+                          <button
+                            type="button"
+                            className="vpn-indicator-connect"
+                            onClick={() => setRemoveArm(null)}
+                          >
+                            Keep
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="vpn-indicator-actions">
+                        <button
+                          type="button"
+                          className="vpn-indicator-connect"
+                          title="Bring this tunnel up. It will route this computer's traffic — not only Eldrun's."
+                          onClick={() => void connect(c.path)}
+                        >
+                          Connect
+                        </button>
+                        <button
+                          type="button"
+                          className="vpn-indicator-remove"
+                          title="Remove this stored config from Eldrun and forget its saved credentials. Asks once more before doing it."
+                          onClick={() => setRemoveArm(c.path)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    )}
+                    {autoConnectRow(c.path)}
                   </div>
-                  <button
-                    type="button"
-                    className="vpn-indicator-connect"
-                    title="Bring this tunnel up. It will route this computer's traffic — not only Eldrun's."
-                    onClick={() => void connect(c.path)}
-                  >
-                    Connect
-                  </button>
-                  {autoConnectRow(c.path)}
-                </div>
-              ))}
+                );
+              })}
             </>
           )}
 
@@ -324,10 +406,10 @@ export function VpnIndicator() {
               </button>
             </div>
           ) : (
-            // Configs already exist, but you may want a different one — the store is
-            // add-only, so browsing here adds/switches without going through a
-            // project's Connect dialog. Same browse→store→connect path as the empty
-            // state; a cancelled browse changes nothing.
+            // Configs already exist, but you may want a different one — browsing
+            // here adds/switches without going through a project's Connect dialog.
+            // Same browse→store→connect path as the empty state; a cancelled
+            // browse changes nothing.
             <div className="vpn-indicator-row vpn-indicator-browse">
               <button
                 type="button"
@@ -340,6 +422,7 @@ export function VpnIndicator() {
             </div>
           )}
           {error && <div className="vpn-indicator-error">{error}</div>}
+          </div>
         </div>
       )}
     </div>

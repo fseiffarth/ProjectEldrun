@@ -158,6 +158,23 @@ pub fn switch(
         };
         for label in &prev_labels {
             if let Some(win) = app.get_webview_window(label) {
+                // Capture the popout's real on-screen geometry (PHYSICAL px, so
+                // it is scale-invariant and re-applies onto the SAME monitor)
+                // BEFORE hiding it. hide()/show() lets the WM re-place the window
+                // — typically onto the primary monitor — so switch-back must put
+                // it back explicitly (step 8b), or a multi-monitor popout lands on
+                // the wrong screen (#42).
+                if let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) {
+                    win_registry.lock().unwrap().detached_bounds.insert(
+                        label.clone(),
+                        crate::commands::apps::DetachedBounds {
+                            x: pos.x,
+                            y: pos.y,
+                            w: size.width,
+                            h: size.height,
+                        },
+                    );
+                }
                 let _ = win.hide();
             }
         }
@@ -200,6 +217,31 @@ pub fn switch(
             if let Some(win) = app.get_webview_window(label) {
                 let _ = win.unminimize();
                 let _ = win.show();
+                // Put the popout back where it was before it was parked: the
+                // show() above lets the WM move it (often onto the wrong
+                // monitor), so re-apply the geometry captured at hide-time (step
+                // 5b), validated against the currently-connected monitors so an
+                // unplugged display can't strand it off-screen. Size before
+                // position so a resize can't shift the placement. PHYSICAL px →
+                // correct monitor regardless of per-monitor scaling (#42).
+                let saved = win_registry.lock().unwrap().detached_bounds.get(label).copied();
+                if let Some(b) = saved {
+                    let monitors = window_service::monitor_rects(&win);
+                    let fitted = crate::services::window_state::resolve_detached_geometry(
+                        crate::schema::settings::WindowState {
+                            x: b.x,
+                            y: b.y,
+                            w: b.w,
+                            h: b.h,
+                            maximized: false,
+                        },
+                        &monitors,
+                    );
+                    if let Some(g) = fitted {
+                        let _ = win.set_size(tauri::PhysicalSize::new(g.w, g.h));
+                        let _ = win.set_position(tauri::PhysicalPosition::new(g.x, g.y));
+                    }
+                }
             }
         }
     }

@@ -61,8 +61,6 @@ pub struct AutoSyncTask {
     /// `git_peer` re-stamps the file-sync bases before clearing this, so the next
     /// pass reads the rewritten tracked files as green rather than as local edits.
     paused: Arc<AtomicBool>,
-    /// Kept alive for the task's lifetime; dropped on `stop` → unwatch.
-    _watcher: notify::RecommendedWatcher,
 }
 
 /// Tauri-managed registry of per-project auto-sync tasks, keyed by project id.
@@ -106,20 +104,12 @@ pub async fn start(
     // Mirror watcher → mpsc into the loop (debounced there). The mirror must
     // exist for the recursive watch to attach (connect() already creates it, but
     // be defensive for a first-ever run).
+    //
+    // The watcher itself is attached by the loop, not here, and only once the
+    // manifest actually marks something for auto-sync — see `attach_watcher`.
     let mirror = mirror_dir(project_id);
     let _ = std::fs::create_dir_all(&mirror);
     let (tx, rx) = mpsc::unbounded_channel::<()>();
-    let mut watcher = match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if res.is_ok() {
-            let _ = tx.send(());
-        }
-    }) {
-        Ok(w) => w,
-        Err(_) => return, // no watcher → skip auto-sync for this project
-    };
-    if watcher.watch(&mirror, RecursiveMode::Recursive).is_err() {
-        return;
-    }
 
     let cancel = Arc::new(Notify::new());
     let paused = Arc::new(AtomicBool::new(false));
@@ -129,6 +119,8 @@ pub async fn start(
         manifest,
         target,
         project_id.to_string(),
+        mirror,
+        tx,
         rx,
         cancel.clone(),
         paused.clone(),
@@ -139,7 +131,6 @@ pub async fn start(
             cancel,
             join,
             paused,
-            _watcher: watcher,
         },
     );
 }
@@ -182,6 +173,51 @@ pub async fn stop_all(state: &AutoSyncState) {
     }
 }
 
+/// Attach the mirror watcher, but only once the manifest marks *something* for
+/// auto-sync. No-op if already attached, or if there is still nothing marked.
+///
+/// Byte-sync scope is opt-in per path (no marker ⇒ nothing crosses), so a remote
+/// project that has never marked anything — the common case — used to pay for a
+/// recursive watch it could not act on: `reconcile_pass` collects the `auto_sync`
+/// entries and returns immediately when there are none, but the watch had already
+/// cost one inotify watch per directory in the mirror (8017 on a measured project
+/// with two virtualenvs), each event waking a thread to send on a channel whose
+/// consumer would bail. Deferring the attach makes that cost follow the feature.
+///
+/// Re-checked on every interval tick rather than wired into `sync_set_auto`, which
+/// deliberately transfers nothing and leaves the engine to act on its next pass —
+/// so the marker and the watcher stay decoupled, and a manifest edited by any
+/// route (command, import, hand-edited file) is picked up the same way.
+async fn ensure_watcher(
+    slot: &mut Option<notify::RecommendedWatcher>,
+    manifest: &SyncManifestState,
+    project_id: &str,
+    mirror: &std::path::Path,
+    tx: &mpsc::UnboundedSender<()>,
+) {
+    if slot.is_some() {
+        return;
+    }
+    {
+        let mut g = manifest.lock().await;
+        let m = ensure_loaded(&mut g, project_id);
+        if !m.values().any(|e| e.auto_sync) {
+            return;
+        }
+    }
+    let tx = tx.clone();
+    let Ok(mut w) = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if res.is_ok() {
+            let _ = tx.send(());
+        }
+    }) else {
+        return; // no watcher → interval passes still run, just less promptly
+    };
+    if w.watch(mirror, RecursiveMode::Recursive).is_ok() {
+        *slot = Some(w);
+    }
+}
+
 /// The per-project loop: reconcile on a fixed interval (host changes) and shortly
 /// after any mirror write (local changes), until cancelled. A single task ⇒ passes
 /// are serialized and never overlap.
@@ -191,17 +227,26 @@ async fn run_loop(
     manifest: SyncManifestState,
     target: RemoteTarget,
     project_id: String,
+    mirror: std::path::PathBuf,
+    tx: mpsc::UnboundedSender<()>,
     mut rx: mpsc::UnboundedReceiver<()>,
     cancel: Arc<Notify>,
     paused: Arc<AtomicBool>,
 ) {
     let mut interval = tokio::time::interval(AUTO_INTERVAL);
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // Dropped with the task (cancel/stop) → unwatch, exactly as the old field on
+    // `AutoSyncTask` did. `None` until the manifest marks something; see below.
+    let mut watcher: Option<notify::RecommendedWatcher> = None;
+    ensure_watcher(&mut watcher, &manifest, &project_id, &mirror, &tx).await;
     loop {
         tokio::select! {
             _ = cancel.notified() => break,
             _ = interval.tick() => {
                 if paused.load(Ordering::SeqCst) { continue; }
+                // Cheap once attached; this is what picks up a `sync_set_auto` that
+                // marked the first path after the task was already running.
+                ensure_watcher(&mut watcher, &manifest, &project_id, &mirror, &tx).await;
                 reconcile_pass(Some(&app), &pool, &manifest, &target, &project_id).await;
             }
             res = rx.recv() => {

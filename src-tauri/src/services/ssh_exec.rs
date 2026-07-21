@@ -24,7 +24,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::schema::project::RemoteSpec;
-use crate::services::remote::remote_target_for;
 use crate::services::remote_agents;
 use crate::services::ssh_common::{ssh_base_args, ssh_target, validate_arg};
 use crate::storage;
@@ -71,8 +70,10 @@ pub(crate) fn control_dir() -> PathBuf {
 
 /// Single-quote `s` for a POSIX shell, escaping embedded single quotes as
 /// `'\''`. The result parses back to exactly `s` regardless of spaces, `$`,
-/// quotes, or other metacharacters.
-fn shell_quote(s: &str) -> String {
+/// quotes, or other metacharacters. `pub(crate)` so command modules that build
+/// their own host scripts (e.g. `commands::slurm`) share this one implementation
+/// rather than reinventing shell quoting.
+pub(crate) fn shell_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
     for ch in s.chars() {
@@ -101,6 +102,60 @@ fn is_valid_env_key(k: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// How a remote tab is wrapped in a **tmux** session on the host (TODO #85), so
+/// the work is decoupled from the disposable ssh channel and survives a drop /
+/// laptop sleep / Eldrun relaunch.
+#[derive(Debug, Clone)]
+pub enum TmuxWrap {
+    /// Start-or-attach a per-tab session (`tmux new-session -A`) that runs this
+    /// tab's target command. On first spawn it creates and runs the command; on a
+    /// reconnect/relaunch it reattaches and the target is ignored (the process is
+    /// already running) — one command that is both "start" and "resume".
+    Session(String),
+    /// Attach to an **arbitrary named** session that already exists on the host
+    /// (opened from the Sessions view, or a hand-started `tmux` session). No
+    /// target command — `new-session -A` attaches the running session, or creates
+    /// a bare login shell if the name is somehow gone.
+    Attach(String),
+}
+
+/// Wrap a resolved `exec …` line in a tmux launch (see [`TmuxWrap`]). Emitted as
+/// a POSIX-sh `if command -v tmux …` so a host **without** tmux degrades to the
+/// plain exec (today's behavior) plus a one-line notice, instead of failing —
+/// tmux is usually preinstalled on a compute/HPC host but cannot be assumed. The
+/// session gets `status off` (Eldrun already draws tabs/layout, so tmux's status
+/// bar is redundant chrome) and `mouse on` (wheel scrolls tmux history, so
+/// scrollback still feels native), chained as extra tmux commands after a literal
+/// `;` argv separator.
+fn tmux_wrap_exec(exec_line: &str, wrap: &TmuxWrap) -> String {
+    // `status off`/`mouse on` are passed as separate tmux commands: a standalone
+    // `;` token (quoted so the remote shell hands it to tmux literally, not as a
+    // shell separator) splits tmux's argv into successive commands.
+    let opts = "';' set -g status off ';' set -g mouse on";
+    match wrap {
+        TmuxWrap::Session(name) => {
+            let q = shell_quote(name);
+            // tmux runs its command argument via `sh -c`, so the (quoted) exec
+            // line — `exec "${SHELL:-/bin/bash}" -l…` — is executed exactly as it
+            // would be directly, only now inside the persistent session.
+            let target = shell_quote(exec_line);
+            format!(
+                "if command -v tmux >/dev/null 2>&1; then \
+                 exec tmux new-session -A -D -s {q} {target} {opts}; \
+                 else printf 'eldrun: tmux not found on the remote host; session persistence is OFF (install tmux to enable it)\\n' >&2; {exec_line}; fi"
+            )
+        }
+        TmuxWrap::Attach(name) => {
+            let q = shell_quote(name);
+            format!(
+                "if command -v tmux >/dev/null 2>&1; then \
+                 exec tmux new-session -A -D -s {q} {opts}; \
+                 else printf 'eldrun: tmux not found on the remote host; cannot attach session %s\\n' {q} >&2; exec \"${{SHELL:-/bin/bash}}\" -l; fi"
+            )
+        }
+    }
+}
+
 /// Build the remote command string that `ssh` hands to the remote `$SHELL -c`.
 ///
 /// Shape: `cd <dir> && export K=<v> … && exec <CMD>`. For a shell tab
@@ -115,11 +170,19 @@ fn is_valid_env_key(k: &str) -> bool {
 /// `TERM`/`COLORTERM` are skipped — ssh forwards `TERM` to the remote PTY
 /// already — as are agent-auth vars (`AGENT_AUTH_ENV`), so a local key cannot
 /// clobber the remote agent's own stored login.
+///
+/// `tmux`, when `Some`, wraps the final `exec …` in a persistent tmux session
+/// (TODO #85). Everything before it — the `cd`, the sorted env exports, the
+/// agent bootstrap prelude — is preserved verbatim and nested *inside* the
+/// session, so the wrap changes only where the target runs, not what it is. A
+/// [`TmuxWrap::Attach`] ignores `local_cmd`/`local_args` (it attaches an existing
+/// session, running no fresh target).
 pub fn remote_command(
     local_cmd: &str,
     local_args: &[String],
     env: &HashMap<String, String>,
     remote_dir: &str,
+    tmux: Option<&TmuxWrap>,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
     parts.push(format!("cd {}", shell_quote(remote_dir)));
@@ -164,7 +227,102 @@ pub fn remote_command(
         format!("exec \"${{SHELL:-/bin/bash}}\" -lc {}", shell_quote(&inner))
     };
 
+    // The tmux wrap replaces only the final `exec …`; the `cd`/exports prefix is
+    // untouched, so the session opens in the project dir with the same env.
+    let exec = match tmux {
+        Some(wrap) => tmux_wrap_exec(&exec, wrap),
+        None => exec,
+    };
+
     format!("{} && {}", parts.join(" && "), exec)
+}
+
+/// The tmux **kill-session** one-shot script fired on an *explicit* tab close of
+/// a persistent remote tab (TODO #85). Closing the tab is the destructive intent
+/// that ends the run; an app-exit / disconnect / respawn must instead leave the
+/// session alive, which is the whole point of persistence. Run over the pooled
+/// ControlMaster via [`run_remote_script`]. The session name is `shell_quote`d
+/// (it may be an arbitrary name from the Sessions view). `|| true` keeps the
+/// exit status clean when the session is already gone.
+pub fn tmux_kill_session_script(session: &str) -> String {
+    format!("tmux kill-session -t {} 2>/dev/null || true", shell_quote(session))
+}
+
+/// Whether `name` is a safe tmux session name to rename **to** (TODO #85): tmux
+/// treats `:` and `.` specially, and a name with whitespace/control chars is a
+/// footgun, so a rename target must be a non-empty run of `[A-Za-z0-9_-]`. (The
+/// *source* name is not validated this way — a foreign/hand-started session may be
+/// anything — only quoted.)
+pub fn valid_tmux_session_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// The tmux **rename-session** one-shot (TODO #85): `tmux rename-session -t <old>
+/// <new>`. Both names are `shell_quote`d (the `old` may be an arbitrary foreign
+/// name); the caller MUST have checked `new` with [`valid_tmux_session_name`].
+pub fn tmux_rename_session_script(old: &str, new: &str) -> String {
+    format!(
+        "tmux rename-session -t {} {}",
+        shell_quote(old),
+        shell_quote(new)
+    )
+}
+
+/// The `tmux ls` one-shot that backs the Sessions view (TODO #85): one tab-
+/// separated row per session — name, window count, created epoch, attached flag.
+/// `2>/dev/null || true` makes an absent tmux or a not-running server (`tmux ls`
+/// exits non-zero with "no server running") a clean **empty** list rather than an
+/// error (see [`parse_tmux_ls`]).
+pub fn tmux_ls_script() -> &'static str {
+    "tmux ls -F '#{session_name}\t#{session_windows}\t#{session_created}\t#{session_attached}' 2>/dev/null || true"
+}
+
+/// One host tmux session, as surfaced by the Sessions view (TODO #85).
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct TmuxSession {
+    /// Session name (`eldrun-<uid>` for one Eldrun started, else a foreign name).
+    pub name: String,
+    /// Number of windows in the session.
+    pub windows: u32,
+    /// Creation time, seconds since the Unix epoch (host clock).
+    pub created: u64,
+    /// Whether another client is currently attached to it.
+    pub attached: bool,
+}
+
+/// Parse the tab-separated output of [`tmux_ls_script`] into [`TmuxSession`]s.
+/// Empty/`no server running` output → an empty list (never an error). A row that
+/// does not have the four expected fields is skipped rather than failing the whole
+/// parse (forward-compatible with an unexpected `tmux ls` build).
+pub fn parse_tmux_ls(output: &str) -> Vec<TmuxSession> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_end_matches('\r');
+            if line.is_empty() {
+                return None;
+            }
+            let mut f = line.split('\t');
+            let name = f.next()?.to_string();
+            if name.is_empty() {
+                return None;
+            }
+            let windows = f.next()?.trim().parse().ok()?;
+            let created = f.next()?.trim().parse().ok()?;
+            // tmux prints `session_attached` as a count of attached clients; any
+            // positive count means at least one client is on it.
+            let attached = f.next()?.trim().parse::<u32>().ok()? > 0;
+            Some(TmuxSession {
+                name,
+                windows,
+                created,
+                attached,
+            })
+        })
+        .collect()
 }
 
 /// Build the full `ssh` argv for an interactive remote PTY session running
@@ -308,17 +466,29 @@ pub fn run_remote_script(spec: &RemoteSpec, script: &str) -> Result<std::process
 
 /// Best-effort recursive byte size of a directory on the host, over SSH.
 ///
-/// Runs `du` on the host (riding the shared ControlMaster) for the given
-/// absolute remote dir. `du -sk` reports the total in 1024-byte units, which is
-/// portable across GNU and BSD/macOS `du` (unlike GNU-only `-b`); we multiply
-/// back to bytes so the frontend's byte-based formatter matches file sizes. The
-/// path is validated + single-quoted; a `du` error (e.g. unreadable dir) yields
-/// 0 rather than failing the whole listing.
+/// Reports **apparent** size — the sum of each file's `st_size` — to match every
+/// other size figure in the app: the local walk ([`crate::commands::fs`]'s
+/// `walk_dir_size`) and the per-file SFTP listing sizes both use `st_size`. Plain
+/// `du` instead reports **disk-block allocation** (each file rounded up to a 4 KB
+/// block), which made an identical folder read *larger* over SSH than its local
+/// mirror — e.g. 452 KB vs 377 KB for 31 small files, purely from block rounding.
+///
+/// `du -sb` gives exact apparent bytes on GNU coreutils (the usual Linux dev
+/// host). BSD/macOS `du` has no `-b`, so when it produces nothing we fall back to
+/// `du -sk` (1024-byte *block* units) × 1024 — approximate there, but no worse
+/// than the previous behavior. The shell always emits **bytes**, so the parse
+/// below never rescales. The path is validated + single-quoted; a `du` error
+/// (e.g. unreadable dir) yields 0 rather than failing the whole listing.
 pub fn remote_dir_size(spec: &RemoteSpec, remote_dir: &str) -> Result<u64, String> {
     validate_arg("remote path", remote_dir)?;
-    let cmd = format!("du -sk {} 2>/dev/null | cut -f1", shell_quote(remote_dir));
+    let q = shell_quote(remote_dir);
+    let cmd = format!(
+        "s=$(du -sb {q} 2>/dev/null | cut -f1); \
+         if [ -n \"$s\" ]; then echo \"$s\"; \
+         else du -sk {q} 2>/dev/null | cut -f1 | awk '{{print $1*1024}}'; fi"
+    );
     let out = run_remote_shell(spec, &cmd)?;
-    let kb: u64 = String::from_utf8_lossy(&out.stdout)
+    let bytes: u64 = String::from_utf8_lossy(&out.stdout)
         .trim()
         .lines()
         .next()
@@ -326,7 +496,7 @@ pub fn remote_dir_size(spec: &RemoteSpec, remote_dir: &str) -> Result<u64, Strin
         .trim()
         .parse()
         .unwrap_or(0);
-    Ok(kb.saturating_mul(1024))
+    Ok(bytes)
 }
 
 /// Full recursive size tree of a directory on the host, for the Disk Usage
@@ -458,10 +628,22 @@ pub fn interactive_login_command(
 /// `opts.cwd` a stable local directory (the ssh client's local cwd is
 /// irrelevant). Validation/connection failures surface as `Err`.
 pub fn wrap_pty_options(opts: &mut PtyOptions) -> Result<(), String> {
+    let host_id = opts
+        .remote_host_id
+        .as_deref()
+        .unwrap_or(crate::services::remote::PRIMARY_HOST);
+    use crate::services::remote::{remote_target_for, remote_target_for_host, PRIMARY_HOST};
     let target = match &opts.project_id {
-        Some(id) => match remote_target_for(id) {
+        Some(id) => match remote_target_for_host(id, host_id) {
             Some(t) => t,
-            None => return Ok(()), // local project → leave as-is
+            // A worker id that no longer resolves (the machine was removed while a
+            // tab still pointed at it) falls back to the PRIMARY on a remote project
+            // rather than silently running local in the remote cwd (plan §8). A
+            // genuinely local project still resolves to nothing → left as-is.
+            None => match remote_target_for(id).filter(|_| host_id != PRIMARY_HOST) {
+                Some(t) => t,
+                None => return Ok(()),
+            },
         },
         None => return Ok(()), // untagged spawn (root/connection/local_only) → local
     };
@@ -474,7 +656,19 @@ pub fn wrap_pty_options(opts: &mut PtyOptions) -> Result<(), String> {
     // Ensure the control-socket directory exists before ssh tries to bind it.
     let _ = std::fs::create_dir_all(control_dir());
 
-    let cmd_string = remote_command(&opts.cmd, &opts.args, &opts.env, &remote_dir);
+    // Persistent-session (tmux) wrap, TODO #85. An explicit attach (Sessions view /
+    // restored attach tab) wins; otherwise a per-tab `tmux_session` name — minted
+    // and persisted by the frontend for shell/script tabs of a persist-enabled
+    // remote project (so it is stable across a relaunch, unlike the PTY id) — spawns
+    // or reattaches that session. Absent (agent tabs, persistence off, local) →
+    // today's plain exec.
+    let tmux = match (&opts.tmux_attach, &opts.tmux_session) {
+        (Some(name), _) => Some(TmuxWrap::Attach(name.clone())),
+        (None, Some(name)) => Some(TmuxWrap::Session(name.clone())),
+        (None, None) => None,
+    };
+
+    let cmd_string = remote_command(&opts.cmd, &opts.args, &opts.env, &remote_dir, tmux.as_ref());
     let args = ssh_pty_args(&target.spec, &cmd_string)?;
 
     opts.cmd = "ssh".to_string();
@@ -500,6 +694,8 @@ mod tests {
             openvpn: None,
             auto_connect: None,
             key_auth: None,
+            persist_sessions: None,
+            label: None,
             extra: HashMap::new(),
         }
     }
@@ -519,7 +715,7 @@ mod tests {
 
     #[test]
     fn remote_command_shell_uses_login_shell() {
-        let cmd = remote_command("", &[], &HashMap::new(), "/srv/p");
+        let cmd = remote_command("", &[], &HashMap::new(), "/srv/p", None);
         assert_eq!(cmd, "cd '/srv/p' && exec \"${SHELL:-/bin/bash}\" -l");
     }
 
@@ -535,6 +731,7 @@ mod tests {
             &["--foo".to_string(), "bar baz".to_string()],
             &HashMap::new(),
             "/srv/p",
+            None,
         );
         assert_eq!(
             cmd,
@@ -545,7 +742,7 @@ mod tests {
 
     #[test]
     fn remote_command_agent_bootstraps_known_cli() {
-        let cmd = remote_command("claude", &[], &HashMap::new(), "/srv/p");
+        let cmd = remote_command("claude", &[], &HashMap::new(), "/srv/p", None);
         // Runs inside a login shell …
         assert!(cmd.starts_with("cd '/srv/p' && exec \"${SHELL:-/bin/bash}\" -lc "));
         // … with a detect-and-install prelude for the known CLI …
@@ -563,7 +760,7 @@ mod tests {
         env.insert("COLORTERM".to_string(), "truecolor".to_string());
         env.insert("B_VAR".to_string(), "2".to_string());
         env.insert("A_VAR".to_string(), "x y".to_string());
-        let cmd = remote_command("sh", &[], &env, "/srv/p");
+        let cmd = remote_command("sh", &[], &env, "/srv/p", None);
         assert_eq!(
             cmd,
             "cd '/srv/p' && export A_VAR='x y' && export B_VAR='2' && \
@@ -577,7 +774,7 @@ mod tests {
         env.insert("ANTHROPIC_API_KEY".to_string(), "sk-local".to_string());
         env.insert("OPENAI_API_KEY".to_string(), "sk-oai".to_string());
         env.insert("KEEP_ME".to_string(), "1".to_string());
-        let cmd = remote_command("sh", &[], &env, "/srv/p");
+        let cmd = remote_command("sh", &[], &env, "/srv/p", None);
         // Auth vars (and their values) are never exported to the remote …
         assert!(!cmd.contains("ANTHROPIC_API_KEY"));
         assert!(!cmd.contains("OPENAI_API_KEY"));
@@ -595,10 +792,98 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("A; touch /tmp/pwned #".to_string(), "v".to_string());
         env.insert("GOOD_VAR".to_string(), "1".to_string());
-        let cmd = remote_command("sh", &[], &env, "/srv/p");
+        let cmd = remote_command("sh", &[], &env, "/srv/p", None);
         assert!(!cmd.contains("touch /tmp/pwned"));
         assert!(!cmd.contains("export A;"));
         assert!(cmd.contains("export GOOD_VAR='1'"));
+    }
+
+    // ── tmux wrap (TODO #85) ───────────────────────────────────────────────
+
+    #[test]
+    fn remote_command_off_is_unchanged() {
+        // With no tmux wrap the output is byte-for-byte the pre-#85 command: the
+        // cd/exports/exec nesting is untouched.
+        let mut env = HashMap::new();
+        env.insert("K".to_string(), "v".to_string());
+        assert_eq!(
+            remote_command("", &[], &env, "/srv/p", None),
+            "cd '/srv/p' && export K='v' && exec \"${SHELL:-/bin/bash}\" -l"
+        );
+    }
+
+    #[test]
+    fn remote_command_tmux_wraps_shell_tab() {
+        let wrap = TmuxWrap::Session("eldrun-p1_shell-1".to_string());
+        let cmd = remote_command("", &[], &HashMap::new(), "/srv/p", Some(&wrap));
+        // cd prefix is preserved verbatim…
+        assert!(cmd.starts_with("cd '/srv/p' && "));
+        // …and the exec is a new-session -A -D on the derived name, with the login
+        // shell exec nested as tmux's (quoted) command argument.
+        assert!(cmd.contains("command -v tmux >/dev/null 2>&1"));
+        assert!(cmd.contains("exec tmux new-session -A -D -s 'eldrun-p1_shell-1' "));
+        assert!(cmd.contains("'exec \"${SHELL:-/bin/bash}\" -l'"));
+        // status/mouse options are chained as separate tmux commands.
+        assert!(cmd.contains("';' set -g status off ';' set -g mouse on"));
+        // Fallback: a host without tmux still runs the plain exec.
+        assert!(cmd.contains("session persistence is OFF"));
+        assert!(cmd.contains("; exec \"${SHELL:-/bin/bash}\" -l; fi"));
+    }
+
+    #[test]
+    fn remote_command_tmux_wraps_command_tab_preserving_prelude() {
+        let wrap = TmuxWrap::Session("eldrun-p1_a1".to_string());
+        let cmd = remote_command("claude", &[], &HashMap::new(), "/srv/p", Some(&wrap));
+        // The agent bootstrap prelude is nested INSIDE the tmux target unchanged…
+        assert!(cmd.contains("command -v claude >/dev/null 2>&1"));
+        assert!(cmd.contains("npm install -g @anthropic-ai/claude-code"));
+        // …and the whole `$SHELL -lc '<prelude; exec claude>'` line is tmux's
+        // (quoted) command argument on the persistent session.
+        assert!(cmd.contains("exec tmux new-session -A -D -s 'eldrun-p1_a1' "));
+    }
+
+    #[test]
+    fn remote_command_tmux_attach_ignores_target() {
+        let wrap = TmuxWrap::Attach("train".to_string());
+        // Even with a target command, an attach ignores it and just reattaches the
+        // named (possibly hand-started) session.
+        let cmd = remote_command("python", &["run.py".to_string()], &HashMap::new(), "/srv/p", Some(&wrap));
+        assert!(cmd.contains("exec tmux new-session -A -D -s 'train' "));
+        // No fresh target is exec'd inside the attach (the session already runs).
+        assert!(!cmd.contains("run.py"));
+    }
+
+    #[test]
+    fn tmux_kill_session_script_quotes_name() {
+        assert_eq!(
+            tmux_kill_session_script("eldrun-p1_shell-1"),
+            "tmux kill-session -t 'eldrun-p1_shell-1' 2>/dev/null || true"
+        );
+        // An arbitrary/foreign name is single-quoted so it can't break out.
+        assert!(tmux_kill_session_script("a'b").contains("'a'\\''b'"));
+    }
+
+    #[test]
+    fn parse_tmux_ls_reads_rows_and_tolerates_empty() {
+        let out = "eldrun-p1_shell-1\t2\t1700000000\t1\ntrain\t1\t1700000500\t0\n";
+        let v = parse_tmux_ls(out);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0], TmuxSession { name: "eldrun-p1_shell-1".into(), windows: 2, created: 1_700_000_000, attached: true });
+        assert_eq!(v[1], TmuxSession { name: "train".into(), windows: 1, created: 1_700_000_500, attached: false });
+        // "no server running" / absent tmux → empty output → zero sessions.
+        assert!(parse_tmux_ls("").is_empty());
+        assert!(parse_tmux_ls("\n").is_empty());
+        // A malformed row is skipped, not fatal.
+        assert!(parse_tmux_ls("onlyname\n").is_empty());
+    }
+
+    #[test]
+    fn tmux_ls_script_tolerates_no_server() {
+        let s = tmux_ls_script();
+        assert!(s.contains("tmux ls -F"));
+        // "no server running" (non-zero exit) and absent tmux both collapse to
+        // empty output rather than an error.
+        assert!(s.contains("2>/dev/null || true"));
     }
 
     #[test]
@@ -711,6 +996,9 @@ mod tests {
             local_only: false,
             sandbox: false,
             project_id: project_id.map(str::to_string),
+            remote_host_id: None,
+            tmux_session: None,
+            tmux_attach: None,
         }
     }
 

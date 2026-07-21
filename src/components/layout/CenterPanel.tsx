@@ -8,20 +8,13 @@ import {
   DETACHED_DRAG_MOVE,
   DETACHED_DRAG_START,
   decideDetachedGroupDrop,
+  decideDetachedPaneDrop,
   decideDetachedTabDrop,
   type DetachedDragEnd,
   type DetachedDragMove,
   type DetachedDragStart,
 } from "../../stores/detached";
-import { TerminalView } from "../terminal/TerminalView";
-import { FileBrowser } from "../files/FileBrowser";
-import { EmbedPane } from "../embed/EmbedPane";
-import { FileViewerPane } from "../embed/FileViewerPane";
-import { ProjectBlobPane } from "../common/ProjectBlobPane";
-import { NetworkTrafficPane } from "../monitoring/NetworkTrafficPane";
-import { SystemMonitorPane } from "../monitoring/SystemMonitorPane";
-import { DiskUsagePane } from "../monitoring/DiskUsagePane";
-import { CalendarPane } from "../calendar/CalendarPane";
+import { TabPane } from "../tabs/TabPane";
 import { Subwindow } from "../tabs/Subwindow";
 import { pickEdge, previewInset } from "../tabs/dragGeometry";
 import { dragPreviewLayout } from "../tabs/dragPreview";
@@ -33,9 +26,11 @@ import {
   allGroups,
   cmdToKind,
   effectiveTabLocation,
+  findGroup,
   isRestorableTab,
   isPtyTabKind,
   localTabCwd,
+  remoteHostIdOf,
   useTabsStore,
   type LayoutNode,
   type SavedLayoutTree,
@@ -44,10 +39,12 @@ import {
 import { useSettingsStore } from "../../stores/settings";
 import { useDragStore } from "../../stores/drag";
 import { useSubwindowNavStore } from "../../stores/subwindowNav";
+import { useWindowFocused } from "../../hooks/useWindowFocused";
 import { useScrollSyncStore } from "../../stores/scrollSync";
 import { useWindowMoveStore } from "../../stores/windowMove";
 import { useDetachAnimStore } from "../../stores/detachAnim";
 import { useTabLandStore } from "../../stores/tabLand";
+import { TAB_ACCENT } from "../tabs/newTabItems";
 import { commitDrop } from "../tabs/commitDrop";
 import {
   startDetachedDropSession,
@@ -60,9 +57,10 @@ import {
   type WindowFrame,
 } from "../../lib/coords";
 import { dragPlatform } from "../../lib/dragPlatform";
+import { shouldPersistTab, shouldPersistLocalTab } from "../../lib/tmuxSession";
+import { IS_WINDOWS } from "../../lib/platform";
 import { useProjectsStore } from "../../stores/projects";
-import { useConnectDialogStore } from "../../stores/connectDialog";
-import { RemotePaneHold } from "../projects/RemotePaneHold";
+import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 
@@ -82,13 +80,19 @@ export function CenterPanel() {
   const setScope = useTabsStore((s) => s.setScope);
   const loadFromLayout = useTabsStore((s) => s.loadFromLayout);
   const resizeSplit = useTabsStore((s) => s.resizeSplit);
+  const mergeGroups = useTabsStore((s) => s.mergeGroups);
   const tabs = useTabsStore((s) => s.tabs);
   // #42: the current scope's detached popouts. Subscribed here so the debounced
   // save below re-fires when a popout is moved/resized (setDetachedBounds swaps
   // this array's identity) — otherwise bounds drags wouldn't reach project.json
   // until the next tab/layout change or app quit.
   const detachedGroups = useTabsStore((s) => s.detachedGroupsByScope[s.scope]);
-  const saveLayout = useTabsStore((s) => s.saveLayout);
+  // `persistScope`, not `saveLayout`: the latter persists the tab store's CURRENT
+  // scope into whatever `localFile` it is handed, and those are two independently
+  // tracked values. `activeId` and `localFile` both come from `activeProject` here,
+  // so passing the scope explicitly makes it impossible to write one project's tabs
+  // (or, worse, an empty layout standing in for them) into another project's file.
+  const persistScope = useTabsStore((s) => s.persistScope);
   const updateTabEnv = useTabsStore((s) => s.updateTabEnv);
   // #42: popouts to re-open for the current scope (restored docked, then detached).
   const pendingRespawn = useTabsStore((s) => s.pendingRespawnByScope[s.scope]);
@@ -122,6 +126,9 @@ export function CenterPanel() {
   // layer positions each active pane over its group's body so PTYs never
   // unmount on scope switch / re-tile.
   const [groupRects, setGroupRects] = useState<Record<string, Rect>>({});
+  // Whole-subwindow rects (tab bar + body), used by the focus frame so it wraps
+  // the current subwindow's tab header too — not just its pane region.
+  const [groupFrameRects, setGroupFrameRects] = useState<Record<string, Rect>>({});
   const panelRef = useRef<HTMLDivElement>(null);
   const groupBodyRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -139,7 +146,29 @@ export function CenterPanel() {
   // by the PANE's own scope — panes stay mounted across scope switches, so
   // holding must not track only the active project's state.
   const remoteSshByProject = useRemoteStatusStore((s) => s.byProject);
-  const openConnectDialog = useConnectDialogStore((s) => s.open);
+  // Worker-host lamps (multi-host remote): a pane on a worker holds iff THAT
+  // worker is down, independent of the primary (plan §4.5).
+  const remoteSshByHost = useRemoteStatusStore((s) => s.byHost);
+  // Persistent LOCAL (tmux) sessions (TODO #85): default ON on Unix (no tmux on
+  // Windows). Folded here so the per-pane decision below is a cheap boolean AND.
+  const localPersistEnabled = useSettingsStore(
+    (s) => !IS_WINDOWS && s.settings?.persist_local_sessions !== false,
+  );
+  // Stable per-scope connect handler. TabPane is memoized, so the pane layer only
+  // stays cheap to re-render (e.g. every frame of a divider drag) if its props are
+  // referentially stable — a fresh `() => openRemoteMachines(scopeKey)` arrow every
+  // render would break the memo for every pane. Cached by scope; reads the store
+  // action lazily so the cache never needs invalidating. Opens the unified "Remote
+  // machines" hub (scopeKey is the project id), matching the pill and file view.
+  const connectHandlers = useRef<Map<string, () => void>>(new Map());
+  const getConnect = useCallback((scopeKey: string) => {
+    let h = connectHandlers.current.get(scopeKey);
+    if (!h) {
+      h = () => useRemoteMachinesStore.getState().open(scopeKey);
+      connectHandlers.current.set(scopeKey, h);
+    }
+    return h;
+  }, []);
 
   // The layout to RENDER: normally the store layout, but while dragging a
   // subwindow's lone tab it's that layout with the (about-to-empty) source
@@ -246,10 +275,10 @@ export function CenterPanel() {
   useEffect(() => {
     if (!activeId || !localFile) return;
     const timer = window.setTimeout(() => {
-      saveLayout(localFile).catch(() => {});
+      persistScope(activeId, localFile).catch(() => {});
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [activeId, localFile, tabs, layout, detachedGroups, saveLayout]);
+  }, [activeId, localFile, tabs, layout, detachedGroups, persistScope]);
 
   // #42: re-open popouts that were detached when this scope was last saved. The
   // groups were restored DOCKED (above) so their panes mount and spawn their
@@ -263,7 +292,7 @@ export function CenterPanel() {
       // allowLastGroup: a restored popout may be the scope's only group (its
       // in-window siblings held only non-restorable tabs and were dropped); it
       // must still re-detach into its own window rather than stay docked.
-      detachGroup(t.id, { bounds: t.bounds, allowLastGroup: true });
+      detachGroup(t.id, { bounds: t.bounds, zoom: t.zoom, allowLastGroup: true });
     }
   }, [scope, pendingRespawn, consumePendingRespawn, detachGroup]);
 
@@ -276,6 +305,7 @@ export function CenterPanel() {
     if (!panel) return;
     const base = panel.getBoundingClientRect();
     const next: Record<string, Rect> = {};
+    const frames: Record<string, Rect> = {};
     for (const [id, el] of groupBodyRefs.current) {
       if (!el.isConnected) continue;
       const r = el.getBoundingClientRect();
@@ -285,24 +315,39 @@ export function CenterPanel() {
         width: r.width,
         height: r.height,
       };
-    }
-    setGroupRects((prev) => {
-      // Avoid pointless state churn (which would re-render every pane).
-      const keys = Object.keys(next);
-      if (keys.length === Object.keys(prev).length) {
-        let same = true;
-        for (const k of keys) {
-          const a = next[k];
-          const b = prev[k];
-          if (!b || a.left !== b.left || a.top !== b.top || a.width !== b.width || a.height !== b.height) {
-            same = false;
-            break;
-          }
-        }
-        if (same) return prev;
+      // The enclosing subwindow box spans the tab header bar + body, so the
+      // focus frame drawn from it wraps the current tab strip too. Clamp the
+      // right edge to the pane region's right (`r`) so a docked files sidebar —
+      // which lives in the same body, to the right of the pane — is excluded.
+      const sub = el.closest(".subwindow");
+      if (sub) {
+        const sr = sub.getBoundingClientRect();
+        frames[id] = {
+          left: sr.left - base.left,
+          top: sr.top - base.top,
+          width: r.right - sr.left,
+          height: sr.height,
+        };
       }
-      return next;
-    });
+    }
+    // Skip state writes when a map is unchanged (a write re-renders every pane).
+    const sameRects = (
+      a: Record<string, Rect>,
+      b: Record<string, Rect>,
+    ): boolean => {
+      const keys = Object.keys(a);
+      if (keys.length !== Object.keys(b).length) return false;
+      for (const k of keys) {
+        const x = a[k];
+        const y = b[k];
+        if (!y || x.left !== y.left || x.top !== y.top || x.width !== y.width || x.height !== y.height) {
+          return false;
+        }
+      }
+      return true;
+    };
+    setGroupRects((prev) => (sameRects(next, prev) ? prev : next));
+    setGroupFrameRects((prev) => (sameRects(frames, prev) ? prev : frames));
   }, []);
 
   // Re-measure when the rendered layout tree changes — including the live drag
@@ -560,7 +605,8 @@ export function CenterPanel() {
 
     reg(
       listen<DetachedDragStart>(DETACHED_DRAG_START, (ev) => {
-        const { scope: dScope, groupId, label, cursorPhysX, cursorPhysY, tabKey } = ev.payload;
+        const { scope: dScope, groupId, label, cursorPhysX, cursorPhysY, tabKey, paneId } =
+          ev.payload;
         // Open a popout drop session for THIS gesture so sibling popouts of the
         // scope become live drop targets (highlight on MOVE, dock on END) — the
         // same machinery `TabBar` uses for main→popout drags.
@@ -581,6 +627,7 @@ export function CenterPanel() {
           detachedScope: dScope,
           detachedGroupId: groupId,
           detachedTabKey: tabKey,
+          detachedPaneId: paneId,
         });
         resolveTargetRef.current(seed.x, seed.y);
         void refreshFrame().then(() => {
@@ -709,6 +756,60 @@ export function CenterPanel() {
           return;
         }
 
+        // ── One pane of a multi-pane popout: dock JUST that pane, or pop it into
+        // its own window — NEVER the whole popout (a pane drop must not haul its
+        // sibling panes into the main window). ────────────────────────────────
+        if (f?.kind === "detached" && f.detachedScope && f.detachedGroupId && f.detachedPaneId) {
+          const scope = f.detachedScope;
+          const srcGroup = f.detachedGroupId;
+          const paneId = f.detachedPaneId;
+          const decision = decideDetachedPaneDrop({
+            cancelled: ev.payload.cancelled,
+            shift: ev.payload.shift ?? false,
+            inMain,
+            overPopoutId,
+            srcGroupId: srcGroup,
+          });
+          switch (decision.kind) {
+            case "dockMain": {
+              // Dock only the dragged pane at the resolved target (bar → merge;
+              // body edge → split; else its own pane). Targets only apply when
+              // the popout's scope IS the active one.
+              const sameScope = store.scope === scope;
+              const target =
+                sameScope && f.reorderGroup
+                  ? { targetGroupId: f.reorderGroup, edge: "center" as const }
+                  : sameScope && f.overGroup && f.edge
+                    ? { targetGroupId: f.overGroup, edge: f.edge }
+                    : undefined;
+              store.attachDetachedPane(scope, srcGroup, paneId, target);
+              reseedDetached(scope, srcGroup);
+              break;
+            }
+            case "newWindow": {
+              // Shift, or a free-space release: the pane becomes its own popout
+              // at the physical cursor. A lone-pane source is refused downstream
+              // (null) → clean no-op.
+              if (phys) {
+                const bounds = {
+                  x: Math.round(phys.x - 80),
+                  y: Math.round(phys.y - 8),
+                  w: 900,
+                  h: 640,
+                };
+                const newLabel = store.detachPaneToNewWindow(scope, srcGroup, paneId, bounds);
+                if (newLabel) reseedDetached(scope, srcGroup);
+              }
+              break;
+            }
+            case "none":
+              // Cancelled / released over the source or a sibling popout — stay put.
+              break;
+          }
+          done();
+          return;
+        }
+
         // ── Whole group: dock into main, or stay floating ───────────────────────
         if (f?.kind === "detached" && f.detachedGroupId && f.detachedScope) {
           const decision = decideDetachedGroupDrop({
@@ -821,6 +922,7 @@ export function CenterPanel() {
           node={renderLayout}
           projectCwd={projectCwd}
           resizeSplit={resizeSplit}
+          mergeGroups={mergeGroups}
           panelRef={panelRef}
           registerGroupBody={registerGroupBody}
           onResized={measure}
@@ -891,13 +993,89 @@ export function CenterPanel() {
           const paneRemoteProj = !!paneProject?.remote;
           const paneDisconnected =
             paneRemoteProj && remoteSshByProject[scopeKey]?.ssh !== "connected";
-          // A terminal pane is "remote" when its effective locality is remote
-          // (default shells; agents/shells toggled remote). Held while the pool
-          // is down: spawning `ssh -tt` now would block on the dead pool.
+          // A terminal pane runs on a remote host when its effective locality
+          // resolves to one (primary or a worker). Held while THAT host's pool is
+          // down: spawning `ssh -tt` now would block on the dead pool. Multi-host:
+          // a pane on gpu-2 holds iff gpu-2 is down, independent of the primary
+          // (plan §4.5).
+          const rawHostId = remoteHostIdOf(effectiveTabLocation(tab));
+          // A tab naming a worker that no longer exists (machine removed) falls
+          // back to the primary — matching the backend's wrap_pty_options (plan §8).
+          const paneHostId =
+            rawHostId && rawHostId !== "primary" &&
+            !paneProject?.compute_hosts?.some((h) => h.id === rawHostId)
+              ? "primary"
+              : rawHostId;
+          const paneHostSsh =
+            paneHostId === "primary"
+              ? remoteSshByProject[scopeKey]?.ssh
+              : paneHostId
+                ? remoteSshByHost[scopeKey]?.[paneHostId]?.ssh
+                : undefined;
           const holdRemoteTerminal =
-            paneDisconnected &&
+            paneRemoteProj &&
             isPtyTabKind(tab.kind) &&
-            effectiveTabLocation(tab) === "remote";
+            paneHostId !== null &&
+            paneHostSsh !== "connected";
+          // The label of the host this pane runs on (primary host, or the worker's
+          // label), for the hold placeholder + hover card.
+          const paneHostLabel =
+            paneHostId === "primary" || paneHostId === null
+              ? (paneProject?.remote?.host ?? "")
+              : (() => {
+                  const w = paneProject?.compute_hosts?.find((h) => h.id === paneHostId);
+                  return w?.label || w?.host || paneHostId;
+                })();
+          // The Files-tab browse dir: while a remote project is disconnected the
+          // SFTP tree can't be listed (it would freeze the main thread), so browse
+          // the local mirror instead — the same synced working copy the local tabs
+          // use. FileBrowser re-lists on `projectDir` change, so it swaps back to
+          // the remote tree once the pool connects. (Resolved here, not inside
+          // TabPane, because the popout has no projects store to resolve it.)
+          const filesProjectDir = paneDisconnected
+            ? localTabCwd(
+                { kind: "files" },
+                {
+                  isRemoteProject: true,
+                  projectDirectory: resolveProjectDirectory(paneProject),
+                  mirror: resolveLocalMirror(paneProject),
+                  fallback: tab.cwd,
+                },
+              )
+            : tab.cwd;
+          // SSH-sync Phase 0: a local-on-remote tab runs in the project's local
+          // mirror (state dir), not the remote tree it can't reach.
+          const terminalCwd = localTabCwd(tab, {
+            isRemoteProject: !!paneProject?.remote,
+            projectDirectory: resolveProjectDirectory(paneProject),
+            mirror: resolveLocalMirror(paneProject),
+            fallback: tab.cwd,
+          });
+          // Run this tab inside the project's session container when the toggle is
+          // on: every PTY tab except `local_agent` (host-bound) execs into the one
+          // shared container. Local projects only. Derived here so restored tabs
+          // are covered too. NOTE: this flag is in TerminalView's spawn deps —
+          // flipping the toggle respawns every live tab (ProjectPill confirms when
+          // that would destroy a non-resumable agent conversation).
+          const sandbox =
+            (tab.kind === "agent" || tab.kind === "shell") &&
+            scopeKey !== "root" &&
+            !!paneProject?.sandbox?.enabled &&
+            !paneProject?.remote;
+          // Persistent sessions (TODO #85): the stable, persisted session name to
+          // wrap a shell/script tab in a tmux session, so a long run survives — for a
+          // REMOTE tab an SSH drop / relaunch (default ON per project, opt out via
+          // the pill toggle), for a LOCAL tab an Eldrun crash (default ON on Unix via
+          // `persist_local_sessions`). Shell tabs only (Python runs open a shell tab),
+          // never agents; never the root scope. In TerminalView's spawn deps, so
+          // toggling respawns the tab. Undefined ⇒ no tmux wrap.
+          const localRunning =
+            !paneProject?.remote || effectiveTabLocation(tab) === "local";
+          const tmuxSession =
+            shouldPersistTab(tab.kind, paneHostId, paneProject?.remote) ||
+            shouldPersistLocalTab(tab.kind, scopeKey, localRunning, localPersistEnabled)
+              ? tab.tmuxSession
+              : undefined;
           return (
             <div
               key={`${scopeKey}/${tab.key}`}
@@ -918,134 +1096,25 @@ export function CenterPanel() {
               }}
               style={style}
             >
-              {tab.kind === "projects3d" ? (
-                <ProjectBlobPane />
-              ) : tab.kind === "calendar" ? (
-                <CalendarPane visible={visible} />
-              ) : tab.kind === "network" ? (
-                <NetworkTrafficPane
-                  projectId={scopeKey}
-                  visible={visible}
-                  onConnect={() => openConnectDialog(scopeKey)}
-                />
-              ) : tab.kind === "monitor" ? (
-                <SystemMonitorPane visible={visible} />
-              ) : tab.kind === "diskusage" ? (
-                <DiskUsagePane
-                  projectId={scopeKey === "root" ? null : scopeKey}
-                  projectCwd={tab.cwd}
-                  // Lets the pane retitle its own tab after the folder it scans.
-                  // Several Disk Usage tabs can be open at once, so "Disk Usage"
-                  // three times over would tell the user nothing.
-                  tabKey={tab.key}
-                  visible={visible}
-                />
-              ) : tab.kind === "files" ? (
-                <FileBrowser
-                  // While a remote project is disconnected the SFTP tree can't be
-                  // listed (it would freeze the main thread), so browse the local
-                  // mirror instead — the same synced working copy the local tabs
-                  // use. `list_dir` routes the mirror path locally; FileBrowser
-                  // re-lists when `projectDir` changes, so it swaps back to the
-                  // remote tree automatically once the pool is connected.
-                  projectDir={
-                    paneDisconnected
-                      ? localTabCwd(
-                          { kind: "files" },
-                          {
-                            isRemoteProject: true,
-                            projectDirectory: resolveProjectDirectory(paneProject),
-                            mirror: resolveLocalMirror(paneProject),
-                            fallback: tab.cwd,
-                          },
-                        )
-                      : tab.cwd
-                  }
-                  projectId={scopeKey === "root" ? null : scopeKey}
-                  active={visible}
-                />
-              ) : tab.kind === "embed" ? (
-                tab.viewer ? (
-                  <FileViewerPane
-                    viewer={tab.viewer}
-                    path={tab.embedPath ?? ""}
-                    projectId={scopeKey === "root" ? null : scopeKey}
-                    tabKey={tab.key}
-                    visible={visible}
-                    groupId={groupId}
-                  />
-                ) : (
-                  <EmbedPane
-                    path={tab.embedPath ?? ""}
-                    exec={tab.embedExec}
-                    projectId={scopeKey === "root" ? null : scopeKey}
-                    visible={visible}
-                  />
-                )
-              ) : holdRemoteTerminal ? (
-                // Remote terminal pane while the pool is down: don't mount
-                // TerminalView (it would spawn `ssh -tt` and block on the dead
-                // pool). Show a Connect placeholder; when the project connects
-                // this pane re-renders, mounts TerminalView, and spawns — a
-                // resumable agent resumes via its saved args.
-                <RemotePaneHold
-                  host={paneProject?.remote?.host ?? ""}
-                  onConnect={() => openConnectDialog(scopeKey)}
-                />
-              ) : (
-                <TerminalView
-                  // PTY ids must include the scope: tab keys alone can collide
-                  // across projects (restored layouts), which would attach two
-                  // projects' terminals to the same PTY stream.
-                  id={`${scopeKey}:${tab.key}`}
-                  cmd={tab.cmd}
-                  args={tab.args ?? []}
-                  env={tab.env ?? {}}
-                  initialInput={tab.initialInput}
-                  // SSH-sync Phase 0: a local-on-remote tab runs in the project's
-                  // local mirror (state dir), not the remote tree it can't reach.
-                  cwd={localTabCwd(tab, {
-                    isRemoteProject: !!projects.find((p) => p.id === scopeKey)?.remote,
-                    projectDirectory: resolveProjectDirectory(
-                      projects.find((p) => p.id === scopeKey),
-                    ),
-                    mirror: resolveLocalMirror(
-                      projects.find((p) => p.id === scopeKey),
-                    ),
-                    fallback: tab.cwd,
-                  })}
-                  // SSH-sync Phase 0: agents default LOCAL on a remote project,
-                  // shells default REMOTE; the per-tab toggle overrides. local_agent
-                  // stays fixed-local (effectiveTabLocation handles it).
-                  localOnly={effectiveTabLocation(tab) === "local"}
-                  // The owning project's id (null for the root scope), so the
-                  // backend spawn detects remoteness explicitly instead of
-                  // sniffing the cwd. Harmless for local projects.
-                  projectId={scopeKey === "root" ? null : scopeKey}
-                  // Run this tab inside the project's session container when
-                  // the container toggle is on: every PTY tab except
-                  // `local_agent` (host-bound by definition) execs into the one
-                  // shared container. Local projects only (a remote project is
-                  // ssh-wrapped instead). Derived here, not at tab creation, so
-                  // restored tabs are covered too. NOTE: this flag is in
-                  // TerminalView's spawn deps — flipping the toggle respawns
-                  // every live tab (ProjectPill confirms when that would
-                  // destroy a non-resumable agent conversation).
-                  sandbox={
-                    (tab.kind === "agent" || tab.kind === "shell") &&
-                    scopeKey !== "root" &&
-                    (() => {
-                      const proj = projects.find((p) => p.id === scopeKey);
-                      return !!proj?.sandbox?.enabled && !proj?.remote;
-                    })()
-                  }
-                  // Agent panes are font-zoomable (Ctrl+wheel / Ctrl +/-/0);
-                  // plain shells keep the fixed default size.
-                  zoomable={tab.kind === "agent" || tab.kind === "local_agent"}
-                  visible={visible}
-                  focused={visible}
-                />
-              )}
+              {/* The shared per-tab render switch (`components/tabs/TabPane`), the
+                  SAME one every detached popout renders. The main window owns the
+                  tab store (`ownsTabs`) and the projects store, so it resolves the
+                  mirror/sandbox/hold props the popout can't. New pane kinds/props
+                  go in TabPane so they reach both windows at once. */}
+              <TabPane
+                tab={tab}
+                scope={scopeKey}
+                visible={visible}
+                groupId={groupId}
+                ownsTabs
+                onConnect={getConnect(scopeKey)}
+                holdRemoteTerminal={holdRemoteTerminal}
+                remoteHost={paneHostLabel}
+                filesProjectDir={filesProjectDir}
+                terminalCwd={terminalCwd}
+                sandbox={sandbox}
+                tmuxSession={tmuxSession}
+              />
             </div>
           );
         })}
@@ -1062,6 +1131,7 @@ export function CenterPanel() {
           opaque panes (z-index:2) would otherwise cover an in-body frame. */}
       <FocusFrameOverlay
         groupRects={groupRects}
+        frameRects={groupFrameRects}
         orderedIds={allGroups(layoutByScope[scope] ?? null).map((g) => g.id)}
       />
 
@@ -1145,23 +1215,44 @@ export function SplitPreviewOverlay({ groupRects }: { groupRects: Record<string,
  */
 export function FocusFrameOverlay({
   groupRects,
+  frameRects,
   orderedIds,
 }: {
   groupRects: Record<string, Rect>;
+  frameRects: Record<string, Rect>;
   orderedIds: string[];
 }) {
   const focusedGroupId = useTabsStore((s) => s.focusedGroupId);
   const navActive = useSubwindowNavStore((s) => s.active);
   const previewGroupId = useSubwindowNavStore((s) => s.previewGroupId);
+  // Only the OS-focused window draws its focus frame, so a blurred main window
+  // doesn't show an active subwindow alongside a focused popout (#42).
+  const windowFocused = useWindowFocused();
 
   const frameId = navActive && previewGroupId ? previewGroupId : focusedGroupId;
-  const frameRect = frameId ? groupRects[frameId] : undefined;
+  // Prefer the whole-subwindow rect (tab bar + body); fall back to the pane
+  // region if a subwindow box wasn't measured (e.g. the empty-scope slot).
+  const frameRect = frameId
+    ? (frameRects[frameId] ?? groupRects[frameId])
+    : undefined;
   const n = orderedIds.length;
   const f = frameId ? orderedIds.indexOf(frameId) : -1;
 
+  // Colour the focus frame with the focused subwindow's active-tab group colour
+  // (the same TAB_ACCENT that paints that tab's stripe), so the frame and the
+  // current tab read as one continuous accent. Falls back to the CSS default
+  // (var(--accent)) when the kind can't be resolved.
+  const layout = useTabsStore((s) => s.layoutByScope[s.scope] ?? null);
+  const tabEntries = useTabsStore((s) => s.tabsByScope[s.scope]);
+  const activeTabKey = frameId ? findGroup(layout, frameId)?.activeKey : null;
+  const activeKind = activeTabKey
+    ? tabEntries?.find((t) => t.key === activeTabKey)?.kind
+    : undefined;
+  const frameColor = activeKind ? TAB_ACCENT[activeKind] : undefined;
+
   return (
     <>
-      {frameRect && (
+      {windowFocused && frameRect && (
         <div
           className="focus-frame"
           style={{
@@ -1169,6 +1260,7 @@ export function FocusFrameOverlay({
             top: frameRect.top,
             width: frameRect.width,
             height: frameRect.height,
+            outlineColor: frameColor,
           }}
         />
       )}
@@ -1223,19 +1315,26 @@ export function DragGhost() {
   const srcH = useDragStore((s) => s.drag?.previewH ?? 0);
   const thumbRef = useRef<HTMLDivElement>(null);
 
-  // Track Shift live so the options legend can highlight "force new window"
-  // while the file drag is in flight (Shift can toggle without a pointer move,
-  // which wouldn't otherwise re-render the ghost).
+  // Track Shift/Ctrl live so the options legend can highlight "force new
+  // window" / "copy out to another app" while the file drag is in flight (a
+  // modifier can toggle without a pointer move, which wouldn't otherwise
+  // re-render the ghost). Ctrl only marks the option here — FileTree's own
+  // drag gesture decides when to actually hand off to the native OS drag.
   const [shiftHeld, setShiftHeld] = useState(false);
+  const [ctrlHeld, setCtrlHeld] = useState(false);
   useEffect(() => {
     if (!isFileDrag) return;
-    const sync = (e: KeyboardEvent) => setShiftHeld(e.shiftKey);
+    const sync = (e: KeyboardEvent) => {
+      setShiftHeld(e.shiftKey);
+      setCtrlHeld(e.ctrlKey);
+    };
     window.addEventListener("keydown", sync);
     window.addEventListener("keyup", sync);
     return () => {
       window.removeEventListener("keydown", sync);
       window.removeEventListener("keyup", sync);
       setShiftHeld(false);
+      setCtrlHeld(false);
     };
   }, [isFileDrag]);
 
@@ -1261,14 +1360,21 @@ export function DragGhost() {
       <div className="tab-drag-ghost-label">{label}</div>
       {isFileDrag ? (
         <div className="tab-drag-ghost-opts">
+          {/* Exactly ONE option is marked at a time — it is what THIS release
+              would do. Ctrl (copy out) wins over Shift (force a new window),
+              matching the drag itself: once the cursor leaves the window with
+              Ctrl held, the OS drag owns the drop and the in-app targets are
+              out of the picture. */}
           <div className="tab-drag-ghost-opt">Drop on a folder → move file there</div>
-          <div className={`tab-drag-ghost-opt${shiftHeld ? "" : " active"}`}>
+          <div className={`tab-drag-ghost-opt${!shiftHeld && !ctrlHeld ? " active" : ""}`}>
             Drop → open in new window / dock into popout
           </div>
-          <div className={`tab-drag-ghost-opt${shiftHeld ? " active" : ""}`}>
+          <div className={`tab-drag-ghost-opt${shiftHeld && !ctrlHeld ? " active" : ""}`}>
             ⇧ Shift → force a new window
           </div>
-          <div className="tab-drag-ghost-opt">⌃ Ctrl-drag → copy to Signal / browser</div>
+          <div className={`tab-drag-ghost-opt${ctrlHeld ? " active" : ""}`}>
+            ⌃ Ctrl → copy out to another app
+          </div>
         </div>
       ) : null}
       {node ? (
@@ -1329,6 +1435,9 @@ interface TreeProps {
   node: LayoutNode;
   projectCwd: string;
   resizeSplit: (splitId: string, dividerIndex: number, fraction: number) => void;
+  /** Merge the two groups adjacent to a divider (double-click). Wired only when
+   *  both sides are leaf groups — see the divider's `onDoubleClick`. */
+  mergeGroups: (targetGroupId: string, sourceGroupId: string) => void;
   panelRef: React.RefObject<HTMLDivElement>;
   registerGroupBody: (id: string) => (el: HTMLDivElement | null) => void;
   onResized: () => void;
@@ -1353,6 +1462,25 @@ function LayoutTree(props: TreeProps) {
 function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split" }> }) {
   const { node } = props;
   const containerRef = useRef<HTMLDivElement>(null);
+  // Live DOM handles to each `.split-child`, so a divider drag can resize its two
+  // neighbours by writing `flex` directly — no store write per frame.
+  const childRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  // While a divider is dragging, the in-progress per-child flex sizes. Held in a
+  // ref (not state) so the drag never re-renders this subtree; applied to the DOM
+  // imperatively. Re-applied after every render (the layout effect below) so a
+  // re-render triggered by pane re-measurement (setGroupRects) can't clobber the
+  // drag back to the committed store sizes. `null` when no drag is in flight.
+  const dragSizesRef = useRef<number[] | null>(null);
+  const applyDragSizes = () => {
+    const sizes = dragSizesRef.current;
+    if (!sizes) return;
+    for (const [i, el] of childRefs.current) {
+      if (sizes[i] != null) el.style.flex = `${sizes[i]} 1 0`;
+    }
+  };
+  // Runs after every render: if a drag is live, re-assert its sizes over whatever
+  // flex React just wrote from the (still-stale) store `node.sizes`.
+  useLayoutEffect(applyDragSizes);
   // Minimum subwindow size (px) a divider drag may shrink a pane to, per axis,
   // from global settings (falling back to the built-in default).
   const minWidth = useSettingsStore((s) => s.settings?.min_subwindow_width) ?? DEFAULT_MIN_SUBWINDOW_PX;
@@ -1387,13 +1515,29 @@ function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split
       const minPx = isRow ? minWidth : minHeight;
       const minFrac = Math.min(minPx / total, pair / 2);
       const clamped = Math.min(Math.max(leftSize, minFrac), pair - minFrac);
-      props.resizeSplit(node.id, dividerIndex, clamped);
+      // Resize the two neighbours on the DOM (mirrors applyResize: only these two
+      // change, the pair sum is preserved) instead of writing the store every
+      // frame — the store write rebuilt the whole layout tree and re-rendered the
+      // entire pane layer on each move. The store is committed once on release.
+      const sizes = [...node.sizes];
+      sizes[dividerIndex] = clamped;
+      sizes[dividerIndex + 1] = pair - clamped;
+      dragSizesRef.current = sizes;
+      applyDragSizes();
+      // Panes live in CenterPanel's flat overlay, sized to measured rects — they
+      // don't reflow with the flex box, so re-measure to reposition them.
       props.onResized();
     };
     const onUp = (ev: PointerEvent) => {
       (e.target as HTMLElement).releasePointerCapture?.(ev.pointerId);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      // Commit the final position to the store ONCE. The next render writes these
+      // same sizes via `node.sizes`, matching the DOM, so there's no visual jump;
+      // clear the override first so the layout effect stops re-asserting it.
+      const sizes = dragSizesRef.current;
+      dragSizesRef.current = null;
+      if (sizes) props.resizeSplit(node.id, dividerIndex, sizes[dividerIndex]);
       props.onResized();
     };
     window.addEventListener("pointermove", onMove);
@@ -1410,6 +1554,12 @@ function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split
         <Fragment key={child.id}>
           <div
             className="split-child"
+            // Registered so a divider drag can resize this child's flex directly
+            // on the DOM (see startDrag); the map self-heals on unmount.
+            ref={(el) => {
+              if (el) childRefs.current.set(i, el);
+              else childRefs.current.delete(i);
+            }}
             // flex-basis carries the size fraction; grow/shrink let dividers
             // claim their fixed pixels without distorting the ratio noticeably.
             style={{ flex: `${node.sizes[i] ?? 1} 1 0` }}
@@ -1420,6 +1570,18 @@ function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split
             <div
               className={`split-divider split-divider-${node.dir}`}
               onPointerDown={startDrag(i)}
+              // Double-click merges the two adjacent subwindows into one — but
+              // only when both sides are leaf groups (mirroring the ScrollLink
+              // guard below); next to a nested split it's a no-op. Survivor is
+              // the left/top child; the divider drag uses onPointerDown, so the
+              // two gestures don't collide.
+              onDoubleClick={() => {
+                const a = node.children[i];
+                const b = node.children[i + 1];
+                if (a.type === "group" && b.type === "group") {
+                  props.mergeGroups(a.id, b.id);
+                }
+              }}
             >
               {/* Scroll-link toggle: only between two adjacent leaf subwindows
                   whose active tabs are both syncable viewers (text/markdown/PDF). */}

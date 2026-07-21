@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState, type ChangeEventHandler, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { useSettingsStore, clampZoom, MIN_UI_ZOOM, MAX_UI_ZOOM } from "../../stores/settings";
+import {
+  useSettingsStore,
+  clampZoom,
+  MIN_UI_ZOOM,
+  MAX_UI_ZOOM,
+  ZOOM_STEPS,
+} from "../../stores/settings";
+import { UntestedTag } from "../common/UntestedTag";
+import { experimentalEnabled } from "../../lib/experimental";
 import { usePowerStore, useEnergySaver } from "../../stores/power";
 import { useProjectsStore } from "../../stores/projects";
 import { DEFAULT_MIN_SUBWINDOW_PX } from "../../stores/tabs";
@@ -25,11 +33,21 @@ import {
   type ShortcutAction,
   type ShortcutMap,
 } from "../../lib/shortcuts";
-import { AgentsPanel, FileTypeSettings, GlobalAppsSettings, OllamaPanel } from "./SettingsSubPanels";
+import {
+  AgentsPanel,
+  FileTypeSettings,
+  GlobalAppsSettings,
+  OllamaPanel,
+  RemoteHostsSettings,
+} from "./SettingsSubPanels";
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
+import { useT, LANGUAGES, type Language, type TranslationKey } from "../../lib/i18n";
 import { IS_MAC, IS_WINDOWS } from "../../lib/platform";
 import { useHintsStore } from "../../stores/hints";
+import { canConnectVpnSilently } from "../../lib/vpnConnect";
+import { setVpnAutoConnect, vpnUsernameFor } from "../../lib/vpnAutoConnect";
+import type { StoredVpnConfig } from "../../types";
 
 // The workspace-layout help text. On Linux a lone Super toggles the panels; on
 // Windows it's F9 (the lone Win key is OS-reserved — Start opens on release, see
@@ -262,6 +280,92 @@ function GitHostingSettings({ onBack }: { onBack: () => void }) {
           }}
         />
       </label>
+    </>
+  );
+}
+
+/**
+ * Same setting the header's VPN menu arms per config (`settings.vpn_auto_connect`,
+ * see `lib/vpnAutoConnect.ts`) — surfaced here too since the header menu only shows
+ * up once a tunnel exists, which makes this opt-in easy to miss.
+ */
+function VpnAutoConnectSettings({ onBack }: { onBack: () => void }) {
+  const { settings } = useSettingsStore();
+  const armed = settings?.vpn_auto_connect ?? null;
+  const headless = settings?.connections_headless ?? true;
+  const [configs, setConfigs] = useState<StoredVpnConfig[] | null>(null);
+  const [silent, setSilent] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<StoredVpnConfig[]>("openvpn_list_configs")
+      .then(async (list) => {
+        const stored = Array.isArray(list) ? list : [];
+        if (cancelled) return;
+        setConfigs(stored);
+        const checks = await Promise.all(
+          stored.map(async (c) => [c.path, await canConnectVpnSilently(c.path, vpnUsernameFor(c.path))] as const),
+        );
+        if (!cancelled) setSilent(Object.fromEntries(checks));
+      })
+      .catch(() => {
+        if (!cancelled) setConfigs([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <>
+      <div className="settings-title-row">
+        <h2>VPN Auto-Connect</h2>
+        <button type="button" onClick={onBack}>Back</button>
+      </div>
+      <p className="settings-help">
+        Arm one stored OpenVPN tunnel to come up automatically when Eldrun starts.
+        It reroutes this computer's traffic — not just Eldrun's — for as long as it
+        is up, so only one config can be armed at a time; arming another disarms the
+        first. Stored configs are added from a remote project's Connect dialog or the
+        VPN menu in the header.
+      </p>
+      {configs === null ? (
+        <p className="settings-help">Loading…</p>
+      ) : configs.length === 0 ? (
+        <div className="settings-empty">
+          No OpenVPN config stored yet. Add one from a remote project's Connect dialog.
+        </div>
+      ) : (
+        <div className="settings-list">
+          {configs.map((c) => {
+            const on = armed === c.path;
+            const eligible = !headless || silent[c.path] === true;
+            return (
+              <div key={c.path} className="settings-toggle-card">
+                <label className="settings-toggle-card-row">
+                  <span title={c.path}>{c.name}</span>
+                  <Toggle
+                    checked={on}
+                    disabled={!eligible && !on}
+                    onChange={(e) => void setVpnAutoConnect(c.path, e.target.checked)}
+                  />
+                </label>
+                {!eligible && !on && (
+                  <p className="settings-help">
+                    Connect once with <b>Save passphrase</b> ticked to enable this —
+                    auto-connect never prompts.
+                  </p>
+                )}
+                {on && (
+                  <p className="settings-help">
+                    Starts with Eldrun{headless ? "" : " (waits in the root terminal)"}.
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </>
   );
 }
@@ -575,23 +679,22 @@ function HelpPanel({ onBack }: { onBack: () => void }) {
   );
 }
 
-export type SettingsPanelKind = "main" | "global" | "filetypes" | "ollama" | "agents" | "shortcuts" | "git" | "archive" | "scaffoldRepair" | "help";
+export type SettingsPanelKind = "main" | "global" | "filetypes" | "ollama" | "agents" | "shortcuts" | "git" | "vpn" | "remoteHosts" | "archive" | "scaffoldRepair" | "help";
 
 /** Sub-panel navigation shown as a card menu at the foot of the main settings
- *  panel (styled like the Lessons / How-to-start menus). */
-const SETTINGS_NAV: {
-  panel: Exclude<SettingsPanelKind, "main" | "ollama">;
-  title: string;
-  blurb: string;
-}[] = [
-  { panel: "git", title: "Git Hosting", blurb: "Hosting profile, access token, and publishing." },
-  { panel: "global", title: "Global Apps", blurb: "Toolbar launchers shown across every project." },
-  { panel: "filetypes", title: "File Type Apps", blurb: "Choose which app opens each file type." },
-  { panel: "agents", title: "Manage Agents", blurb: "Install or update the agent CLIs." },
-  { panel: "shortcuts", title: "Keyboard Shortcuts", blurb: "Rebind the navigation chords." },
-  { panel: "archive", title: "Archived Projects", blurb: "Restore or permanently delete archived projects." },
-  { panel: "scaffoldRepair", title: "Repair Project Scaffold", blurb: "Regenerate missing scaffold files." },
-  { panel: "help", title: "Feature Guide", blurb: "Full glossary of Eldrun's features." },
+ *  panel (styled like the Lessons / How-to-start menus). Titles/blurbs are
+ *  resolved at render via i18n (`nav.<panel>.title` / `.blurb`). */
+const SETTINGS_NAV: Exclude<SettingsPanelKind, "main" | "ollama">[] = [
+  "git",
+  "vpn",
+  "remoteHosts",
+  "global",
+  "filetypes",
+  "agents",
+  "shortcuts",
+  "archive",
+  "scaffoldRepair",
+  "help",
 ];
 
 export function SettingsDialog({
@@ -601,10 +704,12 @@ export function SettingsDialog({
   onClose: () => void;
   initialPanel?: SettingsPanelKind;
 }) {
-  const { settings, setTheme, updateSettings } = useSettingsStore();
+  const { settings, setTheme, setLanguage, updateSettings } = useSettingsStore();
   const [panel, setPanel] = useState<SettingsPanelKind>(initialPanel);
+  const t = useT();
 
-  const currentTheme = (settings?.color_scheme ?? "light_lavender") as Theme;
+  const currentTheme = (settings?.color_scheme ?? "fancy_dark") as Theme;
+  const currentLang = (settings?.language ?? "en") as Language;
 
   // Live power state for the Energy Saver help line.
   const energyMode = settings?.energy_saver ?? "battery";
@@ -628,15 +733,16 @@ export function SettingsDialog({
   return (
     <div className="modal-backdrop how-to-start-backdrop" onMouseDown={onClose}>
       <div className="settings-dialog" onMouseDown={(e) => e.stopPropagation()}>
+       <div className="dialog-scroll">
         {panel === "main" && (
           <>
             <div className="settings-title-row">
-              <h2>Settings</h2>
+              <h2>{t("settings.title")}</h2>
               <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
             </div>
 
             <div className="settings-row">
-              <label>Theme</label>
+              <label>{t("settings.theme")}</label>
               <Dropdown
                 value={currentTheme}
                 onChange={(v) => void setTheme(v as Theme)}
@@ -644,14 +750,26 @@ export function SettingsDialog({
               />
             </div>
 
+            <div className="settings-row">
+              <label>
+                {t("settings.language")} <UntestedTag />
+              </label>
+              <Dropdown
+                value={currentLang}
+                onChange={(v) => void setLanguage(v as Language)}
+                options={LANGUAGES.map((l) => ({ value: l.value, label: l.label }))}
+              />
+            </div>
+            <p className="settings-help">{t("settings.language.help")}</p>
+
             <ToggleCard
-              label="Run scripts in background"
+              label={t("settings.runScriptsBg")}
               checked={settings?.run_scripts_in_background ?? true}
               onChange={(e) => void updateSettings({ run_scripts_in_background: e.target.checked })}
             />
 
             <ToggleCard
-              label="Claude remote control"
+              label={t("settings.claudeRemote")}
               checked={settings?.agent_remote_control ?? true}
               onChange={(e) => void updateSettings({ agent_remote_control: e.target.checked })}
               help={
@@ -664,8 +782,73 @@ export function SettingsDialog({
             />
 
             <ToggleCard
-              label="Plan/Auto toggle on agent tabs (experimental)"
-              checked={settings?.agent_mode_toggle ?? false}
+              label={t("settings.headlessRemote")}
+              checked={settings?.connections_headless ?? true}
+              onChange={(e) => void updateSettings({ connections_headless: e.target.checked })}
+              help={
+                <>
+                  When on (default), Eldrun makes SSH/OpenVPN connections in the
+                  background, handling the password transiently. Turn it off to instead
+                  open each connection as an interactive terminal in the Eldrun root —
+                  you type the password directly into that terminal and Eldrun never
+                  handles it.
+                </>
+              }
+            />
+
+            {!IS_WINDOWS && (
+              <ToggleCard
+                label={t("settings.persistLocal")}
+                checked={settings?.persist_local_sessions ?? true}
+                onChange={(e) => void updateSettings({ persist_local_sessions: e.target.checked })}
+                help={
+                  <>
+                    When on (default), a local project's shell and Python/script tabs run
+                    inside a tmux session on this machine, so a long run keeps going if
+                    Eldrun crashes and the tab reattaches on restart. Closing a tab still
+                    ends its session. Requires <code>tmux</code>; agent tabs are unaffected.
+                  </>
+                }
+              />
+            )}
+
+            <div className="settings-row">
+              <label>{t("settings.energySaver")}</label>
+              <Dropdown
+                value={energyMode}
+                onChange={(v) => void updateSettings({ energy_saver: v as "off" | "battery" | "always" })}
+                options={[
+                  { value: "off", label: t("energy.off") },
+                  { value: "battery", label: t("energy.battery") },
+                  { value: "always", label: t("energy.always") },
+                ]}
+              />
+            </div>
+            <p className="settings-help">
+              When active, Eldrun eases off to save power: it pauses the project
+              blob's idle spin, calms the status glows, and slows background
+              refreshes. "On battery" (default) does this only while unplugged.
+              {" "}{energyStatus}
+            </p>
+
+            <ToggleCard
+              label={t("settings.debug")}
+              checked={settings?.debug ?? false}
+              onChange={(e) => void updateSettings({ debug: e.target.checked })}
+            />
+
+            <div className="settings-section-title">{t("settings.experimental")}</div>
+            <p className="settings-help">
+              Features that are still moving. Each is off by default and{" "}
+              <b>on by default in Debug mode</b> — so building Eldrun means seeing them
+              without re-ticking this list every time a new one lands. A switch here
+              always wins, in either direction: you can take one on without Debug mode,
+              or turn one off while in it.
+            </p>
+
+            <ToggleCard
+              label={t("settings.agentModeToggle")}
+              checked={experimentalEnabled(settings, "agent_mode_toggle")}
               onChange={(e) => void updateSettings({ agent_mode_toggle: e.target.checked })}
               help={
                 <>
@@ -681,63 +864,40 @@ export function SettingsDialog({
             />
 
             <ToggleCard
-              label="Headless remote connections"
-              checked={settings?.connections_headless ?? true}
-              onChange={(e) => void updateSettings({ connections_headless: e.target.checked })}
+              label={t("settings.pythonRunDebug")}
+              checked={experimentalEnabled(settings, "python_run_debug")}
+              onChange={(e) => void updateSettings({ python_run_debug: e.target.checked })}
               help={
                 <>
-                  When on (default), Eldrun makes SSH/OpenVPN connections in the
-                  background, handling the password transiently. Turn it off to instead
-                  open each connection as an interactive terminal in the Eldrun root —
-                  you type the password directly into that terminal and Eldrun never
-                  handles it.
+                  Gives a <code>.py</code> file open in the editor a <b>▶ Run</b> and a{" "}
+                  <b>🐞 Debug</b> button, and turns its line numbers into a breakpoint
+                  gutter. Both open a terminal tab in the project — so they run on the host
+                  of a remote project and inside the container of a containerised one — and
+                  use the project's own interpreter. Debug is <code>pdb</code>, pre-loaded
+                  with the gutter's breakpoints. Off by default because Run executes the
+                  file. Ctrl+Click to a definition is not gated: it only reads.
                 </>
               }
             />
 
-            <div className="settings-row">
-              <label>Energy saver</label>
-              <Dropdown
-                value={energyMode}
-                onChange={(v) => void updateSettings({ energy_saver: v as "off" | "battery" | "always" })}
-                options={[
-                  { value: "off", label: "Off" },
-                  { value: "battery", label: "On battery" },
-                  { value: "always", label: "Always" },
-                ]}
-              />
-            </div>
-            <p className="settings-help">
-              When active, Eldrun eases off to save power: it pauses the project
-              blob's idle spin, calms the status glows, and slows background
-              refreshes. "On battery" (default) does this only while unplugged.
-              {" "}{energyStatus}
-            </p>
-
-            <ToggleCard
-              label="Debug mode"
-              checked={settings?.debug ?? false}
-              onChange={(e) => void updateSettings({ debug: e.target.checked })}
-            />
-
-            <div className="settings-section-title">Resource monitor</div>
+            <div className="settings-section-title">{t("settings.resourceMonitor")}</div>
             <div className="settings-toggle-card">
               <label className="settings-toggle-card-row">
-                <span>Show CPU usage</span>
+                <span>{t("settings.showCpu")}</span>
                 <Toggle
                   checked={settings?.show_cpu_usage ?? true}
                   onChange={(e) => void updateSettings({ show_cpu_usage: e.target.checked })}
                 />
               </label>
               <label className="settings-toggle-card-row">
-                <span>Show RAM usage</span>
+                <span>{t("settings.showRam")}</span>
                 <Toggle
                   checked={settings?.show_ram_usage ?? true}
                   onChange={(e) => void updateSettings({ show_ram_usage: e.target.checked })}
                 />
               </label>
               <label className="settings-toggle-card-row">
-                <span>Show GPU usage</span>
+                <span>{t("settings.showGpu")}</span>
                 <Toggle
                   checked={settings?.show_gpu_usage ?? true}
                   onChange={(e) => void updateSettings({ show_gpu_usage: e.target.checked })}
@@ -750,44 +910,44 @@ export function SettingsDialog({
               </p>
             </div>
 
-            <div className="settings-section-title">Calendar</div>
+            <div className="settings-section-title">{t("settings.calendar")}</div>
             <div className="settings-row">
-              <label>Week starts on</label>
+              <label>{t("settings.weekStartsOn")}</label>
               <Dropdown
                 value={String(settings?.calendar_week_start ?? 0)}
                 onChange={(v) =>
                   void updateSettings({ calendar_week_start: Number(v) === 1 ? 1 : 0 })
                 }
                 options={[
-                  { value: "0", label: "Sunday" },
-                  { value: "1", label: "Monday" },
+                  { value: "0", label: t("day.sunday") },
+                  { value: "1", label: t("day.monday") },
                 ]}
               />
             </div>
             <div className="settings-row">
-              <label>Default view</label>
+              <label>{t("settings.defaultView")}</label>
               <Dropdown
                 value={settings?.calendar_default_view ?? "month"}
                 onChange={(v) =>
                   void updateSettings({ calendar_default_view: v as CalendarViewKind })
                 }
                 options={[
-                  { value: "day", label: "Day" },
-                  { value: "week", label: "Week" },
-                  { value: "multiweek", label: "Multiweek" },
-                  { value: "month", label: "Month" },
-                  { value: "agenda", label: "Agenda" },
-                  { value: "tasks", label: "Tasks" },
+                  { value: "day", label: t("view.day") },
+                  { value: "week", label: t("view.week") },
+                  { value: "multiweek", label: t("view.multiweek") },
+                  { value: "month", label: t("view.month") },
+                  { value: "agenda", label: t("view.agenda") },
+                  { value: "tasks", label: t("view.tasks") },
                 ]}
               />
             </div>
             <ToggleCard
-              label="24-hour clock"
+              label={t("settings.clock24")}
               checked={settings?.calendar_time_format_24h ?? false}
               onChange={(e) => void updateSettings({ calendar_time_format_24h: e.target.checked })}
             />
             <div className="settings-row">
-              <label>Day grid starts at</label>
+              <label>{t("settings.dayGridStart")}</label>
               <Dropdown
                 value={String(settings?.calendar_day_start_hour ?? 8)}
                 onChange={(v) => void updateSettings({ calendar_day_start_hour: Number(v) })}
@@ -798,19 +958,19 @@ export function SettingsDialog({
               />
             </div>
             <div className="settings-row">
-              <label>Default reminder</label>
+              <label>{t("settings.defaultReminder")}</label>
               <Dropdown
                 value={String(settings?.calendar_default_reminder_minutes ?? 0)}
                 onChange={(v) =>
                   void updateSettings({ calendar_default_reminder_minutes: Number(v) })
                 }
                 options={[
-                  { value: "0", label: "None" },
-                  { value: "5", label: "5 minutes before" },
-                  { value: "15", label: "15 minutes before" },
-                  { value: "30", label: "30 minutes before" },
-                  { value: "60", label: "1 hour before" },
-                  { value: "1440", label: "1 day before" },
+                  { value: "0", label: t("reminder.none") },
+                  { value: "5", label: t("reminder.5") },
+                  { value: "15", label: t("reminder.15") },
+                  { value: "30", label: t("reminder.30") },
+                  { value: "60", label: t("reminder.60") },
+                  { value: "1440", label: t("reminder.1440") },
                 ]}
               />
             </div>
@@ -820,9 +980,9 @@ export function SettingsDialog({
               scroll to — earlier events are still there, just above the fold.
             </p>
 
-            <div className="settings-section-title">Hints & onboarding</div>
+            <div className="settings-section-title">{t("settings.hintsOnboarding")}</div>
             <ToggleCard
-              label="Show contextual hints"
+              label={t("settings.showHints")}
               checked={settings?.hints_enabled ?? true}
               onChange={(e) => void updateSettings({ hints_enabled: e.target.checked })}
             />
@@ -834,7 +994,7 @@ export function SettingsDialog({
                   window.dispatchEvent(new Event("eldrun:open-how-to-start"));
                 }}
               >
-                How to start...
+                {t("settings.howToStart")}
               </button>
               <button
                 type="button"
@@ -843,7 +1003,7 @@ export function SettingsDialog({
                   window.dispatchEvent(new Event("eldrun:start-tour"));
                 }}
               >
-                Take a tour
+                {t("settings.takeTour")}
               </button>
               <button
                 type="button"
@@ -852,20 +1012,23 @@ export function SettingsDialog({
                   window.dispatchEvent(new Event("eldrun:open-lessons"));
                 }}
               >
-                Lessons
+                {t("settings.lessons")}
               </button>
               <button type="button" onClick={() => useHintsStore.getState().reset()}>
-                Reset hints
+                {t("settings.resetHints")}
               </button>
             </div>
 
-            <div className="settings-section-title">Layout</div>
+            <div className="settings-section-title">{t("settings.layout")}</div>
             <p className="settings-help">
-              Global zoom scales the entire Eldrun interface — handy on 4K /
-              high-DPI monitors. 100% is the default.
+              Window zoom scales the entire Eldrun interface — handy on 4K /
+              high-DPI monitors. 100% is the default. Zoom is <strong>per
+              window</strong>: this sets the main window, and each popped-out
+              subwindow keeps its own. Ctrl&nbsp;+ / Ctrl&nbsp;− zoom the focused
+              window and Ctrl&nbsp;0 resets it. <UntestedTag />
             </p>
             <div className="settings-row">
-              <label>Global zoom</label>
+              <label>{t("settings.windowZoom")}</label>
               <Dropdown
                 value={String(clampZoom(settings?.ui_zoom))}
                 onChange={(v) => {
@@ -874,12 +1037,12 @@ export function SettingsDialog({
                     ui_zoom: z === 1 ? undefined : clampZoom(z),
                   });
                 }}
-                options={[0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
-                  .filter((z) => z >= MIN_UI_ZOOM && z <= MAX_UI_ZOOM)
-                  .map((z) => ({
-                    value: String(z),
-                    label: `${Math.round(z * 100)}%${z === 1 ? " (default)" : ""}`,
-                  }))}
+                options={ZOOM_STEPS.filter(
+                  (z) => z >= MIN_UI_ZOOM && z <= MAX_UI_ZOOM,
+                ).map((z) => ({
+                  value: String(z),
+                  label: `${Math.round(z * 100)}%${z === 1 ? ` (${t("common.default")})` : ""}`,
+                }))}
               />
             </div>
             <p className="settings-help">
@@ -887,7 +1050,7 @@ export function SettingsDialog({
               Defaults to {DEFAULT_MIN_SUBWINDOW_PX}px when left blank.
             </p>
             <div className="settings-row">
-              <label htmlFor="min-subwindow-width">Min subwindow width (px)</label>
+              <label htmlFor="min-subwindow-width">{t("settings.minSubWidth")}</label>
               <input
                 id="min-subwindow-width"
                 type="number"
@@ -904,7 +1067,7 @@ export function SettingsDialog({
               />
             </div>
             <div className="settings-row">
-              <label htmlFor="min-subwindow-height">Min subwindow height (px)</label>
+              <label htmlFor="min-subwindow-height">{t("settings.minSubHeight")}</label>
               <input
                 id="min-subwindow-height"
                 type="number"
@@ -921,7 +1084,7 @@ export function SettingsDialog({
               />
             </div>
 
-            <div className="settings-section-title">Downloads</div>
+            <div className="settings-section-title">{t("settings.downloads")}</div>
             <p className="settings-help">
               Folders scanned by the right-panel Downloads section (the 📥 toggle),
               for quickly copying freshly downloaded files into a project. Read-only
@@ -931,7 +1094,7 @@ export function SettingsDialog({
             <div className="settings-list">
               {(settings?.download_sources ?? []).length === 0 ? (
                 <div className="settings-empty">
-                  No folders added — the system Downloads folder is used.
+                  {t("settings.noDownloadFolders")}
                 </div>
               ) : (
                 (settings?.download_sources ?? []).map((dir) => (
@@ -959,7 +1122,7 @@ export function SettingsDialog({
                       }
                       title="Remove this folder"
                     >
-                      Remove
+                      {t("common.remove")}
                     </button>
                   </div>
                 ))
@@ -981,13 +1144,13 @@ export function SettingsDialog({
                   })();
                 }}
               >
-                Add download folder...
+                {t("settings.addDownloadFolder")}
               </button>
             </div>
 
-            <div className="settings-section-title">Usage stats</div>
+            <div className="settings-section-title">{t("settings.usageStats")}</div>
             <ToggleCard
-              label="Show the recap at the start of each day"
+              label={t("settings.dailyRecap")}
               checked={settings?.daily_stats_recap ?? true}
               onChange={(e) => void updateSettings({ daily_stats_recap: e.target.checked })}
               help={
@@ -1006,20 +1169,24 @@ export function SettingsDialog({
                 window.dispatchEvent(new CustomEvent(OPEN_STATS_EVENT));
               }}
             >
-              Open usage stats
+              {t("settings.openUsageStats")}
             </button>
 
-            <div className="settings-section-title">More settings</div>
+            <div className="settings-section-title">{t("settings.moreSettings")}</div>
             <div className="settings-nav-list">
-              {SETTINGS_NAV.map((item) => (
+              {SETTINGS_NAV.map((panelKind) => (
                 <button
-                  key={item.panel}
+                  key={panelKind}
                   type="button"
                   className="settings-nav-item"
-                  onClick={() => setPanel(item.panel)}
+                  onClick={() => setPanel(panelKind)}
                 >
-                  <span className="settings-nav-item-title">{item.title}</span>
-                  <span className="settings-nav-item-blurb">{item.blurb}</span>
+                  <span className="settings-nav-item-title">
+                    {t(`nav.${panelKind}.title` as TranslationKey)}
+                  </span>
+                  <span className="settings-nav-item-blurb">
+                    {t(`nav.${panelKind}.blurb` as TranslationKey)}
+                  </span>
                 </button>
               ))}
             </div>
@@ -1031,9 +1198,12 @@ export function SettingsDialog({
         {panel === "agents" && <AgentsPanel onBack={() => setPanel("main")} />}
         {panel === "shortcuts" && <ShortcutsSettings onBack={() => setPanel("main")} />}
         {panel === "git" && <GitHostingSettings onBack={() => setPanel("main")} />}
+        {panel === "vpn" && <VpnAutoConnectSettings onBack={() => setPanel("main")} />}
+        {panel === "remoteHosts" && <RemoteHostsSettings onBack={() => setPanel("main")} />}
         {panel === "archive" && <ArchivedProjectsPanel onBack={() => setPanel("main")} />}
         {panel === "scaffoldRepair" && <ScaffoldRepairPanel onBack={() => setPanel("main")} />}
         {panel === "help" && <HelpPanel onBack={() => setPanel("main")} />}
+       </div>
       </div>
     </div>
   );

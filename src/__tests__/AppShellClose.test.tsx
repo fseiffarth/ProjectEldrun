@@ -34,20 +34,26 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() =
 
 // Paths below are relative to this test file (src/__tests__/), matching the
 // resolved module IDs that AppShell uses (src/stores/ and src/components/layout/).
-vi.mock("../stores/projects", () => ({
-  useProjectsStore: vi.fn((sel: (s: object) => unknown) =>
-    sel({
-      load: vi.fn(),
-      loaded: true,
-      activeId: null,
-      switchToast: null,
-      clearSwitchToast: vi.fn(),
-      projects: [],
-    }),
-  ),
-  // AppShell subscribes to runtime-switch events on mount; provide a no-op.
-  listenProjectRuntimeSwitched: vi.fn().mockResolvedValue(() => {}),
-}));
+vi.mock("../stores/projects", () => {
+  const state = {
+    load: vi.fn(),
+    loaded: true,
+    activeId: null,
+    switchToast: null,
+    clearSwitchToast: vi.fn(),
+    projects: [],
+  };
+  return {
+    // The close handler reads the store imperatively (getState) to flush the
+    // active scope's tab layout, so the mock must carry it alongside the hook.
+    useProjectsStore: Object.assign(
+      vi.fn((sel: (s: object) => unknown) => sel(state)),
+      { getState: () => state },
+    ),
+    // AppShell subscribes to runtime-switch events on mount; provide a no-op.
+    listenProjectRuntimeSwitched: vi.fn().mockResolvedValue(() => {}),
+  };
+});
 vi.mock("../stores/settings", () => ({
   useSettingsStore: vi.fn((sel: (s: object) => unknown) =>
     sel({ load: vi.fn() }),

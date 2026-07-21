@@ -6,6 +6,8 @@ import { BoxPill } from "../projects/BoxPill";
 import { ProjectSearch } from "../projects/ProjectSearch";
 import { ProjectDialog } from "../projects/ProjectDialog";
 import { SettingsDialog, type SettingsPanelKind } from "./SettingsPanel";
+import { UntestedTag } from "../common/UntestedTag";
+import { useHpcPipelineStore } from "../../stores/hpcPipeline";
 import { useProjectsStore } from "../../stores/projects";
 import { useBoxesStore } from "../../stores/boxes";
 import { useTabsStore } from "../../stores/tabs";
@@ -31,6 +33,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const deleteBox = useBoxesStore((s) => s.deleteBox);
   const assignToBox = useBoxesStore((s) => s.assignToBox);
   const openBox = useBoxesStore((s) => s.openBox);
+  const openHpcWizard = useHpcPipelineStore((s) => s.openWizard);
   // The currently-displayed scope is the single source of truth for which pill
   // is highlighted (BoxPill keys off it too). Opening a box moves the scope but
   // not `activeId`, so highlighting on `activeId` would leave the previously
@@ -40,7 +43,9 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState<SettingsPanelKind>("main");
   const [showAddMenu, setShowAddMenu] = useState(false);
-  const [dialog, setDialog] = useState<"new" | "import" | null>(null);
+  // "clone" is the import dialog opened straight onto its GitHub/GitLab source —
+  // the same dialog, so the source can still be switched back inside it.
+  const [dialog, setDialog] = useState<"new" | "import" | "clone" | null>(null);
   const settingsMenuRef = useRef<HTMLDivElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
   // Hover-opened, like the header's sibling menus (GlobalAppMenu, LocalModelMenu,
@@ -343,9 +348,10 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
         />,
         document.body,
       )}
-      {dialog === "import" && createPortal(
+      {(dialog === "import" || dialog === "clone") && createPortal(
         <ProjectDialog
           kind="import"
+          initialImportSource={dialog === "clone" ? "git" : "folder"}
           onClose={() => setDialog(null)}
           onProject={(project) => addProject(project)}
         />,
@@ -525,12 +531,25 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
                 Import Project
               </button>
               <button
+                className="untested"
+                onClick={() => { setShowAddMenu(false); setDialog("clone"); }}
+              >
+                Import from GitHub/GitLab <UntestedTag />
+              </button>
+              <button
+                className="untested"
+                onClick={() => { setShowAddMenu(false); openHpcWizard(); }}
+              >
+                HPC pipeline… <UntestedTag />
+              </button>
+              <button
+                className="untested"
                 onClick={() => {
                   setShowAddMenu(false);
                   void createBox("New Box");
                 }}
               >
-                New Box
+                New Box <UntestedTag />
               </button>
             </div>
           )}

@@ -1,24 +1,17 @@
-import { useState } from "react";
 import { joinRemotePath } from "./scaffold";
-import { fileIcon, folderIcon } from "../../lib/viewers/fileUtils";
+import { RemoteFolderBrowser } from "./RemoteFolderBrowser";
 import { TerminalView } from "../terminal/TerminalView";
 import { ConnectionLog } from "../common/ConnectionLog";
 import { ConnLamp } from "../common/ConnLamp";
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
+import { Toggle } from "../common/Toggle";
+import { VpnTunnelUpNotice } from "../common/VpnTunnelUpNotice";
+import { useVpnSectionVisible } from "../../stores/vpnStatus";
 import type { ConnState } from "../../stores/remoteStatus";
 import type { useRemoteSession } from "./useRemoteSession";
 
 type RemoteSession = ReturnType<typeof useRemoteSession>;
-
-/** Extension (".py", ".md", …) of a remote listing entry, for picking its
- *  file-type icon the same way the right-hand file tree does. A leading-dot
- *  name (e.g. ".gitignore") has no extension, so it falls back to the generic
- *  file icon. */
-function remoteEntryExt(name: string): string | null {
-  const dot = name.lastIndexOf(".");
-  return dot > 0 ? name.slice(dot) : null;
-}
 
 /** Map the dialog's connection status (`idle|connecting|connected|error`) to a
  *  lamp state (`off|connecting|connected|error`). */
@@ -83,6 +76,10 @@ export function RemoteProjectSection({
     sshPassword,
     sshStatus,
     sshError,
+    sshRemember,
+    setSshRemember,
+    sshSaved,
+    forgetSshPassword,
     remoteBrowsePath,
     remoteEntries,
     remoteListBusy,
@@ -107,6 +104,10 @@ export function RemoteProjectSection({
     vpnStatus,
     setVpnStatus,
     vpnError,
+    vpnRemember,
+    setVpnRemember,
+    vpnSaved,
+    forgetVpnPassword,
     vpnLog,
     vpnTerm,
     startVpnTerm,
@@ -124,14 +125,14 @@ export function RemoteProjectSection({
     createRemoteFolder,
   } = remote;
 
-  // Inline "new folder" entry within the remote browser (local to this view).
-  const [newFolderName, setNewFolderName] = useState("");
-  const submitNewFolder = () => {
-    const name = newFolderName.trim();
-    if (!name) return;
-    void createRemoteFolder(name);
-    setNewFolderName("");
-  };
+  // Same gate as the Connect modal: a tunnel is machine-wide, so once one is up
+  // (from the header, another project, or connect-on-launch) this dialog has no
+  // tunnel left to offer and collapses its OpenVPN block to a one-line notice —
+  // unless the live tunnel is the one *this* dialog just brought up, whose log and
+  // state belong here. The project simply stores no config in that case; the
+  // Connect modal can still attach one later.
+  const vpnBusy = vpnStatus === "connecting" || vpnStatus === "connected";
+  const showVpnSection = useVpnSectionVisible(vpnBusy);
 
   if (!isRemoteProject) return null;
 
@@ -192,7 +193,7 @@ export function RemoteProjectSection({
                   "Password auth needs OpenSSH 8.4+ or sshpass — update OpenSSH or install sshpass, or use SSH keys (leave the password blank).",
                 );
               }
-              if (vpnEnabled && vpnConfig && !sshTooling.openvpn) {
+              if (showVpnSection && vpnEnabled && vpnConfig && !sshTooling.openvpn) {
                 warnings.push(
                   "openvpn/pkexec not found — VPN-gated hosts can't connect. Install openvpn and polkit.",
                 );
@@ -208,6 +209,11 @@ export function RemoteProjectSection({
             })()}
 
           <div className="ssh-connect-fields" role="group" aria-label="OpenVPN tunnel">
+            {/* A tunnel that is already up machine-wide leaves this section nothing
+                to do — say so in one line and go straight to SSH. */}
+            {!showVpnSection && <VpnTunnelUpNotice />}
+            {showVpnSection && (
+              <>
             {/* OpenVPN is opt-in (default off): reaching the host directly needs
                 no tunnel when you're already on the right network. Flip the toggle
                 only for a VPN-gated host; the config + connect UI stays collapsed
@@ -288,12 +294,24 @@ export function RemoteProjectSection({
                     )}
                     <label>
                       {vpnNeeds.username ? "VPN password" : "VPN passphrase"}{" "}
-                      <span className="ssh-optional-hint">(not stored; asked again on activation)</span>
+                      <span className="ssh-optional-hint">
+                        {vpnSaved
+                          ? "(saved in your OS keychain)"
+                          : "(not stored unless you save it below)"}
+                      </span>
                       <div className="folder-picker-row">
                         <PasswordInput
                           className="ssh-password-input"
                           value={vpnPassword}
-                          placeholder={vpnNeeds.username ? "OpenVPN account password" : "VPN passphrase"}
+                          // A saved secret can't be pre-filled — it never leaves the
+                          // backend — so blank means "use the saved one".
+                          placeholder={
+                            vpnSaved
+                              ? "Using saved passphrase — leave blank"
+                              : vpnNeeds.username
+                                ? "OpenVPN account password"
+                                : "VPN passphrase"
+                          }
                           onChange={(e) => {
                             setVpnPassword(e.target.value);
                             if (vpnStatus !== "idle") setVpnStatus("idle");
@@ -307,12 +325,20 @@ export function RemoteProjectSection({
                     {vpnNeedsKeyPassphrase && (
                       <label>
                         Private key passphrase{" "}
-                        <span className="ssh-optional-hint">(not stored; asked again on activation)</span>
+                        <span className="ssh-optional-hint">
+                          {vpnSaved
+                            ? "(saved in your OS keychain)"
+                            : "(not stored unless you save it below)"}
+                        </span>
                         <div className="folder-picker-row">
                           <PasswordInput
                             className="ssh-password-input"
                             value={vpnKeyPassphrase}
-                            placeholder="Passphrase for the config's encrypted key"
+                            placeholder={
+                              vpnSaved
+                                ? "Using saved passphrase — leave blank"
+                                : "Passphrase for the config's encrypted key"
+                            }
                             onChange={(e) => {
                               setVpnKeyPassphrase(e.target.value);
                               if (vpnStatus !== "idle") setVpnStatus("idle");
@@ -322,6 +348,25 @@ export function RemoteProjectSection({
                         </div>
                       </label>
                     )}
+                    {/* Same opt-in as the Connect modal's, writing the same keychain
+                        entry (keyed by config path). Without it, a tunnel set up here
+                        asked for its passphrase again on the very next activation. */}
+                    <label className="remote-connect-remember">
+                      <Toggle
+                        size="sm"
+                        checked={vpnRemember}
+                        onChange={(e) => {
+                          setVpnRemember(e.target.checked);
+                          if (!e.target.checked && vpnSaved) void forgetVpnPassword();
+                        }}
+                      />
+                      {vpnNeedsKeyPassphrase ? "Save VPN credentials" : "Save passphrase"}
+                      <span className="ssh-optional-hint">
+                        {vpnSaved
+                          ? "saved in your OS keychain — turn off to delete it"
+                          : "stored securely in your OS keychain"}
+                      </span>
+                    </label>
                     {(vpnStatus === "connecting" || vpnLog.length > 0) && (
                       <ConnectionLog lines={vpnLog} busy={vpnStatus === "connecting"} />
                     )}
@@ -384,6 +429,8 @@ export function RemoteProjectSection({
                 )}
               </div>
             )}
+              </>
+            )}
             <label>
               <span className="remote-field-label">
                 <ConnLamp status={sshLamp} label="SSH" />
@@ -422,13 +469,21 @@ export function RemoteProjectSection({
                 <label>
                   Password{" "}
                   <span className="ssh-optional-hint">
-                    (not stored; blank uses SSH key)
+                    {sshSaved
+                      ? "(saved in your OS keychain)"
+                      : "(not stored unless you save it below; blank uses SSH key)"}
                   </span>
                   <div className="folder-picker-row">
                     <PasswordInput
                       className="ssh-password-input"
                       value={sshPassword}
-                      placeholder="leave empty for key/agent auth"
+                      // A saved password never leaves the backend, so it can't be
+                      // pre-filled: blank + Connect authenticates with it.
+                      placeholder={
+                        sshSaved
+                          ? "Using saved password — leave blank"
+                          : "leave empty for key/agent auth"
+                      }
                       onChange={(e) => onSshPasswordChange(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && sshAddress.trim() && sshStatus !== "connecting") {
@@ -450,6 +505,27 @@ export function RemoteProjectSection({
                           : "Connect"}
                     </button>
                   </div>
+                </label>
+                {/* The keychain is keyed by host target, not by project — so the
+                    password saved here is the one this project's later reconnects
+                    (and auto-connect) use, and a host already saved by another
+                    project shows up pre-ticked rather than being silently cleared. */}
+                <label className="remote-connect-remember">
+                  <Toggle
+                    size="sm"
+                    checked={sshRemember}
+                    onChange={(e) => {
+                      setSshRemember(e.target.checked);
+                      // Untick = delete it now, not at a next connect that may never come.
+                      if (!e.target.checked && sshSaved) void forgetSshPassword();
+                    }}
+                  />
+                  Save password
+                  <span className="ssh-optional-hint">
+                    {sshSaved
+                      ? "saved in your OS keychain — turn off to delete it"
+                      : "stored securely in your OS keychain"}
+                  </span>
                 </label>
                 {sshStatus === "error" && sshError && (
                   <div className="project-dialog-error">{sshError}</div>
@@ -557,93 +633,25 @@ export function RemoteProjectSection({
       )}
 
       {step === "browse" && !winManual && (
-        <div className="remote-browser" role="group" aria-label="Remote folder browser">
-          <div className="remote-browser-header">
-            <button type="button" className="remote-up-btn" onClick={remoteGoUp} title="Go up">
-              ..
-            </button>
-            <span className="remote-breadcrumb" title={remoteBrowsePath}>
-              {remoteBrowsePath || "/"}
-            </span>
-            {remotePaths.length > 0 && (
-              <Dropdown
-                className="vpn-config-recent"
-                value=""
-                placeholder="Recently used…"
-                title="Jump to a previously-used remote path for this host"
-                onChange={(v) => {
-                  if (v) jumpToRemotePath(v);
-                }}
-                options={remotePaths.map((p) => ({ value: p, label: p }))}
-              />
-            )}
-            <button type="button" onClick={onUseThisFolder}>
-              Use this folder
-            </button>
-          </div>
-          <div className="remote-newfolder">
-            <input
-              type="text"
-              className="remote-newfolder-input"
-              placeholder="New folder name…"
-              value={newFolderName}
-              onChange={(e) => setNewFolderName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  submitNewFolder();
-                }
-              }}
-              disabled={remoteListBusy}
-            />
-            <button
-              type="button"
-              onClick={submitNewFolder}
-              disabled={remoteListBusy || !newFolderName.trim()}
-              title="Create a new folder here"
-            >
-              + Add folder
-            </button>
-          </div>
-          <div className="remote-list">
-            {remoteListBusy && <div className="scaffold-empty">Listing...</div>}
-            {!remoteListBusy && remoteListError && (
-              <div className="project-dialog-error">{remoteListError}</div>
-            )}
-            {!remoteListBusy && !remoteListError && remoteEntries.length === 0 && (
-              <div className="scaffold-empty">Empty folder.</div>
-            )}
-            {!remoteListBusy &&
-              !remoteListError &&
-              remoteEntries.map((entry) => (
-                <div
-                  key={entry.name}
-                  className={`remote-entry ${entry.is_dir ? "is-dir" : "is-file"}`}
-                  role={entry.is_dir ? "button" : undefined}
-                  tabIndex={entry.is_dir ? 0 : undefined}
-                  onClick={() => enterRemoteFolder(entry)}
-                  onKeyDown={(e) => {
-                    if (entry.is_dir && (e.key === "Enter" || e.key === " ")) {
-                      e.preventDefault();
-                      enterRemoteFolder(entry);
-                    }
-                  }}
-                >
-                  <span className="remote-entry-icon file-icon">
-                    {entry.is_dir ? folderIcon() : fileIcon(remoteEntryExt(entry.name))}
-                  </span>
-                  <span className="remote-entry-name">{entry.name}</span>
-                </div>
-              ))}
-          </div>
-          <div className="remote-chosen">
-            {remoteChosenPath
+        <RemoteFolderBrowser
+          path={remoteBrowsePath}
+          entries={remoteEntries}
+          busy={remoteListBusy}
+          error={remoteListError}
+          recentPaths={remotePaths}
+          onGoUp={remoteGoUp}
+          onJumpPath={jumpToRemotePath}
+          onEnterFolder={enterRemoteFolder}
+          onUseFolder={onUseThisFolder}
+          onCreateFolder={(name) => void createRemoteFolder(name)}
+          footer={
+            remoteChosenPath
               ? kind === "new"
                 ? `Will create: ${joinRemotePath(remoteChosenPath, safeName || "<name>")}`
                 : `Selected: ${remoteChosenPath}`
-              : "Browse to a folder, then click “Use this folder”."}
-          </div>
-        </div>
+              : "Browse to a folder, then click “Use this folder”."
+          }
+        />
       )}
     </>
   );

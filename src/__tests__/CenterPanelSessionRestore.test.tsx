@@ -318,9 +318,35 @@ describe("loadFromLayout — resume args", () => {
     expect(tab.sessionId).toBeUndefined();
   });
 
-  it("non-resumable agent (gemini) with a sessionId gets no resume args", () => {
+  it("continue-last agent (gemini) restores with --resume latest and carries sessionId", () => {
     const layout = [
       { key: "agent-1", label: "gemini", cmd: "gemini", cwd: "/stale", kind: "agent" as const, sessionId: "abc" },
+    ];
+
+    useTabsStore.getState().loadFromLayout(layout, "/project-r-dir", "project-r");
+
+    const tab = useTabsStore.getState().tabsByScope["project-r"]![0];
+    // Gemini's `--resume` continues the project's most-recent session ("latest"),
+    // since its `--resume` takes latest/index, not the launch uuid.
+    expect(tab.args).toEqual(["--resume", "latest"]);
+    expect(tab.sessionId).toBe("abc");
+  });
+
+  it("continue-last agent (Mistral/vibe) restores with --continue and carries sessionId", () => {
+    const layout = [
+      { key: "agent-1", label: "vibe", cmd: "vibe", cwd: "/stale", kind: "agent" as const, sessionId: "vibe-key-1" },
+    ];
+
+    useTabsStore.getState().loadFromLayout(layout, "/project-r-dir", "project-r");
+
+    const tab = useTabsStore.getState().tabsByScope["project-r"]![0];
+    expect(tab.args).toEqual(["--continue"]);
+    expect(tab.sessionId).toBe("vibe-key-1");
+  });
+
+  it("agent with no wired resume (aider) with a sessionId gets no resume args", () => {
+    const layout = [
+      { key: "agent-1", label: "aider", cmd: "aider", cwd: "/stale", kind: "agent" as const, sessionId: "abc" },
     ];
 
     useTabsStore.getState().loadFromLayout(layout, "/project-r-dir", "project-r");

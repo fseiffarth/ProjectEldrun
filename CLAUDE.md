@@ -94,6 +94,20 @@ Both list only the load-bearing files; the tree is the source of truth.
   **different notions of scope**, so marking a folder auto-sync is the one click
   that can haul a multi-GB tree into the mirror; the file tree prices the host
   subtree first (`sync_auto_preview`) and confirms when it is large.
+- **Passwords are never persisted by default**, and the opt-in that persists them is
+  the same in every remote menu — the Connect modal *and* the new-project /
+  extend-to-remote dialogs (`useRemoteSession`, rendered by `RemoteProjectSection`).
+  It can be, because the keychain is keyed by **host target** (`ssh:user@host:port`)
+  and **config path**, never by project id: there is one saved credential per host and
+  per tunnel, whichever menu saved it. Hence the toggle is *pre-ticked* when the target
+  already has one (an untick is an explicit delete, so connecting with it unticked
+  would clear another project's saved password), and a blank password field means "use
+  the saved one", not "authenticate with nothing". The credential a create/extend
+  dialog authenticated with is also handed to that project's **first pooled connect**
+  (`stashRemotePassword`, single-use, never written to disk): connecting it
+  password-less would work — it rides the ControlMaster the dialog left up — but the
+  backend reads "no password given, none saved" as *key* auth and would record
+  `key_auth: true` on a password host, which auto-connect later believes.
 - A remote project connects **on demand** (the pill's connection lamp opens the
   `RemoteConnectDialog`) — *unless* it opts into `remote.auto_connect`, which
   connects it on launch and on activation and **never prompts**. The toggle is only
@@ -112,7 +126,14 @@ Both list only the load-bearing files; the tree is the source of truth.
   a holder refcount — `releaseVpn` means a project logging out never pulls a tunnel out
   from under another project) and surfaced in the header by `VpnIndicator`, which is
   always present, lists every stored `.ovpn`, and can bring a tunnel **up or down with
-  no project behind it**. Every UI that can start a tunnel says so before it does.
+  no project behind it**. Every UI that can start a tunnel says so before it does —
+  and none of them offers a *second* one: while a tunnel is up machine-wide, every
+  project-scoped OpenVPN block (the Connect modal, and the SSH section the
+  new-project and extend-to-remote dialogs share) collapses to a one-line
+  "tunnel already up" notice pointing at the header, via the shared
+  `useVpnSectionVisible` gate + `VpnTunnelUpNotice`. The exception the gate keeps:
+  a tunnel *that* dialog itself brought up stays expanded, so its log and its
+  Disconnect remain where the user started it.
   Interactive (non-headless) tunnels are *armed* at command-build time —
   `interactive_connect_command` appends a `--writepid` Eldrun owns and registers it —
   so a tunnel typed into a terminal tab is as visible and as killable as a headless
@@ -152,6 +173,77 @@ Both list only the load-bearing files; the tree is the source of truth.
   and the backend injects `codex resume <live-id>`. **Codex caveat:** user-level
   Codex hooks need a one-time trust (`/hooks` in Codex) before they run. Gemini
   and Vibe are still dropped (TODO 39d).
+- **A remote project can reach N machines, not one** (`docs/multi_host_remote_plan.md`,
+  `services::worker_sync`). The project's `remote` is the **primary** — it still owns
+  files, git, the mirror, and full bidirectional sync, unchanged. Extra **worker**
+  hosts (`Project.compute_hosts`, mirrored into `projects.json`'s
+  `extra["compute_hosts"]`) are experiment machines: their code is kept **one-way** in
+  sync from the mirror (source→worker, tracked files only, `reset --hard`, **never
+  `git clean`**), their files are read-only, and their experiment **outputs** (untracked
+  paths) stay on the worker until a user-initiated, size-confirmed **Pull outputs** — the
+  only worker→local byte path. Because worker sync is push-only it dodges the entire
+  divergence/conflict/local-loss half of lockstep. Each host has its own pool entry
+  (`remote::conn_key`, keyed `(project, host)`), its own pill lamp, and its own tab
+  locality (`host:<id>`); the primary is the implicit `"primary"` id, so every existing
+  file/git/sync caller keeps meaning "the primary" with no change. A tab runs on a host
+  via its `host:<id>` location → `PtyOptions.remote_host_id`. Managed from the pill's
+  "Remote machines…" (`RemoteMachinesWindow`).
+  - **A worker can instead SHARE the primary's folder over a shared filesystem — and
+    this is now the DEFAULT for a newly added machine** (`ComputeHost.shared_fs`,
+    schema default `false` for back-compat but the "Add machine" form ticks it on;
+    untick "Sync a copy" ⇒ shared). A shared-fs worker sees the primary's project
+    folder at its own `remote_path` (an HPC compute node on a shared home), so Eldrun
+    copies **nothing** and **never runs git on it** — a tab just `cd`s into that folder
+    and runs there (`wrap_pty_options` already uses `spec.remote_path`, so tab spawn is
+    unchanged). This is load-bearing for safety: the code path that would `git init` +
+    `reset --hard` a synced worker's tree must **never** fire on a shared-fs host, or it
+    corrupts the primary's real working tree. Three guards enforce it — `remote_connect`
+    skips `on_worker_connect`, `worker_sync::fan_out` skips via `wants_code_fanout`
+    (`!shared_fs && sync_code`), and `sync_worker` itself early-returns a no-op skip for a
+    shared-fs host so even a stray `worker_sync_now` is harmless. "Sync code now" / "Pull
+    outputs" / "Auto-sync code" are hidden for a shared-fs worker (its outputs are already
+    in the primary's folder, moved by the primary's own sync).
+- **A shell/script tab runs inside a tmux session so a long run survives** (#85,
+  `docs/tmux_remote_plan.md`) — decoupled from the disposable channel, the tab
+  **reattaches** on relaunch. It covers **two axes**:
+  - **Remote** (on the SSH host): survives an SSH drop, a laptop sleep, a VPN drop,
+    or Eldrun quitting. **Default ON** per remote project
+    (`RemoteSpec.persist_sessions !== false`; opt out via the pill's "Persistent
+    sessions (tmux)"). `ssh_exec::wrap_pty_options` nests the existing `exec …`
+    inside `tmux new-session -A -D -s <name>`.
+  - **Local** (on this machine, Unix only — no tmux on Windows): survives an
+    **Eldrun crash** (the tmux server is a daemon; the PTY only holds a client).
+    **Default ON** via `settings.persist_local_sessions`. `services::tmux_local`
+    rewrites the local spawn's `{cmd,args}` into a `tmux` argv in
+    `commands::terminal::pty_spawn`, *after* the ssh/docker branch so only a
+    genuinely local tab is wrapped.
+  Scoped to **shell tabs** (Python runs open one; a command runs inside the
+  session's login shell, which outlives it → the run reattaches, not re-runs) and
+  never the root scope — **agent tabs are excluded** (they resume via their own
+  session). The session name is a **uuid the frontend mints once per shell tab and
+  persists** (`TabEntry.tmuxSession`) — *not* derived from the PTY id, which
+  `loadFromLayout` regenerates on restore (a derived name would fork a second
+  session on relaunch instead of reattaching); `tmux_attach` overrides it for a
+  Sessions-view attach. **Kill vs. detach**: closing a tab **always detaches** —
+  `lib/closeRemoteTab.ts`'s `closeTabWithConfirm` just `removeTab`s, killing only the
+  ssh/PTY client, so the session lives on under its tmux daemon; an app-exit,
+  disconnect, crash, or respawn likewise **leave the session alive**. Two explicit
+  actions terminate a session — a session's **×** (kill) in the Sessions view
+  (`remote_tmux_kill`/`local_tmux_kill`), and an **active disconnect** of the whole
+  host, which ends *every* session on it at once (`remote_kill_all_jobs`: `tmux
+  kill-server` over the host, best-effort). The active disconnect is the "Disconnect"
+  on a **global machine** (`MachinesIndicator`, + `ssh_close_master` to drop any
+  shared master) and the "Disconnect & end jobs" beside a project host's plain
+  Disconnect (`RemoteConnectDialog`, then the ordinary `remote_disconnect` teardown).
+  Both are **explicit-click only** — `remote_kill_all_jobs` must never run on
+  deactivation or relaunch, or persistent sessions would stop surviving a restart.
+  Because a session outlives its tab, a host
+  can hold runs no tab points at; the **Sessions view** (`☰` toggle in
+  `ProjectFilesView`, mirrors the Orange view) makes them discoverable —
+  **multi-host** (aggregated across the primary and every connected worker via
+  `remote_tmux_list`, each row host-tagged), click a row to attach, per-row **×**
+  (kill) and **Rename** (`remote_tmux_rename`, updates the owning tab's persisted
+  name). tmux-absent falls back to today's plain `exec` + a notice.
 - **A project can run in a container** (#38, `services::sandbox`,
   `docs/docker_projects_plan.md`): with the pill's "Run this project in a
   container" toggle on, every shell/agent tab `docker exec`s into ONE
@@ -170,14 +262,17 @@ Both list only the load-bearing files; the tree is the source of truth.
 - **Agent authority has three axes**, and they compose: the project container
   `sandbox` (OS containment), the tab's `location` (where the process runs), and — behind the
   experimental `agent_mode_toggle` setting, default off — its `agentMode`: **Plan**
-  (`--permission-mode plan`) vs **Auto** (`acceptEdits`). The mode is a *launch
-  flag*, so flipping it rewrites the tab's `args`, which respawns the PTY
-  (`TerminalView`'s spawn effect keys on them) — non-destructive only because the
-  backend rewrites `--session-id` → `--resume` and the conversation comes back.
-  That is exactly why `components/tabs/agentModes.ts` is a **capability table, not
-  a universal field**: an agent belongs in it only if it has both an absolute mode
-  flag *and* a working resume. Claude has both; Gemini has the flag but no resume
-  (a toggle would destroy the chat), Codex resumes but has no plan mode. The mode
+  vs **Auto** (Claude `--permission-mode plan`/`acceptEdits`; Gemini
+  `--approval-mode plan`/`auto_edit`). The mode is a *launch flag*, so flipping it
+  rewrites the tab's `args`, which respawns the PTY (`TerminalView`'s spawn effect
+  keys on them) — non-destructive only because the tab resumes its conversation on
+  respawn. That is exactly why `components/tabs/agentModes.ts` is a **capability
+  table, not a universal field**: an agent belongs in it only if it has both an
+  absolute mode flag *and* a working resume. Claude (resume-by-id) and Gemini
+  (continue-last) both qualify; Codex resumes but has no plan mode. Gemini's
+  continue-last resume carries one accepted caveat — with two Gemini tabs in a
+  project a respawn reattaches to the project's latest session, not necessarily
+  this tab's (the same ambiguity their ordinary restore already has). The mode
   is persisted per tab, and re-applied onto the rebuilt args in `loadFromLayout` —
   args are NOT persisted, so without that the split would silently die on restart.
 - New/imported projects receive `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`,

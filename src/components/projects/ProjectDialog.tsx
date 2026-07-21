@@ -15,20 +15,29 @@ import {
   buildDescriptionFillPrompt,
   buildScaffoldFillPrompt,
   collectScaffoldAgentFills,
+  isCloneUrl,
   joinRemotePath,
+  repoNameFromCloneUrl,
   sanitizeName,
   type ScaffoldPreviewItem,
 } from "./scaffold";
 import { useRemoteSession, type RemoteStep } from "./useRemoteSession";
 import { RemoteProjectSection } from "./RemoteProjectSection";
+import { stashRemotePassword } from "../../stores/projects";
 import { Dropdown } from "../common/Dropdown";
+
+/** Where an import's files come from: a folder already on this machine, or a
+ *  repository cloned from GitHub/GitLab (any git URL). */
+export type ImportSource = "folder" | "git";
 
 export function ProjectDialog({
   kind,
+  initialImportSource = "folder",
   onClose,
   onProject,
 }: {
   kind: "new" | "import";
+  initialImportSource?: ImportSource;
   onClose: () => void;
   onProject: (project: ProjectEntry) => void | Promise<void>;
 }) {
@@ -51,6 +60,10 @@ export function ProjectDialog({
   const [mode, setMode] = useState("keep");
   const [skipScaffold, setSkipScaffold] = useState(false);
   const [sourceDir, setSourceDir] = useState("");
+  // Import source: an existing local folder, or a clone from GitHub/GitLab.
+  const [importSource, setImportSource] = useState<ImportSource>(initialImportSource);
+  const [repoUrl, setRepoUrl] = useState("");
+  const [cloning, setCloning] = useState(false);
   const [scaffoldPreview, setScaffoldPreview] = useState<ScaffoldPreviewItem[]>([]);
   const [scaffoldFillModes, setScaffoldFillModes] = useState<Record<string, string>>({});
   const [scaffoldError, setScaffoldError] = useState("");
@@ -70,6 +83,7 @@ export function ProjectDialog({
     remoteChosenPath,
     setRemoteChosenPath,
     rememberChosenPath,
+    remotePassword,
     toggleRemoteProject,
     buildRemoteSpec,
   } = remote;
@@ -95,12 +109,36 @@ export function ProjectDialog({
         : false;
   const safeName = sanitizeName(name);
   const targetDir = safeName && projectsRoot ? `${projectsRoot}/${safeName}` : "";
+  // Cloning from a hosting service. A remote (SSH) project's tree lives on the
+  // host and is never cloned locally, so the two are mutually exclusive.
+  const isCloneImport = kind === "import" && !isRemoteProject && importSource === "git";
   // "Push to GitHub/GitLab" was chosen, but no Eldrun connection is set up yet.
   // Here "remote" is the git push target (a hosting service), distinct from the
   // SSH host the files may live on — see the git-hosting hint below.
   const wantsRemoteGit = gitType === "remote-private" || gitType === "remote-public";
   const gitConnected = gitToken.trim() !== "";
-  const needsGitConnection = wantsRemoteGit && !gitConnected;
+  // A clone is exempt: the gate exists because publishing a *new* repo needs a
+  // token, and a cloned repo is already hosted — it has an origin to push back
+  // to. (The clone itself only needs the token when the repo is private, which
+  // the URL field's own hint covers.)
+  const needsGitConnection = wantsRemoteGit && !gitConnected && !isCloneImport;
+
+  // Switching the import source resets the git-hosting default to the one that
+  // fits it: a clone comes from a host, a plain folder does not. Both remain
+  // freely overridable in the dropdown below.
+  const changeImportSource = (next: ImportSource) => {
+    setImportSource(next);
+    setGitType(next === "git" ? "remote-private" : "local");
+  };
+
+  const setRepoUrlAndName = (url: string) => {
+    setRepoUrl(url);
+    // Pre-fill the project name from the repo's own name, but only while the
+    // user hasn't typed one of their own (and only while it still matches what
+    // the previous URL suggested, so backspacing the URL keeps updating it).
+    const suggested = repoNameFromCloneUrl(url);
+    setName((cur) => (cur === "" || cur === repoNameFromCloneUrl(repoUrl) ? suggested : cur));
+  };
 
   // Send the user to Settings → Git Hosting to establish the GitHub/GitLab
   // connection. The project dialog stays open (so the half-filled form isn't
@@ -276,6 +314,22 @@ export function ProjectDialog({
           : new Map<string, string[]>();
       const descriptionAgent = selectedDescriptionAgent();
       const remoteSpec = buildRemoteSpec(safeName);
+      // Clone first, then import the resulting directory in place: the clone owns
+      // getting the files onto the disk, `import_project` owns registering them.
+      // A failed clone throws here, so nothing is registered for a tree that
+      // isn't there.
+      let clonedDir = "";
+      if (isCloneImport) {
+        setCloning(true);
+        try {
+          clonedDir = await invoke<string>("git_clone", {
+            url: repoUrl.trim(),
+            dest: targetDir,
+          });
+        } finally {
+          setCloning(false);
+        }
+      }
       const project =
         kind === "new"
           ? await invoke<ProjectEntry>("create_project", {
@@ -293,12 +347,17 @@ export function ProjectDialog({
           : await invoke<ProjectEntry>("import_project", {
               req: {
                 // Backend ignores sourceDir for remote but the field is required;
-                // pass the (browsed or typed) remote path as a stand-in.
-                sourceDir: isRemoteProject ? remoteChosenPath : sourceDir,
+                // pass the (browsed or typed) remote path as a stand-in. A clone
+                // registers the directory it just landed in.
+                sourceDir: isRemoteProject
+                  ? remoteChosenPath
+                  : isCloneImport
+                    ? clonedDir
+                    : sourceDir,
                 name,
                 description,
                 gitType,
-                mode: isRemoteProject ? "keep" : mode,
+                mode: isRemoteProject || isCloneImport ? "keep" : mode,
                 scaffoldFillModes,
                 manualValidationConfirmed,
                 skipScaffold,
@@ -307,7 +366,15 @@ export function ProjectDialog({
                 mirrorParent: isRemoteProject ? mirrorParent : undefined,
               },
             });
-      if (isRemoteProject) rememberChosenPath();
+      if (isRemoteProject) {
+        rememberChosenPath();
+        // The new project's pooled connect happens on activation, inside `onProject`
+        // below — hand it the credential this dialog authenticated with, so that leg
+        // doesn't have to ride the master we happen to have left up (and so a
+        // password host isn't recorded as key-auth). Single-use; not persisted —
+        // persisting is what the "Save password" toggle is for.
+        stashRemotePassword(project.id, remotePassword);
+      }
       await onProject(project);
       await openScaffoldAgentTabs(project, scaffoldAgentFills);
       await openDescriptionAgentTab(project, descriptionAgent);
@@ -333,12 +400,16 @@ export function ProjectDialog({
           : Boolean(name.trim() && remoteChosenPath && mirrorParent.trim())
       : kind === "new"
         ? Boolean(name.trim() && targetDir && safeName)
-        : Boolean(
-            name.trim() &&
-            sourceDir &&
-            (mode === "keep" || safeName) &&
-            (mode === "keep" || manualValidationConfirmed),
-          ));
+        : isCloneImport
+          ? // A clone needs a plausible URL and somewhere to land; it has no
+            // source folder and no copy/move decision to validate.
+            Boolean(name.trim() && safeName && targetDir && isCloneUrl(repoUrl))
+          : Boolean(
+              name.trim() &&
+              sourceDir &&
+              (mode === "keep" || safeName) &&
+              (mode === "keep" || manualValidationConfirmed),
+            ));
 
   const missingFillableScaffoldCount = scaffoldPreview.filter((item) => !item.exists && item.kind === "file").length;
 
@@ -365,7 +436,9 @@ export function ProjectDialog({
     <label>
       Project name
       <input
-        autoFocus
+        // A clone starts at the URL field (which pre-fills this one), so the
+        // focus belongs there — two autoFocus inputs would fight over it.
+        autoFocus={!isCloneImport}
         value={name}
         placeholder="my-project"
         onChange={(e) => setName(e.target.value)}
@@ -409,8 +482,12 @@ export function ProjectDialog({
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
-      <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
-        <h2>{kind === "new" ? "New Project" : "Import Project"}</h2>
+      <div className="project-dialog dialog-framed" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>{kind === "new" ? "New Project" : "Import Project"}</h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+        <div className="dialog-scroll">
 
         <label className={`toggle-card${isRemoteProject ? " is-on" : ""}`}>
           <span className="toggle-card-body">
@@ -464,6 +541,21 @@ export function ProjectDialog({
         <>
         {kind === "import" && !isRemoteProject && (
           <label>
+            Import from
+            <Dropdown
+              className="dropdown-block"
+              value={importSource}
+              onChange={(v) => changeImportSource(v as ImportSource)}
+              options={[
+                { value: "folder", label: "Folder on this machine" },
+                { value: "git", label: "GitHub / GitLab repository (clone)" },
+              ]}
+            />
+          </label>
+        )}
+
+        {kind === "import" && !isRemoteProject && importSource === "folder" && (
+          <label>
             Source folder
             <div className="folder-picker-row">
               <span title={sourceDir}>{sourceDir || "No folder selected"}</span>
@@ -472,13 +564,39 @@ export function ProjectDialog({
           </label>
         )}
 
-        {kind === "new" && !isRemoteProject && (
+        {isCloneImport && (
+          <label>
+            Repository URL
+            <input
+              autoFocus
+              value={repoUrl}
+              placeholder="https://github.com/owner/repo.git"
+              onChange={(e) => setRepoUrlAndName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && canSubmit && !busy) void submit();
+                if (e.key === "Escape") onClose();
+              }}
+            />
+            <span className="ssh-optional-hint">
+              {gitConnected
+                ? "A private repository is cloned with the access token from Settings → Git Hosting. An SSH URL (git@…) uses your own SSH keys instead."
+                : "Public repositories clone as-is. For a private one, add an access token in Settings → Git Hosting, or use an SSH URL (git@…) to authenticate with your SSH keys."}
+            </span>
+          </label>
+        )}
+
+        {(kind === "new" || isCloneImport) && !isRemoteProject && (
           <label>
             Location
             <div className="folder-picker-row">
               <span title={projectsRoot}>{projectsRoot || "No folder selected"}</span>
               <button type="button" onClick={chooseLocation}>Browse...</button>
             </div>
+            {isCloneImport && (
+              <span className="ssh-optional-hint">
+                The repository is cloned into {safeName || "<name>"} here.
+              </span>
+            )}
           </label>
         )}
 
@@ -520,7 +638,7 @@ export function ProjectDialog({
           </div>
         )}
 
-        {kind === "import" && !isRemoteProject && (
+        {kind === "import" && !isRemoteProject && importSource === "folder" && (
           <label>
             Import mode
             <Dropdown
@@ -551,7 +669,11 @@ export function ProjectDialog({
           Skip scaffolding (do not generate any scaffold files)
         </label>
 
-        {kind === "import" && !isRemoteProject && !skipScaffold && (
+        {/* The scaffold preview reads the source folder off the disk, so it only
+            applies to a folder import — a clone's tree doesn't exist yet. Missing
+            scaffold files are still written after the clone (unless skipped);
+            they just can't be previewed or agent-filled from here. */}
+        {kind === "import" && !isRemoteProject && importSource === "folder" && !skipScaffold && (
           <div className="scaffold-popover" role="group" aria-label="Import scaffold guidance">
             <div className="scaffold-popover-title">Import guidance</div>
             <ol className="scaffold-steps">
@@ -651,7 +773,7 @@ export function ProjectDialog({
             ) : (
               ""
             )
-          ) : kind === "new" || mode !== "keep" ? (
+          ) : kind === "new" || isCloneImport || mode !== "keep" ? (
             targetDir ? `Destination: ${targetDir}` : ""
           ) : sourceDir ? (
             `Location: ${sourceDir}`
@@ -676,9 +798,18 @@ export function ProjectDialog({
             </button>
           ) : (
             <button type="button" disabled={!canSubmit || busy} onClick={() => void submit()}>
-              {busy ? "Working..." : kind === "new" ? "Create" : "Import"}
+              {cloning
+                ? "Cloning..."
+                : busy
+                  ? "Working..."
+                  : kind === "new"
+                    ? "Create"
+                    : isCloneImport
+                      ? "Clone & Import"
+                      : "Import"}
             </button>
           )}
+        </div>
         </div>
       </div>
     </div>

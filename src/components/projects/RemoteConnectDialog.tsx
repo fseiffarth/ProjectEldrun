@@ -1,16 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { invoke } from "@tauri-apps/api/core";
 import { TerminalView } from "../terminal/TerminalView";
 import { Toggle } from "../common/Toggle";
 import { ConnLamp } from "../common/ConnLamp";
 import { ConnectionLog } from "../common/ConnectionLog";
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
+import { UntestedTag } from "../common/UntestedTag";
 import { useRemoteReconnect } from "./useRemoteReconnect";
 import { useConnectDialogStore } from "../../stores/connectDialog";
 import { useProjectsStore, disconnectRemote } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
-import { anyVpnLive, useVpnStatusStore } from "../../stores/vpnStatus";
+import { useVpnSectionVisible } from "../../stores/vpnStatus";
+import { VpnTunnelUpNotice } from "../common/VpnTunnelUpNotice";
 import { formatRemoteTarget, resolveLocalMirror, type ProjectEntry } from "../../types";
 
 /**
@@ -31,14 +34,29 @@ import { formatRemoteTarget, resolveLocalMirror, type ProjectEntry } from "../..
  */
 export function RemoteConnectDialog() {
   const projectId = useConnectDialogStore((s) => s.projectId);
+  const hostId = useConnectDialogStore((s) => s.hostId);
   const project = useProjectsStore((s) =>
     projectId ? s.projects.find((p) => p.id === projectId) : undefined,
   );
   if (!projectId || !project?.remote) return null;
-  return <RemoteConnectDialogInner key={project.id} project={project} />;
+  // Multi-host remote: the modal targets the primary or a worker host. Resolve the
+  // selected worker (if any) so its own spec drives the connect + lamp.
+  const worker =
+    hostId && hostId !== "primary"
+      ? project.compute_hosts?.find((h) => h.id === hostId)
+      : undefined;
+  return (
+    <RemoteConnectDialogInner key={`${project.id}:${hostId ?? "primary"}`} project={project} host={worker} />
+  );
 }
 
-function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
+function RemoteConnectDialogInner({
+  project,
+  host,
+}: {
+  project: ProjectEntry;
+  host?: import("../../types").ComputeHost;
+}) {
   const close = useConnectDialogStore((s) => s.close);
   const headless = useSettingsStore((s) => s.settings?.connections_headless ?? true);
   const {
@@ -68,12 +86,63 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
     autoConnect,
     autoConnectEligible,
     setAutoConnect,
+    setWorkerLabel,
     connectVpnHeadless,
     connectSshHeadless,
     forgetPasswords,
     forgetSshPassword,
     forgetVpnPassword,
-  } = useRemoteReconnect(project);
+  } = useRemoteReconnect(project, host);
+
+  // Editable name: for a worker its `label`, for the primary the project name.
+  // Seeded from the current value and re-synced when the store's copy changes (a
+  // rename commits into the store); committed on blur / Enter so a write fires once,
+  // not per keystroke. The two differ on blank: a worker label may be cleared (it
+  // then falls back to the host), but a project name may not — the backend rejects
+  // it, so we restore the field instead.
+  const currentName = host ? host.label ?? "" : project.name;
+  const [nameDraft, setNameDraft] = useState(currentName);
+  useEffect(() => setNameDraft(currentName), [currentName]);
+  const commitName = () => {
+    const next = nameDraft.trim();
+    if (next === currentName) return;
+    if (host) {
+      setWorkerLabel(next);
+    } else if (next) {
+      void useProjectsStore.getState().renameProject(project.id, next).catch(() => {});
+    } else {
+      setNameDraft(currentName); // project name can't be blank — undo the edit
+    }
+  };
+
+  // The primary's own machine name (`remote.label`) — distinct from the project
+  // name above: a project can be renamed without touching which name identifies
+  // its primary host across the multi-host surfaces (System Monitor's source
+  // picker, the pill's connection lamps). Worker-only equivalent is `host.label`,
+  // already covered by the "Name" field above since a worker has no project name
+  // of its own to conflict with it.
+  const currentMachineLabel = host ? "" : project.remote?.label ?? "";
+  const [machineDraft, setMachineDraft] = useState(currentMachineLabel);
+
+  // "Disconnect & end jobs": the *active* teardown — kills every running tmux
+  // session on this host before the ordinary disconnect, distinct from plain
+  // Disconnect which leaves them alive to reattach. Two-step confirm (this arms
+  // it) because killing jobs can't be undone. Target is the worker's own spec or
+  // the primary's `remote`.
+  const [killArm, setKillArm] = useState(false);
+  const killTarget = host
+    ? { user: host.user, host: host.host, port: host.port }
+    : {
+        user: project.remote?.user,
+        host: project.remote?.host ?? "",
+        port: project.remote?.port,
+      };
+  useEffect(() => setMachineDraft(currentMachineLabel), [currentMachineLabel]);
+  const commitMachineLabel = () => {
+    const next = machineDraft.trim();
+    if (next === currentMachineLabel) return;
+    setWorkerLabel(next);
+  };
 
   const [sshPassword, setSshPassword] = useState("");
   const [vpnPassword, setVpnPassword] = useState("");
@@ -133,37 +202,104 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
   // this project's OpenVPN section to offer — except when it's THIS project's own
   // attempt that made it live, in which case its controls (log, Stop/Disconnect)
   // must stay reachable here. `vpnBusy` already mirrors that via the machine store.
-  const vpnGloballyLive = useVpnStatusStore((s) => anyVpnLive(s.byConfig));
-  const showVpnSection = !vpnGloballyLive || vpnBusy;
+  const showVpnSection = useVpnSectionVisible(vpnBusy);
   // One submit for the whole VPN form: the fields are separate prompts OpenVPN
   // raises, but they're answered in a single connect.
   const submitVpn = () => void connectVpnHeadless(vpnPassword, vpnKeyPassphrase, vpnRemember);
 
   return createPortal(
-    <div className="modal-backdrop" onMouseDown={close}>
+    <div className="modal-backdrop modal-backdrop-elevated" onMouseDown={close}>
       <div
-        className="project-dialog remote-connect-dialog"
+        className="project-dialog dialog-framed remote-connect-dialog"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="settings-title-row">
-          <h2>Connect remote project</h2>
+          <h2>
+            {host
+              ? `Connect worker · ${host.label || host.host}`
+              : "Connect remote project"}
+          </h2>
           <button type="button" className="dialog-close-btn" onClick={close}>×</button>
         </div>
 
+        <div className="dialog-scroll">
         <div className="remote-connect-target">
           <div className="remote-connect-location">
             <span className="remote-connect-location-label">Remote</span>
-            <span className="remote-connect-location-path" title={project.remote ? formatRemoteTarget(project.remote) : undefined}>
-              {project.remote && formatRemoteTarget(project.remote)}
+            <span
+              className="remote-connect-location-path"
+              title={host ? formatRemoteTarget(host) : project.remote ? formatRemoteTarget(project.remote) : undefined}
+            >
+              {host ? formatRemoteTarget(host) : project.remote && formatRemoteTarget(project.remote)}
             </span>
           </div>
-          {localMirror && (
+          {/* A worker is code-read-only (one-way sync, outputs stay on it) — it
+              has no local mirror to show; only the primary does. */}
+          {!host && localMirror && (
             <div className="remote-connect-location">
               <span className="remote-connect-location-label">Local</span>
               <span className="remote-connect-location-path" title={localMirror}>{localMirror}</span>
             </div>
           )}
         </div>
+
+        {/* Rename here — a worker's name was only settable once (at add time), and the
+            primary's project name was only editable elsewhere. Blank clears a worker
+            label (it falls back to the host); a project name can't be blank. */}
+        <label className="remote-connect-field remote-worker-name">
+          <span className="remote-machine-add-label">
+            Name
+            <UntestedTag />
+          </span>
+          <input
+            type="text"
+            value={nameDraft}
+            placeholder={host ? host.host : "Project name"}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(e) => setNameDraft(e.target.value)}
+            onBlur={commitName}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+          />
+          <span className="ssh-optional-hint">
+            {host
+              ? "Shown on the pill and in “Remote machines”. Leave blank to use the host name."
+              : "The project name, shown on its pill and across Eldrun."}
+          </span>
+        </label>
+
+        {/* The primary's own machine name — worker rows already get this via the
+            "Name" field above (a worker has no project name to conflict with it);
+            the primary needs a second field since its "Name" above is the project
+            name. Optional: blank falls back to the bare host everywhere hosts are
+            listed side by side (System Monitor, pill lamps, "Remote machines"). */}
+        {!host && (
+          <label className="remote-connect-field remote-worker-name">
+            <span className="remote-machine-add-label">
+              Machine name
+              <UntestedTag />
+            </span>
+            <input
+              type="text"
+              value={machineDraft}
+              placeholder={project.remote?.host ?? ""}
+              spellCheck={false}
+              autoComplete="off"
+              onChange={(e) => setMachineDraft(e.target.value)}
+              onBlur={commitMachineLabel}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              }}
+            />
+            <span className="ssh-optional-hint">
+              Identifies this machine in the System Monitor and connection lamps
+              when the project has more than one host. Leave blank to use the host
+              name.
+            </span>
+          </label>
+        )}
 
         {/* ── OpenVPN (always offered; opt-in, default off) ─────────────────────
             Shown for every remote project, not only ones that stored a config at
@@ -174,14 +310,8 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
             redundant — the routing this project needs is already there — so it
             collapses to a one-line status and the dialog goes straight to SSH. */}
         {!showVpnSection && (
-          <div className="remote-reconnect-section" role="group" aria-label="OpenVPN tunnel">
-            <div className="remote-field-label">
-              <ConnLamp status="connected" label="OpenVPN" />
-              OpenVPN tunnel already up
-            </div>
-            <span className="ssh-optional-hint">
-              Manage tunnels from the header's VPN control.
-            </span>
+          <div className="remote-reconnect-section">
+            <VpnTunnelUpNotice />
           </div>
         )}
         {showVpnSection && (
@@ -624,6 +754,37 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
               Disconnect
             </button>
           )}
+          {/* Active teardown: end every running tmux job on this host, then
+              disconnect. Distinct from plain Disconnect (which detaches and
+              leaves sessions alive to reattach). Only when SSH is up — there are
+              no host jobs to end otherwise. Two-step: the first click arms it. */}
+          {sshStatus === "connected" &&
+            (killArm ? (
+              <button
+                type="button"
+                className="vpn-disconnect-btn"
+                title="Confirm: this kills every running tmux session on the host — it can't be undone."
+                onClick={() => {
+                  setKillArm(false);
+                  void invoke("remote_kill_all_jobs", killTarget).catch(() => {});
+                  stopSsh();
+                  if (vpnConfig) stopVpn();
+                  disconnectRemote(project.id);
+                  close();
+                }}
+              >
+                Confirm: end all jobs
+              </button>
+            ) : (
+              <button
+                type="button"
+                title="Actively disconnect: end every running tmux job on this host and close the connection. Jobs are killed only on this click — never on an Eldrun restart."
+                onClick={() => setKillArm(true)}
+              >
+                Disconnect &amp; end jobs
+                <UntestedTag />
+              </button>
+            ))}
           {/* Only offered when there is something to forget — the keychain state
               (queried on mount) is the source of truth, not the toggles. Stays
               open afterwards so the emptied "Save password" toggles are visible
@@ -638,6 +799,7 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
             </button>
           )}
           <button type="button" onClick={close}>Close</button>
+        </div>
         </div>
       </div>
     </div>,

@@ -4,15 +4,19 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   needsSeparateKeyPassphrase,
-  type RemoteEntry,
   type SshTooling,
   type StoredVpnConfig,
   type VpnAuthNeeds,
 } from "../../types";
 import { joinRemotePath, parseSshAddress, type ParsedSshAddress } from "./scaffold";
+import { useRemoteBrowse } from "./useRemoteBrowse";
 import { useVpnStatusStore } from "../../stores/vpnStatus";
 import { IS_WINDOWS } from "../../lib/platform";
-import { forgetConnection, markConnectionOpened } from "../../lib/remoteConnect";
+import {
+  forgetConnection,
+  markConnectionOpened,
+  resolveRemoteStartDir,
+} from "../../lib/remoteConnect";
 import { useSettingsStore } from "../../stores/settings";
 import type { LogLine } from "../common/ConnectionLog";
 
@@ -38,6 +42,7 @@ export type RemoteStep = "connect" | "browse" | "details";
 // no ":" so it never collides with a tab PTY id (`<scope>:<key>`) or trips the
 // detached-PTY check. (Module scope so the counter survives re-renders.)
 let dialogTermSeq = 0;
+
 const nextDialogTermId = (kind: string) => `dialog-${kind}-${++dialogTermSeq}`;
 
 /**
@@ -69,16 +74,33 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   const [sshPassword, setSshPassword] = useState("");
   const [sshStatus, setSshStatus] = useState<ConnStatus>("idle");
   const [sshError, setSshError] = useState("");
+  // "Save password" opt-in (default OFF), identical in mechanism to the Connect
+  // modal's: the secret goes to the OS keychain **after** a successful auth, keyed
+  // by the *host target* — not by the project, which doesn't exist yet here. That
+  // is what lets the credential typed while creating/extending a project be the one
+  // its later reconnects (and auto-connect) authenticate with, instead of being
+  // thrown away the moment this dialog closes.
+  const [sshRemember, setSshRemember] = useState(false);
+  // Whether this host target already has a saved password. Queried, never received
+  // as a secret. Pre-checks the toggle, so connecting can't silently *clear* a
+  // credential the user saved elsewhere (`remember: false` is an explicit untick).
+  const [sshSaved, setSshSaved] = useState(false);
+  // The connect-and-browse mechanism (frozen (host, password) session + live SFTP
+  // listing + navigation) is the SHARED one every remote-login dialog uses — see
+  // `useRemoteBrowse`. This flow keeps its own fields/steps/VPN around it; the
+  // browser state below is just re-exposed under the names the rest of this hook
+  // and `RemoteProjectSection` already read.
+  const browse = useRemoteBrowse();
   // The SSH address that was successfully connected (frozen at connect time so
   // edits to the input don't silently change which host we browse/submit to).
-  const [remoteConn, setRemoteConn] = useState<ParsedSshAddress | null>(null);
+  const remoteConn = browse.conn;
   // The password that was used for the successful connect, frozen so the remote
   // listing always reuses the same credential the connection was made with.
-  const [remotePassword, setRemotePassword] = useState("");
-  const [remoteBrowsePath, setRemoteBrowsePath] = useState("");
-  const [remoteEntries, setRemoteEntries] = useState<RemoteEntry[]>([]);
-  const [remoteListBusy, setRemoteListBusy] = useState(false);
-  const [remoteListError, setRemoteListError] = useState("");
+  const remotePassword = browse.password;
+  const remoteBrowsePath = browse.path;
+  const remoteEntries = browse.entries;
+  const remoteListBusy = browse.busy;
+  const remoteListError = browse.error;
   // The remote folder the user committed to via "Use this folder".
   const [remoteChosenPath, setRemoteChosenPath] = useState("");
   // Previously-used remote paths for the current host (newest first), offered
@@ -111,6 +133,11 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   const [vpnKeyPassphrase, setVpnKeyPassphrase] = useState("");
   const [vpnStatus, setVpnStatus] = useState<ConnStatus>("idle");
   const [vpnError, setVpnError] = useState("");
+  // The VPN twin of `sshRemember`/`sshSaved`, keyed by config path. One toggle for
+  // the whole tunnel (password + key passphrase + username), as in the Connect
+  // modal — the backend saves or clears the set together.
+  const [vpnRemember, setVpnRemember] = useState(false);
+  const [vpnSaved, setVpnSaved] = useState(false);
   // Live OpenVPN handshake output for the headless connect, streamed from the
   // backend (`openvpn-progress`) and shown in a read-only log so the connect
   // isn't an opaque spinner. Reset at the start of each connect attempt.
@@ -178,12 +205,8 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     clearSshPoll();
     setSshStatus("idle");
     setSshError("");
-    setRemoteConn(null);
-    setRemotePassword("");
-    setRemoteEntries([]);
-    setRemoteBrowsePath("");
+    browse.reset();
     setRemoteChosenPath("");
-    setRemoteListError("");
     setStep("connect");
   };
 
@@ -245,6 +268,72 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       refreshSshAddresses();
     }
   }, [isRemoteProject]);
+
+  // ── Saved credentials (OS keychain) ─────────────────────────────────────────
+  // Both toggles mirror the Connect modal exactly, because they write the *same*
+  // entries: the keychain is keyed by host target / config path, so there is one
+  // saved credential per host and per tunnel, whichever menu put it there.
+
+  // Does this host target already have a saved password? Re-asked as the typed
+  // address changes, so the toggle always reflects the target being connected.
+  useEffect(() => {
+    const parsed = isRemoteProject ? parseSshAddress(sshAddress) : null;
+    if (!parsed) {
+      setSshSaved(false);
+      return;
+    }
+    let cancelled = false;
+    invoke<boolean>("remote_has_saved_password", {
+      user: parsed.user ?? null,
+      host: parsed.host,
+      port: parsed.port ?? null,
+    })
+      .then((saved) => !cancelled && setSshSaved(saved))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isRemoteProject, sshAddress]);
+  useEffect(() => setSshRemember(sshSaved), [sshSaved]);
+
+  // Same question for the selected `.ovpn` (all of its secrets, so a config that
+  // needs two and has one saved reports "not saved" — a silent connect would fail).
+  useEffect(() => {
+    if (!vpnConfig) {
+      setVpnSaved(false);
+      return;
+    }
+    let cancelled = false;
+    invoke<boolean>("vpn_has_saved_password", { config: vpnConfig })
+      .then((saved) => !cancelled && setVpnSaved(saved))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [vpnConfig]);
+  useEffect(() => setVpnRemember(vpnSaved), [vpnSaved]);
+
+  // Unticking a *saved* toggle is a request to drop the secret now — not at the
+  // next connect, which may never come (the user may be about to abandon this
+  // dialog). Same semantics as the Connect modal's toggles.
+  const forgetSshPassword = async () => {
+    const parsed = parseSshAddress(sshAddress);
+    if (!parsed) return;
+    await invoke("remote_forget_password", {
+      user: parsed.user ?? null,
+      host: parsed.host,
+      port: parsed.port ?? null,
+    }).catch(() => {});
+    setSshSaved(false);
+    setSshRemember(false);
+  };
+
+  const forgetVpnPassword = async () => {
+    if (!vpnConfig) return;
+    await invoke("vpn_forget_password", { config: vpnConfig }).catch(() => {});
+    setVpnSaved(false);
+    setVpnRemember(false);
+  };
 
   // Load the recently-used remote paths for `host` (newest first). Best-effort;
   // an empty/unresolved host just clears the list.
@@ -379,10 +468,14 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       await invoke("openvpn_connect", {
         config: vpnConfig,
         username: vpnUsername || null,
+        // Blank + a saved credential = "use the saved one" (the backend falls back
+        // to the keychain), the same contract the Connect modal's blank field has.
         password: vpnPassword,
         keyPassphrase: vpnKeyPassphrase || null,
+        remember: vpnRemember,
       });
       setVpnStatus("connected");
+      setVpnSaved(vpnRemember);
       useVpnStatusStore.getState().setState(vpnConfig, "connected");
     } catch (e) {
       setVpnStatus("error");
@@ -472,16 +565,11 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     })
       .then(async () => {
         clearSshPoll();
-        const startDir = await invoke<string>("ssh_default_dir", {
-          user: parsed.user,
-          host: parsed.host,
-          port: parsed.port,
-          password: null,
-        }).catch(() => "");
-        setRemoteConn(parsed);
-        setRemotePassword(""); // empty → null → rides the master in the listing effect
+        const startDir = await resolveRemoteStartDir(parsed.user, parsed.host, parsed.port, null);
+        // Freeze the session the login terminal already authenticated — empty
+        // password → null → rides its ControlMaster in the listing effect.
+        browse.openSession(parsed, "", startDir);
         setSshStatus("connected");
-        setRemoteBrowsePath(startDir || "");
       })
       .catch(() => {
         if (attempt + 1 >= maxAttempts) {
@@ -550,7 +638,7 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     // readiness poll and return to the disconnected state.
     clearSshPoll();
     setSshStatus("idle");
-    setRemoteConn(null);
+    browse.reset();
     setStep("connect");
   };
 
@@ -577,121 +665,35 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       setSshError("Enter an address like user@host or host:2222");
       return;
     }
-    // Empty password → key/agent auth (Option<String> None on the backend).
+    // Empty password → the backend falls back to a saved one for this host, then to
+    // key/agent auth (Option<String> None). So a blank field is "use what you have",
+    // exactly as in the Connect modal — not "authenticate with nothing".
     const password = sshPassword ? sshPassword : null;
     setSshStatus("connecting");
     setSshError("");
     setRemoteChosenPath("");
     try {
-      await invoke<void>("ssh_connect", {
-        user: parsed.user,
-        host: parsed.host,
-        port: parsed.port,
-        password,
-      });
-      const startDir = await invoke<string>("ssh_default_dir", {
-        user: parsed.user,
-        host: parsed.host,
-        port: parsed.port,
-        password,
-      }).catch(() => "");
-      setRemoteConn(parsed);
-      setRemotePassword(sshPassword);
+      // The shared connect: ssh_connect (remembering the working password only on
+      // success, so a rejected credential is never stored) → freeze the session →
+      // open its start dir. The listing then refreshes itself.
+      await browse.connect({ target: parsed, password, remember: sshRemember });
       setSshStatus("connected");
-      setRemoteBrowsePath(startDir || "");
+      setSshSaved(sshRemember);
       // Connection succeeded — remember the address for the recents dropdown.
       rememberSshAddress(sshAddress);
     } catch (err) {
       setSshStatus("error");
       setSshError(String(err));
-      setRemoteConn(null);
+      browse.reset();
     }
   };
 
-  // Refresh the remote folder listing whenever the browse path changes.
-  useEffect(() => {
-    if (sshStatus !== "connected" || !remoteConn) {
-      setRemoteEntries([]);
-      return;
-    }
-    let cancelled = false;
-    setRemoteListBusy(true);
-    setRemoteListError("");
-    invoke<RemoteEntry[]>("ssh_list_dir", {
-      user: remoteConn.user,
-      host: remoteConn.host,
-      port: remoteConn.port,
-      password: remotePassword ? remotePassword : null,
-      path: remoteBrowsePath,
-    })
-      .then((entries) => {
-        if (cancelled) return;
-        setRemoteEntries(entries);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setRemoteEntries([]);
-        setRemoteListError(String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setRemoteListBusy(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [sshStatus, remoteConn, remotePassword, remoteBrowsePath]);
-
-  const enterRemoteFolder = (entry: RemoteEntry) => {
-    if (!entry.is_dir) return;
-    setRemoteBrowsePath(joinRemotePath(remoteBrowsePath, entry.name));
-  };
-
-  // Jump the browser straight to a previously-used remote path (picked from the
-  // recents dropdown) instead of navigating there entry by entry.
-  const jumpToRemotePath = (path: string) => {
-    setRemoteBrowsePath(path);
-  };
-
-  const remoteGoUp = () => {
-    const path = remoteBrowsePath.replace(/\/+$/, "");
-    if (!path || path === "/") {
-      setRemoteBrowsePath("/");
-      return;
-    }
-    const idx = path.lastIndexOf("/");
-    setRemoteBrowsePath(idx <= 0 ? "/" : path.slice(0, idx));
-  };
-
-  // Create a new folder under the current browse path, then descend into it so
-  // it becomes the selectable target. Reuses the frozen connect credential, like
-  // the listing. No-op without a live session (the SFTP browser only renders then).
-  const createRemoteFolder = async (rawName: string) => {
-    const name = rawName.trim();
-    if (!name || !remoteConn) return;
-    // Reject path separators — this creates a single child of the current dir,
-    // not an arbitrary deep path. The backend's mkdir -p still joins safely.
-    if (name.includes("/")) {
-      setRemoteListError("Folder name can't contain '/'.");
-      return;
-    }
-    const target = joinRemotePath(remoteBrowsePath || "/", name);
-    setRemoteListBusy(true);
-    setRemoteListError("");
-    try {
-      await invoke("ssh_mkdir", {
-        user: remoteConn.user,
-        host: remoteConn.host,
-        port: remoteConn.port,
-        password: remotePassword ? remotePassword : null,
-        path: target,
-      });
-      // Descend into the new folder; the listing effect refreshes off the path.
-      setRemoteBrowsePath(target);
-    } catch (err) {
-      setRemoteListError(String(err));
-      setRemoteListBusy(false);
-    }
-  };
+  // The live SFTP listing + folder navigation all come from the shared browser;
+  // re-exposed here under the names `RemoteProjectSection` already reads.
+  const enterRemoteFolder = browse.enter;
+  const jumpToRemotePath = browse.jump;
+  const remoteGoUp = browse.goUp;
+  const createRemoteFolder = browse.mkdir;
 
   // Build the `remote` spec for the create/import request, or undefined when this
   // isn't a usable remote project. NEW: name becomes a subdir under the chosen
@@ -746,6 +748,10 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   return {
     isRemoteProject,
     isRemote,
+    // The live-connected host, frozen at connect time (`{ user, host, port }`),
+    // so a caller can register it elsewhere — e.g. the HPC wizard surfacing the
+    // cluster in the header's global-machines list once the login goes live.
+    remoteConn,
     headless,
     winManual,
     remoteReady,
@@ -758,6 +764,14 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     sshPassword,
     sshStatus,
     sshError,
+    sshRemember,
+    setSshRemember,
+    sshSaved,
+    forgetSshPassword,
+    // The credential the live session actually authenticated with, so the caller can
+    // hand it to the project's first *pooled* connect (`remote_connect`) instead of
+    // letting that leg rely on the ControlMaster this dialog happens to have left up.
+    remotePassword,
     remoteBrowsePath,
     remoteEntries,
     remoteListBusy,
@@ -785,6 +799,10 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     setVpnStatus,
     vpnError,
     setVpnError,
+    vpnRemember,
+    setVpnRemember,
+    vpnSaved,
+    forgetVpnPassword,
     vpnLog,
     vpnTerm,
     startVpnTerm,

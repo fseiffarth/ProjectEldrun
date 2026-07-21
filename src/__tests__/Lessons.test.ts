@@ -14,6 +14,12 @@ describe("LESSONS catalog", () => {
       "add-tab",
       "native-viewer",
       "arrange-tabs",
+      "yaml-viewer",
+      "pdf-viewer",
+      "run-python",
+      "file-search",
+      "calendar",
+      "usage-recap",
       // Agents & models
       "install-agent",
       "local-model",
@@ -23,7 +29,11 @@ describe("LESSONS catalog", () => {
       "docker-sandbox",
       "add-ssh-project",
       "ssh-via-openvpn",
+      "vpn-tunnel",
       "extend-to-remote",
+      "compute-machines",
+      "persistent-sessions",
+      "hpc-pipeline",
     ]);
   });
 

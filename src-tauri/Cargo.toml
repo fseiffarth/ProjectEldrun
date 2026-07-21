@@ -1,6 +1,6 @@
 [package]
 name = "eldrun"
-version = "0.1.22"
+version = "0.1.32"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
@@ -105,13 +105,14 @@ windows = { version = "0.61", features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_System_IO",
     "Win32_System_Kernel",
-    # Unelevated OpenVPN connects through the interactive service: message-mode
-    # reads + PeekNamedPipe liveness probe on its control pipe (`services/openvpn.rs`).
-    "Win32_System_Pipes",
     # Per-process CPU/memory sampling + process-tree walk for the project resource
     # readout (the Windows analogue of Linux's `/proc` parsing in `sysstat.rs`).
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_ProcessStatus",
+    # Named-pipe IPC with the OpenVPN Interactive Service (`PeekNamedPipe`,
+    # `SetNamedPipeHandleState`) so headless VPN connects stay unelevated
+    # (`services/openvpn.rs`).
+    "Win32_System_Pipes",
     # Whole-system monitor sample (`GetSystemTimes`, `GlobalMemoryStatusEx`,
     # `GetSystemInfo`, `GetTickCount64`) in `sysstat.rs`.
     "Win32_System_SystemInformation",

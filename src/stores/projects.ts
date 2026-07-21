@@ -5,6 +5,7 @@ import {
   formatRemoteTarget,
   resolveLocalMirror,
   resolveProjectDirectory,
+  type ComputeHost,
   type GitHostingInfo,
   type GitProvider,
   type ProjectEntry,
@@ -18,7 +19,9 @@ import {
   useTabsStore,
   type SavedLayoutTree,
   type TabKind,
+  type ViewerState,
 } from "./tabs";
+import { type AgentMode } from "../components/tabs/agentModes";
 import { useTimerStore } from "./timer";
 import { useVpnPromptStore } from "./vpnPrompt";
 import { useSettingsStore } from "./settings";
@@ -189,15 +192,40 @@ async function ensureRootSshLoginIfNeeded(project: ProjectEntry | undefined): Pr
 }
 
 /**
+ * The password a create/extend dialog authenticated its SSH session with, handed
+ * over for that project's **first** pooled connect and forgotten the moment it is
+ * used (or the connect gives up). Never persisted — persisting is what the dialog's
+ * "Save password" toggle is for, and a user who declined it must not have the
+ * secret written anywhere.
+ *
+ * Without this, the first `remote_connect` for a just-created remote project ran
+ * with `password: null` and only succeeded because the dialog's ControlMaster was
+ * still up. Two things came out wrong: the pool depended on a master it doesn't own,
+ * and the backend — which reads "no password given, none saved" as *key* auth —
+ * recorded `key_auth: true` on a host that in fact needs a password, so the project
+ * then advertised itself as auto-connect-eligible and the auto-connect failed on the
+ * next launch.
+ */
+const pendingRemotePassword = new Map<string, string>();
+
+/** Hand `projectId`'s first pooled connect the password the dialog just used. */
+export function stashRemotePassword(projectId: string, password: string): void {
+  if (password) pendingRemotePassword.set(projectId, password);
+}
+
+/**
  * Phase 0 (mount-free remote): open the pooled SSH/SFTP connection for a remote
  * project so authentication happens once on activation and every later channel
  * (file browse / I-O, agent tabs, git) rides the shared ControlMaster. Best-
  * effort and fire-and-forget: a failure (offline host, or password-only auth
  * with no live master) is logged and never blocks activation — later access
  * falls back to a one-shot session exactly as before. No-op for local projects
- * (the backend resolves remoteness and returns early). Passes no password (the
- * no-stored-password rule); password-auth hosts authenticate their master via
- * the interactive root-terminal login, which this connection then rides.
+ * (the backend resolves remoteness and returns early).
+ *
+ * The password, in order: the one the create/extend dialog just authenticated with
+ * (`stashRemotePassword`, single-use), else none — in which case the backend falls
+ * back to a saved credential for the host, then to key/agent auth, and finally to
+ * the master an interactive root-terminal login left behind.
  */
 function ensureRemotePool(projectId: string): void {
   const status = useRemoteStatusStore.getState();
@@ -211,10 +239,17 @@ function ensureRemotePool(projectId: string): void {
   const maxAttempts = 6;
   const tryConnect = () => {
     if (useProjectsStore.getState().activeId !== projectId) return;
-    void invoke("remote_connect", { projectId, password: null })
-      .then(() => useRemoteStatusStore.getState().setSsh(projectId, "connected"))
+    // Kept across retries (an early attempt can lose to a still-starting host) and
+    // dropped once the attempt is settled either way.
+    const password = pendingRemotePassword.get(projectId) ?? null;
+    void invoke("remote_connect", { projectId, password })
+      .then(() => {
+        pendingRemotePassword.delete(projectId);
+        useRemoteStatusStore.getState().setSsh(projectId, "connected");
+      })
       .catch((error) => {
         if (++attempts >= maxAttempts) {
+          pendingRemotePassword.delete(projectId);
           console.warn("remote_connect failed", error);
           useRemoteStatusStore.getState().setSsh(projectId, "error");
           return;
@@ -256,7 +291,7 @@ const autoConnecting = new Set<string>();
  * Fire-and-forget: it never blocks a switch. Local tabs restore and work on the
  * mirror regardless, and remote panes stay held until the pool is actually up.
  */
-async function autoConnectRemote(projectId: string): Promise<void> {
+async function autoConnectPrimary(projectId: string): Promise<void> {
   const project = useProjectsStore.getState().projects.find((p) => p.id === projectId);
   const remote = project?.remote;
   if (!remote?.auto_connect) return;
@@ -345,10 +380,103 @@ async function autoConnectRemote(projectId: string): Promise<void> {
   }
 }
 
-/** Tear down a remote project's pooled connection on deactivation. Best-effort. */
+/**
+ * Auto-connect a remote project on launch/activation: the primary first, then any
+ * worker (`compute_hosts`) that opted in. The primary is awaited before the
+ * workers fire so a VPN it brings up (the tunnel is machine-wide) is already there
+ * when a worker reachable only through it is probed. Fire-and-forget per host —
+ * one worker being unreachable never blocks the others or the primary.
+ */
+async function autoConnectRemote(projectId: string): Promise<void> {
+  await autoConnectPrimary(projectId);
+  const project = useProjectsStore.getState().projects.find((p) => p.id === projectId);
+  for (const host of project?.compute_hosts ?? []) {
+    if (host.auto_connect) void autoConnectWorker(projectId, host);
+  }
+}
+
+/**
+ * The worker twin of `autoConnectPrimary`: connect one opted-in worker host with no
+ * prompt. Simpler than the primary — a worker has no VPN escalation of its own (the
+ * tunnel is machine-wide, so the primary or the header owns it) — but it keeps the
+ * same guards: only from an "off" lamp, only when eligible (`key_auth` or a saved
+ * password, re-checked against the backend so a stale opt-in degrades to
+ * "stay disconnected"), and it abandons its own "connecting" lamp if the user
+ * switches away mid-probe. Keyed in `autoConnecting` by `project:host` so it never
+ * collides with the primary's per-project claim.
+ */
+async function autoConnectWorker(projectId: string, host: ComputeHost): Promise<void> {
+  const hostId = host.id;
+  const claim = `${projectId}:${hostId}`;
+  const state = useRemoteStatusStore.getState().byHost[projectId]?.[hostId];
+  if ((state?.ssh ?? "off") !== "off" || autoConnecting.has(claim)) return;
+  autoConnecting.add(claim);
+
+  const stillActive = () => useProjectsStore.getState().activeId === projectId;
+  const status = () => useRemoteStatusStore.getState();
+  const abandon = () => {
+    if (status().byHost[projectId]?.[hostId]?.ssh === "connecting")
+      status().setSsh(projectId, "off", hostId);
+  };
+  try {
+    const sshArgs = { user: host.user ?? null, host: host.host, port: host.port ?? null };
+    const eligible =
+      host.key_auth === true ||
+      (await invoke<boolean>("remote_has_saved_password", sshArgs).catch(() => false));
+    if (!eligible || !stillActive()) return;
+
+    status().setSsh(projectId, "connecting", hostId);
+    const probe = await invoke<SshProbe>("ssh_probe", sshArgs);
+    if (!stillActive()) return abandon();
+    if (!probe.ok) {
+      console.warn("worker auto-connect: host not reachable/authenticating", probe.error);
+      status().setSsh(projectId, "error", hostId);
+      return;
+    }
+    await invoke("remote_connect", { projectId, hostId, password: null });
+    if (!stillActive()) return abandon();
+    status().setSsh(projectId, "connected", hostId);
+  } catch (error) {
+    console.warn("worker auto-connect failed", error);
+    if (stillActive()) status().setSsh(projectId, "error", hostId);
+    else abandon();
+  } finally {
+    autoConnecting.delete(claim);
+  }
+}
+
+/**
+ * Re-attempt auto-connect for the **active** remote project after a VPN tunnel has
+ * just come up (the machine-wide event `lib/remoteAutoReconnect` subscribes to).
+ *
+ * A first auto-connect at launch may have run *before* the armed tunnel was up: the
+ * probe found the host unreachable and left the lamp red (`autoConnectPrimary` step
+ * 4 — no retry loop of its own). Now the routing exists, so we reset that red lamp
+ * (primary and each opted-in worker) back to "off" and fire `autoConnectRemote`
+ * again — the guard there only re-attempts from "off", so without this reset the
+ * fresh tunnel would go unused until the user connected by hand. Only ever clears an
+ * `error` lamp: a `connecting`/`connected` lamp is a live or winning attempt and is
+ * left strictly alone. No-op unless the active project is a remote that opted in.
+ */
+export function retryAutoConnectAfterVpn(): void {
+  const { activeId, projects } = useProjectsStore.getState();
+  if (!activeId) return;
+  const project = projects.find((p) => p.id === activeId);
+  if (!project?.remote?.auto_connect) return;
+  const status = useRemoteStatusStore.getState();
+  if ((status.byProject[activeId]?.ssh ?? "off") === "error") status.setSsh(activeId, "off");
+  for (const host of project.compute_hosts ?? []) {
+    if (host.auto_connect && (status.byHost[activeId]?.[host.id]?.ssh ?? "off") === "error")
+      status.setSsh(activeId, "off", host.id);
+  }
+  void autoConnectRemote(activeId);
+}
+
+/** Tear down a remote project's pooled connection on deactivation — the primary
+ *  AND every worker host (multi-host remote). Best-effort. */
 function dropRemotePool(projectId: string): void {
   useRemoteStatusStore.getState().clear(projectId);
-  void invoke("remote_disconnect", { projectId }).catch(() => {});
+  void invoke("remote_disconnect_all_hosts", { projectId }).catch(() => {});
 }
 
 /**
@@ -408,7 +536,11 @@ interface ProjectRuntimeSwitchedPayload {
     embedPath?: string;
     embedExec?: string;
     viewer?: "pdf" | "image" | "markdown" | "text";
+    viewerState?: ViewerState;
     location?: "local" | "remote";
+    agentMode?: AgentMode;
+    /** A "projectfiles" tab's browsed folder (see TabEntry.folder). */
+    folder?: string;
   }>;
   // Opaque split/group layout tree (camelCased by the backend's serde rename);
   // absent → restored as a single group.
@@ -460,11 +592,21 @@ interface ProjectsStore {
    *  Backend normalizes blank fields away and stores it in both projects.json
    *  and project.json; the stored spec is mirrored into local state. */
   setProjectSandboxSpec: (id: string, spec: SandboxSpec) => Promise<void>;
+  /** Pin the project's Python interpreter, or `null` to restore auto-detect (#87). */
+  setProjectPython: (id: string, interpreter: string | null) => Promise<void>;
   /** Opt a remote project in/out of auto-connect (connect it silently on launch
    *  and activation). Only offered once the connect can complete with no prompt —
    *  a saved SSH password, or a host recorded as `key_auth`; `autoConnectRemote`
    *  re-checks that, so a stale opt-in degrades to staying disconnected. */
   setProjectAutoConnect: (id: string, enabled: boolean) => Promise<void>;
+  /** Opt a remote project in/out of persistent (tmux) sessions (TODO #85). Default
+   *  ON, so this only records an opt-out; re-enabling clears the field. */
+  setProjectPersistSessions: (id: string, enabled: boolean) => Promise<void>;
+  /** Set (or clear, on blank) the display name for a remote project's PRIMARY
+   *  machine — the counterpart of a worker's `label` (`patch_compute_host`).
+   *  Distinct from the project name: this labels the host, shown wherever a
+   *  project's hosts are listed side by side (System Monitor, pill lamps). */
+  setProjectRemoteLabel: (id: string, label: string) => Promise<void>;
   /** Attach (or clear) an OpenVPN config on a remote project's SSH spec, so a
    *  project created without a VPN can gain one later when reconnecting from a
    *  VPN-gated network. `config = null`/"" clears it. Mirrors the stored path
@@ -651,6 +793,12 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projectId: id,
       previousProjectId: previousId,
       previousSnapshot: {
+        // Keep in step with the canonical persist in `tabs.ts` (persistScope):
+        // this snapshot OVERWRITES the previous project's project.json on switch,
+        // so any field dropped here is lost on a switch even though the debounced
+        // save wrote it. That is how a Files (Project) tab's browsed `folder` (and
+        // a viewer's scroll position / an agent's plan-mode) went missing on
+        // switch-away.
         tabLayout: tabs.map((t) => ({
           key: t.key,
           label: t.label,
@@ -662,7 +810,10 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
           embedPath: t.embedPath,
           embedExec: t.embedExec,
           viewer: t.viewer,
+          viewerState: t.viewerState,
           location: t.location,
+          agentMode: t.agentMode,
+          folder: t.folder,
         })),
         tabGroups,
         activeTabIndex,
@@ -912,6 +1063,22 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     }));
   },
 
+  setProjectPython: async (id, interpreter) => {
+    // Backend writes both stores (projects.json mirror + project.json) and returns
+    // what it stored — null when cleared back to auto-detect.
+    const saved = await invoke<string | null>("set_project_python", {
+      projectId: id,
+      interpreter,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id
+          ? { ...project, python_interpreter: saved ?? undefined }
+          : project,
+      ),
+    }));
+  },
+
   setProjectAutoConnect: async (id, enabled) => {
     // Backend patches `auto_connect` on the remote spec in both projects.json and
     // project.json and returns the resulting state; mirror it into local state so
@@ -924,6 +1091,41 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projects: state.projects.map((project) =>
         project.id === id && project.remote
           ? { ...project, remote: { ...project.remote, auto_connect: result || undefined } }
+          : project,
+      ),
+    }));
+  },
+
+  setProjectPersistSessions: async (id, enabled) => {
+    // TODO #85: persistent (tmux) sessions are DEFAULT ON for a remote project, so
+    // the backend stores only an explicit opt-out (`persist_sessions: false`) and
+    // clears the field when re-enabled. Mirror the resulting state into local state
+    // as `persist_sessions: enabled ? undefined : false` so the pill reflects it.
+    const result = await invoke<boolean>("set_project_persist_sessions", {
+      projectId: id,
+      enabled,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id && project.remote
+          ? {
+              ...project,
+              remote: { ...project.remote, persist_sessions: result ? undefined : false },
+            }
+          : project,
+      ),
+    }));
+  },
+
+  setProjectRemoteLabel: async (id, label) => {
+    const result = await invoke<string | null>("set_project_remote_label", {
+      projectId: id,
+      label,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id && project.remote
+          ? { ...project, remote: { ...project.remote, label: result ?? undefined } }
           : project,
       ),
     }));
@@ -1019,10 +1221,27 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // Backend promotes the local mirror back to the project directory and drops
     // the remote/mirror pointers (host files untouched), returning the updated
     // local entry. Replace the whole entry so the pill lamp + file tree update.
+    const oldDir = get().projects.find((p) => p.id === id)?.directory ?? "";
     const updated = await invoke<ProjectEntry>("detach_project_from_remote", { projectId: id });
     set((state) => ({
       projects: state.projects.map((project) => (project.id === id ? updated : project)),
     }));
+
+    // Re-point the tabs. `directory` just changed out from under them: it was the remote
+    // state dir, and it is now the promoted mirror. Every tab still holds the old one as
+    // its cwd — harmless while the project was remote (localTabCwd rewrote it at render),
+    // instantly wrong the moment it isn't, because that override is gated on the project
+    // BEING remote. Left alone, agents relaunch inside the state dir this detach just
+    // emptied, and Claude — which keys its session history by cwd — can no longer find the
+    // conversation to `--resume`. See `detachScopeFromRemote`.
+    if (oldDir && updated.directory) {
+      useTabsStore.getState().detachScopeFromRemote(id, oldDir, updated.directory);
+    }
+
+    // The SSH/VPN lamp lives in its own store, keyed by project — nothing about replacing
+    // the project entry clears it, so a detached project would keep showing a connection
+    // to a host it no longer has.
+    useRemoteStatusStore.getState().clear(id);
   },
 
   unpublishProject: async (id) => {

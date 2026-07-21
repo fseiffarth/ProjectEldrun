@@ -20,7 +20,9 @@ use tauri::{
     WebviewWindowBuilder, WebviewUrl,
 };
 
-use crate::commands::apps::{TrackedWindow, WindowRegistryState, ORIGIN_DETACHED_SUBWINDOW};
+use crate::commands::apps::{
+    TrackedWindow, WindowRegistry, WindowRegistryState, ORIGIN_DETACHED_SUBWINDOW,
+};
 use crate::commands::workspace::WorkspaceStateArc;
 
 /// Stable Tauri window label for a detached group. One window per (project,
@@ -46,6 +48,31 @@ pub fn detached_query(scope: &str, group_id: &str) -> String {
 
 pub fn detached_decorations(os: crate::paths::OsKind) -> bool {
     os == crate::paths::OsKind::Macos
+}
+
+/// Reserve the lowest free display number for `label` (the N in "Eldrun
+/// win-N"). Must run under the registry lock so a concurrent detach (or a
+/// restart batch respawning several popouts) can't pick the same one.
+pub fn reserve_detached_seq(reg: &mut WindowRegistry, label: &str) -> u32 {
+    let used: std::collections::HashSet<u32> = reg.detached_seqs.values().copied().collect();
+    let n = (1u32..).find(|n| !used.contains(n)).expect("a free u32 always exists");
+    reg.detached_seqs.insert(label.to_string(), n);
+    n
+}
+
+/// Drop a detached window's registry footprint: its display number (so the
+/// next detach can reuse it — "the second window is always win-1") and its
+/// `TrackedWindow`. Returns the native window id (if one was resolved) so the
+/// caller can unset the parkable override. Idempotent: a label with no
+/// footprint is a no-op returning `None`, which is what makes it safe to call
+/// from BOTH `attach_subwindow` and the `WindowEvent::Destroyed` hook — the
+/// dock-back path fires it twice.
+pub fn release_detached_entry(reg: &mut WindowRegistry, label: &str) -> Option<u64> {
+    reg.detached_seqs.remove(label);
+    // Drop any captured switch-back geometry too, so a docked/closed label never
+    // leaves a stale bounds entry a reused label could later pick up (#42).
+    reg.detached_bounds.remove(label);
+    reg.windows.remove(label).and_then(|w| w.window_id)
 }
 
 /// PHYSICAL-pixel position to apply to a freshly-built detached window from the
@@ -116,18 +143,14 @@ pub async fn detach_subwindow(
         return Ok(label);
     }
 
-    // Reserve the lowest free display number under the registry lock so a
-    // concurrent detach (or a restart batch respawning several popouts) can't
-    // pick the same one. The number becomes the OS title "Eldrun win-N" and, on
-    // X11, the resolver key — hence it must be unique per live window. It's freed
-    // in `attach_subwindow` on dock-back/close, so freed numbers get reused.
-    let seq = {
-        let mut reg = win_registry.lock().unwrap();
-        let used: std::collections::HashSet<u32> = reg.detached_seqs.values().copied().collect();
-        let n = (1u32..).find(|n| !used.contains(n)).expect("a free u32 always exists");
-        reg.detached_seqs.insert(label.clone(), n);
-        n
-    };
+    // Reserve the lowest free display number. It becomes the OS title
+    // "Eldrun win-N" and, on X11, the resolver key — hence it must be unique per
+    // live window. It's freed on dock-back/close (`attach_subwindow`) AND on any
+    // other destruction via the `WindowEvent::Destroyed` hook in `lib.rs` (the
+    // popout self-destroys on seed timeout, last-tab close and the WM-close
+    // safety net without ever calling attach), so freed numbers get reused and a
+    // lone popout is always "win-1".
+    let seq = reserve_detached_seq(&mut win_registry.lock().unwrap(), &label);
     let title = detached_title(seq);
 
     let mut builder = WebviewWindowBuilder::new(
@@ -160,7 +183,7 @@ pub async fn detach_subwindow(
         Err(e) => {
             // Release the reserved number so a rare failed build doesn't
             // permanently skip a slot.
-            win_registry.lock().unwrap().detached_seqs.remove(&label);
+            release_detached_entry(&mut win_registry.lock().unwrap(), &label);
             return Err(format!("build detached window: {e}"));
         }
     };
@@ -277,15 +300,9 @@ pub fn attach_subwindow(
 ) -> Result<(), String> {
     // Drop the parkable override first so a stray park can't target a closing id.
     // Free the display number in the same critical section so it can be reused.
-    let removed = {
-        let mut reg = win_registry.lock().unwrap();
-        reg.detached_seqs.remove(&registry_id);
-        reg.windows.remove(&registry_id)
-    };
-    if let Some(win) = removed {
-        if let Some(wid) = win.window_id {
-            workspace.lock().unwrap().backend.unset_parkable(wid);
-        }
+    let wid = release_detached_entry(&mut win_registry.lock().unwrap(), &registry_id);
+    if let Some(wid) = wid {
+        workspace.lock().unwrap().backend.unset_parkable(wid);
     }
     if let Some(window) = app.get_webview_window(&registry_id) {
         // `destroy()` (not `close()`) so the removal is immediate: `close()` fires
@@ -423,6 +440,64 @@ mod tests {
             }
             other => panic!("expected a physical size, got {other:?}"),
         }
+    }
+
+    fn tracked(label: &str, window_id: Option<u64>) -> TrackedWindow {
+        TrackedWindow {
+            id: label.to_string(),
+            exec: "eldrun-detached".to_string(),
+            file: None,
+            pid: 1,
+            project_id: Some("p1".to_string()),
+            role: Some("g-1".to_string()),
+            opened_at: 0.0,
+            window_id,
+            origin: ORIGIN_DETACHED_SUBWINDOW.to_string(),
+        }
+    }
+
+    #[test]
+    fn released_numbers_are_reused_lowest_first() {
+        // The user-visible guarantee: a lone popout is always "win-1". Reserve
+        // three, release the first two (whichever way their windows died), and
+        // the next detach must take 1 — not climb to 4.
+        let mut reg = WindowRegistry::default();
+        assert_eq!(reserve_detached_seq(&mut reg, "detached-p1-g-1"), 1);
+        assert_eq!(reserve_detached_seq(&mut reg, "detached-p1-g-2"), 2);
+        assert_eq!(reserve_detached_seq(&mut reg, "detached-p1-g-3"), 3);
+        release_detached_entry(&mut reg, "detached-p1-g-1");
+        release_detached_entry(&mut reg, "detached-p1-g-2");
+        assert_eq!(reserve_detached_seq(&mut reg, "detached-p1-g-4"), 1);
+        // 3 is still live, so the one after takes 2, never a duplicate 3.
+        assert_eq!(reserve_detached_seq(&mut reg, "detached-p1-g-5"), 2);
+    }
+
+    #[test]
+    fn release_is_idempotent_and_returns_the_native_id() {
+        // The Destroyed hook fires after `attach_subwindow` already freed the
+        // entry, so a second release of the same label must be a clean no-op.
+        let mut reg = WindowRegistry::default();
+        let label = "detached-p1-g-1";
+        reserve_detached_seq(&mut reg, label);
+        reg.windows.insert(label.to_string(), tracked(label, Some(42)));
+        assert_eq!(release_detached_entry(&mut reg, label), Some(42));
+        assert!(reg.detached_seqs.is_empty());
+        assert!(reg.windows.is_empty());
+        // Second release (and a never-registered label): no-op, no id.
+        assert_eq!(release_detached_entry(&mut reg, label), None);
+        assert_eq!(release_detached_entry(&mut reg, "detached-p1-g-9"), None);
+    }
+
+    #[test]
+    fn release_without_native_id_still_frees_the_number() {
+        // A popout whose native id never resolved (e.g. macOS) must still give
+        // its display number back.
+        let mut reg = WindowRegistry::default();
+        let label = "detached-p1-g-1";
+        reserve_detached_seq(&mut reg, label);
+        reg.windows.insert(label.to_string(), tracked(label, None));
+        assert_eq!(release_detached_entry(&mut reg, label), None);
+        assert_eq!(reserve_detached_seq(&mut reg, "detached-p1-g-2"), 1);
     }
 
     #[test]

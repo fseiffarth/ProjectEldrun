@@ -277,7 +277,32 @@ fn git_file_statuses_blocking(
         return Ok(HashMap::new());
     }
 
-    let out = run_git(target.as_ref(), &project_dir, &["status", "--porcelain", "--ignored"])?;
+    // A directory that is itself wholly ignored is collapsed by git into a
+    // single `!! rel_path/` line at every ancestor listing under the default
+    // `--untracked-files=normal` — so listing `rel_path` itself would come
+    // back with zero lines under its prefix, and its children would silently
+    // lose their "ignored" marker (rather than the folder just being empty of
+    // git-reportable changes, which is the far more common reason this map
+    // comes back empty). Detect that case up front via `check-ignore` and add
+    // `--untracked-files=all`, which makes git recurse into an ignored
+    // directory and report every file underneath individually instead of
+    // collapsing it, scoped to `rel_path` so this stays cheap even inside a
+    // huge folder like `node_modules`. Left off for the common case: it's a
+    // more expensive walk, and combined with the anti-bubble rule below it
+    // would actually stop a normal (non-wholly-ignored-ancestor) ignored
+    // subfolder from being recognized, since a deep file line like
+    // `sub/leaf.js` never equals its containing folder's own name.
+    let wholly_ignored = !rel_path.is_empty()
+        && run_git(target.as_ref(), &project_dir, &["check-ignore", "-q", "--", &rel_path])
+            .map(|out| out.status.success())
+            .unwrap_or(false);
+
+    let status_args: Vec<&str> = if wholly_ignored {
+        vec!["status", "--porcelain", "--ignored", "--untracked-files=all", "--", &rel_path]
+    } else {
+        vec!["status", "--porcelain", "--ignored"]
+    };
+    let out = run_git(target.as_ref(), &project_dir, &status_args)?;
     let porcelain = String::from_utf8_lossy(&out.stdout).into_owned();
 
     // prefix used to filter entries under rel_path
@@ -321,7 +346,12 @@ fn git_file_statuses_blocking(
         // top-level entry ignored when the ignored path IS that entry — else a
         // single ignored child would drag the whole folder into the gitignored
         // section. Other statuses still bubble up so a dir reflects its changes.
-        if status == "ignored" && rel.trim_end_matches('/') != top {
+        // Skipped when `rel_path` itself is already known to be wholly
+        // ignored: every line here is one of its descendants, so there is no
+        // "is this ONE child ignored or is the whole folder" ambiguity to
+        // guard against, and a deep file's top-level parent must still be
+        // marked ignored even though the two paths never match exactly.
+        if status == "ignored" && !wholly_ignored && rel.trim_end_matches('/') != top {
             return;
         }
 
@@ -546,6 +576,15 @@ fn git_unpushed_commits_blocking(project_dir: String) -> Result<Vec<String>, Str
     Ok(text.lines().filter(|l| !l.is_empty()).map(|l| l.to_string()).collect())
 }
 
+/// Ephemeral inline credential helper that answers an https challenge with the
+/// effective token. The token is read from the child's env INSIDE the snippet, so
+/// it never lands in argv or on disk. Always passed after a leading empty
+/// `credential.helper=`, which clears any system helper (e.g. GCM) so only ours
+/// runs. Harmless for SSH remotes — git won't call an http helper. Shared by
+/// `git_push` and `git_clone`.
+const TOKEN_CREDENTIAL_HELPER: &str =
+    "credential.helper=!f() { test \"$1\" = get && echo username=x-access-token && echo \"password=$ELDRUN_GIT_TOKEN\"; }; f";
+
 #[tauri::command]
 pub async fn git_push(project_dir: String, project_id: Option<String>) -> Result<String, String> {
     run_off_thread(move || git_push_blocking(project_dir, project_id)).await
@@ -566,18 +605,9 @@ fn git_push_blocking(project_dir: String, project_id: Option<String>) -> Result<
         let mut cmd = crate::paths::command_no_window("git");
         cmd.current_dir(&project_dir);
         if let Some(tok) = token.as_deref() {
-            // Authenticate an https push with the effective token via an ephemeral
-            // inline credential helper. The token is read from the child's env INSIDE
-            // the helper snippet, so it never lands in argv or on disk. The leading
-            // empty `credential.helper=` clears any system helper (e.g. GCM) so only
-            // ours runs. Harmless for SSH remotes — git won't call an http helper.
-            cmd.args([
-                "-c",
-                "credential.helper=",
-                "-c",
-                "credential.helper=!f() { test \"$1\" = get && echo username=x-access-token && echo \"password=$ELDRUN_GIT_TOKEN\"; }; f",
-                "push",
-            ]);
+            // Authenticate an https push with the effective token (see
+            // TOKEN_CREDENTIAL_HELPER).
+            cmd.args(["-c", "credential.helper=", "-c", TOKEN_CREDENTIAL_HELPER, "push"]);
             cmd.env("ELDRUN_GIT_TOKEN", tok);
             cmd.env("GIT_TERMINAL_PROMPT", "0");
         } else {
@@ -591,6 +621,142 @@ fn git_push_blocking(project_dir: String, project_id: Option<String>) -> Result<
         return Err(if stderr.is_empty() { stdout } else { stderr });
     }
     Ok(if stdout.is_empty() { stderr } else { stdout })
+}
+
+// ── Clone (import from GitHub/GitLab) ───────────────────────────────────────
+
+/// Accept only the clone URL forms we actually mean to support: https/http,
+/// `ssh://`, `git://`, and the scp-like `[user@]host:path`. This is a whitelist
+/// on purpose — git also understands `ext::<command>` (which *runs* the command)
+/// and local paths, and neither belongs behind a "paste a repo URL" field.
+pub(crate) fn validate_clone_url(url: &str) -> Result<(), String> {
+    let url = url.trim();
+    let reject = || {
+        Err(format!(
+            "'{url}' is not a supported repository URL (expected https://…, ssh://… or git@host:owner/repo.git)"
+        ))
+    };
+    if url.is_empty() {
+        return Err("Repository URL is empty".to_string());
+    }
+
+    let lower = url.to_ascii_lowercase();
+    if let Some(scheme_end) = lower.find("://") {
+        // An explicit scheme must be one we support. `file://` is not a remote,
+        // and anything else is a transport we did not mean to expose.
+        return if ["https", "http", "ssh", "git"].contains(&&lower[..scheme_end]) {
+            Ok(())
+        } else {
+            reject()
+        };
+    }
+
+    // scp-like: `[user@]host:path`. The host part carries no slash (that would be
+    // a local path) and no colon of its own — `transport::address` is git's
+    // transport-helper form, and `ext::<command>` *runs* the command.
+    let Some(colon) = url.find(':') else {
+        return reject();
+    };
+    let (host, path) = (&url[..colon], &url[colon + 1..]);
+    if host.is_empty()
+        || host.contains('/')
+        || host.starts_with('-')
+        || path.is_empty()
+        || path.starts_with(':')
+    {
+        return reject();
+    }
+    Ok(())
+}
+
+/// Turn git's own auth failure into the one sentence that tells the user what to
+/// do about it. A private https repo with no token stored reads as "could not
+/// read Username" / "Authentication failed", which explains nothing on its own.
+fn clone_error(stderr: &str, had_token: bool, https: bool) -> String {
+    let lower = stderr.to_ascii_lowercase();
+    let auth_failed = lower.contains("could not read username")
+        || lower.contains("authentication failed")
+        || lower.contains("terminal prompts disabled")
+        || lower.contains("repository not found");
+    if auth_failed && https {
+        let hint = if had_token {
+            "The stored access token was rejected (or has no access to this repository) — check it in Settings → Git Hosting."
+        } else {
+            "For a private repository, add an access token in Settings → Git Hosting, or use an SSH URL."
+        };
+        return format!("{}\n\n{hint}", stderr.trim());
+    }
+    if auth_failed {
+        return format!(
+            "{}\n\nSSH authentication failed — make sure your key is loaded (ssh-agent) and the host is known.",
+            stderr.trim()
+        );
+    }
+    stderr.trim().to_string()
+}
+
+/// Clone `url` into `dest` and return `dest`. Used by the import dialog's
+/// "Clone from GitHub/GitLab" source: the clone lands first, then the regular
+/// `import_project` registers the resulting directory in place ("keep" mode).
+///
+/// Auth: an https URL rides the global access token from Settings → Git Hosting
+/// (via the same inline credential helper as `git_push`) when one is stored; an
+/// SSH URL uses the user's own keys. Every interactive prompt git could raise is
+/// disabled (`GIT_TERMINAL_PROMPT=0`, ssh `BatchMode=yes`) — Eldrun has no console
+/// attached, so a prompt would be an invisible hang rather than a question.
+#[tauri::command]
+pub async fn git_clone(url: String, dest: String) -> Result<String, String> {
+    run_off_thread(move || git_clone_blocking(url, dest)).await
+}
+
+fn git_clone_blocking(url: String, dest: String) -> Result<String, String> {
+    let url = url.trim().to_string();
+    validate_clone_url(&url)?;
+
+    let dest_path = PathBuf::from(&dest);
+    if dest_path.exists() {
+        let empty = std::fs::read_dir(&dest_path)
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false);
+        if !empty {
+            return Err(format!("Destination '{dest}' already exists and is not empty"));
+        }
+    }
+    if let Some(parent) = dest_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    let token = crate::commands::git_hosting::global_git_token();
+    let https = {
+        let lower = url.to_ascii_lowercase();
+        lower.starts_with("https://") || lower.starts_with("http://")
+    };
+
+    let mut cmd = crate::paths::command_no_window("git");
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    if https {
+        if let Some(tok) = token.as_deref() {
+            cmd.args(["-c", "credential.helper=", "-c", TOKEN_CREDENTIAL_HELPER]);
+            cmd.env("ELDRUN_GIT_TOKEN", tok);
+        }
+    }
+    // `--` so a URL can never be read as an option.
+    cmd.args(["clone", "--", &url, &dest]);
+
+    let out = cmd.output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let raw = if stderr.trim().is_empty() { stdout } else { stderr };
+        // A failed clone can still leave a partial directory behind; drop it so a
+        // retry isn't blocked by its own debris.
+        if dest_path.exists() {
+            let _ = std::fs::remove_dir_all(&dest_path);
+        }
+        return Err(clone_error(&raw, token.is_some(), https));
+    }
+    Ok(dest)
 }
 
 // ── Git history & branches ──────────────────────────────────────────────────
@@ -1504,6 +1670,19 @@ filename note.txt
             "whole/ should be ignored (got {:?})",
             statuses.get("whole")
         );
+
+        // Navigating INTO the wholly-ignored folder must still report its own
+        // children as ignored, not silently come back empty (the bug this
+        // test guards: plain `--ignored` collapses `whole/` to one line and
+        // never descends into it).
+        let inner = git_file_statuses_blocking(dir.to_string_lossy().to_string(), "whole".to_string())
+            .expect("git_file_statuses on whole/ should succeed");
+        assert_eq!(
+            inner.get("a.txt").map(String::as_str),
+            Some("ignored"),
+            "whole/a.txt should be reported as ignored when listing whole/ (got {:?})",
+            inner.get("a.txt")
+        );
     }
 
     #[test]
@@ -1640,5 +1819,61 @@ filename note.txt
             provider_from_origin_url("git@git.mycorp.com:owner/repo.git"),
             None
         );
+    }
+
+    // ── validate_clone_url ─────────────────────────────────────────────────
+
+    #[test]
+    fn validate_clone_url_accepts_supported_forms() {
+        for url in &[
+            "https://github.com/owner/repo.git",
+            "https://gitlab.com/group/sub/repo",
+            "http://git.internal/owner/repo.git",
+            "ssh://git@github.com:22/owner/repo.git",
+            "git://git.internal/repo.git",
+            "git@github.com:owner/repo.git",
+            "gitlab.com:group/repo.git",
+        ] {
+            assert!(validate_clone_url(url).is_ok(), "should accept: {url}");
+        }
+        // Surrounding whitespace (a pasted URL) is tolerated.
+        assert!(validate_clone_url("  https://github.com/o/r.git  ").is_ok());
+    }
+
+    #[test]
+    fn validate_clone_url_rejects_unsupported_forms() {
+        for url in &[
+            "",
+            "   ",
+            // `ext::` runs a command — never behind a URL field.
+            "ext::sh -c 'touch /tmp/pwned'",
+            "file:///etc",
+            "/etc/passwd",
+            "../repo",
+            "just-a-name",
+            // Option injection, with and without the scp-like colon.
+            "--upload-pack=touch /tmp/pwned",
+            "--upload-pack=x:y",
+        ] {
+            assert!(validate_clone_url(url).is_err(), "should reject: {url}");
+        }
+    }
+
+    #[test]
+    fn clone_error_explains_missing_token_for_https() {
+        let msg = clone_error("fatal: could not read Username for 'https://github.com'", false, true);
+        assert!(msg.contains("Settings → Git Hosting"), "{msg}");
+
+        // A token IS stored but was rejected → point at the token, not at adding one.
+        let msg = clone_error("remote: Repository not found.", true, true);
+        assert!(msg.contains("was rejected"), "{msg}");
+
+        // SSH auth failure gets the key/agent hint instead.
+        let msg = clone_error("git@github.com: Permission denied (publickey).\nfatal: Authentication failed", false, false);
+        assert!(msg.contains("ssh-agent"), "{msg}");
+
+        // A non-auth failure is passed through unchanged (no misleading hint).
+        let msg = clone_error("fatal: destination path exists", false, true);
+        assert_eq!(msg, "fatal: destination path exists");
     }
 }

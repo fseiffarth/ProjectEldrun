@@ -913,4 +913,93 @@ container) — as opposed to the git **push** axis (#21/#22).*
       disconnect from the header and confirm routing is restored. Connect a tunnel
       from the header with no project active.
 
+85. ✅ **Persistent sessions (tmux) — remote + local.** *(Implemented — `RemoteSpec.persist_sessions`,
+    `settings.persist_local_sessions`, `PtyOptions.tmux_session`/`tmux_attach`, `ssh_exec::{TmuxWrap,
+    tmux_wrap_exec,tmux_kill_session_script,tmux_rename_session_script,tmux_ls_script,parse_tmux_ls,
+    valid_tmux_session_name}`, `services::tmux_local`, `remote_tmux_{list,kill,rename}` +
+    `local_tmux_{list,kill,rename}` + `set_project_persist_sessions` commands;
+    frontend `lib/tmuxSession.ts`, `lib/closeRemoteTab.ts`, CenterPanel/TabPane/TerminalView
+    plumbing, the pill toggle + a global Settings toggle, and the multi-host Sessions view in
+    `ProjectFilesView`.)* Shipped **default ON** rather than behind the experimental flag (per user).
+    Beyond the original remote scope it also covers: **local** persistence (Unix — survives an
+    Eldrun *crash*), **worker-host** sessions (the Sessions view aggregates every connected host),
+    and per-row **Rename**. Agent tabs are excluded (they resume via their own session).
+    Live-QA on a real host / crash still pending (Done ≠ Tested). A remote shell/script is a child of
+    the `ssh -tt` channel, so it dies (`SIGHUP`) on any channel break — network
+    blip, laptop sleep, VPN drop, or Eldrun quitting. Run it **inside a tmux
+    server on the host** instead, decoupled from SSH: reconnect or relaunch and
+    the same command reattaches to the still-running session. Server-side, so it
+    works identically for a Windows/macOS Eldrun (only the local `ssh` client
+    differs); **remote projects only** (a local process is Eldrun's own child,
+    not decoupled by SSH). One seam: `remote_command` (`ssh_exec.rs:117`) wraps
+    the final `exec` in `tmux new-session -A -D -s eldrun-<tab-uid> -- …`, nesting
+    the existing `cd`/env-export/`remote_agents` prelude untouched — `-A` makes
+    the one command both start and resume, the stable per-tab name is what
+    reattach keys on. Restart-resume is then nearly free (a remote shell tab is
+    already restorable, `tabs.ts:3416`). The one new decision is **kill vs.
+    detach**: explicit tab-close runs `tmux kill-session` via `run_remote_script`
+    (`ssh_exec.rs:300`); app-exit/disconnect leave the session alive. Behind the
+    experimental flag; tmux-absent falls back to today's plain `exec` + a notice.
+    Headline surface is a **Sessions view** in the file viewer, alongside Files /
+    Git / Search / Apps / Orange (`ProjectFilesView.tsx:33,607`) — a remote-only
+    toolbar toggle (mirrors the Orange/diverged view) listing host `tmux ls`
+    sessions (incl. hand-started ones and orphans from a crashed Eldrun); click a
+    row → open a shell tab that **attaches** (`tmux new-session -A -D -s <name>`),
+    per-row kill/reveal. Renders in both the right panel and the Files tab for
+    free (one component). Plan: `docs/tmux_remote_plan.md`. `dtach`/`abduco`
+    (more transparent, less available) kept as a deferred alt backend.
+    - [x] 🤖 Automated test — argv builder (`remote_command_off_is_unchanged`,
+      `remote_command_tmux_wraps_shell_tab`/`_command_tab_preserving_prelude`/
+      `_tmux_attach_ignores_target`); `tmux ls` parse
+      (`parse_tmux_ls_reads_rows_and_tolerates_empty`);
+      `tmux_kill_session_script_quotes_name`; frontend `TmuxSessions.test.ts`
+      (uuid mint is tmux-safe, default-ON gate, shell-only rule, attach-tab restore,
+      and the **key-regenerates-but-tmuxSession-stays-stable** reattach guarantee).
+    - [ ] 🖐️ Manual test — remote long-running `python -u` run: kill network /
+      sleep → reconnect → output continues; quit Eldrun mid-run → relaunch →
+      shell tab reattaches, run still going; explicit tab-close → `tmux ls` shows
+      the session gone; tmux-less host → tab works, notice shown, no persistence;
+      hand-start a session on the host → it appears in the `☰` Sessions view →
+      click → tab attaches to the live process → per-row Kill drops it.
+
+86. **HPC / SLURM pipeline (guided login → run → watch).** *(Phases A + B implemented —
+    `docs/quirky-knitting-umbrella` plan.)* On a SLURM cluster, computation must go
+    through the scheduler (`sbatch`/`srun`), never the login node. Eldrun already
+    connects to such a host as a remote project; this adds a guided run/watch layer
+    so a newcomer never memorizes a SLURM command.
+    **Phase A — run/watch core (done, untested on a cluster):** backend
+    `commands::slurm` (`slurm_available`/`slurm_submit`/`slurm_queue`/`slurm_job_out`/
+    `slurm_cancel`) mirrors `commands::python`'s local-or-remote dispatch over the
+    pooled ControlMaster — a `.slurm` file (any script with a `#SBATCH` line) opened
+    in the code viewer gets a **SLURM bar** beside the Python Run bar (Submit job /
+    Variables / Interactive session…), shown only when the host has SLURM. Submit →
+    `sbatch --parsable` + `scontrol` (one round trip) → a **log tab** tailing the
+    resolved out-file (`tail -F`, waits out the queue); **Variables** is a `#SBATCH`
+    directive form editing the draft by splice (render-rows/edit-text, like the YAML
+    viewer); **Interactive session…** opens an `srun --pty … bash -l` shell on a
+    compute node. A **Jobs view** in `ProjectFilesView` (alongside Sessions/Orange)
+    polls `squeue`, per-row Watch/Cancel. Frontend `lib/slurm.ts` + `stores/hpcJobs`.
+    - [x] 🤖 Automated test — Rust parsers (`parse_submit_jobid` incl. `;cluster`
+      suffix + numeric-guard, `parse_scontrol_paths`, `parse_squeue` incl.
+      multi-word reason, `split_script_rel` incl. absolute paths, `default_out_file`);
+      frontend `Slurm.test.ts` (`isSlurmScript`, `parseSbatchDirectives`
+      short-flag folding, `spliceDirective` in-place/insert/clear + byte-preservation,
+      `buildInteractiveCommand`/`buildTailCommand`).
+    - [ ] 🖐️ Manual test (cluster) — open a `.slurm` → SLURM bar appears; edit
+      `--time`/`--mem` in Variables → file dirties/saves; Submit → toast + log tab
+      tails output; Jobs view lists it, Cancel removes it, Watch re-opens its log;
+      Interactive session… lands a shell on a compute node.
+    - **Phase B — guided pipeline wizard (implemented, untested).** A 5-step stepper
+      (`HpcPipelineWizard.tsx` + `stores/hpcPipeline`, launched from the project-switcher
+      **+** menu) that composes the existing flows rather than reimplementing them:
+      **Login** (`RemoteProjectSection`/`useRemoteSession`) → **Project**
+      (name + local-mirror location → `create_project`) → **Load data** (skippable; local
+      files → `remote_upload_file`, a new streaming SFTP-upload command) → **Run job**
+      (edit a starter `.slurm`'s `#SBATCH` via the Phase-A splice helpers → write to host →
+      Phase-A `submitSlurmJob`) → **Watch** (log tab + Jobs view). Mounted as
+      `HpcPipelineWizardHost` in `AppShell`.
+    - [ ] 🖐️ Manual test (cluster, Phase B) — **+ → HPC pipeline…** walks
+      login→create→load→run→watch end-to-end; the created project connects; an
+      uploaded file lands on the host; Submit opens a tailing log tab.
+
 ---

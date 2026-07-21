@@ -33,7 +33,15 @@ import {
   type PageList,
 } from "../../../lib/viewers/pageModel";
 import { openSource, newSourceId, buildPdf, type PdfSources } from "./pdfDoc";
+import {
+  loadOutline,
+  detectHeadings,
+  flattenOutline,
+  type OutlineNode,
+  type HeadingRun,
+} from "./outline";
 import { PageStrip } from "../../common/PageStrip";
+import { UntestedTag } from "../../common/UntestedTag";
 import type { PageTransfer } from "../../../stores/pdfDrag";
 import { ContextFilePicker } from "../ContextFilePicker";
 import { useProjectsStore } from "../../../stores/projects";
@@ -382,6 +390,262 @@ function PdfPageCanvas({
 }
 
 /**
+ * One row of the contents sidebar, plus its children. A node with a resolved page
+ * is a jump button; one without (an unresolvable destination) is inert text. A
+ * node with children carries a ▸/▾ disclosure that toggles its subtree.
+ */
+/** The leading sign for a leaf row, one per level: a dot for the top tiers, a
+ *  dash deeper down — the disclosure caret (a triangle) stands in for it on a row
+ *  that has children, so a branch reads as ▸/▾, a mid leaf as •, a deep leaf as –. */
+const leafSign = (depth: number) => (depth >= 2 ? "–" : "•");
+
+function OutlineRow({
+  node,
+  depth,
+  collapsed,
+  currentId,
+  onToggle,
+  onJump,
+  onHover,
+}: {
+  node: OutlineNode;
+  depth: number;
+  collapsed: Set<string>;
+  currentId: string | null;
+  onToggle: (id: string) => void;
+  onJump: (page: number) => void;
+  onHover: (page: number | null, rect: DOMRect | null) => void;
+}) {
+  const hasKids = node.children.length > 0;
+  const isCollapsed = collapsed.has(node.id);
+  return (
+    <>
+      <div
+        className={`file-viewer-pdf-outline-row${node.id === currentId ? " current" : ""}${node.page == null ? " inert" : ""}`}
+        style={{ paddingLeft: 6 + depth * 14 }}
+      >
+        {hasKids ? (
+          <button
+            className="file-viewer-pdf-outline-caret"
+            onClick={() => onToggle(node.id)}
+            aria-label={isCollapsed ? "Expand" : "Collapse"}
+            title={isCollapsed ? "Expand" : "Collapse"}
+          >
+            {isCollapsed ? "▸" : "▾"}
+          </button>
+        ) : (
+          <span className="file-viewer-pdf-outline-caret is-sign" aria-hidden="true">
+            {leafSign(depth)}
+          </span>
+        )}
+        <button
+          className={`file-viewer-pdf-outline-title depth-${Math.min(depth, 3)}`}
+          onClick={() => node.page != null && onJump(node.page)}
+          onMouseEnter={(e) =>
+            node.page != null && onHover(node.page, e.currentTarget.getBoundingClientRect())
+          }
+          onMouseLeave={() => onHover(null, null)}
+          disabled={node.page == null}
+          title={node.page != null ? `${node.title} — page ${node.page}` : node.title}
+        >
+          {node.title}
+        </button>
+      </div>
+      {hasKids &&
+        !isCollapsed &&
+        node.children.map((c) => (
+          <OutlineRow
+            key={c.id}
+            node={c}
+            depth={depth + 1}
+            collapsed={collapsed}
+            currentId={currentId}
+            onToggle={onToggle}
+            onJump={onJump}
+            onHover={onHover}
+          />
+        ))}
+    </>
+  );
+}
+
+/** Preview card width in CSS px; the thumbnail's height follows the page aspect. */
+const OUTLINE_PREVIEW_W = 220;
+
+/**
+ * A floating thumbnail of a contents entry's page, shown while its row is
+ * hovered. Renders the page once at preview width and memoises it in the shared
+ * `cache` (keyed by file page), so re-hovering the same chapter is instant and a
+ * long document only rasterises the pages actually pointed at.
+ */
+function OutlinePreview({
+  doc,
+  page,
+  top,
+  left,
+  cache,
+}: {
+  doc: PDFDocumentProxy;
+  page: number;
+  top: number;
+  left: number;
+  cache: Map<number, string>;
+}) {
+  const [url, setUrl] = useState<string | null>(() => cache.get(page) ?? null);
+  useEffect(() => {
+    const hit = cache.get(page);
+    if (hit) {
+      setUrl(hit);
+      return;
+    }
+    setUrl(null);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const p = await doc.getPage(page);
+        if (cancelled) return;
+        const base = p.getViewport({ scale: 1, rotation: p.rotate });
+        const dpr = window.devicePixelRatio || 1;
+        const scale = (OUTLINE_PREVIEW_W / (base.width || 1)) * dpr;
+        const viewport = p.getViewport({ scale, rotation: p.rotate });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.floor(viewport.width));
+        canvas.height = Math.max(1, Math.floor(viewport.height));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        await p.render({ canvasContext: ctx, viewport }).promise;
+        if (cancelled) return;
+        const data = canvas.toDataURL("image/png");
+        cache.set(page, data);
+        setUrl(data);
+      } catch {
+        /* leave the card in its loading state on a render failure */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [doc, page, cache]);
+
+  return (
+    <div className="file-viewer-pdf-outline-preview" style={{ top, left, width: OUTLINE_PREVIEW_W }}>
+      {url ? (
+        <img src={url} alt="" draggable={false} />
+      ) : (
+        <div className="file-viewer-pdf-outline-preview-loading">Rendering page {page}…</div>
+      )}
+      <div className="file-viewer-pdf-outline-preview-cap">Page {page}</div>
+    </div>
+  );
+}
+
+/**
+ * The contents sidebar: the PDF's embedded outline (chapters/sections) as a
+ * collapsible tree. Clicking an entry jumps the reader to its page; the entry
+ * whose page is currently in view is highlighted; hovering an entry shows a
+ * thumbnail of its page. A PDF with no outline shows a short notice.
+ */
+function OutlinePane({
+  doc,
+  nodes,
+  placeholder,
+  derived,
+  currentId,
+  onJump,
+}: {
+  /** The file's own document, for rendering hover previews (null while loading). */
+  doc: PDFDocumentProxy | null;
+  /** The chapters to show, or null while they're still being loaded/scanned. */
+  nodes: OutlineNode[] | null;
+  /** The message to show when there is nothing to render (loading or empty). */
+  placeholder: string | null;
+  /** True when `nodes` came from the font-size fallback, not an embedded outline. */
+  derived: boolean;
+  currentId: string | null;
+  onJump: (page: number) => void;
+}) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const toggle = useCallback((id: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // Hover preview: a small debounce keeps a quick pass down the list from
+  // rasterising every page it crosses; the card is placed just right of the pane
+  // at the hovered row's height (clamped to stay on screen).
+  const paneRef = useRef<HTMLDivElement>(null);
+  const previewCache = useRef<Map<number, string>>(new Map());
+  const [preview, setPreview] = useState<{ page: number; top: number; left: number } | null>(null);
+  const hoverTimer = useRef<number | null>(null);
+  const onHover = useCallback((page: number | null, rect: DOMRect | null) => {
+    if (hoverTimer.current != null) window.clearTimeout(hoverTimer.current);
+    if (page == null || !rect) {
+      setPreview(null);
+      return;
+    }
+    hoverTimer.current = window.setTimeout(() => {
+      const pane = paneRef.current?.getBoundingClientRect();
+      const left = (pane?.right ?? rect.right) + 8;
+      // Keep the card on screen: assume up to ~320px tall and nudge up if the row
+      // sits near the bottom edge.
+      const top = Math.max(8, Math.min(rect.top, window.innerHeight - 328));
+      setPreview({ page, top, left });
+    }, 140);
+  }, []);
+  useEffect(
+    () => () => { if (hoverTimer.current != null) window.clearTimeout(hoverTimer.current); },
+    [],
+  );
+
+  return (
+    <div className="file-viewer-pdf-outline" ref={paneRef}>
+      <div className="file-viewer-pdf-outline-head">
+        <span>Contents</span>
+        <UntestedTag />
+      </div>
+      {derived && nodes && nodes.length > 0 && (
+        <div className="file-viewer-pdf-outline-note" title="This document has no embedded table of contents; these headings were inferred from the text's font sizes.">
+          Inferred from text
+        </div>
+      )}
+      <div
+        className="file-viewer-pdf-outline-body"
+        // A stale row rect after a scroll would misplace the card, so drop it.
+        onScroll={() => setPreview(null)}
+      >
+        {placeholder != null ? (
+          <div className="file-viewer-pdf-outline-empty">{placeholder}</div>
+        ) : (
+          nodes!.map((n) => (
+            <OutlineRow
+              key={n.id}
+              node={n}
+              depth={0}
+              collapsed={collapsed}
+              currentId={currentId}
+              onToggle={toggle}
+              onJump={onJump}
+              onHover={onHover}
+            />
+          ))
+        )}
+      </div>
+      {preview && doc && (
+        <OutlinePreview
+          doc={doc}
+          page={preview.page}
+          top={preview.top}
+          left={preview.left}
+          cache={previewCache.current}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
  * Reusable pdf.js-backed PDF view: a zoom toolbar over a scrolling stack of page
  * canvases. Unlike the old native `<iframe>`, every surface here is ours, so the
  * surround and (via the global scrollbar rules) the scrollbar follow the app
@@ -426,6 +690,10 @@ function PdfCanvas({
   // rather than closing over a stale snapshot.
   const pagesRef = useRef<PageList>([]);
   pagesRef.current = pages;
+  // "Page X / N" toolbar readout: the page occupying the viewport. Declared here
+  // (rather than beside `updateVisiblePage` below) so the go-to-page control,
+  // which seeds its input from the current value, can read it too.
+  const [visiblePage, setVisiblePage] = useState(1);
   // Undo/redo: the arrangement is a small immutable list, so history is just a
   // stack of them.
   const [past, setPast] = useState<PageList[]>([]);
@@ -434,6 +702,13 @@ function PdfCanvas({
   const [editError, setEditError] = useState<string | null>(null);
   /** The page rail (the thumbnail strip you arrange pages in) is showing. */
   const [railOpen, setRailOpen] = useState(false);
+  /** The contents sidebar (the PDF's chapters/outline) is showing. */
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  /** The document's resolved outline: null = not loaded yet, [] = none. */
+  const [outline, setOutline] = useState<OutlineNode[] | null>(null);
+  /** The font-size heading fallback, used only when `outline` is empty: null =
+   *  not scanned yet, [] = none found. */
+  const [headings, setHeadings] = useState<OutlineNode[] | null>(null);
   /** The rail's current selection, so an insert lands where the reader is looking. */
   const [selection, setSelection] = useState<Set<string>>(new Set());
   /** The "Insert PDF…" picker is open. */
@@ -866,8 +1141,42 @@ function PdfCanvas({
     scrollRef.current?.focus();
   }, []);
 
-  // Ctrl/Cmd+F opens the find bar; Esc closes it. Bound on the host so it fires
-  // wherever focus sits within the PDF pane (the scroll area is focusable).
+  // ── Go to page (Ctrl+G) ───────────────────────────────────────────────────
+  // Jumps by ARRANGEMENT position — the same "X / N" the toolbar readout and
+  // `visiblePage` already count in — so it lands right even after pages have
+  // been reordered/merged/deleted, without having to resolve a file page first.
+  const [pageJumpOpen, setPageJumpOpen] = useState(false);
+  const [pageJumpValue, setPageJumpValue] = useState("");
+  const pageJumpInputRef = useRef<HTMLInputElement>(null);
+  const jumpToArrangementIndex = useCallback((pos: number) => {
+    const count = pagesRef.current.length;
+    if (count === 0) return;
+    const idx = Math.min(Math.max(Math.trunc(pos), 1), count) - 1;
+    const wrap = contentRef.current?.children[idx] as HTMLElement | undefined;
+    wrap?.scrollIntoView({ block: "start", inline: "nearest" });
+  }, []);
+  const openPageJump = useCallback(() => {
+    if (pages.length === 0) return;
+    setPageJumpValue(String(visiblePage));
+    setPageJumpOpen(true);
+    requestAnimationFrame(() => {
+      pageJumpInputRef.current?.focus();
+      pageJumpInputRef.current?.select();
+    });
+  }, [pages.length, visiblePage]);
+  const closePageJump = useCallback(() => {
+    setPageJumpOpen(false);
+    scrollRef.current?.focus();
+  }, []);
+  const commitPageJump = useCallback(() => {
+    const n = parseInt(pageJumpValue, 10);
+    if (Number.isFinite(n)) jumpToArrangementIndex(n);
+    closePageJump();
+  }, [pageJumpValue, jumpToArrangementIndex, closePageJump]);
+
+  // Ctrl/Cmd+F opens the find bar, Ctrl/Cmd+G opens go-to-page; Esc closes
+  // whichever is open. Bound on the host so it fires wherever focus sits within
+  // the PDF pane (the scroll area is focusable).
   const onHostKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
       const mod = e.ctrlKey || e.metaKey;
@@ -875,6 +1184,9 @@ function PdfCanvas({
       if (mod && key === "f") {
         e.preventDefault();
         openFind();
+      } else if (mod && key === "g") {
+        e.preventDefault();
+        openPageJump();
       } else if (mod && key === "s") {
         e.preventDefault();
         void handleSave();
@@ -884,12 +1196,15 @@ function PdfCanvas({
       } else if (mod && (key === "y" || (key === "z" && e.shiftKey))) {
         e.preventDefault();
         redo();
+      } else if (e.key === "Escape" && pageJumpOpen) {
+        e.preventDefault();
+        closePageJump();
       } else if (e.key === "Escape" && findOpen) {
         e.preventDefault();
         closeFind();
       }
     },
-    [openFind, closeFind, findOpen, handleSave, undo, redo],
+    [openFind, closeFind, findOpen, openPageJump, closePageJump, pageJumpOpen, handleSave, undo, redo],
   );
   const onFindKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
@@ -1114,7 +1429,6 @@ function PdfCanvas({
   // is a third of the way down the viewport (typical PDF-viewer feel); the page
   // wraps are always all mounted, so a linear scan over their live rects stays
   // correct across zoom, resize, and mixed page heights.
-  const [visiblePage, setVisiblePage] = useState(1);
   const updateVisiblePage = useCallback(() => {
     const el = scrollRef.current;
     const content = contentRef.current;
@@ -1133,6 +1447,99 @@ function PdfCanvas({
     setVisiblePage(1);
     if (doc) updateVisiblePage();
   }, [doc, updateVisiblePage]);
+
+  // ── Contents / outline (#pdf-outline) ────────────────────────────────────
+  // Load the PDF's embedded outline (its chapters) when a document loads. Reset
+  // to "not loaded" first so a file switch never shows the prior file's chapters.
+  useEffect(() => {
+    setOutline(null);
+    setHeadings(null);
+    if (!doc) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const nodes = await loadOutline(doc);
+        if (!cancelled) setOutline(nodes);
+      } catch {
+        if (!cancelled) setOutline([]); // treat an unreadable outline as none
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [doc]);
+
+  // Font-size heading fallback: when the PDF ships NO embedded outline, infer
+  // chapters from the text's typography (`detectHeadings`). Run it lazily — only
+  // once the contents pane is opened on an outline-less document — because it
+  // reads every page's text content, which is far heavier than `getOutline`.
+  useEffect(() => {
+    if (!outlineOpen || !doc) return;
+    if (outline == null || outline.length > 0) return; // embedded outline present/pending
+    if (headings != null) return; // already scanned
+    let cancelled = false;
+    void (async () => {
+      const runs: HeadingRun[] = [];
+      // Sequential (not Promise.all): a 500-page document would otherwise fire
+      // 500 concurrent text extractions at the pdf.js worker at once.
+      for (let p = 1; p <= doc.numPages; p++) {
+        if (cancelled) return;
+        try {
+          const page = await doc.getPage(p);
+          const viewport = page.getViewport({ scale: 1 });
+          const content = await page.getTextContent();
+          for (const it of content.items) {
+            if (!("str" in it) || typeof it.str !== "string" || !it.str.trim()) continue;
+            const tx = pdfjs.Util.transform(viewport.transform, it.transform);
+            const size = Math.hypot(tx[2], tx[3]);
+            runs.push({ str: it.str, size, page: p, x: tx[4], y: tx[5] - size });
+          }
+        } catch {
+          /* skip an unreadable page */
+        }
+      }
+      if (!cancelled) setHeadings(detectHeadings(runs));
+    })();
+    return () => { cancelled = true; };
+  }, [outlineOpen, doc, outline, headings]);
+
+  // The chapters actually shown: the embedded outline if the PDF has one, else
+  // the inferred headings. `activeOutline` is null while its source is still
+  // loading/scanning; `outlineDerived` says the fallback is in use.
+  const outlineDerived = outline != null && outline.length === 0;
+  const activeOutline: OutlineNode[] | null =
+    outline == null ? null : outline.length > 0 ? outline : headings;
+  const outlinePlaceholder =
+    activeOutline && activeOutline.length > 0
+      ? null
+      : outline == null
+        ? "Reading outline…"
+        : outlineDerived && headings == null
+          ? "Scanning for headings…"
+          : "No chapters in this document.";
+
+  // Jump the reader to a 1-based FILE page from the contents sidebar. The reader
+  // shows an arrangement, so resolve the file page to whichever sheet is showing
+  // it now (a moved/merged page still lands right; a deleted one is a no-op).
+  const jumpToPage = useCallback((filePage: number) => {
+    const idx = pagesRef.current.findIndex((r) => r.src === SELF && r.page === filePage);
+    if (idx < 0) return;
+    const wrap = contentRef.current?.children[idx] as HTMLElement | undefined;
+    wrap?.scrollIntoView({ block: "start", inline: "nearest" });
+  }, []);
+
+  // The outline entry to highlight: the last chapter (in document order) whose
+  // page is at or before the page currently in view. Recomputed from the flat
+  // outline as the reader scrolls (`visiblePage`) — but keyed off the *file* page
+  // the visible SHEET shows, so it stays right after pages are rearranged.
+  const currentOutlineId = useMemo(() => {
+    if (!activeOutline || activeOutline.length === 0) return null;
+    const sheet = pages[visiblePage - 1];
+    const filePage = sheet && sheet.src === SELF ? sheet.page : visiblePage;
+    let best: string | null = null;
+    for (const { node } of flattenOutline(activeOutline)) {
+      if (node.page != null && node.page <= filePage) best = node.id;
+    }
+    return best;
+  }, [activeOutline, visiblePage, pages]);
 
   // #viewerpos: persist the scroll position as the reader scrolls (throttled,
   // trailing-edge). Ignored while a programmatic restore is still settling so we
@@ -1231,6 +1638,19 @@ function PdfCanvas({
   return (
     <div className="file-viewer-pdf-host" onKeyDown={onHostKeyDown}>
       <div className="file-viewer-pdf-toolbar" role="group" aria-label="PDF zoom controls">
+        {/* Contents (chapters) sits at the far left — it opens the navigation
+            column on the same side, so the button lines up over it. */}
+        <button
+          className={`file-viewer-zoom-btn${outlineOpen ? " active" : ""}`}
+          onClick={() => setOutlineOpen((v) => !v)}
+          disabled={!doc}
+          title="Contents (chapters)"
+          aria-label="Contents"
+          aria-pressed={outlineOpen}
+        >
+          ☰
+        </button>
+        <span className="file-viewer-pdf-toolbar-sep" aria-hidden="true" />
         <button
           className="file-viewer-zoom-btn"
           onClick={() => {
@@ -1265,9 +1685,37 @@ function PdfCanvas({
           Fit width
         </button>
         {doc && (
-          <span className="file-viewer-pdf-pagenum" title="Page">
-            {visiblePage} / {pages.length}
-          </span>
+          pageJumpOpen ? (
+            <input
+              ref={pageJumpInputRef}
+              className="file-viewer-pdf-pagejump-input"
+              type="number"
+              min={1}
+              max={pages.length}
+              value={pageJumpValue}
+              aria-label="Go to page"
+              onChange={(e) => setPageJumpValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitPageJump();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  closePageJump();
+                }
+              }}
+              onBlur={closePageJump}
+            />
+          ) : (
+            <button
+              className="file-viewer-zoom-btn file-viewer-pdf-pagenum"
+              onClick={openPageJump}
+              title="Go to page (Ctrl+G)"
+              aria-label="Go to page"
+            >
+              {visiblePage} / {pages.length}
+            </button>
+          )
         )}
         <button
           className={`file-viewer-zoom-btn${findOpen ? " active" : ""}`}
@@ -1434,6 +1882,16 @@ function PdfCanvas({
         </div>
       )}
       <div className="file-viewer-pdf-scroll-wrap">
+        {outlineOpen && doc && (
+          <OutlinePane
+            doc={doc}
+            nodes={activeOutline}
+            placeholder={outlinePlaceholder}
+            derived={outlineDerived}
+            currentId={currentOutlineId}
+            onJump={jumpToPage}
+          />
+        )}
         {railOpen && doc && (
           // The page rail: the SAME <PageStrip> the print preview uses, stood on its
           // side. Drag to reorder, shift-click for a range, right-click for the rest.

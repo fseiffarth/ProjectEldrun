@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   needsSeparateKeyPassphrase,
+  type ComputeHost,
   type ProjectEntry,
   type StoredVpnConfig,
   type VpnAuthNeeds,
@@ -17,7 +18,6 @@ import {
   markVpnConnecting,
   markVpnError,
   releaseVpn,
-  useVpnStatusStore,
 } from "../../stores/vpnStatus";
 import type { LogLine } from "../common/ConnectionLog";
 
@@ -98,9 +98,15 @@ const adoptTerm = (term: LoginTerm | undefined): LoginTerm | null =>
  * Status is published to `useRemoteStatusStore` (keyed by project id) so the
  * header lamps and the restore gate observe the same state this panel drives.
  */
-export function useRemoteReconnect(project: ProjectEntry) {
+export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
   const projectId = project.id;
-  const remote = project.remote;
+  // Multi-host remote (`docs/multi_host_remote_plan.md`): the dialog can target the
+  // primary remote or an extra "worker" host. `hostId` keys the pool + lamp state;
+  // `remote` is the spec to connect (the worker's own, or the primary's). A worker
+  // connect kicks its one-way code fan-out (backend `remote_connect`), never the
+  // primary's git-lockstep / byte-sync.
+  const hostId = host?.id ?? "primary";
+  const remote = host ?? project.remote;
   // The project's OpenVPN config path. Stateful (not just `remote.openvpn.config`)
   // because a project may have been created/extended on a no-VPN network with no
   // config, then need one attached here when reconnecting from a VPN-gated network
@@ -135,27 +141,27 @@ export function useRemoteReconnect(project: ProjectEntry) {
     };
   }, [vpnConfig]);
 
-  const status = useRemoteStatusStore((s) => s.byProject[projectId]);
+  const status = useRemoteStatusStore((s) =>
+    hostId === "primary" ? s.byProject[projectId] : s.byHost[projectId]?.[hostId],
+  );
   const sshStatus: ConnState = status?.ssh ?? "off";
   const vpnStatus: ConnState = status?.vpn ?? "off";
-  const machineVpnStatus = useVpnStatusStore((s) =>
-    vpnConfig ? s.byConfig[vpnConfig] : undefined,
-  );
   const setSsh = useRemoteStatusStore((s) => s.setSsh);
   const setVpn = useRemoteStatusStore((s) => s.setVpn);
 
-  // A tunnel can be brought up from the header/global VPN control, without this
-  // project initiating it. If it matches this project's stored config, surface it
-  // here too so the OpenVPN section opens as connected instead of offering a second
-  // connect path for a machine-wide tunnel that is already up.
-  useEffect(() => {
-    if (!vpnConfig) return;
-    if (machineVpnStatus === "connected" && vpnStatus !== "connected") {
-      markVpnConnected(projectId, vpnConfig);
-    } else if (machineVpnStatus === "connecting" && vpnStatus !== "connecting") {
-      markVpnConnecting(projectId, vpnConfig);
-    }
-  }, [machineVpnStatus, projectId, vpnConfig, vpnStatus]);
+  // Deliberately NOT mirroring a machine-wide tunnel that merely matches this
+  // project's stored config path into this project's own vpn status: that used to
+  // "surface it here too" by marking this project connected and acquiring it as a
+  // holder purely off a path match, even when the tunnel was actually brought up
+  // by the header or another project. Two things followed from that, both wrong:
+  // the OpenVPN section rendered its own "connected" card instead of collapsing to
+  // `VpnTunnelUpNotice` like every other remote dialog does for a tunnel that
+  // isn't its own (see `useVpnSectionVisible`) — and logging out of *this* project
+  // then called `releaseVpn` on a holder slot it never earned, which could drop
+  // the tunnel out from under whoever actually started it. `vpnStatus` is now only
+  // ever set by an action this hook itself took (`connectVpnHeadless`,
+  // `startVpnTerm`'s ready-marker watcher), so `showVpnSection`'s `ownTunnelBusy`
+  // means what it says.
 
   // Windows has no ssh ControlMaster socket, so an interactive login can't be
   // ridden for the pooled connection — fall back to the headline (key-auth)
@@ -205,11 +211,56 @@ export function useRemoteReconnect(project: ProjectEntry) {
   // moment a "Save password" connect succeeds, so the checkbox comes alive right
   // there without a reopen.
   const autoConnect = remote?.auto_connect ?? false;
-  const autoConnectEligible = sshSaved || remote?.key_auth === true;
+  // Key/agent auth (a passwordless connect) also makes auto-connect eligible, but a
+  // passwordless host has nothing in the keychain, so `key_auth` is recorded by the
+  // backend on a successful connect rather than known up front. Seed it from the
+  // stored spec and flip it live the moment a credential-less connect succeeds
+  // (mirroring how `sshSaved` comes alive), so the toggle un-greys right here
+  // without waiting for the project to reload. This is what a worker relied on:
+  // its `key_auth` was never recorded at all (the connect returned early), so its
+  // toggle stayed disabled forever — see `record_worker_key_auth`.
+  const [keyAuth, setKeyAuth] = useState(remote?.key_auth === true);
+  useEffect(() => setKeyAuth(remote?.key_auth === true), [remote?.key_auth]);
+  const autoConnectEligible = sshSaved || keyAuth;
+  // A worker's toggles/label live on its `compute_hosts` entry (not the project's
+  // primary remote). `patch_compute_host` returns the full updated list — apply it
+  // back to the store so anything derived from `host` (the auto-connect toggle, the
+  // dialog title's name) reflects the change at once; without this the UI wouldn't
+  // visibly stick until a reload.
+  const applyPatchedHosts = (hosts: ComputeHost[]) =>
+    useProjectsStore.setState((s) => ({
+      projects: s.projects.map((p) =>
+        p.id === projectId ? { ...p, compute_hosts: hosts } : p,
+      ),
+    }));
+
   const setAutoConnect = (enabled: boolean) => {
+    if (host) {
+      void invoke<ComputeHost[]>("patch_compute_host", { projectId, hostId, autoConnect: enabled })
+        .then(applyPatchedHosts)
+        .catch((e) => setSshError(String(e)));
+      return;
+    }
     void useProjectsStore
       .getState()
       .setProjectAutoConnect(projectId, enabled)
+      .catch((e) => setSshError(String(e)));
+  };
+
+  // Rename this host's machine label (worker `label`, or the primary's own
+  // `remote.label`) — distinct from the project name, which is edited elsewhere.
+  // A blank name clears the label, so the display falls back to the bare host
+  // (both backend commands trim and treat empty as "no label").
+  const setWorkerLabel = (label: string) => {
+    if (host) {
+      void invoke<ComputeHost[]>("patch_compute_host", { projectId, hostId, label })
+        .then(applyPatchedHosts)
+        .catch((e) => setSshError(String(e)));
+      return;
+    }
+    void useProjectsStore
+      .getState()
+      .setProjectRemoteLabel(projectId, label)
       .catch((e) => setSshError(String(e)));
   };
 
@@ -375,7 +426,7 @@ export function useRemoteReconnect(project: ProjectEntry) {
       dropTerm(projectId, "vpn");
     }
     releaseVpn(projectId, vpnConfig);
-    setVpn(projectId, "off");
+    setVpn(projectId, "off", hostId);
     force();
   };
 
@@ -400,19 +451,23 @@ export function useRemoteReconnect(project: ProjectEntry) {
         clearSshPoll();
         // Master is up; bring the pool up so every later channel rides it.
         try {
-          await invoke("remote_connect", { projectId, password: null });
+          await invoke("remote_connect", { projectId, hostId, password: null });
           if (gen !== sshGen.current) return;
-          setSsh(projectId, "connected");
+          // Rode the ControlMaster with no password and no saved credential →
+          // key/agent auth, which the backend just recorded. Reflect it now so the
+          // Auto-connect toggle un-greys without a reload.
+          if (!sshSaved) setKeyAuth(true);
+          setSsh(projectId, "connected", hostId);
         } catch {
           if (gen !== sshGen.current) return;
-          setSsh(projectId, "error");
+          setSsh(projectId, "error", hostId);
         }
       })
       .catch(() => {
         if (gen !== sshGen.current) return; // stopped while the probe ran
         if (attempt + 1 >= maxAttempts) {
           clearSshPoll();
-          setSsh(projectId, "error");
+          setSsh(projectId, "error", hostId);
           return;
         }
         sshPollTimer.current = setTimeout(() => pollSshReady(attempt + 1, gen), 3000);
@@ -438,11 +493,11 @@ export function useRemoteReconnect(project: ProjectEntry) {
       sshTermRef.current = term;
       rememberTerm(projectId, "ssh", term);
       const gen = ++sshGen.current;
-      setSsh(projectId, "connecting");
+      setSsh(projectId, "connecting", hostId);
       force();
       pollSshReady(0, gen);
     } catch {
-      setSsh(projectId, "error");
+      setSsh(projectId, "error", hostId);
     }
   };
 
@@ -452,7 +507,7 @@ export function useRemoteReconnect(project: ProjectEntry) {
     if (!sshTermRef.current) return;
     clearSshPoll();
     const gen = ++sshGen.current;
-    setSsh(projectId, "connecting");
+    setSsh(projectId, "connecting", hostId);
     pollSshReady(0, gen);
   };
 
@@ -533,7 +588,7 @@ export function useRemoteReconnect(project: ProjectEntry) {
   const connectSshHeadless = async (password: string, remember?: boolean) => {
     if (!remote) return;
     const gen = ++sshGen.current;
-    setSsh(projectId, "connecting");
+    setSsh(projectId, "connecting", hostId);
     setSshError("");
     // A blank field means "use what's saved" (the secret itself never comes back to
     // the UI, so a saved password can't be pre-filled — the user just leaves it
@@ -559,14 +614,18 @@ export function useRemoteReconnect(project: ProjectEntry) {
       // master-owning pooled session, and with a null password it drops to
       // key/agent auth — which a password-auth host rejects. It falls back to a
       // *saved* password, so this only ever worked with "Save password" ticked.
-      await invoke("remote_connect", { projectId, password: secret });
+      await invoke("remote_connect", { projectId, hostId, password: secret });
       if (gen !== sshGen.current) return;
       // Only a checkbox-driven connect changed what's in the keychain.
       if (remember !== undefined) setSshSaved(remember);
-      setSsh(projectId, "connected");
+      // No password given, none saved, and the connect still succeeded → the host
+      // authenticated via key/agent auth (the backend records the same). Flip the
+      // eligibility flag so the Auto-connect toggle comes alive here, no reload.
+      if (secret === null && !sshSaved && !remember) setKeyAuth(true);
+      setSsh(projectId, "connected", hostId);
     } catch (e) {
       if (gen !== sshGen.current) return; // stopped — ignore the stale failure
-      setSsh(projectId, "error");
+      setSsh(projectId, "error", hostId);
       setSshError(String(e));
     }
   };
@@ -628,8 +687,8 @@ export function useRemoteReconnect(project: ProjectEntry) {
       sshTermRef.current = null;
       dropTerm(projectId, "ssh");
     }
-    void invoke("remote_disconnect", { projectId }).catch(() => {});
-    setSsh(projectId, "off");
+    void invoke("remote_disconnect", { projectId, hostId }).catch(() => {});
+    setSsh(projectId, "off", hostId);
     force();
   };
 
@@ -663,6 +722,7 @@ export function useRemoteReconnect(project: ProjectEntry) {
     autoConnect,
     autoConnectEligible,
     setAutoConnect,
+    setWorkerLabel,
     connectVpnHeadless,
     connectSshHeadless,
     forgetPasswords,

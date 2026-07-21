@@ -5,9 +5,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use tauri::State;
+
 use crate::paths;
-use crate::schema::project::{OpenVpnSpec, Project, RemoteSpec, SandboxSpec};
+use crate::schema::project::{ComputeHost, OpenVpnSpec, Project, RemoteSpec, SandboxSpec};
 use crate::schema::projects::{ProjectEntry, ProjectsList};
+use crate::services::remote_sync::SyncManifestState;
 use crate::storage;
 
 /// Local per-project state directory for a **remote** project:
@@ -18,6 +21,36 @@ use crate::storage;
 /// fs/git/terminal commands resolve to a `RemoteTarget`).
 fn remote_project_state_dir(id: &str) -> std::path::PathBuf {
     storage::state_dir().join("remote-projects").join(id)
+}
+
+/// Drop the per-project state that is bound to **one specific host**: the byte-sync
+/// manifest (`sync.json`) and the lockstep state (`git_peer.json`). Both are meaningless
+/// — worse, actively wrong — once a project is pointed at a *different* host, or at none.
+///
+/// The manifest is the dangerous one, and it is why detach→re-extend needs this at all.
+/// Its entries carry `last_pull_ts`/`last_push_ts`, so against a fresh, empty host
+/// `push_decision` sees `ever_synced = true` plus a missing file and returns `Stale` — it
+/// **refuses to push**. Meanwhile `divergence` maps the failed host stat to "couldn't
+/// check → don't flag", so the file tree paints the very same file **green**. Net: a
+/// re-extended project whose auto-synced data silently never crosses, reported as fully
+/// in sync. The classic false green.
+///
+/// The state dir is keyed by project **id**, which a detach preserves — so a re-extend
+/// lands back on the same directory and inherits whatever the detach left behind.
+/// `remove_dir` (as detach used to call) only removes an *empty* dir, and this one never
+/// is, so every one of these files survived.
+///
+/// Evicting the in-memory cache is not optional: `ensure_loaded` is `or_insert_with`, so
+/// a manifest already loaded this session is never re-read from disk — deleting the file
+/// alone would just get the stale copy re-saved on the next pass.
+///
+/// `local_loss.json` deliberately **survives**: it records what was destroyed in the
+/// *local mirror*, the user may not have acknowledged it yet, and it is a fact about this
+/// machine rather than about any host.
+async fn clear_host_bound_state(project_id: &str, manifest: &SyncManifestState) {
+    let _ = fs::remove_file(crate::services::remote_sync::manifest_path(project_id));
+    let _ = fs::remove_file(crate::services::git_peer::state_path(project_id));
+    manifest.lock().await.remove(project_id);
 }
 
 /// Compute a `<name>` leaf under `parent` for a remote (SSH) project's local
@@ -863,6 +896,40 @@ pub fn set_project_auto_connect(project_id: String, enabled: bool) -> Result<boo
     Ok(enabled)
 }
 
+/// Opt a **remote** project in/out of persistent (tmux) sessions (TODO #85). The
+/// feature is **default ON** for a remote project, so the field is only written
+/// when the user opts *out* (`Some(false)`); turning it back on clears the field
+/// (`None`) to restore the default. Returns the resulting enabled state. Applies
+/// to shell/script tabs spawned after the change (each spawn reads it via the
+/// frontend's per-tab `tmux_session` name).
+#[tauri::command]
+pub fn set_project_persist_sessions(project_id: String, enabled: bool) -> Result<bool, String> {
+    patch_remote_spec(&project_id, |remote| {
+        remote.persist_sessions = if enabled { None } else { Some(false) };
+    })?;
+    Ok(enabled)
+}
+
+/// Set (or clear) the display name for a **remote** project's primary machine —
+/// the counterpart of `patch_compute_host`'s `label` for a worker. Distinct from
+/// the project name: this labels the host `Project.remote.host` reaches, shown
+/// wherever a project's hosts are listed side by side (System Monitor's source
+/// picker, the pill's connection lamps). A blank/whitespace-only string clears it,
+/// falling back to the bare host. Returns the resulting label (`None` when cleared).
+#[tauri::command]
+pub fn set_project_remote_label(
+    project_id: String,
+    label: Option<String>,
+) -> Result<Option<String>, String> {
+    let normalized = label
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string);
+    patch_remote_spec(&project_id, |remote| remote.label = normalized.clone())?;
+    Ok(normalized)
+}
+
 /// Record how a remote project's host authenticated on its last successful connect
 /// (`key_auth` = no password was used at all — key/agent auth). Called by
 /// `remote_connect`; this is the only way the UI can know a passwordless host is
@@ -875,6 +942,147 @@ pub fn record_remote_key_auth(project_id: &str, key_auth: bool) -> Result<(), St
         return Ok(());
     }
     patch_remote_spec(project_id, |remote| remote.key_auth = Some(key_auth))
+}
+
+/// The worker twin of `record_remote_key_auth`: record how an extra "worker" host
+/// authenticated on its last successful connect (`key_auth` = no password at all —
+/// key/agent auth). Called by `remote_connect` on a worker connect. Without it a
+/// passwordless worker could never be marked auto-connect-eligible — it has nothing
+/// in the keychain to check — so the Connect dialog's Auto-connect toggle would
+/// stay permanently disabled for it. A no-op when unchanged, so an ordinary connect
+/// costs no write.
+pub fn record_worker_key_auth(
+    project_id: &str,
+    host_id: &str,
+    key_auth: bool,
+) -> Result<(), String> {
+    let current = crate::services::remote::compute_hosts_for(project_id)
+        .into_iter()
+        .find(|h| h.id == host_id)
+        .and_then(|h| h.spec.key_auth);
+    if current == Some(key_auth) {
+        return Ok(());
+    }
+    patch_compute_hosts(project_id, |hosts| {
+        if let Some(h) = hosts.iter_mut().find(|h| h.id == host_id) {
+            h.spec.key_auth = Some(key_auth);
+        }
+    })?;
+    Ok(())
+}
+
+/// Apply `patch` to a **remote** project's extra worker hosts (`compute_hosts`,
+/// `docs/multi_host_remote_plan.md`) in both places they are stored: the
+/// `projects.json` entry's flattened `extra["compute_hosts"]` (the always-local
+/// source of truth `services::remote::compute_hosts_for` reads) and the project's
+/// own `project.json` (best effort — a remote project's copy may be unreachable).
+/// Errors if the project is unknown. The list is created when absent, so this works
+/// on a project that has no workers yet.
+fn patch_compute_hosts(
+    project_id: &str,
+    patch: impl Fn(&mut Vec<ComputeHost>),
+) -> Result<Vec<ComputeHost>, String> {
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let entry = list
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    let mut hosts: Vec<ComputeHost> = entry
+        .extra
+        .get("compute_hosts")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    patch(&mut hosts);
+    let value = serde_json::to_value(&hosts).map_err(|e| e.to_string())?;
+    if hosts.is_empty() {
+        entry.extra.remove("compute_hosts");
+    } else {
+        entry.extra.insert("compute_hosts".to_string(), value);
+    }
+    let local_file = entry.local_file.clone();
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+            patch(&mut project.compute_hosts);
+            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(hosts)
+}
+
+/// Add an extra "worker" host to a remote project (the pill's "Add machine").
+/// Mints a stable `id` when the incoming spec has none, then appends it. Returns
+/// the full updated host list. The primary (`Project.remote`) is untouched.
+#[tauri::command]
+pub fn add_compute_host(
+    project_id: String,
+    mut host: ComputeHost,
+) -> Result<Vec<ComputeHost>, String> {
+    if host.id.trim().is_empty() {
+        host.id = uuid_v4();
+    }
+    patch_compute_hosts(&project_id, |hosts| {
+        // Replace in place when the id already exists (idempotent re-add), else push.
+        if let Some(existing) = hosts.iter_mut().find(|h| h.id == host.id) {
+            *existing = host.clone();
+        } else {
+            hosts.push(host.clone());
+        }
+    })
+}
+
+/// Remove a worker host from a remote project. The caller disconnects it and stops
+/// its fan-out first (frontend); this only drops the persisted entry. Returns the
+/// remaining host list.
+#[tauri::command]
+pub fn remove_compute_host(
+    project_id: String,
+    host_id: String,
+) -> Result<Vec<ComputeHost>, String> {
+    patch_compute_hosts(&project_id, |hosts| hosts.retain(|h| h.id != host_id))
+}
+
+/// Patch a worker host's toggles (`sync_code` / `pull_outputs` / `auto_connect` /
+/// `shared_fs` / `label`). Each argument is applied only when `Some`, so a caller
+/// can flip one flag without restating the others. Unknown `host_id` is a silent
+/// no-op (returns the unchanged list).
+#[tauri::command]
+pub fn patch_compute_host(
+    project_id: String,
+    host_id: String,
+    sync_code: Option<bool>,
+    pull_outputs: Option<bool>,
+    auto_connect: Option<bool>,
+    shared_fs: Option<bool>,
+    label: Option<String>,
+) -> Result<Vec<ComputeHost>, String> {
+    patch_compute_hosts(&project_id, |hosts| {
+        if let Some(h) = hosts.iter_mut().find(|h| h.id == host_id) {
+            if let Some(v) = shared_fs {
+                h.shared_fs = v;
+            }
+            if let Some(v) = sync_code {
+                h.sync_code = v;
+            }
+            if let Some(v) = pull_outputs {
+                h.pull_outputs = v;
+            }
+            if let Some(v) = auto_connect {
+                h.spec.auto_connect = v.then_some(true);
+            }
+            if let Some(v) = &label {
+                let t = v.trim();
+                h.spec.label = if t.is_empty() { None } else { Some(t.to_string()) };
+            }
+        }
+    })
 }
 
 /// Normalize a list of category tags: trim each, drop blanks, and de-duplicate
@@ -1056,14 +1264,25 @@ pub fn save_project(local_file: String, project: Project) -> Result<(), String> 
 }
 
 /// Save only the tab layout — writes to both project.json and the session file.
+///
+/// `allow_clear` licenses an EMPTY `tabs` to erase the saved layout. The frontend
+/// sets it only for a scope it has actually hydrated and that genuinely holds no
+/// tabs; every other empty save is a no-op. See `terminal_service`.
 #[tauri::command]
 pub fn save_tab_layout(
     local_file: String,
     tabs: Vec<crate::schema::project::TabEntry>,
     groups: Option<Value>,
     sessions: Option<Value>,
+    allow_clear: bool,
 ) -> Result<(), String> {
-    crate::services::terminal_service::save_tab_layout(&local_file, &tabs, groups, sessions)
+    crate::services::terminal_service::save_tab_layout(
+        &local_file,
+        &tabs,
+        groups,
+        sessions,
+        allow_clear,
+    )
 }
 
 #[tauri::command]
@@ -2018,7 +2237,10 @@ pub struct ExtendProjectRemoteRequest {
 /// becomes a local state dir holding `project.json`. The user pushes files to the
 /// (empty) host later via the existing manual sync UI.
 #[tauri::command]
-pub fn extend_project_to_remote(req: ExtendProjectRemoteRequest) -> Result<ProjectEntry, String> {
+pub async fn extend_project_to_remote(
+    req: ExtendProjectRemoteRequest,
+    manifest: State<'_, SyncManifestState>,
+) -> Result<ProjectEntry, String> {
     let list_path = storage::state_dir().join("projects.json");
     let mut list: ProjectsList = if list_path.exists() {
         storage::read_json(&list_path).map_err(|e| e.to_string())?
@@ -2071,6 +2293,15 @@ pub fn extend_project_to_remote(req: ExtendProjectRemoteRequest) -> Result<Proje
     let state_dir = remote_project_state_dir(&req.project_id);
     std::fs::create_dir_all(&state_dir).map_err(|e| e.to_string())?;
     let new_directory = state_dir.to_string_lossy().to_string();
+
+    // This project may have been remote before (detached, and now pointed at a different
+    // host — the ordinary way to correct a wrong path). The state dir is keyed by id, so
+    // any host-bound state from that earlier life is sitting right here. Clear it before
+    // we write the new pairing: a manifest describing the OLD host makes byte-sync refuse
+    // to push to the new one while the file tree reports green. Detach clears it too; this
+    // is the belt-and-braces that also rescues a project detached by an older build, which
+    // could not clear it (`remove_dir` cannot empty a non-empty directory).
+    clear_host_bound_state(&req.project_id, manifest.inner()).await;
 
     // Move project.json from the old (now mirror) tree into the state dir, tagging
     // it remote. Read the existing one so tabs/time/created_at/etc. survive.
@@ -2152,7 +2383,10 @@ pub fn extend_project_to_remote(req: ExtendProjectRemoteRequest) -> Result<Proje
 ///
 /// Errors if the project isn't remote, or has no local mirror to fall back to.
 #[tauri::command]
-pub fn detach_project_from_remote(project_id: String) -> Result<ProjectEntry, String> {
+pub async fn detach_project_from_remote(
+    project_id: String,
+    manifest: State<'_, SyncManifestState>,
+) -> Result<ProjectEntry, String> {
     let list_path = storage::state_dir().join("projects.json");
     let mut list: ProjectsList = if list_path.exists() {
         storage::read_json(&list_path).map_err(|e| e.to_string())?
@@ -2196,13 +2430,77 @@ pub fn detach_project_from_remote(project_id: String) -> Result<ProjectEntry, St
     project.directory = mirror.clone();
     project.remote = None;
     project.mirror = None;
+
+    // Re-point the carried tabs at the mirror. While the project was remote its
+    // `directory` WAS the state dir, so that is what every tab holds as its cwd —
+    // harmless then (the frontend rewrote it at render time, gated on the project
+    // being remote), a dangling path the moment it isn't. Left alone, a restored
+    // agent relaunches inside the state dir this detach is about to delete, and
+    // Claude — which keys its session history by cwd — finds no conversation to
+    // `--resume`. The frontend fixes the LIVE tabs (`detachScopeFromRemote`); this
+    // fixes the ones on disk, which is what a restart restores from.
+    let state_dir = remote_project_state_dir(&project_id);
+    let state_dir_s = state_dir.to_string_lossy().to_string();
+    if let Some(tabs) = project.tab_layout.as_mut() {
+        for tab in tabs.iter_mut() {
+            if tab.cwd == state_dir_s {
+                tab.cwd = mirror.clone();
+            } else if let Some(rest) = tab.cwd.strip_prefix(&format!("{state_dir_s}/")) {
+                tab.cwd = format!("{mirror}/{rest}");
+            }
+        }
+    }
+
     let new_project_file = mirror_path.join("project.json");
     storage::write_json(&new_project_file, &project).map_err(|e| e.to_string())?;
 
-    // Remove the old state-dir project.json + the (now empty) state dir. Best
-    // effort — leftovers are harmless.
+    // The tabs are in project.json now — but that is not where they are READ from.
+    // `load_terminal_session` prefers `.eldrun/sessions/terminals.json` and only falls
+    // back to project.json, and the mirror has its OWN session file, left over from
+    // before this project was ever extended to a host. Preserving `tab_layout` while
+    // that stale file still sits there restores the pre-extend tabs and silently drops
+    // everything the project gained while it was remote. Rewrite it from what we carried
+    // (or drop it, when the project genuinely ended up with no tabs — project.json is the
+    // record, and a leftover session file must not resurrect tabs from before the extend).
+    let new_local_file = new_project_file.to_string_lossy().to_string();
+    match project.tab_layout.as_deref() {
+        Some(tabs) if !tabs.is_empty() => {
+            let _ = crate::services::terminal_service::save_tab_layout(
+                &new_local_file,
+                tabs,
+                project.tab_groups.clone(),
+                None,
+                false,
+            );
+        }
+        _ => {
+            if let Some(dir) = crate::services::terminal_service::eldrun_sessions_dir(&new_local_file)
+            {
+                let _ = std::fs::remove_file(dir.join("terminals.json"));
+            }
+        }
+    }
+
+    // Drop everything that was bound to the host we are detaching from. Not merely
+    // hygiene: the project keeps its id, so a later "extend to remote" — the whole point
+    // of detaching, when the old path was wrong — lands on this same state dir and would
+    // otherwise inherit a byte-sync manifest whose bases describe the OLD host. See
+    // `clear_host_bound_state` for what that silently does to the new one.
+    clear_host_bound_state(&project_id, manifest.inner()).await;
+
+    // Remove the old state-dir project.json, its session mirror, and then the state dir.
+    // `.eldrun/` is why the dir used to survive every detach: `remove_dir` is
+    // non-recursive, so it failed on a dir that still held the session mirror, and the
+    // project's id was left lying around under `remote-projects/` forever.
+    //
+    // The final `remove_dir` stays non-recursive ON PURPOSE — `local_loss.json`
+    // deliberately outlives a detach (it records what was destroyed in the *local*
+    // mirror, and the user may not have seen it yet). A dir that still holds it must
+    // survive; `remove_dir` succeeds only once the dir is genuinely empty, which is
+    // exactly that distinction.
     let _ = std::fs::remove_file(&state_local_file);
-    let _ = std::fs::remove_dir(remote_project_state_dir(&project_id));
+    let _ = std::fs::remove_dir_all(state_dir.join(".eldrun"));
+    let _ = std::fs::remove_dir(&state_dir);
 
     // Update the projects.json entry in place, preserving every other extra key
     // (categories, git_provider, git_type, description, sandbox, …).

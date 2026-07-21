@@ -10,6 +10,7 @@ pub mod remote;
 pub mod remote_agents;
 pub mod remote_credentials;
 pub mod remote_sync;
+pub mod remote_usage;
 pub mod restore_service;
 // The project container bind-mounts host paths straight into a Linux container
 // and maps the host uid/gid, so it is Unix-only today *at runtime*: Windows
@@ -23,6 +24,8 @@ pub mod ssh_common;
 pub mod ssh_exec;
 pub mod sync_auto;
 pub mod terminal_service;
+pub mod tmux_local;
 pub mod usage_stats;
 pub mod window_service;
+pub mod worker_sync;
 pub mod window_state;

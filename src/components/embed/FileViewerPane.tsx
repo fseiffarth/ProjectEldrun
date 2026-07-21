@@ -9,9 +9,10 @@ import {
   type ViewerState,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
+import { useExperimental } from "../../lib/experimental";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
-import { useConnectDialogStore } from "../../stores/connectDialog";
+import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { RemotePaneHold } from "../projects/RemotePaneHold";
 import { useLinkRoutingStore } from "../../stores/linkRouting";
 import {
@@ -25,6 +26,7 @@ import { useScrollSync } from "../../stores/scrollSync";
 import { parseDetachedParam } from "../../stores/detached";
 import { Dropdown } from "../common/Dropdown";
 import { CompareView } from "./CompareView";
+import { PresentationOverlay } from "./PresentationOverlay";
 import { renderMarkdown } from "../../lib/viewers/markdown";
 import { enrichMarkdownDom } from "../../lib/viewers/markdownEnrich";
 import { highlight, languageForPath, escapeHtml } from "../../lib/viewers/highlight";
@@ -54,6 +56,30 @@ import {
 } from "../../lib/viewers/markdownEdit";
 import { internalViewerFor, disabledViewers, relFromAbs, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
 import {
+  isPythonPath,
+  isPythonMainScript,
+  pythonLinkRanges,
+  remapBreakpoints,
+  resolvePythonDefinition,
+  snapBreakpointLine,
+} from "../../lib/viewers/python";
+import { debugPythonFile, runCwd, runPythonFile, placeForFocused } from "../../lib/pythonRun";
+import {
+  isSlurmScript,
+  parseSbatchDirectives,
+  directiveValue,
+  spliceDirective,
+  slurmAvailable,
+  submitSlurmJob,
+  openInteractiveJob,
+  COMMON_SBATCH_KEYS,
+  type SlurmInfo,
+  type InteractiveResources,
+} from "../../lib/slurm";
+import { FileDropContext } from "../files/fileDropContext";
+import { UntestedTag } from "../common/UntestedTag";
+import { FileSourceSwitch } from "../files/ProjectFilesPane";
+import {
   basename,
   dirname,
   fromFileUri,
@@ -82,12 +108,15 @@ import {
   readFileBytes,
   writeFileText,
   fileMtime,
+  describeFileError,
 } from "./fileAccess";
 import { TableView } from "./TableView";
 import { NotebookView } from "./NotebookView";
 import { DiffView } from "./DiffView";
+import { SyncMergeView } from "./SyncMergeView";
 import { OdtView } from "./OdtView";
 import { MediaView } from "./MediaView";
+import { GifView } from "./GifView";
 import { SqliteView } from "./SqliteView";
 import { ImageAnnotator } from "./ImageAnnotator";
 import {
@@ -115,6 +144,10 @@ import {
   phraseAt,
 } from "../../lib/viewers/tex";
 import { PdfView } from "./pdf/PdfViewer";
+import { YamlTree } from "./YamlTree";
+import { YamlGrid } from "./YamlGrid";
+import { isTreePath, isJsonPath } from "../../lib/viewers/yaml";
+import { hasCards } from "../../lib/viewers/yamlGrid";
 
 /**
  * Persisted reader-position plumbing for an in-app viewer. Snapshots the tab's
@@ -246,6 +279,12 @@ interface Props {
  *                  to disk (Python, Rust, JSON, config files, …).
  *   - "markdown" → rendered HTML via renderMarkdown, with an Edit/Preview toggle
  *                  that lets you edit the source and save it back to disk.
+ *   - "yaml"     → YAML **and JSON** (which is YAML's flow syntax): the same
+ *                  editor with a Tree/Source toggle, where the tree is an editable
+ *                  structure view (rename a key, retype a value, add a key or a
+ *                  list item, reorder, delete). It splices the file's own text, so
+ *                  comments and layout survive, each collection keeps the style it
+ *                  is written in (block or flow), and both modes share one draft.
  *   - "image"    → the bytes wrapped in a Blob URL, shown in a zoomable/pannable
  *                  <img> (wheel to zoom at cursor, drag to pan, Fit / 1:1).
  *   - "pdf"      → rendered with pdf.js into a scrolling stack of page canvases
@@ -275,18 +314,52 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
       .then((s) => {
         if (cancelled) return;
         setSource(s);
-        if (tabKey) useFileSourcesStore.getState().setSource(tabKey, s);
       })
       .catch(() => {
         if (cancelled) return;
         setSource("none");
-        if (tabKey) useFileSourcesStore.getState().setSource(tabKey, "none");
       });
     return () => {
       cancelled = true;
+    };
+  }, [path, projectId]);
+
+  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+
+  // A viewer tab is opened against one fixed absolute path (mirror OR host). For
+  // a remote project this manual override lets the SAME tab show the other side
+  // instead — same rel path, root swapped — without touching the tab's
+  // persisted path. Session-only: resets to "no override" when the tab is
+  // retargeted to a different file, so `effectiveSource` falls back to the file's
+  // OWN resolved side (`source`, from `fileSource(path)`) — i.e. the side the
+  // path already points at. That is the load-bearing default: `openFileEntry`
+  // hands the viewer a *host* path when the tree that opened it was on Remote and
+  // a *mirror* path when it was on Local, so trusting the path is what makes
+  // "opened from a Remote listing ⇒ shown over SFTP" hold. Seeding instead from a
+  // shared per-project pref (the old behaviour) let a stale/other-surface value
+  // silently rewrite a host path back to the mirror — the Files-tab / subwindow
+  // sidebar use an *independent* source that never writes that pref, so a file
+  // opened there on Remote was read locally. `null` = follow the path.
+  const [sideOverride, setSideOverride] = useState<"local" | "remote" | null>(null);
+  useEffect(() => {
+    setSideOverride(null);
+  }, [path, projectId]);
+  const rel = useMemo(() => autoSyncRel(project, path), [project, path]);
+  const mirrorRoot = useMemo(() => localMirrorRootFor(project), [project]);
+  const effectiveSource: FileSource = sideOverride ?? source ?? "none";
+  const effectivePath = useMemo(() => {
+    if (!project?.remote || !rel) return path;
+    if (effectiveSource === "remote") return resolvePath(project.remote.remote_path, rel);
+    if (effectiveSource === "local" && mirrorRoot) return resolvePath(mirrorRoot, rel);
+    return path;
+  }, [project, rel, effectiveSource, mirrorRoot, path]);
+
+  useEffect(() => {
+    if (tabKey) useFileSourcesStore.getState().setSource(tabKey, effectiveSource);
+    return () => {
       if (tabKey) useFileSourcesStore.getState().clearSource(tabKey);
     };
-  }, [path, projectId, tabKey]);
+  }, [tabKey, effectiveSource]);
 
   // Disconnected remote project: reading a remote-native (SFTP) file would block
   // on the dead pool and each nested viewer would flash its own red read error.
@@ -294,15 +367,56 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
   // the message is unified across terminal and file tabs. Local-mirror files
   // (source "local") and local projects ("none") work offline and render as
   // usual; while the source is still unknown on a disconnected remote we hold.
-  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+  // Gated on the EFFECTIVE side, not the tab's opened side, so flipping the
+  // switch to Remote while offline surfaces the same Connect prompt a
+  // remote-native tab would — the toggle itself stays put (matches
+  // ProjectFilesPane's `useFileSource`).
   const sshState = useRemoteStatusStore((s) => (projectId ? s.byProject[projectId]?.ssh : undefined));
-  const openConnectDialog = useConnectDialogStore((s) => s.open);
+  const openRemoteMachines = useRemoteMachinesStore((s) => s.open);
   const remoteDisconnected = !!project?.remote && sshState !== "connected";
-  if (remoteDisconnected && source !== "local" && source !== "none") {
+
+  // Does this file exist on the host? A local-only file (never synced) has no
+  // host counterpart, so flipping the Local/Remote switch to Remote would only
+  // strand the viewer on an SFTP read error — disable that segment instead. Only
+  // knowable on a live pool; disconnected / not-yet-probed leaves it enabled (the
+  // disconnected gate above owns that case). One cheap SFTP stat per remote tab.
+  const [remoteMissing, setRemoteMissing] = useState(false);
+  const remoteRoot = project?.remote?.remote_path;
+  useEffect(() => {
+    setRemoteMissing(false);
+    if (!remoteRoot || !rel || sshState !== "connected") return;
+    let cancelled = false;
+    fileMtime(resolvePath(remoteRoot, rel), projectId)
+      .then(() => { if (!cancelled) setRemoteMissing(false); })
+      .catch(() => { if (!cancelled) setRemoteMissing(true); });
+    return () => { cancelled = true; };
+  }, [remoteRoot, rel, sshState, projectId]);
+  // Mirror the Local/Remote switch out to the tab strip so its file-source badge
+  // is a clickable toggle (not just a glyph): switching applies only when this
+  // remote project's file has a counterpart on the other side (`rel`). Cleared
+  // when it doesn't, and on unmount. Owns no state — `setSideOverride` stays here.
+  useEffect(() => {
+    if (!tabKey) return;
+    const store = useFileSourcesStore.getState();
+    if (project?.remote && rel) {
+      store.setControls(tabKey, {
+        current: effectiveSource === "remote" ? "remote" : "local",
+        set: setSideOverride,
+        remoteDisabled: remoteMissing,
+      });
+    } else {
+      store.clearControls(tabKey);
+    }
+    return () => {
+      if (tabKey) useFileSourcesStore.getState().clearControls(tabKey);
+    };
+  }, [tabKey, project?.remote, rel, effectiveSource, remoteMissing]);
+
+  if (remoteDisconnected && effectiveSource !== "local" && effectiveSource !== "none") {
     return (
       <RemotePaneHold
         host={project?.remote?.host ?? ""}
-        onConnect={() => { if (projectId) openConnectDialog(projectId); }}
+        onConnect={() => { if (projectId) openRemoteMachines(projectId); }}
       />
     );
   }
@@ -310,58 +424,107 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
   const openExternally = () => {
     useWindowsStore
       .getState()
-      .openFile(path, undefined, projectId, "right_file_tree")
+      .openFile(effectivePath, undefined, projectId, "right_file_tree")
       .catch((e) => console.error(e));
   };
 
   // Pick the concrete viewer, then publish this pane's owning project as the file
   // scope so every nested viewer/hook confines its file commands to this project
   // (and its box siblings) regardless of which project is globally current.
+  // Every viewer below reads `effectivePath` — the tab's own opened path unless
+  // the Local/Remote switch has retargeted it to the same rel path's other root
+  // — EXCEPT "diff"/"syncdiff", which already compare both sides directly and
+  // whose single `path` prop means something else in that mode.
   let view: React.ReactNode;
-  if (viewer === "image") {
-    view = <ImageView path={path} fileName={fileName} onOpenExternally={openExternally} tabKey={tabKey} />;
+  if (viewer === "gif") {
+    // Animated GIFs get the frame-transport viewer (#gifviewer); the plain
+    // image viewer remains its opt-out fallback (VIEWER_FALLBACK).
+    view = <GifView path={effectivePath} fileName={fileName} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "image") {
+    view = <ImageView path={effectivePath} fileName={fileName} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "pdf") {
-    view = <PdfView path={path} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
+    view = <PdfView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
   } else if (viewer === "markdown") {
-    view = <MarkdownView path={path} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
+    view = <MarkdownView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
   } else if (viewer === "tex") {
-    view = <TexView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+    view = <TexView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "table") {
-    view = <TableView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+    view = <TableView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "notebook") {
-    view = <NotebookView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+    view = <NotebookView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "diff") {
     view = <DiffView path={path} projectId={projectId} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "syncdiff") {
     view = <DiffView path={path} projectId={projectId} mode="sync" onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "syncmerge") {
+    view = <SyncMergeView path={path} projectId={projectId} tabKey={tabKey} />;
   } else if (viewer === "odt") {
-    view = <OdtView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+    view = <OdtView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "media") {
-    view = <MediaView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+    view = <MediaView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "html") {
     // HTML is now the editable base editor with a sandboxed live preview, keyed
     // to its own per-type prefs.
-    view = <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} type="html" groupId={groupId} />;
+    view = <TextView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} type="html" groupId={groupId} />;
   } else if (viewer === "sqlite") {
-    view = <SqliteView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+    view = <SqliteView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "yaml") {
+    // YAML is the same base editor, with the structure tree as its "preview" half
+    // (#yaml) and its own per-type prefs.
+    view = <TextView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} type="yaml" groupId={groupId} />;
   } else {
-    view = <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
+    view = <TextView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
   }
+  const sourceSwitch =
+    project?.remote && rel
+      ? {
+          current: (effectiveSource === "remote" ? "remote" : "local") as "local" | "remote",
+          onChange: setSideOverride,
+          remoteDisabled: remoteMissing,
+        }
+      : null;
   return (
     <FileScopeContext.Provider value={projectId}>
-      <ViewerHeaderInfoContext.Provider value={{ path, projectId }}>
-        {view}
+      <ViewerHeaderInfoContext.Provider value={{ path: effectivePath, projectId, sourceSwitch }}>
+        {/* A single relative host so the marker/laser presentation overlay can
+            sit over ANY viewer without each one wiring it in (see
+            PresentationOverlay). `.presentation-host` is height:100% so the
+            existing `.file-viewer` (also 100%) fills it unchanged. */}
+        <div className="presentation-host">
+          {view}
+          <PresentationOverlay />
+        </div>
       </ViewerHeaderInfoContext.Provider>
     </FileScopeContext.Provider>
   );
 }
 
 /** The file identity a `ViewerHeader` needs to offer file-scoped actions (the
- *  auto-sync toggle) without every sub-viewer threading these props through. Set
- *  by `FileViewerPane`; `null` outside a viewer pane. */
-const ViewerHeaderInfoContext = createContext<{ path: string; projectId: string | null } | null>(
-  null,
-);
+ *  auto-sync toggle, the Local/Remote source switch) without every sub-viewer
+ *  threading these props through. Set by `FileViewerPane`; `null` outside a
+ *  viewer pane. `sourceSwitch` is `null` unless the open file resolves to a rel
+ *  path under a remote project's mirror or host root (i.e. the other side could
+ *  exist too). */
+const ViewerHeaderInfoContext = createContext<{
+  path: string;
+  projectId: string | null;
+  sourceSwitch?: {
+    current: "local" | "remote";
+    onChange: (s: "local" | "remote") => void;
+    remoteDisabled?: boolean;
+  } | null;
+} | null>(null);
+
+/** A remote project's local-mirror root, or `null` for a local project / one
+ *  with no resolvable mirror. Shared by `autoSyncRel` and the Local/Remote
+ *  switch's path-building — both need the exact same root. */
+function localMirrorRootFor(
+  project: ReturnType<typeof useProjectsStore.getState>["projects"][number] | undefined,
+): string | null {
+  if (!project?.remote) return null;
+  const projectDir = resolveProjectDirectory(project);
+  return resolveLocalMirror(project) ?? (projectDir ? `${projectDir}/mirror` : null);
+}
 
 /**
  * Resolve `absPath` to the project-relative path the sync backend keys on, for a
@@ -375,8 +538,7 @@ function autoSyncRel(
   absPath: string,
 ): string | null {
   if (!project?.remote) return null;
-  const projectDir = resolveProjectDirectory(project);
-  const mirrorRoot = resolveLocalMirror(project) ?? (projectDir ? `${projectDir}/mirror` : null);
+  const mirrorRoot = localMirrorRootFor(project);
   if (mirrorRoot) {
     const r = relFromAbs(mirrorRoot, absPath);
     if (r) return r;
@@ -418,6 +580,44 @@ function AutoSyncHeaderToggle({ path, projectId }: { path: string; projectId: st
       onClick={() => void setAuto(projectId, [rel], !auto, false)}
     >
       ⟳
+    </button>
+  );
+}
+
+/**
+ * "Resolve divergence" button for the viewer header, shown only when the open
+ * file is currently **diverged (amber)** for a remote project. Opens the exact
+ * same three-way merge resolver (`syncmerge` → `SyncMergeView`/`CompareView`) the
+ * orange list opens, so the user can reconcile local mirror ⇄ host from the file
+ * they are already looking at instead of hunting it down in the Orange view.
+ *
+ * The resolver keys on the **mirror-side** path (`mirrorRoot/rel`), exactly as the
+ * orange list builds it, regardless of which side this viewer is currently showing.
+ */
+function SyncResolveHeaderButton({ path, projectId }: { path: string; projectId: string | null }) {
+  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+  const rel = useMemo(() => autoSyncRel(project, path), [project, path]);
+  const mirrorRoot = useMemo(() => localMirrorRootFor(project), [project]);
+  const amber = useSyncStore((s) =>
+    projectId && rel ? s.byProject[projectId]?.[rel]?.state === "amber" : false,
+  );
+  if (!project?.remote || !rel || !projectId || !mirrorRoot || !amber) return null;
+  const mirrorPath = resolvePath(mirrorRoot, rel);
+  return (
+    <button
+      type="button"
+      className="file-viewer-resolve"
+      title="This file diverged (local ⇄ host) — open the three-way resolver"
+      aria-label="Resolve divergence"
+      onClick={() =>
+        openLinkedFile(undefined, dirname(mirrorPath), {
+          path: mirrorPath,
+          viewer: "syncmerge",
+          label: basename(mirrorPath),
+        })
+      }
+    >
+      ±
     </button>
   );
 }
@@ -631,12 +831,21 @@ export function ViewerHeader({
   // and the open-externally icon pushed to the trailing edge. The remote/local
   // source badge no longer lives here — it rides on the tab itself (see
   // TabBar's tab-source badge), so it costs no header row. The auto-sync toggle
-  // (remote projects only) rides in from context so no sub-viewer has to pass it.
+  // and the Local/Remote source switch (both remote projects only) ride in from
+  // context so no sub-viewer has to pass them.
   const info = useContext(ViewerHeaderInfoContext);
   return (
     <div className="file-viewer-header">
       <div className="file-viewer-header-spacer" aria-hidden="true" />
       {children}
+      {info?.sourceSwitch && (
+        <FileSourceSwitch
+          source={info.sourceSwitch.current}
+          onChange={info.sourceSwitch.onChange}
+          remoteDisabled={info.sourceSwitch.remoteDisabled}
+        />
+      )}
+      {info && <SyncResolveHeaderButton path={info.path} projectId={info.projectId} />}
       {info && <AutoSyncHeaderToggle path={info.path} projectId={info.projectId} />}
       <button
         className="file-viewer-open-external"
@@ -786,10 +995,12 @@ function useEditHistory(initial: string) {
 const RELOAD_POLL_MS = 1500;
 
 /**
- * Editable-file state shared by the code and markdown editors: loads `path`,
- * keeps a `draft` against the last-known-on-disk `baseline` (so "dirty" is just
- * draft !== baseline), and writes the draft back via write_file_text — re-seeding
- * the baseline on success so the dirty flag clears without re-reading the file.
+ * Editable-file state shared by the editable viewers — the code and markdown
+ * editors, and the table viewer, whose cell edits are splices into this same
+ * text draft (see `lib/viewers/table.ts`): loads `path`, keeps a `draft` against
+ * the last-known-on-disk `baseline` (so "dirty" is just draft !== baseline), and
+ * writes the draft back via write_file_text — re-seeding the baseline on success
+ * so the dirty flag clears without re-reading the file.
  *
  * Adds (Group M):
  *  - #46 undo/redo: the draft is backed by `useEditHistory`; `undo`/`redo` are
@@ -800,7 +1011,7 @@ const RELOAD_POLL_MS = 1500;
  *    silently re-reads into a clean buffer, or surfaces a non-destructive banner
  *    when the buffer is dirty (Reload / Keep mine) — never clobbering edits.
  */
-function useEditableFile(path: string) {
+export function useEditableFile(path: string) {
   const scope = useFileScope();
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -850,7 +1061,7 @@ function useEditableFile(path: string) {
         if (cancelled) return;
         seedFromDisk(text);
       })
-      .catch((e) => { if (!cancelled) setError(String(e)); });
+      .catch((e) => { if (!cancelled) setError(describeFileError(e)); });
     fileMtime(path, scope)
       .then((m) => { if (!cancelled) lastMtime.current = m; })
       .catch(() => {});
@@ -935,7 +1146,7 @@ function useEditableFile(path: string) {
 }
 
 /** The non-destructive external-change banner (#43). */
-function ExternalChangeBanner({
+export function ExternalChangeBanner({
   onReload,
   onKeep,
 }: {
@@ -1039,7 +1250,7 @@ export function useReadonlyFile(path: string) {
     lastMtime.current = null;
     readFileText(path, scope)
       .then((text) => { if (!cancelled) setContent(text); })
-      .catch((e) => { if (!cancelled) setError(String(e)); });
+      .catch((e) => { if (!cancelled) setError(describeFileError(e)); });
     fileMtime(path, scope)
       .then((m) => { if (!cancelled) lastMtime.current = m; })
       .catch(() => {});
@@ -1551,6 +1762,8 @@ function CodeEditor({
   editorApiRef,
   showBlame,
   blame,
+  breakpoints,
+  onToggleBreakpoint,
   initialScrollTop,
   onScrollPersist,
   groupId,
@@ -1622,6 +1835,13 @@ function CodeEditor({
    *  hovercard. `blame` maps 1-based line numbers to their attribution. */
   showBlame?: boolean;
   blame?: Map<number, BlameLine>;
+  /** Debug breakpoints (#py), as 1-based line numbers. When `onToggleBreakpoint`
+   *  is wired the gutter becomes interactive: each line number is a click target
+   *  that toggles a breakpoint, and a breakpointed line paints a red dot. Only the
+   *  Python editor supplies these; every other file type gets the inert,
+   *  aria-hidden gutter it had before. */
+  breakpoints?: ReadonlySet<number>;
+  onToggleBreakpoint?: (line: number) => void;
   /** Persisted vertical scroll (px) to restore once the file loads, so reopening
    *  it (or an Eldrun restart) lands the reader where they left off (#viewerpos).
    *  Applied once on first load; user scrolling thereafter reports via
@@ -3095,22 +3315,52 @@ function CodeEditor({
       {/* Line-number gutter. Fixed-height rows normally; in wrap mode (the LaTeX
           viewer) a logical line can span several visual rows, so each cell is
           sized to its measured wrapped height (`lineHeights`). Lines holding a
-          search match are marked, the current match brightest (#67). */}
-      <div className="file-viewer-gutter" aria-hidden="true">
+          search match are marked, the current match brightest (#67).
+
+          When `onToggleBreakpoint` is wired (the Python editor, #py) the cells
+          become real buttons that set/clear a debug breakpoint, so the gutter
+          stops being decoration and the whole column drops its `aria-hidden` —
+          hiding a control from the accessibility tree would make the feature
+          unreachable without a mouse. */}
+      <div className="file-viewer-gutter" aria-hidden={onToggleBreakpoint ? undefined : "true"}>
         <div className="file-viewer-gutter-inner" ref={gutterInnerRef}>
           {Array.from({ length: lineCount }, (_, i) => {
             const n = i + 1;
             const h = wrap ? lineHeights[i] : undefined;
+            const broken = breakpoints?.has(n) ?? false;
             const cls =
-              n === currentMatchLine
+              (n === currentMatchLine
                 ? "file-viewer-gutter-line current-match"
                 : matchLineSet.has(n)
                   ? "file-viewer-gutter-line has-match"
-                  : "file-viewer-gutter-line";
+                  : "file-viewer-gutter-line") +
+              (onToggleBreakpoint ? " is-breakable" : "") +
+              (broken ? " has-breakpoint" : "");
+            const style = h != null ? { height: h } : undefined;
+
+            if (!onToggleBreakpoint) {
+              return (
+                <div key={i} className={cls} style={style}>
+                  {n}
+                </div>
+              );
+            }
             return (
-              <div key={i} className={cls} style={h != null ? { height: h } : undefined}>
+              <button
+                key={i}
+                type="button"
+                className={cls}
+                style={style}
+                // Keep the caret where it is: clicking the gutter sets a
+                // breakpoint, it does not move the cursor or steal focus.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => onToggleBreakpoint(n)}
+                title={broken ? `Remove breakpoint on line ${n}` : `Break on line ${n}`}
+                aria-pressed={broken}
+                aria-label={broken ? `Remove breakpoint on line ${n}` : `Break on line ${n}`}
+              >
                 {n}
-              </div>
+              </button>
             );
           })}
         </div>
@@ -3452,7 +3702,7 @@ function CodeEditor({
  * than text: a spinner while saving, a filled disk with a dot when there are
  * unsaved edits, and a check when clean. `aria-label="Save"` keeps it findable.
  */
-function SaveButton({
+export function SaveButton({
   isDirty,
   saving,
   save,
@@ -3508,7 +3758,7 @@ function PrintButton({
 }
 
 /** Undo/redo toolbar buttons shared by the editable viewers (#46). */
-function UndoRedoButtons({
+export function UndoRedoButtons({
   undo,
   redo,
   canUndo,
@@ -4011,7 +4261,7 @@ function onCtrlWheelFont(
  *  `{ passive: false }` lets `preventDefault()` cancel the scroll, so Ctrl+wheel
  *  zooms immediately and never scrolls. The callback ref re-binds cleanly across
  *  mount/unmount (e.g. conditionally-rendered viewports). */
-function useNonPassiveWheel(handler: (e: WheelEvent) => void) {
+export function useNonPassiveWheel(handler: (e: WheelEvent) => void) {
   const cb = useRef(handler);
   cb.current = handler;
   const detach = useRef<(() => void) | null>(null);
@@ -4240,6 +4490,420 @@ function BlameButton({ active, toggle }: { active: boolean; toggle: () => void }
   );
 }
 
+/**
+ * The editor's debug breakpoints (#py) — the gutter's red dots.
+ *
+ * Two things make this more than a `Set<number>`:
+ *
+ *  - **They must survive edits.** A breakpoint names a line, so typing a new
+ *    import at the top of the file silently re-points every dot below it at the
+ *    wrong statement. Each draft change is therefore diffed against the previous
+ *    one and the lines are remapped (`remapBreakpoints`).
+ *  - **They must be settable only where pdb can break.** Clicking a blank line or
+ *    a comment snaps down to the next executable line rather than setting a
+ *    breakpoint pdb would reject at startup (`snapBreakpointLine`).
+ *
+ * They persist in the tab's `ViewerState`, so they survive closing the file and
+ * an Eldrun restart — the same plumbing (and the same `project.json` write) as the
+ * reader's scroll position.
+ */
+function useBreakpoints(
+  enabled: boolean,
+  draft: string,
+  loaded: boolean,
+  viewPos: ReturnType<typeof useViewerState>,
+) {
+  const [lines, setLines] = useState<number[]>(() =>
+    enabled ? (viewPos.initial?.breakpoints ?? []) : [],
+  );
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+
+  // The draft the current lines were resolved against. Seeded on first load: the
+  // editor's ""→content transition is not an edit, and diffing across it would
+  // look like "every line was replaced" and drop every restored breakpoint.
+  const prevDraft = useRef<string | null>(null);
+  useEffect(() => {
+    if (!enabled || !loaded) return;
+    const before = prevDraft.current;
+    prevDraft.current = draft;
+    if (before === null || before === draft) return;
+    setLines((cur) => {
+      if (cur.length === 0) return cur;
+      const next = remapBreakpoints(before, draft, cur);
+      // Keep the identity stable when nothing moved, so the gutter doesn't
+      // re-render on every keystroke.
+      return next.length === cur.length && next.every((l, i) => l === cur[i]) ? cur : next;
+    });
+  }, [enabled, loaded, draft]);
+
+  // Persist on change only — never on mount, which would rewrite the tab with the
+  // value we just read out of it.
+  const persistedKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    const key = lines.join(",");
+    if (persistedKey.current === null) {
+      persistedKey.current = key;
+      return;
+    }
+    if (persistedKey.current === key) return;
+    persistedKey.current = key;
+    viewPos.persist({ breakpoints: lines });
+  }, [enabled, lines, viewPos]);
+
+  const toggle = useCallback((line: number) => {
+    setLines((cur) => {
+      if (cur.includes(line)) return cur.filter((l) => l !== line);
+      const snapped = snapBreakpointLine(draftRef.current, line);
+      if (snapped == null) return cur; // nothing executable below — no-op
+      if (cur.includes(snapped)) return cur.filter((l) => l !== snapped);
+      return [...cur, snapped].sort((a, b) => a - b);
+    });
+  }, []);
+
+  const set = useMemo(() => new Set(lines), [lines]);
+  return { lines, set, toggle };
+}
+
+/** Run / Debug (#py). Run executes the file in a fresh terminal tab; Debug does
+ *  the same under `pdb`, pre-loaded with the gutter's breakpoints.
+ *
+ *  Right-clicking Run opens a small popover to type **arguments** (`sys.argv`) —
+ *  appended to the command line and reused by every subsequent Run/Debug, so a
+ *  plain left-click re-runs with them (the tooltip shows what they are). */
+function RunDebugButtons({
+  breakpointCount,
+  busy,
+  showDebug,
+  args,
+  setArgs,
+  onRun,
+  onDebug,
+}: {
+  breakpointCount: number;
+  busy: boolean;
+  /** Debug (pdb + breakpoint gutter) is behind the experimental gate; Run isn't. */
+  showDebug: boolean;
+  /** The current argument string, and its setter (right-click popover edits it). */
+  args: string;
+  setArgs: (v: string) => void;
+  onRun: () => void;
+  onDebug: () => void;
+}) {
+  const [argsOpen, setArgsOpen] = useState(false);
+  // Hovering the Run/Debug buttons shows the saved args in an in-DOM popover — the
+  // native `title` tooltip is unreliable under WebKitGTK, so it can't be the only
+  // place the args are shown.
+  const [hovering, setHovering] = useState(false);
+  // Local draft so typing doesn't rebuild the run command on every keystroke; it
+  // is committed to the shared `args` on Run or when the popover closes.
+  const [draft, setDraft] = useState(args);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const open = useCallback(() => {
+    setDraft(args);
+    setArgsOpen(true);
+  }, [args]);
+  const commit = useCallback(() => {
+    setArgs(draft.trim());
+    setArgsOpen(false);
+  }, [draft, setArgs]);
+
+  // Focus the field when the popover opens, and close it on an outside click or Esc.
+  useEffect(() => {
+    if (!argsOpen) return;
+    inputRef.current?.focus();
+    inputRef.current?.select();
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) commit();
+    };
+    document.addEventListener("mousedown", onDown, true);
+    return () => document.removeEventListener("mousedown", onDown, true);
+  }, [argsOpen, commit]);
+
+  return (
+    <div
+      className="file-viewer-run-controls"
+      ref={wrapRef}
+      onMouseEnter={() => setHovering(true)}
+      onMouseLeave={() => setHovering(false)}
+    >
+      <button
+        className="file-viewer-format-btn"
+        // Right-click opens the args popover. We act on mousedown, not the
+        // contextmenu event: preventing the button's default focus-steal (needed
+        // to keep the editor caret) suppresses `contextmenu` under WebKitGTK, so
+        // that event never arrives. Left-click still runs via onClick.
+        onMouseDown={(e) => {
+          e.preventDefault();
+          if (e.button === 2) open();
+        }}
+        onClick={onRun}
+        onContextMenu={(e) => e.preventDefault()}
+        disabled={busy}
+        title="Run this file in a terminal tab\nRight-click to set arguments"
+        aria-label="Run file"
+      >
+        ▶ Run{args ? " *" : ""}
+      </button>
+      {showDebug && (
+      <button
+        className="file-viewer-format-btn"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          if (e.button === 2) open();
+        }}
+        onClick={onDebug}
+        onContextMenu={(e) => e.preventDefault()}
+        disabled={busy}
+        title={
+          (breakpointCount > 0
+            ? `Debug under pdb, breaking on ${breakpointCount} line${
+                breakpointCount === 1 ? "" : "s"
+              } (click the gutter to set more)`
+            : "Debug under pdb — stops at the first line. Click a line number to set a breakpoint.") +
+          "\nRight-click to set arguments"
+        }
+        aria-label="Debug file"
+      >
+        🐞 Debug
+      </button>
+      )}
+      {/* Saved-args hover hint. Shown only while hovering, only when args are set,
+          and never over the editor popover (which shows them already). */}
+      {hovering && args && !argsOpen && (
+        <div className="file-viewer-run-argshint" role="tooltip">
+          <span className="file-viewer-run-argshint-label">args:</span>
+          <span className="file-viewer-run-argshint-val">{args}</span>
+        </div>
+      )}
+      {argsOpen && (
+        <div className="file-viewer-run-args" role="dialog" aria-label="Run arguments">
+          <label className="file-viewer-run-args-label">Arguments (sys.argv)</label>
+          <input
+            ref={inputRef}
+            className="file-viewer-run-args-input"
+            value={draft}
+            spellCheck={false}
+            placeholder="--epochs 5 data.csv"
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                setArgs(draft.trim());
+                setArgsOpen(false);
+                onRun();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setArgsOpen(false);
+              }
+            }}
+          />
+          <div className="file-viewer-run-args-row">
+            <button
+              type="button"
+              className="file-viewer-format-btn"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                setArgs(draft.trim());
+                setArgsOpen(false);
+                onRun();
+              }}
+            >
+              ▶ Run
+            </button>
+            <button
+              type="button"
+              className="file-viewer-format-btn"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                setDraft("");
+                setArgs("");
+              }}
+              disabled={!draft}
+              title="Clear arguments"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Human labels for the `#SBATCH` keys the directive form surfaces. */
+const SBATCH_FIELD_LABELS: Record<string, string> = {
+  "job-name": "Job name",
+  account: "Account",
+  partition: "Partition",
+  time: "Time",
+  nodes: "Nodes",
+  ntasks: "Tasks",
+  "cpus-per-task": "CPUs/task",
+  mem: "Memory",
+  gres: "GRES",
+  output: "Output",
+};
+
+/** Placeholder hints per key, so an empty field still teaches the format. */
+const SBATCH_FIELD_HINTS: Record<string, string> = {
+  "job-name": "myjob",
+  account: "your-group",
+  partition: "gpu",
+  time: "01:00:00",
+  nodes: "1",
+  ntasks: "1",
+  "cpus-per-task": "4",
+  mem: "8G",
+  gres: "gpu:1",
+  output: "slurm-%j.out",
+};
+
+/**
+ * The SLURM control bar (HPC), shown beside the Python Run bar for a `#SBATCH`
+ * script on a host that has SLURM. **Submit job** submits it and opens a log tab;
+ * **Variables** toggles the `#SBATCH` directive form (render rows, edit text — each
+ * edit splices the draft, an ordinary undoable change); **Interactive session…**
+ * opens a resource mini-form that launches an `srun --pty` shell on a compute node.
+ * Carries an `UntestedTag` until QA'd on a real cluster.
+ */
+function SlurmBar({
+  busy,
+  fields,
+  onField,
+  onSubmit,
+  onInteractive,
+}: {
+  busy: boolean;
+  fields: { key: string; value: string }[];
+  onField: (key: string, value: string) => void;
+  onSubmit: () => void;
+  onInteractive: (res: InteractiveResources) => void;
+}) {
+  const [varsOpen, setVarsOpen] = useState(false);
+  const [interOpen, setInterOpen] = useState(false);
+  // Per-field typed drafts, so a splice (and its undo step) happens on commit
+  // (blur/Enter), not on every keystroke.
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [inter, setInter] = useState<InteractiveResources>({
+    time: "01:00:00",
+    cpus: "4",
+    mem: "8G",
+    gpus: "",
+    partition: "",
+    account: "",
+  });
+
+  const valueFor = (key: string) =>
+    edits[key] ?? directiveValue(fields, key);
+  const commit = (key: string) => {
+    const v = edits[key];
+    if (v === undefined) return;
+    onField(key, v);
+  };
+
+  return (
+    <div className="file-viewer-run-controls">
+      <button
+        className="file-viewer-format-btn"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={onSubmit}
+        disabled={busy}
+        title="Submit this job to SLURM (sbatch) and open a log tab"
+        aria-label="Submit SLURM job"
+      >
+        ⏫ Submit job
+      </button>
+      <button
+        className={`file-viewer-format-btn${varsOpen ? " active" : ""}`}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => { setVarsOpen((v) => !v); setInterOpen(false); }}
+        title="Edit #SBATCH directives (resources)"
+        aria-pressed={varsOpen}
+      >
+        Variables
+      </button>
+      <button
+        className={`file-viewer-format-btn${interOpen ? " active" : ""}`}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => { setInterOpen((v) => !v); setVarsOpen(false); }}
+        title="Open an interactive shell on a compute node (srun --pty)"
+        aria-pressed={interOpen}
+      >
+        ⚡ Interactive session…
+      </button>
+      <UntestedTag />
+
+      {varsOpen && (
+        <div className="file-viewer-run-args" role="dialog" aria-label="SBATCH variables">
+          <label className="file-viewer-run-args-label">#SBATCH directives</label>
+          <div className="slurm-directive-grid">
+            {COMMON_SBATCH_KEYS.map((key) => (
+              <label key={key} className="slurm-directive-field">
+                <span className="slurm-directive-key">{SBATCH_FIELD_LABELS[key] ?? key}</span>
+                <input
+                  className="file-viewer-run-args-input"
+                  value={valueFor(key)}
+                  spellCheck={false}
+                  placeholder={SBATCH_FIELD_HINTS[key] ?? ""}
+                  onChange={(e) => setEdits((m) => ({ ...m, [key]: e.target.value }))}
+                  onBlur={() => commit(key)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      commit(key);
+                    }
+                  }}
+                />
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {interOpen && (
+        <div className="file-viewer-run-args" role="dialog" aria-label="Interactive session">
+          <label className="file-viewer-run-args-label">Interactive session (srun --pty)</label>
+          <div className="slurm-directive-grid">
+            {([
+              ["account", "Account", "your-group"],
+              ["partition", "Partition", "gpu"],
+              ["time", "Time", "01:00:00"],
+              ["cpus", "CPUs/task", "4"],
+              ["mem", "Memory", "8G"],
+              ["gpus", "GPUs", "1"],
+            ] as const).map(([k, label, hint]) => (
+              <label key={k} className="slurm-directive-field">
+                <span className="slurm-directive-key">{label}</span>
+                <input
+                  className="file-viewer-run-args-input"
+                  value={inter[k] ?? ""}
+                  spellCheck={false}
+                  placeholder={hint}
+                  onChange={(e) => setInter((s) => ({ ...s, [k]: e.target.value }))}
+                />
+              </label>
+            ))}
+          </div>
+          <div className="file-viewer-run-args-row">
+            <button
+              type="button"
+              className="file-viewer-format-btn"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => { setInterOpen(false); onInteractive(inter); }}
+            >
+              ⚡ Start
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** "Compare" toolbar toggle. When active the editor body is replaced by the
  *  three-column compare/merge view (old commit ⇄ live content ⇄ editable result). */
 function CompareButton({ active, toggle }: { active: boolean; toggle: () => void }) {
@@ -4295,18 +4959,208 @@ function TextView({
   const blame = useBlame(path, showBlame);
   const [compareOpen, setCompareOpen] = useState(false);
   const viewPos = useViewerState(tabKey);
+  // Live scroll offsets for the two views this pane toggles between: the Source
+  // code editor (`scrollTop`) and the YAML Tree (`yamlScrollTop`). Held in refs,
+  // not only persisted, because the pane stays mounted across the Tree↔Source
+  // toggle but each inner view REMOUNTS — and would otherwise seed from
+  // `viewPos.initial` (the stale open-time snapshot) and jump there. The ref
+  // carries the live position so a switch back lands where the view was left.
+  const srcScroll = useRef(viewPos.initial?.scrollTop ?? 0);
+  const yamlScroll = useRef(viewPos.initial?.yamlScrollTop ?? 0);
   const persistScroll = useCallback(
-    (scrollTop: number) => viewPos.persist({ scrollTop }),
+    (scrollTop: number) => {
+      srcScroll.current = scrollTop;
+      viewPos.persist({ scrollTop });
+    },
     [viewPos],
+  );
+
+  // ── Python (#py): run/debug + breakpoints + go-to-definition ──────────────
+  // Run is available only for a "main" script — one with a module-level
+  // `if __name__ == "__main__":` guard — not for every importable .py module,
+  // which has nothing useful to execute. Debug (pdb) and the breakpoint gutter
+  // that only exists to feed it sit behind the experimental `python_run_debug`
+  // flag — off by default, on in debug mode (`lib/experimental.ts`).
+  // Go-to-definition is deliberately NOT gated: it reads, it never runs anything.
+  const isPy = useMemo(() => isPythonPath(path), [path]);
+  const pyDebugEnabled = useExperimental("python_run_debug");
+  const isMainScript = useMemo(
+    () => isPy && loaded && isPythonMainScript(draft),
+    [isPy, loaded, draft],
+  );
+  const pyRun = isMainScript;
+  const pyDebug = isMainScript && pyDebugEnabled;
+  const projectId = useFileScope();
+  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+  const projectDir = project ? resolveProjectDirectory(project) : "";
+  const bp = useBreakpoints(pyDebug, draft, loaded, viewPos);
+  const [launching, setLaunching] = useState(false);
+  // Arguments typed into the Run button's right-click popover, appended to the
+  // command line (see pythonRun.buildRunCommand). Kept PER FILE (keyed by absolute
+  // path in global settings), not per tab, so every viewer of the same script
+  // shares one set of args — edit them in one tab and the others follow live,
+  // because both read this same store selector — and so they survive closing the
+  // viewer and an Eldrun restart, and show in the Run button's hover tooltip.
+  const pyArgs = useSettingsStore((s) => s.settings?.python_run_args?.[path] ?? "");
+  const setPyArgs = useCallback(
+    (v: string) => {
+      void useSettingsStore.getState().setPythonRunArgs(path, v);
+    },
+    [path],
+  );
+  // Non-null inside a detached popout → the run terminal must stream into THIS
+  // window, not the main tab store (see placeForFocused).
+  const fileDrop = useContext(FileDropContext);
+
+  // The tab runs in the project's own scope, not whichever project happens to be
+  // active — a viewer keeps working after you switch projects (see FileScopeContext),
+  // and its Run button must not fire a terminal into a different project's layout.
+  const scope = projectId ?? "root";
+  const cwd = runCwd(projectDir, path);
+
+  const launch = useCallback(
+    async (go: () => Promise<void>) => {
+      setLaunching(true);
+      try {
+        await go();
+      } finally {
+        setLaunching(false);
+      }
+    },
+    [],
+  );
+
+  // Open the run/debug terminal in the focused subwindow of this project — where
+  // the user is looking — rather than beside this tab's group.
+  const onRun = useCallback(
+    () =>
+      void launch(() =>
+        runPythonFile({
+          file: path,
+          projectDir: cwd,
+          scope,
+          projectId,
+          args: pyArgs,
+          place: placeForFocused(fileDrop),
+        }),
+      ),
+    [launch, path, cwd, scope, projectId, pyArgs, fileDrop],
+  );
+  const onDebug = useCallback(
+    () =>
+      void launch(() =>
+        debugPythonFile({
+          file: path,
+          projectDir: cwd,
+          scope,
+          projectId,
+          breakpoints: bp.lines,
+          args: pyArgs,
+          place: placeForFocused(fileDrop),
+        }),
+      ),
+    [launch, path, cwd, scope, projectId, bp.lines, pyArgs, fileDrop],
+  );
+
+  // ── SLURM (HPC): submit / interactive on a batch script ───────────────────
+  // A `.slurm`-style file (one carrying a `#SBATCH` directive) gets a submit bar
+  // beside the Python one — but only when the project's host actually has SLURM
+  // (`slurm_available`), so the affordance never appears off-HPC. Everything here
+  // rides the same terminal-tab machinery Run uses (`lib/slurm.ts`).
+  const isSlurm = useMemo(() => loaded && isSlurmScript(draft), [loaded, draft]);
+  const [slurmInfo, setSlurmInfo] = useState<SlurmInfo | null>(null);
+  useEffect(() => {
+    if (!isSlurm || !projectDir) {
+      setSlurmInfo(null);
+      return;
+    }
+    let cancelled = false;
+    slurmAvailable(projectDir)
+      .then((info) => { if (!cancelled) setSlurmInfo(info); })
+      .catch(() => { if (!cancelled) setSlurmInfo(null); });
+    return () => { cancelled = true; };
+  }, [isSlurm, projectDir]);
+  const showSlurm = isSlurm && !!slurmInfo?.available;
+  const isRemoteProject = !!project?.remote;
+
+  const onSlurmSubmit = useCallback(
+    () =>
+      void launch(async () => {
+        if (!projectId) return;
+        await submitSlurmJob({
+          file: path,
+          projectDir,
+          cwd,
+          projectId,
+          scope,
+          isRemote: isRemoteProject,
+          place: placeForFocused(fileDrop),
+        });
+      }),
+    [launch, path, projectDir, cwd, projectId, scope, isRemoteProject, fileDrop],
+  );
+  const onSlurmInteractive = useCallback(
+    (res: InteractiveResources) => {
+      openInteractiveJob({
+        scope,
+        cwd,
+        res,
+        hostId: "primary",
+        isRemote: isRemoteProject,
+        place: placeForFocused(fileDrop),
+      });
+    },
+    [scope, cwd, isRemoteProject, fileDrop],
+  );
+
+  // Ctrl/Cmd+Click a name to open its `def`/`class` — in this file or in the
+  // module it was imported from. `jumpToSource` handles both: it re-uses an open
+  // editor when there is one (including the same file, and across a detached
+  // window) and otherwise opens the target in this tab's subwindow.
+  const followPython = useCallback(
+    async (caret: number) => {
+      const loc = await resolvePythonDefinition(draft, caret, path, projectDir, async (p) => {
+        try {
+          return await readFileText(p, projectId);
+        } catch {
+          return null; // doesn't exist / unreadable — just not this candidate
+        }
+      });
+      if (loc) jumpToSource(loc.path, loc.line, loc.column);
+    },
+    [draft, path, projectDir, projectId],
   );
 
   const fmt = useFormatter(path, draft, setDraft);
   const issue = useSyntaxCheck(path, draft, loaded);
   const previewKind = useMemo(() => previewKindForPath(path), [path]);
-  // HTML/SVG open in preview; CSS opens in the editor (its preview is a sample).
-  const [mode, setMode] = useState<"preview" | "edit">(
-    previewKind === "html" || previewKind === "svg" ? "preview" : "edit",
+  // #yaml: for YAML and JSON the "preview" is an editable structure tree rather
+  // than a rendered document — it writes back into this very draft (see YamlTree),
+  // which is what lets Tree and Source be two views on one text and keeps
+  // save/undo/format/validation working across both without either mode knowing
+  // about the other. JSON is YAML's flow syntax, so it is the same tree, written
+  // back in the stricter dialect (`strict`).
+  const isYaml = useMemo(() => isTreePath(path), [path]);
+  const jsonStrict = useMemo(() => isJsonPath(path), [path]);
+  // #yaml-grid: the CARD view for structured YAML/JSON — a recursive grid of nested
+  // cards, editing the same draft by splice (see YamlGrid). Offered only when the
+  // file actually nests a collection worth carding, so the Cards toggle appears
+  // exactly where it does something (the tree's honesty rule).
+  const gridAvailable = useMemo(
+    () => (isYaml && loaded ? hasCards(draft, jsonStrict) : false),
+    [isYaml, loaded, draft, jsonStrict],
   );
+  // YAML/JSON opens in the TREE view by default ("preview"); HTML/SVG in preview; CSS
+  // in the editor. The card view stays available (via the toggle, when the file nests
+  // something to card) but is no longer the default — it still needs work.
+  const [mode, setMode] = useState<"preview" | "grid" | "edit">(
+    isYaml ? "preview" : previewKind === "html" || previewKind === "svg" ? "preview" : "edit",
+  );
+  // A flat file (or a card edit that removes all nesting) has no card view — retire
+  // the mode rather than strand it on a toggle with no button, dropping to the tree.
+  useEffect(() => {
+    if (mode === "grid" && !gridAvailable && loaded) setMode("preview");
+  }, [mode, gridAvailable, loaded]);
   const fileName = basename(path);
   const jumpToLine = useCallback(
     (line: number, column: number) =>
@@ -4314,10 +5168,55 @@ function TextView({
     [path],
   );
 
-  const showEditor = !previewKind || mode === "edit";
+  const showEditor = (!previewKind && !isYaml) || mode === "edit";
   const wheelRef = useNonPassiveWheel((e) => {
-    if (showEditor) onCtrlWheelFont(e, font.inc, font.dec);
+    onCtrlWheelFont(e, font.inc, font.dec);
   });
+
+  // The Tree (and preview) scrolls `.file-viewer-body` itself; the Source editor
+  // scrolls its own inner viewport instead (see CodeEditor). Keep a ref to the
+  // body alongside the wheel-font ref so the tree's scroll can be persisted and
+  // restored on the switch back from Source.
+  const bodyEl = useRef<HTMLDivElement | null>(null);
+  const bodyRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      bodyEl.current = el;
+      wheelRef(el);
+    },
+    [wheelRef],
+  );
+  // Only the TREE persists/restores the body's scroll (the grid scrolls its own
+  // inner table container, the editor its own viewport).
+  const treeScrolls = isYaml && mode === "preview";
+  const showGrid = isYaml && mode === "grid" && gridAvailable;
+  const scrollRaf = useRef<number | null>(null);
+  const onBodyScroll = useCallback(() => {
+    if (!treeScrolls) return;
+    const el = bodyEl.current;
+    if (!el) return;
+    yamlScroll.current = el.scrollTop;
+    // Coalesce the store write to one per frame — a flick of the wheel must not
+    // churn the tabs array (and its debounced disk save) every scroll event.
+    if (scrollRaf.current == null) {
+      scrollRaf.current = requestAnimationFrame(() => {
+        scrollRaf.current = null;
+        viewPos.persist({ yamlScrollTop: yamlScroll.current });
+      });
+    }
+  }, [treeScrolls, viewPos]);
+  useEffect(
+    () => () => {
+      if (scrollRaf.current != null) cancelAnimationFrame(scrollRaf.current);
+    },
+    [],
+  );
+  // Restore the tree's scroll when it (re)mounts — on load, and on switching back
+  // from Source. Layout effect so it lands before paint, with no visible jump.
+  useLayoutEffect(() => {
+    if (treeScrolls && loaded && bodyEl.current) {
+      bodyEl.current.scrollTop = yamlScroll.current;
+    }
+  }, [treeScrolls, loaded]);
 
   // Print: HTML/SVG/CSS print their rendered preview document; plain text and
   // source print as a wrapped monospace block.
@@ -4336,17 +5235,44 @@ function TextView({
   return (
     <div className="file-viewer">
       <ViewerHeader onOpenExternally={onOpenExternally}>
-        {previewKind && (
+        {(previewKind || isYaml) && (
           <ModeToggle
             value={mode}
             onChange={setMode}
             options={[
-              { value: "preview", label: "Preview" },
-              { value: "edit", label: previewKind === "svg" ? "Source" : "Edit" },
+              { value: "preview", label: isYaml ? "Tree" : "Preview" },
+              // The card view leads no longer — Tree is the default. It is still
+              // offered, but only for a file with nesting to card (the tree's
+              // honesty rule).
+              ...(gridAvailable ? [{ value: "grid" as const, label: "Cards" }] : []),
+              {
+                value: "edit",
+                label: isYaml || previewKind === "svg" ? "Source" : "Edit",
+              },
             ]}
           />
         )}
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
+        {showEditor && pyRun && (
+          <RunDebugButtons
+            breakpointCount={bp.lines.length}
+            busy={launching}
+            showDebug={pyDebug}
+            args={pyArgs}
+            setArgs={setPyArgs}
+            onRun={onRun}
+            onDebug={onDebug}
+          />
+        )}
+        {showEditor && showSlurm && (
+          <SlurmBar
+            busy={launching}
+            fields={parseSbatchDirectives(draft)}
+            onField={(key, value) => setDraft(spliceDirective(draft, key, value))}
+            onSubmit={onSlurmSubmit}
+            onInteractive={onSlurmInteractive}
+          />
+        )}
         {showEditor && <EditorAiControls ai={ai} />}
         {showEditor && fmt.enabled && (
           <FormatButton available={fmt.available} busy={fmt.busy} run={() => void fmt.run()} />
@@ -4357,7 +5283,9 @@ function TextView({
         {showEditor && (
           <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
         )}
-        {showEditor && (
+        {/* The YAML tree edits the text, so its edits are ordinary undo steps —
+            the buttons stay live in Tree mode, unlike a read-only preview. */}
+        {(showEditor || isYaml) && (
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
         )}
         <PrintButton onPrint={handlePrint} disabled={!loaded} />
@@ -4366,19 +5294,41 @@ function TextView({
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
       {saveError && <div className="file-viewer-error">{saveError}</div>}
       {fmt.status && <div className="file-viewer-status-line">{fmt.status}</div>}
-      {showEditor && <ValidationBanner issue={issue} onJump={jumpToLine} />}
+      {(showEditor || isYaml) && <ValidationBanner issue={issue} onJump={jumpToLine} />}
       <div
         className={`file-viewer-body${showEditor ? " file-viewer-code-body" : ""}`}
-        ref={wheelRef}
+        ref={bodyRef}
+        onScroll={onBodyScroll}
       >
-        {!showEditor && previewKind ? (
+        {!showEditor && (previewKind || isYaml) ? (
           error != null ? (
             <div className="file-viewer-error">{error}</div>
           ) : !loaded ? (
             <div className="file-viewer-loading">Loading…</div>
+          ) : showGrid ? (
+            // The grid edits the same draft by splice, just like the tree — a cell
+            // edit is dirty, undoable and saveable exactly like a typed one.
+            <YamlGrid
+              text={draft}
+              onChange={setDraft}
+              tabKey={tabKey}
+              fontSize={font.isCustom ? font.fontSize : undefined}
+              strict={jsonStrict}
+            />
+          ) : isYaml ? (
+            // The tree edits the draft in place — the same draft Source shows and
+            // Ctrl+S writes, so an edit made here is dirty, undoable and saveable
+            // exactly like a typed one.
+            <YamlTree
+              text={draft}
+              onChange={setDraft}
+              tabKey={tabKey}
+              fontSize={font.isCustom ? font.fontSize : undefined}
+              strict={jsonStrict}
+            />
           ) : (
             // Preview reflects the live draft, so it tracks unsaved edits.
-            <RenderedPreview kind={previewKind} content={draft} fileName={fileName} />
+            <RenderedPreview kind={previewKind!} content={draft} fileName={fileName} />
           )
         ) : compareOpen ? (
           <CompareView
@@ -4412,7 +5362,14 @@ function TextView({
             onGotoApplied={jump.onGotoApplied}
             showBlame={showBlame}
             blame={blame}
-            initialScrollTop={viewPos.initial?.scrollTop}
+            breakpoints={pyDebug ? bp.set : undefined}
+            onToggleBreakpoint={pyDebug ? bp.toggle : undefined}
+            onFollowLink={isPy ? followPython : undefined}
+            linkRanges={isPy ? pythonLinkRanges : undefined}
+            // The LIVE offset (not `viewPos.initial`), so re-showing Source after
+            // a trip through Tree restores where the editor was, not the stale
+            // open-time snapshot.
+            initialScrollTop={srcScroll.current}
             onScrollPersist={persistScroll}
             groupId={groupId}
           />
@@ -4704,7 +5661,7 @@ function useBlobUrl(path: string, type: string) {
         setUrl(objectUrl);
         if (prev) URL.revokeObjectURL(prev);
       })
-      .catch((e) => { if (!cancelled) setError(String(e)); });
+      .catch((e) => { if (!cancelled) setError(describeFileError(e)); });
     return () => { cancelled = true; };
   }, [path, type, diskVersion, scope]);
 
@@ -5309,11 +6266,13 @@ function TexView({
   );
 }
 
-const MIN_SCALE = 0.05;
-const MAX_SCALE = 40;
-const ZOOM_STEP = 1.2;
+// Exported so GifView shares the exact zoom behavior (steps, bounds) with the
+// image viewer.
+export const MIN_SCALE = 0.05;
+export const MAX_SCALE = 40;
+export const ZOOM_STEP = 1.2;
 
-const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
+export const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
 
 /**
  * Zoomable/pannable image viewer. The image is drawn at its natural pixel size

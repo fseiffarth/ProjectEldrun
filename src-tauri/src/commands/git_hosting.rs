@@ -136,6 +136,15 @@ pub fn effective_git_creds(project_id: &str) -> (Option<String>, Option<String>)
     (profile_url, token)
 }
 
+/// The global access token from Settings → Git Hosting, if one is stored. For
+/// work that has no project to key a per-project override off yet — `git_clone`
+/// runs *before* the project exists — so only the global connection applies.
+pub fn global_git_token() -> Option<String> {
+    read_settings()
+        .and_then(|s| s.git_token)
+        .filter(|t| !t.trim().is_empty())
+}
+
 fn read_settings() -> Option<Settings> {
     let path = storage::state_dir().join("settings.json");
     if path.exists() {

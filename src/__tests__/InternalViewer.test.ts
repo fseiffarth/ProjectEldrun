@@ -22,8 +22,23 @@ describe("internalViewerFor", () => {
 
   it("maps common text/code extensions to the text viewer", () => {
     expect(internalViewerFor(file("main.rs", ".rs"))).toBe("text");
-    expect(internalViewerFor(file("data.json", ".json"))).toBe("text");
     expect(internalViewerFor(file("notes.txt", ".txt"))).toBe("text");
+    expect(internalViewerFor(file("Cargo.toml", ".toml"))).toBe("text");
+  });
+
+  it("maps YAML and JSON to the structure tree (#yaml)", () => {
+    // JSON is YAML's flow syntax, so both open in the same tree — with Source as
+    // the same code editor they used to open in.
+    expect(internalViewerFor(file("config.yaml", ".yaml"))).toBe("yaml");
+    expect(internalViewerFor(file("config.yml", ".yml"))).toBe("yaml");
+    expect(internalViewerFor(file("data.json", ".json"))).toBe("yaml");
+  });
+
+  it("falls back to the plain editor when the tree is opted out (#48)", () => {
+    // Turning off the tree is a vote against the tree, not against editing YAML
+    // in Eldrun — so it drops back to the code editor, not to an external app.
+    expect(internalViewerFor(file("data.json", ".json"), new Set(["yaml"] as const))).toBe("text");
+    expect(internalViewerFor(file("c.yaml", ".yaml"), new Set(["yaml", "text"] as const))).toBeNull();
   });
 
   it("maps well-known extensionless filenames to the text viewer", () => {
@@ -35,7 +50,19 @@ describe("internalViewerFor", () => {
     expect(internalViewerFor(file("photo.png", ".png"))).toBe("image");
     expect(internalViewerFor(file("photo.jpg", ".jpg"))).toBe("image");
     expect(internalViewerFor(file("photo.jpeg", ".jpeg"))).toBe("image");
-    expect(internalViewerFor(file("anim.gif", ".gif"))).toBe("image");
+  });
+
+  it("maps .gif to the animated-GIF viewer (wins over the generic image viewer)", () => {
+    expect(internalViewerFor(file("anim.gif", ".gif"))).toBe("gif");
+    // Opting the transport out (#48) degrades to the image viewer — the webview
+    // still animates <img> GIFs natively, it just loses frame control.
+    expect(internalViewerFor(file("anim.gif", ".gif"), new Set(["gif"] as const))).toBe("image");
+    expect(
+      internalViewerFor(file("anim.gif", ".gif"), new Set(["gif", "image"] as const)),
+    ).toBeNull();
+    const disabled = disabledViewers({ gif: { enabled: false } });
+    expect(disabled.has("gif")).toBe(true);
+    expect(internalViewerFor(file("anim.gif", ".gif"), disabled)).toBe("image");
   });
 
   it("maps .html/.htm/.svg to the rendered-preview viewer (wins over text)", () => {

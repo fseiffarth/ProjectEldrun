@@ -142,6 +142,17 @@ pub async fn pty_spawn(
         crate::services::ssh_exec::wrap_pty_options(&mut opts)?;
     }
 
+    // Persistent LOCAL (tmux) sessions (TODO #85): a tab that resolved to a LOCAL
+    // spawn — i.e. ssh/docker wrapping did NOT rewrite it — and carries a
+    // `tmux_session` name is wrapped in a tmux session on this machine, so the run
+    // survives an Eldrun crash and the tab reattaches on restart. A remote tab is
+    // now `cmd == "ssh"` (its tmux is inside the remote command) and a container tab
+    // is `cmd == "docker"`, so both are skipped. No-op on Windows / without tmux.
+    #[cfg(unix)]
+    if opts.tmux_session.is_some() && opts.cmd != "ssh" && opts.cmd != "docker" {
+        crate::services::tmux_local::wrap_pty_options_local(&mut opts);
+    }
+
     // Crash-loop guard.
     {
         let mut reg = registry.lock().unwrap();
@@ -154,6 +165,60 @@ pub async fn pty_spawn(
     }
 
     crate::terminal::spawn_pty(app, registry.inner().clone(), opts)
+}
+
+/// List the tmux sessions running on the **local** machine (TODO #85), for a local
+/// project's Sessions view. Empty on Windows / without tmux / no server.
+#[tauri::command]
+pub async fn local_tmux_list() -> Result<Vec<crate::services::ssh_exec::TmuxSession>, String> {
+    if !crate::services::tmux_local::tmux_available() {
+        return Ok(Vec::new());
+    }
+    tauri::async_runtime::spawn_blocking(|| {
+        let out = crate::paths::command_no_window("tmux")
+            .args(crate::services::tmux_local::local_tmux_ls_args())
+            .output();
+        match out {
+            Ok(o) => crate::services::ssh_exec::parse_tmux_ls(&String::from_utf8_lossy(&o.stdout)),
+            Err(_) => Vec::new(),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Kill a **local** tmux session (TODO #85) — the explicit-close / Sessions-view
+/// kill of a local persistent tab. No-op on Windows / without tmux.
+#[tauri::command]
+pub async fn local_tmux_kill(session: String) -> Result<(), String> {
+    if !crate::services::tmux_local::tmux_available() {
+        return Ok(());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = crate::paths::command_no_window("tmux")
+            .args(crate::services::tmux_local::local_tmux_kill_args(&session))
+            .output();
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Rename a **local** tmux session (TODO #85). `new_name` must be a safe tmux name.
+#[tauri::command]
+pub async fn local_tmux_rename(session: String, new_name: String) -> Result<(), String> {
+    if !crate::services::ssh_exec::valid_tmux_session_name(&new_name) {
+        return Err("a session name may only contain letters, digits, '-' and '_'".to_string());
+    }
+    if !crate::services::tmux_local::tmux_available() {
+        return Ok(());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = crate::paths::command_no_window("tmux")
+            .args(crate::services::tmux_local::local_tmux_rename_args(&session, &new_name))
+            .output();
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

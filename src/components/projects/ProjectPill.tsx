@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Toggle } from "../common/Toggle";
+import { UntestedTag } from "../common/UntestedTag";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import {
@@ -16,12 +17,14 @@ import { useProjectsStore } from "../../stores/projects";
 import { isResumableAgentTab, useTabsStore } from "../../stores/tabs";
 import { IS_WINDOWS } from "../../lib/platform";
 import { runInstallInTab } from "../../lib/installCommand";
+import { PythonInterpreterWindow } from "./PythonInterpreterWindow";
 import { useGitDirtyStore, type GitDirtyState } from "../../stores/gitDirty";
 import { providerName, gitTypeLabel } from "./projectTypeTags";
 import { ProjectHoverCard, projectDescription, useProjectHoverCard } from "./ProjectHoverCard";
 import { ActivityCalendar } from "./ActivityCalendar";
 import { CategoryEditor } from "./CategoryEditor";
 import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
+import { useRemoteMachinesStore, type DroppedGlobalMachine } from "../../stores/remoteMachines";
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { FolderPickerDialog } from "../common/FolderPickerDialog";
@@ -43,6 +46,11 @@ interface Props {
 }
 
 export const PILL_DRAG_TYPE = "application/x-eldrun-project";
+
+/** File endings that mark a project as holding Python — the "Python interpreter…"
+ *  menu entry is offered only when one is present. Matched against
+ *  `list_project_endings` (lowercased). */
+const PYTHON_ENDINGS = new Set([".py", ".pyw", ".pyi"]);
 
 /** Folder-icon title/color per git state — mirrors the file-tree markers'
  *  priority (red ▸ orange ▸ green), plus a neutral "clean" default. */
@@ -594,8 +602,16 @@ function ArchiveConfirmWindow({
   );
 }
 
-/** Simple confirm for detaching a remote (SSH) project back to local. The host's
- *  files are never touched — only the local mirror is promoted back in place. */
+/** Confirm for detaching a remote (SSH) project back to local. The host's files are never
+ *  touched — only the local mirror is promoted back in place.
+ *
+ *  Lives in the pill's **danger zone** despite destroying nothing on either side, because
+ *  what it drops is not a file but a *pairing*: `clear_host_bound_state` discards the
+ *  byte-sync manifest (every auto-sync marker the user set up for this host, and every
+ *  size/mtime base behind the file tree's green) along with the lockstep state. That purge
+ *  is mandatory — those records describe ONE host, and a project that keeps its id can be
+ *  re-extended to a different one — but it is not undoable, and re-attaching the very same
+ *  host means choosing the auto-sync scope again from scratch. Say so before, not after. */
 function DetachRemoteWindow({
   project,
   onConfirm,
@@ -632,7 +648,13 @@ function DetachRemoteWindow({
           This turns <strong>{project.name}</strong> back into a plain local
           project: its local working copy stays exactly where it is and becomes
           the project directory again. The files on the remote host are
-          {" "}<strong>not</strong> touched — this only drops the SSH link.
+          {" "}<strong>not</strong> touched, and nothing local is deleted.
+        </p>
+        <p className="settings-help">
+          What it does drop is the <strong>pairing</strong>: git lockstep stops, and the
+          auto-sync scope you chose for this host — which folders cross, and the record of
+          what was already in step — is discarded. Re-attaching the same host later means
+          picking that scope again from scratch.
         </p>
         {error && <div className="project-dialog-error">{error}</div>}
         <div className="project-dialog-actions">
@@ -1035,6 +1057,13 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const [showArchive, setShowArchive] = useState(false);
   const [editCategories, setEditCategories] = useState(false);
   const [extendRemote, setExtendRemote] = useState(false);
+  // Set instead of `extendRemote` alone when a global machine was handed to this
+  // (local-only) project from the header's Machines menu — seeds the "Extend to
+  // remote" dialog's SSH address with that machine, so the pick becomes "make
+  // this the project's primary".
+  const [extendRemoteMachine, setExtendRemoteMachine] = useState<DroppedGlobalMachine | null>(
+    null,
+  );
   // When set, the in-app "Move project…" folder browser is open, seeded at this
   // parent directory. `null` = closed.
   const [movePickerInitial, setMovePickerInitial] = useState<string | null>(null);
@@ -1049,14 +1078,15 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const catColor = primaryCategoryColor(categories);
 
   const timerPaused = useTimerStore((s) => s.paused);
-  // Whole-pill status glow, matching the tab lamps: working (green pulse) wins,
-  // else an agent in this project needs a decision (orange pulse) or has finished
-  // unseen (green steady). Attention rolls up from the project's background tabs.
   // One little bar per non-idle tab along the bottom edge of the pill, so a
   // glance at the switcher says how many tabs of each project are working
   // (green, pulsing), waiting on a decision (orange, pulsing) or finished unseen
   // (green, steady). This replaced a whole-pill tint that could only ever show
   // one state and said nothing about how many tabs were in it.
+  // The SELECTED project keeps its bars: the strip is a tally of what the project
+  // is doing, not a list of what still needs a glance, and the project you are in
+  // is the one whose agents you most need to see running. Only "finished unseen"
+  // is inherently about unread output, and it can't arise for a tab on screen.
   const statusCounts = useActivityStore((s) => s.statusCountsByScope[project.id]);
   const gitDirty = useGitDirtyStore((s) => s.byId[project.id]);
   const updateProjectDescription = useProjectsStore((s) => s.updateProjectDescription);
@@ -1064,6 +1094,28 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const moveRemoteMirror = useProjectsStore((s) => s.moveRemoteMirror);
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
   const [showContainerSettings, setShowContainerSettings] = useState(false);
+  const openRemoteMachines = useRemoteMachinesStore((s) => s.open);
+  // A global machine picked for THIS (local) project in the header's Machines
+  // menu: that menu can't own the extend dialog, so it parks the request here
+  // and the target's pill opens it. Cleared on pickup so it fires once.
+  const extendTarget = useRemoteMachinesStore((s) => s.extendTarget);
+  const clearExtend = useRemoteMachinesStore((s) => s.clearExtend);
+  useEffect(() => {
+    if (extendTarget?.projectId !== project.id) return;
+    setExtendRemoteMachine(extendTarget.machine);
+    setExtendRemote(true);
+    clearExtend();
+  }, [extendTarget, project.id, clearExtend]);
+  const [showPythonSettings, setShowPythonSettings] = useState(false);
+  // Whether this project actually contains Python files — the interpreter/venv
+  // setting is only worth offering then. Probed lazily when the context menu
+  // opens (see handleContextMenu), like the saved-password lookup, so no pill
+  // scans on render. `null` = not yet probed. A remote project's `directory` is
+  // its local state dir, not the host tree, so the local ending scan can't see
+  // its files: offer the setting for any remote project rather than hide it
+  // wrongly (the dialog probes the host for that project anyway).
+  const [hasPythonFiles, setHasPythonFiles] = useState<boolean | null>(null);
+  const showPython = project.remote ? true : hasPythonFiles === true;
 
   // Flip the project-container toggle. The flag is in every TerminalView's
   // spawn deps, so flipping respawns each live tab of this project —
@@ -1111,6 +1163,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   }, [project.id, project.sandbox?.enabled, setProjectSandbox]);
 
   const setProjectAutoConnect = useProjectsStore((s) => s.setProjectAutoConnect);
+  const setProjectPersistSessions = useProjectsStore((s) => s.setProjectPersistSessions);
   // Auto-connect is only offered when the connect can complete with no prompt: a
   // key/agent-auth host (recorded by the backend on its last successful connect) or
   // a password in the keychain (looked up when the menu opens).
@@ -1229,6 +1282,24 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
         .then(setSshPasswordSaved)
         .catch(() => setSshPasswordSaved(false));
     }
+    // Does this project hold any Python files? Gates the "Python interpreter…"
+    // entry below. A cheap local ending scan (already the file tree's "hide these
+    // endings" source), skipped for remote projects whose files live on the host
+    // (showPython shows those regardless — see hasPythonFiles).
+    if (!project.remote) {
+      const dir = resolveProjectDirectory(project);
+      if (dir) {
+        void invoke<string[]>("list_project_endings", { projectDir: dir })
+          .then((endings) =>
+            setHasPythonFiles(
+              endings.some((e) => PYTHON_ENDINGS.has(e.toLowerCase())),
+            ),
+          )
+          .catch(() => setHasPythonFiles(false));
+      } else {
+        setHasPythonFiles(false);
+      }
+    }
     // Anchor to the pill's bottom-left corner so the menu opens downward, below
     // the bar, with its left edge flush to the pill's left border.
     const rect = pillRef.current?.getBoundingClientRect();
@@ -1289,6 +1360,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
             </button>
             {project.remote && (
               <button
+                className="untested"
                 onClick={() => {
                   setContextMenu(null);
                   void moveMirror();
@@ -1296,17 +1368,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                 title="Move this project's local mirror (the connected working copy) to a new folder"
               >
                 Move project…
-              </button>
-            )}
-            {project.remote && (
-              <button
-                onClick={() => {
-                  setContextMenu(null);
-                  setShowDetach(true);
-                }}
-                title="Turn this back into a local project — the local working copy stays put; the remote host's files are untouched"
-              >
-                Detach SSH host…
+                <UntestedTag />
               </button>
             )}
             <button
@@ -1318,6 +1380,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
               Edit description
             </button>
             <button
+              className="untested"
               onClick={() => {
                 setContextMenu(null);
                 setEditCategories(true);
@@ -1325,8 +1388,10 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
               title="Tag this project to color and group it in the cloud and the pill bar"
             >
               Categories…
+              <UntestedTag />
             </button>
             <button
+              className="untested"
               onClick={() => {
                 setContextMenu(null);
                 void repairProjectScaffold(project.id);
@@ -1334,11 +1399,13 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
               title="Fill in any missing scaffold file, default .gitignore pattern, or .claude/settings.json — never overwrites existing content"
             >
               Repair scaffold files
+              <UntestedTag />
             </button>
             {!project.remote && (
               <button
                 onClick={() => {
                   setContextMenu(null);
+                  setExtendRemoteMachine(null);
                   setExtendRemote(true);
                 }}
                 title="Attach a remote SSH host to this local project — files stay put; push them up manually"
@@ -1354,6 +1421,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
             {project.git_type === "none" ? (
               !project.remote && (
                 <button
+                  className="untested"
                   onClick={() => {
                     setContextMenu(null);
                     void setProjectGitDisabled(project.id, false);
@@ -1361,12 +1429,14 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   title="Run git init to start version-controlling this project"
                 >
                   Enable git (git init)
+                  <UntestedTag />
                 </button>
               )
             ) : typeof project.git_type === "string" && project.git_type.startsWith("remote") ? (
               // Already published — offer in-place management, not another publish.
               <>
                 <button
+                  className="untested"
                   onClick={() => {
                     setContextMenu(null);
                     setShowVisibility(true);
@@ -1374,8 +1444,10 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   title="Flip the repository between public and private in place (gh/glab repo edit)"
                 >
                   {project.git_type === "remote-public" ? "Make private…" : "Make public…"}
+                  <UntestedTag />
                 </button>
                 <button
+                  className="untested"
                   onClick={() => {
                     setContextMenu(null);
                     setShowMigrate(true);
@@ -1383,8 +1455,10 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   title="Publish to the other provider and re-point origin; the old repo is left intact"
                 >
                   Move to {project.git_provider === "gitlab" ? "GitHub" : "GitLab"}…
+                  <UntestedTag />
                 </button>
                 <button
+                  className="untested"
                   onClick={() => {
                     setContextMenu(null);
                     setShowUnpublish(true);
@@ -1392,8 +1466,10 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   title="Remove the origin remote and go back to a local repo; the hosted repo and history are kept"
                 >
                   Unpublish (keep repo)…
+                  <UntestedTag />
                 </button>
                 <button
+                  className="untested"
                   onClick={() => {
                     setContextMenu(null);
                     setShowGitHosting(true);
@@ -1401,17 +1477,20 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   title="Override the global git hosting (profile URL + token) for this project only"
                 >
                   Git hosting…
+                  <UntestedTag />
                 </button>
               </>
             ) : (
               // Local git repo, not yet pushed anywhere.
               <button
+                className="untested"
                 onClick={() => {
                   setContextMenu(null);
                   setShowPublish(true);
                 }}
               >
                 Publish to GitHub / GitLab…
+                <UntestedTag />
               </button>
             )}
           </div>
@@ -1444,6 +1523,17 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                 </button>
               </>
             )}
+            {showPython && (
+              <button
+                onClick={() => {
+                  setContextMenu(null);
+                  setShowPythonSettings(true);
+                }}
+                title="The Python environment this project's scripts run and debug in. Auto-detected by default (in-tree venv, poetry, conda, pyenv); pin one when your environment lives somewhere Eldrun can't infer."
+              >
+                {project.python_interpreter ? "✓ " : ""}Python interpreter…
+              </button>
+            )}
             {project.remote && (
               <button
                 disabled={!autoConnectEligible}
@@ -1460,6 +1550,40 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                 {project.remote.auto_connect ? "✓ " : ""}Auto-connect on launch
               </button>
             )}
+            {/* Persistent remote sessions (TODO #85): shell/script tabs run inside a
+                tmux session on the host, so a long run survives an SSH drop, a
+                laptop sleep, or Eldrun quitting. Default ON — this opts out. */}
+            {project.remote && (
+              <button
+                onClick={() => {
+                  setContextMenu(null);
+                  void setProjectPersistSessions(
+                    project.id,
+                    project.remote?.persist_sessions === false,
+                  );
+                }}
+                title="Run this project's remote shell and Python/script tabs inside a tmux session on the host, so a long run keeps going through an SSH drop, a laptop sleep, or Eldrun quitting — the tab reattaches when you reconnect. Closing a tab still ends its session (with a confirm). Agent tabs are unaffected."
+              >
+                {project.remote.persist_sessions !== false ? "✓ " : ""}Persistent sessions (tmux)
+              </button>
+            )}
+            {/* Multi-host remote (docs/multi_host_remote_plan.md): manage the extra
+                "worker" machines this project runs experiments on. Remote only. */}
+            {project.remote && (
+              <button
+                className="untested"
+                onClick={() => {
+                  setContextMenu(null);
+                  openRemoteMachines(project.id);
+                }}
+                title="Add and manage extra machines this project runs on. They run the same code (kept in one-way sync) as read-only experiment workers; their outputs stay on each machine."
+              >
+                {project.compute_hosts?.length
+                  ? `Remote machines… (${project.compute_hosts.length})`
+                  : "Remote machines…"}
+                <UntestedTag />
+              </button>
+            )}
             <button
               onClick={() => {
                 setContextMenu(null);
@@ -1471,8 +1595,8 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   tabsStore.closeDetachedGroup(project.id, g.id);
                 }
                 // Clear this project's in-window tabs. For the ACTIVE project the
-                // debounced saveLayout effect persists the empty layout; for a
-                // non-active project nothing else writes it, so persist explicitly.
+                // debounced persist effect writes the empty layout; for a non-active
+                // project nothing else writes it, so persist explicitly.
                 tabsStore.closeAllTabs(project.id);
                 if (project.local_file) {
                   void invoke("save_tab_layout", {
@@ -1480,6 +1604,11 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                     tabs: [],
                     groups: null,
                     sessions: [],
+                    // This is THE close-all: the one empty save that is meant, by a user
+                    // who clicked a button that says so. Everywhere else an empty layout
+                    // is refused, because it far more often means "the caller had nothing
+                    // loaded" than "erase four tabs and their agent conversations".
+                    allowClear: true,
                   }).catch(() => {});
                 }
               }}
@@ -1491,6 +1620,18 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           {/* Danger zone — irreversible / destructive actions, fenced off */}
           <div className="context-menu-danger-zone">
             <div className="context-menu-group-label">Danger zone</div>
+            {project.remote && (
+              <button
+                className="danger"
+                onClick={() => {
+                  setContextMenu(null);
+                  setShowDetach(true);
+                }}
+                title="Turn this back into a local project. The local working copy stays put and the remote host's files are untouched — but the pairing is dropped: lockstep stops, and the auto-sync scope you set up for this host is discarded."
+              >
+                Detach SSH host…
+              </button>
+            )}
             {!project.remote && project.git_type !== "none" && (
               <button
                 className="danger"
@@ -1568,9 +1709,26 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
         />
       )}
 
-      {/* Extend a local project to remote (attach an SSH host) */}
+
+      {/* Which Python the viewer's Run/Debug buttons use (#87) */}
+      {showPythonSettings && (
+        <PythonInterpreterWindow
+          project={project}
+          onClose={() => setShowPythonSettings(false)}
+        />
+      )}
+
+      {/* Extend a local project to remote (attach an SSH host) — either from
+          the context menu, or a global machine dropped onto this pill. */}
       {extendRemote && (
-        <ExtendToRemoteDialog project={project} onClose={() => setExtendRemote(false)} />
+        <ExtendToRemoteDialog
+          project={project}
+          initialMachine={extendRemoteMachine ?? undefined}
+          onClose={() => {
+            setExtendRemote(false);
+            setExtendRemoteMachine(null);
+          }}
+        />
       )}
 
       {/* Detach a remote project back to local */}

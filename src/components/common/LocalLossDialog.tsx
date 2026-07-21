@@ -125,8 +125,8 @@ export function LocalLossDialog() {
             <LossEntry key={`${e.ts}-${i}`} loss={e} />
           ))}
         </div>
-        <div className="local-loss-actions">
-          <button type="button" className="primary" onClick={() => void ack(activeId)}>
+        <div className="project-dialog-actions">
+          <button type="button" onClick={() => void ack(activeId)}>
             Got it
           </button>
         </div>

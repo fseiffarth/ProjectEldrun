@@ -3,11 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
 import { useWindowsStore } from "../../stores/windows";
 import { useProjectsStore } from "../../stores/projects";
+import { useSettingsStore } from "../../stores/settings";
 import { Dropdown } from "../common/Dropdown";
 import {
   type FileEntry,
   type SortKey,
   STANDARD_PROJECT_FILES,
+  disabledViewers,
   fileIcon,
   folderIcon,
   fmtModified,
@@ -19,6 +21,7 @@ import {
 } from "../../lib/viewers/fileUtils";
 import { basename, dirname, isAbsolute } from "../../lib/paths";
 import { closeTabsForDeletedPath, retargetTabsForRenamedPath } from "./fileTabSync";
+import { openFileEntry } from "./openFileEntry";
 
 type ProjectJson = Record<string, unknown>;
 
@@ -49,6 +52,8 @@ interface Props {
 export function FileBrowser({ projectDir, projectId, active }: Props) {
   const { openFile } = useWindowsStore();
   const projects = useProjectsStore((s) => s.projects);
+  const viewerPrefs = useSettingsStore((s) => s.settings?.viewer_prefs);
+  const disabledViewerSet = useMemo(() => disabledViewers(viewerPrefs), [viewerPrefs]);
   const [relPath, setRelPath] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -165,14 +170,23 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
     load(next, { replace: true });
   }
 
-  function activate(entry: FileEntry) {
+  // Open on double-click. A folder navigates in; a file with a native in-app
+  // viewer opens in the project's focused subwindow, while a type with no native
+  // viewer — or a Shift+double-click — opens in the OS default app. The single
+  // open-a-file policy shared with the FileTree (see `openFileEntry`).
+  function activate(entry: FileEntry, ev?: React.MouseEvent) {
     if (entry.is_dir) {
       load(joinRel(relPath, entry.name));
-    } else {
-      openFile(entry.path, undefined, projectId, "middle_file_browser").catch((e) =>
-        setError(String(e)),
-      );
+      return;
     }
+    openFileEntry({
+      entry,
+      projectDir,
+      projectId,
+      origin: "middle_file_browser",
+      external: ev?.shiftKey ?? false,
+      disabled: disabledViewerSet,
+    });
   }
 
   function toggleSelected(entry: FileEntry, additive: boolean) {
@@ -314,8 +328,21 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
 
   const canMutate = selected.size > 0;
 
+  // Delete key removes the current selection — the keyboard twin of the Delete
+  // button / context-menu action. Ignored while a text field (path/search/rename
+  // prompt) has focus so it never eats a keystroke there.
+  function handleKeyDown(ev: React.KeyboardEvent) {
+    if (ev.key !== "Delete" || selected.size === 0) return;
+    const target = ev.target as HTMLElement | null;
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+      return;
+    }
+    ev.preventDefault();
+    void deleteSelected();
+  }
+
   return (
-    <section className={`file-browser ${active ? "active" : ""}`}>
+    <section className={`file-browser ${active ? "active" : ""}`} tabIndex={0} onKeyDown={handleKeyDown}>
       <div className="file-browser-toolbar">
         <button onClick={goBack} disabled={history.length === 0} title="Back">‹</button>
         <button onClick={goForward} disabled={future.length === 0} title="Forward">›</button>
@@ -382,7 +409,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
                   key={entry.path}
                   className={`file-browser-row${selected.has(entry.path) ? " selected" : ""}${isScaffold ? " scaffold" : ""}`}
                   onClick={(e) => toggleSelected(entry, e.ctrlKey || e.metaKey)}
-                  onDoubleClick={() => activate(entry)}
+                  onDoubleClick={(e) => activate(entry, e)}
                   onContextMenu={(e) => showEntryContextMenu(e, entry)}
                 >
                   <span><b>{entry.is_dir ? folderIcon() : fileIcon(entry.extension)}</b>{entry.name}</span>
@@ -399,7 +426,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
                   key={entry.path}
                   className={`file-browser-tile${selected.has(entry.path) ? " selected" : ""}${isScaffold ? " scaffold" : ""}`}
                   onClick={(e) => toggleSelected(entry, e.ctrlKey || e.metaKey)}
-                  onDoubleClick={() => activate(entry)}
+                  onDoubleClick={(e) => activate(entry, e)}
                   onContextMenu={(e) => showEntryContextMenu(e, entry)}
                 >
                   <span>{entry.is_dir ? folderIcon() : fileIcon(entry.extension)}</span>

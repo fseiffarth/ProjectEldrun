@@ -4,6 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Eldrun</title>
+    <script>
+      // Apply the theme BEFORE first paint. Settings arrive over an async
+      // Tauri invoke, so without this the page renders ~1s with the CSS
+      // :root default (fancy_dark) and then snaps to the real theme.
+      // stores/settings.ts keeps this cache in sync on every theme change;
+      // fancy_dark mirrors the backend default (schema::settings).
+      try {
+        document.documentElement.setAttribute(
+          "data-theme",
+          localStorage.getItem("eldrun-theme") || "fancy_dark",
+        );
+      } catch (_) {
+        document.documentElement.setAttribute("data-theme", "fancy_dark");
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

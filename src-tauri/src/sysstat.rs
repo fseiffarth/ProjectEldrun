@@ -46,6 +46,27 @@ pub struct ProcSample {
     pub rss_kib: u64,
     pub cpu_jiffies: u64,
     pub threads: u32,
+    /// Owning user's name, resolved from the machine's own passwd database
+    /// (`/etc/passwd` locally, `getent passwd` on a remote host) so the pane can
+    /// group the process table by user — the same per-user "who's loading the
+    /// host" statistic the connect-time usage dialog shows. Empty when the
+    /// backend can't resolve an owner (Windows/macOS, an unmapped uid), which the
+    /// frontend reads as "no per-user data" and hides the section. An unmapped
+    /// uid falls back to `#<uid>` rather than an empty string.
+    #[serde(default)]
+    pub user: String,
+}
+
+/// One interactive login session on the sampled host, from `who`. Mirrors the
+/// connect-time remote-usage dialog's `UserSession`: `user` is the login name,
+/// `tty` the terminal, `detail` the rest of the `who` line verbatim (login time,
+/// origin `(host)`). Populated **only on the remote path** — the local pane never
+/// shows the "Logged in" panel, since local sampling is always just this user.
+#[derive(Serialize, Clone, Default)]
+pub struct LoginSession {
+    pub user: String,
+    pub tty: String,
+    pub detail: String,
 }
 
 /// A single whole-system sample backing the htop-like monitor pane. Everything
@@ -67,6 +88,33 @@ pub struct SystemSnapshot {
     pub load_avg: [f64; 3],
     pub uptime_secs: f64,
     pub processes: Vec<ProcSample>,
+    /// Every GPU the machine will report memory for; empty when none can be read
+    /// (macOS, an Intel-only box, no `nvidia-smi`). See [`crate::gpustat`].
+    pub gpus: Vec<crate::gpustat::GpuSample>,
+    /// Per-process GPU memory. Populated only on the **remote** path (sampled on
+    /// the host alongside the snapshot); the local pane fills it from the dedicated
+    /// `gpu_process_snapshot` command instead, so this stays empty locally.
+    #[serde(default)]
+    pub gpu_procs: Vec<crate::gpustat::GpuProc>,
+    /// Whole-package CPU temperature in °C, when a CPU hwmon sensor exposes one
+    /// (`coretemp` on Intel, `k10temp`/`zenpower` on AMD Zen). `None` when no such
+    /// sensor is present, or on a backend that can't read one (Windows/macOS/other)
+    /// — never a fake zero, matching the GPU sensors.
+    #[serde(default)]
+    pub cpu_temp_c: Option<f64>,
+    /// Hottest DIMM temperature in °C, when the board exposes an on-module thermal
+    /// sensor (`jc42` on DDR3/DDR4, `spd5118` on DDR5). The *max* across modules, so
+    /// it reads as "how hot is memory". `None` when no such sensor is present (most
+    /// desktops don't wire one) or the backend can't read one — never a fake zero.
+    #[serde(default)]
+    pub mem_temp_c: Option<f64>,
+    /// Interactive login sessions on the host (from `who`), backing the pane's
+    /// "Logged in" panel — the same per-user session view the connect-time
+    /// remote-usage dialog shows. Populated only on the **remote** path; empty
+    /// locally (the panel is remote-only, since local sampling is always just this
+    /// user, so it would be a single trivial row).
+    #[serde(default)]
+    pub sessions: Vec<LoginSession>,
 }
 
 /// Generation counter bumped whenever a PTY is spawned or dies (see
@@ -202,17 +250,25 @@ pub fn cmdline(pid: u32) -> Option<String> {
 /// A whole-system sample (all processes + per-core CPU + memory/load) for the
 /// htop-like monitor pane. Delegates to the per-OS backend; non-`/proc` targets
 /// return `SystemSnapshot { supported: false, .. }`.
+///
+/// The GPUs are stapled on here rather than inside each backend: they are read
+/// from a different place entirely ([`crate::gpustat`] — DRM sysfs or
+/// `nvidia-smi`, both of which have their own per-OS story) and an empty list is
+/// a legitimate answer on every platform, including a supported one.
 pub fn system_snapshot() -> SystemSnapshot {
-    platform::system_snapshot()
+    let mut snapshot = platform::system_snapshot();
+    snapshot.gpus = crate::gpustat::snapshot();
+    snapshot
 }
 
-// ── Pure `/proc` parsers (Linux; compiled under test on any OS) ──────────────
+// ── Pure `/proc` parsers ─────────────────────────────────────────────────────
 // Factored out of the Linux backend so they can be unit-tested from string
-// fixtures without a live `/proc`.
+// fixtures without a live `/proc`. Compiled on *every* host OS (not just Linux)
+// because `parse_remote_snapshot` reuses them to parse a remote Linux host's
+// `/proc` fetched over SSH — the host is Linux even when this machine is not.
 
 /// Parse one `cpu`/`cpuN` line of `/proc/stat` into cumulative busy/total ticks.
 /// `total` is the sum of every column; `busy = total − idle − iowait`.
-#[cfg(any(target_os = "linux", test))]
 fn parse_cpu_line(line: &str) -> Option<CpuTimes> {
     let mut it = line.split_whitespace();
     it.next()?; // "cpu" / "cpuN" label
@@ -231,7 +287,6 @@ fn parse_cpu_line(line: &str) -> Option<CpuTimes> {
 
 /// Parse `/proc/stat` into (aggregate, per-core) cumulative CPU times. The
 /// aggregate is the `cpu ` line; each `cpuN` line is one core, in order.
-#[cfg(any(target_os = "linux", test))]
 fn parse_cpu_stat(content: &str) -> (CpuTimes, Vec<CpuTimes>) {
     let mut agg = CpuTimes::default();
     let mut per_core = Vec::new();
@@ -258,7 +313,6 @@ fn parse_cpu_stat(content: &str) -> (CpuTimes, Vec<CpuTimes>) {
 
 /// Extract (MemTotal, MemAvailable, SwapTotal, SwapFree) from `/proc/meminfo`,
 /// all in KiB. Missing keys default to 0.
-#[cfg(any(target_os = "linux", test))]
 fn parse_meminfo(content: &str) -> (u64, u64, u64, u64) {
     let get = |key: &str| -> u64 {
         content
@@ -277,7 +331,6 @@ fn parse_meminfo(content: &str) -> (u64, u64, u64, u64) {
 }
 
 /// First three floats of `/proc/loadavg` (1/5/15-minute load averages).
-#[cfg(any(target_os = "linux", test))]
 fn parse_loadavg(content: &str) -> [f64; 3] {
     let mut it = content.split_whitespace();
     let mut next = || it.next().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
@@ -289,7 +342,6 @@ fn parse_loadavg(content: &str) -> [f64; 3] {
 /// contain spaces/parens, so fields are indexed *after* the last `)`:
 /// index 0 = state (field 3), 1 = ppid (field 4), 11 = utime (14),
 /// 12 = stime (15), 17 = num_threads (20).
-#[cfg(any(target_os = "linux", test))]
 fn parse_pid_stat(content: &str) -> Option<(String, String, u32, u64, u32)> {
     let open = content.find('(')?;
     let close = content.rfind(')')?;
@@ -301,6 +353,477 @@ fn parse_pid_stat(content: &str) -> Option<(String, String, u32, u64, u32)> {
     let stime: u64 = fields.get(12)?.parse().ok()?;
     let threads: u32 = fields.get(17)?.parse().ok()?;
     Some((comm, state, ppid, utime + stime, threads))
+}
+
+/// Parse `getent passwd` / `/etc/passwd` content into a uid → username map. Each
+/// line is `name:passwd:uid:gid:gecos:home:shell`; only `name` (field 0) and
+/// `uid` (field 2) are read, malformed lines skipped. The *first* name wins when
+/// two entries share a uid (a deliberate alias), so the mapping is stable.
+fn parse_passwd(content: &str) -> HashMap<u32, String> {
+    let mut map: HashMap<u32, String> = HashMap::new();
+    for line in content.lines() {
+        let mut it = line.split(':');
+        let name = it.next().unwrap_or("");
+        let _passwd = it.next();
+        let Some(uid) = it.next().and_then(|s| s.trim().parse::<u32>().ok()) else {
+            continue;
+        };
+        if !name.is_empty() {
+            map.entry(uid).or_insert_with(|| name.to_string());
+        }
+    }
+    map
+}
+
+/// Resolve a numeric uid to a display name via a passwd map, falling back to
+/// `#<uid>` for a uid the map doesn't cover (an NSS-only account the file walk
+/// missed, or a process whose owner was removed) rather than an empty string.
+fn username_for(uid: u32, map: &HashMap<u32, String>) -> String {
+    map.get(&uid)
+        .cloned()
+        .unwrap_or_else(|| format!("#{uid}"))
+}
+
+/// Parse `who` output into one [`LoginSession`] per non-blank line. Each line is
+/// `user  tty  <login-time> (<origin>)`; the first two whitespace fields are the
+/// user and tty, everything after is kept verbatim as `detail`. Matches
+/// `services::remote_usage::parse_who` so the pane's "Logged in" panel reads
+/// identically to the connect-time dialog's.
+fn parse_who(content: &str) -> Vec<LoginSession> {
+    content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| {
+            let mut parts = l.split_whitespace();
+            let user = parts.next()?.to_string();
+            let tty = parts.next().unwrap_or("").to_string();
+            let detail = parts.collect::<Vec<_>>().join(" ");
+            Some(LoginSession { user, tty, detail })
+        })
+        .collect()
+}
+
+/// hwmon `name` values that identify a CPU **package** temperature sensor: Intel
+/// exposes `coretemp`, AMD Zen `k10temp` (or the out-of-tree `zenpower`), some
+/// ARM/embedded boards `cpu_thermal`. Anything else (a GPU's `amdgpu`, a
+/// mainboard SuperIO chip, an NVMe drive) is deliberately excluded — a wrong
+/// sensor reported as "CPU" is worse than reporting none.
+fn is_cpu_hwmon(name: &str) -> bool {
+    matches!(name.trim(), "coretemp" | "k10temp" | "zenpower" | "cpu_thermal")
+}
+
+/// hwmon `name` values that identify an on-DIMM **memory** temperature sensor:
+/// `jc42` (the JEDEC JC42.4 sensor on DDR3/DDR4 modules) and `spd5118` (the DDR5
+/// SPD-hub temperature sensor). One hwmon appears per populated module that has
+/// one, so the reader takes the *hottest*. Anything else is excluded — a
+/// mainboard/SuperIO channel mislabelled as memory would be worse than none.
+fn is_mem_hwmon(name: &str) -> bool {
+    matches!(name.trim(), "jc42" | "spd5118")
+}
+
+/// Choose the reading that best represents the whole CPU package from one hwmon's
+/// temperature channels, each a `(label, milli_celsius)` pair. Prefers an explicit
+/// package/control label — `Package id 0` (Intel `coretemp`), `Tctl`/`Tdie` (AMD
+/// `k10temp`) — over a per-core channel; failing that, the first channel
+/// (`temp1_input`), which is the package on a single-channel sensor. Returns °C
+/// (millidegrees ÷ 1000), or `None` when there are no channels.
+fn pick_cpu_temp(channels: &[(Option<String>, f64)]) -> Option<f64> {
+    let preferred = channels.iter().find(|(label, _)| {
+        label.as_deref().is_some_and(|l| {
+            let l = l.trim();
+            l.starts_with("Package") || l == "Tctl" || l == "Tdie"
+        })
+    });
+    preferred
+        .or_else(|| channels.first())
+        .map(|(_, milli)| milli / 1000.0)
+}
+
+// ── Remote (`ssh`) whole-system snapshot ────────────────────────────────────
+// A remote project's System Monitor reads the *host's* `/proc` over the shared
+// ControlMaster, exactly as the Disk Usage pane reads the host's `du`. The
+// snapshot shape is identical to the local one, so the frontend pane needs no
+// per-source branch — only the pure parsers above, fed the host's `/proc` bytes.
+
+/// POSIX-`sh` script run on the host (via `services::ssh_exec::run_remote_script`)
+/// to capture one whole-system sample from its `/proc`.
+///
+/// **Constant** — `run_remote_script` embeds it verbatim (no quoting), so nothing
+/// may be interpolated in; the only variable in that call is the `cd`-target
+/// `remote_path`, which it quotes and which this script ignores. Output is
+/// line-oriented and consumed by [`parse_remote_snapshot`]: a `CLK` line, then the
+/// `@SECTION@` blocks carrying the raw kernel files verbatim. `@GPU@` carries the
+/// host's GPUs — `NVSMI`/`NVPROC` lines are the `nvidia-smi` CSV verbatim (reusing
+/// the same parsers as the local read), and `AMD\t<card>\t<key>\t<value>` lines
+/// ship one DRM sysfs file each so `parse_drm_card` runs unchanged on them. The
+/// `@WHO@` block carries the host's `who` output verbatim for the pane's "Logged
+/// in" panel ([`parse_who`]). The
+/// `@PASSWD@` block ships the host's `getent passwd` (or `/etc/passwd`) verbatim so
+/// [`parse_passwd`] can map each process's owner uid to a name on the *host's*
+/// account database, not this machine's. Under `@PROCS@` comes one `S`/`U`/`R`/`C`
+/// quad per process (the raw `/proc/<pid>/stat` line, its owner uid from
+/// `/proc/<pid>/status`, its `VmRSS` in KiB, and its NUL-flattened cmdline).
+/// cmdline NULs become spaces so every field stays on one line, which is what lets
+/// the parser split on line prefixes alone.
+pub const REMOTE_SNAPSHOT_SCRIPT: &str = r#"
+printf 'CLK\t%s\n' "$(getconf CLK_TCK 2>/dev/null || echo 100)"
+printf '@STAT@\n'; cat /proc/stat 2>/dev/null
+printf '@MEM@\n'; cat /proc/meminfo 2>/dev/null
+printf '@LOAD@\n'; cat /proc/loadavg 2>/dev/null
+printf '@UP@\n'; cat /proc/uptime 2>/dev/null
+printf '@WHO@\n'; who 2>/dev/null
+printf '@GPU@\n'
+if command -v nvidia-smi >/dev/null 2>&1; then
+  nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw,power.limit,clocks.sm,clocks.mem,fan.speed,driver_version,pcie.link.gen.current,pcie.link.width.current --format=csv,noheader,nounits 2>/dev/null | sed 's/^/NVSMI\t/'
+  nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null | sed 's/^/NVPROC\t/'
+fi
+for c in /sys/class/drm/card[0-9]*; do
+  d="$c/device"
+  [ -r "$d/mem_info_vram_total" ] || continue
+  i=${c##*/}; i=${i#card}
+  h=$(ls -d "$d"/hwmon/hwmon* 2>/dev/null | head -n1)
+  printf 'AMD\t%s\tdriver\t%s\n' "$i" "$(sed -n 's/^DRIVER=//p' "$d/uevent" 2>/dev/null)"
+  printf 'AMD\t%s\tvendor\t%s\n' "$i" "$(cat "$d/vendor" 2>/dev/null)"
+  printf 'AMD\t%s\tdevice\t%s\n' "$i" "$(cat "$d/device" 2>/dev/null)"
+  printf 'AMD\t%s\tvram_used\t%s\n' "$i" "$(cat "$d/mem_info_vram_used" 2>/dev/null)"
+  printf 'AMD\t%s\tvram_total\t%s\n' "$i" "$(cat "$d/mem_info_vram_total" 2>/dev/null)"
+  printf 'AMD\t%s\tgtt_used\t%s\n' "$i" "$(cat "$d/mem_info_gtt_used" 2>/dev/null)"
+  printf 'AMD\t%s\tgtt_total\t%s\n' "$i" "$(cat "$d/mem_info_gtt_total" 2>/dev/null)"
+  printf 'AMD\t%s\tbusy\t%s\n' "$i" "$(cat "$d/gpu_busy_percent" 2>/dev/null)"
+  printf 'AMD\t%s\tsclk\t%s\n' "$i" "$(grep '\*' "$d/pp_dpm_sclk" 2>/dev/null | head -n1)"
+  printf 'AMD\t%s\tmclk\t%s\n' "$i" "$(grep '\*' "$d/pp_dpm_mclk" 2>/dev/null | head -n1)"
+  printf 'AMD\t%s\tlink_speed\t%s\n' "$i" "$(cat "$d/current_link_speed" 2>/dev/null)"
+  printf 'AMD\t%s\tlink_width\t%s\n' "$i" "$(cat "$d/current_link_width" 2>/dev/null)"
+  printf 'AMD\t%s\ttemp\t%s\n' "$i" "$(cat "$h/temp1_input" 2>/dev/null)"
+  printf 'AMD\t%s\tpower\t%s\n' "$i" "$(cat "$h/power1_average" 2>/dev/null || cat "$h/power1_input" 2>/dev/null)"
+  printf 'AMD\t%s\tpower_cap\t%s\n' "$i" "$(cat "$h/power1_cap" 2>/dev/null)"
+  printf 'AMD\t%s\tpwm\t%s\n' "$i" "$(cat "$h/pwm1" 2>/dev/null)"
+  printf 'AMD\t%s\tpwm_max\t%s\n' "$i" "$(cat "$h/pwm1_max" 2>/dev/null)"
+done
+printf '@CPUTEMP@\n'
+for h in /sys/class/hwmon/hwmon*; do
+  n=$(cat "$h/name" 2>/dev/null)
+  case "$n" in coretemp|k10temp|zenpower|cpu_thermal) ;; *) continue ;; esac
+  for t in "$h"/temp*_input; do
+    [ -r "$t" ] || continue
+    printf 'T\t%s\t%s\n' "$(cat "${t%_input}_label" 2>/dev/null)" "$(cat "$t" 2>/dev/null)"
+  done
+done
+printf '@MEMTEMP@\n'
+for h in /sys/class/hwmon/hwmon*; do
+  n=$(cat "$h/name" 2>/dev/null)
+  case "$n" in jc42|spd5118) ;; *) continue ;; esac
+  printf 'M\t%s\n' "$(cat "$h/temp1_input" 2>/dev/null)"
+done
+printf '@PASSWD@\n'; getent passwd 2>/dev/null || cat /etc/passwd 2>/dev/null
+printf '@PROCS@\n'
+for d in /proc/[0-9]*; do
+  [ -r "$d/stat" ] || continue
+  s=$(cat "$d/stat" 2>/dev/null) || continue
+  [ -n "$s" ] || continue
+  ru=$(awk '/^Uid:/{u=$2} /^VmRSS:/{r=$2} END{print (u==""?0:u)" "(r==""?0:r)}' "$d/status" 2>/dev/null)
+  u=${ru%% *}; r=${ru##* }
+  c=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)
+  printf 'S\t%s\n' "$s"
+  printf 'U\t%s\n' "${u:-0}"
+  printf 'R\t%s\n' "${r:-0}"
+  printf 'C\t%s\n' "$c"
+done
+"#;
+
+/// Assemble a [`SystemSnapshot`] from the output of [`REMOTE_SNAPSHOT_SCRIPT`],
+/// reusing the same pure `/proc` parsers the local Linux backend uses. `supported`
+/// is always `true` (the host is assumed Linux; a host with no `/proc` simply
+/// yields zeroed CPU/memory and an empty process table). The `@GPU@` block is fed
+/// through the very same `gpustat` parsers as the local read, so a host GPU shows
+/// with the same memory/sensor detail; `gpu_procs` carries the host's per-process
+/// GPU memory (NVIDIA only — the AMD `fdinfo` walk is local-only, too heavy to run
+/// per remote poll).
+pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
+    use std::collections::BTreeMap;
+    enum Sec {
+        None,
+        Stat,
+        Mem,
+        Load,
+        Up,
+        Who,
+        Gpu,
+        CpuTemp,
+        MemTemp,
+        Passwd,
+        Procs,
+    }
+    let mut sec = Sec::None;
+    let mut clk: u64 = 100;
+    let mut stat_buf = String::new();
+    let mut mem_buf = String::new();
+    let mut load_buf = String::new();
+    let mut up_buf = String::new();
+    let mut who_buf = String::new();
+    // The host's passwd db (shipped under @PASSWD@), accumulated then parsed into a
+    // uid → name map the instant @PROCS@ starts — fully built before any process
+    // line, so `flush` can resolve each owner immediately.
+    let mut passwd_buf = String::new();
+    let mut uid_to_name: HashMap<u32, String> = HashMap::new();
+    let mut processes: Vec<ProcSample> = Vec::new();
+    // GPU accumulators: the `nvidia-smi` CSV rebuilt line-by-line for its parsers,
+    // and one `DrmFiles` per AMD card index assembled from its shipped sysfs files.
+    let mut nvsmi = String::new();
+    let mut nvproc = String::new();
+    let mut amd_cards: BTreeMap<u32, crate::gpustat::DrmFiles> = BTreeMap::new();
+    // CPU hwmon channels shipped as `T\t<label>\t<milli_celsius>` under @CPUTEMP@.
+    let mut cpu_temp_channels: Vec<(Option<String>, f64)> = Vec::new();
+    // Hottest DIMM temp in °C, from `M\t<milli>` lines under @MEMTEMP@ (one per module).
+    let mut mem_temp_c: Option<f64> = None;
+
+    // A process is assembled from its consecutive S/U/R/C lines; `flush` finalizes
+    // the pending one when the next `S` arrives (or at end of input).
+    let mut p_stat: Option<String> = None;
+    let mut p_uid: Option<u32> = None;
+    let mut p_rss: u64 = 0;
+    let mut p_cmd: Option<String> = None;
+
+    fn flush(
+        processes: &mut Vec<ProcSample>,
+        p_stat: &mut Option<String>,
+        p_uid: &mut Option<u32>,
+        p_rss: &mut u64,
+        p_cmd: &mut Option<String>,
+        uid_to_name: &HashMap<u32, String>,
+    ) {
+        if let Some(line) = p_stat.take() {
+            if let Some((comm, state, ppid, cpu_jiffies, threads)) = parse_pid_stat(&line) {
+                // The pid is field 1 of the stat line, before `(comm)`.
+                let pid = line
+                    .trim_start()
+                    .split('(')
+                    .next()
+                    .and_then(|p| p.trim().parse::<u32>().ok())
+                    .unwrap_or(0);
+                let cmdline = p_cmd
+                    .take()
+                    .filter(|c| !c.trim().is_empty())
+                    .unwrap_or_else(|| format!("[{comm}]"));
+                // An owner uid the host didn't report (unreadable status) leaves the
+                // user empty rather than mislabelling it `#0` (root).
+                let user = p_uid
+                    .take()
+                    .map(|uid| username_for(uid, uid_to_name))
+                    .unwrap_or_default();
+                processes.push(ProcSample {
+                    pid,
+                    ppid,
+                    comm,
+                    cmdline,
+                    state,
+                    rss_kib: *p_rss,
+                    cpu_jiffies,
+                    threads,
+                    user,
+                });
+            }
+        }
+        *p_uid = None;
+        *p_rss = 0;
+        *p_cmd = None;
+    }
+
+    for line in raw.lines() {
+        match line {
+            "@STAT@" => {
+                sec = Sec::Stat;
+                continue;
+            }
+            "@MEM@" => {
+                sec = Sec::Mem;
+                continue;
+            }
+            "@LOAD@" => {
+                sec = Sec::Load;
+                continue;
+            }
+            "@UP@" => {
+                sec = Sec::Up;
+                continue;
+            }
+            "@WHO@" => {
+                sec = Sec::Who;
+                continue;
+            }
+            "@GPU@" => {
+                sec = Sec::Gpu;
+                continue;
+            }
+            "@CPUTEMP@" => {
+                sec = Sec::CpuTemp;
+                continue;
+            }
+            "@MEMTEMP@" => {
+                sec = Sec::MemTemp;
+                continue;
+            }
+            "@PASSWD@" => {
+                sec = Sec::Passwd;
+                continue;
+            }
+            "@PROCS@" => {
+                // @PASSWD@ has fully arrived by now (it precedes @PROCS@), so parse
+                // it into the uid → name map before the first process line.
+                uid_to_name = parse_passwd(&passwd_buf);
+                sec = Sec::Procs;
+                continue;
+            }
+            _ => {}
+        }
+        if let Some(rest) = line.strip_prefix("CLK\t") {
+            if let Ok(v) = rest.trim().parse::<u64>() {
+                if v > 0 {
+                    clk = v;
+                }
+            }
+            continue;
+        }
+        match sec {
+            Sec::Stat => {
+                stat_buf.push_str(line);
+                stat_buf.push('\n');
+            }
+            Sec::Mem => {
+                mem_buf.push_str(line);
+                mem_buf.push('\n');
+            }
+            Sec::Load => {
+                load_buf.push_str(line);
+                load_buf.push('\n');
+            }
+            Sec::Up => {
+                up_buf.push_str(line);
+                up_buf.push('\n');
+            }
+            Sec::Who => {
+                who_buf.push_str(line);
+                who_buf.push('\n');
+            }
+            Sec::Gpu => {
+                if let Some(rest) = line.strip_prefix("NVSMI\t") {
+                    nvsmi.push_str(rest);
+                    nvsmi.push('\n');
+                } else if let Some(rest) = line.strip_prefix("NVPROC\t") {
+                    nvproc.push_str(rest);
+                    nvproc.push('\n');
+                } else if let Some(rest) = line.strip_prefix("AMD\t") {
+                    // `<index>\t<key>\t<value>`; an empty value = a file the host
+                    // didn't expose, so skip it rather than store a blank.
+                    let mut it = rest.splitn(3, '\t');
+                    if let (Some(idx), Some(key), Some(val)) = (it.next(), it.next(), it.next()) {
+                        if !val.is_empty() {
+                            if let Ok(idx) = idx.parse::<u32>() {
+                                crate::gpustat::set_drm_field(
+                                    amd_cards.entry(idx).or_default(),
+                                    key,
+                                    val,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Sec::CpuTemp => {
+                // `T\t<label>\t<milli>`; an empty label ⇒ no `tempN_label` file,
+                // an empty/garbage value ⇒ a channel the host couldn't read (skip).
+                if let Some(rest) = line.strip_prefix("T\t") {
+                    let mut it = rest.splitn(2, '\t');
+                    let label = it.next().unwrap_or("").trim();
+                    if let Some(milli) = it.next().and_then(|v| v.trim().parse::<f64>().ok()) {
+                        let label = (!label.is_empty()).then(|| label.to_string());
+                        cpu_temp_channels.push((label, milli));
+                    }
+                }
+            }
+            Sec::MemTemp => {
+                // `M\t<milli>`; keep the hottest module, skipping blanks/garbage.
+                if let Some(rest) = line.strip_prefix("M\t") {
+                    if let Ok(milli) = rest.trim().parse::<f64>() {
+                        let c = milli / 1000.0;
+                        mem_temp_c = Some(mem_temp_c.map_or(c, |h| h.max(c)));
+                    }
+                }
+            }
+            Sec::Passwd => {
+                passwd_buf.push_str(line);
+                passwd_buf.push('\n');
+            }
+            Sec::Procs => {
+                if let Some(rest) = line.strip_prefix("S\t") {
+                    flush(
+                        &mut processes,
+                        &mut p_stat,
+                        &mut p_uid,
+                        &mut p_rss,
+                        &mut p_cmd,
+                        &uid_to_name,
+                    );
+                    p_stat = Some(rest.to_string());
+                } else if let Some(rest) = line.strip_prefix("U\t") {
+                    p_uid = rest.trim().parse().ok();
+                } else if let Some(rest) = line.strip_prefix("R\t") {
+                    p_rss = rest.trim().parse().unwrap_or(0);
+                } else if let Some(rest) = line.strip_prefix("C\t") {
+                    p_cmd = Some(rest.to_string());
+                }
+            }
+            Sec::None => {}
+        }
+    }
+    flush(
+        &mut processes,
+        &mut p_stat,
+        &mut p_uid,
+        &mut p_rss,
+        &mut p_cmd,
+        &uid_to_name,
+    );
+
+    let (cpu, per_core) = parse_cpu_stat(&stat_buf);
+    let (mem_total_kib, mem_available_kib, swap_total_kib, swap_free_kib) = parse_meminfo(&mem_buf);
+    let load_avg = parse_loadavg(&load_buf);
+    let uptime_secs = up_buf
+        .split_whitespace()
+        .next()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.0);
+
+    // AMD cards (via the shared `parse_drm_card`) then NVIDIA (via the shared
+    // `parse_nvidia_smi`), so the host reading matches the local one field-for-field.
+    let mut gpus: Vec<crate::gpustat::GpuSample> = amd_cards
+        .into_iter()
+        .filter_map(|(idx, files)| crate::gpustat::parse_drm_card(idx, &files))
+        .collect();
+    gpus.extend(crate::gpustat::parse_nvidia_smi(&nvsmi));
+    let gpu_procs = crate::gpustat::parse_nvidia_apps(&nvproc);
+    let cpu_temp_c = pick_cpu_temp(&cpu_temp_channels);
+    let sessions = parse_who(&who_buf);
+
+    SystemSnapshot {
+        supported: true,
+        clk_tck: clk,
+        num_cores: per_core.len() as u32,
+        cpu,
+        per_core,
+        mem_total_kib,
+        mem_available_kib,
+        swap_total_kib,
+        swap_free_kib,
+        load_avg,
+        uptime_secs,
+        processes,
+        gpus,
+        gpu_procs,
+        cpu_temp_c,
+        mem_temp_c,
+        sessions,
+    }
 }
 
 // ── Pure Windows decoders (compiled under test on any OS) ───────────────────
@@ -480,11 +1003,74 @@ mod platform {
         }
     }
 
+    /// Whole-package CPU temperature in °C from the first CPU hwmon that exposes
+    /// one, or `None`. Scans `/sys/class/hwmon/hwmon*`, matches the sensor by its
+    /// `name` ([`super::is_cpu_hwmon`]), reads every `tempN_input` with its optional
+    /// `tempN_label`, and lets [`super::pick_cpu_temp`] choose the package channel.
+    /// No tool spawn and no root — the same cheap sysfs read the GPU sensors use.
+    pub fn cpu_temp_c() -> Option<f64> {
+        for entry in fs::read_dir("/sys/class/hwmon").ok()?.flatten() {
+            let base = entry.path();
+            let name = fs::read_to_string(base.join("name")).unwrap_or_default();
+            if !super::is_cpu_hwmon(&name) {
+                continue;
+            }
+            let mut channels: Vec<(Option<String>, f64)> = Vec::new();
+            for i in 1..=32u32 {
+                let Ok(raw) = fs::read_to_string(base.join(format!("temp{i}_input"))) else {
+                    continue;
+                };
+                let Ok(milli) = raw.trim().parse::<f64>() else {
+                    continue;
+                };
+                let label = fs::read_to_string(base.join(format!("temp{i}_label")))
+                    .ok()
+                    .map(|s| s.trim().to_string());
+                channels.push((label, milli));
+            }
+            if let Some(t) = super::pick_cpu_temp(&channels) {
+                return Some(t);
+            }
+        }
+        None
+    }
+
+    /// Hottest DIMM temperature in °C across every on-module memory sensor
+    /// (`jc42`/`spd5118`, one hwmon per populated module), or `None` when the board
+    /// exposes none. `temp1_input` is the module's only channel. Same cheap sysfs
+    /// read the CPU/GPU sensors use — no tool spawn, no root.
+    pub fn mem_temp_c() -> Option<f64> {
+        let mut hottest: Option<f64> = None;
+        for entry in fs::read_dir("/sys/class/hwmon").ok()?.flatten() {
+            let base = entry.path();
+            let name = fs::read_to_string(base.join("name")).unwrap_or_default();
+            if !super::is_mem_hwmon(&name) {
+                continue;
+            }
+            let Ok(raw) = fs::read_to_string(base.join("temp1_input")) else {
+                continue;
+            };
+            let Ok(milli) = raw.trim().parse::<f64>() else {
+                continue;
+            };
+            let c = milli / 1000.0;
+            hottest = Some(hottest.map_or(c, |h| h.max(c)));
+        }
+        hottest
+    }
+
     /// Whole-system sample from `/proc`: aggregate + per-core CPU, memory/swap,
     /// load, uptime, and every process (one `/proc/<pid>/{stat,status,cmdline}`
     /// read each). Kernel threads (empty `cmdline`) fall back to `[comm]`.
     pub fn system_snapshot() -> super::SystemSnapshot {
         use super::{ProcSample, SystemSnapshot};
+        use std::os::unix::fs::MetadataExt;
+
+        // Resolve each process's owner uid to a name via the machine's own
+        // `/etc/passwd`, read once. NSS-only accounts (LDAP/SSSD) the file walk
+        // misses fall back to `#<uid>` in `username_for` — the remote path uses
+        // `getent`, which is NSS-aware, so this file read is the local-only gap.
+        let passwd = super::parse_passwd(&fs::read_to_string("/etc/passwd").unwrap_or_default());
 
         let (cpu, per_core) =
             super::parse_cpu_stat(&fs::read_to_string("/proc/stat").unwrap_or_default());
@@ -512,6 +1098,10 @@ mod platform {
                     continue;
                 };
                 let cmdline = cmdline(pid).unwrap_or_else(|| format!("[{comm}]"));
+                // The process's owner is the uid owning its `/proc/<pid>` dir.
+                let user = fs::metadata(format!("/proc/{pid}"))
+                    .map(|m| super::username_for(m.uid(), &passwd))
+                    .unwrap_or_default();
                 processes.push(ProcSample {
                     pid,
                     ppid,
@@ -521,6 +1111,7 @@ mod platform {
                     rss_kib: rss_kib(pid).unwrap_or(0),
                     cpu_jiffies,
                     threads,
+                    user,
                 });
             }
         }
@@ -538,6 +1129,11 @@ mod platform {
             load_avg,
             uptime_secs,
             processes,
+            gpus: Vec::new(), // filled by `system_snapshot()`, not by this backend
+            gpu_procs: Vec::new(),
+            cpu_temp_c: cpu_temp_c(),
+            mem_temp_c: mem_temp_c(),
+            sessions: Vec::new(), // remote-only (the pane's "Logged in" panel)
         }
     }
 }
@@ -774,6 +1370,9 @@ mod platform {
                             rss_kib: rss_kib(pid).unwrap_or(0),
                             cpu_jiffies: proc_ticks(pid).unwrap_or(0),
                             threads: entry.cntThreads,
+                            // No cheap per-process owner lookup here; the pane hides
+                            // the per-user section when no process reports one.
+                            user: String::new(),
                         });
                         if Process32Next(snapshot, &mut entry).is_err() {
                             break;
@@ -797,6 +1396,11 @@ mod platform {
             load_avg: [0.0; 3],
             uptime_secs,
             processes,
+            gpus: Vec::new(), // filled by `system_snapshot()`, not by this backend
+            gpu_procs: Vec::new(),
+            cpu_temp_c: None, // no cheap CPU thermal read on this backend
+            mem_temp_c: None, // nor a memory thermal read
+            sessions: Vec::new(), // remote-only (the pane's "Logged in" panel)
         }
     }
 }
@@ -1113,6 +1717,10 @@ mod platform {
                 rss_kib: task.pti_resident_size / 1024,
                 cpu_jiffies: task.pti_total_user.wrapping_add(task.pti_total_system),
                 threads: task.pti_threadnum.max(0) as u32,
+                // Owner name isn't resolved here (only the calling user's processes
+                // are visible anyway); the pane hides the per-user section when no
+                // process reports one.
+                user: String::new(),
             });
         }
 
@@ -1129,6 +1737,11 @@ mod platform {
             load_avg,
             uptime_secs,
             processes,
+            gpus: Vec::new(), // filled by `system_snapshot()`, not by this backend
+            gpu_procs: Vec::new(),
+            cpu_temp_c: None, // no cheap CPU thermal read on this backend
+            mem_temp_c: None, // nor a memory thermal read
+            sessions: Vec::new(), // remote-only (the pane's "Logged in" panel)
         }
     }
 }
@@ -1185,6 +1798,88 @@ mod tests {
     #[test]
     fn clk_tck_is_positive() {
         assert!(clk_tck() > 0, "ticks-per-second must be positive");
+    }
+
+    #[test]
+    fn is_cpu_hwmon_matches_only_cpu_sensors() {
+        assert!(is_cpu_hwmon("coretemp"));
+        assert!(is_cpu_hwmon("k10temp"));
+        assert!(is_cpu_hwmon("zenpower"));
+        assert!(is_cpu_hwmon("cpu_thermal\n"), "trailing newline is trimmed");
+        assert!(!is_cpu_hwmon("amdgpu"), "a GPU sensor is not the CPU");
+        assert!(!is_cpu_hwmon("nvme"));
+        assert!(!is_cpu_hwmon(""));
+    }
+
+    #[test]
+    fn pick_cpu_temp_prefers_package_channel() {
+        // Intel coretemp: `Package id 0` wins over the per-core channels.
+        let intel = vec![
+            (Some("Core 0".to_string()), 45000.0),
+            (Some("Package id 0".to_string()), 52000.0),
+            (Some("Core 1".to_string()), 47000.0),
+        ];
+        assert_eq!(pick_cpu_temp(&intel), Some(52.0));
+
+        // AMD k10temp: `Tctl` wins over `Tccd1`.
+        let amd = vec![
+            (Some("Tccd1".to_string()), 58000.0),
+            (Some("Tctl".to_string()), 61000.0),
+        ];
+        assert_eq!(pick_cpu_temp(&amd), Some(61.0));
+
+        // No labels at all: fall back to the first channel (temp1_input).
+        let bare = vec![(None, 40000.0), (None, 99000.0)];
+        assert_eq!(pick_cpu_temp(&bare), Some(40.0));
+
+        // No channels: unknown, never a fake zero.
+        assert_eq!(pick_cpu_temp(&[]), None);
+    }
+
+    #[test]
+    fn remote_snapshot_reads_cpu_temp() {
+        let raw = "\
+CLK\t100
+@STAT@
+cpu  1 2 3 4 5 6 7 8
+@CPUTEMP@
+T\tCore 0\t45000
+T\tPackage id 0\t53000
+@PROCS@
+";
+        let snap = parse_remote_snapshot(raw);
+        assert_eq!(snap.cpu_temp_c, Some(53.0), "host package temp is surfaced");
+    }
+
+    #[test]
+    fn is_mem_hwmon_matches_only_dimm_sensors() {
+        assert!(is_mem_hwmon("jc42"), "DDR3/DDR4 on-module sensor");
+        assert!(is_mem_hwmon("spd5118\n"), "DDR5 SPD hub, newline trimmed");
+        assert!(!is_mem_hwmon("coretemp"), "a CPU sensor is not memory");
+        assert!(!is_mem_hwmon("amdgpu"));
+        assert!(!is_mem_hwmon(""));
+    }
+
+    #[test]
+    fn remote_snapshot_reads_hottest_dimm_temp() {
+        let raw = "\
+CLK\t100
+@STAT@
+cpu  1 2 3 4 5 6 7 8
+@MEMTEMP@
+M\t41000
+M\t46500
+M\t44000
+@PROCS@
+";
+        let snap = parse_remote_snapshot(raw);
+        assert_eq!(snap.mem_temp_c, Some(46.5), "hottest module wins");
+    }
+
+    #[test]
+    fn remote_snapshot_has_no_mem_temp_when_section_empty() {
+        let raw = "CLK\t100\n@STAT@\ncpu  1 2 3 4 5 6 7 8\n@MEMTEMP@\n@PROCS@\n";
+        assert_eq!(parse_remote_snapshot(raw).mem_temp_c, None);
     }
 
     #[test]
@@ -1418,5 +2113,174 @@ SwapFree:        2000000 kB
         assert_eq!(ppid, 1000);
         assert_eq!(cpu, 4200 + 1300); // utime + stime
         assert_eq!(threads, 27);
+    }
+
+    #[test]
+    fn parse_remote_snapshot_assembles_from_script_output() {
+        // A minimal but complete capture in the wire format REMOTE_SNAPSHOT_SCRIPT
+        // emits: a CLK line, `@SECTION@` blocks of raw kernel files (incl. `who`),
+        // then S/R/C triples per process. One core, 8 GiB RAM, two processes — one
+        // with a real cmdline, one kernel thread (empty cmdline → `[comm]` fallback).
+        let raw = "CLK\t100\n\
+@STAT@\n\
+cpu  100 0 50 800 0 0 0 0 0 0\n\
+cpu0 100 0 50 800 0 0 0 0 0 0\n\
+intr 12345\n\
+@MEM@\n\
+MemTotal:        8192000 kB\n\
+MemAvailable:    4096000 kB\n\
+SwapTotal:       2048000 kB\n\
+SwapFree:        2048000 kB\n\
+@LOAD@\n\
+0.50 0.40 0.30 1/234 5678\n\
+@UP@\n\
+123456.78 987654.32\n\
+@WHO@\n\
+alice    pts/0        2026-07-18 09:12 (203.0.113.5)\n\
+alice    pts/1        2026-07-18 09:20 (203.0.113.5)\n\
+bob      tty1         2026-07-17 22:03\n\
+@PROCS@\n\
+S\t42 (bash) S 1 42 42 0 -1 4194304 100 0 0 0 12 8 0 0 20 0 3 0 999 0 0\n\
+R\t2048\n\
+C\t/usr/bin/bash -i\n\
+S\t7 (kworker/0:1) I 2 0 0 0 -1 69238880 0 0 0 0 5 2 0 0 20 0 1 0 50 0 0\n\
+R\t0\n\
+C\t\n";
+
+        let snap = parse_remote_snapshot(raw);
+        assert!(snap.supported);
+        assert_eq!(snap.clk_tck, 100);
+        assert_eq!(snap.num_cores, 1);
+        assert_eq!(snap.per_core.len(), 1);
+        // total = sum of all columns; busy = total − idle − iowait (800 idle here).
+        assert_eq!(snap.cpu.total, 100 + 50 + 800);
+        assert_eq!(snap.cpu.busy, 150);
+        assert_eq!(snap.mem_total_kib, 8_192_000);
+        assert_eq!(snap.mem_available_kib, 4_096_000);
+        assert_eq!(snap.swap_total_kib, 2_048_000);
+        assert_eq!(snap.load_avg, [0.50, 0.40, 0.30]);
+        assert_eq!(snap.uptime_secs as u64, 123_456);
+        assert!(snap.gpus.is_empty());
+
+        assert_eq!(snap.processes.len(), 2);
+        let bash = &snap.processes[0];
+        assert_eq!(bash.pid, 42);
+        assert_eq!(bash.ppid, 1);
+        assert_eq!(bash.comm, "bash");
+        assert_eq!(bash.state, "S");
+        assert_eq!(bash.rss_kib, 2048);
+        assert_eq!(bash.cpu_jiffies, 12 + 8);
+        assert_eq!(bash.threads, 3);
+        assert_eq!(bash.cmdline, "/usr/bin/bash -i");
+        // Kernel thread: empty cmdline falls back to `[comm]`.
+        let kworker = &snap.processes[1];
+        assert_eq!(kworker.pid, 7);
+        assert_eq!(kworker.rss_kib, 0);
+        assert_eq!(kworker.cmdline, "[kworker/0:1]");
+
+        // `who` → login sessions for the "Logged in" panel: three sessions across
+        // two users, the tail of each line kept verbatim as `detail`.
+        assert_eq!(snap.sessions.len(), 3);
+        assert_eq!(snap.sessions[0].user, "alice");
+        assert_eq!(snap.sessions[0].tty, "pts/0");
+        assert!(snap.sessions[0].detail.contains("203.0.113.5"));
+        assert_eq!(snap.sessions[2].user, "bob");
+        assert_eq!(snap.sessions[2].tty, "tty1");
+    }
+
+    #[test]
+    fn parse_passwd_maps_uid_to_name() {
+        let content = "\
+root:x:0:0:root:/root:/bin/bash
+alice:x:1000:1000:Alice:/home/alice:/bin/bash
+bob:x:1001:1001::/home/bob:/bin/zsh
+# a comment line is skipped
+malformed-no-uid
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+";
+        let map = parse_passwd(content);
+        assert_eq!(map.get(&0).map(String::as_str), Some("root"));
+        assert_eq!(map.get(&1000).map(String::as_str), Some("alice"));
+        assert_eq!(map.get(&1001).map(String::as_str), Some("bob"));
+        assert_eq!(map.get(&1).map(String::as_str), Some("daemon"));
+        // A known uid resolves to its name; an unknown one falls back to `#<uid>`.
+        assert_eq!(username_for(1000, &map), "alice");
+        assert_eq!(username_for(4242, &map), "#4242");
+    }
+
+    #[test]
+    fn parse_remote_snapshot_resolves_process_owner() {
+        // The @PASSWD@ block feeds the uid→name map; each process's `U` line names
+        // its owner uid, resolved against that map (an unmapped uid → `#<uid>`).
+        let raw = "CLK\t100\n\
+@PASSWD@\n\
+root:x:0:0:root:/root:/bin/bash\n\
+alice:x:1000:1000:Alice:/home/alice:/bin/bash\n\
+@PROCS@\n\
+S\t42 (bash) S 1 42 42 0 -1 4194304 100 0 0 0 12 8 0 0 20 0 3 0 999 0 0\n\
+U\t1000\n\
+R\t2048\n\
+C\t/usr/bin/bash -i\n\
+S\t1 (systemd) S 0 1 1 0 -1 4194560 200 0 0 0 5 5 0 0 20 0 1 0 5 0 0\n\
+U\t0\n\
+R\t4096\n\
+C\t/sbin/init\n\
+S\t99 (weird) S 1 99 99 0 -1 4194304 1 0 0 0 1 1 0 0 20 0 1 0 100 0 0\n\
+U\t7777\n\
+R\t128\n\
+C\tweird\n";
+
+        let snap = parse_remote_snapshot(raw);
+        assert_eq!(snap.processes.len(), 3);
+        assert_eq!(snap.processes[0].user, "alice");
+        assert_eq!(snap.processes[1].user, "root");
+        // An owner uid with no passwd entry falls back to `#<uid>`.
+        assert_eq!(snap.processes[2].user, "#7777");
+    }
+
+    #[test]
+    fn parse_remote_snapshot_reads_the_gpu_section() {
+        // The `@GPU@` wire format: an AMD card shipped file-by-file, an NVIDIA card
+        // as raw nvidia-smi CSV, and one NVIDIA compute process. A blank AMD value
+        // (a file the host didn't expose) must be skipped, not stored.
+        let raw = "CLK\t100\n\
+@GPU@\n\
+NVSMI\tNVIDIA RTX A4000, 2048, 16376, 55, 63, 90.0, 140, 1800, 7000, 44, 550.90.07, 4, 16\n\
+NVPROC\t4321, python, 1536\n\
+AMD\t1\tdriver\tamdgpu\n\
+AMD\t1\tvendor\t0x1002\n\
+AMD\t1\tvram_used\t440770560\n\
+AMD\t1\tvram_total\t536870912\n\
+AMD\t1\tgtt_used\t18052190208\n\
+AMD\t1\tgtt_total\t65855619072\n\
+AMD\t1\tbusy\t72\n\
+AMD\t1\ttemp\t58000\n\
+AMD\t1\tsclk\t2: 2900Mhz *\n\
+AMD\t1\tlink_speed\t\n\
+@PROCS@\n";
+
+        let snap = parse_remote_snapshot(raw);
+        assert_eq!(snap.gpus.len(), 2, "one AMD card + one NVIDIA card");
+
+        // AMD card comes first (built from the shipped sysfs files).
+        let amd = &snap.gpus[0];
+        assert_eq!(amd.driver, "amdgpu");
+        assert_eq!(amd.vram_total, 536_870_912);
+        assert_eq!(amd.shared_total, 65_855_619_072);
+        assert_eq!(amd.busy_percent, Some(72.0));
+        assert_eq!(amd.temp_c, Some(58.0));
+        assert_eq!(amd.sclk_mhz, Some(2900));
+        assert_eq!(amd.pcie_gen, None, "a blank link_speed line was skipped");
+
+        // NVIDIA card, parsed by the same CSV reader as the local path.
+        let nv = &snap.gpus[1];
+        assert_eq!(nv.driver, "nvidia");
+        assert_eq!(nv.temp_c, Some(63.0));
+        assert_eq!(nv.power_w, Some(90.0));
+        assert_eq!(nv.driver_version.as_deref(), Some("550.90.07"));
+
+        assert_eq!(snap.gpu_procs.len(), 1);
+        assert_eq!(snap.gpu_procs[0].pid, 4321);
+        assert_eq!(snap.gpu_procs[0].mem_bytes, 1536 * 1024 * 1024);
     }
 }

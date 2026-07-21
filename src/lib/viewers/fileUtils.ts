@@ -49,10 +49,17 @@ export type InternalViewer =
   // explicitly from a diverged (amber) file's diff button; routed to `DiffView`
   // in sync mode (backend `sync_diff`).
   | "syncdiff"
+  // SSH-sync three-way merge (PyCharm-style): local mirror ⇄ editable result ⇄
+  // remote host, with per-block take-left/right. Never auto-selected — only
+  // opened from a diverged (amber) file in the orange list; routed to
+  // `SyncMergeView`. Apply resolves the divergence (writes mirror + force-push).
+  | "syncmerge"
   | "odt"
   | "media"
+  | "gif"
   | "html"
-  | "sqlite";
+  | "sqlite"
+  | "yaml";
 
 // Audio/video formats the webview plays natively via <audio>/<video> from a
 // Blob URL (Dev D). Kept separate from IMAGE_EXTS so the media viewer wins.
@@ -115,16 +122,38 @@ export function internalViewerFor(
 ): InternalViewer | null {
   const viewer = naturalViewerFor(entry);
   // When the user has opted this type out (#48), return null so the file falls
-  // through to the external-app path (commitFileDrop routes it via embedExec).
-  if (viewer && disabled?.has(viewer)) return null;
+  // through to the external-app path (commitFileDrop routes it via embedExec) —
+  // unless the type has a native fallback that is itself still enabled. YAML is
+  // the case: turning off its tree is a vote against the *tree*, not against
+  // editing YAML in Eldrun at all, so it drops back to the plain code editor
+  // (which is where .yaml opened before the tree existed).
+  if (viewer && disabled?.has(viewer)) {
+    const fallback = VIEWER_FALLBACK[viewer];
+    return fallback && !disabled.has(fallback) ? fallback : null;
+  }
   return viewer;
 }
+
+/** Where a type lands when its own viewer is opted out (#48), before the
+ *  external-app path. Only for types whose bytes another native viewer can still
+ *  render honestly. */
+const VIEWER_FALLBACK: Partial<Record<InternalViewer, InternalViewer>> = {
+  yaml: "text",
+  // Opting out the GIF transport UI is not a vote against viewing GIFs in-app:
+  // the plain image viewer still animates them honestly (the webview animates
+  // <img> GIFs natively) — it just offers no frame control.
+  gif: "image",
+};
 
 /** The viewer a file *type* maps to, ignoring any user opt-out. */
 function naturalViewerFor(entry: FileEntry): InternalViewer | null {
   if (entry.is_dir) return null;
   const ext = (entry.extension ?? "").toLowerCase();
   if (ext === ".pdf") return "pdf";
+  // .gif gets the dedicated animated-GIF viewer (frame transport: pause, step,
+  // scrub — #gifviewer). It is also in IMAGE_EXTS, so this early return must
+  // win — exactly like .tex/.csv below.
+  if (ext === ".gif") return "gif";
   if (IMAGE_EXTS.has(ext)) return "image";
   if (MARKDOWN_EXTS.has(ext)) return "markdown";
   // .tex gets the dedicated LaTeX viewer (compile to a PDF tab when a TeX engine
@@ -156,6 +185,13 @@ function naturalViewerFor(entry: FileEntry): InternalViewer | null {
   // (Dev E). These are also in TEXT_EXTS, so this specific return must win — like
   // .tex above. Opting it out (#48) falls back to the plain text editor.
   if (ext === ".html" || ext === ".htm" || ext === ".svg") return "html";
+  // .yaml/.yml/.json get the structured tree editor with a Tree/Source toggle
+  // (#yaml). JSON is YAML's flow syntax — the same tree renders it, written back
+  // in the stricter dialect — so the two share a viewer rather than duplicating
+  // one. All three are also in TEXT_EXTS, so this specific return must win, like
+  // .tex above. Opting it out (#48) falls back to the plain code editor, not the
+  // external app (see VIEWER_FALLBACK).
+  if (ext === ".yaml" || ext === ".yml" || ext === ".json") return "yaml";
   if (ext && TEXT_EXTS.has(ext)) return "text";
   if (!ext && TEXT_FILENAMES.has(entry.name.toLowerCase())) return "text";
   // DEFERRED (#51, DECISION B): the remaining OpenDocument / spreadsheet formats
@@ -219,7 +255,7 @@ export const VIEWER_PREF_TYPES: ViewerTypeMeta[] = [
   {
     id: "text",
     label: "Text / code",
-    extensions: [".txt", ".json", ".py", ".rs", ".ts", ".svg", ".bib", "…"],
+    extensions: [".txt", ".toml", ".py", ".rs", ".ts", ".svg", ".bib", "…"],
     autocomplete: true,
   },
   {
@@ -235,9 +271,21 @@ export const VIEWER_PREF_TYPES: ViewerTypeMeta[] = [
     autocomplete: true,
   },
   {
+    id: "yaml",
+    label: "YAML / JSON tree",
+    extensions: [".yaml", ".yml", ".json"],
+    autocomplete: true,
+  },
+  {
     id: "image",
     label: "Images",
-    extensions: [".png", ".jpg", ".gif", ".webp", "…"],
+    extensions: [".png", ".jpg", ".bmp", ".webp", "…"],
+    autocomplete: false,
+  },
+  {
+    id: "gif",
+    label: "Animated GIF",
+    extensions: [".gif"],
     autocomplete: false,
   },
   { id: "pdf", label: "PDF", extensions: [".pdf"], autocomplete: false },
@@ -428,6 +476,7 @@ export function fileIcon(ext: string | null): string {
     case ".png":
     case ".jpg":
     case ".jpeg":
+    case ".gif":
     case ".svg": return "🖼";
     case ".sh": return "⚙";
     default: return "📄";

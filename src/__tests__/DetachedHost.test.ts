@@ -61,6 +61,7 @@ import {
   DETACHED_EDIT,
   DETACHED_DOCK,
   DETACHED_CLOSE,
+  DETACHED_HIDE,
   detachedSeedEvent,
   type DetachedSeed,
 } from "../stores/detached";
@@ -79,6 +80,7 @@ function reset() {
     layoutByScope: {},
     focusedGroupByScope: {},
     detachedGroupsByScope: {},
+    hiddenGroupsByScope: {},
     tabs: [],
     layout: null,
     focusedGroupId: null,
@@ -110,6 +112,7 @@ describe("detached host (#42)", () => {
     expect(handlers.has(DETACHED_EDIT)).toBe(true);
     expect(handlers.has(DETACHED_DOCK)).toBe(true);
     expect(handlers.has(DETACHED_CLOSE)).toBe(true);
+    expect(handlers.has(DETACHED_HIDE)).toBe(true);
   });
 
   it("a seed request emits the group's tabs + subtree to the requesting label", async () => {
@@ -175,6 +178,43 @@ describe("detached host (#42)", () => {
     expect(payloadSeed.tabs.map((t) => t.key)).toEqual([bKey, newKey]);
   });
 
+  it("an 'add' edit with a side edge carves a NEW pane in the popout (a file dropped on a body edge)", async () => {
+    const { groupId, label, bKey } = detachSecond();
+    await listenDetachedHost();
+    emitted.length = 0;
+
+    handlers.get(DETACHED_EDIT)!({
+      payload: {
+        scope: "p",
+        groupId,
+        edit: {
+          kind: "add",
+          targetGroupId: groupId,
+          edge: "right",
+          tab: { label: "readme.md", cmd: "", cwd: "/p", kind: "embed", embedPath: "/p/readme.md" },
+        },
+      },
+    });
+
+    // The popout's subtree is now a split: the original group + a NEW group
+    // holding the dropped file's embed tab (the target's own tab is untouched).
+    const rec = useTabsStore.getState().detachedGroupsByScope["p"]![0];
+    const sub = rec.subtree as { type: string; children: GroupNode[] };
+    expect(sub.type).toBe("split");
+    expect(sub.children).toHaveLength(2);
+    const original = sub.children.find((g) => g.tabKeys.includes(bKey))!;
+    const carved = sub.children.find((g) => !g.tabKeys.includes(bKey))!;
+    expect(original.tabKeys).toEqual([bKey]);
+    expect(carved.tabKeys).toHaveLength(1);
+    const newKey = carved.tabKeys[0];
+    // The embed payload lives in the main store (its pane mounts + owns anything).
+    const payload = useTabsStore.getState().tabsByScope["p"]!.find((t) => t.key === newKey);
+    expect(payload).toMatchObject({ kind: "embed", embedPath: "/p/readme.md", scope: "p" });
+    // The popout is re-seeded with the landed key so it renders the new pane.
+    const seed = emitted.find((e) => e.event === detachedSeedEvent(label));
+    expect((seed!.payload as DetachedSeed & { landedKey?: string }).landedKey).toBe(newKey);
+  });
+
   it("an active-scope dock re-docks the group and closes the OS window", async () => {
     const { groupId, label } = detachSecond();
     await listenDetachedHost();
@@ -197,6 +237,45 @@ describe("detached host (#42)", () => {
 
     expect(useTabsStore.getState().detachedGroupsByScope["p"]).toHaveLength(0);
     expect(invokeMock).toHaveBeenCalledWith("attach_subwindow", { registryId: label });
+  });
+
+  it("a hide parks the group in the scope's Hidden list, keeps its tabs, and closes the window", async () => {
+    const { groupId, label, bKey } = detachSecond();
+    await listenDetachedHost();
+    invokeMock.mockClear();
+
+    handlers.get(DETACHED_HIDE)!({ payload: { scope: "p", groupId } });
+
+    // Moved out of the detached record and into the scope's hidden list…
+    expect(useTabsStore.getState().detachedGroupsByScope["p"]).toHaveLength(0);
+    const hidden = useTabsStore.getState().hiddenGroupsByScope["p"];
+    expect(hidden).toHaveLength(1);
+    expect(hidden![0].id).toBe(groupId);
+    // …with its tab payload intact (PTY stays mounted, unlike a WM-close)…
+    expect(useTabsStore.getState().tabsByScope["p"]?.some((t) => t.key === bKey)).toBe(true);
+    expect(invokeMock).not.toHaveBeenCalledWith("pty_kill", expect.anything());
+    // …and the OS window closed (registry entry dropped).
+    expect(invokeMock).toHaveBeenCalledWith("attach_subwindow", { registryId: label });
+  });
+
+  it("a hide persists the (parked) scope so it restores as hidden, not detached", async () => {
+    const { groupId } = detachSecond();
+    useTabsStore.setState({ scope: "other" });
+    useProjectsStore.setState({
+      projects: [{ id: "p", name: "p", local_file: "/p/project.json" } as never],
+    });
+    await listenDetachedHost();
+    invokeMock.mockClear();
+
+    handlers.get(DETACHED_HIDE)!({ payload: { scope: "p", groupId } });
+
+    // The record still moved to hidden even for an inactive scope…
+    expect(useTabsStore.getState().hiddenGroupsByScope["p"]).toHaveLength(1);
+    // …and the scope is persisted so disk agrees (saved as hidden).
+    expect(invokeMock).toHaveBeenCalledWith(
+      "save_tab_layout",
+      expect.objectContaining({ localFile: "/p/project.json" }),
+    );
   });
 
   it("a WM-close drops the group's tabs (no dock-back), kills their PTYs, and closes the window", async () => {

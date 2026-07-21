@@ -87,6 +87,13 @@ export function notePtyOutput(ptyId: string, data = "") {
   }
 }
 
+/** When a PTY last produced output (ms epoch), or undefined if none was seen
+ *  this session. Read-only view for the tab hover card's "quiet for…" line —
+ *  the raw map stays module-private because it churns per output batch. */
+export function lastPtyOutputAt(ptyId: string): number | undefined {
+  return lastOutputByPty[ptyId];
+}
+
 /** Record that input was sent to a PTY on the user's behalf — a keystroke, a
  *  paste, or a user-triggered flow typing its command (`initialInput`). This is
  *  what makes output COUNT: "working" and "done" only ever arise from output
@@ -94,9 +101,17 @@ export function notePtyOutput(ptyId: string, data = "") {
  *  banner or replaying a prior transcript — real bytes, but nothing anybody
  *  asked for — never lights up a tab or its project pill. `decision` is exempt:
  *  a resumed agent genuinely sitting at an unanswered prompt is real signal
- *  worth surfacing immediately, commanded or not. */
+ *  worth surfacing immediately, commanded or not.
+ *
+ *  Sending input also drops the tail: answering a prompt is input, and a menu
+ *  that has been answered must not be matched again as a live one. This is the
+ *  ONLY thing that retires a decision prompt the user is looking at (looking is
+ *  no longer enough — see `attentionFor`), and it covers the case the per-burst
+ *  reset in `notePtyOutput` misses: an answer so fast that the agent's next
+ *  output lands inside the same burst, leaving the answered menu in the tail. */
 export function noteUserInput(ptyId: string) {
   inputByPty[ptyId] = Date.now();
+  tailByPty[ptyId] = "";
 }
 
 /** Forget everything recorded about a PTY, called when it is (re)spawned. A
@@ -156,15 +171,22 @@ export function _clearPtyActivityForTest() {
  *  decision (a prompt is on screen) vs one that simply finished its turn. */
 export type AttentionKind = "decision" | "done";
 
-/** What an unwatched agent tab is asking for, or null if it isn't asking for
- *  anything. Derived on each `recompute` tick from the tab's own output rather
- *  than pushed in by the terminal: the bell we used to rely on is optional in
- *  every agent we support (and never even reaches xterm for a tab whose pane has
- *  not been opened yet), which left a finished agent showing no state at all.
+/** What an agent tab is asking for, or null if it isn't asking for anything.
+ *  Derived on each `recompute` tick from the tab's own output rather than pushed
+ *  in by the terminal: the bell we used to rely on is optional in every agent we
+ *  support (and never even reaches xterm for a tab whose pane has not been opened
+ *  yet), which left a finished agent showing no state at all.
  *
- *  Also stamps `seenAtByPty` for a tab under the user's eyes, so that everything
- *  it has printed up to now is treated as read and only what it does AFTER the
- *  user looks away can raise a flag again. */
+ *  The two kinds treat "the user is looking at this tab" differently, because
+ *  they mean different things:
+ *  - `done` is about UNREAD output, so looking at the tab IS the thing that
+ *    retires it. A looked-at tab also stamps `seenAtByPty`, so only what the
+ *    agent does AFTER the user looks away can raise the flag again.
+ *  - `decision` is about a BLOCKED agent, and looking at a prompt does not answer
+ *    it. It therefore holds while watched (nothing else in the UI says "this one
+ *    is stuck on you" once the tab is on screen but the eyes are elsewhere), and
+ *    is retired only by input — `noteUserInput` drops the tail the match is made
+ *    against. */
 function attentionFor(
   scope: string,
   tab: TabEntry,
@@ -174,25 +196,21 @@ function attentionFor(
   // Only AI agent tabs raise attention; a shell finishing a build doesn't.
   if (tab.kind !== "agent" && tab.kind !== "local_agent") return null;
   if (isTabDetached(scope, tab.key)) return null;
-  if (isTabLookedAt(scope, tab.key)) {
-    seenAtByPty[ptyId] = now;
-    // What's on screen has been read, so it can't be what raises the next flag.
-    // Dropping the tail here also covers the one case the per-burst reset in
-    // `notePtyOutput` misses: a prompt answered so fast that the agent's next
-    // output lands inside the same burst — you had to be LOOKING at the tab to
-    // answer it, so the menu is gone from the tail before it could stick.
-    tailByPty[ptyId] = "";
-    return null;
-  }
+  const lookedAt = isTabLookedAt(scope, tab.key);
+  // What's on screen has been read, so it can't be what raises a "done" later.
+  if (lookedAt) seenAtByPty[ptyId] = now;
   const seen = seenAtByPty[ptyId] ?? 0;
   const out = lastOutputByPty[ptyId] ?? 0;
   const bell = bellByPty[ptyId] ?? 0;
-  // Nothing has happened here since the user last had eyes on the tab.
-  if (out <= seen && bell <= seen) return null;
   const quiet = now - Math.max(out, bell);
   if (quiet >= DECISION_QUIET_MS && looksLikeDecisionPrompt(tailByPty[ptyId] ?? "")) {
     return "decision";
   }
+  // Past here everything is inferred from silence, which a watched tab's own
+  // screen already tells the user better than a lamp could.
+  if (lookedAt) return null;
+  // Nothing has happened here since the user last had eyes on the tab.
+  if (out <= seen && bell <= seen) return null;
   // "Done" means the agent finished work somebody asked for, so it requires
   // input to have been sent this session (see `noteUserInput`): without it, the
   // quiet that follows a restore banner or a resumed session's replayed
@@ -258,10 +276,14 @@ function sameCountMaps(
 /** Tally each scope's tabs by status. A tab counts exactly once: working wins
  *  over a pending attention flag, mirroring how the tab bar resolves its own
  *  glow, so the pill's bars can never disagree with the tabs they stand for.
- *  The tab currently under the user's eyes is skipped entirely, mirroring
- *  `attentionFor`'s own `isTabLookedAt` guard — the pill's bars stand for the
- *  project's BACKGROUND tabs, so the one tab the user is already looking at
- *  shouldn't light up as if it needed a glance.
+ *  Every tab counts, including the one under the user's eyes: the pill's strip is
+ *  a tally of what the PROJECT is doing, not of what still needs a glance, and a
+ *  project whose bars emptied out the moment it was selected could not answer the
+ *  one question the strip exists for — "is anything still running in there?" —
+ *  for the project you are actually in. (The tab bar still hides the viewed tab's
+ *  own glow: there, the tab IS the thing you're looking at.) A looked-at tab that
+ *  went quiet can still hold no `done` flag, so what a selected project shows is
+ *  its working tabs and its unanswered prompts — see `attentionFor`.
  *  Scopes whose counts are unchanged keep their previous object identity, so a
  *  tab going busy in one project doesn't re-render every other project's pill. */
 function countStatusScopes(
@@ -274,7 +296,6 @@ function countStatusScopes(
   for (const [scope, tabs] of Object.entries(tabsByScope)) {
     const counts: TabStatusCounts = { working: 0, decision: 0, done: 0 };
     for (const t of tabs) {
-      if (isTabLookedAt(scope, t.key)) continue;
       const ptyId = `${scope}:${t.key}`;
       if (isPtyTabKind(t.kind) && busyByTab[ptyId]) counts.working++;
       else if (attentionByTab[ptyId] === "decision") counts.decision++;
@@ -285,6 +306,13 @@ function countStatusScopes(
     next[scope] = before && sameCounts(before, counts) ? before : counts;
   }
   return next;
+}
+
+/** True when two string sets hold exactly the same members. */
+function sameStringSet(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
 }
 
 function withoutScript(set: Set<string>, scriptPath: string): Set<string> {
@@ -327,6 +355,13 @@ interface ActivityStore {
   /** Absolute paths of `.sh` scripts currently running detached. The run_id
    *  used with the backend is the script's absolute path (see runScript). */
   runningScripts: Set<string>;
+  /** Absolute paths of files whose run-launched terminal tab (Python Run/Debug
+   *  or a foreground shell run, tagged via `TabEntry.runFile`) is producing
+   *  sustained output right now. Derived by `recompute` from `busyByTab`, so it
+   *  drops out the moment the tab closes or goes quiet. Drives the green pulse on
+   *  the file tree's ▶ run button for the tab-backed run paths (the detached `.sh`
+   *  path uses `runningScripts` instead). */
+  runningRunFiles: Set<string>;
   /** Spawn a `.sh` script detached and track it so the run button can show a
    *  spinner until the backend emits `script-finished`. */
   runScript: (scriptPath: string, cwd: string) => void;
@@ -339,6 +374,7 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
   attentionByScope: {},
   statusCountsByScope: {},
   runningScripts: new Set(),
+  runningRunFiles: new Set(),
 
   noteBell: (ptyId) => {
     if (!splitPtyId(ptyId)) return;
@@ -348,7 +384,13 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
 
   clearAttention: (ptyId) => {
     seenAtByPty[ptyId] = Date.now();
-    if (!get().attentionByTab[ptyId]) return;
+    const kind = get().attentionByTab[ptyId];
+    if (!kind) return;
+    // Looking at a tab marks its output read — but it does not ANSWER a prompt,
+    // and the next `recompute` would only raise the flag straight back (see
+    // `attentionFor`). Keep it, so the lamp holds steady instead of blinking off
+    // and on at the switch. Input is what retires it.
+    if (kind === "decision" && looksLikeDecisionPrompt(tailByPty[ptyId] ?? "")) return;
     const attentionByTab = { ...get().attentionByTab };
     delete attentionByTab[ptyId];
     set({
@@ -388,6 +430,9 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     const nextScope: Record<string, boolean> = {};
     const nextTab: Record<string, boolean> = {};
     const nextAttn: Record<string, AttentionKind> = {};
+    // Files whose run-launched tab is busy this tick (see `runningRunFiles`).
+    // Collected from live tabs only, so a closed/replaced run tab drops out.
+    const nextRunFiles = new Set<string>();
     const live = new Set<string>();
     let changed = false;
 
@@ -416,6 +461,10 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
         if (tabBusy) {
           nextTab[ptyId] = true;
           scopeBusy = true;
+          // A run-launched tab (Python Run/Debug, foreground shell run) pulses
+          // its source file's ▶ run button while it produces output. Busy-gated,
+          // so a restored-but-quiet run tab never lights up.
+          if (t.runFile) nextRunFiles.add(t.runFile);
         }
         if ((prevTab[ptyId] ?? false) !== tabBusy) changed = true;
 
@@ -467,7 +516,12 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     // The tally can move even when no tab flipped busy — a tab carrying an
     // attention flag was closed, say — so it gates the publish independently.
     const countsChanged = !sameCountMaps(prevCounts, nextCounts);
-    if (!changed && !attnChanged && !countsChanged) return;
+    // The run-file set can move independently of `busyByTab` — a run tab going
+    // busy flips both, but a run tab closing while still "busy" drops out here
+    // via `live` even if some other tab keeps the same busy tally — so gate it
+    // on its own comparison, same as the other maps.
+    const runFilesChanged = !sameStringSet(get().runningRunFiles, nextRunFiles);
+    if (!changed && !attnChanged && !countsChanged && !runFilesChanged) return;
     // Only re-publish the maps that actually moved: every tab bar subscribes to
     // the whole `busyByTab` object, so handing it a fresh-but-equal one on each
     // interval tick would re-render them all for nothing.
@@ -477,6 +531,7 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
         ? { attentionByTab: nextAttn, attentionByScope: rollupAttentionScopes(nextAttn) }
         : {}),
       ...(countsChanged ? { statusCountsByScope: nextCounts } : {}),
+      ...(runFilesChanged ? { runningRunFiles: nextRunFiles } : {}),
     });
   },
 }));

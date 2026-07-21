@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
@@ -26,33 +26,51 @@ import {
   type DetachedPanesRequest,
   type PaneRect,
 } from "../../stores/detached";
-import { TerminalView } from "../terminal/TerminalView";
-import { FileBrowser } from "../files/FileBrowser";
-import { EmbedPane } from "../embed/EmbedPane";
-import { FileViewerPane } from "../embed/FileViewerPane";
-import { NetworkTrafficPane } from "../monitoring/NetworkTrafficPane";
-import { SystemMonitorPane } from "../monitoring/SystemMonitorPane";
-import { DiskUsagePane } from "../monitoring/DiskUsagePane";
-import { CalendarPane } from "../calendar/CalendarPane";
+import { FileDropContext, type FileDropController } from "../files/fileDropContext";
+import { fileDropPayloads } from "../tabs/commitFileDrop";
+import { TabPane } from "../tabs/TabPane";
+import {
+  clampFilesWidth,
+  DEFAULT_GROUP_FILES_WIDTH,
+  SubwindowFilesSidebar,
+} from "../files/SubwindowFilesSidebar";
+import { useWindowFocused } from "../../hooks/useWindowFocused";
+import { TabHoverCard } from "../tabs/TabHoverCard";
 import { WindowControls } from "../header/WindowControls";
 import { DragGhost, SplitPreviewOverlay } from "./CenterPanel";
 import { TabDropPlaceholder } from "../tabs/TabDropPlaceholder";
 import { NewTabMenu } from "../tabs/NewTabMenu";
+import { CustomAgentDialog } from "../tabs/CustomAgentDialog";
 import { pickEdge } from "../tabs/dragGeometry";
+import {
+  chordMatches,
+  resolveChord,
+  type ShortcutAction,
+  type ShortcutMap,
+} from "../../lib/shortcuts";
+import { isEditableTarget } from "../../hooks/useKeyboard";
 import { useDragStore } from "../../stores/drag";
 import { useTabLandStore } from "../../stores/tabLand";
 import { useSettingsStore } from "../../stores/settings";
 import {
   DEFAULT_MIN_SUBWINDOW_PX,
   allGroups,
-  effectiveTabLocation,
   findGroup,
   type DropEdge,
   type GroupNode,
   type LayoutNode,
   type SplitNode,
   type TabEntry,
+  type TabLocation,
 } from "../../stores/tabs";
+import type { DetachedRemoteInfo } from "../../stores/detached";
+import {
+  TabSourceBadge,
+  TabLocalityBadge,
+  LocalityMenu,
+  tabLocation,
+  type LocalityMenuState,
+} from "../tabs/TabLocalityBadges";
 
 /** Pixel coordinates of a group body, relative to the detached center panel. */
 interface Rect {
@@ -60,6 +78,142 @@ interface Rect {
   top: number;
   width: number;
   height: number;
+}
+
+/**
+ * The horizontally-scrolling tab strip + flanking chevrons — the SAME overflow
+ * behaviour as the main window's `TabBar` (click-scroll, continuous hover-scroll,
+ * wheel-to-horizontal, chevrons that appear only on overflow). Extracted as its
+ * own component so each group's bar in a (possibly multi-pane) popout gets its
+ * own strip ref + scroll state, exactly as each main-window `TabBar` instance
+ * does. The bar div, its detach-drag handler, and the per-group `barRefs`
+ * registration stay in `renderGroup`; this only owns the scroll chrome.
+ */
+function DetachedTabStrip({
+  children,
+  revision,
+}: {
+  children: React.ReactNode;
+  /** Changes whenever the group's tab set (or its drop placeholder) changes, so
+   *  overflow is re-evaluated — adding/removing tabs alters the strip's
+   *  scrollWidth without resizing its own box, which the ResizeObserver misses. */
+  revision: string;
+}) {
+  const stripRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const updateScrollState = useCallback(() => {
+    const el = stripRef.current;
+    if (!el) {
+      setCanScrollLeft(false);
+      setCanScrollRight(false);
+      return;
+    }
+    setCanScrollLeft(el.scrollLeft > 1);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  }, []);
+
+  // Track overflow so the chevrons toggle with the strip's size/content (mirrors
+  // the main-window `TabBar`): Resize catches the strip shrinking, the revision
+  // effect below catches scrollWidth changes from adding/removing tabs.
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    updateScrollState();
+    const onScroll = () => updateScrollState();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    const ro = new ResizeObserver(() => updateScrollState());
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      ro.disconnect();
+    };
+  }, [updateScrollState]);
+  useEffect(() => {
+    updateScrollState();
+  }, [revision, updateScrollState]);
+
+  // Scroll one chevron-press worth (most of the visible width) toward `dir`.
+  const scrollStrip = useCallback((dir: number) => {
+    const el = stripRef.current;
+    if (!el) return;
+    el.scrollBy({ left: dir * Math.max(120, el.clientWidth * 0.7), behavior: "smooth" });
+  }, []);
+
+  // Continuous scroll while a chevron is hovered: rAF loop nudges the strip each
+  // frame until the pointer leaves (mirrors the main window's chevrons).
+  const hoverScrollRef = useRef<number | null>(null);
+  const stopHoverScroll = useCallback(() => {
+    if (hoverScrollRef.current !== null) {
+      cancelAnimationFrame(hoverScrollRef.current);
+      hoverScrollRef.current = null;
+    }
+  }, []);
+  const startHoverScroll = useCallback((dir: number) => {
+    stopHoverScroll();
+    const step = () => {
+      const el = stripRef.current;
+      if (!el) return;
+      el.scrollLeft += dir * 6;
+      // The chevrons unmount at the edges (canScroll*), so onMouseLeave may never
+      // fire — stop once we can't scroll further in `dir` rather than spin forever.
+      const atEdge =
+        dir < 0
+          ? el.scrollLeft <= 0
+          : el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
+      if (atEdge) {
+        hoverScrollRef.current = null;
+        return;
+      }
+      hoverScrollRef.current = requestAnimationFrame(step);
+    };
+    hoverScrollRef.current = requestAnimationFrame(step);
+  }, [stopHoverScroll]);
+  useEffect(() => stopHoverScroll, [stopHoverScroll]);
+
+  // Translate a vertical wheel into horizontal strip scrolling so the tabs can be
+  // panned while hovering anywhere over them, not just via the (hidden) scrollbar.
+  const onStripWheel = useCallback((e: React.WheelEvent) => {
+    const el = stripRef.current;
+    if (!el || el.scrollWidth <= el.clientWidth) return;
+    const delta = e.deltaY !== 0 ? e.deltaY : e.deltaX;
+    if (delta === 0) return;
+    el.scrollLeft += delta;
+  }, []);
+
+  return (
+    <>
+      {canScrollLeft && (
+        <button
+          className="tab-scroll-btn left"
+          title="Scroll tabs left"
+          // Keep the chevron out of the bar's window-move/dock drag flow.
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseEnter={() => startHoverScroll(-1)}
+          onMouseLeave={stopHoverScroll}
+          onClick={() => scrollStrip(-1)}
+        >
+          ‹
+        </button>
+      )}
+      <div className="tab-strip" ref={stripRef} onWheel={onStripWheel}>
+        {children}
+      </div>
+      {canScrollRight && (
+        <button
+          className="tab-scroll-btn right"
+          title="Scroll tabs right"
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseEnter={() => startHoverScroll(1)}
+          onMouseLeave={stopHoverScroll}
+          onClick={() => scrollStrip(1)}
+        >
+          ›
+        </button>
+      )}
+    </>
+  );
 }
 
 interface Props {
@@ -72,8 +226,20 @@ interface Props {
   tree: LayoutNode;
   /** All of the popout's tab payloads (across every group in the tree). */
   tabs: TabEntry[];
+  /** The owning project's remoteness (machines + primary host name), streamed in
+   *  the seed. Drives the per-tab locality badge/menu; undefined = local project
+   *  (no locality axis, no badge — parity with a local main-window strip). */
+  remoteInfo?: DetachedRemoteInfo;
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
+  /** Hide the WHOLE popout into the main window's right-panel "Hidden subwindows"
+   *  list (the detached twin of a main-window subwindow's "–" hide). Closes this
+   *  OS window; the group is parked with its tabs mounted and restored from there.
+   *  Undefined ⇒ no hide affordance. */
+  onHideWindow?: () => void;
+  /** Multi-host: change where a locatable tab runs (streamed to the main window,
+   *  which owns the PTY and respawns the pane on the chosen host). */
+  onSetLocation: (key: string, location: TabLocation) => void;
   /** Reorder a bar's tabs (a tab dragged + dropped back onto its own bar). The
    *  main store resolves WHICH group from the key set. */
   onReorder: (tabKeys: string[]) => void;
@@ -86,10 +252,16 @@ interface Props {
   /** Merge `key` into `targetGroupId` (at `index`, else append) — a tab dragged
    *  onto ANOTHER group's bar (or body center) inside a split popout. */
   onMove: (key: string, targetGroupId: string, index?: number) => void;
-  /** Create a new tab (from the popout's own "+" menu) in `targetGroupId`. The
-   *  detached window can't mint the key/own the PTY, so it streams the resolved
-   *  payload to the main window, which creates the tab and re-seeds. */
-  onAddTab: (tab: Omit<TabEntry, "key">, targetGroupId: string) => void;
+  /** Create a new tab in `targetGroupId` — the popout's own "+" menu, or a file
+   *  dropped onto a pane inside the popout. The detached window can't mint the
+   *  key/own the PTY, so it streams the resolved payload to the main window, which
+   *  creates the tab and re-seeds. A side `edge` carves a NEW pane at that edge (a
+   *  file dropped on a body edge); omitted/"center" appends to the group. */
+  onAddTab: (tab: Omit<TabEntry, "key">, targetGroupId: string, edge?: DropEdge) => void;
+  /** Toggle/resize a group's docked file-viewer column (the per-subwindow right
+   *  file viewer): applied optimistically popout-side and streamed to the main
+   *  window so the flag persists (and survives a dock-back). */
+  onFiles: (groupId: string, patch: { open?: boolean; width?: number; folder?: string }) => void;
 }
 
 /**
@@ -105,16 +277,30 @@ export function DetachedCenterPanel({
   popoutId,
   tree,
   tabs,
+  remoteInfo,
   onActivate,
   onClose,
+  onHideWindow,
+  onSetLocation,
   onReorder,
   onSplit,
   onResize,
   onMove,
   onAddTab,
+  onFiles,
 }: Props) {
   // The popout's "+" add-tab menu: which group opened it + where to anchor it.
   const [addMenu, setAddMenu] = useState<{ groupId: string; x: number; y: number } | null>(null);
+  const [agentDialogOpen, setAgentDialogOpen] = useState(false);
+  // Tab hover card anchor (the hovered tab's bottom-centre), mirroring the main
+  // window's TabBar — the popout has its own tab strip, so it renders its own.
+  const [hoverTab, setHoverTab] = useState<{ key: string; x: number; y: number } | null>(null);
+  // Multi-host locality menu (shared with TabBar). Machine names + the primary
+  // host come from the streamed `remoteInfo`; undefined ⇒ local project, no badge.
+  const [localityMenu, setLocalityMenu] = useState<LocalityMenuState | null>(null);
+  const isRemote = !!remoteInfo;
+  const primaryHost = remoteInfo?.primaryHost;
+  const computeHosts = remoteInfo?.computeHosts;
   // One bar element per group, so a per-tab drag can hit-test the bar it's over.
   const barRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   // One body element per group, for resolving an edge-split drop target.
@@ -125,6 +311,10 @@ export function DetachedCenterPanel({
   // overlay, which must paint ABOVE the per-group panes (opaque terminals) — so,
   // like the main window, it lives at the panel level rather than in a body.
   const [groupRects, setGroupRects] = useState<Record<string, Rect>>({});
+  // Whole-subwindow rects (tab bar + pane region, sidebar excluded), used by the
+  // focus frame so it wraps the current subwindow's tab header too — mirrors the
+  // main window's `groupFrameRects`.
+  const [groupFrameRects, setGroupFrameRects] = useState<Record<string, Rect>>({});
   // Minimum subwindow size (px) a divider drag may shrink a pane to, per axis.
   const minWidth = useSettingsStore((s) => s.settings?.min_subwindow_width) ?? DEFAULT_MIN_SUBWINDOW_PX;
   const minHeight = useSettingsStore((s) => s.settings?.min_subwindow_height) ?? DEFAULT_MIN_SUBWINDOW_PX;
@@ -164,12 +354,120 @@ export function DetachedCenterPanel({
   // detached window is inert to the main tabs store (separate JS heap, layout
   // streamed via props), so focus is tracked locally here.
   const [focusedGroupId, setFocusedGroupId] = useState<string | null>(null);
+  // Only paint this popout's active subwindow while the popout itself owns OS
+  // focus, so it and the main window never both highlight one at once (#42).
+  const windowFocused = useWindowFocused();
   // Keep focus on a group that still exists as the tree changes (split added /
   // removed / docked back); default to the first group.
   useEffect(() => {
     const ids = allGroups(tree).map((g) => g.id);
     setFocusedGroupId((cur) => (cur && ids.includes(cur) ? cur : (ids[0] ?? null)));
   }, [tree]);
+
+  // ── Keyboard shortcuts (parity with the main window) ──────────────────────
+  // The popout is a separate JS heap, inert to the tabs store, so the main
+  // window's `useKeyboard` (which drives `useTabsStore`) can't run here. Instead
+  // we handle the WINDOW-LOCAL chords against THIS popout's own layout + edit
+  // protocol, resolving each chord through the SAME `shortcuts.ts` map (incl. the
+  // user's overrides) so a rebound key behaves identically in both windows.
+  //
+  // Only the actions with a popout equivalent are wired: close tab, prev/next/
+  // cycle tab, cycle subwindow focus, and F11 OS-fullscreen. The rest are
+  // deliberately absent because the popout has no matching concept:
+  // app-internal fullscreen, hide/close-subwindow (no such edit), and
+  // cycle-project (a popout owns no project switcher). Live values are read
+  // through a ref so the window listener binds once and never churns on the
+  // per-render identity of the edit callbacks.
+  const kbRef = useRef({ tree, focusedGroupId, onActivate, onClose, onFiles });
+  kbRef.current = { tree, focusedGroupId, onActivate, onClose, onFiles };
+  useEffect(() => {
+    const win = getCurrentWindow();
+    const onKeyDown = async (e: KeyboardEvent) => {
+      // F11 — OS fullscreen (Windows: maximize toggle, matching the main window,
+      // since real fullscreen strips the styles native dragging relies on).
+      // Handled before the editable-target guard so it works from a terminal too.
+      if (e.key === "F11") {
+        e.preventDefault();
+        if (PLATFORM === "windows") {
+          if (await win.isMaximized()) void win.unmaximize();
+          else void win.maximize();
+        } else {
+          const isFs = await win.isFullscreen();
+          void win.setFullscreen(!isFs);
+        }
+        return;
+      }
+      // Never steal keys from a focused text field / xterm textarea (same rule
+      // the main window applies) — otherwise typing in a terminal would trip the
+      // nav chords.
+      if (isEditableTarget(e.target)) return;
+
+      const overrides = useSettingsStore.getState().settings
+        ?.keyboard_shortcuts as ShortcutMap | undefined;
+      const is = (action: ShortcutAction) =>
+        chordMatches(resolveChord(action, overrides), e);
+      const {
+        tree: t,
+        focusedGroupId: fid,
+        onActivate: activate,
+        onClose: close,
+        onFiles: files,
+      } = kbRef.current;
+      const focused = (fid && findGroup(t, fid)) || allGroups(t)[0] || null;
+
+      // Toggle the focused subwindow's docked file viewer (streams a files edit
+      // back to the main window, same as the ◫ button / resize-edge double-click).
+      if (is("toggleSubwindowFiles")) {
+        if (focused) {
+          e.preventDefault();
+          files(focused.id, { open: !focused.filesOpen });
+        }
+        return;
+      }
+
+      // Close the active tab of the focused subwindow. DetachedApp's handleClose
+      // closes the whole window when it was the last tab.
+      if (is("closeTab")) {
+        if (focused?.activeKey) {
+          e.preventDefault();
+          close(focused.activeKey);
+        }
+        return;
+      }
+
+      // Previous / next / cycle tab within the focused subwindow.
+      const prev = is("prevTab");
+      if (prev || is("nextTab") || is("cycleTabs")) {
+        if (focused && focused.tabKeys.length > 1) {
+          e.preventDefault();
+          const len = focused.tabKeys.length;
+          const cur = focused.activeKey ? focused.tabKeys.indexOf(focused.activeKey) : 0;
+          const next = focused.tabKeys[(cur + (prev ? -1 : 1) + len) % len];
+          activate(next);
+        }
+        return;
+      }
+
+      // Cycle which subwindow is focused (only meaningful once the popout is
+      // split into several panes). A direct move — the popout has a focus frame
+      // but not the main window's numbered Shift-preview nav.
+      const down = is("subwindowDown");
+      if (down || is("subwindowUp")) {
+        const ids = allGroups(t).map((g) => g.id);
+        if (ids.length >= 2) {
+          e.preventDefault();
+          const from = fid ? ids.indexOf(fid) : -1;
+          const base = from >= 0 ? from : 0;
+          setFocusedGroupId(ids[(base + (down ? 1 : -1) + ids.length) % ids.length]);
+        }
+        return;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // Bind once: live state is read via kbRef; the resolver reads settings live.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Pane-region measurement (for the split-preview overlay) ───────────────
   // Recompute every group body's rect (relative to the panel) so the overlay can
@@ -179,27 +477,42 @@ export function DetachedCenterPanel({
     if (!panel) return;
     const base = panel.getBoundingClientRect();
     const next: Record<string, Rect> = {};
+    const frames: Record<string, Rect> = {};
     for (const [id, el] of bodyRefs.current) {
       if (!el.isConnected) continue;
       const r = el.getBoundingClientRect();
       next[id] = { left: r.left - base.left, top: r.top - base.top, width: r.width, height: r.height };
-    }
-    setGroupRects((prev) => {
-      const keys = Object.keys(next);
-      if (keys.length === Object.keys(prev).length) {
-        let same = true;
-        for (const k of keys) {
-          const a = next[k];
-          const b = prev[k];
-          if (!b || a.left !== b.left || a.top !== b.top || a.width !== b.width || a.height !== b.height) {
-            same = false;
-            break;
-          }
-        }
-        if (same) return prev;
+      // The enclosing subwindow box spans the tab header bar + body; clamp the
+      // right edge to the pane region's right (`r`, the measured element here)
+      // so a docked files sidebar in the same body is excluded from the frame.
+      const sub = el.closest(".subwindow");
+      if (sub) {
+        const sr = sub.getBoundingClientRect();
+        frames[id] = {
+          left: sr.left - base.left,
+          top: sr.top - base.top,
+          width: r.right - sr.left,
+          height: sr.height,
+        };
       }
-      return next;
-    });
+    }
+    const sameRects = (
+      a: Record<string, Rect>,
+      b: Record<string, Rect>,
+    ): boolean => {
+      const keys = Object.keys(a);
+      if (keys.length !== Object.keys(b).length) return false;
+      for (const k of keys) {
+        const x = a[k];
+        const y = b[k];
+        if (!y || x.left !== y.left || x.top !== y.top || x.width !== y.width || x.height !== y.height) {
+          return false;
+        }
+      }
+      return true;
+    };
+    setGroupRects((prev) => (sameRects(next, prev) ? prev : next));
+    setGroupFrameRects((prev) => (sameRects(frames, prev) ? prev : frames));
   }, []);
 
   // Re-measure when the popout's tree changes (split added/removed/resized).
@@ -369,7 +682,7 @@ export function DetachedCenterPanel({
   // it to this popout's drag store: a tab BAR → within-bar reorder slot; a group
   // BODY → edge split of that group. Mirrors CenterPanel.resolveTarget, but scans
   // this popout's own per-group bar/body refs (it may have several once split).
-  const resolveLocalTarget = (clientX: number, clientY: number) => {
+  const resolveLocalTarget = useCallback((clientX: number, clientY: number) => {
     const setTarget = useDragStore.getState().setTarget;
     const clear = () =>
       setTarget({ overGroup: null, edge: null, reorderGroup: null, reorderIndex: null });
@@ -403,7 +716,45 @@ export function DetachedCenterPanel({
       return;
     }
     clear();
-  };
+  }, []);
+
+  // #42: a FILE dragged out of the file tree (a Files (Project) tab) onto a pane
+  // inside THIS popout. The main window's `commitFileDrop` can't run here (the
+  // popout doesn't own the tab store), so commit the resolved target as a
+  // detached `add` edit: a bar / pane-centre → append; a body side edge → carve a
+  // new pane. Provided to the tree via `FileDropContext`, with `resolveLocalTarget`
+  // as its per-move target resolver so the split/merge preview lights up.
+  const fileDrop = useMemo<FileDropController>(
+    () => ({
+      resolveTarget: resolveLocalTarget,
+      commit: (d, projectCwd) => {
+        const drag = useDragStore.getState().drag;
+        if (!drag) return;
+        const payloads = fileDropPayloads(d, projectCwd);
+        if (payloads.length === 0) return;
+        // Body side edge → the first file carves a new pane at that edge; any
+        // further files (a multi-selection) append to the target group, since the
+        // popout can't reference the pane the main window is about to mint.
+        if (drag.overGroup && drag.edge && drag.edge !== "center") {
+          onAddTab(payloads[0], drag.overGroup, drag.edge);
+          for (const p of payloads.slice(1)) onAddTab(p, drag.overGroup);
+          return;
+        }
+        // A pane centre/body, or a tab bar → append to that group. No pane under
+        // the cursor (released over empty space) → nothing (never leak a file out).
+        const target = drag.overGroup ?? drag.reorderGroup;
+        if (!target) return;
+        for (const p of payloads) onAddTab(p, target);
+      },
+      // No drag involved (a button click): drop the tab into the popout's focused
+      // group, else its first group, streamed to the main window via onAddTab.
+      openTab: (tab) => {
+        const target = focusedGroupId ?? allGroups(tree)[0]?.id;
+        if (target) onAddTab(tab, target);
+      },
+    }),
+    [resolveLocalTarget, onAddTab, focusedGroupId, tree],
+  );
 
   // A per-tab drag released over THIS popout: commit the LAST resolved target
   // (set by resolveLocalTarget during the drag) — a bar slot reorders, a body
@@ -488,8 +839,12 @@ export function DetachedCenterPanel({
     // The source group of a per-tab drag (for local ghost/reorder visuals).
     sourceGroup?: GroupNode;
     tabKey?: string;
+    // ONE pane (inner group) of a multi-pane popout dragged by its bar grip: the
+    // host docks just this group (attachDetachedPane) — never the whole popout.
+    paneGroupId?: string;
   }) => {
-    const { pointerId, captureEl, label: dragLabel, moveWindow, tabKey, sourceGroup } = args;
+    const { pointerId, captureEl, label: dragLabel, moveWindow, tabKey, sourceGroup, paneGroupId } =
+      args;
     // Per-tab drags pass `captureEl: null` (no stable element under the pointer);
     // on engines that need capture to deliver the terminal event, fall back to a
     // stable element (the panel root, else document.body). Without this, dragging a
@@ -647,6 +1002,7 @@ export function DetachedCenterPanel({
           cursorPhysX: seed.x,
           cursorPhysY: seed.y,
           tabKey,
+          paneId: paneGroupId,
         } satisfies DetachedDragStart);
         startPoll();
       })
@@ -702,6 +1058,19 @@ export function DetachedCenterPanel({
         finish(handledLocally, shift);
         return;
       }
+      // A PANE drag released over its own popout stays put: the window doesn't
+      // follow the cursor (moveWindow=false), and the popout usually floats
+      // ABOVE the main window — the host's inMain test alone would read a
+      // release-in-place as "dock into main". Cancel so the host no-ops.
+      if (!shift && paneGroupId != null && popoutFrame) {
+        const c = physToClient(popoutFrame, last);
+        const overSelf =
+          c.x >= 0 && c.y >= 0 && c.x <= window.innerWidth && c.y <= window.innerHeight;
+        if (overSelf) {
+          finish(true, shift);
+          return;
+        }
+      }
       finish(false, shift);
     };
     // bindDragRelease applies the engine-correct policy (WebKitGTK: pointercancel
@@ -713,24 +1082,19 @@ export function DetachedCenterPanel({
     });
   };
 
-  // #42: grab a group's empty bar area to move/dock the WHOLE popout window.
-  const onGroupBarPointerDown = (e: React.PointerEvent, group: GroupNode) => {
+  // Grab a group's bar grip → MOVE the whole popout window natively (option B:
+  // move-only). This replaces the old streamed move+dock gesture (`beginDockDrag`)
+  // whose cross-window protocol is what painted a dock/split preview in the main
+  // window while you were merely repositioning a popout. A popout no longer docks
+  // back — nor separates a pane — by dragging; those are part of a re-docking
+  // redesign still to come. Only the explicit `.tab-drag-grip` starts the move;
+  // grabbing empty bar space does not.
+  const onGroupBarPointerDown = (e: React.PointerEvent, _group: GroupNode) => {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
-    // Only the explicit `.tab-drag-grip` moves/docks the popout from the tab bar —
-    // grabbing empty bar space no longer does (the titlebar remains a move handle).
     if (!target.closest(".tab-drag-grip")) return;
     e.preventDefault();
-    const activeLabel =
-      group.tabKeys
-        .map((k) => byKey.get(k))
-        .find((t) => t?.key === group.activeKey)?.label ?? "Subwindow";
-    beginDockDrag({
-      pointerId: e.pointerId,
-      captureEl: e.currentTarget as HTMLElement,
-      label: activeLabel,
-      moveWindow: true,
-    });
+    beginNativeWindowMove();
   };
 
   // #42 (Windows): show the cheap move placeholder for the duration of a NATIVE
@@ -776,6 +1140,20 @@ export function DetachedCenterPanel({
       .catch(() => {});
   };
 
+  // Move-only, most-native window reposition. Hands the drag straight to the OS
+  // (`startDragging`) instead of the streamed poll+setPosition dock gesture
+  // (`beginDockDrag`) — so it emits NO cross-window dock protocol and therefore
+  // no other window ever paints a dock/split preview for it. This is the whole-
+  // subwindow behaviour: a popout's grip and titlebar only REPOSITION the window;
+  // re-docking back into another window by dragging is deliberately gone (a
+  // separate re-docking design is planned). On Windows the move placeholder keeps
+  // the frame aligned during the OS modal move loop (WebView2 can't repaint the
+  // terminals fast enough); other engines don't need it.
+  const beginNativeWindowMove = () => {
+    if (PLATFORM === "windows") beginWindowMove();
+    void getCurrentWindow().startDragging().catch(() => {});
+  };
+
   // #42: grab the popout's outer title bar to move/dock the WHOLE window. Mirrors
   // the group-bar handle, but anchored to the always-full-width title strip so it
   // works the same whether or not the content is split. The window controls carry
@@ -785,32 +1163,10 @@ export function DetachedCenterPanel({
     const target = e.target as HTMLElement;
     if (target.closest(".detached-titlebar-controls, button, .no-drag")) return;
     e.preventDefault();
-    // Windows: move the borderless popout with the NATIVE OS window drag, the same
-    // mechanism the main window's HeaderBar uses. The custom poll+setPosition dock
-    // gesture (`beginDockDrag`) can't move the window on Windows — window-follow is
-    // disabled there (`followWindowOnDockDrag=false`), AND the focus loss when the
-    // main window paints its dock ghost trips the `blur` backstop in
-    // `bindDragRelease` (armed because `needsPointerCapture` is true on Windows),
-    // which aborts the gesture with `cancelled=true` and so SKIPS the on-release
-    // `setPosition`. The popout was therefore frozen during the drag and never
-    // jumped on release. `startDragging` hands the move to the OS: live, DPI-correct,
-    // and correct across monitors. Dock-back-into-main stays available via the group
-    // tab-bar handle (`onGroupBarPointerDown`). Other platforms keep the unified
-    // move+dock gesture, where window-follow already works — untouched.
-    if (PLATFORM === "windows") {
-      beginWindowMove();
-      void getCurrentWindow().startDragging().catch(() => {});
-      return;
-    }
-    const first = allGroups(tree)[0];
-    const activeLabel =
-      (first ? tabs.find((t) => t.key === first.activeKey)?.label : undefined) ?? "Subwindow";
-    beginDockDrag({
-      pointerId: e.pointerId,
-      captureEl: e.currentTarget as HTMLElement,
-      label: activeLabel,
-      moveWindow: true,
-    });
+    // Move the whole popout window natively on every platform (see
+    // `beginNativeWindowMove`) — no streamed dock gesture, so dragging the
+    // titlebar never makes another window flash a dock/split preview.
+    beginNativeWindowMove();
   };
 
   // #42: dragging a SINGLE tab out of `group`. Activate on press, then once the
@@ -865,7 +1221,7 @@ export function DetachedCenterPanel({
     const localReorder = reorderGroupId === group.id ? reorderIndex : null;
     const isDropTarget = localReorder != null;
     const dropPlaceholder = <TabDropPlaceholder label={dragLabel} />;
-    const isFocused = group.id === focusedGroupId;
+    const isFocused = windowFocused && group.id === focusedGroupId;
     return (
       <div
         className={`subwindow${isFocused ? " focused" : ""}`}
@@ -898,6 +1254,13 @@ export function DetachedCenterPanel({
           >
             ⠿
           </div>
+          {/* The tabs live in their own horizontally-scrolling strip; chevrons
+              flank it and appear only on overflow — the same behaviour as the
+              main-window `TabBar`. `revision` re-checks overflow when the tab set
+              (or its drop placeholder) changes. */}
+          <DetachedTabStrip
+            revision={`${orderedTabs.map((t) => t.key).join(",")}|${isDropTarget}|${localReorder}`}
+          >
           {/* Empty bar that's a drop target: the placeholder is the only slot. */}
           {isDropTarget && orderedTabs.length === 0 && (
             <Fragment key="drop-marker">{dropPlaceholder}</Fragment>
@@ -916,6 +1279,15 @@ export function DetachedCenterPanel({
                 <div
                   className={`tab ${isActive ? "active" : ""}${isDragging ? " dragging" : ""}${landing ? " landing" : ""}`}
                   onPointerDown={(e) => onTabPointerDown(e, group, tab)}
+                  // Styled hover card (same one the main window's TabBar shows —
+                  // this strip is bespoke, so it anchors the shared card itself).
+                  onMouseEnter={(e) => {
+                    const r = e.currentTarget.getBoundingClientRect();
+                    setHoverTab({ key: tab.key, x: r.left + r.width / 2, y: r.bottom });
+                  }}
+                  onMouseLeave={() =>
+                    setHoverTab((h) => (h?.key === tab.key ? null : h))
+                  }
                   // Clear the landing once it finishes so the class doesn't linger
                   // (guard on currentTarget so a child's animationend never clears
                   // it early). Mirrors the main-window `TabBar`.
@@ -928,6 +1300,26 @@ export function DetachedCenterPanel({
                   }
                 >
                   <span className="tab-label">{tab.label}</span>
+                  {/* Local/remote badges — parity with the main-window TabBar,
+                      via the shared TabLocalityBadges. The source badge reads THIS
+                      window's fileSources store; the locality badge/menu use the
+                      streamed host list and route changes through onSetLocation. */}
+                  <TabSourceBadge tabKey={tab.key} />
+                  {isRemote && (
+                    <TabLocalityBadge
+                      tab={tab}
+                      primaryHost={primaryHost}
+                      computeHosts={computeHosts}
+                      onOpen={(r, startOnMachines) =>
+                        setLocalityMenu({
+                          key: tab.key,
+                          x: r.left,
+                          y: r.bottom + 2,
+                          view: startOnMachines ? "machines" : "root",
+                        })
+                      }
+                    />
+                  )}
                   <button
                     className="tab-close"
                     onClick={(e) => {
@@ -969,14 +1361,66 @@ export function DetachedCenterPanel({
               +
             </button>
           </div>
+          </DetachedTabStrip>
+          {/* Per-subwindow right file viewer, same ◫ toggle as the main window's
+              TabBar. Applied optimistically + streamed to the main window. When
+              the viewer is docked below, the control reserves its width (like
+              the main window's `.tab-controls`) so it stays pinned above the
+              viewer and the strip stops at the pane edge. */}
+          <div
+            className="tab-controls"
+            style={
+              group.filesOpen
+                ? { width: clampFilesWidth(group.filesWidth ?? DEFAULT_GROUP_FILES_WIDTH) }
+                : undefined
+            }
+          >
+            <button
+              className={`subwindow-files-toggle${group.filesOpen ? " open" : ""}`}
+              title={
+                group.filesOpen
+                  ? "Close this subwindow's file viewer"
+                  : "Open a file viewer in this subwindow"
+              }
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onFiles(group.id, { open: !group.filesOpen });
+              }}
+            >
+              ◫
+            </button>
+            {/* Hide the WHOLE popout into the main window's right-panel Hidden
+                list — the detached twin of the main-window bar's "–". Rendered
+                per bar (like ◫); for a multi-pane popout every bar's "–" hides
+                the whole window as one hidden entry. stopPropagation keeps the
+                press off the bar's window-move/dock drag. */}
+            {onHideWindow && (
+              <button
+                className="subwindow-hide"
+                title="Hide this window into the right panel (bring it back from there)"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onHideWindow();
+                }}
+              >
+                –
+              </button>
+            )}
+          </div>
         </div>
-        <div
-          className="subwindow-body"
-          ref={(el) => {
-            if (el) bodyRefs.current.set(group.id, el);
-            else bodyRefs.current.delete(group.id);
-          }}
-        >
+        <div className="subwindow-body">
+          {/* The measured/drop-target body is the PANE REGION, not the whole
+              flex row — so edge-split drops and the split preview never target
+              the file-viewer column. */}
+          <div
+            className="subwindow-pane-region"
+            ref={(el) => {
+              if (el) bodyRefs.current.set(group.id, el);
+              else bodyRefs.current.delete(group.id);
+            }}
+          >
           <div className="pane-layer">
             {orderedTabs.map((tab) => {
               const visible = tab.key === group.activeKey;
@@ -985,65 +1429,44 @@ export function DetachedCenterPanel({
                 : { display: "none" };
               return (
                 <div key={tab.key} className="center-pane" data-tab-key={tab.key} style={style}>
-                  {tab.kind === "network" ? (
-                    <NetworkTrafficPane projectId={scope} visible={visible} />
-                  ) : tab.kind === "calendar" ? (
-                    <CalendarPane visible={visible} />
-                  ) : tab.kind === "monitor" ? (
-                    <SystemMonitorPane visible={visible} />
-                  ) : tab.kind === "diskusage" ? (
-                    <DiskUsagePane
-                      projectId={scope === "root" ? null : scope}
-                      projectCwd={tab.cwd}
-                      // No `tabKey` on purpose: a popout runs on a streamed COPY of
-                      // the tab payloads in its own JS heap, with no rename channel
-                      // back to the main window — renaming here would silently
-                      // diverge. A detached tab keeps the label it was given.
-                      visible={visible}
-                    />
-                  ) : tab.kind === "files" ? (
-                    <FileBrowser
-                      projectDir={tab.cwd}
-                      projectId={scope === "root" ? null : scope}
-                      active={visible}
-                    />
-                  ) : tab.kind === "embed" ? (
-                    tab.viewer ? (
-                      <FileViewerPane
-                        viewer={tab.viewer}
-                        path={tab.embedPath ?? ""}
-                        projectId={scope === "root" ? null : scope}
-                        tabKey={tab.key}
-                        visible={visible}
-                      />
-                    ) : (
-                      <EmbedPane
-                        path={tab.embedPath ?? ""}
-                        exec={tab.embedExec}
-                        projectId={scope === "root" ? null : scope}
-                        visible={visible}
-                      />
-                    )
-                  ) : (
-                    <TerminalView
-                      id={`${scope}:${tab.key}`}
-                      cmd={tab.cmd}
-                      args={tab.args ?? []}
-                      env={tab.env ?? {}}
-                      cwd={tab.cwd}
-                      // attachOnly: the main window owns the spawn, so localOnly is
-                      // cosmetic here — kept aligned with CenterPanel's locality.
-                      localOnly={effectiveTabLocation(tab) === "local"}
-                      zoomable={tab.kind === "agent" || tab.kind === "local_agent"}
-                      visible={visible}
-                      focused={visible}
-                      attachOnly
-                    />
-                  )}
+                  {/* The shared per-tab render switch (`components/tabs/TabPane`),
+                      the SAME one the main window uses. A popout is attach-only (the
+                      main window owns the PTY) and doesn't own the tab store, so it
+                      passes no `ownsTabs`/`onConnect`/mirror props — the cwd is just
+                      the tab's, since the projects store the mirror-swap needs isn't
+                      here. See TabPane for why each prop differs between windows. */}
+                  <TabPane
+                    tab={tab}
+                    scope={scope}
+                    visible={visible}
+                    attachOnly
+                    filesProjectDir={tab.cwd}
+                    terminalCwd={tab.cwd}
+                  />
                 </div>
               );
             })}
           </div>
+          </div>
+          {/* Per-subwindow right file viewer. The popout has no projects store,
+              so the viewer resolves its root from the group's tab cwd (same
+              fallback a Files (Project) tab uses here); no open-in-new-tab (a
+              popout can't own tabs). Width edits stream back like the toggle. */}
+          {group.filesOpen && (
+            <SubwindowFilesSidebar
+              scope={scope}
+              cwd={
+                byKey.get(group.activeKey ?? group.tabKeys[0] ?? "")?.cwd ??
+                group.tabKeys.map((k) => byKey.get(k)?.cwd).find(Boolean) ??
+                ""
+              }
+              width={group.filesWidth}
+              onWidthChange={(w) => onFiles(group.id, { width: w })}
+              folder={group.filesFolder}
+              onFolderChange={(f) => onFiles(group.id, { folder: f })}
+              onHide={() => onFiles(group.id, { open: false })}
+            />
+          )}
         </div>
       </div>
     );
@@ -1083,6 +1506,18 @@ export function DetachedCenterPanel({
               <div
                 className={`split-divider split-divider-${node.dir}`}
                 onPointerDown={onDividerPointerDown(node, i)}
+                // Double-click merges the two adjacent subwindows (both must be
+                // leaf groups). No `merge` edit exists, so replay it as one
+                // `move` per source tab into the left/top survivor — the main
+                // window applies each via moveKeyInTree (which collapses the
+                // emptied source) and streams the result back.
+                onDoubleClick={() => {
+                  const a = node.children[i];
+                  const b = node.children[i + 1];
+                  if (a.type === "group" && b.type === "group") {
+                    for (const key of b.tabKeys) onMove(key, a.id);
+                  }
+                }}
               />
             )}
           </Fragment>
@@ -1099,6 +1534,7 @@ export function DetachedCenterPanel({
     "Subwindow";
 
   return (
+    <FileDropContext.Provider value={fileDrop}>
     <div className={`detached-center center-panel${windowDragging ? " moving" : ""}`}>
       {/* #42: the popout's own title bar — a full-width strip ABOVE the tab layout
           that always hosts the min/max/close controls top-right. They used to live
@@ -1119,21 +1555,22 @@ export function DetachedCenterPanel({
         {/* Split preview: the translucent half/whole a split drop would carve out,
             drawn above the per-group panes (mirrors the main window). */}
         <SplitPreviewOverlay groupRects={groupRects} />
-        {/* Focus frame: the accent outline around the current group's pane rect,
-            drawn here (above the opaque panes) for the same reason as the split
-            preview — an in-body frame would be hidden. Mirrors the main window's
-            `FocusFrameOverlay` (minus Shift+↑/↓ nav, which isn't wired here). */}
-        {focusedGroupId && groupRects[focusedGroupId] && (
-          <div
-            className="focus-frame"
-            style={{
-              left: groupRects[focusedGroupId].left,
-              top: groupRects[focusedGroupId].top,
-              width: groupRects[focusedGroupId].width,
-              height: groupRects[focusedGroupId].height,
-            }}
-          />
-        )}
+        {/* Focus frame: the accent outline around the current subwindow (tab bar
+            + pane region, sidebar excluded), drawn here (above the opaque panes)
+            for the same reason as the split preview — an in-body frame would be
+            hidden. Mirrors the main window's `FocusFrameOverlay` (minus Shift+↑/↓
+            nav, which isn't wired here). Falls back to the pane rect if the
+            whole-subwindow box wasn't measured. */}
+        {windowFocused &&
+          focusedGroupId &&
+          (groupFrameRects[focusedGroupId] ?? groupRects[focusedGroupId]) && (
+            <div
+              className="focus-frame"
+              style={
+                groupFrameRects[focusedGroupId] ?? groupRects[focusedGroupId]
+              }
+            />
+          )}
         {/* #42 (Windows): the move placeholder. While shown, `.detached-center.moving`
             hides the heavy pane content so this trivial surface is all WebView2 has to
             composite during the native drag — keeping the content aligned with the
@@ -1165,10 +1602,48 @@ export function DetachedCenterPanel({
               anchor={{ x: addMenu.x, y: addMenu.y }}
               onPick={(tab) => onAddTab(tab, addMenu.groupId)}
               onClose={() => setAddMenu(null)}
+              onManageAgents={() => setAgentDialogOpen(true)}
             />
           );
         })()}
+      {agentDialogOpen && (
+        <CustomAgentDialog onClose={() => setAgentDialogOpen(false)} />
+      )}
+      {/* Multi-host locality menu — parity with the main-window TabBar, routed
+          through onSetLocation (the main window owns the PTY + respawns it). */}
+      {localityMenu && (
+        <LocalityMenu
+          menu={localityMenu}
+          current={tabLocation(byKey.get(localityMenu.key))}
+          primaryHost={primaryHost}
+          computeHosts={computeHosts}
+          onClose={() => setLocalityMenu(null)}
+          onChangeView={(view) => setLocalityMenu((m) => (m ? { ...m, view } : m))}
+          onChoose={(key, loc) => onSetLocation(key, loc)}
+        />
+      )}
+      {/* Styled tab hover card — parity with the main window's TabBar.
+          Suppressed mid-drag (local or streamed-in: both set the drag store)
+          and while the "+" menu is open so it never overlaps them. The card
+          reads THIS window's stores; the machine names come from the streamed
+          `remoteInfo` (the projects store is absent here). */}
+      {hoverTab && dragKey === null && !addMenu && (() => {
+        const tab = byKey.get(hoverTab.key);
+        if (!tab) return null;
+        return (
+          <TabHoverCard
+            tab={tab}
+            scope={scope}
+            isRemote={isRemote}
+            primaryHost={primaryHost}
+            computeHosts={computeHosts}
+            anchorX={hoverTab.x}
+            anchorY={hoverTab.y}
+          />
+        );
+      })()}
       <DragGhost />
     </div>
+    </FileDropContext.Provider>
   );
 }

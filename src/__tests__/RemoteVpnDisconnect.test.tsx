@@ -90,7 +90,12 @@ describe("VPN-only disconnect (tunnel up, SSH down)", () => {
     expect(toggle.checked).toBe(true);
   });
 
-  it("opens the VPN section when the matching tunnel was started globally", async () => {
+  it("collapses to the already-up notice when a matching tunnel was started globally, not by this project", async () => {
+    // A tunnel that matches this project's stored config but was brought up by the
+    // header (or another project) is not this project's own — it must not be
+    // silently adopted as a holder here (see `useRemoteReconnect`), or logging out
+    // of *this* project could later drop the tunnel out from under whoever actually
+    // started it. It gets the same collapsed notice every other dialog shows.
     useRemoteStatusStore.setState({ byProject: { p1: { ssh: "off", vpn: "off" } } } as never);
     useVpnStatusStore.setState({
       byConfig: { [VPN_CONFIG]: "connected" },
@@ -99,14 +104,10 @@ describe("VPN-only disconnect (tunnel up, SSH down)", () => {
 
     render(<RemoteConnectDialog />);
 
-    const toggle = await screen.findByRole<HTMLInputElement>("checkbox", {
-      name: /connect via openvpn/i,
-    });
-    await waitFor(() => expect(toggle.checked).toBe(true));
-    expect(useRemoteStatusStore.getState().byProject.p1?.vpn).toBe("connected");
-    expect(useVpnStatusStore.getState().holders[VPN_CONFIG]).toEqual(["p1"]);
-    expect(screen.queryByRole("button", { name: /^connect vpn$/i })).toBeNull();
-    expect(screen.getByRole("button", { name: /disconnect vpn/i })).toBeTruthy();
+    expect(await screen.findByText(/openvpn tunnel already up/i)).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: /connect via openvpn/i })).toBeNull();
+    expect(useRemoteStatusStore.getState().byProject.p1?.vpn).toBe("off");
+    expect(useVpnStatusStore.getState().holders[VPN_CONFIG] ?? []).toEqual([]);
   });
 
   it("offers a VPN disconnect while connected, and drops only the tunnel", async () => {

@@ -13,7 +13,9 @@
 
 > **You don't open applications — you open projects.**
 > Eldrun is a project-centric desktop layer that swaps your whole working
-> context as one unit, with AI agent terminals and in-app file viewers built in.
+> context as one unit, with AI agent terminals and in-app file viewers built in
+> — and it runs that work on remote machines and HPC clusters, not just your
+> laptop.
 
 Eldrun is a **project-centric desktop layer**, not just an app that launches or
 embeds other apps: projects own their windows and desktop context, and selecting
@@ -23,6 +25,11 @@ on top, living *inside* a project once its desktop is restored. Built with
 **Tauri 2 + React + TypeScript**. Linux (X11 / KDE Wayland) and Windows both get
 native workspace, app-launch, default-app, and download integration today; macOS
 runs as a shell with a no-op workspace backend (on the roadmap).
+
+Eldrun is also **strong at working across machines**: it manages a fleet of
+remote hosts, runs agents, shells, and jobs on them over SSH, and drives HPC /
+SLURM clusters — all from the same project cockpit. See
+[Remote machines & HPC clusters](#remote-machines--hpc-clusters).
 
 ---
 
@@ -263,6 +270,37 @@ update-desktop-database ~/.local/share/applications/
   pointer hover and disappear when the pointer leaves, keeping the center
   terminal unobstructed; the right panel can also be pinned permanently open.
 
+### Remote machines & HPC clusters
+
+Eldrun treats remote hosts as first-class: it **manages a fleet of machines** and
+**runs your work on them**, from a single SSH box to a full HPC cluster.
+
+- **Machine hub**: register SSH hosts once (independent of any project) in the
+  header's machines indicator — see a live CPU/GPU usage bar per machine,
+  connect/disconnect, arm silent auto-connect on launch, and drag a machine onto
+  a project to attach it as a compute host.
+- **Run on the remote host**: a project can point at a host and run its agent,
+  shell, and Python tabs *on that host* over SSH, with the file tree, Git, and
+  in-app viewers all reading the remote tree. VPN-gated hosts bring up an OpenVPN
+  tunnel first.
+- **Many machines per project**: beyond the primary host, add extra *worker*
+  machines — their code is kept in sync from the project (one-way, tracked files
+  only) and their experiment outputs are pulled back on demand. A worker on a
+  **shared filesystem** (e.g. an HPC compute node on a shared home) is used in
+  place, with nothing copied and no Git run on it.
+- **Persistent sessions**: a long run lives in a tmux session per shell tab, so
+  a job survives an SSH drop, a laptop sleep, a VPN drop, or Eldrun quitting, and
+  the tab reattaches on relaunch. A **Sessions view** lists every running session
+  across all connected machines, with per-row attach/rename/kill.
+- **Remote system monitor**: a host's CPU, memory, and GPUs (AMD + NVIDIA,
+  including per-process GPU memory) are sampled over the same SSH connection and
+  shown alongside the local machine's.
+- **HPC / SLURM** *(built, but untested pending real-cluster QA)*: submit a batch
+  script with `sbatch`, watch its live log, list and cancel your queued jobs, and
+  open an interactive compute-node shell via `srun` — without memorizing the
+  commands. A guided **HPC pipeline wizard** walks a cluster newcomer through
+  login → project → data upload → job → watch.
+
 ### In-app file viewers
 
 Drag a file from the tree onto a subwindow's tab bar to open it in a tab; the
@@ -271,11 +309,13 @@ app until they land.
 
 | Viewer | Extensions | Status | Notes |
 | ------ | ---------- | ------ | ----- |
-| **Text / code** | `.txt` `.json` `.py` `.rs` `.ts` `.bib` + many more, plus extensionless files like `Dockerfile` | ✅ Shipping | Editable editor: line-number gutter, syntax highlighting, Tab/Shift+Tab indent, undo/redo (`Ctrl+Z`/`Ctrl+Shift+Z`), find (`Ctrl+F`) and find-and-replace (`Ctrl+R`) with match nav + case toggle, save (`Ctrl+S`); unsaved lines marked; non-destructive auto-reload banner; opt-in local autocomplete and grammar check. |
+| **Text / code** | `.txt` `.toml` `.py` `.rs` `.ts` `.bib` + many more, plus extensionless files like `Dockerfile` | ✅ Shipping | Editable editor: line-number gutter, syntax highlighting, Tab/Shift+Tab indent, undo/redo (`Ctrl+Z`/`Ctrl+Shift+Z`), find (`Ctrl+F`) and find-and-replace (`Ctrl+R`) with match nav + case toggle, save (`Ctrl+S`); unsaved lines marked; non-destructive auto-reload banner; opt-in local autocomplete and grammar check. |
 | **Markdown** | `.md` `.markdown` `.mdx` | ✅ Shipping | Rendered preview with an Edit/Preview toggle; links to local files are clickable. |
+| **YAML / JSON** | `.yaml` `.yml` `.json` | ✅ Shipping | Editable structure tree with a Tree/Source toggle: retype a value, rename a key, add a key or list item (with a type picker), reorder, delete. Both of YAML's syntaxes are first-class — block (`key:`) and flow (`{a: 1}`, which is exactly JSON, on one line or spread over many) — and each keeps the style it is written in. The tree edits the file's own text, so comments, quoting and layout survive an edit; it withholds the affordance rather than botch a construct it can't rewrite (anchors, merge keys). Source is the full code editor. |
 | **LaTeX** | `.tex` | ✅ Shipping | Code editor + compile (when a TeX engine is on `PATH`, shell-escape stripped); follows `\input{…}`/`\includegraphics{…}`, `\ref`/`\cite` completion from `\label` keys and `.bib` entries; parsed compile errors jump to the line; bidirectional SyncTeX sync across tiled or detached panes. |
 | **PDF** | `.pdf` | ✅ Shipping | Rendered with a themed zoom toolbar. |
-| **Images** | `.png` `.jpg` `.gif` `.webp` … | ✅ Shipping | Zoom-to-cursor / pan; draggable out as an OS drop source. |
+| **Images** | `.png` `.jpg` `.bmp` `.webp` … | ✅ Shipping | Zoom-to-cursor / pan; draggable out as an OS drop source. |
+| **Animated GIF** | `.gif` | ✅ Shipping | Frame-level transport on top of the image viewer's zoom/pan: play/pause, frame stepping, scrubber, playback speed, loop toggle, frame/delay readout. Decoded in-app (pure LZW decoder), so it works over SFTP too; a GIF the decoder can't handle degrades to the native animated `<img>`. |
 | **Table / CSV** | `.csv` `.tsv` | ✅ Shipping | Read-only grid (RFC 4180-style parse); large files are windowed to keep the webview responsive. |
 | **Jupyter notebook** | `.ipynb` | ✅ Shipping | Read-only render of cells top-to-bottom — markdown cells, Python-highlighted code cells, and their classified outputs. |
 | **Diff / patch** | `.diff` `.patch` | ✅ Shipping | Color-coded add/del rendering that reads in light and dark themes. |

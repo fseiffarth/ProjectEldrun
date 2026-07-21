@@ -254,6 +254,28 @@ pub fn divergence(
     (host_diverged, local_diverged)
 }
 
+/// Whether an amber verdict is worth confirming against the actual bytes rather
+/// than trusting the size+mtime heuristic. Size+mtime only *approximates*
+/// divergence: a re-save with identical bytes (or a bare `touch`) moves the mtime
+/// while the content is unchanged, so the file paints amber with nothing to
+/// resolve. We read to disprove that only when it could pay off: both sides exist
+/// (a present mtime), they are the SAME size (different sizes can't be identical —
+/// don't read), and they sit at or below `cutoff`. Large files keep the heuristic —
+/// reading them over SFTP on every status refresh is exactly its reason to exist.
+/// Pure, unit-tested; the byte read + compare itself lives in `commands::sync`.
+pub fn content_verify_worth_it(
+    host: (u64, Option<u64>),
+    local: (u64, Option<u64>),
+    cutoff: u64,
+) -> bool {
+    let (host_size, host_mtime) = host;
+    let (local_size, local_mtime) = local;
+    host_mtime.is_some()
+        && local_mtime.is_some()
+        && host_size == local_size
+        && host_size <= cutoff
+}
+
 /// Whether `rel` auto-syncs, by **nearest explicit marker wins**. A marker is an
 /// entry carrying `auto_sync` (on) or `auto_off` (excluded). We consult, closest
 /// first: the path's own entry, then each ancestor **directory** marker, ending at
@@ -1000,6 +1022,24 @@ mod tests {
     }
 
     #[test]
+    fn content_verify_gate() {
+        let cutoff = 1024;
+        // Same size, both present, within cutoff → worth reading to disprove amber.
+        assert!(content_verify_worth_it((10, Some(100)), (10, Some(50)), cutoff));
+        // Different sizes can't be byte-identical → never read.
+        assert!(!content_verify_worth_it((10, Some(100)), (12, Some(50)), cutoff));
+        // A missing side (no mtime) is a real divergence → don't downgrade, don't read.
+        assert!(!content_verify_worth_it((10, None), (10, Some(50)), cutoff));
+        assert!(!content_verify_worth_it((10, Some(100)), (10, None), cutoff));
+        // Above the cutoff → large files keep the pure metadata heuristic.
+        assert!(!content_verify_worth_it((2048, Some(100)), (2048, Some(50)), cutoff));
+        // Exactly at the cutoff is still verified (boundary is inclusive).
+        assert!(content_verify_worth_it((1024, Some(100)), (1024, Some(50)), cutoff));
+        // Two empty files (size 0, both present) → trivially worth it (and equal).
+        assert!(content_verify_worth_it((0, Some(100)), (0, Some(50)), cutoff));
+    }
+
+    #[test]
     fn is_auto_follows_own_entry_and_ancestor_folder_markers() {
         let mut m = Manifest::new();
         // A file with its own auto flag.
@@ -1078,5 +1118,61 @@ mod tests {
         );
         assert!(!is_auto(&m, "README.md"));
         assert!(is_auto(&m, "vendor/keep/x.rs")); // explicit ON still wins
+    }
+
+    /// Why `commands::projects::clear_host_bound_state` must exist.
+    ///
+    /// A manifest entry is a claim about **one specific host**. Point the project at a
+    /// different one — detach, then extend to a corrected path, which is the normal way to
+    /// fix a wrong `remote_path` — and every base in it becomes a lie. The state dir is
+    /// keyed by project *id*, which detach preserves, so without an explicit purge the new
+    /// pairing inherits the old host's manifest wholesale.
+    ///
+    /// The two pure functions below then disagree about the same file in the worst
+    /// possible way, and this test pins both halves so the purge can never be quietly
+    /// dropped:
+    ///   * `push_decision` sees `ever_synced` + a missing host file and calls it `Stale` —
+    ///     a deletion to be resolved, not a file to send. So it **refuses to push**.
+    ///   * `divergence` maps the same failed host stat to "couldn't check → don't flag",
+    ///     so with the mirror untouched the file reads `(false, false)` — **green**.
+    ///
+    /// A file the tree reports as fully in sync, on a host that has never had it, which
+    /// byte-sync will never send. It would look like the sync simply worked.
+    #[test]
+    fn a_stale_manifest_against_a_fresh_host_is_a_false_green() {
+        // Synced against the OLD host, and untouched locally since.
+        let stale = SyncEntry {
+            selected: true,
+            auto_sync: true,
+            host_size: 10,
+            host_mtime: Some(100),
+            local_size: 10,
+            local_mtime: Some(100),
+            last_pull_ts: Some(1),
+            ..Default::default()
+        };
+        let local_unchanged = Some((10u64, Some(100u64)));
+
+        // The new host has never heard of this file.
+        assert_eq!(
+            push_decision(&stale, None),
+            PushDecision::Stale,
+            "refuses to push: it reads the absence as a host-side DELETION, not a new host"
+        );
+        assert_eq!(
+            divergence(&stale, None, local_unchanged),
+            (false, false),
+            "…and paints it green while doing so"
+        );
+
+        // Cleared (as a fresh pairing must be), the very same file behaves correctly: it
+        // is simply a local file the host lacks, so it gets created there.
+        let fresh = SyncEntry { selected: true, auto_sync: true, ..Default::default() };
+        assert_eq!(push_decision(&fresh, None), PushDecision::Safe);
+        assert_eq!(
+            divergence(&fresh, None, local_unchanged),
+            (false, true),
+            "local-only change → push, which is exactly the seed a new host needs"
+        );
     }
 }

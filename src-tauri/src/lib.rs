@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod duscan;
+pub mod gpustat;
 pub mod paths;
 pub mod platform;
 pub mod schema;
@@ -438,6 +439,10 @@ pub fn run() {
     // on remote_connect when enabled, stopped on disconnect / exit). See
     // `services::git_peer` (TODO #28n).
     let git_peer = services::git_peer::new_registry();
+    // Registry of per-(project,worker) code-sync fan-outs (multi-host remote,
+    // `docs/multi_host_remote_plan.md`). Kicked on a worker connect / commit /
+    // manual "Push code to machines". See `services::worker_sync`.
+    let worker_sync = services::worker_sync::new_state();
     // Cancel flags for in-flight disk-usage scans, one per scanning pane. See
     // `commands::disk_usage`.
     let disk_scans = commands::disk_usage::new_state();
@@ -457,6 +462,7 @@ pub fn run() {
         .manage(sync_manifest)
         .manage(auto_sync)
         .manage(git_peer)
+        .manage(worker_sync)
         .manage(disk_scans)
         .manage(usage_watch.clone())
         .setup(|_app| {
@@ -531,6 +537,15 @@ pub fn run() {
             // skips the exit teardown) and the staged config copies. Off-thread:
             // docker may be slow or absent, and neither may block startup.
             std::thread::spawn(services::sandbox::sweep_orphans);
+            // Re-adopt OpenVPN tunnels a previous run left running (a crash, an OOM
+            // kill, a refused quit-time prompt): the daemon runs as root and outlives
+            // the app, still rerouting the machine, but the live-tunnel registries are
+            // in-memory and start empty — so without this the VPN lamp reads grey while
+            // the machines are in fact reachable through the still-up tunnel. Off-thread
+            // (a few pidfile stats); additive and idempotent, so racing the frontend's
+            // first `openvpn_active` refresh is benign.
+            #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+            std::thread::spawn(services::openvpn::adopt_orphans);
             // Start the background per-project SSH-link traffic sampler so each
             // remote project's daily/monthly/overall usage accrues even when its
             // Network Traffic tab is closed (see services::net_usage). No-op on
@@ -571,8 +586,21 @@ pub fn run() {
             commands::projects::set_project_sandbox,
             commands::projects::set_project_sandbox_spec,
             commands::projects::sandbox_preflight,
+            commands::python::python_interpreters,
+            commands::python::python_interpreter_for,
+            commands::python::set_project_python,
+            commands::slurm::slurm_available,
+            commands::slurm::slurm_submit,
+            commands::slurm::slurm_queue,
+            commands::slurm::slurm_job_out,
+            commands::slurm::slurm_cancel,
             commands::projects::set_project_openvpn,
             commands::projects::set_project_auto_connect,
+            commands::projects::set_project_persist_sessions,
+            commands::projects::set_project_remote_label,
+            commands::projects::add_compute_host,
+            commands::projects::remove_compute_host,
+            commands::projects::patch_compute_host,
             commands::projects::set_project_categories,
             commands::projects::set_project_git_disabled,
             commands::projects::save_tab_layout,
@@ -627,6 +655,8 @@ pub fn run() {
             commands::ssh::ssh_probe,
             commands::ssh::remote_has_saved_password,
             commands::ssh::remote_forget_password,
+            commands::ssh::remote_kill_all_jobs,
+            commands::ssh::ssh_close_master,
             commands::ssh::remote_login_command,
             commands::ssh::ssh_default_dir,
             commands::ssh::ssh_list_dir,
@@ -634,6 +664,29 @@ pub fn run() {
             // Pooled SSH/SFTP connection lifecycle (mount-free remote, Phase 0)
             commands::remote::remote_connect,
             commands::remote::remote_disconnect,
+            commands::remote::remote_disconnect_all_hosts,
+            commands::remote::remote_connected_ids,
+            commands::remote::remote_connected_targets,
+            commands::remote::worker_sync_now,
+            commands::remote::worker_outputs_preview,
+            commands::remote::worker_pull_outputs,
+            commands::remote::remote_upload_file,
+            commands::remote::remote_usage_check,
+            // Global machines (cross-project compute host registry)
+            commands::global_machines::global_machines_list,
+            commands::global_machines::global_machine_add,
+            commands::global_machines::global_machine_update,
+            commands::global_machines::global_machine_set_auto_connect,
+            commands::global_machines::global_machine_remove,
+            commands::global_machines::global_machine_reorder,
+            commands::global_machines::global_machine_monitor_snapshot,
+            commands::global_machines::global_machine_usage_check,
+            commands::global_machines::global_machine_tmux_list,
+            commands::global_machines::global_machines_export,
+            commands::global_machines::global_machines_import_read,
+            commands::remote::remote_tmux_list,
+            commands::remote::remote_tmux_kill,
+            commands::remote::remote_tmux_rename,
             // Read-only local/remote host + SSH transport monitoring.
             commands::network::network_host_snapshot,
             commands::network::network_ssh_link_snapshot,
@@ -644,6 +697,8 @@ pub fn run() {
             commands::usage_stats::usage_watch_project,
             commands::usage_stats::usage_git_stats,
             commands::monitor::system_monitor_snapshot,
+            commands::monitor::gpu_memory_snapshot,
+            commands::monitor::gpu_process_snapshot,
             // AC-vs-battery detection for Energy Saver mode.
             commands::power::get_power_state,
             // SSH-sync (Phase 1): selective local↔remote mirror sync.
@@ -656,12 +711,16 @@ pub fn run() {
             commands::sync::sync_auto_preview,
             commands::sync::sync_status,
             commands::sync::sync_file_meta,
+            commands::sync::sync_resolve_if_identical,
             commands::sync::sync_diff,
             commands::ssh::ssh_tooling_status,
             commands::ssh::ssh_list_addresses,
             commands::ssh::ssh_remember_address,
             commands::ssh::remote_list_paths,
             commands::ssh::remote_remember_path,
+            commands::ssh::remote_list_default_paths,
+            commands::ssh::remote_get_default_path,
+            commands::ssh::remote_set_default_path,
             commands::ssh::open_external_url,
             // OpenVPN tunnels for VPN-gated remote projects
             commands::openvpn::openvpn_connect,
@@ -671,10 +730,12 @@ pub fn run() {
             commands::openvpn::vpn_forget_password,
             commands::openvpn::openvpn_login_command,
             commands::openvpn::openvpn_disconnect,
+            commands::openvpn::openvpn_disconnect_all_on_quit,
             commands::openvpn::openvpn_status,
             commands::openvpn::openvpn_active,
             commands::openvpn::openvpn_store_config,
             commands::openvpn::openvpn_list_configs,
+            commands::openvpn::openvpn_remove_config,
             // Git hosting (GitHub / GitLab) publishing
             commands::git_publish::publish_project,
             commands::git_publish::unpublish_project,
@@ -691,6 +752,7 @@ pub fn run() {
             commands::fs::list_dir,
             commands::fs::list_recent_downloads,
             commands::fs::dir_size,
+            commands::fs::dir_size_breakdown,
             commands::fs::list_dirs,
             commands::fs::list_project_endings,
             commands::fs::list_project_paths,
@@ -739,6 +801,9 @@ pub fn run() {
             commands::terminal::pty_write,
             commands::terminal::pty_resize,
             commands::terminal::pty_kill,
+            commands::terminal::local_tmux_list,
+            commands::terminal::local_tmux_kill,
+            commands::terminal::local_tmux_rename,
             commands::terminal::project_cpu_percent,
             // External apps / window tracking
             commands::apps::launch_app,
@@ -750,6 +815,8 @@ pub fn run() {
             commands::apps::restore_open_apps,
             commands::apps::run_script_detached,
             commands::apps::drag_preview_icon,
+            commands::apps::start_file_drag,
+            commands::apps::cancel_file_drag,
             commands::apps::embed_capability,
             commands::apps::list_installed_apps,
             // Workspace / network
@@ -777,6 +844,7 @@ pub fn run() {
             commands::git::git_generate_commit_message,
             commands::git::git_commit,
             commands::git::git_push,
+            commands::git::git_clone,
             commands::git::git_file_statuses,
             commands::git::git_unpushed_commits,
             commands::git::git_change_stats,
@@ -834,6 +902,7 @@ pub fn run() {
             commands::ollama::vibe_install_strategy,
             commands::agents::agent_is_installed,
             commands::agents::npm_is_installed,
+            commands::agents::probe_binaries,
             commands::agents::list_agents,
             commands::agents::codex_hook_status,
             commands::agents::install_agent,
@@ -864,7 +933,47 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, event| {
+            // A detached popout can die WITHOUT going through `attach_subwindow`
+            // (seed-timeout self-destroy, last-tab close, the WM-close safety
+            // net in DetachedApp). Free its registry footprint — display number
+            // ("Eldrun win-N"), TrackedWindow, parkable override — here, the one
+            // choke point every destruction passes, so freed numbers get reused
+            // and a lone popout is always "win-1". The dock-back path fires this
+            // after `attach_subwindow` already freed; the release is idempotent.
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Destroyed,
+                ..
+            } = &event
+            {
+                if label.starts_with("detached-") {
+                    use tauri::Manager;
+                    // Guard against a same-label window already re-created
+                    // (rapid destroy → re-detach): only clean up when no live
+                    // window holds the label, else we'd free the NEW window's
+                    // number while it is still on screen.
+                    if _app.get_webview_window(label).is_none() {
+                        let reg = _app.state::<WindowRegistryState>();
+                        let wid = commands::subwindow::release_detached_entry(
+                            &mut reg.lock().unwrap(),
+                            label,
+                        );
+                        if let Some(wid) = wid {
+                            let ws = _app.state::<commands::workspace::WorkspaceStateArc>();
+                            ws.lock().unwrap().backend.unset_parkable(wid);
+                        }
+                    }
+                }
+            }
             if let tauri::RunEvent::Exit = event {
+                use tauri::Manager;
+                // Abort every terminal's process subtree so no inner process (a
+                // dev server, a build, a training run) outlives Eldrun. Runs
+                // before the container teardown below, since a containerized
+                // tab's in-container process is TERMed via its still-live
+                // container. Dropping the registry alone would kill only the
+                // shell leaders and orphan everything they spawned.
+                _app.state::<RegistryState>().lock().unwrap().kill_all();
                 // Tear down any OpenVPN tunnels brought up for VPN-gated
                 // remote projects so no privileged tunnel outlives the app.
                 services::openvpn::disconnect_all();
@@ -873,7 +982,6 @@ pub fn run() {
                 services::sandbox::down_all();
                 // Tear down pooled SSH/SFTP connections so no ssh ControlMaster
                 // child (and the master socket it owns) outlives Eldrun.
-                use tauri::Manager;
                 // Stop every auto-sync task first (cancel loops + drop watchers)
                 // so none races the pool teardown below.
                 let auto = _app

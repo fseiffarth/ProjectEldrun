@@ -14,6 +14,8 @@ import {
   type CodexHookState,
 } from "../../lib/codexHooks";
 import type { GlobalAppEntry } from "../../types";
+import { parseSshAddress } from "../projects/scaffold";
+import { useProjectsStore } from "../../stores/projects";
 
 interface OllamaModelInfo {
   name: string;
@@ -241,6 +243,139 @@ export function FileTypeSettings({ onBack }: { onBack: () => void }) {
           />
           <button type="button" onClick={addEntry}>Add</button>
         </div>
+      </div>
+    </>
+  );
+}
+
+/**
+ * "Remote Connections" settings panel: a standard/default remote path per SSH
+ * host, set once here instead of re-browsing it every time. Consulted by
+ * `useRemoteSession`'s `resolveStartDir` whenever a connect/browse flow would
+ * otherwise fall back to the SSH-reported home directory — so a host with a
+ * preferred working directory (e.g. a projects folder that isn't `$HOME`)
+ * opens there every time, for both new remote projects and reconnects.
+ *
+ * Distinct from the auto-remembered "recently used paths" dropdown in the New
+ * Project dialog (`remote_paths.json`): that list grows on its own from every
+ * folder you browse to, while this is one explicit choice per host, edited
+ * only here.
+ */
+export function RemoteHostsSettings({ onBack }: { onBack: () => void }) {
+  const [defaults, setDefaults] = useState<Record<string, string> | null>(null);
+  const [draftHost, setDraftHost] = useState("");
+  const [draftPath, setDraftPath] = useState("");
+  const [error, setError] = useState("");
+
+  const refresh = () => {
+    invoke<Record<string, string>>("remote_list_default_paths")
+      .then(setDefaults)
+      .catch((e) => setError(String(e)));
+  };
+  useEffect(refresh, []);
+
+  // Hosts seen before (recent SSH addresses + any active remote project),
+  // offered as suggestions when adding a new entry — typing the exact host is
+  // still required (paths are host-specific and a typo would silently do
+  // nothing), this just saves re-typing one you've already connected to.
+  const knownHosts = useProjectsStore((s) => s.projects);
+  const [hostSuggestions, setHostSuggestions] = useState<string[]>([]);
+  useEffect(() => {
+    invoke<string[]>("ssh_list_addresses")
+      .then((addrs) => {
+        const fromAddrs = addrs.map((a) => parseSshAddress(a)?.host).filter((h): h is string => !!h);
+        const fromProjects = knownHosts.map((p) => p.remote?.host).filter((h): h is string => !!h);
+        const seen = new Set<string>();
+        const out: string[] = [];
+        for (const h of [...fromAddrs, ...fromProjects]) {
+          const key = h.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(h);
+        }
+        setHostSuggestions(out);
+      })
+      .catch(() => setHostSuggestions([]));
+  }, [knownHosts]);
+
+  const savePath = (host: string, path: string) => {
+    setError("");
+    invoke<void>("remote_set_default_path", { host, path })
+      .then(refresh)
+      .catch((e) => setError(String(e)));
+  };
+
+  const removeHost = (host: string) => savePath(host, "");
+
+  const addEntry = () => {
+    const host = draftHost.trim();
+    const path = draftPath.trim();
+    if (!host || !path) return;
+    savePath(host, path);
+    setDraftHost("");
+    setDraftPath("");
+  };
+
+  const entries = defaults ? Object.entries(defaults).sort(([a], [b]) => a.localeCompare(b)) : [];
+
+  return (
+    <>
+      <div className="settings-title-row">
+        <h2>Remote Connections</h2>
+        <button type="button" onClick={onBack}>Back</button>
+      </div>
+      <p className="settings-help">
+        The folder a connect or browse opens in for a given SSH host, instead of
+        the host's home directory. Set once here and it applies the next time you
+        connect to that host — for a new remote project's folder browser and for
+        reconnecting an existing one.
+      </p>
+      {error && <div className="project-dialog-error">{error}</div>}
+      {defaults === null ? (
+        <p className="settings-help">Loading…</p>
+      ) : entries.length === 0 ? (
+        <div className="settings-empty">No standard paths set — hosts default to their home directory.</div>
+      ) : (
+        <div className="settings-list">
+          {entries.map(([host, path]) => (
+            <div className="remote-host-settings-row" key={host}>
+              <span className="settings-role-label" title={host}>{host}</span>
+              <input
+                value={path}
+                onChange={(e) => setDefaults((d) => (d ? { ...d, [host]: e.target.value } : d))}
+                onBlur={(e) => savePath(host, e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") savePath(host, e.currentTarget.value);
+                }}
+              />
+              <button type="button" onClick={() => removeHost(host)} title="Remove">
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="remote-host-settings-row remote-host-settings-add">
+        <input
+          list="remote-host-suggestions"
+          value={draftHost}
+          placeholder="host"
+          onChange={(e) => setDraftHost(e.target.value)}
+        />
+        <datalist id="remote-host-suggestions">
+          {hostSuggestions.map((h) => (
+            <option key={h} value={h} />
+          ))}
+        </datalist>
+        <input
+          value={draftPath}
+          placeholder="/path/on/host"
+          onChange={(e) => setDraftPath(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") addEntry();
+          }}
+        />
+        <button type="button" onClick={addEntry}>Add</button>
       </div>
     </>
   );

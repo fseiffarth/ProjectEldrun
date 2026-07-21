@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PLATFORM } from "../lib/dragPlatform";
 import { allGroups, findGroup, useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
-import { useSettingsStore } from "../stores/settings";
+import { useSettingsStore, stepZoom } from "../stores/settings";
 import { useSubwindowNavStore } from "../stores/subwindowNav";
 import {
   chordMatches,
@@ -17,8 +17,10 @@ interface KeyboardOptions {
 }
 
 /** True when keystrokes belong to a text field (input/textarea/contenteditable)
- *  — we must not steal those for navigation chords. */
-function isEditableTarget(target: EventTarget | null): boolean {
+ *  — we must not steal those for navigation chords. Exported so the detached
+ *  popout's keyboard hook applies the exact same "don't shadow a focused text
+ *  field / xterm textarea" rule as the main window. */
+export function isEditableTarget(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
   if (!el) return false;
   const tag = el.tagName;
@@ -97,6 +99,25 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         return;
       }
 
+      // Ctrl +/- / Ctrl+0 — per-window UI zoom (this is the MAIN window; a popout
+      // handles its own — see DetachedApp). Handled before the editable-target
+      // guard so it works from a focused terminal too (the browser-zoom
+      // convention). Agent panes consume these for font zoom and stopPropagation,
+      // so those never reach here. Persisted to `ui_zoom` (the main window's own
+      // value), which `updateSettings` also re-applies to this webview.
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+        const cur = useSettingsStore.getState().settings?.ui_zoom;
+        const set1 = (z: number) => {
+          e.preventDefault();
+          void useSettingsStore
+            .getState()
+            .updateSettings({ ui_zoom: z === 1 ? undefined : z });
+        };
+        if (e.code === "Equal") return set1(stepZoom(cur, 1));
+        if (e.code === "Minus") return set1(stepZoom(cur, -1));
+        if (e.code === "Digit0") return set1(1);
+      }
+
       const tabs = useTabsStore.getState();
 
       // Escape exits app-internal fullscreen (when active). Only act if we're
@@ -154,6 +175,18 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         if (focused) {
           e.preventDefault();
           tabs.hideGroup(focused);
+        }
+        return;
+      }
+
+      // Toggle the focused subwindow's docked file viewer (same flag the ◫
+      // button and the sidebar's resize-edge double-click write).
+      if (is("toggleSubwindowFiles")) {
+        const focused = tabs.focusedGroupId;
+        const group = focused ? findGroup(tabs.layout, focused) : null;
+        if (focused && group) {
+          e.preventDefault();
+          tabs.setGroupFiles(focused, !group.filesOpen);
         }
         return;
       }
