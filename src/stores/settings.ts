@@ -1,9 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { emit } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import type { Settings, Theme, WindowState } from "../types";
 
-function applyTheme(scheme: string) {
+/** Each Tauri window is its own JS runtime with its own copy of this store, so
+ *  a theme change made in one (normally the main window's Settings dialog)
+ *  only calls `applyTheme` on that window's own `document` — a detached/popped-
+ *  out subwindow (`DetachedApp`) keeps whatever theme it loaded at open time.
+ *  Broadcast the new scheme so every live window can re-apply it; see the
+ *  listener in `DetachedApp`. */
+export const THEME_CHANGED_EVENT = "eldrun:theme-changed";
+
+export function applyTheme(scheme: string) {
   document.documentElement.setAttribute("data-theme", scheme);
   // Cache for index.html's pre-paint inline script, so the next launch
   // paints the right theme immediately instead of flashing the CSS
@@ -15,26 +24,49 @@ function applyTheme(scheme: string) {
   }
 }
 
-/** Global UI zoom (4K-monitor scaling). `1` is 100% (the current/default look);
- *  higher enlarges the whole interface, lower shrinks it. Applied via the
- *  webview's native zoom so every layer scales — including `position: fixed` /
- *  portaled overlays (menus, dropdowns, hover popovers) that a CSS `zoom` misses
- *  on WebKitGTK. */
+/** UI zoom (4K-monitor scaling). `1` is 100% (the current/default look); higher
+ *  enlarges the whole interface, lower shrinks it. Applied via the webview's
+ *  native zoom so every layer scales — including `position: fixed` / portaled
+ *  overlays (menus, dropdowns, hover popovers) that a CSS `zoom` misses on
+ *  WebKitGTK.
+ *
+ *  Zoom is **per window**, not global: each OS window (the main window and every
+ *  detached popout, #42) is its own webview and holds its own zoom. `ui_zoom`
+ *  persists the MAIN window's value; a popout persists its own alongside its
+ *  bounds (see `DetachedGroup.zoom`). So bumping one window's zoom never rescales
+ *  another, and each window restores at the zoom it was left at. */
 export const MIN_UI_ZOOM = 0.5;
 export const MAX_UI_ZOOM = 3;
+
+/** The zoom ladder shared by the Settings dropdown and the Ctrl +/- keyboard
+ *  steps, so both surfaces move through the same stops. */
+export const ZOOM_STEPS = [0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
 
 export function clampZoom(z: number | undefined | null): number {
   if (typeof z !== "number" || !Number.isFinite(z)) return 1;
   return Math.min(MAX_UI_ZOOM, Math.max(MIN_UI_ZOOM, z));
 }
 
-function applyZoom(zoom: number | undefined) {
+/** Next zoom stop up (`dir > 0`) or down (`dir < 0`) from `current` on the
+ *  `ZOOM_STEPS` ladder, for the Ctrl +/- keyboard shortcuts. Clamped to the ends. */
+export function stepZoom(current: number | undefined, dir: 1 | -1): number {
+  const cur = clampZoom(current);
+  if (dir > 0) {
+    const up = ZOOM_STEPS.find((z) => z > cur + 1e-6);
+    return up ?? MAX_UI_ZOOM;
+  }
+  const down = [...ZOOM_STEPS].reverse().find((z) => z < cur - 1e-6);
+  return down ?? MIN_UI_ZOOM;
+}
+
+/** Apply a zoom to THIS window's webview (native WebKitGTK `zoom_level` /
+ *  WebView2 ZoomFactor). Exported so a detached popout can drive its OWN zoom
+ *  (the popout skips the global apply in `load` and owns its value; see
+ *  DetachedApp). CSS `zoom` on the root is deliberately not used: it does not
+ *  scale `position: fixed` / portaled overlays in WebKitGTK, so those stayed at
+ *  100%. Native zoom scales the entire webview uniformly, overlays included. */
+export function applyZoom(zoom: number | undefined) {
   const z = clampZoom(zoom);
-  // Use the webview's native zoom (WebKitGTK `zoom_level` / WebView2 ZoomFactor)
-  // rather than a CSS `zoom` on the root: CSS zoom does not scale
-  // `position: fixed` / portaled overlays (menus, dropdowns, hover popovers) in
-  // WebKitGTK, so those stayed at 100%. Native zoom scales the entire webview
-  // uniformly, overlays included.
   void getCurrentWebview()
     .setZoom(z)
     .catch((err) => {
@@ -45,7 +77,10 @@ function applyZoom(zoom: number | undefined) {
 interface SettingsStore {
   settings: Settings | null;
   loaded: boolean;
-  load: () => Promise<void>;
+  /** Load settings and apply theme. `skipZoom` suppresses applying the persisted
+   *  `ui_zoom` to this window's webview — used by a detached popout, which owns
+   *  its OWN zoom (restored from its seed) rather than the main window's. */
+  load: (opts?: { skipZoom?: boolean }) => Promise<void>;
   setTheme: (theme: Theme) => Promise<void>;
   updateSettings: (patch: Partial<Settings>) => Promise<void>;
   saveWindowState: (ws: WindowState) => Promise<void>;
@@ -59,10 +94,12 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   settings: null,
   loaded: false,
 
-  load: async () => {
+  load: async (opts) => {
     const settings = await invoke<Settings>("get_settings");
     applyTheme(settings.color_scheme ?? "light_lavender");
-    applyZoom(settings.ui_zoom);
+    // `ui_zoom` is the MAIN window's own zoom. A popout skips it and applies its
+    // own persisted zoom from its seed instead (zoom is per window, not global).
+    if (!opts?.skipZoom) applyZoom(settings.ui_zoom);
     set({ settings, loaded: true });
   },
 
@@ -71,6 +108,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const updated = { ...current, color_scheme: theme };
     await invoke<void>("save_settings", { settings: updated });
     applyTheme(theme);
+    void emit(THEME_CHANGED_EVENT, theme);
     set({ settings: updated as Settings });
   },
 
@@ -80,6 +118,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     await invoke<void>("save_settings", { settings: updated });
     if (typeof updated.color_scheme === "string") {
       applyTheme(updated.color_scheme);
+      if ("color_scheme" in patch) {
+        void emit(THEME_CHANGED_EVENT, updated.color_scheme);
+      }
     }
     if ("ui_zoom" in patch) {
       applyZoom(updated.ui_zoom);

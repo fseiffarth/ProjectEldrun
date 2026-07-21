@@ -211,19 +211,56 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
   // moment a "Save password" connect succeeds, so the checkbox comes alive right
   // there without a reopen.
   const autoConnect = remote?.auto_connect ?? false;
-  const autoConnectEligible = sshSaved || remote?.key_auth === true;
+  // Key/agent auth (a passwordless connect) also makes auto-connect eligible, but a
+  // passwordless host has nothing in the keychain, so `key_auth` is recorded by the
+  // backend on a successful connect rather than known up front. Seed it from the
+  // stored spec and flip it live the moment a credential-less connect succeeds
+  // (mirroring how `sshSaved` comes alive), so the toggle un-greys right here
+  // without waiting for the project to reload. This is what a worker relied on:
+  // its `key_auth` was never recorded at all (the connect returned early), so its
+  // toggle stayed disabled forever — see `record_worker_key_auth`.
+  const [keyAuth, setKeyAuth] = useState(remote?.key_auth === true);
+  useEffect(() => setKeyAuth(remote?.key_auth === true), [remote?.key_auth]);
+  const autoConnectEligible = sshSaved || keyAuth;
+  // A worker's toggles/label live on its `compute_hosts` entry (not the project's
+  // primary remote). `patch_compute_host` returns the full updated list — apply it
+  // back to the store so anything derived from `host` (the auto-connect toggle, the
+  // dialog title's name) reflects the change at once; without this the UI wouldn't
+  // visibly stick until a reload.
+  const applyPatchedHosts = (hosts: ComputeHost[]) =>
+    useProjectsStore.setState((s) => ({
+      projects: s.projects.map((p) =>
+        p.id === projectId ? { ...p, compute_hosts: hosts } : p,
+      ),
+    }));
+
   const setAutoConnect = (enabled: boolean) => {
     if (host) {
-      // A worker's auto-connect lives on its `compute_hosts` entry, not the
-      // project's primary remote.
-      void invoke("patch_compute_host", { projectId, hostId, autoConnect: enabled }).catch((e) =>
-        setSshError(String(e)),
-      );
+      void invoke<ComputeHost[]>("patch_compute_host", { projectId, hostId, autoConnect: enabled })
+        .then(applyPatchedHosts)
+        .catch((e) => setSshError(String(e)));
       return;
     }
     void useProjectsStore
       .getState()
       .setProjectAutoConnect(projectId, enabled)
+      .catch((e) => setSshError(String(e)));
+  };
+
+  // Rename this host's machine label (worker `label`, or the primary's own
+  // `remote.label`) — distinct from the project name, which is edited elsewhere.
+  // A blank name clears the label, so the display falls back to the bare host
+  // (both backend commands trim and treat empty as "no label").
+  const setWorkerLabel = (label: string) => {
+    if (host) {
+      void invoke<ComputeHost[]>("patch_compute_host", { projectId, hostId, label })
+        .then(applyPatchedHosts)
+        .catch((e) => setSshError(String(e)));
+      return;
+    }
+    void useProjectsStore
+      .getState()
+      .setProjectRemoteLabel(projectId, label)
       .catch((e) => setSshError(String(e)));
   };
 
@@ -416,6 +453,10 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
         try {
           await invoke("remote_connect", { projectId, hostId, password: null });
           if (gen !== sshGen.current) return;
+          // Rode the ControlMaster with no password and no saved credential →
+          // key/agent auth, which the backend just recorded. Reflect it now so the
+          // Auto-connect toggle un-greys without a reload.
+          if (!sshSaved) setKeyAuth(true);
           setSsh(projectId, "connected", hostId);
         } catch {
           if (gen !== sshGen.current) return;
@@ -577,6 +618,10 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
       if (gen !== sshGen.current) return;
       // Only a checkbox-driven connect changed what's in the keychain.
       if (remember !== undefined) setSshSaved(remember);
+      // No password given, none saved, and the connect still succeeded → the host
+      // authenticated via key/agent auth (the backend records the same). Flip the
+      // eligibility flag so the Auto-connect toggle comes alive here, no reload.
+      if (secret === null && !sshSaved && !remember) setKeyAuth(true);
       setSsh(projectId, "connected", hostId);
     } catch (e) {
       if (gen !== sshGen.current) return; // stopped — ignore the stale failure
@@ -677,6 +722,7 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
     autoConnect,
     autoConnectEligible,
     setAutoConnect,
+    setWorkerLabel,
     connectVpnHeadless,
     connectSshHeadless,
     forgetPasswords,

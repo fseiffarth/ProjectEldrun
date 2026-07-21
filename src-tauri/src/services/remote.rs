@@ -479,6 +479,7 @@ mod tests {
             auto_connect: None,
             key_auth: None,
             persist_sessions: None,
+            label: None,
             extra: HashMap::new(),
         }
     }
@@ -531,7 +532,6 @@ mod tests {
     fn compute_host(id: &str, host: &str) -> ComputeHost {
         ComputeHost {
             id: id.to_string(),
-            label: None,
             sync_code: true,
             pull_outputs: false,
             shared_fs: false,
@@ -544,6 +544,7 @@ mod tests {
                 auto_connect: None,
                 key_auth: None,
                 persist_sessions: None,
+                label: None,
                 extra: HashMap::new(),
             },
         }
@@ -587,7 +588,7 @@ mod tests {
     fn display_label_falls_back_to_host() {
         let mut h = compute_host("h1", "gpu-2.example");
         assert_eq!(h.display_label(), "gpu-2.example");
-        h.label = Some("trainer".to_string());
+        h.spec.label = Some("trainer".to_string());
         assert_eq!(h.display_label(), "trainer");
     }
 

@@ -24,7 +24,8 @@ import { ProjectHoverCard, projectDescription, useProjectHoverCard } from "./Pro
 import { ActivityCalendar } from "./ActivityCalendar";
 import { CategoryEditor } from "./CategoryEditor";
 import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
-import { useRemoteMachinesStore } from "../../stores/remoteMachines";
+import { useRemoteMachinesStore, type DroppedGlobalMachine } from "../../stores/remoteMachines";
+import { GLOBAL_MACHINE_DRAG_TYPE } from "../header/MachinesIndicator";
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { FolderPickerDialog } from "../common/FolderPickerDialog";
@@ -1065,6 +1066,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   // projects together rather than reorder. Drives the distinct hover affordance.
   const [groupHint, setGroupHint] = useState(false);
   const [dragging, setDragging] = useState(false);
+  // True while a global machine (MachinesIndicator) is dragged over this pill —
+  // distinct from `dragOver` (pill reorder), which never fires for this MIME type.
+  const [machineDragOver, setMachineDragOver] = useState(false);
   const pillRef = useRef<HTMLDivElement>(null);
   const dir = resolveProjectDirectory(project);
   const categories = projectCategories(project);
@@ -1773,7 +1777,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
 
       <div
         ref={pillRef}
-        className={`project-pill${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}${dragOver ? " drag-over" : ""}${groupHint ? " drag-group" : ""}${dragging ? " dragging" : ""}${catColor ? " has-category" : ""}`}
+        className={`project-pill${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}${dragOver ? " drag-over" : ""}${groupHint ? " drag-group" : ""}${dragging ? " dragging" : ""}${catColor ? " has-category" : ""}${machineDragOver ? " machine-drag-over" : ""}`}
         style={catColor ? ({ "--cat-color": catColor } as React.CSSProperties) : undefined}
         draggable
         onMouseEnter={handleMouseEnter}
@@ -1787,6 +1791,15 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           e.dataTransfer.effectAllowed = "move";
         }}
         onDragOver={(e) => {
+          if (e.dataTransfer.types.includes(GLOBAL_MACHINE_DRAG_TYPE)) {
+            // Only a remote project can host a worker; a local one simply
+            // doesn't accept the drop (no preventDefault → rejecting cursor).
+            if (!project.remote) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+            if (!machineDragOver) setMachineDragOver(true);
+            return;
+          }
           if (!e.dataTransfer.types.includes(PILL_DRAG_TYPE)) return;
           e.preventDefault();
           e.dataTransfer.dropEffect = "move";
@@ -1795,8 +1808,24 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           const wantGroup = e.altKey && !!onGroup;
           if (wantGroup !== groupHint) setGroupHint(wantGroup);
         }}
-        onDragLeave={() => { setDragOver(false); setGroupHint(false); }}
+        onDragLeave={() => { setDragOver(false); setGroupHint(false); setMachineDragOver(false); }}
         onDrop={(e) => {
+          if (e.dataTransfer.types.includes(GLOBAL_MACHINE_DRAG_TYPE)) {
+            setMachineDragOver(false);
+            if (!project.remote) return;
+            const raw = e.dataTransfer.getData(GLOBAL_MACHINE_DRAG_TYPE);
+            if (!raw) return;
+            e.preventDefault();
+            // Don't also bubble into an enclosing BoxChip/pills-strip handler.
+            e.stopPropagation();
+            try {
+              const machine = JSON.parse(raw) as DroppedGlobalMachine;
+              openRemoteMachines(project.id, machine);
+            } catch {
+              // Malformed payload — ignore the drop.
+            }
+            return;
+          }
           setDragOver(false);
           setGroupHint(false);
           const fromId = e.dataTransfer.getData(PILL_DRAG_TYPE);

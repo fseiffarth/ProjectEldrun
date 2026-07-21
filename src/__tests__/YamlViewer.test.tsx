@@ -91,12 +91,21 @@ function setup() {
   });
 }
 
+/** YAML now opens in the CARD view by default; these tests exercise the tree, so
+ *  switch to it after rendering. */
+async function toTree() {
+  await act(async () => {
+    fireEvent.click(await screen.findByRole("button", { name: "Tree" }));
+  });
+}
+
 async function renderYaml() {
   vi.resetModules();
   const { FileViewerPane } = await import("../components/embed/FileViewerPane");
   await act(async () => {
     render(<FileViewerPane viewer="yaml" path="/p/config.yaml" projectId="proj" />);
   });
+  await toTree();
   await screen.findByRole("button", { name: "Collapse server" });
 }
 
@@ -215,6 +224,7 @@ describe("yaml tree viewer (#yaml)", () => {
     await act(async () => {
       render(<FileViewerPane viewer="yaml" path="/p/flowlist.yaml" projectId="proj" />);
     });
+    await toTree();
 
     const tags = (await screen.findByLabelText("Value of tags")) as HTMLInputElement;
     expect(tags.value).toBe("web, prod");
@@ -357,6 +367,7 @@ describe("yaml tree viewer (#yaml)", () => {
     await act(async () => {
       render(<FileViewerPane viewer="yaml" path="/p/flow.yaml" projectId="proj" />);
     });
+    await toTree();
 
     const port = (await screen.findByLabelText("Value of port")) as HTMLInputElement;
     expect(port.value).toBe("8080");
@@ -376,6 +387,7 @@ describe("yaml tree viewer (#yaml)", () => {
     await act(async () => {
       render(<FileViewerPane viewer="yaml" path="/p/package.json" projectId="proj" />);
     });
+    await toTree();
 
     // A list item added to a JSON file comes out quoted — JSON has no plain scalars.
     await act(async () => {
@@ -448,6 +460,7 @@ describe("yaml tree viewer (#yaml)", () => {
     await act(async () => {
       render(<FileViewerPane viewer="yaml" path="/p/mix.yaml" projectId="proj" />);
     });
+    await toTree();
 
     const input = (await screen.findByLabelText("Value of mix")) as HTMLInputElement;
     const mirror = input.closest(".yaml-list-field")!.querySelector(".yaml-list-mirror")!;
@@ -506,6 +519,7 @@ describe("yaml tree viewer (#yaml)", () => {
     await act(async () => {
       render(<FileViewerPane viewer="yaml" path="/p/anchors.yaml" projectId="proj" />);
     });
+    await toTree();
 
     // The anchored mapping and the merge key both render, but as text with no
     // input behind them.
@@ -600,5 +614,93 @@ describe("copy & paste cursor (#yaml)", () => {
     });
     expect(screen.queryByRole("button", { name: "paste port here" })).toBeNull();
     expect(screen.queryByText(/Copied/)).toBeNull();
+  });
+});
+
+describe("card view (#yaml-grid)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setup();
+  });
+
+  async function renderCards() {
+    vi.resetModules();
+    const { FileViewerPane } = await import("../components/embed/FileViewerPane");
+    await act(async () => {
+      render(<FileViewerPane viewer="yaml" path="/p/config.yaml" projectId="proj" />);
+    });
+    // The grid is a drill navigation, not a recursive nest: the overview shows
+    // only the root "document" card. Open it to reach `server`'s own level,
+    // which renders `server`'s scalar fields (host, port) inline.
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Open document" }));
+    });
+    await screen.findByLabelText("Value of port");
+  }
+
+  it("opens a structured .yaml file in the card view by default", async () => {
+    await renderCards();
+    // The Cards toggle is present and active, and cards (not tree rows) render.
+    expect((screen.getByRole("button", { name: "Cards" }) as HTMLButtonElement).getAttribute("aria-pressed")).toBe("true");
+    expect(document.querySelector(".yaml-card")).not.toBeNull();
+    expect(document.querySelector(".yaml-row")).toBeNull();
+    // A nested collection is a subcard, a scalar is an editable field.
+    expect(screen.getByRole("button", { name: "Open server" })).toBeTruthy();
+    expect((screen.getByLabelText("Value of port") as HTMLInputElement).value).toBe("8080");
+  });
+
+  it("edits a card field back into the file, comments intact", async () => {
+    await renderCards();
+    const port = screen.getByLabelText("Value of port") as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(port, { target: { value: "9090" } });
+      fireEvent.keyDown(port, { key: "Enter" });
+    });
+    const saved = await saveAndRead();
+    expect(saved).toContain("port: 9090");
+    expect(saved).toContain("# Server configuration");
+  });
+
+  it("reorders sibling cards by dragging one onto another", async () => {
+    await renderCards();
+    // `server` holds subcards `tags` then `mounts` — drill into `server` to reach
+    // them as its own level. Drag `mounts` onto `tags`: with every rect at 0 in
+    // jsdom the pointer lands on the first sibling, so mounts moves up before tags.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Open server" }));
+    });
+    const grip = await screen.findByLabelText("Reorder mounts");
+    await act(async () => {
+      fireEvent.pointerDown(grip, { pointerId: 1 });
+      fireEvent.pointerMove(grip, { pointerId: 1, clientX: 0, clientY: 0 });
+      fireEvent.pointerUp(grip, { pointerId: 1 });
+    });
+    // mounts (with its item comment) now precedes tags; nothing else moved.
+    expect(await saveAndRead()).toContain(
+      "  port: 8080\n  mounts:\n    - /data  # scratch\n    - /home\n  tags:\n    - web\n    - prod\n",
+    );
+  });
+
+  it("names a list item card by its name-ish field, not #0", async () => {
+    // Root is a map (one key, `services`), so reaching the two service items
+    // means drilling document → services.
+    onDisk = "services:\n  - name: web\n    port: 8080\n  - name: db\n    port: 5432\n";
+    vi.resetModules();
+    const { FileViewerPane } = await import("../components/embed/FileViewerPane");
+    await act(async () => {
+      render(<FileViewerPane viewer="yaml" path="/p/svc.yaml" projectId="proj" />);
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Open document" }));
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Open services" }));
+    });
+    // Cards titled by their `name` field, not `Item N`/`#0`. Neither item has a
+    // nested collection, so its title is static text, not a drill button.
+    expect(await screen.findByText("web")).toBeTruthy();
+    expect(screen.getByText("db")).toBeTruthy();
+    expect(screen.queryByText("Item 1")).toBeNull();
+    expect(screen.queryByText("#0")).toBeNull();
   });
 });

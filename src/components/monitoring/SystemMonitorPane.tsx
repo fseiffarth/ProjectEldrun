@@ -14,7 +14,10 @@ import {
   type GpuSample,
 } from "../../lib/gpu";
 import { useProjectsStore } from "../../stores/projects";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { ConnLamp } from "../common/ConnLamp";
+import { UntestedTag } from "../common/UntestedTag";
+import { hostsForProject } from "../../lib/remoteHosts";
+import { PRIMARY_HOST, sshOf, useRemoteStatusStore } from "../../stores/remoteStatus";
 
 // ── Backend snapshot shape (mirrors sysstat::SystemSnapshot, snake_case) ──────
 
@@ -32,6 +35,10 @@ export interface ProcSample {
   rss_kib: number;
   cpu_jiffies: number;
   threads: number;
+  /** Owning user's name (resolved on the sampled machine's passwd db). Empty when
+   *  the backend can't resolve an owner (Windows/macOS) — the per-user section is
+   *  hidden then. An unmapped uid reads as `#<uid>`. */
+  user: string;
 }
 
 export interface SystemSnapshot {
@@ -67,8 +74,10 @@ interface Props {
   visible: boolean;
 }
 
-/** Which machine the pane samples: this one, or a connected remote project's host. */
-type Source = "local" | "remote";
+/** Which machine the pane samples: this one, or a connected remote project's host.
+ *  A hostId of `PRIMARY_HOST` selects the project's own remote; any other id
+ *  selects a `compute_hosts` worker (`docs/multi_host_remote_plan.md`). */
+type Source = "local" | { hostId: string };
 
 const POLL_MS = 1500;
 /** The host sample is one SSH round-trip reading its whole `/proc`, so it polls
@@ -150,6 +159,26 @@ function toneFor(pct: number): string {
   return "var(--success)";
 }
 
+/** Traffic-light tone for a utilization percentage, matching the remote-usage
+ *  connect dialog exactly: green when effectively idle (≤5%), orange up to 40%,
+ *  red above — so the per-user "By user" panel reads identically to the session
+ *  stats there. */
+type UsageTone = "green" | "orange" | "red";
+function usageTone(pct: number): UsageTone {
+  if (pct <= 5) return "green";
+  if (pct <= 40) return "orange";
+  return "red";
+}
+
+/** The same green/orange/red dot the remote-usage dialog puts next to a user's
+ *  CPU share (`.remote-usage-light`), reused here so the two panels match. */
+function UsageLight({ pct }: { pct: number }) {
+  const tone = usageTone(pct);
+  return (
+    <span className={`remote-usage-light is-${tone}`} aria-label={`utilization ${tone}`} />
+  );
+}
+
 // ── Derived rows ──────────────────────────────────────────────────────────────
 
 interface ProcRow extends ProcSample {
@@ -177,6 +206,34 @@ function sortRows(rows: ProcRow[], key: SortKey, asc: boolean): ProcRow[] {
     if (key === "comm") return dir * a.comm.localeCompare(b.comm);
     return dir * ((a[key] as number) - (b[key] as number));
   });
+}
+
+/** One user's share of the machine: their summed CPU%/MEM% across every process
+ *  they own, and how many processes that is. This is the same "who's loading the
+ *  host" statistic the connect-time usage dialog shows, but derived from the full
+ *  process table rather than a top-N `ps` sample — so it's exact, not a sample. */
+interface UserRow {
+  user: string;
+  cpu: number;
+  mem: number;
+  count: number;
+}
+
+/** Collapse the process rows into one row per owning user, summing CPU%/MEM% and
+ *  counting processes. Sorted by CPU%, busiest first — the point is spotting who's
+ *  loading the machine. Processes with no resolved owner are ignored (the section
+ *  itself is hidden when *no* process reports one). */
+function groupByUser(rows: ProcRow[]): UserRow[] {
+  const byUser = new Map<string, UserRow>();
+  for (const r of rows) {
+    if (!r.user) continue;
+    const cur = byUser.get(r.user) ?? { user: r.user, cpu: 0, mem: 0, count: 0 };
+    cur.cpu += r.cpu;
+    cur.mem += r.mem;
+    cur.count += 1;
+    byUser.set(r.user, cur);
+  }
+  return [...byUser.values()].sort((a, b) => b.cpu - a.cpu);
 }
 
 // ── Small presentational bits ─────────────────────────────────────────────────
@@ -301,31 +358,46 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
   // The detailed process table is collapsible so the CPU/GPU vitals can own the
   // pane; expanded by default (the monitor's main content).
   const [procOpen, setProcOpen] = useState(true);
+  // The per-user breakdown is collapsible too, expanded by default when present.
+  const [usersOpen, setUsersOpen] = useState(true);
   const prevRef = useRef<SystemSnapshot | null>(null);
 
-  // A remote (SSH) project can sample its host — the same store reads the Disk
-  // Usage pane uses to reach the host over the shared pool.
+  // A remote (SSH) project can sample its primary host, and — multi-host
+  // (`docs/multi_host_remote_plan.md`) — any connected `compute_hosts` worker
+  // too. Same store reads the Disk Usage pane uses to reach a host over the
+  // shared pool.
   const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
-  const sshState = useRemoteStatusStore((s) =>
-    projectId ? s.byProject[projectId]?.ssh : undefined,
-  );
+  const byProject = useRemoteStatusStore((s) => s.byProject);
+  const byHostAll = useRemoteStatusStore((s) => s.byHost);
   const isRemoteProject = !!project?.remote;
-  const hostConnected = isRemoteProject && sshState === "connected";
-  const remoteHost = project?.remote?.host ?? "the host";
+
+  const hosts = useMemo(() => hostsForProject(project), [project]);
+
+  function connState(hostId: string) {
+    if (!projectId) return "off" as const;
+    return sshOf({ byProject, byHost: byHostAll }, projectId, hostId);
+  }
+  const primaryConnected = isRemoteProject && connState(PRIMARY_HOST) === "connected";
 
   const [source, setSource] = useState<Source>("local");
-  // Auto-follow the host: point at "remote" once it is connected, "local"
-  // otherwise — until the user picks a side explicitly, which pins the choice.
+  // Auto-follow the primary host: point at it once it is connected, "local"
+  // otherwise — until the user picks a side explicitly (any host or "local"),
+  // which pins the choice.
   const pinnedRef = useRef(false);
   useEffect(() => {
-    if (!pinnedRef.current) setSource(hostConnected ? "remote" : "local");
-  }, [hostConnected]);
+    if (!pinnedRef.current) setSource(primaryConnected ? { hostId: PRIMARY_HOST } : "local");
+  }, [primaryConnected]);
   function pickSource(next: Source) {
     pinnedRef.current = true;
     setSource(next);
   }
 
-  const onHost = source === "remote";
+  const onHost = source !== "local";
+  const selectedHostId = onHost ? (source as { hostId: string }).hostId : null;
+  const hostConnected = onHost && selectedHostId != null && connState(selectedHostId) === "connected";
+  const remoteHost = onHost
+    ? (hosts.find((h) => h.id === selectedHostId)?.label ?? "the host")
+    : "the host";
   // Whether the pane is actually sampling (and so the table/meters below apply).
   const sampling = visible && !(onHost && !hostConnected);
 
@@ -346,6 +418,7 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
       try {
         const next = await invoke<SystemSnapshot>("system_monitor_snapshot", {
           projectId: onHost ? projectId : null,
+          hostId: onHost ? selectedHostId : null,
         });
         if (cancelled) return;
         const prev = prevRef.current;
@@ -376,22 +449,27 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [sampling, onHost, projectId]);
+  }, [sampling, onHost, projectId, selectedHostId]);
+
+  // Every process, before the table's text filter — the per-user breakdown sums
+  // over the whole machine, not just what the filter happens to show.
+  const allRows = useMemo(() => (pair ? buildRows(pair.snap, pair.prev) : []), [pair]);
 
   const rows = useMemo(() => {
-    if (!pair) return [];
-    const built = buildRows(pair.snap, pair.prev);
     const q = filter.trim().toLowerCase();
     const filtered = q
-      ? built.filter(
+      ? allRows.filter(
           (r) =>
             r.comm.toLowerCase().includes(q) ||
             r.cmdline.toLowerCase().includes(q) ||
             String(r.pid) === q,
         )
-      : built;
+      : allRows;
     return sortRows(filtered, sortKey, asc);
-  }, [pair, filter, sortKey, asc]);
+  }, [allRows, filter, sortKey, asc]);
+
+  const userRows = useMemo(() => groupByUser(allRows), [allRows]);
+  const hasUserData = userRows.length > 0;
 
   function toggleSort(key: SortKey) {
     if (key === sortKey) {
@@ -418,6 +496,9 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
   );
 
   const arrow = (key: SortKey) => (key === sortKey ? (asc ? " ▲" : " ▼") : "");
+  /** Marks the active sort column's header AND its body cells (`.sysmon-table
+   *  th.sorted` / `td.sorted`) so the whole column reads as one accent band. */
+  const sortedCls = (key: SortKey) => (key === sortKey ? "sorted" : undefined);
 
   return (
     <div className="sysmon-root">
@@ -433,16 +514,28 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
           >
             This machine
           </button>
-          <button
-            className={source === "remote" ? "sysmon-source-btn active" : "sysmon-source-btn"}
-            onClick={() => pickSource("remote")}
-            role="tab"
-            aria-selected={source === "remote"}
-            title={hostConnected ? `System monitor on ${remoteHost}` : undefined}
-          >
-            {remoteHost}
-            {!hostConnected && <span className="sysmon-source-off"> · offline</span>}
-          </button>
+          {/* One button per connected machine — the primary and every multi-host
+              `compute_hosts` worker — each carrying its own live SSH traffic light
+              (the same `ConnLamp` the Remote machines window shows per row), so a
+              worker's status is visible right where its usage would be sampled. */}
+          {hosts.map((h) => {
+            const state = connState(h.id);
+            const connected = state === "connected";
+            const active = onHost && selectedHostId === h.id;
+            return (
+              <button
+                key={h.id}
+                className={active ? "sysmon-source-btn active" : "sysmon-source-btn"}
+                onClick={() => pickSource({ hostId: h.id })}
+                role="tab"
+                aria-selected={active}
+                title={connected ? `System monitor on ${h.label}` : `${h.label}: ${state}`}
+              >
+                <ConnLamp status={state} label={h.label} />
+                {h.label}
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -573,6 +666,58 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
             )}
           </div>
 
+          {/* Per-user breakdown: who is loading the machine, summed over the whole
+              process table. Shown for a **remote host only** — it exists to answer
+              "who else is on this shared machine?", the same question the
+              connect-time usage dialog's session stats answer, and it is rendered
+              in that dialog's exact look (the `.remote-usage-users` grid + its
+              traffic-light dot). Local sampling is always just this user, so the
+              panel would be a single trivial row — hidden there. Still gated on the
+              host resolving process owners (Linux only; never Windows/macOS). */}
+          {onHost && hasUserData && (
+            <>
+              <div className="sysmon-proc-head">
+                <button
+                  type="button"
+                  className="sysmon-proc-toggle"
+                  onClick={() => setUsersOpen((v) => !v)}
+                  aria-expanded={usersOpen}
+                  title={usersOpen ? "Collapse per-user usage" : "Expand per-user usage"}
+                >
+                  <span className="sysmon-proc-caret">{usersOpen ? "▾" : "▸"}</span>
+                  <span className="sysmon-group-title">By user</span>
+                  <UntestedTag />
+                </button>
+                <span className="sysmon-count">
+                  {userRows.length} {userRows.length === 1 ? "user" : "users"}
+                </span>
+              </div>
+              {usersOpen && (
+                <div className="sysmon-users">
+                  <ul className="remote-usage-users">
+                    <li className="remote-usage-users-head" aria-hidden="true">
+                      <span>User</span>
+                      <span>CPU</span>
+                      <span>Procs</span>
+                      <span>Mem</span>
+                    </li>
+                    {userRows.map((u) => (
+                      <li key={u.user}>
+                        <span className="remote-usage-user">{u.user}</span>
+                        <span className="remote-usage-user-cpu">
+                          <UsageLight pct={u.cpu} />
+                          {u.cpu.toFixed(0)}%
+                        </span>
+                        <span className="remote-usage-user-sessions">{u.count}</span>
+                        <span className="remote-usage-user-mem">{u.mem.toFixed(0)}%</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
+          )}
+
           {/* The Processes group: its own titled header, collapsible via the caret
               so the vitals above can own the pane when the table isn't needed. */}
           <div className="sysmon-proc-head">
@@ -607,23 +752,29 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
             <table className="sysmon-table">
               <thead>
                 <tr>
-                  <th className="num" onClick={() => toggleSort("pid")}>
+                  <th className={`num ${sortedCls("pid") ?? ""}`} onClick={() => toggleSort("pid")}>
                     PID{arrow("pid")}
                   </th>
-                  <th className="num" onClick={() => toggleSort("cpu")}>
+                  <th className={`num ${sortedCls("cpu") ?? ""}`} onClick={() => toggleSort("cpu")}>
                     CPU%{arrow("cpu")}
                   </th>
-                  <th className="num" onClick={() => toggleSort("mem")}>
+                  <th className={`num ${sortedCls("mem") ?? ""}`} onClick={() => toggleSort("mem")}>
                     MEM%{arrow("mem")}
                   </th>
-                  <th className="num" onClick={() => toggleSort("rss_kib")}>
+                  <th
+                    className={`num ${sortedCls("rss_kib") ?? ""}`}
+                    onClick={() => toggleSort("rss_kib")}
+                  >
                     RSS{arrow("rss_kib")}
                   </th>
-                  <th className="num" onClick={() => toggleSort("threads")}>
+                  <th
+                    className={`num ${sortedCls("threads") ?? ""}`}
+                    onClick={() => toggleSort("threads")}
+                  >
                     THR{arrow("threads")}
                   </th>
                   <th className="st">S</th>
-                  <th className="cmd" onClick={() => toggleSort("comm")}>
+                  <th className={`cmd ${sortedCls("comm") ?? ""}`} onClick={() => toggleSort("comm")}>
                     Command{arrow("comm")}
                   </th>
                 </tr>
@@ -631,17 +782,23 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.pid}>
-                    <td className="num">{r.pid}</td>
-                    <td className="num" style={{ color: toneFor(Math.min(100, r.cpu)) }}>
+                    <td className={`num ${sortedCls("pid") ?? ""}`}>{r.pid}</td>
+                    <td
+                      className={`num ${sortedCls("cpu") ?? ""}`}
+                      style={{ color: toneFor(Math.min(100, r.cpu)) }}
+                    >
                       {r.cpu.toFixed(1)}
                     </td>
-                    <td className="num" style={{ color: toneFor(r.mem) }}>
+                    <td
+                      className={`num ${sortedCls("mem") ?? ""}`}
+                      style={{ color: toneFor(r.mem) }}
+                    >
                       {r.mem.toFixed(1)}
                     </td>
-                    <td className="num">{formatKib(r.rss_kib)}</td>
-                    <td className="num">{r.threads}</td>
+                    <td className={`num ${sortedCls("rss_kib") ?? ""}`}>{formatKib(r.rss_kib)}</td>
+                    <td className={`num ${sortedCls("threads") ?? ""}`}>{r.threads}</td>
                     <td className="st">{r.state}</td>
-                    <td className="cmd" title={r.cmdline}>
+                    <td className={`cmd ${sortedCls("comm") ?? ""}`} title={r.cmdline}>
                       {r.cmdline}
                     </td>
                   </tr>
@@ -677,11 +834,15 @@ const SYSMON_CSS = `
 .sysmon-source {
   display: flex;
   gap: 4px;
+  flex-wrap: wrap;
   padding: 6px 12px;
   border-bottom: 1px solid var(--border-color);
   flex: 0 0 auto;
 }
 .sysmon-source-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: var(--control-bg);
   border: 1px solid var(--control-border);
   border-radius: var(--radius, 4px);
@@ -701,13 +862,6 @@ const SYSMON_CSS = `
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-contrast, #fff);
-}
-.sysmon-source-off {
-  color: var(--text-muted);
-}
-.sysmon-source-btn.active .sysmon-source-off {
-  color: var(--accent-contrast, #fff);
-  opacity: 0.8;
 }
 /* The single scroll region: the vitals and the process table scroll together under
    ONE scrollbar. The table's sticky thead pins to this scroller. */
@@ -968,6 +1122,20 @@ const SYSMON_CSS = `
   border-bottom: 1px solid var(--border-color);
   user-select: none;
 }
+/* The active sort column reads as a distinct vertical band, not just a tinted
+   header: a strong accent header and an accent-tinted column body, both bracketed
+   by 2px accent edge-lines drawn with an inset box-shadow (so the band gains no
+   width and the columns stay aligned). */
+.sysmon-table th.sorted {
+  background: color-mix(in srgb, var(--accent) 30%, var(--bg-header));
+  color: var(--text-primary);
+  font-weight: 700;
+  box-shadow: inset 2px 0 0 var(--accent), inset -2px 0 0 var(--accent);
+}
+.sysmon-table td.sorted {
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-panel));
+  box-shadow: inset 2px 0 0 var(--accent), inset -2px 0 0 var(--accent);
+}
 .sysmon-table th.num,
 .sysmon-table td.num {
   text-align: right;
@@ -992,5 +1160,11 @@ const SYSMON_CSS = `
 }
 .sysmon-table tbody tr:hover {
   background: var(--control-hover-bg);
+}
+/* The per-user breakdown borrows the remote-usage dialog's .remote-usage-users
+   grid wholesale (defined in themes.css), so this only positions that panel —
+   an indented block below the vitals, not the full-width process scroller. */
+.sysmon-users {
+  padding: 0 12px 8px;
 }
 `;

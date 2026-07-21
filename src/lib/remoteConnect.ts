@@ -1,5 +1,29 @@
+import { invoke } from "@tauri-apps/api/core";
 import { useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
+
+/**
+ * The directory a fresh connect/browse should open in for `host`: the standard
+ * path set in Settings' "Remote Connections" panel if there is one, else the
+ * SSH-reported home directory. Best-effort — either lookup failing just falls
+ * through to the next, never blocking a connect that already succeeded.
+ *
+ * Shared by every remote connect+browse flow (`useRemoteSession` for the
+ * new/extend-project dialog, `RemoteMachinesWindow` for add-worker-machine) so
+ * they resolve the starting folder identically.
+ */
+export async function resolveRemoteStartDir(
+  user: string | null | undefined,
+  host: string,
+  port: number | null | undefined,
+  password: string | null,
+): Promise<string> {
+  const configured = await invoke<string | null>("remote_get_default_path", { host }).catch(
+    () => null,
+  );
+  if (configured) return configured;
+  return invoke<string>("ssh_default_dir", { user, host, port, password }).catch(() => "");
+}
 
 /**
  * Non-headless remote-connection support: instead of Eldrun handling the

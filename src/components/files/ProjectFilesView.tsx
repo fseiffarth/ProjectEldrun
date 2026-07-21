@@ -10,6 +10,8 @@ import {
   useBoxRoots,
   useRemoteBlocked,
 } from "./ProjectFilesPane";
+import { RunHostPicker } from "../tabs/TabLocalityBadges";
+import { runHostPickerApplies } from "../../stores/runHostPref";
 import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFilesSettings";
 import { useImportDrop } from "./importDrop";
 import { logoutRemote } from "../../stores/projects";
@@ -22,12 +24,20 @@ import type { SortKey } from "../../lib/viewers/fileUtils";
 import { basename, dirname } from "../../lib/paths";
 import { projectTypeTags } from "../projects/projectTypeTags";
 import { ProjectHoverCard, useProjectHoverCard } from "../projects/ProjectHoverCard";
-import { useConnectDialogStore } from "../../stores/connectDialog";
 import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { UntestedTag } from "../common/UntestedTag";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { persistentSessionOf } from "../../lib/closeRemoteTab";
 import { useRemoteStatusStore, sshOf } from "../../stores/remoteStatus";
+import {
+  slurmAvailable,
+  slurmQueue,
+  slurmCancel,
+  slurmJobOut,
+  openLogTab,
+  type SlurmJob,
+} from "../../lib/slurm";
+import { useHpcJobsStore } from "../../stores/hpcJobs";
 
 /** One host tmux session (TODO #85), mirroring the backend `TmuxSession`. */
 interface TmuxSession {
@@ -67,7 +77,7 @@ interface GitStatus {
   is_repo: boolean;
 }
 
-type View = "files" | "windows" | "git" | "search" | "orange" | "sessions";
+type View = "files" | "windows" | "git" | "search" | "orange" | "sessions" | "jobs";
 
 // A single shared empty array for scopes with no registered tabs. Must be a
 // stable reference — a Zustand selector that returned a fresh `[]` here would
@@ -444,6 +454,79 @@ export function ProjectFilesView({
       .catch((e) => window.alert(`Rename failed: ${e}`));
   };
 
+  // ── SLURM jobs (HPC) ──────────────────────────────────────────────────────
+  // A Jobs view, primary-only to start: whether the primary host has SLURM, and
+  // this user's live queue on it. Rides the primary's pooled ControlMaster; polled
+  // only while the view is active (like Sessions). A local project with SLURM (a
+  // login node) also gets it. The session store carries just-submitted jobs so a
+  // Watch can resolve their log path without a fresh scontrol.
+  const [slurmSupported, setSlurmSupported] = useState(false);
+  const [jobRows, setJobRows] = useState<SlurmJob[]>([]);
+  const sessionJobs = useHpcJobsStore((s) =>
+    projectId ? s.byProject[projectId] : undefined,
+  );
+  // Primary connectivity, so probes/polls re-run the moment it connects.
+  const primaryConn = useRemoteStatusStore((s) => sshOf(s, projectId ?? "", "primary"));
+  const primaryReady = !project?.remote || primaryConn === "connected";
+  useEffect(() => {
+    if (!active || !projectDir || !primaryReady) {
+      setSlurmSupported(false);
+      return;
+    }
+    let cancelled = false;
+    slurmAvailable(projectDir)
+      .then((info) => { if (!cancelled) setSlurmSupported(info.available); })
+      .catch(() => { if (!cancelled) setSlurmSupported(false); });
+    return () => { cancelled = true; };
+  }, [active, projectDir, primaryReady]);
+  useEffect(() => {
+    if (!active || view !== "jobs" || !slurmSupported || !projectDir) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const jobs = await slurmQueue(projectDir);
+        if (!cancelled) setJobRows(jobs);
+      } catch {
+        if (!cancelled) setJobRows([]);
+      }
+    };
+    void poll();
+    const iv = setInterval(() => void poll(), 7000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [active, view, slurmSupported, projectDir]);
+
+  // Watch a job: open a log tab tailing its stdout. Use the session store's path
+  // if we submitted it this session, else resolve via scontrol.
+  const watchJob = async (jobId: string, name: string) => {
+    if (!projectDir) return;
+    try {
+      const known = sessionJobs?.find((j) => j.jobId === jobId);
+      const outFile = known?.outFile ?? (await slurmJobOut(projectDir, jobId));
+      openLogTab({
+        scope,
+        projectDir,
+        outFile,
+        jobLabel: `${jobId} ${name}`,
+        hostId: "primary",
+        isRemote: !!project?.remote,
+      });
+    } catch (e) {
+      window.alert(`Could not resolve the log file for job ${jobId}: ${e}`);
+    }
+  };
+
+  // Cancel a job (confirmed). Drops the row optimistically; the poll reconciles.
+  const cancelJob = (jobId: string, name: string) => {
+    if (!projectDir) return;
+    if (!window.confirm(`Cancel job ${jobId}${name ? ` (${name})` : ""}?`)) return;
+    slurmCancel(projectDir, jobId)
+      .then(() => {
+        setJobRows((rs) => rs.filter((r) => r.id !== jobId));
+        if (projectId) useHpcJobsStore.getState().remove(projectId, jobId, "primary");
+      })
+      .catch((e) => window.alert(`Cancel failed: ${e}`));
+  };
+
   // Resolve the scaffold-missing flag whenever the project changes. Failures
   // fall back to "present" so a probe error doesn't flash the tag.
   useEffect(() => {
@@ -460,11 +543,15 @@ export function ProjectFilesView({
 
   const typeTags = project ? projectTypeTags(project, scaffoldMissing) : [];
 
-  // Right-click menu on the SSH (remote) tag: connect/manage the host, or open the
-  // multi-host "Remote machines" manager (docs/multi_host_remote_plan.md).
-  const openConnectDialog = useConnectDialogStore((s) => s.open);
+  // Right-click menu on the SSH (remote) tag: open the one unified "Remote machines"
+  // hub, which connects/manages every host and adds workers
+  // (docs/multi_host_remote_plan.md).
   const openRemoteMachines = useRemoteMachinesStore((s) => s.open);
   const [sshTagMenu, setSshTagMenu] = useState<{ x: number; y: number } | null>(null);
+
+  // Import button's Files.../Folder... menu — same portal+backdrop pattern as
+  // the SSH tag's context menu above.
+  const [importMenu, setImportMenu] = useState<{ x: number; y: number } | null>(null);
 
   // Same hover card as the project pill, shown when hovering the project name
   // here — minus the type tags, which already sit beside the name below.
@@ -668,14 +755,8 @@ export function ProjectFilesView({
             >
               <div className="context-menu-group">
                 <div className="context-menu-group-label">{project?.remote?.host ?? "Remote"}</div>
-                <button
-                  onClick={() => {
-                    openConnectDialog(projectId, "primary");
-                    setSshTagMenu(null);
-                  }}
-                >
-                  Connect / manage…
-                </button>
+                {/* One unified hub: connect/manage every host (primary + workers)
+                    and add a machine, all from "Remote machines…". */}
                 <button
                   className="untested"
                   onClick={() => {
@@ -702,6 +783,18 @@ export function ProjectFilesView({
               pin/name (header padding edge) instead of trailing the tags. */}
           <span style={{ flexBasis: "100%", width: 0, height: 0 }} />
           <FileSourceSwitch source={source} onChange={setSource} />
+          {/* Run-host picker — which machine scripts/shells launched from this
+              project run on (primary or a worker), distinct from the source
+              switch's read side. Shown only while the switch is on Remote (no
+              machine axis on Local), and hidden once a worker keeps its own synced
+              code copy — then the run target is the tab's picked locality. */}
+          {source === "remote" && runHostPickerApplies(project.compute_hosts) && (
+            <RunHostPicker
+              projectId={projectId}
+              primaryHost={project.remote.host}
+              computeHosts={project.compute_hosts}
+            />
+          )}
           {/* One-click SSH logout, shown while connected. Lives here (not on the
               project pill) so the pill stays status-only; the danger tint only
               appears on hover. */}
@@ -884,15 +977,62 @@ export function ProjectFilesView({
             ☰ {sessionRows.length > 0 && <span className="right-panel-orange-count">{sessionRows.length}</span>}
           </button>
         )}
+        {/* SLURM jobs (HPC): shown only when the host actually has SLURM, so the
+            toggle never appears off-cluster. Badged with the live queue count. */}
+        {!activeBox && slurmSupported && projectId && (
+          <button
+            className={`tab-add-btn right-panel-orange-btn${view === "jobs" ? " active" : ""}`}
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            aria-pressed={view === "jobs"}
+            onClick={() => setView((v) => (v === "jobs" ? "files" : "jobs"))}
+            title={`SLURM jobs: ${jobRows.length}`}
+          >
+            ⚙ {jobRows.length > 0 && <span className="right-panel-orange-count">{jobRows.length}</span>}
+          </button>
+        )}
         {importDrop.canImport && (
           <button
             className="tab-add-btn"
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
-            onClick={() => void importDrop.importViaDialog()}
-            title="Import files into this folder"
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              setImportMenu({ x: r.left, y: r.bottom + 2 });
+            }}
+            title="Import files or a folder into this project"
           >
             ⬇
           </button>
+        )}
+        {importMenu && createPortal(
+          <>
+            <div
+              style={{ position: "fixed", inset: 0, zIndex: 200 }}
+              onPointerDown={() => setImportMenu(null)}
+            />
+            <div
+              className="context-menu"
+              style={{ left: importMenu.x, top: importMenu.y, zIndex: 201 }}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <button
+                onClick={() => {
+                  setImportMenu(null);
+                  void importDrop.importViaDialog();
+                }}
+              >
+                Import files…
+              </button>
+              <button
+                onClick={() => {
+                  setImportMenu(null);
+                  void importDrop.importFolderViaDialog();
+                }}
+              >
+                Import folder (copy)…
+              </button>
+            </div>
+          </>,
+          document.body,
         )}
         {projectDir && (
           <button
@@ -1162,6 +1302,62 @@ export function ProjectFilesView({
         </div>
       )}
 
+      {view === "jobs" && (
+        <div className="right-panel-scroll right-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
+          <div className="right-panel-jobs-head">
+            <UntestedTag />
+          </div>
+          {jobRows.length === 0 ? (
+            <div className="right-panel-orange-empty">
+              {remoteBlocked
+                ? "Connect to list SLURM jobs"
+                : "No queued or running jobs (squeue)"}
+            </div>
+          ) : (
+            jobRows.map((j) => (
+              <div key={j.id} className="orange-file-row" title={`${j.id} ${j.name}`}>
+                <button
+                  type="button"
+                  className="orange-file-name"
+                  title={`Watch job ${j.id} — tail its output log`}
+                  onClick={() => void watchJob(j.id, j.name)}
+                >
+                  <span className="orange-file-dot" aria-hidden="true">
+                    {j.state === "RUNNING" ? "●" : "○"}
+                  </span>
+                  {j.name || j.id}
+                  <span className="tmux-session-meta">
+                    {j.id} · {j.state}
+                    {j.time ? ` · ${j.time}` : ""}
+                    {j.nodes ? ` · ${j.nodes} node${j.nodes === "1" ? "" : "s"}` : ""}
+                    {j.reason && j.reason !== "(None)" ? ` · ${j.reason}` : ""}
+                  </span>
+                </button>
+                <div className="orange-file-actions">
+                  <button
+                    type="button"
+                    className="orange-file-act"
+                    title="Watch this job's output log"
+                    onClick={() => void watchJob(j.id, j.name)}
+                  >
+                    Watch
+                  </button>
+                  <button
+                    type="button"
+                    className="orange-file-act"
+                    title="Cancel this job (scancel)"
+                    aria-label={`Cancel job ${j.id}`}
+                    onClick={() => cancelJob(j.id, j.name)}
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
       {/* Compact (docked subwindow) viewer strips the whole header above, which
           is where the Remote/Local source switch normally lives — but a remote
           project still needs it here to flip the tree between host and mirror.
@@ -1170,6 +1366,13 @@ export function ProjectFilesView({
       {compact && view === "files" && !activeBox && project?.remote && projectId && (
         <div className="right-panel-source right-panel-source--compact">
           <FileSourceSwitch source={source} onChange={setSource} />
+          {source === "remote" && runHostPickerApplies(project.compute_hosts) && (
+            <RunHostPicker
+              projectId={projectId}
+              primaryHost={project.remote.host}
+              computeHosts={project.compute_hosts}
+            />
+          )}
         </div>
       )}
       {view === "files" && (

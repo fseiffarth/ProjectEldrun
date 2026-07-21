@@ -620,7 +620,6 @@ mod tests {
         use crate::schema::project::{ComputeHost, RemoteSpec};
         let mk = |shared_fs: bool, sync_code: bool| ComputeHost {
             id: "h1".into(),
-            label: None,
             sync_code,
             pull_outputs: false,
             shared_fs,
@@ -633,6 +632,7 @@ mod tests {
                 auto_connect: None,
                 key_auth: None,
                 persist_sessions: None,
+                label: None,
                 extra: Default::default(),
             },
         };

@@ -8,14 +8,10 @@ import {
   NETWORK_TAB_CMD,
   MONITOR_TAB_CMD,
   EMPTY_GROUP_ID,
-  effectiveTabLocation,
-  remoteHostIdOf,
-  isLocatableKind,
   isPtyTabKind,
   useTabsStore,
   useGroup,
   useGroupTabs,
-  type TabLocation,
 } from "../../stores/tabs";
 import { useDragStore } from "../../stores/drag";
 import { useTabLandStore } from "../../stores/tabLand";
@@ -36,6 +32,13 @@ import { CustomAgentDialog } from "./CustomAgentDialog";
 import { type AgentMode, supportsAgentMode } from "./agentModes";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
 import { TabHoverCard } from "./TabHoverCard";
+import {
+  TabSourceBadge,
+  TabLocalityBadge,
+  LocalityMenu,
+  tabLocation,
+  type LocalityMenuState,
+} from "./TabLocalityBadges";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
 import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
@@ -44,7 +47,6 @@ import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { closeTabWithConfirm } from "../../lib/closeRemoteTab";
 import { useActivityStore } from "../../stores/activity";
-import { useFileSourcesStore } from "../../stores/fileSources";
 
 /** Default fly-out card size when no live pane thumbnail is available (group
  *  detach via the bar drag carries no preview). */
@@ -134,7 +136,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // Per-tab file source (remote-native vs local mirror), published by the file
   // viewers. Lets the Remote/Local badge ride on the viewer tab itself rather
   // than costing a whole viewer header row. Only meaningful on remote projects.
-  const fileSources = useFileSourcesStore((s) => s.byTab);
   const closeAllTabs = useTabsStore((s) => s.closeAllTabs);
   const detachGroup = useTabsStore((s) => s.detachGroup);
   const detachTab = useTabsStore((s) => s.detachTab);
@@ -183,11 +184,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // the left / Close to the right / Rename). Shift+right-click bypasses it and
   // goes straight to inline rename (#56). Keyed to the clicked tab + its index so
   // the left/right-of splits resolve against this group's ordered `tabs`.
-  // Multi-host: the open tab-locality menu (Local / Primary / each worker), keyed
-  // by tab. Positioned like the tab context menu below.
-  const [localityMenu, setLocalityMenu] = useState<{ key: string; x: number; y: number } | null>(
-    null,
-  );
+  // Multi-host: the open tab-locality menu, keyed by tab. Two-level — `view`
+  // starts at "root" (Local ↔ Remote) and drills into "machines" (primary +
+  // each worker) when Remote is chosen. Positioned like the tab context menu.
+  const [localityMenu, setLocalityMenu] = useState<LocalityMenuState | null>(null);
   const [tabMenu, setTabMenu] = useState<
     { x: number; y: number; key: string; index: number } | null
   >(null);
@@ -1130,24 +1130,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               <span className="tab-label">{tab.label}</span>
             )}
             {/* Viewer file-source badge — remote-native (host SFTP) vs local
-                mirror — published by FileViewerPane. Rides on the tab so it
-                costs no viewer header row; absent for local projects/tabs. */}
-            {(() => {
-              const src = fileSources[tab.key];
-              if (src !== "remote" && src !== "local") return null;
-              return (
-                <span
-                  className={`tab-source ${src}`}
-                  title={
-                    src === "remote"
-                      ? "Remote-native: read directly from the host over SFTP (no local copy)."
-                      : "Local mirror: read from this project's local synced copy of the host file."
-                  }
-                >
-                  {src === "remote" ? "☁" : "⌂"}
-                </span>
-              );
-            })()}
+                mirror, a clickable toggle when the file exists on both sides.
+                Shared with the detached strip (see TabLocalityBadges). */}
+            <TabSourceBadge tabKey={tab.key} />
             {/* Planner/doer badge (experimental, off by default) — click to switch
                 the agent between Plan and Auto. Only for agents that can actually
                 be launched into a mode AND resume on the respawn that costs (see
@@ -1177,35 +1162,22 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             {/* Locality badge — click to choose where this agent/shell tab runs:
                 the local mirror, the primary host, or (multi-host remote,
                 docs/multi_host_remote_plan.md) any worker machine. Only shown for
-                a remote project's locatable tabs. With no workers it is still a
-                menu (Local / Primary). */}
-            {isRemoteScope && isLocatableKind(tab.kind) && (() => {
-              const loc = effectiveTabLocation(tab);
-              const hostId = remoteHostIdOf(loc);
-              const label =
-                hostId === null
-                  ? "Local (mirror)"
-                  : hostId === "primary"
-                    ? `Primary${primaryHost ? ` (${primaryHost})` : ""}`
-                    : (() => {
-                        const w = computeHosts?.find((h) => h.id === hostId);
-                        return w?.label || w?.host || hostId;
-                      })();
-              return (
-                <button
-                  className={`tab-locality ${hostId === null ? "local" : "remote"}`}
-                  title={`Runs on: ${label} — click to change where this tab runs`}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                    setLocalityMenu({ key: tab.key, x: r.left, y: r.bottom + 2 });
-                  }}
-                >
-                  {hostId === null ? "⌂" : "☁"}
-                </button>
-              );
-            })()}
+                a remote project's locatable tabs. Shared with the detached strip. */}
+            {isRemoteScope && (
+              <TabLocalityBadge
+                tab={tab}
+                primaryHost={primaryHost}
+                computeHosts={computeHosts}
+                onOpen={(r, startOnMachines) =>
+                  setLocalityMenu({
+                    key: tab.key,
+                    x: r.left,
+                    y: r.bottom + 2,
+                    view: startOnMachines ? "machines" : "root",
+                  })
+                }
+              />
+            )}
             <button
               className="tab-close"
               onClick={(e) => { e.stopPropagation(); closeTabWithConfirm(tab.key); }}
@@ -1436,48 +1408,16 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       {agentDialogOpen && (
         <CustomAgentDialog onClose={() => setAgentDialogOpen(false)} />
       )}
-      {localityMenu && createPortal(
-        <>
-          {/* Click-away backdrop closing the locality menu. */}
-          <div
-            style={{ position: "fixed", inset: 0, zIndex: 40 }}
-            onPointerDown={() => setLocalityMenu(null)}
-          />
-          <div
-            className="tab-new-menu"
-            style={{ position: "fixed", left: localityMenu.x, top: localityMenu.y, zIndex: 41 }}
-          >
-            {(() => {
-              const menuTab = tabs.find((t) => t.key === localityMenu.key);
-              const cur = menuTab ? effectiveTabLocation(menuTab) : "local";
-              const item = (loc: TabLocation, glyph: string, text: string) => (
-                <button
-                  key={loc}
-                  className="tab-new-menu-item"
-                  onClick={() => {
-                    setTabLocation(localityMenu.key, loc);
-                    setLocalityMenu(null);
-                  }}
-                >
-                  <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>
-                    {cur === loc ? "●" : glyph}
-                  </span>
-                  {text}
-                </button>
-              );
-              return (
-                <>
-                  {item("local", "⌂", "Local (mirror)")}
-                  {item("remote", "☁", `Primary${primaryHost ? ` (${primaryHost})` : ""}`)}
-                  {(computeHosts ?? []).map((h) =>
-                    item(`host:${h.id}`, "☁", h.label || h.host || h.id),
-                  )}
-                </>
-              );
-            })()}
-          </div>
-        </>,
-        document.body,
+      {localityMenu && (
+        <LocalityMenu
+          menu={localityMenu}
+          current={tabLocation(tabs.find((t) => t.key === localityMenu.key))}
+          primaryHost={primaryHost}
+          computeHosts={computeHosts}
+          onClose={() => setLocalityMenu(null)}
+          onChangeView={(view) => setLocalityMenu((m) => (m ? { ...m, view } : m))}
+          onChoose={(key, loc) => setTabLocation(key, loc)}
+        />
       )}
       {tabMenu && createPortal(
         <div
@@ -1552,6 +1492,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             tab={tab}
             scope={scope}
             isRemote={isRemoteScope}
+            primaryHost={primaryHost}
+            computeHosts={computeHosts}
             anchorX={hoverTab.x}
             anchorY={hoverTab.y}
           />

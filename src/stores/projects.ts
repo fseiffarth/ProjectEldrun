@@ -5,6 +5,7 @@ import {
   formatRemoteTarget,
   resolveLocalMirror,
   resolveProjectDirectory,
+  type ComputeHost,
   type GitHostingInfo,
   type GitProvider,
   type ProjectEntry,
@@ -290,7 +291,7 @@ const autoConnecting = new Set<string>();
  * Fire-and-forget: it never blocks a switch. Local tabs restore and work on the
  * mirror regardless, and remote panes stay held until the pool is actually up.
  */
-async function autoConnectRemote(projectId: string): Promise<void> {
+async function autoConnectPrimary(projectId: string): Promise<void> {
   const project = useProjectsStore.getState().projects.find((p) => p.id === projectId);
   const remote = project?.remote;
   if (!remote?.auto_connect) return;
@@ -376,6 +377,71 @@ async function autoConnectRemote(projectId: string): Promise<void> {
     else abandon();
   } finally {
     autoConnecting.delete(projectId);
+  }
+}
+
+/**
+ * Auto-connect a remote project on launch/activation: the primary first, then any
+ * worker (`compute_hosts`) that opted in. The primary is awaited before the
+ * workers fire so a VPN it brings up (the tunnel is machine-wide) is already there
+ * when a worker reachable only through it is probed. Fire-and-forget per host —
+ * one worker being unreachable never blocks the others or the primary.
+ */
+async function autoConnectRemote(projectId: string): Promise<void> {
+  await autoConnectPrimary(projectId);
+  const project = useProjectsStore.getState().projects.find((p) => p.id === projectId);
+  for (const host of project?.compute_hosts ?? []) {
+    if (host.auto_connect) void autoConnectWorker(projectId, host);
+  }
+}
+
+/**
+ * The worker twin of `autoConnectPrimary`: connect one opted-in worker host with no
+ * prompt. Simpler than the primary — a worker has no VPN escalation of its own (the
+ * tunnel is machine-wide, so the primary or the header owns it) — but it keeps the
+ * same guards: only from an "off" lamp, only when eligible (`key_auth` or a saved
+ * password, re-checked against the backend so a stale opt-in degrades to
+ * "stay disconnected"), and it abandons its own "connecting" lamp if the user
+ * switches away mid-probe. Keyed in `autoConnecting` by `project:host` so it never
+ * collides with the primary's per-project claim.
+ */
+async function autoConnectWorker(projectId: string, host: ComputeHost): Promise<void> {
+  const hostId = host.id;
+  const claim = `${projectId}:${hostId}`;
+  const state = useRemoteStatusStore.getState().byHost[projectId]?.[hostId];
+  if ((state?.ssh ?? "off") !== "off" || autoConnecting.has(claim)) return;
+  autoConnecting.add(claim);
+
+  const stillActive = () => useProjectsStore.getState().activeId === projectId;
+  const status = () => useRemoteStatusStore.getState();
+  const abandon = () => {
+    if (status().byHost[projectId]?.[hostId]?.ssh === "connecting")
+      status().setSsh(projectId, "off", hostId);
+  };
+  try {
+    const sshArgs = { user: host.user ?? null, host: host.host, port: host.port ?? null };
+    const eligible =
+      host.key_auth === true ||
+      (await invoke<boolean>("remote_has_saved_password", sshArgs).catch(() => false));
+    if (!eligible || !stillActive()) return;
+
+    status().setSsh(projectId, "connecting", hostId);
+    const probe = await invoke<SshProbe>("ssh_probe", sshArgs);
+    if (!stillActive()) return abandon();
+    if (!probe.ok) {
+      console.warn("worker auto-connect: host not reachable/authenticating", probe.error);
+      status().setSsh(projectId, "error", hostId);
+      return;
+    }
+    await invoke("remote_connect", { projectId, hostId, password: null });
+    if (!stillActive()) return abandon();
+    status().setSsh(projectId, "connected", hostId);
+  } catch (error) {
+    console.warn("worker auto-connect failed", error);
+    if (stillActive()) status().setSsh(projectId, "error", hostId);
+    else abandon();
+  } finally {
+    autoConnecting.delete(claim);
   }
 }
 
@@ -509,6 +575,11 @@ interface ProjectsStore {
   /** Opt a remote project in/out of persistent (tmux) sessions (TODO #85). Default
    *  ON, so this only records an opt-out; re-enabling clears the field. */
   setProjectPersistSessions: (id: string, enabled: boolean) => Promise<void>;
+  /** Set (or clear, on blank) the display name for a remote project's PRIMARY
+   *  machine — the counterpart of a worker's `label` (`patch_compute_host`).
+   *  Distinct from the project name: this labels the host, shown wherever a
+   *  project's hosts are listed side by side (System Monitor, pill lamps). */
+  setProjectRemoteLabel: (id: string, label: string) => Promise<void>;
   /** Attach (or clear) an OpenVPN config on a remote project's SSH spec, so a
    *  project created without a VPN can gain one later when reconnecting from a
    *  VPN-gated network. `config = null`/"" clears it. Mirrors the stored path
@@ -1014,6 +1085,20 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
               ...project,
               remote: { ...project.remote, persist_sessions: result ? undefined : false },
             }
+          : project,
+      ),
+    }));
+  },
+
+  setProjectRemoteLabel: async (id, label) => {
+    const result = await invoke<string | null>("set_project_remote_label", {
+      projectId: id,
+      label,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id && project.remote
+          ? { ...project, remote: { ...project.remote, label: result ?? undefined } }
           : project,
       ),
     }));

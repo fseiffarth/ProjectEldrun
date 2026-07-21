@@ -1,6 +1,5 @@
-import { useState } from "react";
 import { joinRemotePath } from "./scaffold";
-import { fileIcon, folderIcon } from "../../lib/viewers/fileUtils";
+import { RemoteFolderBrowser } from "./RemoteFolderBrowser";
 import { TerminalView } from "../terminal/TerminalView";
 import { ConnectionLog } from "../common/ConnectionLog";
 import { ConnLamp } from "../common/ConnLamp";
@@ -13,15 +12,6 @@ import type { ConnState } from "../../stores/remoteStatus";
 import type { useRemoteSession } from "./useRemoteSession";
 
 type RemoteSession = ReturnType<typeof useRemoteSession>;
-
-/** Extension (".py", ".md", …) of a remote listing entry, for picking its
- *  file-type icon the same way the right-hand file tree does. A leading-dot
- *  name (e.g. ".gitignore") has no extension, so it falls back to the generic
- *  file icon. */
-function remoteEntryExt(name: string): string | null {
-  const dot = name.lastIndexOf(".");
-  return dot > 0 ? name.slice(dot) : null;
-}
 
 /** Map the dialog's connection status (`idle|connecting|connected|error`) to a
  *  lamp state (`off|connecting|connected|error`). */
@@ -134,15 +124,6 @@ export function RemoteProjectSection({
     remoteGoUp,
     createRemoteFolder,
   } = remote;
-
-  // Inline "new folder" entry within the remote browser (local to this view).
-  const [newFolderName, setNewFolderName] = useState("");
-  const submitNewFolder = () => {
-    const name = newFolderName.trim();
-    if (!name) return;
-    void createRemoteFolder(name);
-    setNewFolderName("");
-  };
 
   // Same gate as the Connect modal: a tunnel is machine-wide, so once one is up
   // (from the header, another project, or connect-on-launch) this dialog has no
@@ -652,93 +633,25 @@ export function RemoteProjectSection({
       )}
 
       {step === "browse" && !winManual && (
-        <div className="remote-browser" role="group" aria-label="Remote folder browser">
-          <div className="remote-browser-header">
-            <button type="button" className="remote-up-btn" onClick={remoteGoUp} title="Go up">
-              ..
-            </button>
-            <span className="remote-breadcrumb" title={remoteBrowsePath}>
-              {remoteBrowsePath || "/"}
-            </span>
-            {remotePaths.length > 0 && (
-              <Dropdown
-                className="vpn-config-recent"
-                value=""
-                placeholder="Recently used…"
-                title="Jump to a previously-used remote path for this host"
-                onChange={(v) => {
-                  if (v) jumpToRemotePath(v);
-                }}
-                options={remotePaths.map((p) => ({ value: p, label: p }))}
-              />
-            )}
-            <button type="button" onClick={onUseThisFolder}>
-              Use this folder
-            </button>
-          </div>
-          <div className="remote-newfolder">
-            <input
-              type="text"
-              className="remote-newfolder-input"
-              placeholder="New folder name…"
-              value={newFolderName}
-              onChange={(e) => setNewFolderName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  submitNewFolder();
-                }
-              }}
-              disabled={remoteListBusy}
-            />
-            <button
-              type="button"
-              onClick={submitNewFolder}
-              disabled={remoteListBusy || !newFolderName.trim()}
-              title="Create a new folder here"
-            >
-              + Add folder
-            </button>
-          </div>
-          <div className="remote-list">
-            {remoteListBusy && <div className="scaffold-empty">Listing...</div>}
-            {!remoteListBusy && remoteListError && (
-              <div className="project-dialog-error">{remoteListError}</div>
-            )}
-            {!remoteListBusy && !remoteListError && remoteEntries.length === 0 && (
-              <div className="scaffold-empty">Empty folder.</div>
-            )}
-            {!remoteListBusy &&
-              !remoteListError &&
-              remoteEntries.map((entry) => (
-                <div
-                  key={entry.name}
-                  className={`remote-entry ${entry.is_dir ? "is-dir" : "is-file"}`}
-                  role={entry.is_dir ? "button" : undefined}
-                  tabIndex={entry.is_dir ? 0 : undefined}
-                  onClick={() => enterRemoteFolder(entry)}
-                  onKeyDown={(e) => {
-                    if (entry.is_dir && (e.key === "Enter" || e.key === " ")) {
-                      e.preventDefault();
-                      enterRemoteFolder(entry);
-                    }
-                  }}
-                >
-                  <span className="remote-entry-icon file-icon">
-                    {entry.is_dir ? folderIcon() : fileIcon(remoteEntryExt(entry.name))}
-                  </span>
-                  <span className="remote-entry-name">{entry.name}</span>
-                </div>
-              ))}
-          </div>
-          <div className="remote-chosen">
-            {remoteChosenPath
+        <RemoteFolderBrowser
+          path={remoteBrowsePath}
+          entries={remoteEntries}
+          busy={remoteListBusy}
+          error={remoteListError}
+          recentPaths={remotePaths}
+          onGoUp={remoteGoUp}
+          onJumpPath={jumpToRemotePath}
+          onEnterFolder={enterRemoteFolder}
+          onUseFolder={onUseThisFolder}
+          onCreateFolder={(name) => void createRemoteFolder(name)}
+          footer={
+            remoteChosenPath
               ? kind === "new"
                 ? `Will create: ${joinRemotePath(remoteChosenPath, safeName || "<name>")}`
                 : `Selected: ${remoteChosenPath}`
-              : "Browse to a folder, then click “Use this folder”."}
-          </div>
-        </div>
+              : "Browse to a folder, then click “Use this folder”."
+          }
+        />
       )}
     </>
   );

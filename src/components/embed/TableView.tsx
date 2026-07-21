@@ -47,11 +47,6 @@ const CELL_PAD_X = 20;
 /** Smallest a column can be dragged to, in px — narrow enough to tuck a column
  *  away, wide enough to keep its resize handle grabbable. */
 const MIN_COL_W = 32;
-/** The sorted column's tint: the accent mixed into the panel, so it follows the
- *  active theme and stays opaque (the sticky header must not let body cells
- *  bleed through — and opaque mixes avoid the WebKitGTK translucent-color-mix
- *  caveat). */
-const SORTED_COL_BG = "color-mix(in srgb, var(--accent) 10%, var(--bg-panel))";
 /** The zebra tint for odd body rows: the panel's own text mixed a hair into the
  *  panel, so it darkens on a light theme and lightens on a dark one, and stays
  *  opaque (the sticky gutter must not let body cells bleed through — and an opaque
@@ -66,6 +61,18 @@ const GUTTER_BG = "color-mix(in srgb, var(--text-primary) 12%, var(--bg-panel))"
 /** The gutter's right edge and the header's bottom edge: a heavier rule than the
  *  1px cell grid, so the sticky chrome stays legible against the scrolling body. */
 const GUTTER_BORDER = "2px solid var(--border-color)";
+/** The active sort column reads as a distinct vertical band, not just a tinted
+ *  header — a strong accent header, an accent-tinted column body (kept light
+ *  enough that the zebra stripe still shows through it, so the two tints stack),
+ *  and 2px accent edge-lines drawn with an inset box-shadow so the band gains no
+ *  width and header/body stay column-aligned. Matches the system monitor's table
+ *  (`.sysmon-table th.sorted` / `td.sorted`). */
+const SORTED_HEADER_BG = "color-mix(in srgb, var(--accent) 30%, var(--bg-header))";
+const SORTED_CELL_BG = "color-mix(in srgb, var(--accent) 8%, var(--bg-panel))";
+const SORTED_CELL_BG_STRIPE = "color-mix(in srgb, var(--accent) 15%, var(--bg-panel))";
+/** The accent edge-lines bracketing the sorted column, as an inset shadow so they
+ *  cost no layout width (a real border would desync the measured column widths). */
+const SORTED_EDGE = "inset 2px 0 0 var(--accent), inset -2px 0 0 var(--accent)";
 /** Sentinel `SortSpec.col` for the row-number gutter: it sorts on each row's
  *  source index, not a cell value, so it needs a column id no real column has. */
 const GUTTER_SORT_COL = -1;
@@ -796,8 +803,8 @@ export function TableView({
                     top: 0,
                     left: 0,
                     zIndex: 2,
-                    background: gutterSorted ? SORTED_COL_BG : GUTTER_BG,
-                    borderBottom: GUTTER_BORDER,
+                    background: gutterSorted ? SORTED_HEADER_BG : "var(--bg-header)",
+                    borderBottom: "1px solid var(--border-color)",
                     borderRight: GUTTER_BORDER,
                     padding: 0,
                   }}
@@ -818,16 +825,20 @@ export function TableView({
                       gap: 3,
                       width: "100%",
                       boxSizing: "border-box",
-                      padding: "6px 6px",
+                      padding: "5px 6px",
                       cursor: "pointer",
+                      userSelect: "none",
                       fontSize: 11,
-                      color: "var(--text-secondary, var(--text-primary))",
+                      fontWeight: gutterSorted ? 700 : 600,
+                      color: gutterSorted ? "var(--text-primary)" : "var(--text-secondary)",
                     }}
                   >
                     <span aria-hidden="true">#</span>
-                    <span style={{ opacity: gutterSorted ? 0.9 : 0.25 }}>
-                      {gutterSorted ? (sort!.dir === "asc" ? "↑" : "↓") : "↕"}
-                    </span>
+                    {gutterSorted && (
+                      <span style={{ color: "var(--accent)", fontWeight: 700 }}>
+                        {sort!.dir === "asc" ? "▲" : "▼"}
+                      </span>
+                    )}
                   </button>
                 </th>
                 {cols.map((c) => {
@@ -840,10 +851,9 @@ export function TableView({
                         position: "sticky",
                         top: 0,
                         zIndex: 1,
-                        // The sorted column wears a light theme tint down its
-                        // whole length, header included.
-                        background: active ? SORTED_COL_BG : "var(--bg-panel)",
-                        borderBottom: "2px solid var(--border-color)",
+                        background: active ? SORTED_HEADER_BG : "var(--bg-header)",
+                        boxShadow: active ? SORTED_EDGE : undefined,
+                        borderBottom: "1px solid var(--border-color)",
                         borderRight: "1px solid var(--border-color)",
                         padding: 0,
                         textAlign: "left",
@@ -873,10 +883,11 @@ export function TableView({
                             gap: 4,
                             width: "100%",
                             boxSizing: "border-box",
-                            padding: "6px 10px",
+                            padding: "5px 10px",
                             cursor: "pointer",
-                            fontWeight: 600,
-                            color: "var(--text-primary)",
+                            userSelect: "none",
+                            fontWeight: active ? 700 : 600,
+                            color: active ? "var(--text-primary)" : "var(--text-secondary)",
                           }}
                         >
                           <span
@@ -887,15 +898,11 @@ export function TableView({
                             }}
                           >
                             {header[c] ?? ""}
-                          </span>
-                          <span
-                            style={{
-                              marginLeft: "auto",
-                              opacity: active ? 0.9 : 0.25,
-                              fontSize: 11,
-                            }}
-                          >
-                            {active ? (sort!.dir === "asc" ? "↑" : "↓") : "↕"}
+                            {active && (
+                              <span style={{ color: "var(--accent)", fontWeight: 700 }}>
+                                {sort!.dir === "asc" ? " ▲" : " ▼"}
+                              </span>
+                            )}
                           </span>
                         </button>
                       )}
@@ -993,8 +1000,16 @@ export function TableView({
                   </td>
                   {cols.map((c) => {
                     const isEditing = editing?.row === row.index && editing.col === c;
-                    const sorted = sort?.col === c;
                     const value = row.cells[c] ?? "";
+                    // The sorted column carries its own accent tint (stacked over
+                    // the zebra stripe) and the accent edge-lines, so it reads as
+                    // one continuous band down the table, not just a tinted header.
+                    const sortedCol = sort?.col === c;
+                    const cellBg = sortedCol
+                      ? stripeBg
+                        ? SORTED_CELL_BG_STRIPE
+                        : SORTED_CELL_BG
+                      : stripeBg;
                     return (
                       <td
                         key={c}
@@ -1003,7 +1018,8 @@ export function TableView({
                         // has to stay reachable somewhere.
                         title={isEditing ? undefined : value}
                         style={{
-                          background: sorted ? SORTED_COL_BG : stripeBg,
+                          background: cellBg,
+                          boxShadow: sortedCol ? SORTED_EDGE : undefined,
                           borderBottom: "1px solid var(--border-color)",
                           borderRight: "1px solid var(--border-color)",
                           padding: isEditing ? 0 : "4px 10px",

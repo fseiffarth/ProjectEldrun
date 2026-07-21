@@ -112,9 +112,10 @@ export interface Settings {
   git_profile_url?: string;
   git_token?: string;
   color_scheme?: string;
-  /** Global UI zoom factor for the whole interface (helps on high-DPI/4K
-   *  monitors). `1` (or unset) is 100% — the default look; applied as a CSS
-   *  `zoom` on the document root. Clamped to [0.5, 3]. */
+  /** The MAIN window's UI zoom factor (helps on high-DPI/4K monitors). `1` (or
+   *  unset) is 100% — the default look; applied as the webview's native zoom.
+   *  Clamped to [0.5, 3]. Zoom is **per window**: a detached popout persists its
+   *  own zoom on its layout entry (see `DetachedGroup.zoom`), not here. */
   ui_zoom?: number;
   /** Calendar: first column of the week — `0` = Sunday (default), `1` = Monday. */
   calendar_week_start?: 0 | 1;
@@ -295,6 +296,19 @@ export interface StoredVpnConfig {
   name: string;
 }
 
+/** A globally connected worker machine (`stores/globalMachines.ts`):
+ *  authenticated once via the ordinary login mechanism, with no
+ *  `remote_path` — project-free, unlike {@link ComputeHost}. Drag-and-dropped
+ *  onto an SSH project to become a `shared_fs` compute host there (a value
+ *  copy of this identity, not a reference). */
+export interface GlobalMachine {
+  id: string;
+  user?: string;
+  host: string;
+  port?: number;
+  label?: string;
+}
+
 /** Which secrets a `.ovpn` config needs from the user (`openvpn_auth_needs`), so
  *  the UI shows exactly the fields that config will be asked for. The two are
  *  independent — a config can need both, and OpenVPN prompts for them separately,
@@ -330,6 +344,11 @@ export interface RemoteSpec {
    *  host used no password at all (key/agent auth). A passwordless host has nothing
    *  in the keychain, so this is the only way the UI can tell it is auto-connectable. */
   key_auth?: boolean;
+  /** Display name for this machine, e.g. "gpu-2"; falls back to `host`. Shown
+   *  wherever a project's hosts are listed side by side (System Monitor's source
+   *  picker, the pill's connection lamps, `hostsForProject`). Distinct from the
+   *  *project* name — this labels the machine, not the project. */
+  label?: string;
   /** Persistent remote sessions (TODO #85): run this project's remote shell/script
    *  tabs inside a **tmux** session on the host, so a long run survives an SSH drop,
    *  a laptop sleep, or Eldrun quitting. **Default ON** — `undefined`/`true` mean
@@ -349,8 +368,6 @@ export interface ComputeHost extends RemoteSpec {
   /** Stable id (e.g. "h1"); referenced by tab locations, the pool key, and the
    *  fan-out state. The primary is the implicit id `"primary"`. */
   id: string;
-  /** Display name (e.g. "gpu-2"); falls back to `host`. */
-  label?: string;
   /** Keep this worker's tracked tree synced to the source HEAD (default true). */
   sync_code?: boolean;
   /** Pull this worker's experiment OUTPUTS back only on demand (default false —

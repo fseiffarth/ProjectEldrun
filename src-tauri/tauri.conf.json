@@ -1,6 +1,6 @@
 {
   "productName": "Eldrun",
-  "version": "0.1.29",
+  "version": "0.1.31",
   "identifier": "io.github.fseiffarth.eldrun",
   "build": {
     "frontendDist": "../dist",

@@ -46,6 +46,15 @@ pub struct ProcSample {
     pub rss_kib: u64,
     pub cpu_jiffies: u64,
     pub threads: u32,
+    /// Owning user's name, resolved from the machine's own passwd database
+    /// (`/etc/passwd` locally, `getent passwd` on a remote host) so the pane can
+    /// group the process table by user — the same per-user "who's loading the
+    /// host" statistic the connect-time usage dialog shows. Empty when the
+    /// backend can't resolve an owner (Windows/macOS, an unmapped uid), which the
+    /// frontend reads as "no per-user data" and hides the section. An unmapped
+    /// uid falls back to `#<uid>` rather than an empty string.
+    #[serde(default)]
+    pub user: String,
 }
 
 /// A single whole-system sample backing the htop-like monitor pane. Everything
@@ -327,6 +336,35 @@ fn parse_pid_stat(content: &str) -> Option<(String, String, u32, u64, u32)> {
     Some((comm, state, ppid, utime + stime, threads))
 }
 
+/// Parse `getent passwd` / `/etc/passwd` content into a uid → username map. Each
+/// line is `name:passwd:uid:gid:gecos:home:shell`; only `name` (field 0) and
+/// `uid` (field 2) are read, malformed lines skipped. The *first* name wins when
+/// two entries share a uid (a deliberate alias), so the mapping is stable.
+fn parse_passwd(content: &str) -> HashMap<u32, String> {
+    let mut map: HashMap<u32, String> = HashMap::new();
+    for line in content.lines() {
+        let mut it = line.split(':');
+        let name = it.next().unwrap_or("");
+        let _passwd = it.next();
+        let Some(uid) = it.next().and_then(|s| s.trim().parse::<u32>().ok()) else {
+            continue;
+        };
+        if !name.is_empty() {
+            map.entry(uid).or_insert_with(|| name.to_string());
+        }
+    }
+    map
+}
+
+/// Resolve a numeric uid to a display name via a passwd map, falling back to
+/// `#<uid>` for a uid the map doesn't cover (an NSS-only account the file walk
+/// missed, or a process whose owner was removed) rather than an empty string.
+fn username_for(uid: u32, map: &HashMap<u32, String>) -> String {
+    map.get(&uid)
+        .cloned()
+        .unwrap_or_else(|| format!("#{uid}"))
+}
+
 /// hwmon `name` values that identify a CPU **package** temperature sensor: Intel
 /// exposes `coretemp`, AMD Zen `k10temp` (or the out-of-tree `zenpower`), some
 /// ARM/embedded boards `cpu_thermal`. Anything else (a GPU's `amdgpu`, a
@@ -379,11 +417,14 @@ fn pick_cpu_temp(channels: &[(Option<String>, f64)]) -> Option<f64> {
 /// `@SECTION@` blocks carrying the raw kernel files verbatim. `@GPU@` carries the
 /// host's GPUs — `NVSMI`/`NVPROC` lines are the `nvidia-smi` CSV verbatim (reusing
 /// the same parsers as the local read), and `AMD\t<card>\t<key>\t<value>` lines
-/// ship one DRM sysfs file each so `parse_drm_card` runs unchanged on them. Under
-/// `@PROCS@` comes one `S`/`R`/`C` triple per process (the raw `/proc/<pid>/stat`
-/// line, its `VmRSS` in KiB, and its NUL-flattened cmdline). cmdline NULs become
-/// spaces so every field stays on one line, which is what lets the parser split on
-/// line prefixes alone.
+/// ship one DRM sysfs file each so `parse_drm_card` runs unchanged on them. The
+/// `@PASSWD@` block ships the host's `getent passwd` (or `/etc/passwd`) verbatim so
+/// [`parse_passwd`] can map each process's owner uid to a name on the *host's*
+/// account database, not this machine's. Under `@PROCS@` comes one `S`/`U`/`R`/`C`
+/// quad per process (the raw `/proc/<pid>/stat` line, its owner uid from
+/// `/proc/<pid>/status`, its `VmRSS` in KiB, and its NUL-flattened cmdline).
+/// cmdline NULs become spaces so every field stays on one line, which is what lets
+/// the parser split on line prefixes alone.
 pub const REMOTE_SNAPSHOT_SCRIPT: &str = r#"
 printf 'CLK\t%s\n' "$(getconf CLK_TCK 2>/dev/null || echo 100)"
 printf '@STAT@\n'; cat /proc/stat 2>/dev/null
@@ -433,14 +474,17 @@ for h in /sys/class/hwmon/hwmon*; do
   case "$n" in jc42|spd5118) ;; *) continue ;; esac
   printf 'M\t%s\n' "$(cat "$h/temp1_input" 2>/dev/null)"
 done
+printf '@PASSWD@\n'; getent passwd 2>/dev/null || cat /etc/passwd 2>/dev/null
 printf '@PROCS@\n'
 for d in /proc/[0-9]*; do
   [ -r "$d/stat" ] || continue
   s=$(cat "$d/stat" 2>/dev/null) || continue
   [ -n "$s" ] || continue
-  r=$(awk '/^VmRSS:/{print $2; exit}' "$d/status" 2>/dev/null)
+  ru=$(awk '/^Uid:/{u=$2} /^VmRSS:/{r=$2} END{print (u==""?0:u)" "(r==""?0:r)}' "$d/status" 2>/dev/null)
+  u=${ru%% *}; r=${ru##* }
   c=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)
   printf 'S\t%s\n' "$s"
+  printf 'U\t%s\n' "${u:-0}"
   printf 'R\t%s\n' "${r:-0}"
   printf 'C\t%s\n' "$c"
 done
@@ -465,6 +509,7 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
         Gpu,
         CpuTemp,
         MemTemp,
+        Passwd,
         Procs,
     }
     let mut sec = Sec::None;
@@ -473,6 +518,11 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
     let mut mem_buf = String::new();
     let mut load_buf = String::new();
     let mut up_buf = String::new();
+    // The host's passwd db (shipped under @PASSWD@), accumulated then parsed into a
+    // uid → name map the instant @PROCS@ starts — fully built before any process
+    // line, so `flush` can resolve each owner immediately.
+    let mut passwd_buf = String::new();
+    let mut uid_to_name: HashMap<u32, String> = HashMap::new();
     let mut processes: Vec<ProcSample> = Vec::new();
     // GPU accumulators: the `nvidia-smi` CSV rebuilt line-by-line for its parsers,
     // and one `DrmFiles` per AMD card index assembled from its shipped sysfs files.
@@ -484,17 +534,20 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
     // Hottest DIMM temp in °C, from `M\t<milli>` lines under @MEMTEMP@ (one per module).
     let mut mem_temp_c: Option<f64> = None;
 
-    // A process is assembled from its consecutive S/R/C lines; `flush` finalizes
+    // A process is assembled from its consecutive S/U/R/C lines; `flush` finalizes
     // the pending one when the next `S` arrives (or at end of input).
     let mut p_stat: Option<String> = None;
+    let mut p_uid: Option<u32> = None;
     let mut p_rss: u64 = 0;
     let mut p_cmd: Option<String> = None;
 
     fn flush(
         processes: &mut Vec<ProcSample>,
         p_stat: &mut Option<String>,
+        p_uid: &mut Option<u32>,
         p_rss: &mut u64,
         p_cmd: &mut Option<String>,
+        uid_to_name: &HashMap<u32, String>,
     ) {
         if let Some(line) = p_stat.take() {
             if let Some((comm, state, ppid, cpu_jiffies, threads)) = parse_pid_stat(&line) {
@@ -509,6 +562,12 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
                     .take()
                     .filter(|c| !c.trim().is_empty())
                     .unwrap_or_else(|| format!("[{comm}]"));
+                // An owner uid the host didn't report (unreadable status) leaves the
+                // user empty rather than mislabelling it `#0` (root).
+                let user = p_uid
+                    .take()
+                    .map(|uid| username_for(uid, uid_to_name))
+                    .unwrap_or_default();
                 processes.push(ProcSample {
                     pid,
                     ppid,
@@ -518,9 +577,11 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
                     rss_kib: *p_rss,
                     cpu_jiffies,
                     threads,
+                    user,
                 });
             }
         }
+        *p_uid = None;
         *p_rss = 0;
         *p_cmd = None;
     }
@@ -555,7 +616,14 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
                 sec = Sec::MemTemp;
                 continue;
             }
+            "@PASSWD@" => {
+                sec = Sec::Passwd;
+                continue;
+            }
             "@PROCS@" => {
+                // @PASSWD@ has fully arrived by now (it precedes @PROCS@), so parse
+                // it into the uid → name map before the first process line.
+                uid_to_name = parse_passwd(&passwd_buf);
                 sec = Sec::Procs;
                 continue;
             }
@@ -631,10 +699,23 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
                     }
                 }
             }
+            Sec::Passwd => {
+                passwd_buf.push_str(line);
+                passwd_buf.push('\n');
+            }
             Sec::Procs => {
                 if let Some(rest) = line.strip_prefix("S\t") {
-                    flush(&mut processes, &mut p_stat, &mut p_rss, &mut p_cmd);
+                    flush(
+                        &mut processes,
+                        &mut p_stat,
+                        &mut p_uid,
+                        &mut p_rss,
+                        &mut p_cmd,
+                        &uid_to_name,
+                    );
                     p_stat = Some(rest.to_string());
+                } else if let Some(rest) = line.strip_prefix("U\t") {
+                    p_uid = rest.trim().parse().ok();
                 } else if let Some(rest) = line.strip_prefix("R\t") {
                     p_rss = rest.trim().parse().unwrap_or(0);
                 } else if let Some(rest) = line.strip_prefix("C\t") {
@@ -644,7 +725,14 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
             Sec::None => {}
         }
     }
-    flush(&mut processes, &mut p_stat, &mut p_rss, &mut p_cmd);
+    flush(
+        &mut processes,
+        &mut p_stat,
+        &mut p_uid,
+        &mut p_rss,
+        &mut p_cmd,
+        &uid_to_name,
+    );
 
     let (cpu, per_core) = parse_cpu_stat(&stat_buf);
     let (mem_total_kib, mem_available_kib, swap_total_kib, swap_free_kib) = parse_meminfo(&mem_buf);
@@ -923,6 +1011,13 @@ mod platform {
     /// read each). Kernel threads (empty `cmdline`) fall back to `[comm]`.
     pub fn system_snapshot() -> super::SystemSnapshot {
         use super::{ProcSample, SystemSnapshot};
+        use std::os::unix::fs::MetadataExt;
+
+        // Resolve each process's owner uid to a name via the machine's own
+        // `/etc/passwd`, read once. NSS-only accounts (LDAP/SSSD) the file walk
+        // misses fall back to `#<uid>` in `username_for` — the remote path uses
+        // `getent`, which is NSS-aware, so this file read is the local-only gap.
+        let passwd = super::parse_passwd(&fs::read_to_string("/etc/passwd").unwrap_or_default());
 
         let (cpu, per_core) =
             super::parse_cpu_stat(&fs::read_to_string("/proc/stat").unwrap_or_default());
@@ -950,6 +1045,10 @@ mod platform {
                     continue;
                 };
                 let cmdline = cmdline(pid).unwrap_or_else(|| format!("[{comm}]"));
+                // The process's owner is the uid owning its `/proc/<pid>` dir.
+                let user = fs::metadata(format!("/proc/{pid}"))
+                    .map(|m| super::username_for(m.uid(), &passwd))
+                    .unwrap_or_default();
                 processes.push(ProcSample {
                     pid,
                     ppid,
@@ -959,6 +1058,7 @@ mod platform {
                     rss_kib: rss_kib(pid).unwrap_or(0),
                     cpu_jiffies,
                     threads,
+                    user,
                 });
             }
         }
@@ -1216,6 +1316,9 @@ mod platform {
                             rss_kib: rss_kib(pid).unwrap_or(0),
                             cpu_jiffies: proc_ticks(pid).unwrap_or(0),
                             threads: entry.cntThreads,
+                            // No cheap per-process owner lookup here; the pane hides
+                            // the per-user section when no process reports one.
+                            user: String::new(),
                         });
                         if Process32Next(snapshot, &mut entry).is_err() {
                             break;
@@ -1559,6 +1662,10 @@ mod platform {
                 rss_kib: task.pti_resident_size / 1024,
                 cpu_jiffies: task.pti_total_user.wrapping_add(task.pti_total_system),
                 threads: task.pti_threadnum.max(0) as u32,
+                // Owner name isn't resolved here (only the calling user's processes
+                // are visible anyway); the pane hides the per-user section when no
+                // process reports one.
+                user: String::new(),
             });
         }
 
@@ -2010,6 +2117,56 @@ C\t\n";
         assert_eq!(kworker.pid, 7);
         assert_eq!(kworker.rss_kib, 0);
         assert_eq!(kworker.cmdline, "[kworker/0:1]");
+    }
+
+    #[test]
+    fn parse_passwd_maps_uid_to_name() {
+        let content = "\
+root:x:0:0:root:/root:/bin/bash
+alice:x:1000:1000:Alice:/home/alice:/bin/bash
+bob:x:1001:1001::/home/bob:/bin/zsh
+# a comment line is skipped
+malformed-no-uid
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+";
+        let map = parse_passwd(content);
+        assert_eq!(map.get(&0).map(String::as_str), Some("root"));
+        assert_eq!(map.get(&1000).map(String::as_str), Some("alice"));
+        assert_eq!(map.get(&1001).map(String::as_str), Some("bob"));
+        assert_eq!(map.get(&1).map(String::as_str), Some("daemon"));
+        // A known uid resolves to its name; an unknown one falls back to `#<uid>`.
+        assert_eq!(username_for(1000, &map), "alice");
+        assert_eq!(username_for(4242, &map), "#4242");
+    }
+
+    #[test]
+    fn parse_remote_snapshot_resolves_process_owner() {
+        // The @PASSWD@ block feeds the uid→name map; each process's `U` line names
+        // its owner uid, resolved against that map (an unmapped uid → `#<uid>`).
+        let raw = "CLK\t100\n\
+@PASSWD@\n\
+root:x:0:0:root:/root:/bin/bash\n\
+alice:x:1000:1000:Alice:/home/alice:/bin/bash\n\
+@PROCS@\n\
+S\t42 (bash) S 1 42 42 0 -1 4194304 100 0 0 0 12 8 0 0 20 0 3 0 999 0 0\n\
+U\t1000\n\
+R\t2048\n\
+C\t/usr/bin/bash -i\n\
+S\t1 (systemd) S 0 1 1 0 -1 4194560 200 0 0 0 5 5 0 0 20 0 1 0 5 0 0\n\
+U\t0\n\
+R\t4096\n\
+C\t/sbin/init\n\
+S\t99 (weird) S 1 99 99 0 -1 4194304 1 0 0 0 1 1 0 0 20 0 1 0 100 0 0\n\
+U\t7777\n\
+R\t128\n\
+C\tweird\n";
+
+        let snap = parse_remote_snapshot(raw);
+        assert_eq!(snap.processes.len(), 3);
+        assert_eq!(snap.processes[0].user, "alice");
+        assert_eq!(snap.processes[1].user, "root");
+        // An owner uid with no passwd entry falls back to `#<uid>`.
+        assert_eq!(snap.processes[2].user, "#7777");
     }
 
     #[test]

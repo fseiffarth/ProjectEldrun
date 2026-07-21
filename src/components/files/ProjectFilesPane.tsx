@@ -4,7 +4,7 @@ import { DownloadsSection } from "./DownloadsSection";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSyncStore } from "../../stores/sync";
-import { useConnectDialogStore } from "../../stores/connectDialog";
+import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { useFileSourcePrefStore } from "../../stores/fileSourcePref";
 import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
@@ -409,7 +409,7 @@ export function ProjectFilesPane({
                     <button
                       type="button"
                       className="dialog-connect-btn"
-                      onClick={() => useConnectDialogStore.getState().open(projectId)}
+                      onClick={() => useRemoteMachinesStore.getState().open(projectId)}
                     >
                       Connect
                     </button>

@@ -57,9 +57,24 @@ describe("GifView", () => {
     vi.clearAllMocks();
     diskMtime = 1000;
     // jsdom has no canvas backend: getContext returns null and would leave the
-    // draw effect dead. A putImageData spy is all the viewer needs.
+    // draw effect dead. A putImageData spy is all the viewer itself needs, but
+    // this prototype override is global, so it also answers every canvas the
+    // FileViewerPane chrome mounts alongside it — including PresentationOverlay's
+    // marker/laser canvases, which need a full no-op 2D context or they throw.
     HTMLCanvasElement.prototype.getContext = vi.fn(
-      () => ({ putImageData }) as unknown as CanvasRenderingContext2D,
+      () =>
+        ({
+          putImageData,
+          clearRect: vi.fn(),
+          save: vi.fn(),
+          restore: vi.fn(),
+          beginPath: vi.fn(),
+          moveTo: vi.fn(),
+          lineTo: vi.fn(),
+          arc: vi.fn(),
+          stroke: vi.fn(),
+          fill: vi.fn(),
+        }) as unknown as CanvasRenderingContext2D,
     ) as unknown as typeof HTMLCanvasElement.prototype.getContext;
     // This jsdom build exposes no ImageData global; the viewer only ever hands
     // it to the (stubbed) putImageData, so a data/width/height shell suffices.

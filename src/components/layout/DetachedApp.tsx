@@ -1,17 +1,27 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useSettingsStore } from "../../stores/settings";
+import {
+  useSettingsStore,
+  applyTheme,
+  applyZoom,
+  clampZoom,
+  stepZoom,
+  THEME_CHANGED_EVENT,
+} from "../../stores/settings";
 import {
   DETACHED_BOUNDS,
   DETACHED_CLOSE,
   DETACHED_EDIT,
   DETACHED_REQUEST_SEED,
+  DETACHED_ZOOM,
   applyEditToSubtree,
   applyRenameToTabs,
+  applyLocationToTabs,
   detachedSeedEvent,
   type DetachedEdit,
   type DetachedParam,
+  type DetachedRemoteInfo,
   type DetachedSeed,
 } from "../../stores/detached";
 import {
@@ -57,11 +67,71 @@ export function DetachedApp({ param }: Props) {
   // once split-in-popout (multi-pane) lands in the renderer (Phase 2).
   const [group, setGroup] = useState<LayoutNode | null>(null);
   const [tabs, setTabs] = useState<TabEntry[]>([]);
+  // The owning project's remoteness, streamed in the seed (this window is inert to
+  // the projects store). Drives the tab strip's locality badge/menu + machine
+  // names; undefined for a local project (no locality axis).
+  const [remoteInfo, setRemoteInfo] = useState<DetachedRemoteInfo | undefined>(undefined);
+
+  // This popout's OWN per-window zoom. Restored from the first seed (persisted on
+  // the main window's detached entry), then owned locally — Ctrl +/- adjusts it
+  // and streams the change back for persistence. Held in a ref so the keydown
+  // listener binds once. `zoomSeeded` guards apply-on-seed to the FIRST seed, so a
+  // later re-seed (an edit, a tab docked in) can't revert the live zoom.
+  const zoomRef = useRef(1);
+  const zoomSeeded = useRef(false);
 
   // Theme injection (same as the main shell), but nothing project-switch-aware.
+  // `skipZoom` so we DON'T inherit the main window's `ui_zoom` — a popout owns its
+  // own zoom (applied from its seed below), which is what makes zoom per-window.
   useEffect(() => {
-    void loadSettings();
+    void loadSettings({ skipZoom: true });
   }, [loadSettings]);
+
+  // Per-window zoom via Ctrl +/- / Ctrl+0, handled before any editable-target
+  // guard (like F11) so it works from a focused terminal too — the browser-zoom
+  // convention. Scales THIS window's webview only and streams the new value back
+  // to the main window so it persists on this popout's detached entry.
+  useEffect(() => {
+    const applyAndPersist = (z: number) => {
+      const next = clampZoom(z);
+      zoomRef.current = next;
+      applyZoom(next);
+      void emit(DETACHED_ZOOM, { scope: param.scope, groupId: param.groupId, zoom: next });
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+      // Agent panes consume Ctrl +/- for their own font zoom and stopPropagation,
+      // so those never reach here — this only fires for the rest of the window.
+      if (e.code === "Equal") {
+        e.preventDefault();
+        applyAndPersist(stepZoom(zoomRef.current, 1));
+      } else if (e.code === "Minus") {
+        e.preventDefault();
+        applyAndPersist(stepZoom(zoomRef.current, -1));
+      } else if (e.code === "Digit0") {
+        e.preventDefault();
+        applyAndPersist(1);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [param.scope, param.groupId]);
+
+  // This window is its own JS runtime with its own `document` and its own copy
+  // of the settings store — a theme change made in the main window's Settings
+  // dialog only ever touches ITS document, so without this a popout keeps
+  // whatever theme it had at open time. Re-apply live via the cross-window
+  // broadcast (see THEME_CHANGED_EVENT in stores/settings).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listen<string>(THEME_CHANGED_EVENT, (e) => {
+      applyTheme(e.payload);
+    })
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
 
   // #42: when a PDF tab is popped out into THIS window, a SyncTeX forward search
   // from a TeX editor in the main (or another) window reaches us only over a
@@ -188,6 +258,17 @@ export function DetachedApp({ param }: Props) {
     listen<DetachedSeed>(detachedSeedEvent(label), (ev) => {
       seeded = true;
       if (timer) clearTimeout(timer);
+      // Restore this popout's own zoom on the FIRST seed only (later re-seeds must
+      // not clobber a live zoom the user has since changed). A popout that has its
+      // OWN persisted zoom uses it; a brand-new popout with none inherits the main
+      // window's current `ui_zoom` at birth (so a 4K user's popouts aren't tiny)
+      // and then diverges the moment it's adjusted. Undefined on both ⇒ 100%.
+      if (!zoomSeeded.current) {
+        zoomSeeded.current = true;
+        const mainZoom = useSettingsStore.getState().settings?.ui_zoom;
+        zoomRef.current = clampZoom(ev.payload.zoom ?? mainZoom);
+        applyZoom(zoomRef.current);
+      }
       // Register each seeded tab's viewerState BEFORE rendering, so a viewer pane
       // mounting this frame recovers its per-tab scroll/zoom + #45 autocomplete/
       // grammar overrides (our tabs never enter `useTabsStore`, where the viewer
@@ -195,6 +276,7 @@ export function DetachedApp({ param }: Props) {
       for (const t of ev.payload.tabs) setDetachedViewerState(t.key, t.viewerState);
       setGroup(ev.payload.subtree);
       setTabs(ev.payload.tabs);
+      setRemoteInfo(ev.payload.remote);
       // A tab docked INTO this popout from another window arrives on a seed
       // tagged with its key — play the same drop-in landing as an in-popout
       // merge as it mounts in its destination bar (batched with the state sets
@@ -244,6 +326,10 @@ export function DetachedApp({ param }: Props) {
     setGroup((g) => (g ? applyEditToSubtree(g, edit) : g));
     if (edit.kind === "rename") {
       setTabs((ts) => applyRenameToTabs(ts, edit.key, edit.label));
+    } else if (edit.kind === "setLocation") {
+      // Optimistic: flip the badge now; the main window respawns the pane on the
+      // new host and re-derives the same payload.
+      setTabs((ts) => applyLocationToTabs(ts, edit.key, edit.location));
     }
     void emit(DETACHED_EDIT, { scope: param.scope, groupId: param.groupId, edit });
   };
@@ -305,8 +391,10 @@ export function DetachedApp({ param }: Props) {
       popoutId={param.groupId}
       tree={group}
       tabs={tabs}
+      remoteInfo={remoteInfo}
       onActivate={(key) => pushEdit({ kind: "activate", key })}
       onClose={handleClose}
+      onSetLocation={(key, location) => pushEdit({ kind: "setLocation", key, location })}
       onReorder={(tabKeys) => pushEdit({ kind: "reorder", tabKeys })}
       onSplit={(key, targetGroupId, edge) =>
         pushEdit({ kind: "split", key, targetGroupId, edge })

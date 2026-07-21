@@ -13,6 +13,7 @@ import {
   buildMerged,
   applyBlockToggle,
   canToggle,
+  locateBlock,
   type AlignRow,
   type ChangeBlock,
   type Decision,
@@ -34,6 +35,10 @@ interface GitCommit {
 // Reuse the diff viewer's low-alpha add/del tints so it reads in both themes.
 const ADD_BG = "rgba(63, 185, 80, 0.15)";
 const DEL_BG = "rgba(248, 81, 73, 0.15)";
+// Sync-merge tints: the two sides are local (green) vs remote (amber), so the
+// changed lines take the locality-tag colors instead of add/del red-green.
+const LOCAL_BG = "color-mix(in srgb, var(--success) 15%, transparent)";
+const REMOTE_BG = "color-mix(in srgb, var(--warning) 15%, transparent)";
 
 /** Resolve the owning project directory for `path` exactly like `useBlame`:
  *  the longest project dir that contains the path, else the active project. */
@@ -71,6 +76,7 @@ function SideColumn({
   onTake,
   enabledOf,
   onJump,
+  syncMode,
 }: {
   title: string;
   rows: AlignRow[];
@@ -80,6 +86,8 @@ function SideColumn({
   onScroll: (e: React.UIEvent<HTMLDivElement>) => void;
   /** Change blocks to anchor take-arrows against; omit to draw a plain column. */
   blocks?: ChangeBlock[];
+  /** Sync merge: tint changed lines by locality (green local / amber remote). */
+  syncMode?: boolean;
   /** Whether this side is the block's currently-chosen decision. */
   isActive?: (b: ChangeBlock) => boolean;
   /** Resolve this block to this side. */
@@ -97,20 +105,23 @@ function SideColumn({
       const text = side === "left" ? r.left : r.right;
       if (text == null) return; // absent on this side
       no++;
-      const tint =
-        r.kind === "change"
+      const changed =
+        r.kind === "change" ||
+        (r.kind === "del" && side === "left") ||
+        (r.kind === "add" && side === "right");
+      const tint = !changed
+        ? undefined
+        : syncMode
           ? side === "left"
+            ? LOCAL_BG
+            : REMOTE_BG
+          : side === "left"
             ? DEL_BG
-            : ADD_BG
-          : r.kind === "del" && side === "left"
-            ? DEL_BG
-            : r.kind === "add" && side === "right"
-              ? ADD_BG
-              : undefined;
+            : ADD_BG;
       out.push({ text, tint, no, ri });
     });
     return out;
-  }, [rows, side]);
+  }, [rows, side, syncMode]);
 
   // Anchor each block's take-arrow to the first rendered line at/after its start
   // row (clamped to the last line when this side has no line inside the block —
@@ -129,9 +140,11 @@ function SideColumn({
   // Take-arrows live in an overlay layer positioned in pixels and synced to the
   // body's vertical scroll — NOT inline in each line, which would let a long
   // (horizontally scrolling) line carry the arrow off-screen. LINE_H mirrors the
-  // CSS (font-size 12 × line-height 1.5).
+  // CSS (font-size 12 × line-height 1.5). The overlay is scrolled by translating
+  // an inner layer via a ref in the scroll handler — NOT by React state, which
+  // would re-render every line on every scroll frame and make scrolling stutter.
   const LINE_H = 18;
-  const [scrollTop, setScrollTop] = useState(0);
+  const takeScrollRef = useRef<HTMLDivElement>(null);
   const label = side === "left" ? "Take ▶" : "◀ Take";
 
   return (
@@ -143,7 +156,9 @@ function SideColumn({
           className="file-viewer-compare-col-body"
           ref={scrollRef}
           onScroll={(e) => {
-            setScrollTop(e.currentTarget.scrollTop);
+            if (takeScrollRef.current) {
+              takeScrollRef.current.style.transform = `translateY(${-e.currentTarget.scrollTop}px)`;
+            }
             onScroll(e);
           }}
         >
@@ -168,27 +183,29 @@ function SideColumn({
         </div>
         {onTake && anchors.size > 0 && (
           <div className={`file-viewer-compare-take-layer ${side}`}>
-            {[...anchors.entries()].map(([i, b]) => {
-              const enabled = enabledOf ? enabledOf(b) : true;
-              const active = !!isActive?.(b);
-              return (
-                <button
-                  className={`file-viewer-compare-take ${side}${active ? " active" : ""}${enabled ? "" : " disabled"}`}
-                  key={b.id}
-                  style={{ top: i * LINE_H - scrollTop }}
-                  title={
-                    enabled
-                      ? side === "left"
-                        ? "Take this change from the left"
-                        : "Take this change from the right"
-                      : "Edited manually — can no longer be reassigned"
-                  }
-                  onClick={() => enabled && onTake(b)}
-                >
-                  {label}
-                </button>
-              );
-            })}
+            <div className="file-viewer-compare-take-scroll" ref={takeScrollRef}>
+              {[...anchors.entries()].map(([i, b]) => {
+                const enabled = enabledOf ? enabledOf(b) : true;
+                const active = !!isActive?.(b);
+                return (
+                  <button
+                    className={`file-viewer-compare-take ${side}${active ? " active" : ""}${enabled ? "" : " disabled"}`}
+                    key={b.id}
+                    style={{ top: i * LINE_H }}
+                    title={
+                      enabled
+                        ? side === "left"
+                          ? "Take this change from the left"
+                          : "Take this change from the right"
+                        : "Edited manually — can no longer be reassigned"
+                    }
+                    onClick={() => enabled && onTake(b)}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>
@@ -380,6 +397,20 @@ export function CompareView({
   const lang = useMemo(() => languageForPath(path), [path]);
   const resultLines = useMemo(() => resultText.split("\n"), [resultText]);
 
+  // Which result lines currently belong to a change block — used to tint the
+  // changed regions in the middle backdrop (the same blue as the mid ruler bars).
+  // Located by context against the live buffer so it survives hand-edits and the
+  // per-hunk toggles; a block that can't be uniquely located just isn't marked.
+  const changedLines = useMemo(() => {
+    const s = new Set<number>();
+    for (const b of blocks) {
+      const loc = locateBlock(resultLines, b, decisionOf(b));
+      if (loc) for (let k = 0; k < loc.len; k++) s.add(loc.start + k);
+    }
+    return s;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blocks, resultLines, decisions]);
+
   // Proportional scroll-sync across the three panes (content heights differ, so
   // this is by ratio, not line-for-line). Feedback is suppressed by *echo
   // matching*, not a time-based guard: assigning `scrollTop` fires the target's
@@ -442,7 +473,7 @@ export function CompareView({
   const loading = rev !== "" && oldText == null && error == null;
 
   return (
-    <div className="file-viewer-compare">
+    <div className={`file-viewer-compare${syncMode ? " sync" : ""}`}>
       <div className="file-viewer-compare-bar">
         {syncMode ? (
           // Sync merge: left/right are fixed (local mirror vs remote host), so
@@ -466,22 +497,48 @@ export function CompareView({
         )}
         {syncMode && <UntestedTag />}
         <div className="file-viewer-compare-bar-gap" />
-        <button
-          className="file-viewer-format-btn"
-          onClick={() => setAll("accept")}
-          disabled={blocks.length === 0}
-          title={syncMode ? "Take the right side for every change" : "Keep the current (new) version for every change"}
-        >
-          {syncMode ? "Take all right" : "Accept all"}
-        </button>
-        <button
-          className="file-viewer-format-btn"
-          onClick={() => setAll("reject")}
-          disabled={blocks.length === 0}
-          title={syncMode ? "Take the left side for every change" : "Revert every change to the old version"}
-        >
-          {syncMode ? "Take all left" : "Reject all"}
-        </button>
+        {syncMode ? (
+          // Sync merge: name the two sides by what they are (local mirror vs
+          // remote host), and order the buttons left→right to match the columns
+          // — left column (Local) first, right column (Remote) second.
+          <>
+            <button
+              className="file-viewer-format-btn file-viewer-compare-take-all local"
+              onClick={() => setAll("reject")}
+              disabled={blocks.length === 0}
+              title="Take the local (mirror) side for every change"
+            >
+              Take all local
+            </button>
+            <button
+              className="file-viewer-format-btn file-viewer-compare-take-all remote"
+              onClick={() => setAll("accept")}
+              disabled={blocks.length === 0}
+              title="Take the remote (host) side for every change"
+            >
+              Take all remote
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              className="file-viewer-format-btn"
+              onClick={() => setAll("accept")}
+              disabled={blocks.length === 0}
+              title="Keep the current (new) version for every change"
+            >
+              Accept all
+            </button>
+            <button
+              className="file-viewer-format-btn"
+              onClick={() => setAll("reject")}
+              disabled={blocks.length === 0}
+              title="Revert every change to the old version"
+            >
+              Reject all
+            </button>
+          </>
+        )}
         <button
           className="file-viewer-format-btn file-viewer-compare-apply"
           onClick={() => onApply(resultText)}
@@ -512,6 +569,7 @@ export function CompareView({
             onTake={(b) => setDecision(b, "reject")}
             enabledOf={toggleEnabled}
             onJump={scrollToBlock}
+            syncMode={syncMode}
           />
 
           <div className="file-viewer-compare-col file-viewer-compare-col-mid">
@@ -550,14 +608,15 @@ export function CompareView({
               <div className="file-viewer-compare-result-hl" ref={midHlRef} aria-hidden="true">
                 {resultLines.map((line, i) => {
                   const html = highlight(line, lang);
+                  const cls = `file-viewer-compare-hl-line${changedLines.has(i) ? " changed" : ""}`;
                   return html != null ? (
                     <div
-                      className="file-viewer-compare-hl-line"
+                      className={cls}
                       key={i}
                       dangerouslySetInnerHTML={{ __html: html || "​" }}
                     />
                   ) : (
-                    <div className="file-viewer-compare-hl-line" key={i}>
+                    <div className={cls} key={i}>
                       {line || "​"}
                     </div>
                   );
@@ -596,6 +655,7 @@ export function CompareView({
             onTake={(b) => setDecision(b, "accept")}
             enabledOf={toggleEnabled}
             onJump={scrollToBlock}
+            syncMode={syncMode}
           />
         </div>
       )}

@@ -184,6 +184,16 @@ export function useImportDrop({ projectDir, enabled, destRel, onImported }: Opti
     importPaths(Array.isArray(picked) ? picked : [picked]);
   };
 
+  // Same flow, but for whole folders: the backend's copy already recurses
+  // (`import_external_file` → `copy_recursive`), so this is just a directory
+  // picker feeding the same importPaths pipeline.
+  const importFolderViaDialog = async () => {
+    if (!canImport) return;
+    const picked = await openDialog({ multiple: true, directory: true }).catch(() => null);
+    if (!picked) return;
+    importPaths(Array.isArray(picked) ? picked : [picked]);
+  };
+
   const conflictModal = conflict
     ? createPortal(
         <div
@@ -233,6 +243,7 @@ export function useImportDrop({ projectDir, enabled, destRel, onImported }: Opti
     dropActive,
     dropFlash,
     importViaDialog,
+    importFolderViaDialog,
     conflictModal,
     handlers: {
       onDragEnter: onDragOver,

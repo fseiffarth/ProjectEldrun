@@ -166,20 +166,29 @@ pub fn check_usage(spec: &RemoteSpec) -> Result<RemoteUsageReport, String> {
     Ok(parse_report(&stdout))
 }
 
-/// Emit `report` as a `remote-usage-report` event (`{ projectId, report }`,
-/// camelCase) for the frontend's warning dialog. Best-effort — a closed
-/// window / no listener is not an error.
-pub fn emit_usage_report(app: &AppHandle, project_id: &str, report: &RemoteUsageReport) {
+/// Emit `report` as a `remote-usage-report` event (`{ projectId, hostId, report }`,
+/// camelCase) for the frontend's warning dialog. `host_id` names which of the
+/// project's hosts (primary or a `compute_hosts` worker) this report is for, so
+/// the dialog can show a section per connected host rather than only the
+/// primary's. Best-effort — a closed window / no listener is not an error.
+pub fn emit_usage_report(
+    app: &AppHandle,
+    project_id: &str,
+    host_id: &str,
+    report: &RemoteUsageReport,
+) {
     #[derive(Serialize, Clone)]
     #[serde(rename_all = "camelCase")]
     struct Event<'a> {
         project_id: &'a str,
+        host_id: &'a str,
         report: &'a RemoteUsageReport,
     }
     let _ = app.emit(
         "remote-usage-report",
         Event {
             project_id,
+            host_id,
             report,
         },
     );

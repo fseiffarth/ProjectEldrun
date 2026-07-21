@@ -366,6 +366,51 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       useActivityStore.getState().noteBell(id);
     });
 
+    // OSC 52 clipboard write: TUIs (Claude Code's own copy action among them)
+    // set the system clipboard by writing `ESC ] 52 ; c ; <base64> BEL/ST`
+    // rather than relying on a host-side mouse selection — the standard escape
+    // for "copy this over SSH/tmux where the program can't reach the clipboard
+    // itself". xterm parses OSC codes but performs no action on 52 without a
+    // handler, so the CLI reports success (it only confirms the write *reached
+    // the terminal*) while the OS clipboard silently keeps its old contents.
+    // `c` is the only target register Eldrun has one clipboard for; a `?`
+    // query (read-back) is intentionally left unhandled — implementing it would
+    // let any program read whatever the user last copied elsewhere.
+    const oscHandler = term.parser.registerOscHandler(52, (data) => {
+      const parts = data.split(";");
+      // Pc (parts[0]) names the target selection buffer(s) — "c" (clipboard),
+      // "" (spec default, also clipboard), or a combination like "cp"/"cs"
+      // that includes clipboard alongside primary/select. Anything without
+      // "c" (e.g. a primary-selection-only "p") isn't Eldrun's one clipboard.
+      if (parts.length < 2 || (parts[0] !== "" && !parts[0].includes("c")) || parts[1] === "?") return true;
+      try {
+        const binary = atob(parts[1]);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const text = new TextDecoder("utf-8").decode(bytes);
+        navigator.clipboard?.writeText(text).catch(() => {});
+      } catch {
+        /* malformed OSC 52 payload — ignore rather than surface a write error */
+      }
+      return true;
+    });
+
+    // Copy-on-select: a mouse-made selection (drag, double/triple-click) copies
+    // itself to the clipboard with no chord needed, matching most native
+    // terminals. Debounced so a drag firing onSelectionChange on every cell it
+    // crosses doesn't issue a clipboard write per event — only once ~60ms after
+    // the selection settles. Ctrl+Shift+C below stays as the explicit fallback
+    // (e.g. a selection made without the mouse never fires this).
+    let selectionCopyTimer: ReturnType<typeof setTimeout> | null = null;
+    term.onSelectionChange(() => {
+      const sel = term.getSelection();
+      if (!sel) return;
+      if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
+      selectionCopyTimer = setTimeout(() => {
+        navigator.clipboard?.writeText(sel).catch(() => {});
+      }, 60);
+    });
+
     // Agent CLIs set the terminal title (OSC 0/2) to a short summary of what
     // they're doing — the same signal a native terminal shows in its tab. Capture
     // it per tab so the tab hover card can surface it as the agent task summary.
@@ -404,12 +449,15 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
       // Ctrl +/-/0 zoom (agent panes only). preventDefault stops WebKit's own
-      // page-zoom; returning false stops xterm forwarding the chord to the PTY.
+      // page-zoom; returning false stops xterm forwarding the chord to the PTY;
+      // stopPropagation stops the WINDOW-level per-window zoom handler (useKeyboard
+      // / DetachedApp) from ALSO webview-zooming — an agent pane zooms its FONT, not
+      // the whole window.
       if (zoomable && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
         const cur = term.options.fontSize ?? DEFAULT_FONT_SIZE;
-        if (e.code === "Equal") { e.preventDefault(); applyFontSize(cur + 1, true); return false; }
-        if (e.code === "Minus") { e.preventDefault(); applyFontSize(cur - 1, true); return false; }
-        if (e.code === "Digit0") { e.preventDefault(); applyFontSize(DEFAULT_FONT_SIZE, true); return false; }
+        if (e.code === "Equal") { e.preventDefault(); e.stopPropagation(); applyFontSize(cur + 1, true); return false; }
+        if (e.code === "Minus") { e.preventDefault(); e.stopPropagation(); applyFontSize(cur - 1, true); return false; }
+        if (e.code === "Digit0") { e.preventDefault(); e.stopPropagation(); applyFontSize(DEFAULT_FONT_SIZE, true); return false; }
       }
       if (!e.ctrlKey || !e.shiftKey) return true;
       if (e.code === "KeyC") {
@@ -597,6 +645,8 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       cancelled = true;
       if (initialEnterTimer.current) clearTimeout(initialEnterTimer.current);
       if (openWatchTimer.current) clearTimeout(openWatchTimer.current);
+      if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
+      oscHandler.dispose();
       window.removeEventListener("resize", doFit);
       if (zoomable) {
         containerRef.current?.removeEventListener("wheel", onWheel);
