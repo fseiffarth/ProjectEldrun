@@ -463,6 +463,12 @@ export interface ProjectEntry {
    *  environments auto-detect cannot see (a conda env, a Poetry venv outside the
    *  tree, a second venv). Set from the pill's "Python interpreter…" dialog. */
   python_interpreter?: string;
+  /** Which machine shells launched from this project run on — the persisted
+   *  `RunHostPicker` choice (a `TabLocation`: "local" | "remote" | "host:<id>").
+   *  Seeds the live `useRunHostPrefStore` on load so the choice survives a
+   *  relaunch. Mirrored from project.json's `run_host` into the entry's flattened
+   *  `extra`. Absent = the shell default (the primary). */
+  run_host?: string;
   /** Denormalized inverse of `ProjectBox.member_ids` (the box this pill is in). */
   box_id?: string;
   /** Per-project git-hosting profile URL that overrides the global one. Mirrored

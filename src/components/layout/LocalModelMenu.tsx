@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../../stores/settings";
 import { useEnergySaver, saverInterval } from "../../stores/power";
+import { useOllamaStatus } from "../../lib/ollamaStatus";
 import {
   formatBytes,
   gpuAdapterTooltip,
@@ -62,7 +63,12 @@ export function LocalModelMenu() {
   // Three-state Ollama health for the status lamp: "stopped" (server down, red),
   // "idle" (server up, no model in memory, yellow), "loaded" (a model is loaded
   // in memory, green).
-  const [status, setStatus] = useState<"stopped" | "idle" | "loaded">("stopped");
+  // Once Ollama is installed, the server's health is polled so the button shows a
+  // live lamp without the user opening the menu. The poll itself is the app-wide
+  // shared one (`lib/ollamaStatus`) — it is a machine-wide fact, and the file
+  // viewer asks the same question per open tab, so a timer here as well meant the
+  // same `/api/ps` round trip several times over.
+  const status = useOllamaStatus(installed, saverInterval(5000, energySaver));
   const [open, setOpen] = useState(false);
   // Every installed model (from list_ollama_models_detailed). Resident ones are
   // selectable as the active local model; the rest can be loaded into memory.
@@ -163,27 +169,6 @@ export function LocalModelMenu() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Once Ollama is installed, poll the server's health so the button can show a
-  // live stopped/idle/loaded lamp without the user opening the menu.
-  useEffect(() => {
-    if (!installed) {
-      setStatus("stopped");
-      return;
-    }
-    let cancelled = false;
-    const check = () =>
-      invoke<"stopped" | "idle" | "loaded">("ollama_status")
-        .then((s) => {
-          if (!cancelled) setStatus(s);
-        })
-        .catch(() => {});
-    void check();
-    const id = window.setInterval(check, saverInterval(5000, energySaver));
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [installed, energySaver]);
 
   // The GPU's own memory, polled only while the menu is open: the question this
   // menu raises is "will the next model fit?", which each model's `size_vram`

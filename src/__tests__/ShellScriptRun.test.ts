@@ -51,6 +51,46 @@ describe("shell script run planning", () => {
     });
   });
 
+  it("runs on the chosen worker machine when a run-host preference is set", () => {
+    const plan = shellScriptRunPlan({
+      project: remoteProject,
+      treeRoot: "/state/demoproj",
+      syncSource: "remote",
+      scriptPath: "/home/alice/demoproj/train.sh",
+      interp: "bash",
+      runHostPref: "host:worker1",
+    });
+
+    // The chosen machine wins over the browsed side; the script path stays
+    // project-relative so it resolves against that host's own project root (the
+    // backend re-cds into the worker's remote_path).
+    expect(plan).toMatchObject({
+      cwd: "/home/alice/demoproj",
+      scriptRel: "train.sh",
+      initialInput: "bash 'train.sh'",
+      location: "host:worker1",
+    });
+  });
+
+  it("sends a mirror-browsed script to the chosen remote machine", () => {
+    // Browsing the local mirror but with a worker chosen: the run still lands on
+    // the worker, and scriptRel (project-relative) resolves there.
+    const plan = shellScriptRunPlan({
+      project: remoteProject,
+      treeRoot: "/state/demoproj/mirror",
+      syncSource: "local",
+      scriptPath: "/state/demoproj/mirror/train.sh",
+      interp: "bash",
+      runHostPref: "host:worker1",
+    });
+
+    expect(plan).toMatchObject({
+      cwd: "/home/alice/demoproj",
+      scriptRel: "train.sh",
+      location: "host:worker1",
+    });
+  });
+
   it("refuses to build bash with an empty script path", () => {
     expect(
       shellScriptRunPlan({

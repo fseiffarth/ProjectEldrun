@@ -601,6 +601,7 @@ pub fn run() {
             commands::projects::add_compute_host,
             commands::projects::remove_compute_host,
             commands::projects::patch_compute_host,
+            commands::projects::set_project_run_host,
             commands::projects::set_project_categories,
             commands::projects::set_project_git_disabled,
             commands::projects::save_tab_layout,

@@ -24,8 +24,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { basename, dirname } from "./paths";
 import { useTabsStore, type TabEntry } from "../stores/tabs";
-import { useProjectsStore } from "../stores/projects";
-import { useRunHostPrefStore, runHostPickerApplies } from "../stores/runHostPref";
+import { useRunHostPrefStore } from "../stores/runHostPref";
 
 /** How a run/debug tab is inserted into the layout. Given the built (keyless)
  *  tab, place it and return the created entry — or null when it streamed the tab
@@ -194,15 +193,15 @@ export function openPythonTab(opts: {
   if (prior) store.removeTab(prior.key);
 
   // Which machine to run on: the project's run-host preference (set from the file
-  // viewer's picker), keyed by the owning project. `scope` is the project id for a
-  // project tab ("root" has no pref). Honoured only while the picker applies —
-  // once a worker keeps its own synced code copy the picker is hidden and the run
-  // target is the tab's picked locality, so we ignore any stale pref and omit
-  // `location` (⇒ the shell default, the primary on a remote project).
-  const project = useProjectsStore.getState().projects.find((p) => p.id === scope);
-  const runHost = runHostPickerApplies(project?.compute_hosts)
-    ? useRunHostPrefStore.getState().byProject[scope]
-    : undefined;
+  // viewer's `RunHostPicker`), keyed by the owning project. `scope` is the project
+  // id for a project tab ("root" has no pref). Honoured for EVERY remote project,
+  // including a genuinely multi-machine one with a synced-code worker — a Python
+  // Run creates a fresh tab, so the per-tab locality badge can't pre-target it and
+  // the project-wide picker is the only control that can send a run to a worker.
+  // Unset ⇒ `location` is omitted (⇒ the shell default, the primary). A pref naming
+  // a since-removed worker is harmless: CenterPanel/`wrap_pty_options` fall the tab
+  // back to the primary.
+  const runHost = useRunHostPrefStore.getState().byProject[scope];
   const tab: Omit<TabEntry, "key"> = {
     label: pyTabLabel(mode, file),
     cmd: "", // the host's default shell

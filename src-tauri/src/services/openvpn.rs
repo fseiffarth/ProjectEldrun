@@ -507,7 +507,7 @@ pub fn openvpn_available() -> bool {
 ///   encrypted private key.
 ///
 /// Shape: `--config <cfg> [--auth-user-pass <f>] [--askpass <f>] --auth-nocache
-///         --writepid <pidfile> --connect-timeout 20 --connect-retry-max 3
+///         --writepid <pidfile> --connect-timeout 20 --persist-tun
 ///         --verb 3 --mute 0`.
 pub fn openvpn_args(
     config: &str,
@@ -535,8 +535,27 @@ pub fn openvpn_args(
         pidfile.to_string_lossy().into_owned(),
         "--connect-timeout".to_string(),
         "20".to_string(),
-        "--connect-retry-max".to_string(),
-        "3".to_string(),
+        // NO `--connect-retry-max`. That option is *not* an initial-connect
+        // guard — it caps reconnect attempts for the tunnel's whole lifetime, so
+        // the `3` this used to pass meant any mid-session blip (a rekey failure,
+        // a suspended laptop, a server restart) burned the three retries and
+        // OpenVPN **exited for good**, leaving the machine's routing changed and
+        // every SSH/SFTP session on top of it stalled against a peer that would
+        // never answer. Unlimited (the OpenVPN default) is what makes a tunnel
+        // survive a blip. The *initial* connect is still bounded — from the
+        // outside, by `CONNECT_TIMEOUT` + the `child.kill()` on its Err — so a
+        // doomed connect cannot retry forever behind the user's back.
+        //
+        // `--persist-tun` keeps the tun device and its routes across those
+        // reconnects, which is what lets a connection on top of the tunnel ride
+        // one out instead of breaking. It also makes the failure mode
+        // fail-*closed*: while OpenVPN is re-handshaking, traffic is black-holed
+        // rather than leaking out the physical default route. That is the right
+        // trade for a VPN, and it is only safe now that the tunnel no longer
+        // gives up permanently (above) and that a tunnel dying is *detected*
+        // rather than left showing a green lamp (`stores/vpnStatus`'s drop
+        // reconcile).
+        "--persist-tun".to_string(),
         // Readiness is detected by watching OpenVPN's output for READY_MARKER,
         // so logging must be deterministic no matter what the config says: a
         // config's `mute N` suppresses consecutive same-category lines — the
@@ -2541,6 +2560,31 @@ mod tests {
         let pi = args.iter().position(|a| a == "--writepid").unwrap();
         assert_eq!(args[pi + 1], "/run/eldrun/openvpn/x.pid");
         assert!(args.iter().any(|a| a == "--auth-nocache"));
+    }
+
+    /// A tunnel must survive a blip. `--connect-retry-max` caps reconnects for
+    /// the tunnel's whole *lifetime*, not just the first connect, so passing it
+    /// meant a momentary drop exhausted the retries and OpenVPN exited for good
+    /// — leaving the machine's routing changed and every SSH/SFTP session on top
+    /// stalled against a peer that would never answer. It must stay absent, with
+    /// `--persist-tun` holding the device and routes across a reconnect.
+    #[test]
+    fn openvpn_args_let_a_dropped_tunnel_reconnect_forever() {
+        let args = openvpn_args(
+            "/home/u/work.ovpn",
+            None,
+            Some(Path::new("/run/eldrun/openvpn/x.pass")),
+            Path::new("/run/eldrun/openvpn/x.pid"),
+        )
+        .unwrap();
+        assert!(
+            !args.iter().any(|a| a == "--connect-retry-max"),
+            "a retry cap makes a blip kill the tunnel permanently: {args:?}"
+        );
+        assert!(args.iter().any(|a| a == "--persist-tun"));
+        // The initial connect stays bounded by CONNECT_TIMEOUT, not by openvpn.
+        let ti = args.iter().position(|a| a == "--connect-timeout").unwrap();
+        assert_eq!(args[ti + 1], "20");
     }
 
     /// Readiness is detected by scanning OpenVPN's output for the
