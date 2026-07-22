@@ -2855,6 +2855,7 @@ mod tests {
     /// A config that runs its own management socket must be left alone: `--management`
     /// twice is an options error, i.e. a tunnel that never comes up at all. Worth a
     /// test because the failure is total and only shows on the user's own config.
+    #[cfg(unix)]
     #[test]
     fn config_declaring_management_is_detected() {
         let dir = std::env::temp_dir().join("eldrun-mgmt-detect");
