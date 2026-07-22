@@ -25,6 +25,19 @@ import { useRemoteSession, type RemoteStep } from "./useRemoteSession";
 import { RemoteProjectSection } from "./RemoteProjectSection";
 import { stashRemotePassword } from "../../stores/projects";
 import { Dropdown } from "../common/Dropdown";
+import { runInstallInTab } from "../../lib/installCommand";
+import { IS_WINDOWS, IS_MAC } from "../../lib/platform";
+
+/** OS-appropriate command to install git, used by the one-click "Install git"
+ *  prompt shown when creating/importing a git-backed project on a machine with
+ *  no `git` on PATH (`scaffold_project`'s `git init` would otherwise silently
+ *  no-op, registering a git-typed project with no repo). */
+const GIT_INSTALL_CMD = IS_WINDOWS
+  ? "winget install --id Git.Git -e --source winget"
+  : IS_MAC
+    ? "brew install git"
+    : "sudo apt-get install -y git";
+const GIT_INSTALL_LABEL = "Install git";
 
 /** Where an import's files come from: a folder already on this machine, or a
  *  repository cloned from GitHub/GitLab (any git URL). */
@@ -70,6 +83,11 @@ export function ProjectDialog({
   const [manualValidationConfirmed, setManualValidationConfirmed] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // Whether `git` is on PATH on this machine. `null` while still probing (never
+  // block submit or show the install banner on that transient state); checked
+  // once per dialog open since installing git mid-dialog is rare enough not to
+  // warrant polling — the banner just won't self-clear without a reopen.
+  const [gitAvailable, setGitAvailable] = useState<boolean | null>(null);
   // Optional SSH + OpenVPN + remote-browser lifecycle (see useRemoteSession).
   const remote = useRemoteSession({ kind });
   const {
@@ -122,6 +140,11 @@ export function ProjectDialog({
   // to. (The clone itself only needs the token when the repo is private, which
   // the URL field's own hint covers.)
   const needsGitConnection = wantsRemoteGit && !gitConnected && !isCloneImport;
+  // A git repo is created LOCALLY even for a remote (SSH) project — the local
+  // mirror scaffolds with `git init` the same way a local project does — so this
+  // gates on the chosen git type alone, not on isRemoteProject. A clone import
+  // needs `git` too (`git_clone` shells out to it) regardless of gitType.
+  const needsGitInstall = gitAvailable === false && (gitType !== "none" || isCloneImport);
 
   // Switching the import source resets the git-hosting default to the one that
   // fits it: a clone comes from a host, a plain folder does not. Both remain
@@ -150,6 +173,10 @@ export function ProjectDialog({
 
   useEffect(() => {
     invoke<string>("projects_root_dir").then(setProjectsRoot).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    invoke<boolean>("git_available").then(setGitAvailable).catch(() => setGitAvailable(false));
   }, []);
 
   // Seed the remote local-mirror parent from the backend default (the
@@ -390,6 +417,9 @@ export function ProjectDialog({
     // "Push to GitHub/GitLab" requires an Eldrun connection first — block submit
     // until a token is saved (the notice above links to Settings → Git Hosting).
     !needsGitConnection &&
+    // git must be installed before a git-backed project (or a clone import) is
+    // created — otherwise `git init`/`git clone` would silently fail underneath.
+    !needsGitInstall &&
     (isRemoteProject
       ? // Remote mode: ready (live session when headless, typed path otherwise)
         // and has a remote folder.
@@ -634,6 +664,26 @@ export function ProjectDialog({
             </span>
             <button type="button" onClick={openGitHostingSettings}>
               Set up GitHub/GitLab…
+            </button>
+          </div>
+        )}
+
+        {needsGitInstall && (
+          <div className="tex-install-banner" role="status">
+            <span className="tex-install-banner-text">
+              No git found on this machine — install it to create a git-backed
+              project{isCloneImport ? " or clone a repository" : ""}.
+            </span>
+            <code className="ollama-install-cmd">{GIT_INSTALL_CMD}</code>
+            <button
+              type="button"
+              className="ollama-action-btn primary"
+              title="Run this command in a new terminal tab"
+              onClick={() =>
+                runInstallInTab(GIT_INSTALL_LABEL, GIT_INSTALL_CMD, IS_WINDOWS ? "default" : "bash")
+              }
+            >
+              Run in terminal
             </button>
           </div>
         )}

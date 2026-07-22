@@ -8,6 +8,7 @@ import { ProjectDialog } from "../projects/ProjectDialog";
 import { SettingsDialog, type SettingsPanelKind } from "./SettingsPanel";
 import { UntestedTag } from "../common/UntestedTag";
 import { useHpcPipelineStore } from "../../stores/hpcPipeline";
+import { useBigFoldersStore } from "../../stores/bigFolders";
 import { useProjectsStore } from "../../stores/projects";
 import { useBoxesStore } from "../../stores/boxes";
 import { useTabsStore } from "../../stores/tabs";
@@ -333,6 +334,19 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   };
   useEffect(() => stopHoverScroll, []);
 
+  /**
+   * Add a just-created/imported project and, for a **remote** one, ask about its
+   * giant folders once. An import in particular can register a folder holding a
+   * `.venv`, a `node_modules` or a data drop, and byte-sync does not read
+   * `.gitignore` — so without this the first sync pass is the moment the user
+   * finds out. The prompt handles the not-yet-connected case itself (it walks
+   * the local side and fills in the host column when the pool comes up).
+   */
+  const addAndAudit = async (project: ProjectEntry) => {
+    await addProject(project);
+    if (project.remote) useBigFoldersStore.getState().openOnce(project.id);
+  };
+
   return (
     <>
       {showSettings && createPortal(
@@ -344,7 +358,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
         <ProjectDialog
           kind="new"
           onClose={() => setDialog(null)}
-          onProject={(project) => addProject(project)}
+          onProject={(project) => void addAndAudit(project)}
         />,
         document.body,
       )}
@@ -353,7 +367,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
           kind="import"
           initialImportSource={dialog === "clone" ? "git" : "folder"}
           onClose={() => setDialog(null)}
-          onProject={(project) => addProject(project)}
+          onProject={(project) => void addAndAudit(project)}
         />,
         document.body,
       )}

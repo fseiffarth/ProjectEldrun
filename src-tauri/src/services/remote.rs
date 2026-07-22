@@ -99,13 +99,48 @@ pub fn remote_target_for_dir(project_dir: &str) -> Option<RemoteTarget> {
     })
 }
 
+/// Parsed `projects.json` plus the `(mtime, len)` it was parsed from — the cache
+/// behind [`read_projects_list`].
+static PROJECTS_CACHE: std::sync::Mutex<Option<(std::time::SystemTime, u64, Arc<ProjectsList>)>> =
+    std::sync::Mutex::new(None);
+
 /// Read the global `projects.json` list, or `None` if absent/unparseable.
-fn read_projects_list() -> Option<ProjectsList> {
+///
+/// CACHED on the file's `(mtime, len)`, because this is one of the hottest paths
+/// in the backend and it was re-reading and re-parsing the same file every time.
+/// [`remote_target_for`] and [`remote_target_for_dir`] are *the* remoteness
+/// oracle — every file, git, sync and SFTP call resolves through one of them, at
+/// ~110 call sites — and each call did a full disk read plus a serde parse of a
+/// document whose entries carry `#[serde(flatten)]` extras. Flattened
+/// deserialization is buffered and quadratic-ish in field count, so it is
+/// expensive out of proportion to the file's size. A `perf` profile of the
+/// backend under ordinary use was dominated by exactly that: `parse_whitespace`,
+/// `FlatMapAccess::next_value_seed`, `skip_to_escape`, spread across every tokio
+/// worker, at ~175% of a core.
+///
+/// A `stat` replaces the read whenever nothing has changed. Eldrun is the only
+/// writer of this file, and every write goes through `storage::write_json`, so a
+/// changed list always moves `mtime` (nanosecond precision on Linux) or `len`.
+/// The value is an `Arc`, so a hit costs one clone of a pointer rather than of
+/// the whole list.
+fn read_projects_list() -> Option<Arc<ProjectsList>> {
     let list_path = crate::storage::state_dir().join("projects.json");
-    if !list_path.exists() {
-        return None;
+    let meta = std::fs::metadata(&list_path).ok()?;
+    let stamp = (meta.modified().ok()?, meta.len());
+
+    if let Ok(guard) = PROJECTS_CACHE.lock() {
+        if let Some((mtime, len, list)) = guard.as_ref() {
+            if *mtime == stamp.0 && *len == stamp.1 {
+                return Some(Arc::clone(list));
+            }
+        }
     }
-    crate::storage::read_json(&list_path).ok()
+
+    let list: Arc<ProjectsList> = Arc::new(crate::storage::read_json(&list_path).ok()?);
+    if let Ok(mut guard) = PROJECTS_CACHE.lock() {
+        *guard = Some((stamp.0, stamp.1, Arc::clone(&list)));
+    }
+    Some(list)
 }
 
 /// A `projects.json` entry's stored `directory` (its flattened `extra` field).

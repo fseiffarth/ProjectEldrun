@@ -295,7 +295,15 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
           .catch(() => [m.id, "error"] as const),
       ),
     );
-    set((s) => ({ status: { ...s.status, ...Object.fromEntries(results) } }));
+    // Same idempotence rule as `setStatus`: a sweep that finds every machine in
+    // the state it was already in is a no-op and must not notify. This one is
+    // the more valuable of the two — it writes EVERY machine at once, so on a
+    // fleet of N an unchanged sweep used to invalidate the whole list.
+    set((s) => {
+      const next = Object.fromEntries(results);
+      const changed = Object.entries(next).some(([id, st]) => s.status[id] !== st);
+      return changed ? { status: { ...s.status, ...next } } : s;
+    });
   },
 
   retryAll: async () => {
@@ -397,5 +405,15 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
     return results;
   },
 
-  setStatus: (id, status) => set((s) => ({ status: { ...s.status, [id]: status } })),
+  // Writing a lamp the value it already has must NOT notify. Rebuilding
+  // `status` unconditionally allocated a new object every call, and zustand
+  // notifies on identity — so a no-op write woke every subscriber of this store.
+  // `MachinesIndicator` alone holds fourteen selectors against it, so one no-op
+  // re-ran all fourteen and re-rendered the header, which re-rendered the pills,
+  // the file panel and the tree beneath them. Measured: 64 `status` writes per
+  // 10 s driving ~140 full commits per 10 s on an idle app, with the main thread
+  // stalling ~300-400 ms in every window. Returning `s` unchanged makes zustand's
+  // `Object.is` check collapse the write into nothing.
+  setStatus: (id, status) =>
+    set((s) => (s.status[id] === status ? s : { status: { ...s.status, [id]: status } })),
 }));

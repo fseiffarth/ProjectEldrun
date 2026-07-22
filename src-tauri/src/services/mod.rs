@@ -1,4 +1,5 @@
 pub mod agent_session;
+pub mod big_folders;
 pub mod codex_bind;
 pub mod git_credentials;
 pub mod git_peer;

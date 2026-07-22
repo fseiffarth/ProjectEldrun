@@ -140,15 +140,35 @@ pub async fn openvpn_auth_needs(config: String) -> VpnAuthNeeds {
 /// is already in the keychain. Lets the UI pre-check the "Save password" box and
 /// offer "Forget", without ever receiving a secret. A config needing two secrets
 /// with only one saved reports `false`: a silent connect would fail on the other.
+///
+/// The keychain reads below are why this (and its two siblings) are `async` +
+/// `spawn_blocking` rather than plain commands: a synchronous Tauri command runs
+/// on the **main thread**, and a Secret Service lookup is an unbounded D-Bus
+/// round-trip that blocks outright while the keyring is locked — waiting on an
+/// unlock prompt the user cannot reach, because the window is frozen mid-frame
+/// waiting for it. The auto-connect-on-launch path asks these questions before it
+/// does anything else, so on the main thread they are a startup freeze.
 #[tauri::command]
-pub fn vpn_has_saved_password(config: String) -> bool {
+pub async fn vpn_has_saved_password(config: String) -> bool {
+    tokio::task::spawn_blocking(move || has_saved_password_blocking(&config))
+        .await
+        // Unreadable keychain ⇒ "nothing saved" ⇒ the caller prompts. Never the
+        // other way round: claiming a secret exists would license a silent
+        // connect that then stalls on a prompt nobody sees.
+        .unwrap_or(false)
+}
+
+/// The blocking body of [`vpn_has_saved_password`], callable from the other
+/// keychain helpers without going through the command layer (and without each
+/// one spawning its own blocking task).
+fn has_saved_password_blocking(config: &str) -> bool {
     use crate::services::remote_credentials as creds;
-    if !creds::has(&creds::openvpn_account(&config)) {
+    if !creds::has(&creds::openvpn_account(config)) {
         return false;
     }
-    let needs_key = openvpn::config_requires_key_passphrase(&config)
-        && openvpn::config_requires_userpass(&config);
-    !needs_key || creds::has(&creds::openvpn_key_account(&config))
+    let needs_key = openvpn::config_requires_key_passphrase(config)
+        && openvpn::config_requires_userpass(config);
+    !needs_key || creds::has(&creds::openvpn_key_account(config))
 }
 
 /// Whether `config` can be brought up with **no prompt of any kind** — the question
@@ -164,16 +184,22 @@ pub fn vpn_has_saved_password(config: String) -> bool {
 /// still answers the narrower keychain-state question the "Save password" checkbox
 /// and "Forget" button are asking; this one answers "would connecting now be silent?".
 #[tauri::command]
-pub fn vpn_can_connect_silently(config: String, username: Option<String>) -> bool {
-    use crate::services::remote_credentials as creds;
-    if !vpn_has_saved_password(config.clone()) {
-        return false;
-    }
-    if !openvpn::config_requires_userpass(&config) {
-        return true;
-    }
-    username.is_some_and(|u| !u.trim().is_empty())
-        || creds::get(&creds::openvpn_user_account(&config)).is_some()
+pub async fn vpn_can_connect_silently(config: String, username: Option<String>) -> bool {
+    tokio::task::spawn_blocking(move || {
+        use crate::services::remote_credentials as creds;
+        if !has_saved_password_blocking(&config) {
+            return false;
+        }
+        if !openvpn::config_requires_userpass(&config) {
+            return true;
+        }
+        username.is_some_and(|u| !u.trim().is_empty())
+            || creds::get(&creds::openvpn_user_account(&config)).is_some()
+    })
+    .await
+    // "Can't tell" must mean "don't connect silently" — the whole point of this
+    // question is to avoid an elevation prompt for a connect that cannot succeed.
+    .unwrap_or(false)
 }
 
 /// Forget every saved credential for `config` (explicit "log out" action) — the
@@ -181,11 +207,20 @@ pub fn vpn_can_connect_silently(config: String, username: Option<String>) -> boo
 /// partial forget can't leave a stale half behind. The SSH-side twin is
 /// `remote_forget_password`.
 #[tauri::command]
-pub fn vpn_forget_password(config: String) -> Result<(), String> {
+pub async fn vpn_forget_password(config: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || forget_password_blocking(&config))
+        .await
+        .map_err(|e| format!("forget credentials task failed: {e}"))?
+}
+
+/// The blocking body of [`vpn_forget_password`], so `openvpn_remove_config` can
+/// forget a config's credentials inside its own blocking task rather than nesting
+/// one command inside another.
+fn forget_password_blocking(config: &str) -> Result<(), String> {
     use crate::services::remote_credentials as creds;
-    let pw = creds::set(&creds::openvpn_account(&config), None);
-    let key = creds::set(&creds::openvpn_key_account(&config), None);
-    let user = creds::set(&creds::openvpn_user_account(&config), None);
+    let pw = creds::set(&creds::openvpn_account(config), None);
+    let key = creds::set(&creds::openvpn_key_account(config), None);
+    let user = creds::set(&creds::openvpn_user_account(config), None);
     pw.and(key).and(user)
 }
 
@@ -209,8 +244,10 @@ pub async fn openvpn_disconnect(config: String) -> Result<(), String> {
 /// touches the same set of tunnels, so that once it succeeds nothing is left for
 /// `RunEvent::Exit` to kill — which is what used to raise the polkit prompt *after* the
 /// window had already vanished. A refused prompt is an error here and leaves the tunnel
-/// registered, so the frontend can keep the window open and tell the user to close the
-/// tunnel first, instead of quitting with the machine's routing still rewritten.
+/// registered *and* marks it declined, so the frontend can warn the user it is staying
+/// up — but the quit itself proceeds either way, and `RunEvent::Exit` will not re-ask
+/// for a declined config, so this is a one-shot: the user is asked once, not once per
+/// close attempt.
 ///
 /// It enumerates the backend registries directly rather than taking a config from the
 /// frontend's `openvpn_active`: `active_configs` filters by a liveness probe, so a
@@ -267,7 +304,11 @@ pub async fn openvpn_list_configs() -> Result<Vec<openvpn::StoredConfig>, String
 /// must be down), so it goes first — a refused removal leaves the credentials
 /// alone. Deletes Eldrun's copy only, never the user's original file.
 #[tauri::command]
-pub fn openvpn_remove_config(config: String) -> Result<(), String> {
-    openvpn::remove_config(&config)?;
-    vpn_forget_password(config)
+pub async fn openvpn_remove_config(config: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        openvpn::remove_config(&config)?;
+        forget_password_blocking(&config)
+    })
+    .await
+    .map_err(|e| format!("remove config task failed: {e}"))?
 }

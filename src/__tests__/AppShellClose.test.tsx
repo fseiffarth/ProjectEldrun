@@ -31,6 +31,7 @@ vi.mock("@tauri-apps/api/window", () => ({
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(null) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ message: vi.fn().mockResolvedValue(undefined) }));
 
 // Paths below are relative to this test file (src/__tests__/), matching the
 // resolved module IDs that AppShell uses (src/stores/ and src/components/layout/).
@@ -82,12 +83,16 @@ vi.mock("../components/layout/GlobalAppBar", () => ({ GlobalAppBar: () => null }
 vi.mock("../hooks/useKeyboard", () => ({ useKeyboard: vi.fn() }));
 
 import { AppShell } from "../components/layout/AppShell";
+import { invoke } from "@tauri-apps/api/core";
+import { message } from "@tauri-apps/plugin-dialog";
 
 describe("AppShell close handler", () => {
   beforeEach(() => {
     shared.flush.mockClear();
     shared.destroy.mockClear();
     shared.handler = null;
+    (invoke as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue(null);
+    (message as ReturnType<typeof vi.fn>).mockClear();
   });
 
   it("prevents default, flushes timer, then destroys the window", async () => {
@@ -116,6 +121,27 @@ describe("AppShell close handler", () => {
       await shared.handler!({ preventDefault: vi.fn() });
     });
 
+    expect(shared.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("warns but still destroys the window when the VPN teardown is declined", async () => {
+    // A dismissed pkexec prompt makes `openvpn_disconnect_all_on_quit` reject —
+    // the quit must warn, not abort (the backend already recorded the decline so
+    // RunEvent::Exit won't re-prompt with the window gone).
+    (invoke as ReturnType<typeof vi.fn>).mockImplementation((cmd: string) =>
+      cmd === "openvpn_disconnect_all_on_quit"
+        ? Promise.reject(new Error("openvpn teardown was not authorized"))
+        : Promise.resolve(null),
+    );
+
+    render(<AppShell />);
+    expect(shared.handler).not.toBeNull();
+
+    await act(async () => {
+      await shared.handler!({ preventDefault: vi.fn() });
+    });
+
+    expect(message).toHaveBeenCalledOnce();
     expect(shared.destroy).toHaveBeenCalledOnce();
   });
 });

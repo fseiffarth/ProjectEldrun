@@ -381,35 +381,59 @@ pub fn parse_remote_probe(stdout: &str) -> Vec<PyInterpreter> {
 }
 
 // ── Commands ─────────────────────────────────────────────────────────────────
+//
+// A remote probe shells out over the pooled SSH ControlMaster, which can stall up
+// to its ConnectTimeout/ServerAlive window on a dead/degraded host. Tauri runs a
+// synchronous `#[command]` on the MAIN thread, so doing that inline froze the
+// whole window — the same bug `commands::git` already fixed (see its
+// `run_off_thread` doc comment) but that fix never reached this file. The two
+// remote-capable commands are now `async` wrappers that offload their blocking
+// body via `spawn_blocking`; the local-only `discover_local`/`project_python`
+// paths stay plain sync fns underneath, so they remain directly unit-testable.
+
+async fn run_off_thread<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("python task failed: {e}"))?
+}
 
 /// Every interpreter offered for `project_dir` — the dialog's dropdown. Probes the
 /// **host** for a remote project (that is where its run tab will run).
-#[tauri::command]
-pub fn python_interpreters(project_dir: String) -> Result<Vec<PyInterpreter>, String> {
-    if let Some(target) = crate::services::remote::remote_target_for_dir(&project_dir) {
+fn python_interpreters_blocking(project_dir: &str) -> Result<Vec<PyInterpreter>, String> {
+    if let Some(target) = crate::services::remote::remote_target_for_dir(project_dir) {
         let out = crate::services::ssh_exec::run_remote_script(&target.spec, REMOTE_PROBE)?;
         return Ok(parse_remote_probe(&String::from_utf8_lossy(&out.stdout)));
     }
-    Ok(discover_local(Path::new(&project_dir)))
+    Ok(discover_local(Path::new(project_dir)))
+}
+
+#[tauri::command]
+pub async fn python_interpreters(project_dir: String) -> Result<Vec<PyInterpreter>, String> {
+    run_off_thread(move || python_interpreters_blocking(&project_dir)).await
 }
 
 /// The interpreter Run/Debug should use *right now*: the project's explicit choice
 /// if it has one (no probing), else the best auto-detected candidate, else the
 /// system default. This is the only thing `lib/pythonRun.ts` needs to ask.
 #[tauri::command]
-pub fn python_interpreter_for(
+pub async fn python_interpreter_for(
     project_id: Option<String>,
     project_dir: String,
 ) -> Result<String, String> {
     if let Some(pinned) = project_id.as_deref().and_then(project_python) {
         return Ok(pinned);
     }
-    let found = python_interpreters(project_dir).unwrap_or_default();
-    Ok(found
-        .into_iter()
-        .find(|i| auto_selectable(&i.kind))
-        .map(|i| i.path)
-        .unwrap_or_else(default_interpreter))
+    run_off_thread(move || {
+        let found = python_interpreters_blocking(&project_dir).unwrap_or_default();
+        Ok(found
+            .into_iter()
+            .find(|i| auto_selectable(&i.kind))
+            .map(|i| i.path)
+            .unwrap_or_else(default_interpreter))
+    })
+    .await
 }
 
 /// A project's pinned interpreter, read from the always-local `projects.json`

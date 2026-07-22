@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { resolveProjectDirectory, type ProjectEntry } from "../../types";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useBigFoldersStore } from "../../stores/bigFolders";
 import { joinRemotePath, sanitizeName } from "./scaffold";
 import { useRemoteSession, type RemoteStep } from "./useRemoteSession";
 import { RemoteProjectSection } from "./RemoteProjectSection";
@@ -143,6 +144,12 @@ export function ExtendToRemoteDialog({
           });
       };
       tryConnect();
+      // The existing local folder is about to become a synced working copy, so
+      // this is the last cheap moment to ask which of its giant folders (a
+      // `.venv`, a build dir, a data drop) should never cross. The prompt walks
+      // the local side straight away and fills in the host column when the
+      // connect above lands.
+      useBigFoldersStore.getState().openOnce(project.id);
       onClose();
     } catch (e) {
       setError(String(e));

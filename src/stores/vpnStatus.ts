@@ -257,10 +257,11 @@ export function disconnectVpnTunnel(config: string): void {
 /**
  * Tear down every live tunnel on the **app-close path, before the window (and the
  * popouts) go away** — awaited, so the UI stays on screen until it is done. Returns
- * `true` when every tunnel is down and the quit may proceed, `false` when the user
- * dismissed the teardown prompt: a tunnel (and the machine-wide routing it installed)
- * is still up, so the caller must **abort the quit** and tell the user to close it
- * first, rather than quit with the OS routing left rewritten.
+ * `true` when every tunnel is down, `false` when the user dismissed the teardown
+ * prompt: the tunnel (and the machine-wide routing it installed) is still up, so
+ * the caller should warn the user — but the quit is **not** aborted. This is a
+ * one-shot ask: a decline here is recorded on the backend so `RunEvent::Exit`'s own
+ * teardown pass never re-prompts for the same tunnel with the window already gone.
  *
  * The backend also disconnects all tunnels in its `RunEvent::Exit` handler, but that
  * fires only *after* the webview window has been destroyed, so the elevated

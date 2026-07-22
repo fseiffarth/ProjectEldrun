@@ -74,6 +74,19 @@ async fn run_off_thread<T: Send + 'static>(
         .map_err(|e| format!("git task failed: {e}"))?
 }
 
+/// Whether the `git` binary is on `PATH`. The new/import-project dialog calls
+/// this before offering a git-backed project, so a missing `git` surfaces as an
+/// install prompt instead of `scaffold_project` silently no-oping `git init`
+/// (see its `let _ =` discard) and registering a git-typed project with no repo.
+#[tauri::command]
+pub fn git_available() -> bool {
+    crate::paths::command_no_window("git")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 #[derive(serde::Serialize)]
 pub struct GitStatus {
     pub staged: usize,
@@ -297,10 +310,21 @@ fn git_file_statuses_blocking(
             .map(|out| out.status.success())
             .unwrap_or(false);
 
+    // Scope the status to the browsed folder. Without a pathspec git walks the
+    // WHOLE repo — and with `--ignored` that means stat-ing every ignored path in
+    // it — only for `record` below to throw away every line outside `rel_path`
+    // anyway. On a REMOTE project that walk runs on the host over SSH, on every
+    // folder navigation and on every Local→Remote switch, which is what made
+    // both feel like a hang on a repo carrying big gitignored trees (data,
+    // checkpoints, venvs). The wholly-ignored branch already scoped itself for
+    // exactly this reason; the common branch just never did. An empty
+    // `rel_path` IS the repo root, so there is nothing to scope it to.
     let status_args: Vec<&str> = if wholly_ignored {
         vec!["status", "--porcelain", "--ignored", "--untracked-files=all", "--", &rel_path]
+    } else if rel_path.is_empty() {
+        vec!["status", "--porcelain", "--ignored", "--untracked-files=normal"]
     } else {
-        vec!["status", "--porcelain", "--ignored"]
+        vec!["status", "--porcelain", "--ignored", "--untracked-files=normal", "--", &rel_path]
     };
     let out = run_git(target.as_ref(), &project_dir, &status_args)?;
     let porcelain = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -1446,13 +1470,9 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Returns true when `git` is on PATH; tests skip gracefully otherwise.
+    /// Tests skip gracefully when `git` isn't on PATH.
     fn git_available() -> bool {
-        crate::paths::command_no_window("git")
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        super::git_available()
     }
 
     fn init_repo(dir: &std::path::Path) {
@@ -1697,6 +1717,37 @@ filename note.txt
             "whole/a.txt should be reported as ignored when listing whole/ (got {:?})",
             inner.get("a.txt")
         );
+    }
+
+    #[test]
+    fn ignored_entries_are_reported_when_git_config_hides_untracked_files() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping ignored_entries_are_reported_when_git_config_hides_untracked_files");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        init_repo(dir);
+
+        fs::write(dir.join(".gitignore"), "cache/\n").expect("write .gitignore");
+        fs::create_dir(dir.join("cache")).expect("mkdir cache");
+        fs::write(dir.join("cache/data.bin"), "ignored\n").expect("write ignored file");
+        let configured = crate::paths::command_no_window("git")
+            .args(["config", "status.showUntrackedFiles", "no"])
+            .current_dir(dir)
+            .output()
+            .expect("git config should run")
+            .status
+            .success();
+        assert!(configured, "git config failed");
+
+        let statuses = git_file_statuses_blocking(
+            dir.to_string_lossy().to_string(),
+            String::new(),
+        )
+        .expect("git_file_statuses should override the user's untracked-files setting");
+
+        assert_eq!(statuses.get("cache").map(String::as_str), Some("ignored"));
     }
 
     #[test]

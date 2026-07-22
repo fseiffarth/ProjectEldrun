@@ -30,10 +30,15 @@ const POINTER_WORD =
 // (`ESC [ … final byte`), the colour/cursor traffic that makes up most of a TUI
 // redraw; then charset designators (`ESC ( B` and friends, which agents emit
 // constantly); then any remaining two-character escape.
-const OSC = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
-const CSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
-const CHARSET = /\x1b[()*+][@-~]/g;
-const ESC2 = /\x1b[@-Z\\-_]/g;
+// ONE pass, not four. These alternatives were four separate global regexes run
+// as four chained `.replace()` calls, which meant four full scans of the text
+// and four fresh strings per call — and this runs on EVERY PTY output batch
+// (~60/s per streaming agent tab, see `notePtyOutput`). Alternation is tried
+// left-to-right at each position, so keeping the original order (OSC, CSI,
+// charset, then any remaining two-char escape) preserves the exact semantics
+// while allocating once.
+const ANSI =
+  /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()*+][@-~]|\x1b[@-Z\\-_]/g;
 
 /**
  * Strip ANSI escape sequences from terminal text. The prompt regexes above are
@@ -42,21 +47,30 @@ const ESC2 = /\x1b[@-Z\\-_]/g;
  * — where a menu line is shot through with colour codes.
  */
 export function stripAnsi(text: string): string {
-  return text
-    .replace(OSC, "")
-    .replace(CSI, "")
-    .replace(CHARSET, "")
-    .replace(ESC2, "");
+  return text.replace(ANSI, "");
 }
 
 /**
- * True when the given terminal text (typically the tail of an agent's output)
- * looks like an agent decision/permission prompt awaiting the user's input.
+ * True when ALREADY ANSI-stripped text looks like an agent decision/permission
+ * prompt awaiting the user's input.
+ *
+ * Split out because the hot caller (`stores/activity`'s `attentionFor`) tests a
+ * tail it built from stripped chunks — so routing it through `stripAnsi` again
+ * re-scanned and re-allocated the whole 8 KB tail several times a second, per
+ * agent tab, to delete escapes that were never there.
  */
-export function looksLikeDecisionPrompt(text: string): boolean {
-  const plain = stripAnsi(text);
+export function looksLikeDecisionPromptStripped(plain: string): boolean {
   if (POINTER_CHOICE.test(plain)) return true;
   if (POINTER_WORD.test(plain)) return true;
   if (AFFIRM.test(plain) && DENY.test(plain)) return true;
   return false;
+}
+
+/**
+ * True when the given RAW terminal text (typically the tail of an agent's
+ * output) looks like an agent decision/permission prompt awaiting the user's
+ * input.
+ */
+export function looksLikeDecisionPrompt(text: string): boolean {
+  return looksLikeDecisionPromptStripped(stripAnsi(text));
 }

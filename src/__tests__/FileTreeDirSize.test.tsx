@@ -152,4 +152,26 @@ describe("file tree folder sizes", () => {
     const row = screen.getByText("venv").closest(".file-entry");
     expect(row?.querySelector(".file-size")?.textContent).toBe("not scanned");
   });
+
+  it("moves an entirely ignored folder out of the normal 0 B list when statuses omit it", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_dir") return Promise.resolve([dirEntry("cache")]);
+      if (cmd === "git_file_statuses") return Promise.resolve({});
+      if (cmd === "dir_size_breakdown") return Promise.resolve({ total: 4096, ignored: 4096 });
+      if (cmd === "dir_size") return Promise.resolve(4096);
+      if (cmd === "git_status")
+        return Promise.resolve({ staged: 0, unstaged: 0, untracked: 0, has_remote: false, is_repo: true });
+      if (cmd === "git_unpushed_commits") return Promise.resolve([]);
+      if (cmd === "load_project") return Promise.resolve({});
+      if (cmd === "list_project_endings") return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+
+    await act(async () => {
+      render(<RightPanel open={true} />);
+    });
+
+    expect(await screen.findByText("gitignored (1)")).toBeTruthy();
+    expect(screen.queryByText("cache")).toBeNull();
+  });
 });

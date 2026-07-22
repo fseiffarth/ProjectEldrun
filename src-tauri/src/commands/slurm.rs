@@ -183,91 +183,117 @@ fn default_out_file(work_dir: &str, job_id: &str) -> String {
 }
 
 // ── Commands ─────────────────────────────────────────────────────────────────
+//
+// Every command here shells out (locally or over the pooled SSH ControlMaster,
+// which can stall up to its ConnectTimeout/ServerAlive window on a dead/degraded
+// host). Tauri runs a synchronous `#[command]` on the MAIN thread, so doing that
+// work inline froze the whole window — the same bug `commands::git` already fixed
+// (see its `run_off_thread` doc comment) but that fix never reached this file.
+// Each command is now an `async` wrapper that offloads its blocking body via
+// `spawn_blocking`, so the UI thread stays free; the bodies are ordinary sync fns
+// so they stay directly callable from the unit tests below.
+
+async fn run_off_thread<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("slurm task failed: {e}"))?
+}
 
 /// Is SLURM available on the project's host? Lets the UI hide itself off-HPC.
 #[tauri::command]
-pub fn slurm_available(
+pub async fn slurm_available(
     project_dir: String,
     host_id: Option<String>,
 ) -> Result<SlurmInfo, String> {
-    let host = host_id.as_deref().unwrap_or(PRIMARY_HOST);
-    // Constant script — nothing interpolated.
-    let script = "command -v sbatch >/dev/null 2>&1 || exit 0\n\
-                  sbatch --version 2>/dev/null | head -n1";
-    let out = run_slurm_script(&project_dir, host, script).unwrap_or_default();
-    let version = out.lines().next().map(str::trim).filter(|s| !s.is_empty());
-    Ok(SlurmInfo {
-        available: version.is_some(),
-        version: version.map(str::to_string),
+    run_off_thread(move || {
+        let host = host_id.as_deref().unwrap_or(PRIMARY_HOST);
+        // Constant script — nothing interpolated.
+        let script = "command -v sbatch >/dev/null 2>&1 || exit 0\n\
+                      sbatch --version 2>/dev/null | head -n1";
+        let out = run_slurm_script(&project_dir, host, script).unwrap_or_default();
+        let version = out.lines().next().map(str::trim).filter(|s| !s.is_empty());
+        Ok(SlurmInfo {
+            available: version.is_some(),
+            version: version.map(str::to_string),
+        })
     })
+    .await
 }
 
 /// Submit `script_rel` (project-relative) with `sbatch`, then resolve its real
 /// output paths via `scontrol` — in one round trip: the numeric job id comes from
 /// `sbatch`'s own output, so chaining `scontrol` on it injects nothing.
 #[tauri::command]
-pub fn slurm_submit(
+pub async fn slurm_submit(
     project_dir: String,
     script_rel: String,
     host_id: Option<String>,
 ) -> Result<SlurmSubmit, String> {
-    let host = host_id.as_deref().unwrap_or(PRIMARY_HOST);
-    let (dir, base) = split_script_rel(&script_rel);
-    if base.is_empty() {
-        return Err("no script file given".into());
-    }
-    // cd into the script's own directory so the job's default WorkDir is where the
-    // script lives; sbatch --parsable prints the job id; scontrol (fed sbatch's own
-    // id) resolves the absolute out/err/work paths. `${jid%%;*}` strips a
-    // `;<cluster>` suffix for the scontrol lookup.
-    let cd = if dir.is_empty() {
-        String::new()
-    } else {
-        format!("cd {} && ", shell_quote(&dir))
-    };
-    let script = format!(
-        "{cd}jid=$(sbatch --parsable {base}) || exit 1\n\
-         printf '%s\\n' \"$jid\"\n\
-         scontrol show job \"${{jid%%;*}}\" 2>/dev/null",
-        base = shell_quote(&base),
-    );
-    let stdout = run_slurm_script(&project_dir, host, &script)?;
+    run_off_thread(move || {
+        let host = host_id.as_deref().unwrap_or(PRIMARY_HOST);
+        let (dir, base) = split_script_rel(&script_rel);
+        if base.is_empty() {
+            return Err("no script file given".into());
+        }
+        // cd into the script's own directory so the job's default WorkDir is where
+        // the script lives; sbatch --parsable prints the job id; scontrol (fed
+        // sbatch's own id) resolves the absolute out/err/work paths. `${jid%%;*}`
+        // strips a `;<cluster>` suffix for the scontrol lookup.
+        let cd = if dir.is_empty() {
+            String::new()
+        } else {
+            format!("cd {} && ", shell_quote(&dir))
+        };
+        let script = format!(
+            "{cd}jid=$(sbatch --parsable {base}) || exit 1\n\
+             printf '%s\\n' \"$jid\"\n\
+             scontrol show job \"${{jid%%;*}}\" 2>/dev/null",
+            base = shell_quote(&base),
+        );
+        let stdout = run_slurm_script(&project_dir, host, &script)?;
 
-    let mut lines = stdout.lines();
-    let first = lines.next().unwrap_or("").trim();
-    let job_id = parse_submit_jobid(first)
-        .ok_or_else(|| format!("sbatch did not return a job id:\n{}", stdout.trim()))?;
-    let rest: String = lines.collect::<Vec<_>>().join("\n");
-    let paths = parse_scontrol_paths(&rest);
+        let mut lines = stdout.lines();
+        let first = lines.next().unwrap_or("").trim();
+        let job_id = parse_submit_jobid(first)
+            .ok_or_else(|| format!("sbatch did not return a job id:\n{}", stdout.trim()))?;
+        let rest: String = lines.collect::<Vec<_>>().join("\n");
+        let paths = parse_scontrol_paths(&rest);
 
-    let out_file = if paths.out_file.is_empty() {
-        default_out_file(&paths.work_dir, &job_id)
-    } else {
-        paths.out_file
-    };
-    Ok(SlurmSubmit {
-        job_id,
-        out_file,
-        err_file: paths.err_file,
-        work_dir: paths.work_dir,
+        let out_file = if paths.out_file.is_empty() {
+            default_out_file(&paths.work_dir, &job_id)
+        } else {
+            paths.out_file
+        };
+        Ok(SlurmSubmit {
+            job_id,
+            out_file,
+            err_file: paths.err_file,
+            work_dir: paths.work_dir,
+        })
     })
+    .await
 }
 
 /// The current user's jobs on the host. `--me` (newer SLURM) with a `-u "$USER"`
 /// fallback for sites where it isn't supported. Constant script.
 #[tauri::command]
-pub fn slurm_queue(
+pub async fn slurm_queue(
     project_dir: String,
     host_id: Option<String>,
 ) -> Result<Vec<SlurmJob>, String> {
-    let host = host_id.as_deref().unwrap_or(PRIMARY_HOST);
-    let fmt = "%i|%j|%T|%M|%D|%R";
-    let script = format!(
-        "squeue --me --noheader -o '{fmt}' 2>/dev/null || \
-         squeue -u \"$USER\" --noheader -o '{fmt}'"
-    );
-    let stdout = run_slurm_script(&project_dir, host, &script)?;
-    Ok(parse_squeue(&stdout))
+    run_off_thread(move || {
+        let host = host_id.as_deref().unwrap_or(PRIMARY_HOST);
+        let fmt = "%i|%j|%T|%M|%D|%R";
+        let script = format!(
+            "squeue --me --noheader -o '{fmt}' 2>/dev/null || \
+             squeue -u \"$USER\" --noheader -o '{fmt}'"
+        );
+        let stdout = run_slurm_script(&project_dir, host, &script)?;
+        Ok(parse_squeue(&stdout))
+    })
+    .await
 }
 
 /// Resolve a job's stdout path via `scontrol` — for **Watch** on a job Eldrun did
@@ -275,37 +301,44 @@ pub fn slurm_queue(
 /// absolute `StdOut`, or a `slurm-<id>.out` fallback in `WorkDir` when scontrol is
 /// silent (a job that already finished). The id is validated numeric.
 #[tauri::command]
-pub fn slurm_job_out(
+pub async fn slurm_job_out(
     project_dir: String,
     job_id: String,
     host_id: Option<String>,
 ) -> Result<String, String> {
-    let host = host_id.as_deref().unwrap_or(PRIMARY_HOST);
-    if job_id.is_empty() || !job_id.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(format!("invalid job id '{job_id}'"));
-    }
-    let stdout = run_slurm_script(&project_dir, host, &format!("scontrol show job {job_id}"))?;
-    let paths = parse_scontrol_paths(&stdout);
-    if !paths.out_file.is_empty() {
-        Ok(paths.out_file)
-    } else {
-        Ok(default_out_file(&paths.work_dir, &job_id))
-    }
+    run_off_thread(move || {
+        let host = host_id.as_deref().unwrap_or(PRIMARY_HOST);
+        if job_id.is_empty() || !job_id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(format!("invalid job id '{job_id}'"));
+        }
+        let stdout =
+            run_slurm_script(&project_dir, host, &format!("scontrol show job {job_id}"))?;
+        let paths = parse_scontrol_paths(&stdout);
+        if !paths.out_file.is_empty() {
+            Ok(paths.out_file)
+        } else {
+            Ok(default_out_file(&paths.work_dir, &job_id))
+        }
+    })
+    .await
 }
 
 /// Cancel a job. The id is validated numeric before it touches the command.
 #[tauri::command]
-pub fn slurm_cancel(
+pub async fn slurm_cancel(
     project_dir: String,
     job_id: String,
     host_id: Option<String>,
 ) -> Result<(), String> {
-    let host = host_id.as_deref().unwrap_or(PRIMARY_HOST);
-    if job_id.is_empty() || !job_id.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(format!("invalid job id '{job_id}'"));
-    }
-    run_slurm_script(&project_dir, host, &format!("scancel {job_id}"))?;
-    Ok(())
+    run_off_thread(move || {
+        let host = host_id.as_deref().unwrap_or(PRIMARY_HOST);
+        if job_id.is_empty() || !job_id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(format!("invalid job id '{job_id}'"));
+        }
+        run_slurm_script(&project_dir, host, &format!("scancel {job_id}"))?;
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(test)]

@@ -8,6 +8,14 @@
 //! launched via `pkexec` (the user authenticates through the system polkit
 //! agent) — that local password is the system's to collect, never Eldrun's.
 //!
+//! **That prompt is paid once, on connect.** Stopping the tunnel used to cost a
+//! second one — the daemon is root-owned, so `kill` had to be `pkexec kill` — which
+//! is one password too many and landed worst on the app-close path. Every tunnel
+//! Eldrun starts now carries a `--management` socket instead, and teardown asks the
+//! daemon to signal *itself* over it. See the "management interface" section below
+//! for the endpoint, its access control, and why every caller still falls back to
+//! the elevated kill.
+//!
 //! The VPN's own secrets are two *independent* channels, and a config can need
 //! either or **both** — OpenVPN prompts for them separately, so answering only
 //! one leaves the other prompt hanging (stdin is closed) until the connect times
@@ -214,6 +222,31 @@ fn mark_signalled(pid: i32) {
     signalled_pids().lock().unwrap().insert(pid);
 }
 
+/// Configs whose elevated teardown was explicitly **refused** (a dismissed polkit
+/// prompt) once already during this run. [`disconnect_checked`] is the one caller
+/// that asks — on the app-close path, while the window is still on screen — and it
+/// is meant to ask exactly once: a "no" there means the user has already decided,
+/// not that Eldrun should try again the moment the window is gone. Every later
+/// best-effort pass ([`disconnect_all`], run from `RunEvent::Exit` with no window
+/// left to hold a polkit dialog) checks this set and leaves a declined tunnel
+/// running rather than re-prompting — which is what used to raise a parentless
+/// pkexec dialog after Eldrun had already vanished.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn declined_configs() -> &'static Mutex<std::collections::HashSet<String>> {
+    static SET: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    SET.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+#[cfg(target_os = "linux")]
+fn mark_declined(config: &str) {
+    declined_configs().lock().unwrap().insert(config.to_string());
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn is_declined(config: &str) -> bool {
+    declined_configs().lock().unwrap().contains(config)
+}
+
 /// `kill -TERM` a **root-owned** pid, escalating the same way the platform's
 /// connect does (a plain kill would get EPERM).
 #[cfg(target_os = "linux")]
@@ -413,22 +446,24 @@ fn shell_quote(s: &str) -> String {
 /// still changed. Building the command is therefore also *claiming* it.
 #[cfg(target_os = "linux")]
 pub fn interactive_connect_command(config: &str) -> Result<String, String> {
-    let (config, pidfile) = arm_interactive(config)?;
+    let arm = arm_interactive(config)?;
     Ok(format!(
-        "pkexec openvpn --config {} --auth-nocache --writepid {}",
-        shell_quote(&config),
-        shell_quote(&pidfile.to_string_lossy())
+        "pkexec openvpn --config {} --auth-nocache --writepid {}{}",
+        shell_quote(&arm.config),
+        shell_quote(&arm.pidfile.to_string_lossy()),
+        arm.management
     ))
 }
 
 /// Windows variant: no `pkexec`; `openvpn.exe` must already be running elevated.
 #[cfg(target_os = "windows")]
 pub fn interactive_connect_command(config: &str) -> Result<String, String> {
-    let (config, pidfile) = arm_interactive(config)?;
+    let arm = arm_interactive(config)?;
     Ok(format!(
-        "openvpn --config {} --auth-nocache --writepid {}",
-        shell_quote(&config),
-        shell_quote(&pidfile.to_string_lossy())
+        "openvpn --config {} --auth-nocache --writepid {}{}",
+        shell_quote(&arm.config),
+        shell_quote(&arm.pidfile.to_string_lossy()),
+        arm.management
     ))
 }
 
@@ -436,11 +471,12 @@ pub fn interactive_connect_command(config: &str) -> Result<String, String> {
 /// interactive root-tab path types the password straight into the terminal).
 #[cfg(target_os = "macos")]
 pub fn interactive_connect_command(config: &str) -> Result<String, String> {
-    let (config, pidfile) = arm_interactive(config)?;
+    let arm = arm_interactive(config)?;
     Ok(format!(
-        "sudo openvpn --config {} --auth-nocache --writepid {}",
-        shell_quote(&config),
-        shell_quote(&pidfile.to_string_lossy())
+        "sudo openvpn --config {} --auth-nocache --writepid {}{}",
+        shell_quote(&arm.config),
+        shell_quote(&arm.pidfile.to_string_lossy()),
+        arm.management
     ))
 }
 
@@ -452,7 +488,7 @@ pub fn interactive_connect_command(config: &str) -> Result<String, String> {
 /// Shared by all three [`interactive_connect_command`] variants so a platform
 /// cannot forget the `--writepid` bookkeeping. Compiled cfg-free so the claim logic
 /// is unit-testable on any host.
-fn arm_interactive(config: &str) -> Result<(String, PathBuf), String> {
+fn arm_interactive(config: &str) -> Result<InteractiveArm, String> {
     let config = config.trim();
     validate_arg("OpenVPN config", config)?;
     if config.is_empty() {
@@ -465,7 +501,36 @@ fn arm_interactive(config: &str) -> Result<(String, PathBuf), String> {
         .lock()
         .unwrap()
         .insert(config.to_string(), pidfile.clone());
-    Ok((config.to_string(), pidfile))
+    // A terminal-started tunnel gets the same management socket a headless one does,
+    // so stopping it costs no second elevation either. Best-effort: if no endpoint
+    // can be armed the fragment is empty and the command is exactly what it was.
+    #[cfg(unix)]
+    let management = arm_management(config)
+        .map(|a| match a.as_slice() {
+            // Shape is fixed by `management_args`: flag, ip, port, pwfile. Only the
+            // last can contain shell metacharacters, and leaving the first three bare
+            // keeps the command legible in the terminal tab the user actually reads.
+            [flag, ip, port, pwfile] => format!(" {flag} {ip} {port} {}", shell_quote(pwfile)),
+            _ => String::new(),
+        })
+        .unwrap_or_default();
+    #[cfg(not(unix))]
+    let management = String::new();
+    Ok(InteractiveArm {
+        config: config.to_string(),
+        pidfile,
+        management,
+    })
+}
+
+/// What [`arm_interactive`] hands each platform's [`interactive_connect_command`]:
+/// the validated config, the pidfile the command must `--writepid` to, and the
+/// pre-quoted `--management …` fragment (leading space included, empty when none
+/// could be armed) to append verbatim.
+struct InteractiveArm {
+    config: String,
+    pidfile: PathBuf,
+    management: String,
 }
 
 /// True if `openvpn` and `pkexec` are both available on `PATH` (both are needed:
@@ -594,6 +659,25 @@ pub fn config_requires_userpass(config: &str) -> bool {
             .trim();
         let mut tok = body.split_whitespace();
         tok.next() == Some("auth-user-pass") && tok.next().is_none()
+    })
+}
+
+/// Whether `config` declares its own `management` socket. Such a config is left
+/// **alone**: OpenVPN rejects `--management` given twice, and even where it did not,
+/// the socket would be on terms Eldrun does not know (its own port, and a password
+/// file it cannot read). Those tunnels simply keep the elevated teardown — the one
+/// place the second password prompt survives, and the reason every management caller
+/// treats the endpoint as optional.
+///
+/// Same best-effort parse as [`config_requires_userpass`]: unreadable ⇒ `false`,
+/// `#`/`;` comments stripped.
+pub fn config_declares_management(config: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(config.trim()) else {
+        return false;
+    };
+    text.lines().any(|line| {
+        let body = line.split(['#', ';']).next().unwrap_or("").trim();
+        body.split_whitespace().next() == Some("management")
     })
 }
 
@@ -858,6 +942,235 @@ fn write_userpass(stem: &str, username: &str, password: &str) -> Result<PathBuf,
     Ok(path)
 }
 
+// --- OpenVPN management interface: teardown without a second password --------
+//
+// Bringing a tunnel UP costs one polkit prompt (`pkexec openvpn`) and always will:
+// the tun device and the routing table genuinely need root. Taking it DOWN used to
+// cost a *second* one, because the daemon is root-owned and a plain `kill` gets
+// EPERM — so teardown had to be `pkexec kill`, and polkit authenticates per
+// invocation. That is one password too many. The user already authorized this exact
+// tunnel; re-authorizing to stop the process Eldrun itself started is pure friction,
+// and it is worst on the app-close path, where it lands as a prompt in front of
+// someone who has already decided to quit.
+//
+// OpenVPN's own management interface removes it. Eldrun controls the argv for every
+// tunnel it starts — the headless one AND the one typed into a terminal tab — so
+// each connect now appends `--management 127.0.0.1 <port> <pwfile>`, and teardown
+// simply opens that loopback socket and sends `signal SIGTERM`. **The daemon signals
+// itself**, so there is nothing to elevate and no prompt to raise.
+//
+// The endpoint is recorded on disk beside the pidfile (`{stem}.mgmt` = port,
+// `{stem}.mgmt.pw` = password) rather than only in memory, for the same reason the
+// pidfile is: a tunnel started by a previous Eldrun run must still be stoppable
+// after a restart.
+//
+// Access control: the socket is loopback-only and gated by a 32-byte CSPRNG password
+// in an owner-only (0600) file. Another process running as this user could read it
+// and stop the tunnel — but that process could equally kill Eldrun outright or read
+// its state dir, so this grants it nothing it did not already have.
+//
+// Every caller treats management as an **optimization, never a guarantee**: a
+// failed, unanswered, or unconfirmed shutdown falls straight through to the elevated
+// kill exactly as before, so no path can silently leave a tunnel up. That is what
+// makes it safe to attach to the interactive command too, where OpenVPN may be an
+// older build or the user may have edited the command before running it.
+
+/// How long to wait for the daemon to actually exit after it acknowledges the
+/// management `signal SIGTERM` (it still has routes to unwind), and how often to
+/// look. Only a pid that has *gone* lets a caller skip the elevated kill.
+#[cfg(unix)]
+const MANAGEMENT_EXIT_POLL: Duration = Duration::from_millis(100);
+#[cfg(unix)]
+const MANAGEMENT_EXIT_POLLS: usize = 50; // ≤5s
+
+/// Where the management port for `config` is recorded.
+fn management_portfile(config: &str) -> PathBuf {
+    runtime_dir().join(format!("{}.mgmt", safe_stem(config)))
+}
+
+/// The password file OpenVPN reads to guard its management socket — and that
+/// Eldrun reads back to authenticate against it.
+fn management_pwfile(config: &str) -> PathBuf {
+    runtime_dir().join(format!("{}.mgmt.pw", safe_stem(config)))
+}
+
+/// The `--management <ip> <port> <pwfile>` argv fragment. Pure and cfg-free so its
+/// shape is unit-testable without opening a socket.
+pub fn management_args(port: u16, pwfile: &Path) -> Vec<String> {
+    vec![
+        "--management".to_string(),
+        "127.0.0.1".to_string(),
+        port.to_string(),
+        pwfile.to_string_lossy().into_owned(),
+    ]
+}
+
+/// Random lowercase-hex string of `bytes` random bytes, straight from the OS
+/// CSPRNG. `None` if it cannot be read, which simply means no management endpoint
+/// is armed and teardown keeps the elevated kill.
+#[cfg(unix)]
+fn random_hex(bytes: usize) -> Option<String> {
+    use std::io::Read;
+    let mut buf = vec![0u8; bytes];
+    std::fs::File::open("/dev/urandom")
+        .ok()?
+        .read_exact(&mut buf)
+        .ok()?;
+    Some(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Forget any endpoint recorded for `config`. Called before arming a new one (a
+/// stale port from a previous run would send teardown at a dead socket) and after
+/// a confirmed shutdown.
+#[cfg(unix)]
+fn clear_management(config: &str) {
+    let _ = std::fs::remove_file(management_portfile(config));
+    let _ = std::fs::remove_file(management_pwfile(config));
+}
+
+/// Claim a management endpoint for `config` and return the `--management` argv the
+/// connect must carry. `None` when none could be armed (no free port, no CSPRNG, an
+/// unwritable runtime dir) — the tunnel then simply keeps the old elevated-kill
+/// teardown, which is why every caller ignores the failure.
+#[cfg(unix)]
+fn arm_management(config: &str) -> Option<Vec<String>> {
+    // A config that already opens its own management socket keeps it — passing
+    // `--management` on top would be the option twice, which OpenVPN refuses, and a
+    // refused option means the tunnel does not come up at all.
+    if config_declares_management(config) {
+        return None;
+    }
+    std::fs::create_dir_all(runtime_dir()).ok()?;
+    clear_management(config);
+    // Bind :0, read the port the kernel picked, release it. A racing bind in that
+    // gap only makes OpenVPN fail to open its socket, which costs the tunnel
+    // nothing — teardown falls back to the elevated kill.
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .ok()?
+        .local_addr()
+        .ok()?
+        .port();
+    let password = random_hex(32)?;
+    let pwfile = management_pwfile(config);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    opts.mode(0o600);
+    let mut f = opts.open(&pwfile).ok()?;
+    writeln!(f, "{password}").ok()?;
+    drop(f);
+    std::fs::write(management_portfile(config), format!("{port}\n")).ok()?;
+    Some(management_args(port, &pwfile))
+}
+
+/// Read back the endpoint recorded for `config`, if any.
+#[cfg(unix)]
+fn management_endpoint(config: &str) -> Option<(u16, String)> {
+    let port: u16 = std::fs::read_to_string(management_portfile(config))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    let password = std::fs::read_to_string(management_pwfile(config))
+        .ok()?
+        .lines()
+        .next()?
+        .to_string();
+    Some((port, password))
+}
+
+/// The pid of whichever flavour of tunnel `config` has recorded on disk — headless
+/// first, then interactive. Used only to CONFIRM that a management shutdown took.
+#[cfg(unix)]
+fn tunnel_pid(config: &str) -> Option<i32> {
+    pidfile_pid(&runtime_dir().join(format!("{}.pid", safe_stem(config))))
+        .or_else(|| pidfile_pid(&interactive_pidfile(config)))
+}
+
+/// Authenticate against the management socket on `port` and send `signal SIGTERM`.
+/// Reports only whether the command was *delivered*; whether the daemon actually
+/// died is [`management_shutdown`]'s job to confirm.
+///
+/// The greeting has to be read as bytes rather than lines: with a password file set,
+/// OpenVPN's first write is the bare prompt `ENTER PASSWORD:` with **no newline**, so
+/// a line-oriented read would block on it forever.
+#[cfg(unix)]
+fn management_send_sigterm(port: u16, password: &str) -> bool {
+    use std::io::Read;
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut sock) = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)) else {
+        return false;
+    };
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(250)));
+    let _ = sock.set_write_timeout(Some(Duration::from_secs(2)));
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut seen = String::new();
+    let mut buf = [0u8; 512];
+    // An empty password means the socket was armed without one; nothing to answer.
+    let mut authed = password.is_empty();
+    while Instant::now() < deadline {
+        match sock.read(&mut buf) {
+            Ok(0) => return false, // peer closed before we got anywhere
+            Ok(n) => seen.push_str(&String::from_utf8_lossy(&buf[..n])),
+            // A read timeout is just "nothing yet" — keep waiting out the deadline.
+            Err(_) => {}
+        }
+        if !authed && seen.contains("ENTER PASSWORD:") {
+            if writeln!(sock, "{password}").is_err() {
+                return false;
+            }
+            let _ = sock.flush();
+            authed = true;
+            seen.clear();
+            continue;
+        }
+        // A rejected password is `ERROR: bad password` (OpenVPN then closes, which
+        // the `Ok(0)` above also catches). Neither token appears in a success flow.
+        if seen.contains("FAILED") || seen.contains("ERROR:") {
+            return false;
+        }
+        // `SUCCESS: password is correct` (password set) or the unsolicited
+        // `>INFO:OpenVPN Management Interface Version …` banner (no password).
+        if authed && (seen.contains("SUCCESS") || seen.contains(">INFO")) {
+            break;
+        }
+    }
+    if !authed {
+        return false;
+    }
+    writeln!(sock, "signal SIGTERM").is_ok() && sock.flush().is_ok()
+}
+
+/// Ask the tunnel for `config` to stop over its own management socket, and report
+/// whether it is **confirmed down**. Only a `true` lets a caller skip the elevated
+/// kill; every other outcome falls through to it.
+#[cfg(unix)]
+fn management_shutdown(config: &str) -> bool {
+    let Some((port, password)) = management_endpoint(config) else {
+        return false;
+    };
+    if !management_send_sigterm(port, &password) {
+        return false;
+    }
+    // `signal SIGTERM` is asynchronous — OpenVPN acknowledges it, then unwinds its
+    // routes and exits. Only a pid that has actually gone proves the tunnel is down;
+    // anything less and we would skip the elevated kill on a still-live tunnel.
+    let Some(pid) = tunnel_pid(config) else {
+        // Nothing recorded to confirm against. Harmless either way: with no pidfile
+        // the elevated kill this gates has nothing to signal either.
+        clear_management(config);
+        return true;
+    };
+    for _ in 0..MANAGEMENT_EXIT_POLLS {
+        if !pid_alive(pid) {
+            clear_management(config);
+            return true;
+        }
+        std::thread::sleep(MANAGEMENT_EXIT_POLL);
+    }
+    false
+}
+
 /// True if a tunnel for `config` is currently up (registered and its process is
 /// still alive). Shared by Linux and Windows since both track the spawned child
 /// in [`registry`].
@@ -1078,12 +1391,18 @@ pub fn connect_streaming(
     let (userpass_file, askpass_file) =
         write_credfiles(config, &stem, username, password, key_passphrase)?;
     let pidfile = runtime_dir().join(format!("{stem}.pid"));
-    let args = openvpn_args(
+    let mut args = openvpn_args(
         config,
         userpass_file.as_deref(),
         askpass_file.as_deref(),
         &pidfile,
     )?;
+    // Give the daemon a management socket so `disconnect` can ask it to stop rather
+    // than spend a second polkit prompt on `pkexec kill`. Optional by design — a
+    // tunnel with no endpoint armed simply keeps the elevated teardown.
+    if let Some(mgmt) = arm_management(config) {
+        args.extend(mgmt);
+    }
     // The credentials have been read once OpenVPN is up (or has failed); remove
     // whichever files we wrote, on every exit path.
     let remove_credfiles = || {
@@ -1226,6 +1545,11 @@ fn wait_for_ready(child: &mut Child, on_line: &dyn Fn(&str)) -> Result<(), Strin
 /// our child. A missing/already-dead tunnel is treated as success.
 #[cfg(target_os = "linux")]
 pub fn disconnect(config: &str) -> Result<(), String> {
+    // First ask the daemon to stop over its own management socket — no elevation,
+    // hence no second password. When it works the pid below is already gone, so
+    // `kill_already_handled` short-circuits every elevated kill that follows; when
+    // it doesn't, those kills run exactly as they always did.
+    management_shutdown(config);
     // An interactive tunnel has no child of ours — kill it by the pid it wrote.
     disconnect_interactive(config);
     let proc = registry().lock().unwrap().remove(config);
@@ -1290,15 +1614,23 @@ fn kill_root_pid_checked(pid: i32) -> bool {
 ///
 /// The app-close path needs this. `disconnect` is best-effort — it drops the
 /// registry entry and ignores whether the elevated `pkexec kill` succeeded — which
-/// is right for exit-time cleanup but wrong for a quit that must be *cancelled* when
-/// the user dismisses the polkit prompt: the tunnel (and the machine-wide routing it
-/// installed) is still up, and silently forgetting it would strand that routing with
-/// nothing left to undo it. On failure the registry entry is preserved so the tunnel
-/// stays visible (`active_configs`) and killable.
+/// is right for exit-time cleanup but wrong for the one interactive ask on the
+/// close path: the frontend needs to know a "no" happened so it can warn the user
+/// that the tunnel (and the machine-wide routing it installed) is staying up,
+/// rather than silently forgetting it. On failure the registry entry is preserved
+/// so the tunnel stays visible (`active_configs`) and killable, and the config is
+/// [`mark_declined`]ed so no later pass re-prompts for it (the quit itself is no
+/// longer blocked on this — see `AppShell`'s close handler).
 #[cfg(target_os = "linux")]
 pub fn disconnect_checked(config: &str) -> Result<(), String> {
+    // Management socket first: it stops the daemon with no elevation at all, which
+    // is what keeps the app-close path to ZERO password prompts. Both checked kills
+    // below then find a dead pid and skip their `pkexec`. Only if this fails does the
+    // user see a prompt — and then exactly one, which they may still decline.
+    management_shutdown(config);
     // Interactive tunnel (terminal-started) first — its own elevated kill.
     if !disconnect_interactive_checked(config) {
+        mark_declined(config);
         return Err("openvpn teardown was not authorized".into());
     }
     // Headless tunnel: peek the pidfile without removing, so a refused kill leaves
@@ -1312,6 +1644,7 @@ pub fn disconnect_checked(config: &str) -> Result<(), String> {
         return Ok(());
     };
     if !kill_pidfile(&pidfile) {
+        mark_declined(config);
         return Err("openvpn teardown was not authorized".into());
     }
     // TERM delivered — now reap our child and forget it.
@@ -1367,6 +1700,12 @@ fn kill_pidfile(pidfile: &Path) -> bool {
 /// Tear down every live tunnel. Used at app exit; errors are swallowed so
 /// shutdown never blocks. Shared by Linux/Windows (each dispatches to its own
 /// platform [`disconnect`]).
+///
+/// Skips any config already [`mark_declined`]ed: the app-close path
+/// (`disconnect_checked`) already asked once, with the window still on screen, and
+/// was told no. Re-asking here would raise a `pkexec` prompt with no window left to
+/// hold it — parentless, easy to miss, and able to sit there stalling shutdown —
+/// which is worse than just leaving a tunnel the user already chose to keep up.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub fn disconnect_all() {
     // Interactive tunnels included: they are the ones that used to survive the app
@@ -1382,20 +1721,24 @@ pub fn disconnect_all() {
         keys.cloned().collect()
     };
     for k in keys {
+        if is_declined(&k) {
+            continue;
+        }
         let _ = disconnect(&k);
     }
 }
 
 /// The **checked twin of [`disconnect_all`]** used on the app-close path. It tears
 /// down the *same* set of registered tunnels — every key `disconnect_all` would touch,
-/// unfiltered by liveness — so that after it succeeds there is nothing left for the
-/// exit-time `disconnect_all` to kill (and therefore no polkit prompt raised after the
-/// window is already gone). But it stops at the first refused teardown and reports it,
-/// so a dismissed prompt aborts the quit instead of quitting with the machine's routing
-/// still rewritten. Enumerating the registries directly — rather than the frontend
-/// filtering `active_configs` — is the point: `active_configs` hides a tunnel whose
-/// liveness probe reads false, which is exactly a tunnel `disconnect_all` would still
-/// prompt to kill.
+/// unfiltered by liveness — while the window is still on screen, which is where a
+/// `pkexec` prompt belongs. It stops at the first refused teardown and reports it, so
+/// the frontend can warn the user their tunnel is staying up — but it does **not**
+/// retry: a refusal is [`mark_declined`]ed, so the exit-time `disconnect_all` leaves it
+/// alone instead of raising a second, parentless prompt after the window is gone.
+/// Enumerating the registries directly — rather than the frontend filtering
+/// `active_configs` — is the point: `active_configs` hides a tunnel whose liveness
+/// probe reads false, which is exactly a tunnel `disconnect_all` would still prompt to
+/// kill.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub fn disconnect_all_checked() -> Result<(), String> {
     let keys: Vec<String> = {
@@ -2155,6 +2498,12 @@ pub fn connect_streaming(
         askpass_file.as_deref(),
         &pidfile,
     )?;
+    // Management socket, so `disconnect` asks the daemon to stop instead of raising
+    // a second `osascript` admin prompt to `kill` it (the macOS twin of the polkit
+    // double-prompt). Optional: no endpoint just keeps the elevated teardown.
+    if let Some(mgmt) = arm_management(config) {
+        args.extend(mgmt);
+    }
     args.push("--daemon".to_string());
     args.push("--log".to_string());
     args.push(logfile.to_string_lossy().into_owned());
@@ -2229,6 +2578,10 @@ pub fn connect_streaming(
 /// tunnel is treated as success.
 #[cfg(target_os = "macos")]
 pub fn disconnect(config: &str) -> Result<(), String> {
+    // Management socket first — stops the daemon with no admin prompt at all, so the
+    // "second prompt per disconnect" the section comment above accepts for v1 is now
+    // only paid when the socket is unavailable.
+    management_shutdown(config);
     // An interactive tunnel has no entry in `mac_registry` — kill it by its pid.
     disconnect_interactive(config);
     let proc = mac_registry().lock().unwrap().remove(config);
@@ -2302,10 +2655,16 @@ mod tests {
     /// Drop a config from both the interactive registry and the disk, without going
     /// through `disconnect_interactive` — which would try to `kill` the pid, and in
     /// these tests that pid is *our own process*.
+    ///
+    /// Also clears the management endpoint `arm_interactive` now writes, so the suite
+    /// leaves nothing behind in the user's real runtime dir (these tests run against
+    /// it, not a temp dir).
     fn forget_interactive(config: &str) {
         if let Some(pidfile) = interactive_registry().lock().unwrap().remove(config) {
             let _ = std::fs::remove_file(pidfile);
         }
+        #[cfg(unix)]
+        clear_management(config);
     }
 
     /// The interactive command must carry a `--writepid` Eldrun chose, and claim it.
@@ -2374,6 +2733,8 @@ mod tests {
         // Reaped from both the registry and the disk.
         assert!(!interactive_registry().lock().unwrap().contains_key(cfg));
         assert!(!pidfile.exists());
+
+        forget_interactive(cfg);
     }
 
     /// Arming twice must not resurrect a stale pidfile: a leftover from a previous
@@ -2465,6 +2826,162 @@ mod tests {
         assert!(cmd.contains("'/home/u/work.ovpn'"));
         assert!(cmd.contains("--auth-nocache"));
         assert!(!cmd.contains("--askpass"));
+
+        forget_interactive("/home/u/work.ovpn");
+    }
+
+    /// The whole point of the management socket: a terminal-started tunnel carries
+    /// one too, so stopping it costs no second polkit prompt either. Without this the
+    /// interactive flavour would silently keep the old double-password teardown.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn interactive_connect_command_arms_a_management_socket() {
+        let cfg = "/home/u/mgmt-interactive.ovpn";
+        forget_interactive(cfg);
+        let cmd = interactive_connect_command(cfg).unwrap();
+        assert!(
+            cmd.contains("--management 127.0.0.1 "),
+            "interactive tunnels need a management socket too: {cmd}"
+        );
+        // The endpoint it armed is the one teardown will read back.
+        let (port, password) = management_endpoint(cfg).expect("endpoint recorded");
+        assert!(port > 0);
+        assert!(!password.is_empty());
+        assert!(cmd.contains(&port.to_string()));
+
+        forget_interactive(cfg);
+    }
+
+    /// A config that runs its own management socket must be left alone: `--management`
+    /// twice is an options error, i.e. a tunnel that never comes up at all. Worth a
+    /// test because the failure is total and only shows on the user's own config.
+    #[test]
+    fn config_declaring_management_is_detected() {
+        let dir = std::env::temp_dir().join("eldrun-mgmt-detect");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let own = dir.join("own.ovpn");
+        std::fs::write(&own, "client\nmanagement 127.0.0.1 7505\nremote vpn.example 1194\n")
+            .unwrap();
+        assert!(config_declares_management(own.to_str().unwrap()));
+        assert!(arm_management(own.to_str().unwrap()).is_none());
+
+        let plain = dir.join("plain.ovpn");
+        std::fs::write(
+            &plain,
+            "client\n# management 127.0.0.1 7505\n; management foo\nremote vpn.example 1194\n",
+        )
+        .unwrap();
+        assert!(
+            !config_declares_management(plain.to_str().unwrap()),
+            "a commented-out directive is not a declaration"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `--management <ip> <port> <pwfile>`, in that order — OpenVPN is positional
+    /// here, so a reordering would be silently accepted and mean something else.
+    #[test]
+    fn management_args_shape() {
+        let args = management_args(7505, Path::new("/run/eldrun/openvpn/x.mgmt.pw"));
+        assert_eq!(
+            args,
+            vec![
+                "--management".to_string(),
+                "127.0.0.1".to_string(),
+                "7505".to_string(),
+                "/run/eldrun/openvpn/x.mgmt.pw".to_string(),
+            ]
+        );
+    }
+
+    /// An armed endpoint round-trips, and its password file is owner-only — it is the
+    /// only thing standing between a local process and control of the tunnel.
+    #[cfg(unix)]
+    #[test]
+    fn arm_management_records_an_owner_only_endpoint() {
+        let cfg = "/home/u/mgmt-roundtrip.ovpn";
+        let args = arm_management(cfg).expect("endpoint armed");
+        assert_eq!(args[0], "--management");
+        let (port, password) = management_endpoint(cfg).expect("endpoint readable");
+        assert_eq!(args[2], port.to_string());
+        assert_eq!(password.len(), 64, "32 random bytes, hex-encoded");
+
+        let mode = std::fs::metadata(management_pwfile(cfg))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "management password must not be group/world readable");
+
+        clear_management(cfg);
+        assert!(management_endpoint(cfg).is_none(), "cleared endpoint is forgotten");
+    }
+
+    /// The teardown handshake, against a stand-in for OpenVPN. Two things are pinned:
+    /// the client answers the password prompt (which arrives with **no newline**, so a
+    /// line-oriented read would hang on it forever), and what it then sends is exactly
+    /// `signal SIGTERM` — the command that makes the root daemon stop *itself*, which
+    /// is the entire reason no second password is needed.
+    #[cfg(unix)]
+    #[test]
+    fn management_sigterm_authenticates_then_signals() {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            write!(sock, "ENTER PASSWORD:").unwrap();
+            sock.flush().unwrap();
+            let mut reader = BufReader::new(sock.try_clone().unwrap());
+            let mut pw = String::new();
+            reader.read_line(&mut pw).unwrap();
+            let _ = tx.send(format!("pw:{}", pw.trim()));
+            writeln!(sock, "SUCCESS: password is correct").unwrap();
+            sock.flush().unwrap();
+            let mut cmd = String::new();
+            reader.read_line(&mut cmd).unwrap();
+            let _ = tx.send(format!("cmd:{}", cmd.trim()));
+        });
+
+        assert!(management_send_sigterm(port, "s3cret"));
+        let got: Vec<String> = rx.iter().take(2).collect();
+        assert_eq!(got, vec!["pw:s3cret", "cmd:signal SIGTERM"]);
+    }
+
+    /// A refused password must report failure, never a false "tunnel is down" — that
+    /// is what makes the caller fall back to the elevated kill instead of walking away
+    /// from a tunnel still rerouting the machine.
+    #[cfg(unix)]
+    #[test]
+    fn management_sigterm_reports_failure_when_auth_is_refused() {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            write!(sock, "ENTER PASSWORD:").unwrap();
+            sock.flush().unwrap();
+            let mut line = String::new();
+            let _ = BufReader::new(sock.try_clone().unwrap()).read_line(&mut line);
+            let _ = writeln!(sock, "ERROR: bad password");
+            let _ = sock.flush();
+        });
+
+        assert!(!management_send_sigterm(port, "wrong"));
+    }
+
+    /// Nothing listening (a tunnel from a previous run whose port is long gone) is an
+    /// ordinary failure, not a hang or a panic.
+    #[cfg(unix)]
+    #[test]
+    fn management_sigterm_fails_on_a_dead_port() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener); // nothing is listening now
+        assert!(!management_send_sigterm(port, "whatever"));
     }
 
     #[cfg(target_os = "linux")]

@@ -158,6 +158,8 @@ export interface Settings {
   show_cpu_usage?: boolean;
   show_ram_usage?: boolean;
   show_gpu_usage?: boolean;
+  /** Header clock: show seconds. Off by default (hh:mm only). */
+  show_clock_seconds?: boolean;
   /** When true (the default), Claude agent tabs are spawned with `--remote-control`
    *  so the running session can be monitored/steered from the Claude app/web. Only
    *  Claude supports this flag; other agents ignore the setting. */
@@ -195,6 +197,16 @@ export interface Settings {
    *  tunnel starts by itself. Only one config can be armed: a tunnel reroutes the
    *  whole machine, so two would fight over the routing. */
   vpn_auto_connect?: string | null;
+  /** When true, the header's OpenVPN indicator is shown. Default OFF — most
+   *  projects are local-only, so the machine-wide tunnel control stays hidden
+   *  until asked for (the first-run `RemoteFeaturesPrompt`, or Settings). */
+  vpn_enabled?: boolean;
+  /** When true, the header's global-machines indicator is shown. Default OFF,
+   *  same reasoning as `vpn_enabled`. */
+  machines_enabled?: boolean;
+  /** True once the first-run "Using VPN or remote machines?" prompt has been
+   *  shown/answered, so it never re-asks automatically. */
+  remote_features_prompted?: boolean;
   /** Energy-saver mode. "off" never throttles; "battery" (the default) throttles
    *  only while running on battery; "always" throttles regardless of power. When
    *  active, Eldrun pauses the blob auto-spin, collapses idle animations, and

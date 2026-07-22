@@ -812,6 +812,30 @@ export function SettingsDialog({
               />
             )}
 
+            <div className="settings-section-title">{t("settings.remoteFeatures")}</div>
+            <div className="settings-toggle-card">
+              <label className="settings-toggle-card-row">
+                <span>{t("settings.vpnEnabled")}</span>
+                <Toggle
+                  checked={settings?.vpn_enabled ?? false}
+                  onChange={(e) => void updateSettings({ vpn_enabled: e.target.checked })}
+                />
+              </label>
+              <label className="settings-toggle-card-row">
+                <span>{t("settings.machinesEnabled")}</span>
+                <Toggle
+                  checked={settings?.machines_enabled ?? false}
+                  onChange={(e) => void updateSettings({ machines_enabled: e.target.checked })}
+                />
+              </label>
+              <p className="settings-help">
+                Both add a machine-wide control to the header: an OpenVPN tunnel
+                (routes this whole computer's traffic while up) and a list of SSH
+                machines no project owns. Off by default; asked about once on
+                first launch.
+              </p>
+            </div>
+
             <div className="settings-row">
               <label>{t("settings.energySaver")}</label>
               <Dropdown
@@ -908,6 +932,13 @@ export function SettingsDialog({
                 local models loaded in Ollama. The pill appears in the header next to
                 the timer.
               </p>
+              <label className="settings-toggle-card-row">
+                <span>{t("settings.showClockSeconds")}</span>
+                <Toggle
+                  checked={settings?.show_clock_seconds ?? false}
+                  onChange={(e) => void updateSettings({ show_clock_seconds: e.target.checked })}
+                />
+              </label>
             </div>
 
             <div className="settings-section-title">{t("settings.calendar")}</div>

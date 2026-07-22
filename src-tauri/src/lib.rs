@@ -710,6 +710,8 @@ pub fn run() {
             commands::sync::sync_mark_selected,
             commands::sync::sync_set_auto,
             commands::sync::sync_auto_preview,
+            commands::sync::sync_big_folders,
+            commands::sync::sync_set_excluded,
             commands::sync::sync_status,
             commands::sync::sync_file_meta,
             commands::sync::sync_resolve_if_identical,
@@ -838,6 +840,7 @@ pub fn run() {
             commands::project_runtime::load_right_panel_folder,
             commands::project_runtime::save_right_panel_folder,
             // Git
+            commands::git::git_available,
             commands::git::git_status,
             commands::git::git_repo_root,
             commands::git::detect_git_providers,
@@ -977,6 +980,9 @@ pub fn run() {
                 _app.state::<RegistryState>().lock().unwrap().kill_all();
                 // Tear down any OpenVPN tunnels brought up for VPN-gated
                 // remote projects so no privileged tunnel outlives the app.
+                // Best-effort: a tunnel the close-path already asked about and was
+                // told to leave up (`declined_configs`) is skipped here rather than
+                // re-prompted with no window left to hold the dialog.
                 services::openvpn::disconnect_all();
                 // Remove every project container this run created — container
                 // lifetime is the project session, never longer than the app.

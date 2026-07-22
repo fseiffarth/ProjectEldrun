@@ -22,6 +22,12 @@ interface SyncStatusEntry {
   state: SyncFileState;
   /** Effective auto-sync (own entry or an ancestor auto folder marker). */
   auto_sync: boolean;
+  /** This path's OWN byte-sync exclusion marker (not an inherited one). */
+  excluded: boolean;
+  /** Current host modification time, when the sync-status probe reported one. */
+  host_mtime: number | null;
+  /** Current local-mirror modification time, when known. */
+  local_mtime: number | null;
 }
 
 /** Payload of the backend `sync-progress` event. */
@@ -41,6 +47,14 @@ export interface SyncEntryStatus {
   isDir: boolean;
   /** Whether this path auto-syncs (own flag or an ancestor auto folder). */
   auto: boolean;
+  /** Carries its own "excluded from byte-sync" marker (giant-folder prompt or
+   *  the tree's own Exclude item). Inherited exclusion is the backend's to
+   *  resolve; this is what flips the menu item's label. */
+  excluded: boolean;
+  /** Current host modification time, for the diverged-files list. */
+  hostMtime: number | null;
+  /** Current local-mirror modification time, for the diverged-files list. */
+  localMtime: number | null;
 }
 
 /** One side (local mirror or host) of a tracked file, from `sync_file_meta`. */
@@ -66,6 +80,27 @@ export interface SyncFileMeta {
 export interface AutoSyncPreview {
   files: number;
   bytes: number;
+}
+
+/** One folder big enough to be worth asking about before the first sync pass
+ *  (`sync_big_folders`), with what each side holds. A folder present on only one
+ *  side reports zeros for the other — which is itself the useful answer. */
+export interface BigFolderRow {
+  rel: string;
+  localFiles: number;
+  localBytes: number;
+  hostFiles: number;
+  hostBytes: number;
+  excluded: boolean;
+}
+
+/** The giant-folder census. `hostScanned` is false when the project was not
+ *  connected — the rows then carry local numbers only and the caller re-runs
+ *  once the pool comes up. */
+export interface BigFolderScan {
+  folders: BigFolderRow[];
+  hostScanned: boolean;
+  hostError: string | null;
 }
 
 /** Live transfer progress for a project (null when idle). */
@@ -130,6 +165,17 @@ interface SyncStore {
   /** What auto-syncing `relPath` would start pulling from the host. Read-only —
    *  the caller confirms a large answer before committing to `setAuto`. */
   autoPreview: (projectId: string, relPath: string) => Promise<AutoSyncPreview>;
+  /** Census the folders too big to sync silently, on BOTH sides (mirror + host).
+   *  Read-only; the host half is skipped when the project isn't connected. */
+  bigFolders: (projectId: string) => Promise<BigFolderScan>;
+  /** Record (or lift) an explicit byte-sync exclusion for folders. Stronger than
+   *  `setAuto(false)`: the whole-project pull and push skip an excluded tree too.
+   *  Never deletes — mirror bytes already present stay put. */
+  setExcluded: (
+    projectId: string,
+    relPaths: string[],
+    excluded: boolean,
+  ) => Promise<void>;
 }
 
 function indexStatus(rows: SyncStatusEntry[]): Record<string, SyncEntryStatus> {
@@ -140,6 +186,9 @@ function indexStatus(rows: SyncStatusEntry[]): Record<string, SyncEntryStatus> {
       selected: r.selected,
       isDir: r.is_dir,
       auto: r.auto_sync,
+      excluded: r.excluded,
+      hostMtime: r.host_mtime,
+      localMtime: r.local_mtime,
     };
   }
   return out;
@@ -158,6 +207,37 @@ export function amberPaths(
     .filter(([, s]) => s.state === "amber")
     .map(([rel]) => rel)
     .sort();
+}
+
+/**
+ * Effective (own-marker-OR-inherited) byte-sync exclusion for `rel`, mirroring
+ * the backend's `remote_sync::is_excluded(manifest, rel, "")` nearest-marker
+ * walk: `rel`'s own entry, then each ancestor DIRECTORY entry, root last. The
+ * first entry with its own `excluded` wins; a nearer `auto` re-includes a path
+ * inside an excluded ancestor tree. Root ("") is never itself consulted here
+ * (mirrors the backend's `under === ""` skip), only used as the walk's floor.
+ * Cheap to call per row — `byPath` already holds every manifest entry the tree
+ * needs (no extra fetch), same map `amberPaths`/the per-row sync slot read.
+ */
+export function isPathExcluded(
+  byPath: Record<string, SyncEntryStatus> | undefined,
+  rel: string,
+): boolean {
+  if (!byPath) return false;
+  let cur = rel;
+  for (;;) {
+    if (cur !== "") {
+      const e = byPath[cur];
+      if (e && (e.isDir || cur === rel)) {
+        if (e.excluded) return true;
+        if (e.auto) return false;
+      }
+    }
+    const idx = cur.lastIndexOf("/");
+    if (idx >= 0) cur = cur.slice(0, idx);
+    else if (cur !== "") cur = "";
+    else return false;
+  }
 }
 
 export const useSyncStore = create<SyncStore>((set, get) => ({
@@ -241,6 +321,14 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
 
   autoPreview: async (projectId, relPath) =>
     invoke<AutoSyncPreview>("sync_auto_preview", { projectId, relPath }),
+
+  bigFolders: async (projectId) =>
+    invoke<BigFolderScan>("sync_big_folders", { projectId }),
+
+  setExcluded: async (projectId, relPaths, excluded) => {
+    await invoke("sync_set_excluded", { projectId, relPaths, excluded });
+    await get().refreshStatus(projectId);
+  },
 }));
 
 /** Payload of the backend `auto-sync` event (one per reconcile pass that moved

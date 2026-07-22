@@ -94,6 +94,21 @@ Both list only the load-bearing files; the tree is the source of truth.
   **different notions of scope**, so marking a folder auto-sync is the one click
   that can haul a multi-GB tree into the mirror; the file tree prices the host
   subtree first (`sync_auto_preview`) and confirms when it is large.
+  - **The giant folders are asked about once, at setup, on both sides**
+    (`services::big_folders` → `BigFolderExcludeDialog`). Pricing one folder on the
+    click that syncs it is too late for a project whose `node_modules/`, `.venv/`,
+    `data/` or `checkpoints/` was there before Eldrun was: nothing else in the app
+    would ever mention them, since byte-sync doesn't read `.gitignore`. So a
+    project newly created/imported as remote, or **extended** to a host, gets one
+    census — the local mirror walked directly, the host in one `du -ak` round trip
+    (skipped, never attempted, at a cold pool: dispatching at a dead session is
+    what freezes the window) — and one prompt listing each side's numbers, ticked
+    to **exclude** by default. The answer is a manifest `excluded` marker, which is
+    deliberately *stronger* than `auto_off`: it is honoured by the whole-project
+    pull and push too (`is_excluded`, whose `under` waives only the marker on the
+    path the user explicitly asked to transfer), and it makes the rsync fast path
+    stand down, since a whole-subtree rsync cannot honour a carve-out. Byte-side
+    only — a **git-tracked** file in an excluded folder still travels as a commit.
 - **Passwords are never persisted by default**, and the opt-in that persists them is
   the same in every remote menu — the Connect modal *and* the new-project /
   extend-to-remote dialogs (`useRemoteSession`, rendered by `RemoteProjectSection`).
@@ -156,6 +171,20 @@ Both list only the load-bearing files; the tree is the source of truth.
   on a project's `OpenVpnSpec`, so a tunnel started from the header had none — the
   backend now keeps a copy beside the saved password (`openvpn_user_account`), saved
   and cleared by the same opt-in checkbox as the secrets.
+- **One polkit prompt per tunnel, on connect — and closing Eldrun never traps you.**
+  Elevation is unavoidable to *build* a tunnel (tun device + routing), but stopping
+  one is not: every tunnel Eldrun starts, headless or typed into a terminal tab,
+  carries an owner-only `--management` socket on loopback, and teardown asks the root
+  daemon to `signal SIGTERM` **itself** — nothing to elevate, so no second password.
+  The endpoint sits beside the pidfile so a tunnel from a previous run stays
+  stoppable after a restart. It is deliberately an *optimization*: an unconfirmed
+  shutdown (or a config carrying its own `management` directive, which `--management`
+  twice would turn into an options error) falls back to the old `pkexec kill`, so no
+  path can silently strand a tunnel. And that fallback is asked **at most once** — on
+  the close path, while the window is still on screen. Declining it does **not** block
+  the quit: Eldrun warns that the tunnel stays up and closes anyway, and records the
+  refusal so the exit-time teardown does not raise a second, parentless polkit dialog
+  after the window is gone (which is what used to leave the machine unusable).
 - Project-local state lives in each project's `project.json`. This includes the
   per-project tab layout (`tab_layout`/`tab_groups`). Shell/files tabs are always
   restored on relaunch; agent tabs are normally dropped, **except resumable agent
@@ -227,16 +256,12 @@ Both list only the load-bearing files; the tree is the source of truth.
   Sessions-view attach. **Kill vs. detach**: closing a tab **always detaches** —
   `lib/closeRemoteTab.ts`'s `closeTabWithConfirm` just `removeTab`s, killing only the
   ssh/PTY client, so the session lives on under its tmux daemon; an app-exit,
-  disconnect, crash, or respawn likewise **leave the session alive**. Two explicit
-  actions terminate a session — a session's **×** (kill) in the Sessions view
-  (`remote_tmux_kill`/`local_tmux_kill`), and an **active disconnect** of the whole
-  host, which ends *every* session on it at once (`remote_kill_all_jobs`: `tmux
-  kill-server` over the host, best-effort). The active disconnect is the "Disconnect"
-  on a **global machine** (`MachinesIndicator`, + `ssh_close_master` to drop any
-  shared master) and the "Disconnect & end jobs" beside a project host's plain
-  Disconnect (`RemoteConnectDialog`, then the ordinary `remote_disconnect` teardown).
-  Both are **explicit-click only** — `remote_kill_all_jobs` must never run on
-  deactivation or relaunch, or persistent sessions would stop surviving a restart.
+  crash, or respawn likewise **leave the session alive**. Disconnecting a remote
+  machine is deliberately different: `remote_disconnect` and
+  `remote_disconnect_all_hosts` end *every* tmux session on each currently
+  connected host before tearing down its pool. A session's **×** remains the way to
+  terminate just that one session (`remote_tmux_kill`/`local_tmux_kill`). Global
+  machines also issue `remote_kill_all_jobs` before closing their master.
   Because a session outlives its tab, a host
   can hold runs no tab points at; the **Sessions view** (`☰` toggle in
   `ProjectFilesView`, mirrors the Orange view) makes them discoverable —

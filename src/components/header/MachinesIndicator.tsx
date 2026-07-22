@@ -8,6 +8,7 @@ import { UntestedTag } from "../common/UntestedTag";
 import { useGlobalMachinesStore, type ImportResult } from "../../stores/globalMachines";
 import { useGlobalMachineMonitorStore } from "../../stores/globalMachineMonitor";
 import { useProjectsStore } from "../../stores/projects";
+import { useSettingsStore } from "../../stores/settings";
 import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { useRemoteUsageStore } from "../../stores/remoteUsage";
 import { useHostBusyStore, busyReading, busyLabel } from "../../stores/hostBusy";
@@ -47,6 +48,9 @@ export function targetLabel(m: { user?: string; host: string; port?: number }): 
  * `stores/globalMachines.ts` / `commands::global_machines`.
  */
 export function MachinesIndicator() {
+  // Off by default (Settings' "Remote features") — most projects are local-only,
+  // so this fleet-wide SSH list stays out of the header until asked for.
+  const enabled = useSettingsStore((s) => s.settings?.machines_enabled ?? false);
   const machines = useGlobalMachinesStore((s) => s.machines);
   const status = useGlobalMachinesStore((s) => s.status);
   const load = useGlobalMachinesStore((s) => s.load);
@@ -216,8 +220,9 @@ export function MachinesIndicator() {
   };
 
   useEffect(() => {
+    if (!enabled) return;
     void load();
-  }, [load]);
+  }, [load, enabled]);
 
   useEffect(() => {
     if (!open) {
@@ -555,8 +560,10 @@ export function MachinesIndicator() {
     }
   };
 
+  if (!enabled) return null;
+
   return (
-    <div className="global-apps-menu no-drag" onMouseEnter={reveal} onMouseLeave={scheduleClose}>
+    <div className="global-apps-menu header-status-menu-anchor no-drag" onMouseEnter={reveal} onMouseLeave={scheduleClose}>
       <button
         type="button"
         className="global-apps-menu-btn machines-indicator-btn"

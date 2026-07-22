@@ -1013,7 +1013,7 @@ export const LESSONS: Lesson[] = [
         anchor: null,
         placement: "bottom",
         title: "Closing a tab detaches it",
-        body: "Closing a tab is non-destructive: it kills only the SSH/PTY client, so the session lives on under its tmux daemon and stays reattachable. A quit, disconnect, crash, or respawn all leave the session running too — so a host can hold runs no tab currently points at.",
+        body: "Closing a tab is non-destructive: it kills only the SSH/PTY client, so the session lives on under its tmux daemon and stays reattachable. A quit, crash, or respawn leaves it running too; disconnecting its machine ends that host's sessions.",
       },
       {
         id: "sessions-view",

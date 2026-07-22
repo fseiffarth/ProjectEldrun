@@ -1,4 +1,4 @@
-import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Toggle } from "../common/Toggle";
 import { invoke } from "@tauri-apps/api/core";
@@ -23,7 +23,7 @@ import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/dragPlatform"
 import { useSettingsStore } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
-import { useSyncStore, type SyncFileState } from "../../stores/sync";
+import { useSyncStore, isPathExcluded, type SyncFileState } from "../../stores/sync";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
 import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, visibleEntries, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
@@ -44,17 +44,32 @@ import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
 import { normalizeScanPath } from "./ProjectFilesSettings";
 import { FileTreeSearch } from "./FileTreeSearch";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
+import { UntestedTag } from "../common/UntestedTag";
 
 // Persist whether the collapsed "gitignored" files section is expanded, so the
 // choice survives right-panel hide/show and remounts (FileTree remounts each
 // time the panel reopens). Mirrors GitHistory's localStorage view pref.
 const GITIGNORED_EXPANDED_KEY = "eldrun.fileTree.gitignoredExpanded";
 
+// How many rows the tree renders at once, and how many more each click of the
+// "show more" footer adds. The rows are not virtualized, so this is the bound on
+// how much DOM one listing can build — see `rowCap` for why an unbounded listing
+// is what makes a big folder freeze the window rather than merely load slowly.
+// A page still overfills the tallest panel, so the cap is invisible in every
+// ordinary folder and only engages where it is the difference between usable
+// and not.
+const ROW_CAP_STEP = 100;
+
 // A stable empty-object fallback for the `python_run_args` selector below — a
 // fresh `{}` literal on every render would change the snapshot's reference
 // identity each time, which `useSyncExternalStore` (what the store hook is
 // built on) reads as "changed" and re-renders forever.
 const EMPTY_PY_ARGS: Record<string, string> = {};
+
+/// How long the pointer must rest on a row before its tooltip opens. Long enough
+/// that sweeping the tree never opens (or measures) anything — see
+/// `handleEntryMouseEnter` for why entry-triggered tooltips were expensive.
+const TOOLTIP_DWELL_MS = 400;
 
 function sizeCategory(bytes: number): string {
   if (bytes < 10 * 1024) return "size-small";
@@ -340,6 +355,32 @@ export function FileTree({
   // when Ctrl is pressed/released.
   const [ctrlHeld, setCtrlHeld] = useState(false);
   const [tooltip, setTooltip] = useState<{ rect: DOMRect; entry: FileEntry } | null>(null);
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
+  // Vertical-only correction: a row near the bottom of a short docked viewer
+  // (the right panel, a subwindow's file sidebar) still measures its anchor
+  // against the WHOLE app window, so an unclamped `top: tooltip.rect.top`
+  // could push the tooltip's body past the window's bottom edge. Horizontal
+  // placement already picks a side with room (see the style below), so only
+  // this axis needs correcting. Measured off `offsetHeight`, not the element's
+  // current on-screen rect, so a stale shift from a previous tooltip can't
+  // pollute the new measurement.
+  const [tooltipShift, setTooltipShift] = useState(0);
+  useLayoutEffect(() => {
+    if (!tooltip) {
+      setTooltipShift(0);
+      return;
+    }
+    const el = tooltipRef.current;
+    if (!el) {
+      setTooltipShift(0);
+      return;
+    }
+    const overflow = tooltip.rect.top + el.offsetHeight - (window.innerHeight - 8);
+    setTooltipShift(overflow > 0 ? overflow : 0);
+  }, [tooltip]);
+  // Drop a pending dwell timer if the tree unmounts mid-hover, so it can't fire
+  // a setState against a gone component.
+  useEffect(() => () => cancelTooltipTimer(), []);
   // In-tree search: while `search` is non-empty the tree body is replaced by a
   // flat result list (FileTreeSearch). `searchMode` picks filename vs. content
   // search; `searchCase` only applies to content search (name search is fuzzy).
@@ -375,6 +416,21 @@ export function FileTree({
   // Escape) would only fire after a manual Tab-in (notably in the docked sidebar).
   const treeRootRef = useRef<HTMLDivElement | null>(null);
   useClampToViewport(contextMenuRef, contextMenu, setContextMenu);
+  // Close on any click outside the menu, not just inside this tree: the tree's
+  // own `onMouseDown={() => setContextMenu(null)}` only fires for a click that
+  // bubbles through the `.file-tree` root, so a click in the terminal, another
+  // tab, or anywhere else in the window left a stale menu floating (it's
+  // portaled to document.body, so it stays visually on top regardless).
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onDocMouseDown = (ev: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(ev.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [contextMenu]);
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm>(null);
   const [autoConfirm, setAutoConfirm] = useState<AutoConfirm>(null);
   const [defaultAppFor, setDefaultAppFor] = useState<FileEntry | null>(null);
@@ -490,6 +546,7 @@ export function FileTree({
   const syncMarkSelected = useSyncStore((s) => s.markSelected);
   const syncSetAuto = useSyncStore((s) => s.setAuto);
   const syncAutoPreview = useSyncStore((s) => s.autoPreview);
+  const syncSetExcluded = useSyncStore((s) => s.setExcluded);
   // A remote project's `list_dir`/`git_file_statuses` dispatch over SSH/SFTP on
   // the backend. Those are SYNCHRONOUS Tauri commands (they run on the main
   // thread), so calling them while the pooled connection is down blocks on the
@@ -584,19 +641,73 @@ export function FileTree({
     const isRoot = !relPath && separateScaffold;
     const nonStandard = isRoot ? entries.filter((e) => !STANDARD_PROJECT_FILES.has(e.name)) : entries;
     const standard = isRoot ? entries.filter((e) => STANDARD_PROJECT_FILES.has(e.name)) : [];
-    const regular = nonStandard.filter((e) => displayStatuses[e.name] !== "ignored");
-    const gitignored = nonStandard.filter((e) => displayStatuses[e.name] === "ignored");
+    // The size breakdown is an independent ignored-path scan. If it establishes
+    // that every byte in a folder is ignored, keep that folder out of the normal
+    // section even when the status request was incomplete (for example an older
+    // backend, or Git configured with status.showUntrackedFiles=no). Otherwise
+    // the normal-row size subtracts the ignored bytes and misleadingly shows 0 B.
+    const isIgnored = (e: FileEntry) =>
+      displayStatuses[e.name] === "ignored" ||
+      (e.is_dir &&
+        (dirIgnoredBytes[e.path] ?? 0) > 0 &&
+        dirSizes[e.path] !== undefined &&
+        (dirIgnoredBytes[e.path] ?? 0) >= dirSizes[e.path]);
+    const regular = nonStandard.filter((e) => !isIgnored(e));
+    const gitignored = nonStandard.filter(isIgnored);
     return { regular, standard, gitignored };
-  }, [entries, relPath, separateScaffold, displayStatuses]);
+  }, [entries, relPath, separateScaffold, displayStatuses, dirSizes, dirIgnoredBytes]);
+
+  // How many rows the tree will actually render, raised a page at a time by the
+  // "show more" footer. Rows are NOT virtualized, and each one is ~16 elements
+  // with ~11 handlers rebuilt on every render of this component — so a folder
+  // holding thousands of files (an ML sweep's `results/` routinely does: one run
+  // per config × per step) builds six figures of DOM and re-reconciles the lot
+  // every time a size lands, a sync status refreshes, or the pointer moves. That
+  // is enough to make the whole window unusable while the CPU still looks idle,
+  // because the cost is layout/paint in a software-rendered webview, not compute.
+  // Capping keeps the cost proportional to what is on screen; the folder is still
+  // fully reachable, one page at a time.
+  const [rowCap, setRowCap] = useState(ROW_CAP_STEP);
+  // A new folder (or a new project) starts back at one page — the cap is about
+  // this listing, not a preference to carry around the tree.
+  useEffect(() => {
+    setRowCap(ROW_CAP_STEP);
+  }, [relPath, projectId]);
+
+  // The rows actually rendered, in on-screen order, clipped to `rowCap` across
+  // the sections as a whole (the budget is spent top-down, so raising the cap
+  // extends the list rather than reshuffling it). Collapsed sections spend
+  // nothing — they render no rows. Section *labels* keep counting the full
+  // `sections` lists, so "gitignored (8316)" still tells the truth about the
+  // folder while only a page of it is on screen.
+  const rowWindow = useMemo(() => {
+    let budget = rowCap;
+    const clip = (list: FileEntry[]) => {
+      const out = budget >= list.length ? list : list.slice(0, Math.max(0, budget));
+      budget -= out.length;
+      return out;
+    };
+    const regular = clip(sections.regular);
+    const standard = scaffoldExpanded ? clip(sections.standard) : [];
+    const gitignored = gitignoredExpanded ? clip(sections.gitignored) : [];
+    const total =
+      sections.regular.length +
+      (scaffoldExpanded ? sections.standard.length : 0) +
+      (gitignoredExpanded ? sections.gitignored.length : 0);
+    const shown = regular.length + standard.length + gitignored.length;
+    return { regular, standard, gitignored, hidden: total - shown };
+  }, [sections, rowCap, scaffoldExpanded, gitignoredExpanded]);
 
   // Flat list of visible row paths in on-screen order — the axis a shift-range
-  // spans. Collapsed sections contribute no rows (they aren't rendered).
+  // spans. Collapsed sections contribute no rows (they aren't rendered), and
+  // neither do rows beyond the cap: a range must span exactly what the user can
+  // see, or shift-click would silently select rows that aren't on screen.
   const orderedVisible = useMemo(() => {
-    const paths = sections.regular.map((e) => e.path);
-    if (scaffoldExpanded) paths.push(...sections.standard.map((e) => e.path));
-    if (gitignoredExpanded) paths.push(...sections.gitignored.map((e) => e.path));
+    const paths = rowWindow.regular.map((e) => e.path);
+    paths.push(...rowWindow.standard.map((e) => e.path));
+    paths.push(...rowWindow.gitignored.map((e) => e.path));
     return paths;
-  }, [sections, scaffoldExpanded, gitignoredExpanded]);
+  }, [rowWindow]);
 
   // Prune selected paths that vanished from the listing (fs-watch removed a
   // file, a folder was deleted, etc.) so stale entries never linger in bulk ops.
@@ -673,8 +784,14 @@ export function FileTree({
   // steady-state re-renders / fs-watch reloads) from re-dispatching. Plain
   // `dir_size` is enough here — the whole folder is ignored by definition, so
   // there's no split to compute, unlike the regular/standard effect below.
+  //
+  // Scoped to the RENDERED rows (`rowWindow`), not the whole section: pricing a
+  // folder costs a recursive walk — a `du` over SSH for a remote project — so a
+  // listing holding thousands of subfolders would dispatch thousands of them for
+  // rows that aren't even on screen. `requestedSizes` dedupes, so raising the
+  // render cap prices the newly revealed folders and only those.
   useEffect(() => {
-    const pending = sections.gitignored.filter(
+    const pending = rowWindow.gitignored.filter(
       (e) => e.is_dir && !requestedSizes.current.has(e.path) && !isScanExcluded(relForEntry(e)),
     );
     if (pending.length === 0) return;
@@ -696,7 +813,7 @@ export function FileTree({
         });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sections.gitignored]);
+  }, [rowWindow.gitignored]);
 
   // Lazily compute the recursive size of each visible regular/standard-section
   // folder, split into ignored vs. non-ignored bytes in the SAME backend walk
@@ -707,8 +824,9 @@ export function FileTree({
   // exactly the kind of folder — build/output dirs — this feature targets).
   // Fills both `dirSizes` and `dirIgnoredBytes` from one response, sharing
   // `requestedSizes` with the effect above so no folder is fetched twice.
+  // Scoped to the rendered rows for the same reason that effect is — see there.
   useEffect(() => {
-    const candidates = [...sections.regular, ...sections.standard];
+    const candidates = [...rowWindow.regular, ...rowWindow.standard];
     const pending = candidates.filter(
       (e) => e.is_dir && !requestedSizes.current.has(e.path) && !isScanExcluded(relForEntry(e)),
     );
@@ -753,7 +871,7 @@ export function FileTree({
         });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sections.regular, sections.standard]);
+  }, [rowWindow.regular, rowWindow.standard]);
 
   // Total bytes contained in each section, kept separate rather than merged
   // into one figure — the point of splitting scaffold/gitignored out visually
@@ -1229,10 +1347,41 @@ export function FileTree({
     load(parts.join("/"));
   }
 
+  // A tooltip opens on DWELL, never on mere entry. `tooltip` is state on THIS
+  // component and the rows are not memoized, so each open/close re-renders the
+  // whole listing — and `getBoundingClientRect()` forces a synchronous reflow on
+  // top. Setting it from `onMouseEnter` therefore made a mouse merely *crossing*
+  // the tree cost two full re-renders plus two reflows per row, which is what
+  // made moving over the tree stutter (worst under the software renderer, since
+  // `WEBKIT_DISABLE_DMABUF_RENDERER=1` puts every repaint on the CPU). Deferring
+  // makes a pass-over free: only a genuine pause measures and opens anything.
+  const tooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function cancelTooltipTimer() {
+    if (tooltipTimer.current !== null) {
+      clearTimeout(tooltipTimer.current);
+      tooltipTimer.current = null;
+    }
+  }
+
   function handleEntryMouseEnter(e: React.MouseEvent<HTMLDivElement>, entry: FileEntry) {
-    // Always shows the name (the row can truncate it); Created/Modified/Ignored
-    // lines below are conditional on the entry actually having that data.
-    setTooltip({ rect: e.currentTarget.getBoundingClientRect(), entry });
+    // `currentTarget` is nulled once the handler returns, so capture the row now
+    // rather than inside the timeout.
+    const row = e.currentTarget;
+    cancelTooltipTimer();
+    tooltipTimer.current = setTimeout(() => {
+      tooltipTimer.current = null;
+      // Always shows the name (the row can truncate it); Created/Modified/Ignored
+      // lines below are conditional on the entry actually having that data.
+      setTooltip({ rect: row.getBoundingClientRect(), entry });
+    }, TOOLTIP_DWELL_MS);
+  }
+
+  function handleEntryMouseLeave() {
+    cancelTooltipTimer();
+    // Costs no render when nothing is open: React bails out on an unchanged
+    // value, so a sweep across rows that never dwelt stays free.
+    setTooltip(null);
   }
 
   // Start the native OS drag-out (EXPORT/COPY to another app: a browser, Signal,
@@ -1730,6 +1879,7 @@ export function FileTree({
   function showEntryContextMenu(e: React.MouseEvent<HTMLDivElement>, entry: FileEntry) {
     e.preventDefault();
     e.stopPropagation();
+    cancelTooltipTimer();
     setTooltip(null);
     // Right-clicking a row that ISN'T part of the current selection resets the
     // selection to just it (standard file-manager behavior); right-clicking one
@@ -1850,6 +2000,21 @@ export function FileTree({
   // deliberately host-side directory (experiment output, checkpoints) is not
   // protected by being gitignored the way it is from lockstep. Price it first and
   // make the user confirm when the answer is big; small folders just proceed.
+  // Exclude a folder from byte-sync outright — the durable form of "leave this
+  // on the host / leave this on my machine". Unlike auto-off it is honoured by
+  // the whole-project pull and push too; it is the same marker the large-folder
+  // setup prompt (`BigFolderExcludeDialog`) writes, so a folder answered for
+  // there reads back correctly here (and can be undone here).
+  async function toggleSyncExcluded(entry: FileEntry, excluded: boolean) {
+    setContextMenu(null);
+    if (!projectId) return;
+    try {
+      await syncSetExcluded(projectId, [relForEntry(entry)], excluded);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   async function toggleAutoSyncEntry(entry: FileEntry, on: boolean) {
     setContextMenu(null);
     if (!projectId) return;
@@ -2130,6 +2295,7 @@ export function FileTree({
 
   function showRootContextMenu(e: React.MouseEvent<HTMLDivElement>) {
     e.preventDefault();
+    cancelTooltipTimer();
     setTooltip(null);
     setContextMenu({ x: e.clientX, y: e.clientY, entry: null, rowRect: null });
     probeClipboardImage();
@@ -2607,7 +2773,14 @@ export function FileTree({
         // Sections (regular / collapsible scaffold / collapsible gitignored) are
         // computed once in the `sections` memo above and shared with the
         // selection click handler so a shift-range spans exactly these rows.
-        const { regular, standard, gitignored } = sections;
+        // `sections` carries the FULL lists — the section headers count them, and
+        // a header that counted only the rendered page would misreport the folder.
+        // `rowWindow` carries the capped lists that are actually rendered.
+        // Only the two collapsible sections read their full list here (their
+        // headers count it); the regular section has no header, so it is read
+        // from `rows` alone.
+        const { standard, gitignored } = sections;
+        const rows = rowWindow;
 
         function renderEntry(e: FileEntry, isScaffold = false, isGitignored = false) {
           const status = isGitignored ? undefined : displayStatuses[e.name];
@@ -2669,6 +2842,13 @@ export function FileTree({
           // the amber ± button — an auto path that went orange is exactly what the
           // user must resolve manually.
           const autoSync = syncTracked ? !!syncStatus?.[rel]?.auto : false;
+          // Effective (own-or-inherited) byte-sync exclusion: takes over the
+          // whole sync slot (file or folder) with a grey X, ahead of the
+          // red/orange/auto icons — an excluded path has none of those states
+          // to act on. A folder shows this too (not just its excluded
+          // descendants): it's the row the user actually right-clicked
+          // "Exclude from sync" on, so it must visibly reflect that.
+          const pathExcluded = syncTracked ? isPathExcluded(syncStatus, rel) : false;
           // Local-mirror view only: a folder that exists in the mirror but not on
           // the host (its name is absent from the host readdir, `hostChildNames`).
           // Dimmed + tagged so "Local" mode never implies the whole tree is on the
@@ -2709,7 +2889,7 @@ export function FileTree({
               // folder to move them. Folders aren't dragged (they navigate).
               onPointerDown={!e.is_dir ? (ev) => onEntryPointerDown(ev, e, dragTarget) : undefined}
               onMouseEnter={(ev) => handleEntryMouseEnter(ev, e)}
-              onMouseLeave={() => setTooltip(null)}
+              onMouseLeave={handleEntryMouseLeave}
             >
               <GitMarker status={status} />
               {/* Fixed-width sync slot: always reserved on a sync-tracked tree so
@@ -2718,52 +2898,65 @@ export function FileTree({
                   diff button; `green` → empty (in sync). */}
               {syncTracked && (
                 <span className="file-sync-slot">
-                  {syncState === "none" && (() => {
-                    const anyBusy = !!syncProgress;
-                    const thisBusy = syncProgress?.rel === rel;
-                    return (
-                      <button
-                        type="button"
-                        className={`file-sync-btn${thisBusy ? " busy" : ""}`}
-                        title={remoteListing ? "Sync to local" : "Push to host"}
-                        aria-label={remoteListing ? "Sync to local" : "Push to host"}
-                        disabled={anyBusy}
-                        onClick={(ev) => {
-                          ev.preventDefault();
-                          ev.stopPropagation();
-                          void (remoteListing ? syncEntryToLocal(e) : pushEntryToHost(e));
-                        }}
-                      >
-                        {thisBusy ? <span className="file-run-spinner" /> : "⇄"}
-                      </button>
-                    );
-                  })()}
-                  {syncState === "amber" && !e.is_dir && (
-                    <button
-                      type="button"
-                      className="file-diff-btn"
-                      title="Host and local differ — compare and resolve"
-                      aria-label="Compare host vs local and resolve"
-                      onClick={(ev) => {
-                        ev.preventDefault();
-                        ev.stopPropagation();
-                        openSyncMerge(e);
-                      }}
-                    >
-                      ±
-                    </button>
-                  )}
-                  {/* Auto-sync indicator (non-interactive): only when the slot has
-                      no action button, so it never crowds out the red/orange
-                      controls. Amber auto paths still show ± (needs resolving). */}
-                  {autoSync && syncState === "green" && (
+                  {pathExcluded ? (
                     <span
-                      className="file-autosync-icon"
-                      title="Auto-syncing"
-                      aria-label="Auto-syncing"
+                      className="file-sync-excluded"
+                      title="Excluded from byte-sync"
+                      aria-label="Excluded from byte-sync"
                     >
-                      ⟳
+                      ✕
                     </span>
+                  ) : (
+                    <>
+                      {syncState === "none" && (() => {
+                        const anyBusy = !!syncProgress;
+                        const thisBusy = syncProgress?.rel === rel;
+                        return (
+                          <button
+                            type="button"
+                            className={`file-sync-btn${thisBusy ? " busy" : ""}`}
+                            title={remoteListing ? "Sync to local" : "Push to host"}
+                            aria-label={remoteListing ? "Sync to local" : "Push to host"}
+                            disabled={anyBusy}
+                            onClick={(ev) => {
+                              ev.preventDefault();
+                              ev.stopPropagation();
+                              void (remoteListing ? syncEntryToLocal(e) : pushEntryToHost(e));
+                            }}
+                          >
+                            {thisBusy ? <span className="file-run-spinner" /> : "⇄"}
+                          </button>
+                        );
+                      })()}
+                      {syncState === "amber" && !e.is_dir && (
+                        <button
+                          type="button"
+                          className="file-diff-btn"
+                          title="Host and local differ — compare and resolve"
+                          aria-label="Compare host vs local and resolve"
+                          onClick={(ev) => {
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                            openSyncMerge(e);
+                          }}
+                        >
+                          ±
+                        </button>
+                      )}
+                      {/* Auto-sync indicator (non-interactive): only when the slot
+                          has no action button, so it never crowds out the
+                          red/orange controls. Amber auto paths still show ±
+                          (needs resolving). */}
+                      {autoSync && syncState === "green" && (
+                        <span
+                          className="file-autosync-icon"
+                          title="Auto-syncing"
+                          aria-label="Auto-syncing"
+                        >
+                          ⟳
+                        </span>
+                      )}
+                    </>
                   )}
                 </span>
               )}
@@ -2843,7 +3036,7 @@ export function FileTree({
 
         return (
           <>
-            {regular.map((e) => renderEntry(e, false))}
+            {rows.regular.map((e) => renderEntry(e, false))}
             {standard.length > 0 && (
               <>
                 <button
@@ -2862,7 +3055,7 @@ export function FileTree({
                     {fmtSize(groupSizes.standard)}
                   </span>
                 </button>
-                {scaffoldExpanded && standard.map((e) => renderEntry(e, true))}
+                {scaffoldExpanded && rows.standard.map((e) => renderEntry(e, true))}
               </>
             )}
             {gitignored.length > 0 && (
@@ -2884,8 +3077,22 @@ export function FileTree({
                     {fmtSize(groupSizes.gitignored)}
                   </span>
                 </button>
-                {gitignoredExpanded && gitignored.map((e) => renderEntry(e, false, true))}
+                {gitignoredExpanded && rows.gitignored.map((e) => renderEntry(e, false, true))}
               </>
+            )}
+            {rows.hidden > 0 && (
+              // The escape hatch for the render cap. Says how many rows are held
+              // back so the number is never a mystery, and reveals a page at a
+              // time rather than the whole folder — the point is to keep the DOM
+              // bounded, and a "show all" would hand back the freeze it prevents.
+              <button
+                type="button"
+                className="file-tree-section-divider file-tree-more"
+                onClick={() => setRowCap((n) => n + ROW_CAP_STEP)}
+                title={`Only the first ${orderedVisible.length} entries are rendered — showing every file at once in a folder this size would stall the window. Click to render ${Math.min(rows.hidden, ROW_CAP_STEP)} more.`}
+              >
+                show {Math.min(rows.hidden, ROW_CAP_STEP)} more ({rows.hidden} not shown)
+              </button>
             )}
           </>
         );
@@ -3046,6 +3253,11 @@ export function FileTree({
             // sync-tracked); read the effective flag either way.
             const syncTracked = remoteListing || treatLocal;
             const autoOn = syncTracked ? !!syncStatus?.[entryRel]?.auto : false;
+            // Own marker only: an inherited exclusion is the transfer paths'
+            // business, but the label here must describe THIS row's answer.
+            const syncExcluded = syncTracked
+              ? !!syncStatus?.[entryRel]?.excluded
+              : false;
             return (
               <>
                 {onOpenFolderTab && entry.is_dir && (
@@ -3129,6 +3341,24 @@ export function FileTree({
                           ? "Auto-sync this folder"
                           : "Auto-sync this file"}
                     </button>
+                    {/* Stronger than "stop auto-syncing": an exclusion is also
+                        honoured by the whole-project Sync all / push, which is
+                        what a giant data or build folder needs. Same marker the
+                        large-folder setup prompt writes, so the two agree. */}
+                    {entry.is_dir && (
+                      <button
+                        className="untested"
+                        onClick={() => toggleSyncExcluded(entry, !syncExcluded)}
+                        title={
+                          syncExcluded
+                            ? "Let this folder take part in syncing again"
+                            : "Never sync this folder: skipped by auto-sync AND by Sync all / Push all (nothing is deleted)"
+                        }
+                      >
+                        {syncExcluded ? "Include in sync" : "Exclude from sync"}
+                        <UntestedTag />
+                      </button>
+                    )}
                     <hr />
                   </>
                 )}
@@ -3363,18 +3593,24 @@ export function FileTree({
       )}
       {tooltip && createPortal(
         <div
+          ref={tooltipRef}
           className="file-tooltip"
           // Anchor on whichever side of the row has more room, so the tooltip pops
           // *away* from the panel edge: docked right → opens left (the default),
           // docked left → the row sits near x:0 and it opens right instead. Keyed
           // off the row's own rect, so it does the right thing in a centred tab too.
+          // `tooltipShift` pulls it back up when it would otherwise overflow the
+          // window's bottom edge (a row near the bottom of a short docked viewer).
           style={
             window.innerWidth - tooltip.rect.right > tooltip.rect.left
-              ? { left: tooltip.rect.right + 8, top: tooltip.rect.top }
-              : { right: window.innerWidth - tooltip.rect.left + 8, top: tooltip.rect.top }
+              ? { left: tooltip.rect.right + 8, top: tooltip.rect.top - tooltipShift }
+              : { right: window.innerWidth - tooltip.rect.left + 8, top: tooltip.rect.top - tooltipShift }
           }
         >
           <div className="file-tooltip-name">{tooltip.entry.name}</div>
+          {(remoteListing || treatLocal) && isPathExcluded(syncStatus, relForEntry(tooltip.entry)) && (
+            <div className="file-tooltip-excluded">Excluded from byte-sync</div>
+          )}
           {tooltip.entry.created_secs && (
             <div><span className="file-tooltip-label">Created </span>{fmtModified(tooltip.entry.created_secs)}</div>
           )}

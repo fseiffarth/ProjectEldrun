@@ -37,6 +37,9 @@ export function VpnIndicator() {
 
   const armed = useSettingsStore((s) => s.settings?.vpn_auto_connect ?? null);
   const headless = useSettingsStore((s) => s.settings?.connections_headless ?? true);
+  // Off by default (Settings' "Remote features") — most projects are local-only,
+  // so this machine-wide tunnel control stays out of the header until asked for.
+  const enabled = useSettingsStore((s) => s.settings?.vpn_enabled ?? false);
 
   const [open, setOpen] = useState(false);
   const [configs, setConfigs] = useState<StoredVpnConfig[]>([]);
@@ -66,6 +69,7 @@ export function VpnIndicator() {
   // guaranteed to run. It is a local IPC call against an in-memory registry, so a
   // 10 s cadence is cheap.
   useEffect(() => {
+    if (!enabled) return;
     void refresh();
     const onFocus = () => void refresh();
     window.addEventListener("focus", onFocus);
@@ -74,7 +78,7 @@ export function VpnIndicator() {
       window.removeEventListener("focus", onFocus);
       window.clearInterval(id);
     };
-  }, [refresh]);
+  }, [refresh, enabled]);
 
   // The stored `.ovpn` list is only needed once the menu is open — and with it, which
   // of those configs could connect with no prompt (the gate on arming auto-connect).
@@ -265,8 +269,10 @@ export function VpnIndicator() {
     );
   };
 
+  if (!enabled) return null;
+
   return (
-    <div className="global-apps-menu no-drag" onMouseEnter={reveal} onMouseLeave={scheduleClose}>
+    <div className="global-apps-menu header-status-menu-anchor no-drag" onMouseEnter={reveal} onMouseLeave={scheduleClose}>
       <button
         type="button"
         className="global-apps-menu-btn vpn-indicator-btn"

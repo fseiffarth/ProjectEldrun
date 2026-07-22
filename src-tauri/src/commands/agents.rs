@@ -85,8 +85,8 @@ const AGENTS: &[AgentSpec] = &[
         id: "codex",
         label: "Codex",
         bin: "codex",
-        install_cmd: "npm install -g @openai/codex",
-        install_cmd_windows: Some("npm install -g @openai/codex"),
+        install_cmd: "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+        install_cmd_windows: Some("irm https://chatgpt.com/codex/install.ps1 | iex"),
         extra_paths: &[".local/bin/codex"],
         docs: "https://github.com/openai/codex",
     },
@@ -445,7 +445,7 @@ mod tests {
         );
         // npm/python installs run in either shell.
         assert_eq!(
-            windows_shell("npm install -g @openai/codex"),
+            windows_shell("npm install -g @google/gemini-cli"),
             "PowerShell or Command Prompt"
         );
     }
@@ -492,9 +492,9 @@ mod tests {
             installer_command(claude).unwrap().get_program(),
             OsStr::new("powershell")
         );
-        let codex = find_spec("codex").unwrap(); // npm install -g …
+        let gemini = find_spec("gemini").unwrap(); // npm install -g …
         assert_eq!(
-            installer_command(codex).unwrap().get_program(),
+            installer_command(gemini).unwrap().get_program(),
             OsStr::new("cmd")
         );
         let vibe = find_spec("vibe").unwrap(); // no Windows installer
@@ -508,7 +508,7 @@ mod tests {
             "powershell"
         );
         assert_eq!(
-            windows_shell_kind("npm install -g @openai/codex"),
+            windows_shell_kind("npm install -g @google/gemini-cli"),
             "default"
         );
     }

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
-import { looksLikeDecisionPrompt, stripAnsi } from "../lib/agentPrompt";
+import { looksLikeDecisionPromptStripped, stripAnsi } from "../lib/agentPrompt";
 import { METRIC, agentPromptLeaf } from "../lib/usageMetrics";
 import { allGroups, isPtyTabKind, useTabsStore } from "./tabs";
 import type { TabEntry } from "./tabs";
@@ -53,6 +53,27 @@ const tailByPty: Record<string, string> = {};
 const seenAtByPty: Record<string, number> = {};
 const bellByPty: Record<string, number> = {};
 const inputByPty: Record<string, number> = {};
+
+/// Memo for the decision-prompt test, keyed by PTY id and validated against the
+/// tail it was computed from. `attentionFor` asks the question of every agent tab
+/// on every 300ms tick, but the answer can only change when the tail does — and a
+/// tab quiet enough to hold a decision prompt is precisely one whose tail is NOT
+/// changing. Without this, a settled prompt re-ran four regexes over 8 KB, three
+/// of them case-insensitive, ~3.3 times a second forever. The guard is a string
+/// compare that hits JS's reference-equality fast path, since `tailByPty` holds
+/// the same string instance while the tab is quiet.
+const decisionMemo = new Map<string, { tail: string; hit: boolean }>();
+
+function tailLooksLikeDecision(ptyId: string): boolean {
+  // Already ANSI-stripped on the way in (see `notePtyOutput`), so this must NOT
+  // be routed through `stripAnsi` again.
+  const tail = tailByPty[ptyId] ?? "";
+  const memo = decisionMemo.get(ptyId);
+  if (memo !== undefined && memo.tail === tail) return memo.hit;
+  const hit = looksLikeDecisionPromptStripped(tail);
+  decisionMemo.set(ptyId, { tail, hit });
+  return hit;
+}
 
 const PTY_MAPS: Record<string, unknown>[] = [
   lastOutputByPty,
@@ -120,6 +141,7 @@ export function noteUserInput(ptyId: string) {
  *  restore/resume replay as a finished turn. */
 export function notePtySpawn(ptyId: string) {
   for (const map of PTY_MAPS) delete map[ptyId];
+  decisionMemo.delete(ptyId);
 }
 
 /** Split a composed PTY id (`<scope>:<tabKey>`) into its parts, mirroring
@@ -158,6 +180,7 @@ export function _clearPtyActivityForTest() {
   for (const map of PTY_MAPS) {
     for (const k of Object.keys(map)) delete map[k];
   }
+  decisionMemo.clear();
   useActivityStore.setState({
     busyByScope: {},
     busyByTab: {},
@@ -203,7 +226,7 @@ function attentionFor(
   const out = lastOutputByPty[ptyId] ?? 0;
   const bell = bellByPty[ptyId] ?? 0;
   const quiet = now - Math.max(out, bell);
-  if (quiet >= DECISION_QUIET_MS && looksLikeDecisionPrompt(tailByPty[ptyId] ?? "")) {
+  if (quiet >= DECISION_QUIET_MS && tailLooksLikeDecision(ptyId)) {
     return "decision";
   }
   // Past here everything is inferred from silence, which a watched tab's own
@@ -390,7 +413,7 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     // and the next `recompute` would only raise the flag straight back (see
     // `attentionFor`). Keep it, so the lamp holds steady instead of blinking off
     // and on at the switch. Input is what retires it.
-    if (kind === "decision" && looksLikeDecisionPrompt(tailByPty[ptyId] ?? "")) return;
+    if (kind === "decision" && tailLooksLikeDecision(ptyId)) return;
     const attentionByTab = { ...get().attentionByTab };
     delete attentionByTab[ptyId];
     set({
@@ -508,6 +531,9 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
       for (const ptyId of Object.keys(map)) {
         if (!live.has(ptyId)) delete map[ptyId];
       }
+    }
+    for (const ptyId of decisionMemo.keys()) {
+      if (!live.has(ptyId)) decisionMemo.delete(ptyId);
     }
 
     const attnChanged = !sameAttention(prevAttn, nextAttn);

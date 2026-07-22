@@ -6619,10 +6619,25 @@ select option {
 }
 /* Same glow as `.tab.working`/`.needs-decision`/`.finished` — a hidden tab's PTY
    is still mounted and running, so its chip keeps reporting status. */
-.hidden-sw-chip.working {
+.hidden-sw-chip.working,
+.hidden-sw-chip.needs-decision {
+  position: relative;
+  z-index: 0;
+}
+.hidden-sw-chip.working::after,
+.hidden-sw-chip.needs-decision::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+.hidden-sw-chip.working::after {
+  background: color-mix(in srgb, var(--success) 26%, transparent);
   animation: tab-glow-working 1.5s ease-in-out infinite;
 }
-.hidden-sw-chip.needs-decision {
+.hidden-sw-chip.needs-decision::after {
+  background: color-mix(in srgb, var(--warning) 34%, transparent);
   animation: tab-glow-decision 1.2s ease-in-out infinite;
 }
 .hidden-sw-chip.finished {
@@ -8169,11 +8184,32 @@ select option {
    - finished       (green, steady): agent rang the bell having simply finished.
    Working and finished clear the moment the tab is viewed; a pending decision
    clears when it is ANSWERED. */
-.tab.working {
+/* The glow is an `::after` overlay, not an animated shadow — see the keyframes
+   below for why. `z-index: -1` inside the tab's own stacking context puts it
+   above the tab's (transparent) background and below its label, which is
+   exactly where the inset box-shadow used to paint, so the look is unchanged. */
+.tab.working,
+.tab.needs-decision {
+  position: relative;
+  z-index: 0;
+}
+
+.tab.working::after,
+.tab.needs-decision::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.tab.working::after {
+  background: color-mix(in srgb, var(--success) 26%, transparent);
   animation: tab-glow-working 1.5s ease-in-out infinite;
 }
 
-.tab.needs-decision {
+.tab.needs-decision::after {
+  background: color-mix(in srgb, var(--warning) 34%, transparent);
   animation: tab-glow-decision 1.2s ease-in-out infinite;
 }
 
@@ -8181,14 +8217,28 @@ select option {
   box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--success) 16%, transparent);
 }
 
+/* Opacity-only pulse. These used to animate `box-shadow: inset … color-mix(…)`
+   directly, which is the most expensive way to express this glow: `box-shadow`
+   is not a compositable property, so every frame forced a full re-rasterization
+   of the tab bar, and the `color-mix()` was re-evaluated per frame on top. With
+   WEBKIT_DISABLE_DMABUF_RENDERER=1 (forced in `lib.rs` after the Mesa/SIGBUS
+   crash) that rasterization is pure CPU — so a couple of working agent tabs
+   alone kept the renderer's main thread pegged at ~a full core, and the UI had
+   no headroom left to answer input. `opacity` is compositor-driven, so the
+   pulse now costs no repaint at all.
+
+   The colour is static on the `::after` overlay below (mixed ONCE, not per
+   frame); these keyframes only fade it between the original endpoints —
+   5%→26% for working, 8%→34% for decision, i.e. the low end is expressed as a
+   fraction of the peak alpha (5/26, 8/34) so the glow looks unchanged. */
 @keyframes tab-glow-working {
-  0%, 100% { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--success) 5%, transparent); }
-  50%      { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--success) 26%, transparent); }
+  0%, 100% { opacity: 0.192; }
+  50%      { opacity: 1; }
 }
 
 @keyframes tab-glow-decision {
-  0%, 100% { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--warning) 8%, transparent); }
-  50%      { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--warning) 34%, transparent); }
+  0%, 100% { opacity: 0.235; }
+  50%      { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -9759,22 +9809,49 @@ select option {
    discoverable; non-embeddable files get no effect, signalling they're not
    draggable (they open on double-click). */
 .file-entry.file.embeddable {
-  transition: transform var(--transition), box-shadow var(--transition), background-color var(--transition);
+  /* NOTE: `box-shadow` is deliberately NOT transitioned here — see ::before. */
+  transition: transform var(--transition), background-color var(--transition);
   transform: translateZ(0);
-}
-.file-entry.file.embeddable:hover {
   position: relative;
-  z-index: 2;
-  cursor: grab;
-  transform: translateY(-2px) scale(1.02);
+}
+/* The lift shadow is painted ONCE on a pseudo-element and faded in with
+   `opacity`, rather than transitioned as a blurred `box-shadow` on the row
+   itself. With the DMABUF renderer disabled (forced in `lib.rs` after the
+   Mesa/SIGBUS crash) every frame of a blur transition is re-rasterized on the
+   CPU — and since the row also `scale()`s, the blur is a different size each
+   frame and cannot be cached either. Sweeping the pointer down the tree started
+   an overlapping transition per row, each re-blurring two shadows per frame,
+   which is what made hovering the file viewer crawl. Opacity is compositor-
+   driven, so the same look now costs nothing to animate. */
+.file-entry.file.embeddable::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--transition);
   box-shadow:
     0 5px 12px rgba(0, 0, 0, 0.35),
     0 1px 3px rgba(0, 0, 0, 0.25);
 }
+.file-entry.file.embeddable:hover::before {
+  opacity: 1;
+}
+.file-entry.file.embeddable:hover {
+  z-index: 2;
+  cursor: grab;
+  transform: translateY(-2px) scale(1.02);
+}
 .file-entry.file.embeddable:active {
   cursor: grabbing;
   transform: translateY(0) scale(1.0);
-  box-shadow: var(--shadow-1);
+}
+/* Pressed: the row settles back down, so fade the same shadow rather than
+   painting a second one over it. */
+.file-entry.file.embeddable:active::before {
+  opacity: 0.45;
 }
 
 .file-run-btn {
@@ -9906,6 +9983,22 @@ select option {
   opacity: 0.85;
 }
 
+/* Excluded-from-sync row indicator (non-interactive): takes over the sync slot
+   ahead of the red/orange/auto icons — an excluded path has no sync action to
+   offer. Deliberately grey/muted, not tinted like the local/remote pair: this
+   isn't "which side wins", it's "sync doesn't apply here at all". */
+.file-sync-excluded {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-muted);
+  opacity: 0.85;
+}
+
 /* Local-mirror view: a folder that exists only in the local mirror and not on
    the remote host. Dim the whole row and tag it, so "Local" mode never quietly
    implies the whole tree is on the remote. */
@@ -9914,6 +10007,9 @@ select option {
   color: var(--text-muted, #687899);
 }
 
+/* "local only" = green, matching the local/remote color language the
+   diverged-files badges use (local = --success, remote = --warning) — this
+   tag names the LOCAL side, not a remote-side warning. */
 .file-offhost-tag {
   flex-shrink: 0;
   display: inline-flex;
@@ -9930,9 +10026,9 @@ select option {
   line-height: 1;
   letter-spacing: 0.02em;
   text-transform: uppercase;
-  color: var(--warning, #e3b341);
-  border: 1px solid color-mix(in srgb, var(--warning, #e3b341) 45%, transparent);
-  background: color-mix(in srgb, var(--warning, #e3b341) 12%, transparent);
+  color: var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 45%, transparent);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
   white-space: nowrap;
   user-select: none;
 }
@@ -9977,10 +10073,10 @@ select option {
 /* Bulk "…for all" resolution bar atop the diverged list. */
 .orange-bulk-bar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 3px 0 5px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 3px 0 6px;
   margin-bottom: 3px;
   border-bottom: 1px solid var(--border-color);
 }
@@ -10030,6 +10126,44 @@ select option {
   flex-shrink: 0;
 }
 
+/* Timestamp-only comparison for a diverged pair: a small pill, tinted by
+   which side it points at (remote vs local) using the same theme tokens as
+   the take-remote/keep-local icon buttons below, so the two read as one
+   language — and the same orange/green pair the diverged (±) dot and the
+   "Take"/"Keep" split already use elsewhere in this view. It deliberately
+   stays a *cue*, never an automatic resolution — remote/local clocks can
+   differ, and the full "modified when" detail lives in the tooltip rather
+   than the pill itself. */
+.orange-mtime-badge {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.orange-mtime-badge--remote {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+}
+
+.orange-mtime-badge--local {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+  border-color: color-mix(in srgb, var(--success) 35%, transparent);
+}
+
+.orange-mtime-badge--neutral {
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
+  border-color: color-mix(in srgb, var(--text-secondary) 30%, transparent);
+}
+
 /* Persistent (tmux) sessions view (TODO #85): the per-row window/age/open meta,
    dimmed so the session name stays the row's focus. */
 .tmux-session-meta {
@@ -10037,6 +10171,34 @@ select option {
   color: var(--text-secondary, #8b949e);
   font-size: 10px;
   flex-shrink: 0;
+}
+
+/* Machine sections in the persistent-session view. Uses the shared elevation,
+   border, and accent tokens so it remains legible in every bundled theme. */
+.tmux-machine-group {
+  margin: 3px 0 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+
+.tmux-machine-group-title {
+  padding: 5px 7px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-elevated, var(--bg-panel));
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.tmux-machine-group .orange-file-row {
+  border-bottom: 1px solid var(--border-color);
+}
+
+.tmux-machine-group .orange-file-row:last-child {
+  border-bottom: 0;
 }
 
 .orange-file-actions {
@@ -10063,6 +10225,44 @@ select option {
 .orange-file-act:disabled {
   cursor: default;
   opacity: 0.5;
+}
+
+/* Icon-only variant (take remote ⬇ / keep local ⬆): same control, no label
+   text repeated on every row. Tinted remote = --warning (orange, matching the
+   ± diverged dot), local = --success (green) — the same pair the mtime badge
+   above uses, so "which side" reads as one color language across the row
+   instead of a wall of "Take host"/"Keep local". */
+.orange-file-act--icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.orange-file-act--icon.orange-file-act--remote {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+}
+
+.orange-file-act--icon.orange-file-act--remote:hover:not(:disabled) {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+  border-color: var(--warning);
+}
+
+.orange-file-act--icon.orange-file-act--local {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 35%, transparent);
+}
+
+.orange-file-act--icon.orange-file-act--local:hover:not(:disabled) {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+  border-color: var(--success);
 }
 
 /* Nested-repo toggle: segmented control shown atop the git view when the browsed
@@ -10131,6 +10331,23 @@ select option {
 
 .file-tree-hidden-toggle:hover {
   color: var(--text-primary);
+}
+
+/* Footer for the tree's render cap (see ROW_CAP_STEP in FileTree.tsx). Wears the
+   section-divider chrome so it reads as another band in the list, but centered
+   and in the accent color — it is an action, not a heading. */
+.file-tree-more {
+  width: 100%;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border-color, rgba(255,255,255,0.12));
+  cursor: pointer;
+  color: var(--accent, #58a6ff);
+}
+
+.file-tree-more:hover {
+  background-color: var(--pill-hover-bg);
 }
 
 .file-tree-hidden-caret {
@@ -10202,6 +10419,13 @@ select option {
 }
 .file-tooltip-name {
   font-weight: 600;
+  margin-bottom: 2px;
+}
+/* Same grey the row's own excluded-sync glyph (`.file-sync-excluded`) uses —
+   this isn't a Created/Modified fact, it's a sync-state callout. */
+.file-tooltip-excluded {
+  color: var(--text-muted);
+  font-size: 10px;
   margin-bottom: 2px;
 }
 /* A sub-entry nested under the row above it (e.g. saved run args under Run),
@@ -13905,6 +14129,59 @@ select option {
   margin-top: 4px;
 }
 
+/* ── Large-folder sync prompt (BigFolderExcludeDialog) ───────────────── */
+/* One grid shared by the header row and every folder row, so the two side
+   columns line up without either knowing the other's width. */
+.big-folder-head,
+.big-folder-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 150px 150px;
+  align-items: center;
+  gap: 8px;
+}
+.big-folder-head {
+  margin-top: 10px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.big-folder-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+.big-folder-row {
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border-subtle, var(--border));
+  font-size: 12px;
+  cursor: pointer;
+}
+.big-folder-row:hover {
+  background: var(--bg-hover);
+}
+.big-folder-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, monospace);
+}
+.big-folder-files {
+  color: var(--text-muted);
+}
+.big-folder-absent {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+.big-folder-intro,
+.big-folder-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
 /* ── Orbit spinner (active-tracking indicator) ───────────────────────── */
 @keyframes orbit-spin {
   from { transform: rotate(0deg); }
@@ -14937,16 +15214,29 @@ select option {
 .machines-indicator-btn {
   /* Unlike the other .global-apps-menu-btn siblings, this one reads as a
      quiet status readout (lamp + label), not a button — so its inherited
-     button box (background/border) is stripped back to plain text/icon. */
+     button box (background/border) is stripped back to plain text/icon.
+     Height stays the shared 32px (matching the brain/local-model button
+     and every other .global-apps-menu-btn) so the header row's icons align
+     and each menu's dropdown (`top: calc(100% + 4px)`) opens at the same
+     screen height. */
   display: inline-flex;
   align-items: center;
   gap: 5px;
   min-width: 0;
-  height: auto;
+  height: 32px;
   padding: 2px 4px;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
+}
+
+/* The Local Models anchor lives in `.header-center`, whose children stretch to
+   the full 44px header. VPN and Machines live in the vertically centered right
+   cluster, so their anchors otherwise shrink to the 32px buttons and place the
+   shared `top: calc(100% + 4px)` menu 6px too high. Stretch only these two
+   anchors so all three hover menus begin on the same horizontal line. */
+.header-status-menu-anchor {
+  align-self: stretch;
 }
 .vpn-indicator-btn:hover,
 .vpn-indicator-btn[aria-expanded="true"],

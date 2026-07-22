@@ -61,6 +61,9 @@ const en = {
   "settings.claudeRemote": "Claude remote control",
   "settings.headlessRemote": "Headless remote connections",
   "settings.persistLocal": "Persistent local sessions (tmux)",
+  "settings.remoteFeatures": "Remote features",
+  "settings.vpnEnabled": "OpenVPN tunnel control",
+  "settings.machinesEnabled": "Global remote machines",
   "settings.energySaver": "Energy saver",
   "energy.off": "Off",
   "energy.battery": "On battery",
@@ -73,6 +76,7 @@ const en = {
   "settings.showCpu": "Show CPU usage",
   "settings.showRam": "Show RAM usage",
   "settings.showGpu": "Show GPU usage",
+  "settings.showClockSeconds": "Show seconds in header clock",
 
   // Settings — calendar.
   "settings.calendar": "Calendar",
@@ -177,6 +181,7 @@ const de: Dict = {
   "settings.showCpu": "CPU-Auslastung anzeigen",
   "settings.showRam": "RAM-Auslastung anzeigen",
   "settings.showGpu": "GPU-Auslastung anzeigen",
+  "settings.showClockSeconds": "Sekunden in der Kopfzeilen-Uhr anzeigen",
 
   "settings.calendar": "Kalender",
   "settings.weekStartsOn": "Woche beginnt am",
@@ -271,6 +276,7 @@ const es: Dict = {
   "settings.showCpu": "Mostrar uso de CPU",
   "settings.showRam": "Mostrar uso de RAM",
   "settings.showGpu": "Mostrar uso de GPU",
+  "settings.showClockSeconds": "Mostrar segundos en el reloj de cabecera",
 
   "settings.calendar": "Calendario",
   "settings.weekStartsOn": "La semana empieza el",
@@ -365,6 +371,7 @@ const fr: Dict = {
   "settings.showCpu": "Afficher l'utilisation du CPU",
   "settings.showRam": "Afficher l'utilisation de la RAM",
   "settings.showGpu": "Afficher l'utilisation du GPU",
+  "settings.showClockSeconds": "Afficher les secondes dans l'horloge d'en-tête",
 
   "settings.calendar": "Calendrier",
   "settings.weekStartsOn": "La semaine commence le",
@@ -459,6 +466,7 @@ const it: Dict = {
   "settings.showCpu": "Mostra utilizzo CPU",
   "settings.showRam": "Mostra utilizzo RAM",
   "settings.showGpu": "Mostra utilizzo GPU",
+  "settings.showClockSeconds": "Mostra i secondi nell'orologio dell'intestazione",
 
   "settings.calendar": "Calendario",
   "settings.weekStartsOn": "La settimana inizia di",

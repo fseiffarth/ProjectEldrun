@@ -124,11 +124,9 @@ function RemoteConnectDialogInner({
   const currentMachineLabel = host ? "" : project.remote?.label ?? "";
   const [machineDraft, setMachineDraft] = useState(currentMachineLabel);
 
-  // "Disconnect & end jobs": the *active* teardown — kills every running tmux
-  // session on this host before the ordinary disconnect, distinct from plain
-  // Disconnect which leaves them alive to reattach. Two-step confirm (this arms
-  // it) because killing jobs can't be undone. Target is the worker's own spec or
-  // the primary's `remote`.
+  // "Disconnect & end jobs" retains its explicit confirmation, although every
+  // disconnect now ends this host's tmux sessions before dropping the pool.
+  // Target is the worker's own spec or the primary's `remote`.
   const [killArm, setKillArm] = useState(false);
   const killTarget = host
     ? { user: host.user, host: host.host, port: host.port }
@@ -754,10 +752,8 @@ function RemoteConnectDialogInner({
               Disconnect
             </button>
           )}
-          {/* Active teardown: end every running tmux job on this host, then
-              disconnect. Distinct from plain Disconnect (which detaches and
-              leaves sessions alive to reattach). Only when SSH is up — there are
-              no host jobs to end otherwise. Two-step: the first click arms it. */}
+          {/* Explicitly confirmed teardown. A plain Disconnect also ends tmux
+              sessions; this variant retains the extra confirmation affordance. */}
           {sshStatus === "connected" &&
             (killArm ? (
               <button

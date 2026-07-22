@@ -23,6 +23,7 @@ import { RemoteConnectDialog } from "../projects/RemoteConnectDialog";
 import { RemoteMachinesDialogHost } from "../projects/RemoteMachinesWindow";
 import { GlobalMachineMonitorDialogHost } from "../monitoring/GlobalMachineMonitorDialog";
 import { HpcPipelineWizardHost } from "../projects/HpcPipelineWizard";
+import { BigFolderDialogHost } from "../projects/BigFolderExcludeDialog";
 import { LocalLossDialog } from "../common/LocalLossDialog";
 import { RemoteUsageWarningDialog } from "../common/RemoteUsageWarningDialog";
 import { QuickOpen } from "../files/QuickOpen";
@@ -30,6 +31,7 @@ import { HintHost } from "./HintHost";
 import { TourHost } from "./TourHost";
 import { StatsRecapHost } from "../stats/StatsRecapHost";
 import { HowToStart } from "./HowToStart";
+import { RemoteFeaturesPrompt } from "./RemoteFeaturesPrompt";
 import { LessonsMenu } from "./LessonsMenu";
 import { useHintsStore } from "../../stores/hints";
 import { useProjectsStore, listenProjectRuntimeSwitched } from "../../stores/projects";
@@ -110,6 +112,9 @@ export function AppShell() {
   const projectsLoaded = useProjectsStore((s) => s.loaded);
   const projectCount = useProjectsStore((s) => s.projects.length);
   const onboardingSeen = useSettingsStore((s) => s.settings?.onboarding_seen ?? false);
+  const remoteFeaturesPrompted = useSettingsStore(
+    (s) => s.settings?.remote_features_prompted ?? false,
+  );
   const loadBoxes = useBoxesStore((s) => s.load);
   const activeId = useProjectsStore((s) => s.activeId);
   const scope = useTabsStore((s) => s.scope);
@@ -130,6 +135,11 @@ export function AppShell() {
   const [resizingRight, setResizingRight] = useState(false);
   const latestRightWidth = useRef(RIGHT_PANEL_DEFAULT);
   const [showHowToStart, setShowHowToStart] = useState(false);
+  const [showRemoteFeaturesPrompt, setShowRemoteFeaturesPrompt] = useState(false);
+  // Set only on the fresh-install path, where HowToStart takes the screen
+  // first — this defers the remote-features ask until HowToStart closes
+  // instead of stacking two modals on the very first launch.
+  const [pendingRemoteFeaturesPrompt, setPendingRemoteFeaturesPrompt] = useState(false);
   const [showLessons, setShowLessons] = useState(false);
   const rightCloseTimer = useRef<number | null>(null);
 
@@ -239,12 +249,38 @@ export function AppShell() {
   // `projects.length === 0` guard keeps upgrading users — who already have
   // projects but no flag — from seeing it). Mark seen immediately (optimistic)
   // so a hot-reload or transient re-render can't reopen it.
+  //
+  // The "Using VPN or remote machines?" ask rides the same effect so the two
+  // never stack: on a fresh install it waits behind HowToStart (queued via
+  // `pendingRemoteFeaturesPrompt`, shown from HowToStart's onClose below);
+  // otherwise — including an upgrading install that already has projects and
+  // so skips HowToStart — it shows immediately. Both settings are written in
+  // one `updateSettings` call on the fresh-install branch so a fast second
+  // effect run can't read a stale `current` and drop one of the two flags.
   useEffect(() => {
-    if (settingsLoaded && projectsLoaded && !onboardingSeen && projectCount === 0) {
+    if (!settingsLoaded || !projectsLoaded) return;
+    if (!onboardingSeen && projectCount === 0) {
       setShowHowToStart(true);
-      void updateSettings({ onboarding_seen: true });
+      if (!remoteFeaturesPrompted) {
+        setPendingRemoteFeaturesPrompt(true);
+        void updateSettings({ onboarding_seen: true, remote_features_prompted: true });
+      } else {
+        void updateSettings({ onboarding_seen: true });
+      }
+      return;
     }
-  }, [settingsLoaded, projectsLoaded, onboardingSeen, projectCount, updateSettings]);
+    if (!remoteFeaturesPrompted) {
+      setShowRemoteFeaturesPrompt(true);
+      void updateSettings({ remote_features_prompted: true });
+    }
+  }, [
+    settingsLoaded,
+    projectsLoaded,
+    onboardingSeen,
+    projectCount,
+    remoteFeaturesPrompted,
+    updateSettings,
+  ]);
 
   // Let the Settings dialog / gear menu re-open the welcome on demand.
   useEffect(() => {
@@ -432,17 +468,19 @@ export function AppShell() {
       // goes away. The backend also does this in RunEvent::Exit, but that runs only
       // after destroy(), so its elevated pkexec kill raised the polkit password prompt
       // against an already-gone window. Awaiting it here keeps Eldrun on screen until
-      // the prompt is answered. If the user dismisses the prompt the tunnel is still up
-      // (it reroutes the whole machine), so abort the quit and say so — running the
-      // save/detached-shutdown steps first would have needlessly torn state down.
+      // the prompt is answered — asked exactly once: if the user dismisses it, the
+      // backend marks that tunnel declined so RunEvent::Exit won't re-prompt for it
+      // with the window already gone (that used to raise a parentless pkexec dialog
+      // that could stall shutdown). So a "no" here just warns and the quit proceeds —
+      // it does not block the app from closing.
       const tunnelsDown = await disconnectAllTunnelsOnQuit().catch(() => true);
       if (!tunnelsDown) {
         await message(
-          "The OpenVPN tunnel is still up and reroutes this whole machine. " +
-            "Close the tunnel first (VPN control in the header), then quit Eldrun.",
+          "The OpenVPN tunnel is still active and reroutes this whole machine. " +
+            "It will keep running after Eldrun closes — use the VPN control in the " +
+            "header to close it yourself when you're done.",
           { title: "VPN tunnel still active", kind: "warning" },
         ).catch(() => {});
-        return;
       }
       await flushTimer().catch(() => {});
       // Counters accrued since the last interval flush would otherwise be lost on
@@ -738,6 +776,11 @@ export function AppShell() {
       {/* The guided HPC/SLURM pipeline wizard (login → create → load → run → watch),
           launched from the project-switcher + menu (docs/quirky-knitting-umbrella). */}
       <HpcPipelineWizardHost />
+      {/* "These folders are giant — sync them?", asked once when a project is first
+          paired with a host. Lives at the shell for the same reason the manager
+          above does: the project that asked may not be the active one by the time
+          its census (local walk + one host `du`) comes back. */}
+      <BigFolderDialogHost />
       {/* Same reason as the alarm below: lockstep/sync can delete a file from the local
           mirror during a background pass, and the user must hear about it wherever they
           are — including when the file panel it happened in is closed (#28q). */}
@@ -753,7 +796,20 @@ export function AppShell() {
       <HintHost />
       <TourHost />
       <StatsRecapHost />
-      {showHowToStart && <HowToStart onClose={() => setShowHowToStart(false)} />}
+      {showHowToStart && (
+        <HowToStart
+          onClose={() => {
+            setShowHowToStart(false);
+            if (pendingRemoteFeaturesPrompt) {
+              setPendingRemoteFeaturesPrompt(false);
+              setShowRemoteFeaturesPrompt(true);
+            }
+          }}
+        />
+      )}
+      {showRemoteFeaturesPrompt && (
+        <RemoteFeaturesPrompt onClose={() => setShowRemoteFeaturesPrompt(false)} />
+      )}
       {showLessons && <LessonsMenu onClose={() => setShowLessons(false)} />}
     </div>
   );

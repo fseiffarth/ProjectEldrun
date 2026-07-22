@@ -4,6 +4,7 @@ import { DownloadsSection } from "./DownloadsSection";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSyncStore } from "../../stores/sync";
+import { useBigFoldersStore } from "../../stores/bigFolders";
 import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { useFileSourcePrefStore } from "../../stores/fileSourcePref";
 import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes";
@@ -340,6 +341,19 @@ export function ProjectFilesPane({
               </button>
             );
           })()}
+          {/* The whole-project version of the file tree's per-folder auto-sync
+              price check: which folders are too big to sync, on both sides. It
+              opens itself once when a project is first paired with a host; this
+              is how it is re-opened (e.g. once the project is finally connected,
+              so the host column can be filled in). */}
+          <button
+            className="tab-add-btn"
+            style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
+            onClick={() => useBigFoldersStore.getState().open(projectId)}
+            title="Find the folders too big to sync (on this machine and on the host) and choose which to exclude"
+          >
+            Large folders…
+          </button>
           {source === "remote" ? (
             <button
               className="tab-add-btn"

@@ -13,6 +13,25 @@ use crate::services::remote::{self, RemotePoolState};
 use crate::services::remote_sync::SyncManifestState;
 use crate::services::sync_auto::{self, AutoSyncState};
 
+/// End tmux work only on a currently pooled host. Checking the pool first keeps
+/// a project deactivation from dialing disconnected workers merely to kill jobs.
+async fn kill_tmux_on_disconnect(pool: &RemotePoolState, project_id: &str, host_id: &str) {
+    if !remote::is_connected_host(pool, project_id, host_id).await {
+        return;
+    }
+    let Some(target) = remote::remote_target_for_host(project_id, host_id) else {
+        return;
+    };
+    let spec = target.spec;
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        crate::services::ssh_exec::run_remote_script(
+            &spec,
+            crate::services::ssh_exec::tmux_kill_server_script(),
+        )
+    })
+    .await;
+}
+
 /// Open (idempotently) the pooled SSH/SFTP connection for a remote project,
 /// authenticating once. A no-op for a local project or one already connected.
 /// `password` is used only for password-auth hosts (never stored); `None` →
@@ -163,8 +182,8 @@ pub async fn remote_connected_ids(pool: State<'_, RemotePoolState>) -> Result<Ve
     Ok(remote::connected_ids(pool.inner()).await)
 }
 
-/// Close and drop the pooled connection for a remote project host (on
-/// deactivation, or a per-host lamp toggle). `host_id` defaults to the primary.
+/// End every tmux session and close the pooled connection for a remote project
+/// host (on deactivation, or a per-host lamp toggle). `host_id` defaults to the primary.
 /// For the **primary**, stops the auto-sync + git-lockstep tasks first (cancel +
 /// unwatch), then tears down the pool; a **worker** disconnect only drops its pool
 /// entry (it owns no lockstep/sync). No-op if nothing is pooled for it.
@@ -177,6 +196,7 @@ pub async fn remote_disconnect(
     host_id: Option<String>,
 ) -> Result<(), String> {
     let host_id = host_id.unwrap_or_else(|| remote::PRIMARY_HOST.to_string());
+    kill_tmux_on_disconnect(pool.inner(), &project_id, &host_id).await;
     if host_id == remote::PRIMARY_HOST {
         git_peer::stop(git_peer_reg.inner(), &project_id).await;
         sync_auto::stop(auto.inner(), &project_id).await;
@@ -185,9 +205,9 @@ pub async fn remote_disconnect(
     Ok(())
 }
 
-/// Disconnect **every** host of a remote project — primary and all workers — on
-/// project deactivation. Stops the primary's lockstep/auto-sync, then tears down
-/// all pooled entries for the project.
+/// End tmux work and disconnect **every connected** host of a remote project —
+/// primary and workers — on project deactivation. Stops the primary's
+/// lockstep/auto-sync, then tears down all pooled entries for the project.
 #[tauri::command]
 pub async fn remote_disconnect_all_hosts(
     pool: State<'_, RemotePoolState>,
@@ -195,6 +215,14 @@ pub async fn remote_disconnect_all_hosts(
     git_peer_reg: State<'_, GitPeerRegistry>,
     project_id: String,
 ) -> Result<(), String> {
+    let hosts: Vec<String> = remote::connected_targets(pool.inner())
+        .await
+        .into_iter()
+        .filter_map(|(id, host)| (id == project_id).then_some(host))
+        .collect();
+    for host_id in hosts {
+        kill_tmux_on_disconnect(pool.inner(), &project_id, &host_id).await;
+    }
     git_peer::stop(git_peer_reg.inner(), &project_id).await;
     sync_auto::stop(auto.inner(), &project_id).await;
     remote::disconnect_project(pool.inner(), &project_id).await;
@@ -308,8 +336,7 @@ pub async fn remote_tmux_list(
 
 /// Kill a tmux session on a remote project host (TODO #85) — the destructive
 /// intent behind an **explicit** tab close of a persistent remote tab, and the
-/// Sessions view's per-row Kill. Fired only on explicit close (an app-exit /
-/// disconnect / respawn deliberately leaves the session alive). `host_id`
+/// Sessions view's per-row Kill. `host_id`
 /// defaults to the primary; `session` is `shell_quote`d inside the script.
 #[tauri::command]
 pub async fn remote_tmux_kill(

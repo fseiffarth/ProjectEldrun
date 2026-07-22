@@ -239,13 +239,20 @@ pub fn remote_command(
 
 /// The tmux **kill-session** one-shot script fired on an *explicit* tab close of
 /// a persistent remote tab (TODO #85). Closing the tab is the destructive intent
-/// that ends the run; an app-exit / disconnect / respawn must instead leave the
-/// session alive, which is the whole point of persistence. Run over the pooled
+/// that ends the run; an app-exit / respawn leaves the session alive. A machine
+/// disconnect ends every session on that host. Run over the pooled
 /// ControlMaster via [`run_remote_script`]. The session name is `shell_quote`d
 /// (it may be an arbitrary name from the Sessions view). `|| true` keeps the
 /// exit status clean when the session is already gone.
 pub fn tmux_kill_session_script(session: &str) -> String {
     format!("tmux kill-session -t {} 2>/dev/null || true", shell_quote(session))
+}
+
+/// Kill every tmux session owned by the connected SSH user. Used when Eldrun
+/// deliberately disconnects a remote machine, so its persistent runs do not
+/// continue without their machine connection.
+pub fn tmux_kill_server_script() -> &'static str {
+    "tmux kill-server 2>/dev/null || true"
 }
 
 /// Whether `name` is a safe tmux session name to rename **to** (TODO #85): tmux
@@ -517,6 +524,26 @@ pub fn remote_du_tree(spec: &RemoteSpec, remote_dir: &str) -> Result<crate::dusc
     // everything it could reach — so the status is ignored and stdout is parsed
     // regardless. An empty stdout (a genuinely dead connection) fails in the parser.
     crate::duscan::parse_du_output(remote_dir, &String::from_utf8_lossy(&out.stdout))
+}
+
+/// Raw `du -ak -x` capture of a host directory, riding the shared ControlMaster.
+///
+/// The same command `remote_du_tree` runs, but handed back as **text** rather than
+/// pruned into a `DuScan`: the giant-folder census (`services::big_folders`) needs
+/// every line — the emit caps that make a size *tree* renderable would silently
+/// drop the folders it exists to find. One round trip; `-x` stays on this
+/// filesystem, so a network mount under the project root isn't measured as project
+/// data. `du` exits non-zero on any unreadable entry having printed the rest, so
+/// stdout is returned regardless of status.
+pub fn remote_du_raw(spec: &RemoteSpec, remote_dir: &str) -> Result<String, String> {
+    validate_arg("remote path", remote_dir)?;
+    let cmd = format!("du -ak -x {} 2>/dev/null", shell_quote(remote_dir));
+    let out = run_remote_shell(spec, &cmd)?;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    if text.trim().is_empty() {
+        return Err("du returned nothing (is the host reachable?)".to_string());
+    }
+    Ok(text)
 }
 
 /// Best-effort create `spec.remote_path` (and parents) on the host over SSH,
@@ -861,6 +888,11 @@ mod tests {
         );
         // An arbitrary/foreign name is single-quoted so it can't break out.
         assert!(tmux_kill_session_script("a'b").contains("'a'\\''b'"));
+    }
+
+    #[test]
+    fn tmux_kill_server_script_is_best_effort() {
+        assert_eq!(tmux_kill_server_script(), "tmux kill-server 2>/dev/null || true");
     }
 
     #[test]

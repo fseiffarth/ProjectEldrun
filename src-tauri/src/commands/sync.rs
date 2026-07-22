@@ -20,6 +20,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::schema::net_usage;
+use crate::services::big_folders;
 use crate::services::local_loss;
 use crate::services::remote::{remote_target_for, pooled_sftp, RemotePoolState, RemoteTarget};
 use crate::services::remote_sync::{
@@ -97,6 +98,17 @@ pub struct SyncStatusEntry {
     /// Effective auto-sync: this path's own entry or an ancestor auto folder
     /// marker (`remote_sync::is_auto`). Drives the file-tree/viewer auto glyph.
     pub auto_sync: bool,
+    /// This path's OWN byte-sync exclusion marker (not an inherited one): what
+    /// the file tree flips "Exclude from sync" to "Include in sync" on, and what
+    /// the giant-folder prompt shows as the standing answer. Inheritance is the
+    /// transfer paths' business (`remote_sync::is_excluded`), not a row's label.
+    pub excluded: bool,
+    /// Current host modification time when known. This is display metadata for
+    /// the diverged-files list; sync decisions still compare each side to its
+    /// recorded base so host/local clock skew cannot choose an authority.
+    pub host_mtime: Option<u64>,
+    /// Current local-mirror modification time when known.
+    pub local_mtime: Option<u64>,
 }
 
 /// Progress payload for the `sync-progress` event (one per transferred file plus
@@ -298,6 +310,158 @@ pub async fn sync_auto_preview(
     })
 }
 
+/// One folder big enough to be worth a question before the first sync pass, with
+/// what each side holds. A folder that exists on only one side reports zeros for
+/// the other — which is itself the answer to "is this the host's data or mine?".
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BigFolderRow {
+    pub rel: String,
+    pub local_files: u64,
+    pub local_bytes: u64,
+    pub host_files: u64,
+    pub host_bytes: u64,
+    /// Already carrying an explicit exclusion marker (so re-opening the prompt
+    /// shows the standing answer rather than asking again from scratch).
+    pub excluded: bool,
+}
+
+/// The whole giant-folder answer, plus which sides it could actually measure.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BigFolderScan {
+    pub folders: Vec<BigFolderRow>,
+    /// The host tree was walked (i.e. the pool was live). When false the rows
+    /// carry local numbers only — the caller re-runs once the project connects.
+    pub host_scanned: bool,
+    /// Why the host side is missing, when it is and the reason isn't "cold pool".
+    pub host_error: Option<String>,
+}
+
+/// Find the folders too big to sync silently — on **both** sides.
+///
+/// This is the question `sync_auto_preview` asks one folder at a time, asked for
+/// the whole project at the moment it matters: a project just created, imported,
+/// or extended to a host, before anything has been hauled anywhere. Byte-sync
+/// does not read `.gitignore`, so nothing else in the system would ever mention
+/// that `node_modules/`, `data/` or `checkpoints/` is about to cross.
+///
+/// Read-only. The local mirror is walked directly; the host side is one `du -ak`
+/// round trip over the pooled ControlMaster, and is **skipped** (not attempted)
+/// when the pool is cold — dispatching at a dead session is what freezes the
+/// window, and a disconnected project's answer is simply "local only, ask again
+/// once connected".
+#[tauri::command]
+pub async fn sync_big_folders(
+    project_id: String,
+    pool: State<'_, RemotePoolState>,
+    manifest: State<'_, SyncManifestState>,
+) -> Result<BigFolderScan, String> {
+    let target = remote_target_for(&project_id)
+        .ok_or_else(|| "not a remote project".to_string())?;
+
+    // Local mirror walk (blocking fs work — off the UI thread).
+    let mirror = remote_sync::mirror_dir(&project_id);
+    let local = tokio::task::spawn_blocking(move || big_folders::scan_local(&mirror))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Host walk, only with a live pool behind it.
+    let connected = pooled_sftp(pool.inner(), &project_id).await.is_some();
+    let mut host_error = None;
+    let host = if connected {
+        let spec = target.spec.clone();
+        let root = spec.remote_path.clone();
+        match tokio::task::spawn_blocking(move || crate::services::ssh_exec::remote_du_raw(&spec, &root))
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            Ok(out) => big_folders::scan_host(&target.spec.remote_path, &out),
+            Err(e) => {
+                host_error = Some(e);
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
+    // Merge by path: one row per folder, whichever side(s) reported it.
+    let mut rows: std::collections::BTreeMap<String, BigFolderRow> = Default::default();
+    for f in local {
+        let row = rows.entry(f.rel.clone()).or_insert(BigFolderRow {
+            rel: f.rel.clone(),
+            local_files: 0,
+            local_bytes: 0,
+            host_files: 0,
+            host_bytes: 0,
+            excluded: false,
+        });
+        row.local_files = f.files;
+        row.local_bytes = f.bytes;
+    }
+    for f in host {
+        let row = rows.entry(f.rel.clone()).or_insert(BigFolderRow {
+            rel: f.rel.clone(),
+            local_files: 0,
+            local_bytes: 0,
+            host_files: 0,
+            host_bytes: 0,
+            excluded: false,
+        });
+        row.host_files = f.files;
+        row.host_bytes = f.bytes;
+    }
+
+    let mut folders: Vec<BigFolderRow> = {
+        let mut guard = manifest.lock().await;
+        let m = ensure_loaded(&mut guard, &project_id);
+        rows.into_values()
+            .map(|mut r| {
+                r.excluded = m.get(&r.rel).map(|e| e.excluded).unwrap_or(false);
+                r
+            })
+            .collect()
+    };
+    folders.sort_by(|a, b| {
+        (b.host_bytes.max(b.local_bytes)).cmp(&a.host_bytes.max(a.local_bytes))
+    });
+
+    Ok(BigFolderScan { folders, host_scanned: connected, host_error })
+}
+
+/// Record (or lift) an explicit byte-sync **exclusion** for one or more folders —
+/// the answer the giant-folder prompt collects.
+///
+/// Stronger than `sync_set_auto(false)`, which only carves a path out of the
+/// background engine: an exclusion is also honoured by the one-click whole-project
+/// pull and push (`pull_subtree` / `sync_push`), which is the transfer the prompt
+/// exists to keep off a multi-GB tree. Nothing is deleted either way — mirror bytes
+/// already present stay exactly where they are.
+#[tauri::command]
+pub async fn sync_set_excluded(
+    project_id: String,
+    rel_paths: Vec<String>,
+    excluded: bool,
+    manifest: State<'_, SyncManifestState>,
+) -> Result<(), String> {
+    let mut guard = manifest.lock().await;
+    let m = ensure_loaded(&mut guard, &project_id);
+    for rel in &rel_paths {
+        let entry = m.entry(rel.clone()).or_default();
+        entry.excluded = excluded;
+        entry.is_dir = true;
+        if excluded {
+            // An excluded folder is not auto-synced, whatever an ancestor (or the
+            // project-wide root marker) says — otherwise the background engine
+            // would keep hauling what the pull path now skips.
+            entry.auto_sync = false;
+            entry.auto_off = true;
+        }
+    }
+    remote_sync::save_manifest(&project_id, m)
+}
+
 /// Return the sync status of every tracked path, re-stat'ing each selected FILE
 /// on the host so the green/amber state is fresh (amber = host moved since the
 /// last fetch). Directories report their stored selection (no re-stat). This is
@@ -329,11 +493,16 @@ pub async fn sync_status(
     // Partition without any network first: only selected FILES against a live
     // pool need a host re-stat. Everything else (unselected → none, directories →
     // green, cold pool → last-known-good green) resolves immediately.
-    let mut to_stat: Vec<(String, crate::services::remote_sync::SyncEntry, bool)> = Vec::new();
+    let mut to_stat: Vec<(String, crate::services::remote_sync::SyncEntry, bool, bool)> = Vec::new();
     for (rel, entry) in entries {
-        // Effective auto-sync resolves against the whole manifest (ancestor folder
-        // markers), so compute it before `rel` is moved into the row.
+        // Effective auto-sync and exclusion both resolve against the whole manifest
+        // (ancestor folder markers), so compute them before `rel` is moved into the
+        // row. A file excluded only via an ancestor folder marker (no marker of its
+        // own) must still drop out of the diverged (amber) view — `entry.excluded`
+        // alone (the row's OWN marker, see `SyncStatusEntry::excluded`) would miss
+        // that case.
         let auto = remote_sync::is_auto(&snapshot, &rel);
+        let excluded_eff = remote_sync::is_excluded(&snapshot, &rel, "");
         if !entry.selected {
             out.push(SyncStatusEntry {
                 rel_path: rel,
@@ -341,6 +510,9 @@ pub async fn sync_status(
                 selected: false,
                 state: SyncState::None,
                 auto_sync: false, // auto implies selected, so unselected is never auto
+                excluded: entry.excluded,
+                host_mtime: None,
+                local_mtime: None,
             });
         } else if entry.is_dir {
             out.push(SyncStatusEntry {
@@ -349,9 +521,12 @@ pub async fn sync_status(
                 selected: true,
                 state: SyncState::Green,
                 auto_sync: auto,
+                excluded: entry.excluded,
+                host_mtime: None,
+                local_mtime: None,
             });
         } else if sftp.is_some() {
-            to_stat.push((rel, entry, auto));
+            to_stat.push((rel, entry, auto, excluded_eff));
         } else {
             // Cold pool: the host can't be re-stat'd, but the local mirror still
             // can (no network) — so a local-only edit made while disconnected
@@ -359,13 +534,16 @@ pub async fn sync_status(
             let local = std::fs::metadata(mirror_local_path(&project_id, &rel))
                 .ok()
                 .map(|m| local_meta(&m));
-            let state = remote_sync::compute_state(&entry, None, local);
+            let state = remote_sync::compute_state(&entry, None, local, excluded_eff);
             out.push(SyncStatusEntry {
                 rel_path: rel,
                 is_dir: false,
                 selected: true,
                 state,
                 auto_sync: auto,
+                excluded: entry.excluded,
+                host_mtime: None,
+                local_mtime: local.and_then(|(_, mtime)| mtime),
             });
         }
     }
@@ -376,7 +554,7 @@ pub async fn sync_status(
     // can't flood the channel; order is irrelevant (the frontend keys status by
     // `rel_path`). The stat/compare rule itself is unchanged.
     if let Some(sftp) = &sftp {
-        let statted = stream::iter(to_stat.into_iter().map(|(rel, entry, auto)| {
+        let statted = stream::iter(to_stat.into_iter().map(|(rel, entry, auto, excluded_eff)| {
             let sftp = Arc::clone(sftp);
             let root = target.spec.remote_path.clone();
             let project_id = project_id.clone();
@@ -387,7 +565,8 @@ pub async fn sync_status(
                 // (symmetric divergence — the host may be unchanged).
                 let mirror_path = mirror_local_path(&project_id, &rel);
                 let local = std::fs::metadata(&mirror_path).ok().map(|m| local_meta(&m));
-                let mut state = remote_sync::compute_state(&entry, Some((size, mtime)), local);
+                let mut state =
+                    remote_sync::compute_state(&entry, Some((size, mtime)), local, excluded_eff);
                 // A metadata-only amber (same bytes, drifted mtime/size-vs-base) is a
                 // false positive: for a small file, confirm against the actual bytes
                 // and downgrade an identical pair to green, capturing the rebase so it
@@ -412,6 +591,9 @@ pub async fn sync_status(
                         selected: true,
                         state,
                         auto_sync: auto,
+                        excluded: entry.excluded,
+                        host_mtime: mtime,
+                        local_mtime: local.and_then(|(_, mtime)| mtime),
                     },
                     rebase,
                 )
@@ -578,6 +760,16 @@ pub async fn sync_push(
 ) -> Result<SyncPushResult, String> {
     let (target, sftp) = resolve(&project_id, pool.inner()).await?;
     let files = remote_sync::walk_mirror_files(&project_id, &rel_path)?;
+    // Excluded folders are excluded in BOTH directions: a mirror-side copy of an
+    // excluded tree (an earlier pull, a local build) must not be pushed up either.
+    let files: Vec<String> = {
+        let mut guard = manifest.lock().await;
+        let m = ensure_loaded(&mut guard, &project_id);
+        files
+            .into_iter()
+            .filter(|rel| !remote_sync::is_excluded(m, rel, &rel_path))
+            .collect()
+    };
     let total = files.len();
     emit(&app, &project_id, "start", &rel_path, 0, total);
     let mut pushed = 0usize;
@@ -732,6 +924,22 @@ async fn pull_subtree(
             )
         }
     };
+    // Drop everything the user excluded from byte-sync (the giant-folder prompt,
+    // `services::big_folders`). A whole-project pull is exactly the click that
+    // answer exists to make safe; an explicit pull *of* the excluded folder still
+    // goes through, which is why its own marker is ignored (`is_excluded`'s `under`).
+    let (files, skipped_excluded) = {
+        let mut guard = manifest.lock().await;
+        let m = ensure_loaded(&mut guard, project_id);
+        let before = files.len();
+        let kept: Vec<_> = files
+            .into_iter()
+            .filter(|f| !remote_sync::is_excluded(m, &f.rel, rel))
+            .collect();
+        let skipped = before - kept.len();
+        (kept, skipped)
+    };
+
     let total = files.len();
     emit(app, project_id, "start", rel, 0, total);
 
@@ -746,7 +954,10 @@ async fn pull_subtree(
     // rsync fast-path for a directory pull: transfer the bytes in one shot, then
     // fall through to the manifest-recording loop (which only re-stats locally —
     // the bytes are already on disk, so `pull_file` would be a wasteful re-read).
-    let rsynced = is_dir && try_rsync_pull(target, rel).await;
+    // It transfers the *whole* subtree, so it is given up entirely as soon as one
+    // file inside was excluded — a fast path that ignores the exclusion would haul
+    // the very folder the user just said to leave on the host.
+    let rsynced = is_dir && skipped_excluded == 0 && try_rsync_pull(target, rel).await;
 
     let mut done = 0usize;
     for file in files {

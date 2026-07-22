@@ -78,7 +78,8 @@ export function localPersistentSessionOf(scope: string, tab: TabEntry): string |
  * session — remote (on an SSH host) or local (on this machine) — keeps running under
  * its tmux daemon and stays discoverable + reattachable in the Sessions view. The one
  * way to actually terminate a session is its × (kill) in the Sessions view; a tab
- * close, a quit, a disconnect, and a crash all leave it alive. (This function stays a
+ * close, a quit, and a crash leave it alive; disconnecting the machine ends its
+ * host sessions. (This function stays a
  * seam — rather than inlining `removeTab` at the call sites — so a future confirm/hook
  * has one home, and so `persistentSessionOf` keeps a co-located reader.)
  */

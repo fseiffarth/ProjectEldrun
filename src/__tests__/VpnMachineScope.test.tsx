@@ -70,6 +70,9 @@ beforeEach(() => {
   useProjectsStore.setState({ projects: [A, B] } as never);
   useRemoteStatusStore.setState({ byProject: {} } as never);
   useVpnStatusStore.setState({ byConfig: {}, holders: {} });
+  // The header indicator is off by default (Settings' "Remote features"); these
+  // tests are specifically about that surface, so opt in.
+  useSettingsStore.setState({ settings: { vpn_enabled: true } as never });
 });
 
 describe("a shared tunnel is refcounted by holder", () => {
@@ -382,7 +385,7 @@ describe("a stored config can be removed, not only connected", () => {
   it("disarms connect-on-launch when the armed config is removed", async () => {
     // An armed path with no file behind it would silently fail at every startup.
     withStored();
-    useSettingsStore.setState({ settings: { vpn_auto_connect: CONFIG } as never });
+    useSettingsStore.setState({ settings: { vpn_auto_connect: CONFIG, vpn_enabled: true } as never });
     render(<VpnIndicator />);
 
     await userEvent.hover(screen.getByRole("button", { name: /openvpn/i }));

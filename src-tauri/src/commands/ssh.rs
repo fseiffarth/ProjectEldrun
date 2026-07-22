@@ -379,10 +379,33 @@ pub async fn ssh_connect(
 /// Whether a saved SSH password exists for this host target, so the UI can
 /// pre-check the "Save password" box and show "saved" without ever receiving the
 /// secret itself.
+///
+/// `async` + `spawn_blocking` is load-bearing, not stylistic. A **synchronous**
+/// Tauri command runs on the **main thread**, and the keychain behind this is the
+/// platform secret store — on Linux a D-Bus round-trip to the Secret Service,
+/// which is unbounded: it is slow while the daemon starts, and it blocks
+/// *indefinitely* while the keyring is locked, because the unlock prompt has to be
+/// answered first. Answering it needs the compositor, and Eldrun's window is
+/// frozen mid-frame at that point. Auto-connect is what makes this a launch
+/// problem rather than a rare one: it asks this question once per host, for the
+/// primary and every opted-in worker, on every launch and every activation — so a
+/// multi-host remote project serialised several unbounded main-thread D-Bus calls
+/// into startup. Off the main thread it is just a slow promise.
 #[tauri::command]
-pub fn remote_has_saved_password(user: Option<String>, host: String, port: Option<u16>) -> bool {
-    let account = crate::services::remote_credentials::ssh_account(&user, &host, port);
-    crate::services::remote_credentials::has(&account)
+pub async fn remote_has_saved_password(
+    user: Option<String>,
+    host: String,
+    port: Option<u16>,
+) -> bool {
+    tokio::task::spawn_blocking(move || {
+        let account = crate::services::remote_credentials::ssh_account(&user, &host, port);
+        crate::services::remote_credentials::has(&account)
+    })
+    .await
+    // A panicked keychain lookup answers the question the same way a missing
+    // entry does: nothing usable is saved. The caller then prompts, which is the
+    // safe direction — never a silent connect on a credential we can't read.
+    .unwrap_or(false)
 }
 
 /// Outcome of a silent reachability probe (`ssh_probe`).
@@ -452,14 +475,19 @@ pub async fn ssh_probe(user: Option<String>, host: String, port: Option<u16>) ->
 }
 
 /// Forget any saved SSH password for this host target (explicit "clear" action).
+/// Off the main thread for the same reason as `remote_has_saved_password`.
 #[tauri::command]
-pub fn remote_forget_password(
+pub async fn remote_forget_password(
     user: Option<String>,
     host: String,
     port: Option<u16>,
 ) -> Result<(), String> {
-    let account = crate::services::remote_credentials::ssh_account(&user, &host, port);
-    crate::services::remote_credentials::set(&account, None)
+    tokio::task::spawn_blocking(move || {
+        let account = crate::services::remote_credentials::ssh_account(&user, &host, port);
+        crate::services::remote_credentials::set(&account, None)
+    })
+    .await
+    .map_err(|e| format!("forget password task failed: {e}"))?
 }
 
 /// Kill every tmux session on a remote host — the "end all my running jobs" half
@@ -487,7 +515,7 @@ pub async fn remote_kill_all_jobs(
             &host,
             port,
             password.as_deref(),
-            &["tmux kill-server 2>/dev/null; true"],
+            &[crate::services::ssh_exec::tmux_kill_server_script()],
         )
         .map(|_| ())
     })
@@ -589,6 +617,31 @@ pub async fn ssh_mkdir(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The keychain-touching commands must stay `async`. A **synchronous**
+    /// `#[tauri::command]` runs on the **main thread**, and the platform secret
+    /// store behind these is an unbounded D-Bus round-trip that blocks outright
+    /// while the keyring is locked — freezing the window against an unlock prompt
+    /// the user then cannot reach. Auto-connect asks `remote_has_saved_password`
+    /// once per host on every launch and activation, so on the main thread a
+    /// multi-host remote project serialises several of those into startup.
+    ///
+    /// This is a COMPILE-TIME guard: making one of them `fn` again stops it being
+    /// a `Future` and fails the build here. The futures are constructed and
+    /// dropped, never awaited, so no keychain is touched by running this test.
+    #[test]
+    fn credential_commands_are_async_so_they_never_block_the_main_thread() {
+        fn assert_future<F: std::future::Future>(_f: F) {}
+        assert_future(remote_has_saved_password(None, "host".into(), None));
+        assert_future(remote_forget_password(None, "host".into(), None));
+        assert_future(crate::commands::openvpn::vpn_has_saved_password(String::new()));
+        assert_future(crate::commands::openvpn::vpn_can_connect_silently(
+            String::new(),
+            None,
+        ));
+        assert_future(crate::commands::openvpn::vpn_forget_password(String::new()));
+        assert_future(crate::commands::openvpn::openvpn_remove_config(String::new()));
+    }
 
     // NOTE: the old `ls`-text browse path (`parse_ls_output`) and its
     // `shell_quote` remote-path injection defense were removed when browsing

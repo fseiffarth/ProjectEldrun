@@ -216,6 +216,12 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const focusedRef = useRef(focused);
   visibleRef.current = visible;
   focusedRef.current = focused;
+  // The live colour scheme, readable from inside the spawn effect without being
+  // one of its deps — that effect owns the PTY, so listing `colorScheme` there
+  // would respawn every terminal on a theme change. `tryOpen` reads it to adopt
+  // whatever the scheme became while the pane was still closed.
+  const colorSchemeRef = useRef(colorScheme);
+  colorSchemeRef.current = colorScheme;
   const argsKey = JSON.stringify(args);
   const envKey = JSON.stringify(env);
 
@@ -279,6 +285,12 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (!visibleRef.current || !hasLayout() || !containerRef.current) return;
       term.open(containerRef.current);
       openedRef.current = true;
+      // Adopt the current scheme now that there is a renderer to take it. The
+      // terminal was constructed with whatever `colorScheme` was at setup — which
+      // is `undefined` on a cold start, since settings load asynchronously — and
+      // the theme effect deliberately skips a closed terminal, so without this a
+      // pane opened after the settings landed would keep the fallback theme.
+      term.options.theme = terminalTheme(colorSchemeRef.current);
       fit.fit();
       if (pendingOutput.current) {
         term.write(pendingOutput.current);
@@ -675,11 +687,40 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         useAgentTaskStore.getState().clearTabTitle(parts.length > 1 ? parts.slice(1).join(":") : id);
       }
       term.dispose();
+      // Retire the lifecycle refs WITH the terminal they describe. Every guard in
+      // this file asks one of these three whether there is a terminal to touch
+      // (`openedRef` in the focus effect, `termRef` in the theme effect, both in
+      // `doFit`), and a disposed xterm answers none of them for itself — it keeps
+      // its object identity while tearing its renderer down, so a call that
+      // arrives afterwards fails inside xterm with
+      // "undefined is not an object (evaluating 'this._renderer.value.dimensions')"
+      // rather than being refused. That is not hypothetical: this effect re-runs
+      // whenever the spawn deps change (an agent mode flip, a container toggle,
+      // a host switch) and unmounts on every tab close, while `colorScheme`,
+      // focus and zoom are all driven from OUTSIDE it — so a theme or focus
+      // change landing in the same tick as a teardown reached a dead terminal.
+      // It was the single most common error in the crash log, thrown on every
+      // launch as restored tabs settled. Clearing here restores the invariant the
+      // guards assume: these refs describe a LIVE terminal or nothing.
+      termRef.current = null;
+      fitRef.current = null;
+      openedRef.current = false;
     };
   }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, remoteHostId, tmuxSession, tmuxAttach, attachOnly, zoomable, persistOnUnmount]);
 
+  // Re-theme a LIVE, OPEN terminal. Both halves of that guard are load-bearing,
+  // and `termRef.current` alone was neither: assigning `options.theme` makes
+  // xterm refresh through its renderer, and the renderer exists only between
+  // `open()` and `dispose()`. Outside that window it throws
+  // "undefined is not an object (evaluating 'this._renderer.value.dimensions')".
+  // The closed case is the one that fired on every launch: `colorScheme` comes
+  // from settings, which load a few seconds AFTER the restored tabs mount, so the
+  // scheme arriving flipped this effect over a whole layout's worth of terminals
+  // that had been constructed but not yet opened (hidden tabs, panes still
+  // waiting on a layout box). `tryOpen` applies the scheme on open instead, so
+  // skipping a closed terminal here costs nothing.
   useEffect(() => {
-    if (termRef.current) {
+    if (openedRef.current && termRef.current) {
       termRef.current.options.theme = terminalTheme(colorScheme);
     }
   }, [colorScheme]);

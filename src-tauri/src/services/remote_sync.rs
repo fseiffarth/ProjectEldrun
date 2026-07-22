@@ -84,6 +84,20 @@ pub struct SyncEntry {
     /// (`is_auto`); a plain off with no ancestor auto is a harmless no-op marker.
     #[serde(default)]
     pub auto_off: bool,
+    /// **Excluded from byte-sync entirely** — a stronger statement than `auto_off`,
+    /// which only carves a path out of the *background* engine. A folder the user
+    /// answered "don't sync this" about (the giant-folder prompt raised when a
+    /// project is first paired with a host, `services::big_folders`) must also be
+    /// skipped by the one-click whole-project pull/push, or the very click the
+    /// prompt exists to make safe would haul it over anyway. Applies to the whole
+    /// subtree on a directory marker; an explicit auto-on *inside* it still wins
+    /// (nearest marker, as everywhere else here).
+    ///
+    /// Byte-sync only: a **git-tracked** file in an excluded folder still travels
+    /// via lockstep (commits, not bytes) — the two transports split the tree by
+    /// git, and this flag lives on the byte side of that line.
+    #[serde(default)]
+    pub excluded: bool,
 }
 
 /// A project's manifest: project-relative path → record.
@@ -213,13 +227,17 @@ fn now_secs() -> u64 {
 /// `host` is `None` when the host wasn't stat'd (cold pool) — then only the local
 /// side is judged (no network needed). `local` is `None` when the mirror file is
 /// gone; a missing mirror we had previously synced counts as diverged (deleted
-/// locally). Pure, unit-tested.
+/// locally). `excluded` is the path's EFFECTIVE (own-or-inherited, see
+/// `is_excluded`) byte-sync exclusion: a path excluded from sync is also
+/// excluded from the diverged view — flagging amber on a file sync will never
+/// touch again is a dead end, not a warning. Pure, unit-tested.
 pub fn compute_state(
     entry: &SyncEntry,
     host: Option<(u64, Option<u64>)>,
     local: Option<(u64, Option<u64>)>,
+    excluded: bool,
 ) -> SyncState {
-    if !entry.selected {
+    if !entry.selected || excluded {
         return SyncState::None;
     }
     let (host_diverged, local_diverged) = divergence(entry, host, local);
@@ -286,7 +304,7 @@ pub fn content_verify_worth_it(
 pub fn is_auto(manifest: &Manifest, rel: &str) -> bool {
     // The path's own entry decides for itself regardless of is_dir.
     if let Some(e) = manifest.get(rel) {
-        if e.auto_off {
+        if e.auto_off || e.excluded {
             return false;
         }
         if e.auto_sync {
@@ -304,7 +322,7 @@ pub fn is_auto(manifest: &Manifest, rel: &str) -> bool {
         };
         if let Some(e) = manifest.get(cur) {
             if e.is_dir {
-                if e.auto_off {
+                if e.auto_off || e.excluded {
                     return false;
                 }
                 if e.auto_sync {
@@ -312,6 +330,40 @@ pub fn is_auto(manifest: &Manifest, rel: &str) -> bool {
                 }
             }
         }
+    }
+}
+
+/// Whether `rel` is **excluded from byte-sync**, by the same nearest-marker walk
+/// as [`is_auto`]: the path's own entry, then each ancestor directory marker up
+/// to the project root. An explicit `auto_sync` marker nearer than the exclusion
+/// re-includes the path, so a user can keep one folder inside an excluded tree.
+///
+/// `under` is the path the caller was *asked* to transfer, and its own marker is
+/// deliberately ignored: right-clicking an excluded folder and syncing it is an
+/// explicit override of the very answer stored there, whereas a whole-project
+/// pull is not. Pass `""` for a project-root pull to honour every exclusion.
+pub fn is_excluded(manifest: &Manifest, rel: &str, under: &str) -> bool {
+    let mut cur = rel;
+    loop {
+        if cur != under {
+            if let Some(e) = manifest.get(cur) {
+                // A directory marker rules its subtree; a file's own entry rules
+                // only itself (`cur == rel` on the first pass).
+                if e.is_dir || cur == rel {
+                    if e.excluded {
+                        return true;
+                    }
+                    if e.auto_sync {
+                        return false;
+                    }
+                }
+            }
+        }
+        cur = match cur.rfind('/') {
+            Some(idx) => &cur[..idx],
+            None if !cur.is_empty() => "",
+            None => return false,
+        };
     }
 }
 
@@ -785,6 +837,47 @@ fn rel_under(root: &Path, path: &Path) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn excluded_dir() -> SyncEntry {
+        SyncEntry { is_dir: true, excluded: true, auto_off: true, ..Default::default() }
+    }
+
+    #[test]
+    fn exclusion_covers_the_subtree_of_a_whole_project_transfer() {
+        let mut m = Manifest::new();
+        m.insert("".into(), SyncEntry { is_dir: true, auto_sync: true, ..Default::default() });
+        m.insert("data".into(), excluded_dir());
+        assert!(is_excluded(&m, "data/raw/big.bin", ""));
+        assert!(!is_excluded(&m, "src/main.rs", ""));
+        // …and the background engine agrees, so the two transports can't disagree.
+        assert!(!is_auto(&m, "data/raw/big.bin"));
+        assert!(is_auto(&m, "src/main.rs"));
+    }
+
+    #[test]
+    fn explicitly_transferring_the_excluded_folder_overrides_its_own_marker() {
+        let mut m = Manifest::new();
+        m.insert("data".into(), excluded_dir());
+        // Whole-project pull: skipped. Right-clicking `data` itself: honoured.
+        assert!(is_excluded(&m, "data/big.bin", ""));
+        assert!(!is_excluded(&m, "data/big.bin", "data"));
+        // A nested exclusion inside it is still honoured — only the requested
+        // path's own marker is waived.
+        m.insert("data/raw".into(), excluded_dir());
+        assert!(is_excluded(&m, "data/raw/big.bin", "data"));
+    }
+
+    #[test]
+    fn a_nearer_auto_marker_re_includes_a_folder_inside_an_excluded_tree() {
+        let mut m = Manifest::new();
+        m.insert("data".into(), excluded_dir());
+        m.insert(
+            "data/small".into(),
+            SyncEntry { is_dir: true, auto_sync: true, selected: true, ..Default::default() },
+        );
+        assert!(!is_excluded(&m, "data/small/notes.md", ""));
+        assert!(is_excluded(&m, "data/raw/big.bin", ""));
+    }
+
     #[test]
     fn push_decision_safe_when_host_matches_base() {
         let e = SyncEntry {
@@ -912,7 +1005,7 @@ mod tests {
         };
         // Both host and local match their recorded bases → green.
         assert_eq!(
-            compute_state(&e, Some((10, Some(100))), Some((10, Some(50)))),
+            compute_state(&e, Some((10, Some(100))), Some((10, Some(50))), false),
             SyncState::Green,
         );
     }
@@ -929,13 +1022,18 @@ mod tests {
         };
         // Host size changed (local unchanged).
         assert_eq!(
-            compute_state(&e, Some((12, Some(100))), Some((10, Some(50)))),
+            compute_state(&e, Some((12, Some(100))), Some((10, Some(50))), false),
             SyncState::Amber,
         );
         // Host mtime changed (local unchanged).
         assert_eq!(
-            compute_state(&e, Some((10, Some(200))), Some((10, Some(50)))),
+            compute_state(&e, Some((10, Some(200))), Some((10, Some(50))), false),
             SyncState::Amber,
+        );
+        // Same divergence, but the path is excluded from sync → None, not Amber.
+        assert_eq!(
+            compute_state(&e, Some((12, Some(100))), Some((10, Some(50))), true),
+            SyncState::None,
         );
     }
 
@@ -952,19 +1050,19 @@ mod tests {
         };
         // Host still matches its base, but the local mirror mtime moved → amber.
         assert_eq!(
-            compute_state(&e, Some((10, Some(100))), Some((10, Some(80)))),
+            compute_state(&e, Some((10, Some(100))), Some((10, Some(80))), false),
             SyncState::Amber,
         );
         // Also amber offline (host not stat'd) when the local size moved.
-        assert_eq!(compute_state(&e, None, Some((12, Some(50)))), SyncState::Amber);
+        assert_eq!(compute_state(&e, None, Some((12, Some(50))), false), SyncState::Amber);
         // Mirror deleted after a prior sync → diverged.
-        assert_eq!(compute_state(&e, Some((10, Some(100))), None), SyncState::Amber);
+        assert_eq!(compute_state(&e, Some((10, Some(100))), None, false), SyncState::Amber);
     }
 
     #[test]
     fn compute_state_none_when_unselected() {
         let e = SyncEntry { selected: false, ..Default::default() };
-        assert_eq!(compute_state(&e, Some((0, None)), None), SyncState::None);
+        assert_eq!(compute_state(&e, Some((0, None)), None, false), SyncState::None);
     }
 
     #[test]

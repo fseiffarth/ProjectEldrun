@@ -19,7 +19,7 @@ import { openLinkedFile } from "../embed/FileViewerPane";
 import { useWindowsStore } from "../../stores/windows";
 import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
 import { resolveLocalMirror, type ProjectEntry } from "../../types";
-import type { SortKey } from "../../lib/viewers/fileUtils";
+import { fmtModified, type SortKey } from "../../lib/viewers/fileUtils";
 import { basename, dirname } from "../../lib/paths";
 import { projectTypeTags } from "../projects/projectTypeTags";
 import { ProjectHoverCard, useProjectHoverCard } from "../projects/ProjectHoverCard";
@@ -66,6 +66,40 @@ function relativeAge(epochSecs: number): string {
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.floor(hrs / 24)}d ago`;
+}
+
+interface MtimeCue {
+  text: string;
+  tone: "remote" | "local" | "neutral";
+  title: string;
+}
+
+/** Which copy has the later recorded mtime, as a small badge. Remote (host)
+ *  and local clocks may differ, so this is intentionally a timestamp cue,
+ *  never an automatic resolution — the full "modified when" detail lives in
+ *  the tooltip rather than the badge itself. Tone always names the side the
+ *  text is about: remote = --warning (orange), local = --success (green),
+ *  matching the take-remote/keep-local icon buttons below.
+ *
+ *  A row only reaches this list once the manifest has recorded a synced base
+ *  for it (`amberPaths` reads `state === "amber"`, which `compute_state`
+ *  never sets for an untracked path) — so a null mtime here is never "this
+ *  file was never synced," it's "this file WAS synced and one side's copy
+ *  has since been deleted." The tooltip says so explicitly, since the badge
+ *  text alone ("Remote only") reads ambiguously otherwise. */
+function mtimeDivergenceCue(
+  hostMtime: number | null | undefined,
+  localMtime: number | null | undefined,
+): MtimeCue | null {
+  if (hostMtime == null && localMtime == null) return null;
+  const hostLabel = hostMtime != null ? `Remote modified ${fmtModified(hostMtime)}` : "Remote: deleted since the last sync";
+  const localLabel = localMtime != null ? `Local modified ${fmtModified(localMtime)}` : "Local: deleted since the last sync";
+  const title = `${hostLabel}\n${localLabel}`;
+  if (hostMtime == null) return { text: "Local only", tone: "local", title };
+  if (localMtime == null) return { text: "Remote only", tone: "remote", title };
+  if (hostMtime > localMtime) return { text: "Remote newer", tone: "remote", title };
+  if (localMtime > hostMtime) return { text: "Local newer", tone: "local", title };
+  return { text: "Same time", tone: "neutral", title };
 }
 
 interface GitStatus {
@@ -368,6 +402,21 @@ export function ProjectFilesView({
       clearInterval(iv);
     };
   }, [active, projectId, project?.remote, connSig, sessionHosts]);
+
+  // Keep the Sessions view grouped in the configured machine order. A fallback
+  // group preserves a row if a machine was renamed or removed while its list
+  // request was still in flight.
+  const sessionGroups = useMemo(() => {
+    const groups = new Map<string, { hostId: string; hostLabel: string; rows: SessionRow[] }>();
+    for (const host of sessionHosts)
+      groups.set(host.id, { hostId: host.id, hostLabel: host.label, rows: [] });
+    for (const row of sessionRows) {
+      const group = groups.get(row.hostId);
+      if (group) group.rows.push(row);
+      else groups.set(row.hostId, { hostId: row.hostId, hostLabel: row.hostLabel, rows: [row] });
+    }
+    return [...groups.values()].filter((group) => group.rows.length > 0);
+  }, [sessionHosts, sessionRows]);
 
   // The (host, session) each open shell tab of this scope owns, so a Sessions row
   // can reveal the tab that runs it instead of opening a second attach.
@@ -1152,7 +1201,8 @@ export function ProjectFilesView({
             <>
               {/* Bulk "…for all" resolution: take one side for every diverged
                   file at once. Both are destructive to the losing side, so each
-                  confirms first (with the file count). */}
+                  confirms first (with the file count). Header + icon buttons
+                  (not a text button per row) so the bar stays compact. */}
               <div className="orange-bulk-bar">
                 <span className="orange-bulk-count">
                   {orangeFiles.length} diverged
@@ -1160,14 +1210,15 @@ export function ProjectFilesView({
                 <div className="orange-file-actions">
                   <button
                     type="button"
-                    className="orange-file-act"
-                    title="Take the host copy for every diverged file (overwrite the local mirror)"
+                    className="orange-file-act orange-file-act--icon orange-file-act--remote"
+                    aria-label="Take the remote copy for all"
+                    title="Take the remote copy for every diverged file (overwrite the local mirror)"
                     disabled={remoteBlocked}
                     onClick={() => {
                       if (!projectId) return;
                       if (
                         !window.confirm(
-                          `Take the host copy for all ${orangeFiles.length} diverged files? This overwrites your local mirror edits.`,
+                          `Take the remote copy for all ${orangeFiles.length} diverged files? This overwrites your local mirror edits.`,
                         )
                       )
                         return;
@@ -1176,11 +1227,12 @@ export function ProjectFilesView({
                         .resolveAll(projectId, orangeFiles, "host");
                     }}
                   >
-                    Take host for all
+                    ⬇
                   </button>
                   <button
                     type="button"
-                    className="orange-file-act"
+                    className="orange-file-act orange-file-act--icon orange-file-act--local"
+                    aria-label="Keep the local copy for all"
                     title="Keep the local copy for every diverged file (force-push over the host)"
                     disabled={remoteBlocked}
                     onClick={() => {
@@ -1196,12 +1248,21 @@ export function ProjectFilesView({
                         .resolveAll(projectId, orangeFiles, "local");
                     }}
                   >
-                    Keep local for all
+                    ⬆
                   </button>
                 </div>
               </div>
-              {orangeFiles.map((rel) => (
-              <div key={rel} className="orange-file-row" title={rel}>
+              {orangeFiles.map((rel) => {
+                const rowHostMtime = syncMap?.[rel]?.hostMtime;
+                const rowLocalMtime = syncMap?.[rel]?.localMtime;
+                const mtimeCue = mtimeDivergenceCue(rowHostMtime, rowLocalMtime);
+                // "Remote only" / "Local only": the other side has no file at
+                // all, so the action that would act on it is a no-op — disable
+                // it rather than leave a button that errors when clicked.
+                const noHostFile = rowHostMtime == null;
+                const noLocalFile = rowLocalMtime == null;
+                return (
+                  <div key={rel} className="orange-file-row" title={rel}>
                 <button
                   type="button"
                   className="orange-file-name"
@@ -1224,28 +1285,39 @@ export function ProjectFilesView({
                   <span className="orange-file-dot" aria-hidden="true">±</span>
                   {rel}
                 </button>
+                {mtimeCue && (
+                  <span
+                    className={`orange-mtime-badge orange-mtime-badge--${mtimeCue.tone}`}
+                    title={mtimeCue.title}
+                  >
+                    {mtimeCue.text}
+                  </span>
+                )}
                 <div className="orange-file-actions">
                   <button
                     type="button"
-                    className="orange-file-act"
-                    title="Take the host copy (overwrite the local mirror)"
-                    disabled={remoteBlocked}
+                    className="orange-file-act orange-file-act--icon orange-file-act--remote"
+                    aria-label="Take the remote copy"
+                    title={noHostFile ? "No remote copy to take" : "Take the remote copy (overwrite the local mirror)"}
+                    disabled={remoteBlocked || noHostFile}
                     onClick={() => projectId && void useSyncStore.getState().pull(projectId, rel)}
                   >
-                    Take host
+                    ⬇
                   </button>
                   <button
                     type="button"
-                    className="orange-file-act"
-                    title="Keep the local copy (force-push over the host)"
-                    disabled={remoteBlocked}
+                    className="orange-file-act orange-file-act--icon orange-file-act--local"
+                    aria-label="Keep the local copy"
+                    title={noLocalFile ? "No local copy to keep" : "Keep the local copy (force-push over the host)"}
+                    disabled={remoteBlocked || noLocalFile}
                     onClick={() => projectId && void useSyncStore.getState().push(projectId, rel, true)}
                   >
-                    Keep local
+                    ⬆
                   </button>
                 </div>
-              </div>
-              ))}
+                  </div>
+                );
+              })}
             </>
           )}
         </div>
@@ -1258,50 +1330,52 @@ export function ProjectFilesView({
               {remoteBlocked ? "Connect to list host sessions" : "No persistent sessions on the host(s)"}
             </div>
           ) : (
-            sessionRows.map(({ hostId, hostLabel, session: s }) => {
-              const owned = sessionOwners.has(`${hostId} ${s.name}`);
-              // Show the host tag only when the project spans more than one host.
-              const showHost = sessionHosts.length > 1;
-              return (
-                <div key={`${hostId} ${s.name}`} className="orange-file-row" title={s.name}>
-                  <button
-                    type="button"
-                    className="orange-file-name"
-                    title={owned ? `Reveal the tab running “${s.name}”` : `Attach to “${s.name}”`}
-                    onClick={() => openSession(hostId, s.name)}
-                  >
-                    <span className="orange-file-dot" aria-hidden="true">
-                      {s.attached ? "●" : "○"}
-                    </span>
-                    {s.name}
-                    <span className="tmux-session-meta">
-                      {showHost ? `${hostLabel} · ` : ""}
-                      {s.windows} win · {relativeAge(s.created)}
-                      {owned ? " · open" : ""}
-                    </span>
-                  </button>
-                  <div className="orange-file-actions">
-                    <button
-                      type="button"
-                      className="orange-file-act"
-                      title="Rename this session"
-                      onClick={() => renameSession(hostId, s.name)}
-                    >
-                      Rename
-                    </button>
-                    <button
-                      type="button"
-                      className="orange-file-act"
-                      title="Kill this session and everything running in it"
-                      aria-label={`Kill session ${s.name}`}
-                      onClick={() => killSession(hostId, s.name)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                </div>
-              );
-            })
+            sessionGroups.map(({ hostId, hostLabel, rows }) => (
+              <section className="tmux-machine-group" key={hostId} aria-label={`Persistent sessions on ${hostLabel}`}>
+                <div className="tmux-machine-group-title">{hostLabel}</div>
+                {rows.map(({ session: s }) => {
+                  const owned = sessionOwners.has(`${hostId} ${s.name}`);
+                  return (
+                    <div key={`${hostId} ${s.name}`} className="orange-file-row" title={s.name}>
+                      <button
+                        type="button"
+                        className="orange-file-name"
+                        title={owned ? `Reveal the tab running “${s.name}”` : `Attach to “${s.name}”`}
+                        onClick={() => openSession(hostId, s.name)}
+                      >
+                        <span className="orange-file-dot" aria-hidden="true">
+                          {s.attached ? "●" : "○"}
+                        </span>
+                        {s.name}
+                        <span className="tmux-session-meta">
+                          {s.windows} win · {relativeAge(s.created)}
+                          {owned ? " · open" : ""}
+                        </span>
+                      </button>
+                      <div className="orange-file-actions">
+                        <button
+                          type="button"
+                          className="orange-file-act"
+                          title="Rename this session"
+                          onClick={() => renameSession(hostId, s.name)}
+                        >
+                          Rename
+                        </button>
+                        <button
+                          type="button"
+                          className="orange-file-act"
+                          title="Kill this session and everything running in it"
+                          aria-label={`Kill session ${s.name}`}
+                          onClick={() => killSession(hostId, s.name)}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </section>
+            ))
           )}
         </div>
       )}

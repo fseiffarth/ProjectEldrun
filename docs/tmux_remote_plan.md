@@ -174,8 +174,8 @@ the session — that would defeat the entire feature. Split the intent:
   `tmux kill-session -t eldrun-<uid>`, fired as a one-shot over the pooled
   ControlMaster via **`run_remote_script`** (`ssh_exec.rs:300`) — the transport
   already exists, no new plumbing. The local ssh child is reaped as today.
-- **Eldrun quit / disconnect / connection drop** → leave the session alive on
-  the host. This is the whole point.
+- **Eldrun quit / connection drop** → leave the session alive on the host. An
+  explicit machine disconnect ends that host's tmux sessions before closing SSH.
 
 The seam: the tab-close path (`kill`) needs to know whether the tab was a
 persistent remote tab, and if so run the kill-session one-shot *before* reaping
@@ -283,7 +283,8 @@ it (vs. detaching) is destructive.
   when off. **No runtime behavior change until the flag/toggle is on.**
 - **Phase 1 — kill semantics.** Thread "is a persistent remote tab" into the
   `kill` path; fire `tmux kill-session` via `run_remote_script` on explicit
-  close only. App-exit and disconnect leave sessions alive. Unit-test the
+  close only. App-exit leaves sessions alive; machine disconnect ends its host's
+  sessions. Unit-test the
   branch selection (kill-session fired vs. not) without a real host.
 - **Phase 2 — presence + transparency.** tmux-detect fallback prelude; ship the
   `status off` / `mouse on` options; the missing-tmux notice.
