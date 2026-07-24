@@ -1,12 +1,13 @@
 import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { useT, useI18nStore, type TranslationKey } from "../../lib/i18n";
 
 interface Props {
   data: Record<string, number>; // "YYYY-MM-DD" -> seconds (full history, all years)
 }
 
-function formatTime(secs: number): string {
-  if (secs <= 0) return "No activity";
+function formatTime(secs: number, t: (key: TranslationKey) => string): string {
+  if (secs <= 0) return t("activityCal.noActivity");
   if (secs < 60) return `${Math.round(secs)}s`;
   const h = Math.floor(secs / 3600);
   const m = Math.floor((secs % 3600) / 60);
@@ -40,7 +41,15 @@ const GAP = 2;
 const STEP = CELL + GAP;
 const LABEL_H = 16;
 const DAY_LABEL_W = 28;
-const DAY_LABELS = ["", "Mon", "", "Wed", "", "Fri", ""];
+const DAY_LABEL_KEYS: (TranslationKey | null)[] = [
+  null,
+  "activityCal.dayMon",
+  null,
+  "activityCal.dayWed",
+  null,
+  "activityCal.dayFri",
+  null,
+];
 
 function buildWeeks(year: number, data: Record<string, number>): Cell[][] {
   const today = new Date();
@@ -74,6 +83,8 @@ function buildWeeks(year: number, data: Record<string, number>): Cell[][] {
 }
 
 export function ActivityCalendar({ data }: Props) {
+  const t = useT();
+  const lang = useI18nStore((s) => s.lang);
   const currentYear = new Date().getFullYear();
 
   const availableYears = useMemo(() => {
@@ -104,13 +115,13 @@ export function ActivityCalendar({ data }: Props) {
       const first = week.find((c) => !c.future && c.date);
       if (!first) return;
       const d = new Date(first.date);
-      const label = d.toLocaleString("en", { month: "short" });
+      const label = d.toLocaleString(lang, { month: "short" });
       if (!labels.length || labels[labels.length - 1].label !== label) {
         labels.push({ label, col: ci });
       }
     });
     return labels;
-  }, [weeks]);
+  }, [weeks, lang]);
 
   return (
     <div className="activity-calendar">
@@ -132,7 +143,7 @@ export function ActivityCalendar({ data }: Props) {
       <div style={{ display: "flex" }}>
         {/* Day-of-week labels */}
         <div style={{ width: DAY_LABEL_W, paddingTop: LABEL_H, flexShrink: 0 }}>
-          {DAY_LABELS.map((label, i) => (
+          {DAY_LABEL_KEYS.map((key, i) => (
             <div
               key={i}
               style={{
@@ -146,7 +157,7 @@ export function ActivityCalendar({ data }: Props) {
                 userSelect: "none",
               }}
             >
-              {label}
+              {key ? t(key) : ""}
             </div>
           ))}
         </div>
@@ -213,13 +224,13 @@ export function ActivityCalendar({ data }: Props) {
 
       {/* Legend */}
       <div className="activity-legend">
-        <span>Less</span>
+        <span>{t("activityCal.less")}</span>
         {([0, 1, 2, 3, 4] as const).map((l) => (
           <svg key={l} width={CELL} height={CELL} style={{ flexShrink: 0 }}>
             <rect width={CELL} height={CELL} rx={2} className={`activity-cell activity-cell-${l}`} />
           </svg>
         ))}
-        <span>More</span>
+        <span>{t("activityCal.more")}</span>
       </div>
 
       {tooltip &&
@@ -235,7 +246,7 @@ export function ActivityCalendar({ data }: Props) {
               zIndex: 10000,
             }}
           >
-            <strong>{tooltip.date}</strong>: {formatTime(tooltip.secs)}
+            <strong>{tooltip.date}</strong>: {formatTime(tooltip.secs, t)}
           </div>,
           document.body,
         )}

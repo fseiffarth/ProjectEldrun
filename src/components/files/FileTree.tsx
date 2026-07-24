@@ -38,6 +38,7 @@ import {
   shellScriptRunPlan,
   type ScriptShell,
 } from "../../lib/shellScriptRun";
+import { guardLoginNodeRun } from "../../lib/hpcGuard";
 import { useRunHostPrefStore } from "../../stores/runHostPref";
 import { readFileText } from "../embed/fileAccess";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
@@ -2372,9 +2373,20 @@ export function FileTree({
       location: plan.location,
     };
     // Same placement policy as the Python Run: stream into a detached popout when
-    // we're in one, else the focused subwindow of this project.
-    if (fileDrop) fileDrop.openTab(tab);
-    else useTabsStore.getState().addTabToScope(projectId ?? "root", tab);
+    // we're in one, else the focused subwindow of this project. Preceded by the
+    // same login-node gate the Python Run has: if `plan.location` resolves to a
+    // machine tagged HPC, running a script there is asked about first
+    // (`lib/hpcGuard.ts`) — a script is the likeliest thing on this menu to be
+    // actual compute.
+    void guardLoginNodeRun({
+      projectId,
+      location: plan.location,
+      kind: "login-node-run",
+    }).then((ok) => {
+      if (!ok) return;
+      if (fileDrop) fileDrop.openTab(tab);
+      else useTabsStore.getState().addTabToScope(projectId ?? "root", tab);
+    });
   }
 
   /** Run a Python file: open a terminal tab in the project's scope running the

@@ -3009,6 +3009,15 @@ pub async fn start(
     if !load_state(project_id).enabled {
         return;
     }
+    // A host tagged HPC gets no background poll loop: every tick runs `git` in the
+    // host tree, which on a cluster sits on the parallel filesystem, and a repo
+    // probe every 12 s for as long as the project is open is exactly the standing
+    // load a login node's rules ask you not to put there. Lockstep's manual
+    // reconcile (and the local `.git` watcher's push) still work — what stops is
+    // Eldrun asking the cluster, unprompted, forever.
+    if crate::services::hpc_mode::is_hpc_spec(&target.spec) {
+        return;
+    }
     let mut guard = reg.lock().await;
     if guard.contains_key(project_id) {
         return;

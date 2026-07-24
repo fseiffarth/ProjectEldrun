@@ -1,8 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore } from "../stores/settings";
-import { useVpnStatusStore } from "../stores/vpnStatus";
+import {
+  markVpnConnected,
+  markVpnConnecting,
+  markVpnError,
+  useVpnStatusStore,
+} from "../stores/vpnStatus";
 import { canConnectVpnSilently, connectVpnSilently } from "./vpnConnect";
+import { keyringState } from "./keyring";
 import { openConnectionInRoot } from "./remoteConnect";
 
 /**
@@ -51,6 +57,43 @@ export async function setVpnAutoConnect(config: string, enabled: boolean): Promi
 }
 
 /**
+ * Whether the user asked Eldrun to remember this config's credentials.
+ *
+ * Deliberately read from *settings*, not from the keychain. The keychain is the only
+ * place the secret lives, but it cannot always be asked: a locked Secret Service
+ * collection answers every read like an empty one, so `vpn_has_saved_password` says
+ * "no" over a perfectly good saved password — which is what made the save toggle
+ * appear to do nothing after a restart. This flag survives that, and is reconciled
+ * back to the truth by [`syncVpnCredentialSaved`] whenever the keychain *is* readable.
+ */
+export function isVpnCredentialSaved(config: string): boolean {
+  return (useSettingsStore.getState().settings?.vpn_saved_configs ?? []).includes(config);
+}
+
+/** Record (or drop) the "remember this config's credentials" intent. */
+export async function setVpnCredentialSaved(config: string, saved: boolean): Promise<void> {
+  const current = useSettingsStore.getState().settings?.vpn_saved_configs ?? [];
+  const next = saved
+    ? current.includes(config)
+      ? current
+      : [...current, config]
+    : current.filter((c) => c !== config);
+  if (next.length === current.length && next.every((c, i) => c === current[i])) return;
+  await useSettingsStore.getState().updateSettings({ vpn_saved_configs: next });
+}
+
+/**
+ * Reconcile the recorded intent against what the keychain actually holds. Call only
+ * with a reading taken while the keychain was **readable** — feeding it the `false`
+ * a locked keyring returns would erase exactly the record that exists to survive
+ * that lock.
+ */
+export async function syncVpnCredentialSaved(config: string, actuallySaved: boolean): Promise<void> {
+  if (actuallySaved === isVpnCredentialSaved(config)) return;
+  await setVpnCredentialSaved(config, actuallySaved);
+}
+
+/**
  * The auth username for an `auth-user-pass` config, as far as the frontend knows one:
  * a project that uses this config carries it on its spec. It is not a secret, and the
  * backend also keeps a copy beside the saved password (which is the only way a
@@ -91,14 +134,7 @@ export async function autoConnectVpnOnLaunch(): Promise<void> {
   // also arms the tunnel backend-side (`--writepid`), so it stays visible and killable.
   if (settings?.connections_headless === false) {
     try {
-      const command = await invoke<string>("openvpn_login_command", { config });
-      useVpnStatusStore.getState().setState(config, "connecting");
-      openConnectionInRoot({
-        label: `OpenVPN · ${fileOf(config)}`,
-        command,
-        dedupeKey: `vpn:${config}`,
-      });
-      pollVpnUp(config);
+      await openVpnLoginInTerminal(config);
     } catch (error) {
       useVpnStatusStore.getState().setState(config, "off");
       console.warn("VPN auto-connect (root terminal) skipped", error);
@@ -110,6 +146,17 @@ export async function autoConnectVpnOnLaunch(): Promise<void> {
   // that has since been forgotten must leave the tunnel down — never open a modal the
   // user did not ask for while the app is still starting up.
   if (!(await canConnectVpnSilently(config, username))) {
+    // Distinguish the two ways that check fails, because only one of them is the
+    // user's fault. A **locked** keyring reads exactly like "nothing saved", so the
+    // tunnel that was armed to come up silently just... doesn't, with no explanation
+    // anywhere — the single most confusing outcome this feature has. Unlocking would
+    // mean prompting during startup, which auto-connect promises not to do, so say so
+    // instead and leave the remedy one click away in the header.
+    if (isVpnCredentialSaved(config) && (await keyringState()) === "locked") {
+      useProjectsStore.setState({
+        connToast: `VPN not started · ${fileOf(config)} — your OS keyring is locked, so its saved credentials can't be read. Unlock it from the VPN menu.`,
+      });
+    }
     console.warn("VPN auto-connect skipped: credentials no longer allow a silent connect");
     return;
   }
@@ -127,28 +174,93 @@ export async function autoConnectVpnOnLaunch(): Promise<void> {
 }
 
 /**
+ * **The** non-headless VPN login: hand `config` to an interactive root-terminal tab
+ * and let OpenVPN itself ask for whatever it needs — the account password, a key
+ * passphrase, a challenge/OTP — none of which Eldrun ever sees or has to model.
+ *
+ * It is the one implementation of that handoff, shared by every caller that reaches
+ * for it: the `connections_headless: false` paths (activation, auto-connect, the
+ * header menu) which *always* go this way, and the headless paths that fall back to
+ * it **per connect** when their own login failed (the modal's "Log in in terminal",
+ * see `stores/vpnPrompt`'s `useTerminal`). That fallback is deliberately a *local*
+ * switch — one tunnel, one click — and never writes the global setting: a mode is
+ * how the user wants Eldrun to behave, not something a failed handshake gets to
+ * decide for them.
+ *
+ * Building the command also **arms** the tunnel backend-side (the pidfile +
+ * `--writepid` + management socket `interactive_connect_command` appends), so a
+ * tunnel authenticated in the terminal is as visible and as killable as a headless
+ * one — which is also what makes the `pollVpnUp` below able to observe it at all.
+ *
+ * Throws if the command can't be built; the lamp is only moved once it can, so a
+ * failed handoff leaves no phantom "connecting" behind.
+ */
+export async function openVpnLoginInTerminal(
+  config: string,
+  opts?: { label?: string; projectId?: string | null },
+): Promise<void> {
+  const name = opts?.label ?? fileOf(config);
+  const command = await invoke<string>("openvpn_login_command", { config });
+  if (opts?.projectId) markVpnConnecting(opts.projectId, config);
+  else useVpnStatusStore.getState().setState(config, "connecting");
+  openConnectionInRoot({
+    label: `OpenVPN · ${name}`,
+    command,
+    dedupeKey: `vpn:${config}`,
+  });
+  pollVpnUp(config, { projectId: opts?.projectId, name });
+}
+
+/**
  * Poll until the root-terminal tunnel is up (non-headless: the user authenticates in
  * that terminal, so `openvpn_status` is the only completion signal). Bounded, so a
  * tunnel that is never authenticated stops polling instead of spinning forever.
+ *
+ * With a `projectId` it also drives that project's pill lamp and takes its hold on
+ * the tunnel, so a project-scoped handoff ends on the same marks a headless connect
+ * would have left.
+ *
+ * It deliberately does **not** bail when the project is switched away from, and it
+ * always runs to a *terminal* mark — connected, or off/error after the bound. The
+ * tunnel is machine-wide; its coming up has nothing to do with which project is on
+ * screen, and an early bail would strand the shared lamp mid-handshake: a phantom the
+ * header's Disconnect won't touch (it is disabled while connecting) and every Connect
+ * dialog reads as a live tunnel. Updating an inactive project's lamp on the way is
+ * harmless; leaving the machine-wide one at "connecting" forever is not.
  */
-function pollVpnUp(config: string): void {
+export function pollVpnUp(
+  config: string,
+  opts?: { projectId?: string | null; name?: string },
+): void {
+  const projectId = opts?.projectId;
   let attempts = 0;
   const maxAttempts = 40; // ~60s at 1.5s cadence
+  const succeed = () => {
+    if (projectId) markVpnConnected(projectId, config);
+    else useVpnStatusStore.getState().setState(config, "connected");
+    useProjectsStore.setState({
+      connToast: `VPN up · ${opts?.name ?? fileOf(config)} — this computer's traffic now routes through the tunnel`,
+    });
+  };
+  const giveUp = () => {
+    if (projectId) markVpnError(projectId, config);
+    else useVpnStatusStore.getState().setState(config, "off");
+  };
   const tick = () => {
     void invoke<boolean>("openvpn_status", { config })
       .then((up) => {
         if (up) {
-          useVpnStatusStore.getState().setState(config, "connected");
+          succeed();
           return;
         }
         if (++attempts >= maxAttempts) {
-          useVpnStatusStore.getState().setState(config, "off");
+          giveUp();
           return;
         }
         setTimeout(tick, 1500);
       })
       .catch(() => {
-        if (++attempts >= maxAttempts) useVpnStatusStore.getState().setState(config, "off");
+        if (++attempts >= maxAttempts) giveUp();
         else setTimeout(tick, 1500);
       });
   };

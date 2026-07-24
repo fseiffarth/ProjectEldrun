@@ -1032,8 +1032,20 @@ fn clear_management(config: &str) {
 /// connect must carry. `None` when none could be armed (no free port, no CSPRNG, an
 /// unwritable runtime dir) — the tunnel then simply keeps the old elevated-kill
 /// teardown, which is why every caller ignores the failure.
+/// A/B kill switch for the `--management` socket (added 2026-07-23, restored
+/// 2026-07-24). It was briefly suspected of the amber-forever connect and gated off to
+/// prove it; the real cause was a locked keyring blocking keychain reads
+/// (`remote_credentials::read_timed`), so the socket is back on — it is the
+/// single-elevation teardown (no second polkit prompt to stop a tunnel). Left as a
+/// const so it can be flipped again without disturbing the two paths that arm it.
+#[cfg(unix)]
+const MANAGEMENT_SOCKET_DISABLED: bool = false;
+
 #[cfg(unix)]
 fn arm_management(config: &str) -> Option<Vec<String>> {
+    if MANAGEMENT_SOCKET_DISABLED {
+        return None;
+    }
     // A config that already opens its own management socket keeps it — passing
     // `--management` on top would be the option twice, which OpenVPN refuses, and a
     // refused option means the tunnel does not come up at all.
@@ -2836,6 +2848,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn interactive_connect_command_arms_a_management_socket() {
+        // Skipped while the A/B kill switch is on (no `--management` is appended).
+        if MANAGEMENT_SOCKET_DISABLED {
+            return;
+        }
         let cfg = "/home/u/mgmt-interactive.ovpn";
         forget_interactive(cfg);
         let cmd = interactive_connect_command(cfg).unwrap();
@@ -2902,6 +2918,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn arm_management_records_an_owner_only_endpoint() {
+        // Skipped while the A/B kill switch is on (no endpoint is armed by design).
+        if MANAGEMENT_SOCKET_DISABLED {
+            return;
+        }
         let cfg = "/home/u/mgmt-roundtrip.ovpn";
         let args = arm_management(cfg).expect("endpoint armed");
         assert_eq!(args[0], "--management");

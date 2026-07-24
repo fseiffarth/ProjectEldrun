@@ -164,6 +164,7 @@ toward broad, cloud, team-scale agent automation — and the defensibility
 | J | [`todo/group-j.md`](todo/group-j.md) | Web & Mail Surfaces — URI routing to external apps (#33), plus in-app mail (#65) and browser (#61) counterparts. |
 | L | [`todo/group-l.md`](todo/group-l.md) | Center Panel: Tabs, Subwindows & Navigation — detach-to-window, tab UX fixes, keyboard nav, on top of the done tiling split model. |
 | M | [`todo/group-m.md`](todo/group-m.md) | In-App Viewers — text/TeX/image enhancements (Phase 2+) on top of the done file→tab viewer infrastructure. |
+| N | [`todo/group-n.md`](todo/group-n.md) | Internationalization (i18n) — full app-wide translation coverage; in progress, ~40% of components done. Plan: [`docs/i18n_translation_plan.md`](docs/i18n_translation_plan.md). |
 | O | [`todo/group-o.md`](todo/group-o.md) | Project Security & Permissions — per-project policy for downloads, agent spawn, and git-push guardrails. |
 | R | [`todo/group-r.md`](todo/group-r.md) | Right Panel: Polish & App-Window Tracking — follow-on polish + a tracking-display bug on the done pin toggle. |
 | S | [`todo/group-s.md`](todo/group-s.md) | Local Agents via Ollama — generalize the local `vibe` model tab into a family of local Ollama-backed agent tabs. |

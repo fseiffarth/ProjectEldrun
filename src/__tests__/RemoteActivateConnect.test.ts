@@ -14,17 +14,21 @@
  * probes instead of assuming — and escalates to the tunnel only when the host is
  * genuinely unreachable, never when it merely rejected a credential.
  */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 
 import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(() => {})) }));
 
-import { useProjectsStore } from "../stores/projects";
+import { retryAutoConnectAfterVpn, useProjectsStore } from "../stores/projects";
 import { useConnectDialogStore } from "../stores/connectDialog";
 import { useRemoteStatusStore } from "../stores/remoteStatus";
-import type { ProjectEntry, RemoteSpec, SshProbe } from "../types";
+import { useSettingsStore } from "../stores/settings";
+import { useTabsStore } from "../stores/tabs";
+import { useVpnStatusStore } from "../stores/vpnStatus";
+import { forgetConnection } from "../lib/remoteConnect";
+import type { ProjectEntry, RemoteSpec, Settings, SshProbe } from "../types";
 
 const invokeMock = vi.mocked(invoke);
 
@@ -62,8 +66,15 @@ const backend = (opts: {
   sshSaved?: boolean;
   vpnSaved?: boolean;
   vpnFails?: boolean;
+  /** Non-headless: how many readiness polls fail before the root-terminal login's
+   *  ControlMaster answers (`Infinity` = the user never authenticates). */
+  loginReadyAfter?: number;
+  /** Non-headless: `openvpn_status` answers true from this poll onwards. */
+  vpnUpAfter?: number;
 }) => {
   const probes = Array.isArray(opts.probe) ? [...opts.probe] : opts.probe ? [opts.probe] : [];
+  let sshConnects = 0;
+  let vpnStatusChecks = 0;
   invokeMock.mockImplementation((cmd: string) => {
     switch (cmd) {
       case "ssh_probe":
@@ -74,6 +85,16 @@ const backend = (opts: {
         return Promise.resolve(opts.vpnSaved ?? false);
       case "openvpn_connect":
         return opts.vpnFails ? Promise.reject("tunnel failed") : Promise.resolve();
+      case "remote_login_command":
+        return Promise.resolve("ssh -tt alice@host.example");
+      case "openvpn_login_command":
+        return Promise.resolve("pkexec openvpn --config /cfg.ovpn");
+      case "openvpn_status":
+        return Promise.resolve(++vpnStatusChecks > (opts.vpnUpAfter ?? Infinity));
+      case "ssh_connect":
+        return sshConnects++ >= (opts.loginReadyAfter ?? 0)
+          ? Promise.resolve()
+          : Promise.reject("not authenticated yet");
       default:
         return Promise.resolve();
     }
@@ -265,5 +286,223 @@ describe("auto-connect opt-in", () => {
     expect(invokeMock.mock.calls.filter(([cmd]) => cmd === "ssh_probe")).toHaveLength(
       probesAfterFirst,
     );
+  });
+});
+
+/**
+ * The same opt-in, in the mode where Eldrun handles no passwords at all
+ * (`connections_headless` off).
+ *
+ * The headless gate — a saved SSH password, or a `key_auth` host — can never pass
+ * there: nothing is ever written to the keychain in that mode, so auto-connect used
+ * to reject *every* project and do nothing at all, silently. The substitution is the
+ * one the header's "Connect on launch" already makes for a tunnel: the connect
+ * command opens in the **root terminal** for the user to authenticate, and the pooled
+ * connection then rides the ControlMaster that login leaves behind. The promise the
+ * toggle keeps is unchanged — no modal is ever raised — but it is kept differently.
+ */
+describe("auto-connect with connections_headless off", () => {
+  const rootTabs = () => useTabsStore.getState().tabsByScope.root ?? [];
+  const rootInputs = () => rootTabs().map((t) => t.initialInput);
+
+  beforeEach(() => {
+    useSettingsStore.setState({
+      settings: { connections_headless: false } as unknown as Settings,
+    });
+    useTabsStore.setState({ tabsByScope: {}, layoutByScope: {} });
+    // The machine-wide VPN store is the thing a phantom would strand — start clean so
+    // an assertion of "no entry" means this test, not a leftover from another.
+    useVpnStatusStore.setState({ byConfig: {}, holders: {} });
+    // The root-terminal dedupe is module-level and session-lived by design (a project
+    // re-activated five times gets one login tab, not five), so each test has to hand
+    // its keys back or only the first would open one.
+    forgetConnection("ssh:alice@host.example:");
+    forgetConnection("vpn:/cfg.ovpn");
+    vi.useFakeTimers();
+  });
+
+  afterEach(async () => {
+    // Drain any readiness poll still in flight: its `autoConnecting` claim is only
+    // released when it resolves, and that claim is module-level too.
+    await vi.advanceTimersByTimeAsync(3000 * 41);
+    vi.useRealTimers();
+    useSettingsStore.setState({ settings: null });
+  });
+
+  it("opens the SSH login in the root terminal, then connects once it is authenticated", async () => {
+    // A password host: nothing saved, no key auth — exactly the project the headless
+    // gate used to reject outright.
+    backend({ probe: REJECTED, sshSaved: false, loginReadyAfter: 1 });
+    useProjectsStore.setState({ projects: [project("remote1", { auto_connect: true })] });
+
+    await useProjectsStore.getState().setActive("remote1");
+    await vi.advanceTimersByTimeAsync(0);
+    // The login is waiting for the user; the lamp says so rather than going red.
+    expect(rootInputs()).toContain("ssh -tt alice@host.example");
+    expect(sshLamp()).toBe("connecting");
+    expect(useConnectDialogStore.getState().projectId).toBeNull();
+
+    // First readiness poll fails (not authenticated yet), the second rides the master.
+    await vi.advanceTimersByTimeAsync(7000);
+
+    expect(invokeMock).toHaveBeenCalledWith("remote_connect", {
+      projectId: "remote1",
+      hostId: null,
+      password: null,
+      // The pool rode the login's master, so the connect says nothing about how the
+      // host authenticates — the backend must not record `key_auth` off the back of
+      // it (`record_key_auth`), or this password host would claim a promptless
+      // connect it can't deliver the next time headless mode is on.
+      viaLogin: true,
+    });
+    expect(sshLamp()).toBe("connected");
+  });
+
+  it("connects a key-auth host with no terminal at all", async () => {
+    backend({ probe: REACHABLE, sshSaved: false });
+    useProjectsStore.setState({ projects: [project("remote1", { auto_connect: true })] });
+
+    await useProjectsStore.getState().setActive("remote1");
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The probe authenticated: there is nothing for the user to type, so no login tab.
+    expect(rootTabs()).toHaveLength(0);
+    expect(sshLamp()).toBe("connected");
+  });
+
+  it("surfaces the VPN login in the root terminal when the host is unreachable", async () => {
+    backend({ probe: UNREACHABLE, sshSaved: false });
+    useProjectsStore.setState({
+      projects: [project("remote1", { auto_connect: true, openvpn: { config: "/cfg.ovpn" } })],
+    });
+
+    await useProjectsStore.getState().setActive("remote1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(rootInputs()).toContain("pkexec openvpn --config /cfg.ovpn");
+    // Eldrun never handles the passphrase here, so the headless connect must not fire.
+    expect(invokeMock).not.toHaveBeenCalledWith("openvpn_connect", expect.anything());
+    // Red, not "connecting" — the host is unreachable until the tunnel is up, and red
+    // is what `retryAutoConnectAfterVpn` clears once the tunnel actually comes up.
+    expect(sshLamp()).toBe("error");
+  });
+
+  // The regression that stranded the header on a phantom yellow tunnel: an unattended
+  // project poll that marked the *machine-wide* VPN "connecting" and then never
+  // resolved it. The header's Disconnect is disabled while "connecting" and the
+  // Connect dialog reads "connecting" as a live tunnel, so a phantom is un-stoppable
+  // AND un-reconnectable. Non-headless auto-connect must therefore NEVER put a config
+  // into the machine-wide store — the lamp belongs to `VpnIndicator`'s reconcile,
+  // which is driven by the backend's real tunnel set and cannot strand.
+  it("never marks the machine-wide tunnel connecting from auto-connect (no phantom)", async () => {
+    backend({ probe: UNREACHABLE, sshSaved: false });
+    useProjectsStore.setState({
+      projects: [project("remote1", { auto_connect: true, openvpn: { config: "/cfg.ovpn" } })],
+    });
+
+    await useProjectsStore.getState().setActive("remote1");
+    // Run out the whole poll window that the old code would have spun on.
+    await vi.advanceTimersByTimeAsync(3000 * 45);
+
+    // The machine-wide store is untouched — no "connecting", no entry at all — so the
+    // header's Disconnect stays enabled and the dialog never thinks a tunnel is up.
+    // This is the load-bearing assertion: the phantom lived here.
+    expect(useVpnStatusStore.getState().byConfig).toEqual({});
+    // The project's own VPN lamp is likewise never stuck yellow (it defaults to "off"
+    // as a side effect of setting the SSH lamp; it must never be "connecting").
+    expect(vpnLamp()).not.toBe("connecting");
+    // Eldrun handles no passphrase here, so no silent connect fires.
+    expect(invokeMock).not.toHaveBeenCalledWith("openvpn_connect", expect.anything());
+  });
+
+  it("completes once the machine-wide reconcile reports the tunnel up", async () => {
+    // First activation: unreachable, so the VPN login is surfaced and SSH goes red.
+    backend({ probe: UNREACHABLE, sshSaved: false });
+    useProjectsStore.setState({
+      projects: [project("remote1", { auto_connect: true, openvpn: { config: "/cfg.ovpn" } })],
+    });
+    await useProjectsStore.getState().setActive("remote1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sshLamp()).toBe("error");
+
+    // The user authenticates the tunnel; `VpnIndicator.refresh` reconciles it up and
+    // the store's subscriber fires `retryAutoConnectAfterVpn`. The host now answers
+    // and takes key auth, so the pool connects with no login tab.
+    backend({ probe: REACHABLE, sshSaved: false });
+    retryAutoConnectAfterVpn();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sshLamp()).toBe("connected");
+    expect(invokeMock).toHaveBeenCalledWith(
+      "remote_connect",
+      expect.objectContaining({ projectId: "remote1" }),
+    );
+  });
+
+  it("leaves the tunnel alone when the host merely rejected the credential", async () => {
+    // Reachable but unauthenticated is the *normal* state of a password host here —
+    // it must not be read as "the network needs the VPN".
+    backend({ probe: REJECTED, sshSaved: false, loginReadyAfter: Infinity });
+    useProjectsStore.setState({
+      projects: [project("remote1", { auto_connect: true, openvpn: { config: "/cfg.ovpn" } })],
+    });
+
+    await useProjectsStore.getState().setActive("remote1");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(invokeMock).not.toHaveBeenCalledWith("openvpn_login_command", expect.anything());
+    expect(rootInputs()).toContain("ssh -tt alice@host.example");
+  });
+
+  it("gives up on a login that is never authenticated, without prompting", async () => {
+    backend({ probe: REJECTED, sshSaved: false, loginReadyAfter: Infinity });
+    useProjectsStore.setState({ projects: [project("remote1", { auto_connect: true })] });
+
+    await useProjectsStore.getState().setActive("remote1");
+    await vi.advanceTimersByTimeAsync(0);
+    // ~2 min of polling (40 × 3s), then the lamp goes red and the polling stops.
+    await vi.advanceTimersByTimeAsync(3000 * 41);
+
+    expect(sshLamp()).toBe("error");
+    expect(invokeMock).not.toHaveBeenCalledWith("remote_connect", expect.anything());
+    expect(useConnectDialogStore.getState().projectId).toBeNull();
+  });
+
+  it("still leaves an unflagged project disconnected", async () => {
+    backend({ probe: REJECTED, sshSaved: false });
+    useProjectsStore.setState({ projects: [project("remote1")] });
+
+    await useProjectsStore.getState().setActive("remote1");
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(rootTabs()).toHaveLength(0);
+    expect(sshLamp()).toBeUndefined();
+  });
+
+  it("treats a closed login tab as 'not now' — disconnected, and re-offered next time", async () => {
+    backend({ probe: REJECTED, sshSaved: false, loginReadyAfter: Infinity });
+    useProjectsStore.setState({
+      projects: [project("remote1", { auto_connect: true }), project("local1")],
+    });
+
+    await useProjectsStore.getState().setActive("remote1");
+    await vi.advanceTimersByTimeAsync(0);
+    const login = rootTabs()[0];
+    expect(login.initialInput).toBe("ssh -tt alice@host.example");
+
+    // The user closes the login instead of authenticating.
+    useTabsStore.getState().removeTab(login.key);
+    await vi.advanceTimersByTimeAsync(4000);
+
+    // Not an error: nothing failed, the user declined. The distinction is load-bearing
+    // — the re-attempt guard only fires from "off", so a red lamp here would wedge the
+    // project shut until the pill's lamp was clicked.
+    expect(sshLamp()).toBe("off");
+
+    // And the dedupe expired with the tab, so switching back offers the login again
+    // rather than silently waiting on a master that is never coming.
+    await useProjectsStore.getState().setActive("local1");
+    await useProjectsStore.getState().setActive("remote1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(rootInputs()).toContain("ssh -tt alice@host.example");
   });
 });

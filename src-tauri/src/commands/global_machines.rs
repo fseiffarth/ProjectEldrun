@@ -323,22 +323,29 @@ pub async fn global_machine_monitor_snapshot(
     user: Option<String>,
     host: String,
     port: Option<u16>,
+    careful: Option<bool>,
 ) -> Result<crate::sysstat::SystemSnapshot, String> {
     tokio::task::spawn_blocking(move || {
         use crate::services::remote_credentials as creds;
         let account = creds::ssh_account(&user, &host, port);
         let password = creds::get(&account);
-        let stdout = crate::commands::ssh::run_ssh_auth(
-            &user,
-            &host,
-            port,
-            password.as_deref(),
-            &[crate::sysstat::REMOTE_SNAPSHOT_SCRIPT],
-        )?;
+        // `careful` is the machine's stored mode (careful by default for every
+        // remote machine, normal where the user said this one is theirs), keyed
+        // by the same SSH target this command already is — see
+        // `commands::monitor::system_monitor_snapshot`. With no answer to pass,
+        // fall back to what earlier probes of this target found; the host's own
+        // SLURM check covers a first sample either way.
+        let key = crate::services::hpc_mode::key(&user, &host, port);
+        let mode = careful.or_else(|| crate::services::hpc_mode::is_known_careful(&key).then_some(true));
+        let script = crate::sysstat::remote_snapshot_script(mode);
+        let stdout =
+            crate::commands::ssh::run_ssh_auth(&user, &host, port, password.as_deref(), &[&script])?;
         if stdout.trim().is_empty() {
             return Err("system monitor probe returned no output".to_string());
         }
-        Ok(crate::sysstat::parse_remote_snapshot(&stdout))
+        let snap = crate::sysstat::parse_remote_snapshot(&stdout);
+        crate::services::hpc_mode::remember(&key, snap.careful);
+        Ok(snap)
     })
     .await
     .map_err(|e| format!("system monitor probe task failed: {e}"))?

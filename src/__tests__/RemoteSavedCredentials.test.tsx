@@ -80,7 +80,7 @@ describe("saved credentials", () => {
     await waitFor(() => expect(save.checked).toBe(true));
     // The field stays empty (the secret never comes back to the UI), so it has to
     // say that leaving it blank is the way to use what's saved.
-    expect(screen.getByPlaceholderText(/using saved password/i)).toBeTruthy();
+    expect(screen.getByPlaceholderText(/using saved secret/i)).toBeTruthy();
   });
 
   it("deletes the saved SSH password the moment the toggle is unticked", async () => {

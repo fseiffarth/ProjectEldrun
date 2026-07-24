@@ -127,6 +127,7 @@ import {
   type TexCompletions,
   type TexComplContext,
   getTexCapability,
+  refreshTexCapability,
   lastLogLine,
   type TexError,
   parseTexErrors,
@@ -146,6 +147,7 @@ import {
   phraseAt,
 } from "../../lib/viewers/tex";
 import { PdfView } from "./pdf/PdfViewer";
+import { DeckView } from "./deck/DeckView";
 import { YamlTree } from "./YamlTree";
 import { YamlGrid } from "./YamlGrid";
 import { isTreePath, isJsonPath } from "../../lib/viewers/yaml";
@@ -300,6 +302,11 @@ interface Props {
  */
 export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Props) {
   const fileName = basename(path) || path;
+
+  // The native presenter is experimental; with the flag off a deck opens as the
+  // JSON it physically is. Read up here because the dispatch below sits after an
+  // early return, and a hook cannot.
+  const deckOn = useExperimental("deck_presenter");
 
   // Resolve whether these bytes are remote-native (host SFTP) or the local
   // mirror, and publish it to the tab strip so the Remote/Local badge rides on
@@ -468,6 +475,15 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
     // HTML is now the editable base editor with a sandboxed live preview, keyed
     // to its own per-type prefs.
     view = <TextView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} type="html" groupId={groupId} />;
+  } else if (viewer === "eldeck") {
+    // The presenter is experimental. Gated HERE rather than in `naturalViewerFor`
+    // so a deck still resolves to a viewer for drag-to-tab and the hover card; with
+    // the flag off it opens as what it physically is — JSON — in the structure tree.
+    view = deckOn ? (
+      <DeckView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />
+    ) : (
+      <TextView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} type="yaml" groupId={groupId} />
+    );
   } else if (viewer === "sqlite") {
     view = <SqliteView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "yaml") {
@@ -6028,6 +6044,14 @@ function TexView({
               }
             >
               Run in terminal
+            </button>
+            <button
+              type="button"
+              className="ollama-action-btn"
+              title="Re-check after installing"
+              onClick={() => void refreshTexCapability().then(setCap)}
+            >
+              Recheck
             </button>
           </div>
         )}

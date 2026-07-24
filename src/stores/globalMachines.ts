@@ -4,6 +4,9 @@ import type { ConnState } from "./remoteStatus";
 import type { GlobalMachine, MachineImportEntry } from "../types";
 import { syncGlobalConnected, syncGlobalDisconnected } from "../lib/machineSync";
 import { useHostBusyStore } from "./hostBusy";
+import { withHostKeyConfirm } from "../lib/hostKey";
+import { isHpcHost } from "../lib/hpcHost";
+import { useSettingsStore } from "./settings";
 
 /** Per-machine outcome of a bulk import (`importMachines`): whether the shared
  *  credentials authenticated against that host. The machine is added to the list
@@ -34,6 +37,14 @@ interface GlobalMachinesStore {
   machines: GlobalMachine[];
   /** Per-machine id; absent = "off". */
   status: Record<string, ConnState>;
+  /** Per-machine id: the message from the last failed `connect`/`update`, so a
+   *  red lamp is never just "error" with no way to tell why — an unknown host
+   *  key, a rejected password, a network timeout, and a keychain that couldn't
+   *  be read all fail differently and the backend already says which. Cleared
+   *  on the next successful connect for that machine; left in place across a
+   *  probe (`probeAll` only ever *reads* reachability, it never explains a
+   *  failure) so it survives until the next real attempt. */
+  errors: Record<string, string>;
   loaded: boolean;
 
   load: () => Promise<void>;
@@ -150,6 +161,7 @@ interface GlobalMachinesStore {
 export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => ({
   machines: [],
   status: {},
+  errors: {},
   loaded: false,
 
   load: async () => {
@@ -160,7 +172,10 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
   },
 
   add: async ({ user, host, port, label, password, remember }) => {
-    await invoke("ssh_connect", { user, host, port, password, remember });
+    // First contact: show the host key's fingerprint before the password is sent.
+    await withHostKeyConfirm(() =>
+      invoke("ssh_connect", { user, host, port, password, remember }),
+    );
     const machine = await invoke<GlobalMachine>("global_machine_add", { user, host, port, label });
     set((s) => ({
       machines: [...s.machines, machine],
@@ -200,18 +215,24 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
     if (!opts?.connect) return;
     set((s) => ({ status: { ...s.status, [id]: "connecting" } }));
     try {
-      await invoke("ssh_connect", {
-        user,
-        host,
-        port,
-        password: opts.password || null,
-        // Only `true` (save) or `null` (leave) — never `false`, which would clear
-        // a credential the edit didn't intend to drop.
-        remember: opts.remember ? true : null,
+      await withHostKeyConfirm(() =>
+        invoke("ssh_connect", {
+          user,
+          host,
+          port,
+          password: opts.password || null,
+          // Only `true` (save) or `null` (leave) — never `false`, which would clear
+          // a credential the edit didn't intend to drop.
+          remember: opts.remember ? true : null,
+        }),
+      );
+      set((s) => {
+        const errors = { ...s.errors };
+        delete errors[id];
+        return { status: { ...s.status, [id]: "connected" }, errors };
       });
-      set((s) => ({ status: { ...s.status, [id]: "connected" } }));
-    } catch {
-      set((s) => ({ status: { ...s.status, [id]: "error" } }));
+    } catch (e) {
+      set((s) => ({ status: { ...s.status, [id]: "error" }, errors: { ...s.errors, [id]: String(e) } }));
     }
   },
 
@@ -230,7 +251,9 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
     set((s) => {
       const status = { ...s.status };
       delete status[id];
-      return { machines: list, status };
+      const errors = { ...s.errors };
+      delete errors[id];
+      return { machines: list, status, errors };
     });
   },
 
@@ -239,17 +262,23 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
     if (!m) return;
     set((s) => ({ status: { ...s.status, [id]: "connecting" } }));
     try {
-      await invoke("ssh_connect", {
-        user: m.user,
-        host: m.host,
-        port: m.port,
-        password,
-        remember: null,
+      await withHostKeyConfirm(() =>
+        invoke("ssh_connect", {
+          user: m.user,
+          host: m.host,
+          port: m.port,
+          password,
+          remember: null,
+        }),
+      );
+      set((s) => {
+        const errors = { ...s.errors };
+        delete errors[id];
+        return { status: { ...s.status, [id]: "connected" }, errors };
       });
-      set((s) => ({ status: { ...s.status, [id]: "connected" } }));
       syncGlobalConnected(m);
-    } catch {
-      set((s) => ({ status: { ...s.status, [id]: "error" } }));
+    } catch (e) {
+      set((s) => ({ status: { ...s.status, [id]: "error" }, errors: { ...s.errors, [id]: String(e) } }));
     }
   },
 
@@ -290,9 +319,9 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
     const machines = get().machines;
     const results = await Promise.all(
       machines.map((m) =>
-        invoke<{ ok: boolean }>("ssh_probe", { user: m.user, host: m.host, port: m.port })
-          .then((r) => [m.id, r.ok ? "connected" : "error"] as const)
-          .catch(() => [m.id, "error"] as const),
+        invoke<{ ok: boolean; error: string }>("ssh_probe", { user: m.user, host: m.host, port: m.port })
+          .then((r) => [m.id, r.ok ? "connected" : "error", r.error] as const)
+          .catch((e) => [m.id, "error", String(e)] as const),
       ),
     );
     // Same idempotence rule as `setStatus`: a sweep that finds every machine in
@@ -300,9 +329,27 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
     // the more valuable of the two — it writes EVERY machine at once, so on a
     // fleet of N an unchanged sweep used to invalidate the whole list.
     set((s) => {
-      const next = Object.fromEntries(results);
-      const changed = Object.entries(next).some(([id, st]) => s.status[id] !== st);
-      return changed ? { status: { ...s.status, ...next } } : s;
+      const nextStatus = Object.fromEntries(results.map(([id, st]) => [id, st]));
+      const changedStatus = Object.entries(nextStatus).some(([id, st]) => s.status[id] !== st);
+      // `ssh_probe` already carries the reason a re-auth failed (bad password,
+      // unreachable network, refused prompt…) — capture it the same way `connect`
+      // does, so a menu-open sweep explains a red lamp exactly as well as a manual
+      // retry would, instead of throwing that text away.
+      const errors = { ...s.errors };
+      let changedErrors = false;
+      for (const [id, st, err] of results) {
+        if (st === "connected") {
+          if (errors[id] !== undefined) {
+            delete errors[id];
+            changedErrors = true;
+          }
+        } else if (err && errors[id] !== err) {
+          errors[id] = err;
+          changedErrors = true;
+        }
+      }
+      if (!changedStatus && !changedErrors) return s;
+      return { status: changedStatus ? { ...s.status, ...nextStatus } : s.status, errors };
     });
   },
 
@@ -335,7 +382,15 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
   },
 
   autoConnect: async () => {
-    const machines = get().machines.filter((m) => m.auto_connect);
+    // A machine tagged HPC is never in the launch/VPN-up sweep, whatever its own
+    // auto-connect toggle says (the toggle is disabled for one, but an older
+    // settings file can carry both). An SSH master opened on a shared login node
+    // because an app started is exactly the unattended presence the tag exists to
+    // stop; connecting by hand is untouched.
+    const settings = useSettingsStore.getState().settings;
+    const machines = get()
+      .machines.filter((m) => m.auto_connect)
+      .filter((m) => !isHpcHost(settings, { user: m.user, host: m.host, port: m.port }));
     await Promise.all(
       machines.map(async (m) => {
         const st = get().status[m.id] ?? "off";
@@ -368,6 +423,10 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
       const effUser = entry.user || user || undefined;
       let ok = true;
       try {
+        // Deliberately NOT wrapped in `withHostKeyConfirm`: this is a bulk loop, and
+        // one fingerprint modal per imported machine would be a wall of prompts. An
+        // unknown host simply fails here and lands as a red row, whose Connect button
+        // asks the question once, for the one machine the user actually wants.
         await invoke("ssh_connect", {
           user: effUser,
           host: entry.host,

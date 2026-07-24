@@ -1,4 +1,5 @@
 import { createPortal } from "react-dom";
+import { useT } from "../../lib/i18n";
 
 /**
  * A small floating coachmark anchored above/below a UI element, or a centered
@@ -27,6 +28,7 @@ export function HintBubble({
   onDismiss: () => void;
   onDisableAll: () => void;
 }) {
+  const t = useT();
   const BUBBLE_W = 280;
   let style: React.CSSProperties;
   let banner = false;
@@ -52,7 +54,7 @@ export function HintBubble({
       <button
         type="button"
         className="hint-bubble-close"
-        aria-label="Dismiss hint"
+        aria-label={t("hint.dismissAria")}
         onClick={onDismiss}
       >
         ×
@@ -61,7 +63,7 @@ export function HintBubble({
       <div className="hint-bubble-body">{body}</div>
       <div className="hint-bubble-actions">
         <button type="button" className="hint-bubble-link" onClick={onDisableAll}>
-          Don't show hints
+          {t("hint.dontShowHints")}
         </button>
         {action && (
           <button
@@ -76,7 +78,7 @@ export function HintBubble({
           </button>
         )}
         <button type="button" className="hint-bubble-got-it" onClick={onDismiss}>
-          {action ? "Not now" : "Got it"}
+          {action ? t("hint.notNow") : t("howToStart.gotIt")}
         </button>
       </div>
     </div>,

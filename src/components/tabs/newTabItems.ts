@@ -1,6 +1,5 @@
 import {
   FILES_TAB_CMD,
-  PROJECT_FILES_TAB_CMD,
   RESUMABLE_AGENTS,
   TabEntry,
   TabKind,
@@ -60,11 +59,13 @@ export const SHELL_ITEMS: StaticMenuItem[] = [
   // fails to spawn on Windows where bash isn't on PATH.
   { label: "Shell", cmd: "",              kind: "shell" },
   { label: "Files", cmd: FILES_TAB_CMD,   kind: "files" },
-  { label: "Files (Project)", cmd: PROJECT_FILES_TAB_CMD, kind: "projectfiles" },
 ];
 
-/** The pure-frontend file panes, offered together under the add menu's "Files"
- *  group and each kept to one tab per cwd (see TabBar.handleAdd). */
+/** The pure-frontend file panes kept to one tab per cwd (see TabBar.handleAdd).
+ *  "projectfiles" is no longer offered as a standalone new-tab entry (it merely
+ *  duplicated the right panel), but the kind still exists — a folder's "Open in
+ *  a new tab" action creates one, and persisted ones restore — so it stays in
+ *  the dedup predicate. */
 export function isFileTabKind(kind: TabKind): boolean {
   return kind === "files" || kind === "projectfiles";
 }

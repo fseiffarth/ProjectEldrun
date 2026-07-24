@@ -1,10 +1,13 @@
+import { useT } from "../../lib/i18n";
+
 interface Props {
   type: "lan" | "wlan";
   online: boolean;
 }
 
 export function ConnTypeIcon({ type, online }: Props) {
-  const label = `${type === "wlan" ? "WiFi" : "Ethernet"}${online ? "" : " (offline)"}`;
+  const t = useT();
+  const label = `${type === "wlan" ? "WiFi" : "Ethernet"}${online ? "" : t("connTypeIcon.offlineSuffix")}`;
   // When offline, draw a diagonal slash over the connection symbol.
   const slash = !online && (
     <>

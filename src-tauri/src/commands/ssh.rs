@@ -50,6 +50,57 @@ pub fn ssh_tooling_status() -> SshTooling {
     }
 }
 
+/// What the fingerprint-confirmation dialog shows for a host Eldrun has never
+/// connected to. `scan` is the raw known_hosts text behind `keys` and is handed
+/// straight back to [`ssh_trust_host_key`], so what gets stored is exactly what
+/// was shown — a re-scan at accept time would leave a window for a different key.
+#[derive(Debug, Clone, Serialize)]
+pub struct HostKeyPreview {
+    /// Resolved `host:port` (after `~/.ssh/config`), so the dialog names the
+    /// machine the key actually belongs to rather than the alias typed.
+    pub target: String,
+    /// True when the key is already in known_hosts — the dialog then has nothing
+    /// to ask and the caller can proceed straight to connecting.
+    pub known: bool,
+    pub keys: Vec<crate::services::ssh_common::HostKeyFingerprint>,
+    /// Opaque known_hosts lines to pass back to `ssh_trust_host_key`.
+    pub scan: String,
+}
+
+/// Fetch the SSH host keys a host currently offers, so the user can verify the
+/// fingerprint before a password is sent to it (see
+/// `ssh_common::guard_first_contact`). Async + `spawn_blocking`: `ssh-keyscan`
+/// talks to the network and would otherwise freeze the window.
+#[tauri::command]
+pub async fn ssh_host_key_preview(
+    host: String,
+    port: Option<u16>,
+) -> Result<HostKeyPreview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use crate::services::ssh_common as sc;
+        let (resolved, resolved_port) = sc::resolve_host_port(&host, port);
+        let known = sc::host_key_known(&resolved, resolved_port);
+        let (scan, keys) = sc::scan_host_keys(&host, port)?;
+        Ok(HostKeyPreview {
+            target: format!("{resolved}:{resolved_port}"),
+            known,
+            keys,
+            scan,
+        })
+    })
+    .await
+    .map_err(|e| format!("host key preview failed: {e}"))?
+}
+
+/// Record the user's acceptance of the keys `ssh_host_key_preview` showed, by
+/// appending them to `~/.ssh/known_hosts`. This is the *only* thing that clears
+/// the first-contact gate, and it exists solely to be reachable from a click — no
+/// launch or background path may call it.
+#[tauri::command]
+pub fn ssh_trust_host_key(scan: String) -> Result<(), String> {
+    crate::services::ssh_common::trust_host_key(&scan)
+}
+
 /// Most-recently-used SSH addresses to keep. Old entries past this fall off.
 const SSH_ADDRESS_CAP: usize = 20;
 
@@ -214,25 +265,63 @@ pub fn open_external_url(url: String) -> Result<(), String> {
 
 /// Run a built command, returning stdout on success or the trimmed stderr (or a
 /// generic message) on failure. `what` names the binary for error messages.
-fn capture(mut cmd: Command, what: &str) -> Result<String, String> {
+fn capture(cmd: Command, what: &str) -> Result<String, String> {
+    capture_raw(cmd, what).map_err(|(explained, _)| explained)
+}
+
+/// [`capture`] keeping ssh's raw stderr alongside the explained message, for the
+/// one caller that must tell a *local* failure (a wrong key passphrase) from a
+/// server-side one before deciding whether to try another auth method — see
+/// [`run_ssh_auth`]. The explained form is deliberately lossy, so the choice
+/// cannot be made from it.
+fn capture_raw(mut cmd: Command, what: &str) -> Result<String, (String, String)> {
     let output = cmd
         .output()
-        .map_err(|e| format!("failed to run {what}: {e}"))?;
+        .map_err(|e| (format!("failed to run {what}: {e}"), String::new()))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if stderr.is_empty() {
-            return Err(format!("{what} command failed"));
+            return Err((format!("{what} command failed"), stderr));
         }
         // Headless has no terminal for the user to read, so translate what OpenSSH
         // said into what they got wrong. Unrecognized stderr passes through
         // verbatim rather than being flattened into a vague guess.
-        return Err(
-            crate::services::ssh_common::explain_ssh_error(&stderr).unwrap_or(stderr)
-        );
+        let explained = crate::services::ssh_common::explain_ssh_error(&stderr)
+            .unwrap_or_else(|| stderr.clone());
+        return Err((explained, stderr));
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Replace a failed ssh result with the prompt the askpass shim refused to answer,
+/// when there was one. Without this a refusal surfaces as OpenSSH's generic
+/// `Permission denied` — which is exactly the dead end the shape check exists to
+/// avoid: the user needs to be told the host asked for something else, and what.
+///
+/// Must be called while the [`Askpass`](crate::services::ssh_common::Askpass) guard
+/// is still alive; dropping it deletes the record.
+#[cfg(any(unix, windows))]
+fn askpass_refusal_raw(
+    kind: crate::services::ssh_common::SecretKind,
+    askpass: &crate::services::ssh_common::Askpass,
+    result: Result<String, (String, String)>,
+) -> Result<String, (String, bool)> {
+    let Err((explained, raw)) = result else {
+        return result.map_err(|(e, _)| (e, false));
+    };
+    // Both reads must happen before the guard drops (it deletes its files).
+    if crate::services::ssh_common::secret_rejected_locally(kind, Some(askpass), &raw) {
+        return Err((crate::services::ssh_common::wrong_passphrase_error(), true));
+    }
+    match askpass.refused_prompt() {
+        Some(prompt) => Err((
+            crate::services::ssh_common::unexpected_prompt_error(&prompt),
+            false,
+        )),
+        None => Err((explained, false)),
+    }
 }
 
 /// Run an ssh command against `[user@]host[:port]`, choosing the auth method by
@@ -254,61 +343,122 @@ pub(crate) fn run_ssh_auth(
     password: Option<&str>,
     remote: &[&str],
 ) -> Result<String, String> {
-    match password.filter(|p| !p.is_empty()) {
-        Some(pw) => {
-            let base = ssh_password_base_args(user, host, port)?;
-            #[cfg(unix)]
-            {
-                // Feed the password via OpenSSH's SSH_ASKPASS (no `sshpass`). The
-                // shim guard must outlive the ssh run, so it stays in scope until
-                // `capture` returns.
-                let mut cmd = crate::paths::command_no_window("ssh");
-                cmd.args(&base);
-                cmd.args(remote);
-                let askpass = crate::services::ssh_common::make_askpass(pw)?;
-                for (k, v) in askpass.env_vars() {
-                    cmd.env(k, v);
-                }
-                capture(cmd, "ssh")
+    use crate::services::ssh_common::SecretKind;
+
+    let Some(pw) = password.filter(|p| !p.is_empty()) else {
+        let base = ssh_base_args(user, host, port)?;
+        let mut cmd = crate::paths::command_no_window("ssh");
+        cmd.args(&base);
+        cmd.args(remote);
+        return capture(cmd, "ssh").map_err(|err| {
+            // `BatchMode=yes` never asks for an encrypted key's passphrase, so a
+            // locked key surfaces as a bare "Permission denied (publickey)" with
+            // nothing pointing at the actual cause. Name it.
+            match crate::services::ssh_common::locked_key_hint(user, host, port) {
+                Some(hint) => format!("{err}\n\n{hint}"),
+                None => err,
             }
-            #[cfg(not(unix))]
-            {
-                // Windows: same SSH_ASKPASS path when OpenSSH is ≥ 8.4; older
-                // installs (Win10-inbox 8.1) fall back to sshpass. All commands
-                // use `command_no_window`, so no console flashes either way.
-                if crate::services::ssh_common::ssh_supports_askpass() {
-                    let mut cmd = crate::paths::command_no_window("ssh");
-                    cmd.args(&base);
-                    cmd.args(remote);
-                    let askpass = crate::services::ssh_common::make_askpass(pw)?;
-                    for (k, v) in askpass.env_vars() {
-                        cmd.env(k, v);
-                    }
-                    // The guard must outlive the ssh run (shim exists through auth).
-                    capture(cmd, "ssh")
-                } else if crate::services::ssh_common::sshpass_available() {
-                    let mut cmd = crate::paths::command_no_window("sshpass");
-                    cmd.arg("-e"); // read the password from the SSHPASS env var
-                    cmd.env("SSHPASS", pw);
-                    cmd.arg("ssh");
-                    cmd.args(&base);
-                    cmd.args(remote);
-                    capture(cmd, "sshpass")
-                } else {
-                    Err(
-                        "password auth needs OpenSSH 8.4+ or sshpass — update OpenSSH, \
-                         install sshpass, or set up SSH keys"
-                            .to_string(),
-                    )
+        });
+    };
+
+    let kinds = crate::services::ssh_common::secret_attempt_order(user, host, port);
+    let last = kinds.len() - 1;
+    let mut error = String::new();
+    for (i, kind) in kinds.iter().copied().enumerate() {
+        if kind == SecretKind::Password {
+            // Never hand a password to a host whose key has not been vetted — the
+            // one thing `accept-new` does not cover (see `guard_first_contact`).
+            // A passphrase needs no such gate: it never leaves this machine.
+            crate::services::ssh_common::guard_first_contact(host, port)?;
+        }
+        let base = match kind {
+            SecretKind::Password => ssh_password_base_args(user, host, port)?,
+            SecretKind::KeyPassphrase => {
+                crate::services::ssh_common::ssh_passphrase_base_args(user, host, port)?
+            }
+        };
+        match run_one_secret_attempt(kind, pw, &base, remote) {
+            Ok(out) => return Ok(out),
+            Err((explained, rejected_locally)) => {
+                error = explained;
+                // Definitively a wrong passphrase: retrying it as a login password
+                // would disclose a local secret to the host.
+                if rejected_locally || i == last {
+                    return Err(error);
                 }
             }
         }
-        None => {
-            let base = ssh_base_args(user, host, port)?;
+    }
+    Err(error)
+}
+
+/// One authentication attempt for [`run_ssh_auth`]: build `ssh` (or `sshpass`)
+/// with the askpass shim for `kind` attached, run it, and return stdout or
+/// `(explained, raw stderr)`.
+///
+/// The askpass guard must outlive the ssh run — the shim is invoked *during*
+/// authentication — so it stays in scope until `capture_raw` returns, and its
+/// refusal record is read before it drops (dropping deletes it).
+fn run_one_secret_attempt(
+    kind: crate::services::ssh_common::SecretKind,
+    secret: &str,
+    base: &[String],
+    remote: &[&str],
+) -> Result<String, (String, bool)> {
+    let build_err = |e: String| (e, false);
+
+    #[cfg(unix)]
+    {
+        let mut cmd = crate::paths::command_no_window("ssh");
+        cmd.args(base);
+        cmd.args(remote);
+        let askpass = crate::services::ssh_common::make_askpass_for(kind, secret, base)
+            .map_err(build_err)?;
+        for (k, v) in askpass.env_vars() {
+            cmd.env(k, v);
+        }
+        let out = capture_raw(cmd, "ssh");
+        askpass_refusal_raw(kind, &askpass, out)
+    }
+    #[cfg(not(unix))]
+    {
+        use crate::services::ssh_common::SecretKind;
+
+        // Windows: same SSH_ASKPASS path when OpenSSH is >= 8.4; older installs
+        // (Win10-inbox 8.1) fall back to sshpass, which can only answer a
+        // *password* prompt. All commands use `command_no_window`, so no console
+        // flashes either way.
+        if crate::services::ssh_common::ssh_supports_askpass() {
             let mut cmd = crate::paths::command_no_window("ssh");
-            cmd.args(&base);
+            cmd.args(base);
             cmd.args(remote);
-            capture(cmd, "ssh")
+            let askpass = crate::services::ssh_common::make_askpass_for(kind, secret, base)
+                .map_err(build_err)?;
+            for (k, v) in askpass.env_vars() {
+                cmd.env(k, v);
+            }
+            let out = capture_raw(cmd, "ssh");
+            askpass_refusal_raw(kind, &askpass, out)
+        } else if kind == SecretKind::KeyPassphrase {
+            Err(build_err(
+                "unlocking a passphrase-protected SSH key needs OpenSSH 8.4+ — update \
+                 OpenSSH, or run `ssh-add` to load the key before connecting"
+                    .to_string(),
+            ))
+        } else if crate::services::ssh_common::sshpass_available() {
+            let mut cmd = crate::paths::command_no_window("sshpass");
+            cmd.arg("-e"); // read the password from the SSHPASS env var
+            cmd.env("SSHPASS", secret);
+            cmd.arg("ssh");
+            cmd.args(base);
+            cmd.args(remote);
+            capture_raw(cmd, "sshpass").map_err(|(e, _)| (e, false))
+        } else {
+            Err(build_err(
+                "password auth needs OpenSSH 8.4+ or sshpass — update OpenSSH, \
+                 install sshpass, or set up SSH keys"
+                    .to_string(),
+            ))
         }
     }
 }

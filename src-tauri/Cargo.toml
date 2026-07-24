@@ -58,7 +58,19 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # Manager / macOS Keychain / Linux Secret Service) instead of plaintext on disk.
 # The backend deps are target-gated inside the crate, so enabling all three
 # native backends is the standard cross-platform recipe.
-keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service", "crypto-rust"] }
+#
+# `linux-native-sync-persistent` adds the **kernel keyutils cache in front of** the
+# Secret Service (which stays the store that survives a reboot). It is here because a
+# Secret Service read is the one credential read that can *block*: on a locked
+# collection it waits on an unlock prompt that may never be answered. With the cache,
+# only the first read of an account per boot is a D-Bus call — every later one is a
+# kernel-keyring lookup that cannot block, cannot prompt, and does not care that the
+# collection is locked. `linux-keyutils` is target-gated to Linux inside the crate, so
+# the Windows/macOS backend selection is untouched. NOTE: keyring 3.6's *builder* for
+# this store hands back a plain secret-service credential (upstream bug), so
+# `remote_credentials` constructs `KeyutilsPersistentCredential` itself rather than
+# going through `keyring::Entry` — enabling the feature alone would be a silent no-op.
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service", "linux-native-sync-persistent", "crypto-rust"] }
 # Native SFTP client for the remote folder browser (TODO #80): drives the SFTP
 # subsystem over a child `ssh -s sftp` process, so browsing parses no `ls` text
 # and never feeds a remote `$SHELL -c` (replaces the injection-prone `ssh ls`
@@ -78,6 +90,14 @@ starship-battery = "0.10"
 # Linux/Unix: workspace backends + crash signal handling
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "4"
+# The Secret Service client `keyring`'s `sync-secret-service` backend already uses
+# (same crate, same version — this adds no new dependency, only direct access).
+# `keyring` itself exposes no way to ask whether the collection is *locked*, and a
+# locked collection is indistinguishable there from "nothing saved": every read
+# answers `None`. That silently un-saves every credential the user asked us to
+# remember, so `services::remote_credentials` needs the lock state — and the
+# `Unlock` call that fixes it — directly. See `keyring_state` / `unlock_keyring`.
+dbus-secret-service = { version = "4", features = ["crypto-rust"] }
 xcb = { version = "1", features = ["randr"] }
 # Same crate/version wry uses; needed to hook web-process-terminated on the
 # raw WebKitWebView for the webview crash reporter.

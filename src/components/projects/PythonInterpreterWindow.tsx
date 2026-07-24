@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { resolveProjectDirectory, type ProjectEntry } from "../../types";
 import { useProjectsStore } from "../../stores/projects";
 import { listInterpreters, type PyInterpreter } from "../../lib/pythonRun";
+import { useT } from "../../lib/i18n";
 
 /**
  * Which Python the code viewer's Run/Debug buttons use for this project (#87).
@@ -27,6 +28,7 @@ export function PythonInterpreterWindow({
   project: ProjectEntry;
   onClose: () => void;
 }) {
+  const t = useT();
   const setProjectPython = useProjectsStore((s) => s.setProjectPython);
   const dir = resolveProjectDirectory(project);
   const AUTO = "";
@@ -84,23 +86,21 @@ export function PythonInterpreterWindow({
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog dialog-framed" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>{project.name} — Python interpreter</h2>
+          <h2>{project.name} — {t("pythonInterp.titleSuffix")}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <div className="dialog-scroll">
         <p className="settings-help">
-          Used by the code viewer's Run and Debug buttons. Auto-detect is right for
-          almost every project — pin one only when your environment lives somewhere
-          Eldrun can't infer.
-          {project.remote && " Probed on the host, since that is where this project runs."}
+          {t("pythonInterp.desc")}
+          {project.remote && ` ${t("pythonInterp.remoteSuffix")}`}
         </p>
 
         {found === null ? (
-          <div className="file-viewer-loading">Looking for interpreters…</div>
+          <div className="file-viewer-loading">{t("pythonInterp.looking")}</div>
         ) : (
           <>
             <label>
-              Interpreter
+              {t("pythonInterp.interpreterLabel")}
               <select
                 value={choice}
                 onChange={(e) => setChoice(e.target.value)}
@@ -108,24 +108,24 @@ export function PythonInterpreterWindow({
               >
                 <option value={AUTO}>
                   {autoPick
-                    ? `Auto-detect — ${autoPick.path}`
-                    : "Auto-detect"}
+                    ? t("pythonInterp.autoDetectWith", { path: autoPick.path })
+                    : t("pythonInterp.autoDetect")}
                 </option>
                 {found.map((i) => (
                   <option key={i.path} value={i.path}>
                     {i.label} — {i.path}
                   </option>
                 ))}
-                <option value={CUSTOM}>Custom path…</option>
+                <option value={CUSTOM}>{t("pythonInterp.customPath")}</option>
               </select>
             </label>
             {choice === CUSTOM && (
               <label>
-                Path to the interpreter
+                {t("pythonInterp.pathLabel")}
                 <input
                   type="text"
                   value={custom}
-                  placeholder="e.g. /opt/envs/ml/bin/python — relative paths resolve from the project root"
+                  placeholder={t("pythonInterp.pathPlaceholder")}
                   onChange={(e) => setCustom(e.target.value)}
                   spellCheck={false}
                   disabled={busy}
@@ -134,8 +134,7 @@ export function PythonInterpreterWindow({
             )}
             {probeError && (
               <p className="settings-help">
-                Couldn't probe for interpreters ({probeError}). You can still set one
-                by hand.
+                {t("pythonInterp.probeErrorPre")}{probeError}{t("pythonInterp.probeErrorPost")}
               </p>
             )}
           </>
@@ -143,9 +142,9 @@ export function PythonInterpreterWindow({
 
         {error && <div className="project-dialog-error">{error}</div>}
         <div className="project-dialog-actions">
-          <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button type="button" onClick={() => void save()} disabled={busy || found === null}>
-            {busy ? "Saving…" : "Save"}
+            {busy ? t("pythonInterp.saving") : t("pythonInterp.save")}
           </button>
         </div>
         </div>

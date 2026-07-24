@@ -7,6 +7,7 @@ import { FILES_TAB_CMD, useTabsStore } from "../../stores/tabs";
 import type { GlobalAppEntry } from "../../types";
 import { resolveProjectDirectory } from "../../types";
 import { basename, IS_WINDOWS } from "../../lib/paths";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 // A platform-appropriate example path for the executable-picker placeholder
 // (a Windows .exe vs a Unix bin path).
@@ -14,20 +15,20 @@ const EXEC_PLACEHOLDER = IS_WINDOWS
   ? "Command path, e.g. C:\\Program Files\\Mozilla Firefox\\firefox.exe"
   : "Command path, e.g. /usr/bin/firefox";
 
-export const GLOBAL_APP_ROLES: Array<{ key: string; label: string; fallback: string }> = [
-  { key: "browser", label: "Browser", fallback: "🌐" },
-  { key: "mail", label: "Mail", fallback: "✉" },
-  { key: "calendar", label: "Calendar", fallback: "◷" },
-  { key: "print_manager", label: "Print Manager", fallback: "⎙" },
-  { key: "file_manager", label: "File Manager", fallback: "📁" },
-  { key: "password_manager", label: "Password Manager", fallback: "⚿" },
-  { key: "video_conf", label: "Video Conf.", fallback: "▣" },
-  { key: "media_player", label: "Media Player", fallback: "▶" },
-  { key: "system_monitor", label: "System Monitor", fallback: "▥" },
-  { key: "notes", label: "Notes", fallback: "☰" },
-  { key: "screenshot", label: "Screenshot", fallback: "▤" },
-  { key: "screen_recorder", label: "Screen Recorder", fallback: "●" },
-  { key: "chat", label: "Chat", fallback: "☏" },
+export const GLOBAL_APP_ROLES: Array<{ key: string; labelKey: TranslationKey; fallback: string }> = [
+  { key: "browser", labelKey: "globalApp.role.browser", fallback: "🌐" },
+  { key: "mail", labelKey: "globalApp.role.mail", fallback: "✉" },
+  { key: "calendar", labelKey: "globalApp.role.calendar", fallback: "◷" },
+  { key: "print_manager", labelKey: "globalApp.role.print_manager", fallback: "⎙" },
+  { key: "file_manager", labelKey: "globalApp.role.file_manager", fallback: "📁" },
+  { key: "password_manager", labelKey: "globalApp.role.password_manager", fallback: "⚿" },
+  { key: "video_conf", labelKey: "globalApp.role.video_conf", fallback: "▣" },
+  { key: "media_player", labelKey: "globalApp.role.media_player", fallback: "▶" },
+  { key: "system_monitor", labelKey: "globalApp.role.system_monitor", fallback: "▥" },
+  { key: "notes", labelKey: "globalApp.role.notes", fallback: "☰" },
+  { key: "screenshot", labelKey: "globalApp.role.screenshot", fallback: "▤" },
+  { key: "screen_recorder", labelKey: "globalApp.role.screen_recorder", fallback: "●" },
+  { key: "chat", labelKey: "globalApp.role.chat", fallback: "☏" },
 ];
 
 const ROLE_BY_KEY = Object.fromEntries(GLOBAL_APP_ROLES.map((role) => [role.key, role]));
@@ -41,6 +42,7 @@ type EditState = {
 };
 
 export function GlobalAppBar() {
+  const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const { projects, activeId } = useProjectsStore();
   const { ensureTab } = useTabsStore();
@@ -148,28 +150,30 @@ export function GlobalAppBar() {
   };
 
   return (
-    <div className="global-apps-toolbar" onClick={(e) => e.stopPropagation()}>
+    <div className="tab-new-menu" onClick={(e) => e.stopPropagation()}>
       {apps.map(([role, app]) => {
-        const meta = ROLE_BY_KEY[role] ?? { key: role, label: role, fallback: "●" };
+        const meta = ROLE_BY_KEY[role];
+        const label = meta ? t(meta.labelKey) : role;
         const iconDataUrl = app.exec ? iconDataUrls[app.exec] : null;
         return (
           <button
             key={role}
-            className="global-app-btn"
-            title={`${meta.label}${app.exec ? `: ${app.exec}` : ""} · Right-click to configure`}
+            className="tab-new-menu-item global-app-menu-row"
+            title={`${label}${app.exec ? `: ${app.exec}` : ""} · ${t("globalApp.rightClickConfigure")}`}
             aria-disabled={role !== "file_manager" && role !== "screenshot" && !app.exec}
             onClick={() => launch(role, app.exec)}
             onContextMenu={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              setEdit({ role, label: meta.label, exec: app.exec, x: event.clientX, y: event.clientY });
+              setEdit({ role, label, exec: app.exec, x: event.clientX, y: event.clientY });
             }}
           >
             {iconDataUrl ? (
               <img className="global-app-icon" src={iconDataUrl} aria-hidden />
             ) : (
-              <span className="global-app-fallback-icon" aria-hidden>{meta.fallback}</span>
+              <span className="global-app-fallback-icon" aria-hidden>{meta?.fallback ?? "●"}</span>
             )}
+            {label}
           </button>
         );
       })}
@@ -181,7 +185,7 @@ export function GlobalAppBar() {
           onClick={(event) => event.stopPropagation()}
         >
           <div className="global-app-edit-title">{edit.label}</div>
-          <div className="global-app-edit-current">{basename(edit.exec) || "No command configured"}</div>
+          <div className="global-app-edit-current">{basename(edit.exec) || t("globalApp.noCommandConfigured")}</div>
           <div className="global-app-edit-row">
             <input
               value={edit.exec}
@@ -195,8 +199,8 @@ export function GlobalAppBar() {
             <button type="button" onClick={() => void browseExecutable()}>...</button>
           </div>
           <div className="global-app-edit-actions">
-            <button type="button" onClick={clearEdit}>Clear</button>
-            <button type="button" className="suggested-action" onClick={saveEdit}>Set</button>
+            <button type="button" onClick={clearEdit}>{t("globalApp.clear")}</button>
+            <button type="button" className="suggested-action" onClick={saveEdit}>{t("globalApp.set")}</button>
           </div>
         </div>
       )}

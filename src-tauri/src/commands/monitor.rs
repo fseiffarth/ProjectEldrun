@@ -24,10 +24,25 @@ use crate::sysstat::{self, SystemSnapshot};
 /// passes `project_id` only while its source toggle points at a host; a
 /// disconnected host is gated out on the frontend, so a dead pool is never dialed
 /// here.
+///
+/// `careful` selects the collection mode, and is authoritative in **both**
+/// directions: `true` = the reduced careful collection (no foreign account
+/// names, argv, GPU processes or sessions leave the host), `false` = the full
+/// reading a local sample gets. It is the machine's stored mode — careful for
+/// every remote machine until the user says that one is theirs, keyed by SSH
+/// target in `settings.careful_hosts` (`src/lib/carefulHost.ts`) — so the pane
+/// passes it on every poll and the answer holds from the first sample.
+///
+/// `None` means the caller has no answer to pass, and only then does anything
+/// guess: the host's own SLURM probe, plus this process's memory of what earlier
+/// probes of the same target found ([`crate::services::hpc_mode`]). That memory
+/// deliberately does **not** override an explicit `false` — it exists to stop a
+/// flaky *probe* from talking a cluster down, not to overrule the user.
 #[tauri::command]
 pub async fn system_monitor_snapshot(
     project_id: Option<String>,
     host_id: Option<String>,
+    careful: Option<bool>,
 ) -> Result<SystemSnapshot, String> {
     let host_id = host_id.unwrap_or_else(|| crate::services::remote::PRIMARY_HOST.to_string());
     if let Some(target) = project_id
@@ -35,14 +50,18 @@ pub async fn system_monitor_snapshot(
         .and_then(|pid| crate::services::remote::remote_target_for_host(pid, &host_id))
     {
         let spec = target.spec.clone();
+        let key = crate::services::hpc_mode::key_for(&spec);
+        let mode = careful.or_else(|| {
+            crate::services::hpc_mode::is_known_careful(&key).then_some(true)
+        });
         return tokio::task::spawn_blocking(move || {
             let out = crate::services::ssh_exec::run_remote_script(
                 &spec,
-                sysstat::REMOTE_SNAPSHOT_SCRIPT,
+                &sysstat::remote_snapshot_script(mode),
             )?;
-            Ok::<_, String>(sysstat::parse_remote_snapshot(&String::from_utf8_lossy(
-                &out.stdout,
-            )))
+            let snap = sysstat::parse_remote_snapshot(&String::from_utf8_lossy(&out.stdout));
+            crate::services::hpc_mode::remember(&key, snap.careful);
+            Ok::<_, String>(snap)
         })
         .await
         .map_err(|e| e.to_string())?;

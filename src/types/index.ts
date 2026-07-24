@@ -136,6 +136,12 @@ export interface Settings {
    *  added/removed from the "＋ Add agent…" dialog. Round-trips through the
    *  backend settings `extra` catch-all — no Rust field needed. See CustomAgent. */
   custom_agents?: CustomAgent[];
+  /** Built-in agent ids (the `cmd` in `AGENT_ITEMS`, e.g. `"codex"`) the user has
+   *  turned off in "Manage Agents" despite being installed — hidden from every
+   *  tab-choice menu (add-tab Agents group, Local Model drivers) without
+   *  uninstalling the CLI. Round-trips through the backend settings `extra`
+   *  catch-all — no Rust field needed. Unset/empty = nothing hidden. */
+  disabled_agents?: string[];
   /** The default local (Ollama) model. Used by any task without its own
    *  per-task assignment in `ollama_roles`, and as the legacy "active model".
    *  Chosen in the 🧠 menu (click a loaded model's name). Unset = none. */
@@ -181,6 +187,12 @@ export interface Settings {
    *  the file* — one click away from an editor — so it is opt-in. Go-to-definition
    *  is not gated: it reads, it never runs anything. */
   python_run_debug?: boolean;
+  /** EXPERIMENTAL, default OFF. The native presenter ("deck",
+   *  `docs/deck_presenter_plan.md`): editable object layers over a base PDF, kept
+   *  in a `*.eldeck.json` sidecar, plus the animate mode and the fullscreen
+   *  presenter. Gated because it is the largest single viewer surface in the app
+   *  and still moving — it registers a viewer, a file type, and a fullscreen mode. */
+  deck_presenter?: boolean;
   /** Persistent LOCAL (tmux) sessions (TODO #85): when true (the default on Unix),
    *  a local project's shell/script tabs run inside a tmux session on the machine,
    *  so a long run keeps going if Eldrun crashes and the tab reattaches on restart.
@@ -192,11 +204,35 @@ export interface Settings {
    *  password is typed directly into the live terminal and Eldrun never handles
    *  it. Default ON (headless) preserves existing behaviour. */
   connections_headless?: boolean;
+  /** Hosts marked **careful** — "this machine is shared and policed, keep
+   *  Eldrun's background load off it" — keyed by canonical SSH target
+   *  (`lib/machineSync`'s `targetKey`, i.e. `user@host:port`), because one login
+   *  node is simultaneously a primary `remote`, a worker and a global machine.
+   *  The value is the user's EXPLICIT answer; a target absent from the map is
+   *  **careful** — the default for every remote machine — which is why this is a
+   *  map and not a list: an explicit `false` ("this one is mine") must be
+   *  distinguishable from an unanswered host, or the default would keep
+   *  re-enabling itself. See `lib/carefulHost.ts`. */
+  careful_hosts?: Record<string, boolean>;
+  /** Machines tagged **HPC** — a shared cluster login node — keyed by the same
+   *  SSH target as `careful_hosts`. Ticked on the login form and shown as a badge
+   *  on the machine's row in the Machines menu. Where `careful_hosts` governs how
+   *  much Eldrun *looks at*, this governs what it *does*: a tagged host is careful
+   *  regardless, and its disk-usage scan, giant-folder census, background sync +
+   *  lockstep loops, silent auto-connect and unannounced login-node compute are
+   *  all gated behind it. See `lib/hpcHost.ts`. */
+  hpc_hosts?: Record<string, boolean>;
   /** Path of the stored `.ovpn` config brought up automatically **on launch** —
    *  armed from the header's VPN menu, with no project behind it. Unset/null = no
    *  tunnel starts by itself. Only one config can be armed: a tunnel reroutes the
    *  whole machine, so two would fight over the routing. */
   vpn_auto_connect?: string | null;
+  /** The `.ovpn` configs the user asked Eldrun to remember the credentials of.
+   *  No secret here — those live in the OS keychain; this is the *intent*, kept
+   *  because a locked keychain answers every read like an empty one, so the
+   *  toggle and the connect path would otherwise read "nothing saved" over a
+   *  perfectly good saved credential (see `lib/keyring.ts`). */
+  vpn_saved_configs?: string[];
   /** When true, the header's OpenVPN indicator is shown. Default OFF — most
    *  projects are local-only, so the machine-wide tunnel control stays hidden
    *  until asked for (the first-run `RemoteFeaturesPrompt`, or Settings). */
@@ -358,6 +394,29 @@ export interface VpnAuthNeeds {
 export const needsSeparateKeyPassphrase = (needs: VpnAuthNeeds): boolean =>
   needs.username && needs.keyPassphrase;
 
+/**
+ * What a project remembers about its HPC **workspace** and its **home anchor**
+ * (`docs/hpc_workspace_plan.md`; backend `schema::project::HpcInfo`).
+ *
+ * It is persisted rather than re-derived because none of it survives the
+ * workspace: the tooling's recovery path (`ws_restore`) is keyed by the workspace
+ * *name*, and the host tree that would have named it is exactly what expiry
+ * deletes. `logs_dir` additionally rescues **Watch** on an older job — with
+ * `--output` routed into the home anchor, `scontrol`'s `<WorkDir>/slurm-<id>.out`
+ * fallback points at a file that never existed.
+ */
+export interface HpcInfo {
+  workspace_id?: string;
+  workspace_path?: string;
+  filesystem?: string;
+  anchor_dir?: string;
+  /** The anchor as the `$HOME`-relative path it was created from — kept so a
+   *  re-anchor (moving to another workspace) passes the rel back instead of
+   *  guessing it by chopping segments off the absolute one. */
+  anchor_rel?: string;
+  logs_dir?: string;
+}
+
 export interface RemoteSpec {
   user?: string;
   host: string;
@@ -481,6 +540,10 @@ export interface ProjectEntry {
    *  relaunch. Mirrored from project.json's `run_host` into the entry's flattened
    *  `extra`. Absent = the shell default (the primary). */
   run_host?: string;
+  /** The HPC workspace this project's tree lives in + its home anchor
+   *  (`docs/hpc_workspace_plan.md`). Mirrored from project.json's `hpc`. Absent
+   *  for every project that isn't in a workspace. */
+  hpc?: HpcInfo;
   /** Denormalized inverse of `ProjectBox.member_ids` (the box this pill is in). */
   box_id?: string;
   /** Per-project git-hosting profile URL that overrides the global one. Mirrored
@@ -535,6 +598,17 @@ export interface UnsyncedReport {
 
 /** Supported git-hosting providers for publishing a project's repo. */
 export type GitProvider = "github" | "gitlab";
+
+/**
+ * Which side a work-remote project publishes from. Not "where the files are":
+ * the provider login (`gh auth login`, the tokens in Settings → Git Hosting) is
+ * *this* machine's, and a work remote is typically a cluster login node with no
+ * provider CLI and no GitHub credentials — while the lockstep mirror is a full
+ * local repo holding the same commits. Hence `"local"` is the default;
+ * `"remote"` is the opt-in for a host that does have its own `gh`/`glab` login.
+ * Ignored for a local project, which has only one side.
+ */
+export type PublishFrom = "local" | "remote";
 
 /**
  * Per-project git-hosting config as returned by `get_project_git_hosting`. The

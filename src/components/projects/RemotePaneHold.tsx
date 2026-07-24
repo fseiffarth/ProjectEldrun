@@ -10,18 +10,20 @@
  * shows ONE unified "Not connected" card instead of each viewer flashing its own
  * red read error.
  */
+import { useT } from "../../lib/i18n";
+
 export function RemotePaneHold({ host, onConnect }: { host: string; onConnect: () => void }) {
+  const t = useT();
   return (
     <div className="center-placeholder" style={{ height: "100%" }}>
       <div className="center-placeholder-card">
-        <div className="center-placeholder-title">Not connected</div>
+        <div className="center-placeholder-title">{t("remotePane.notConnected")}</div>
         <div className="center-placeholder-hint">
-          This tab runs on {host || "the remote host"}. Connect to start it — your
-          local tabs keep working on the mirror meanwhile.
+          {t("remotePane.hintPre")} {host || t("remotePane.theRemoteHost")}. {t("remotePane.hintPost")}
         </div>
         <div className="project-dialog-actions" style={{ justifyContent: "center" }}>
           <button type="button" className="btn-primary" onClick={onConnect}>
-            Connect
+            {t("common.connect")}
           </button>
         </div>
       </div>

@@ -18,6 +18,7 @@ import { GlobalAppMenu } from "./GlobalAppMenu";
 import { LocalModelMenu } from "./LocalModelMenu";
 import { LogoIcon } from "./LogoIcon";
 import { useProjectsStore } from "../../stores/projects";
+import { useT } from "../../lib/i18n";
 // Single source of truth for the displayed version: read package.json (kept in
 // lockstep with src-tauri/Cargo.toml + tauri.conf.json on every bump) so the
 // header never drifts behind a release.
@@ -60,6 +61,7 @@ function handleDrag(e: React.MouseEvent) {
 }
 
 export function HeaderBar() {
+  const t = useT();
   const [online, setOnline] = useState(navigator.onLine);
   const [connType, setConnType] = useState<string | null>(null);
   const activeId = useProjectsStore((s) => s.activeId);
@@ -109,7 +111,7 @@ export function HeaderBar() {
             match NON_DRAG_SELECTOR), driving the same `startDragging()`. */}
         <span
           className="app-drag-grip"
-          title="Drag to move the Eldrun window"
+          title={t("header.dragToMove")}
           aria-hidden="true"
         >
           ⠿
@@ -117,8 +119,8 @@ export function HeaderBar() {
         <button
           type="button"
           className={`root-logo-btn no-drag ${activeId === null ? "active" : ""}`}
-          title="Root terminal"
-          aria-label="Root terminal"
+          title={t("header.rootTerminal")}
+          aria-label={t("header.rootTerminal")}
           onClick={() => void setActive(null)}
         >
           <LogoIcon className="app-logo" />

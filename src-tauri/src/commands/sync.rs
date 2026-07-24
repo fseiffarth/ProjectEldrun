@@ -351,9 +351,23 @@ pub struct BigFolderScan {
 /// when the pool is cold — dispatching at a dead session is what freezes the
 /// window, and a disconnected project's answer is simply "local only, ask again
 /// once connected".
+///
+/// `scan_host` (default **true**, so an ordinary host behaves exactly as before)
+/// is what a **careful** host turns off. `du -ak -x` stats every file under the
+/// project root, and on a cluster that root is very often on the *parallel*
+/// filesystem — because that is precisely where the HPC workspace feature puts
+/// it. A recursive stat of a whole tree is a metadata storm against a shared
+/// Lustre/GPFS metadata server, which is the kind of thing a site's usage policy
+/// actually names. That it is also *cheap for us* and *automatic on connect* is
+/// what makes it worth gating: the caller decides, and a careful host's census
+/// runs local-only until the user asks for the host half by name.
+///
+/// The host half is skipped, never faked: `hostScanned` stays false, which the
+/// dialog already renders as "—" per row rather than as a zero.
 #[tauri::command]
 pub async fn sync_big_folders(
     project_id: String,
+    scan_host: Option<bool>,
     pool: State<'_, RemotePoolState>,
     manifest: State<'_, SyncManifestState>,
 ) -> Result<BigFolderScan, String> {
@@ -366,8 +380,17 @@ pub async fn sync_big_folders(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Host walk, only with a live pool behind it.
-    let connected = pooled_sftp(pool.inner(), &project_id).await.is_some();
+    // Host walk, only when asked for AND with a live pool behind it. The pool
+    // check is skipped entirely when the caller doesn't want the host half, so a
+    // careful host is never even dialled for it.
+    // A tagged HPC host never gets the `du` half, whatever the caller asked for:
+    // the frontend already withholds it for a careful host, and this is the same
+    // refusal made unconditional where the tag is known — a census is automatic
+    // (it fires on connect), so there is no moment at which the user asked for
+    // this particular walk of a parallel filesystem.
+    let scan_host = scan_host.unwrap_or(true)
+        && !crate::services::hpc_mode::is_hpc_spec(&target.spec);
+    let connected = scan_host && pooled_sftp(pool.inner(), &project_id).await.is_some();
     let mut host_error = None;
     let host = if connected {
         let spec = target.spec.clone();

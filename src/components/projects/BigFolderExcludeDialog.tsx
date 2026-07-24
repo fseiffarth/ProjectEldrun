@@ -4,9 +4,12 @@ import { createPortal } from "react-dom";
 import { useBigFoldersStore } from "../../stores/bigFolders";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useSettingsStore } from "../../stores/settings";
 import { useSyncStore, type BigFolderRow } from "../../stores/sync";
+import { isCarefulHost, primaryTargetOf } from "../../lib/carefulHost";
 import { fmtSize } from "../../lib/viewers/fileUtils";
 import { UntestedTag } from "../common/UntestedTag";
+import { useT } from "../../lib/i18n";
 
 /**
  * "These folders are giant — sync them?", asked once, at setup.
@@ -30,6 +33,7 @@ import { UntestedTag } from "../common/UntestedTag";
  * multi-GB transfer this dialog exists to prevent.
  */
 export function BigFolderExcludeDialog({ projectId }: { projectId: string }) {
+  const t = useT();
   const close = useBigFoldersStore((s) => s.close);
   const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
   const bigFolders = useSyncStore((s) => s.bigFolders);
@@ -38,30 +42,54 @@ export function BigFolderExcludeDialog({ projectId }: { projectId: string }) {
   // project that was still connecting when this opened fills in its host column.
   const ssh = useRemoteStatusStore((s) => s.byProject[projectId]?.ssh ?? "off");
 
+  // A **careful** host does not get the host half by itself: it is a recursive
+  // `du -ak -x`, and on a cluster the project root usually sits on the parallel
+  // filesystem, where stat-ing a whole tree is a metadata storm against a shared
+  // server. The local walk still runs — it is this machine's own disk — so the
+  // prompt is still useful, just half-filled until the user asks for the rest.
+  const settings = useSettingsStore((s) => s.settings);
+  const careful = isCarefulHost(settings, primaryTargetOf(project));
+
   const [rows, setRows] = useState<BigFolderRow[] | null>(null);
   const [hostScanned, setHostScanned] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  const [scanningHost, setScanningHost] = useState(false);
 
-  const scan = useCallback(async () => {
-    try {
-      const result = await bigFolders(projectId);
-      setRows(result.folders);
-      setHostScanned(result.hostScanned);
-      setError(result.hostError);
-      // Ticked by default (see the component doc); a standing exclusion stays
-      // ticked, so re-opening the prompt shows the answer already on file.
-      setChecked(new Set(result.folders.map((f) => f.rel)));
-    } catch (e) {
-      setRows([]);
-      setError(String(e));
-    }
-  }, [bigFolders, projectId]);
+  const scan = useCallback(
+    async (scanHost: boolean) => {
+      try {
+        const result = await bigFolders(projectId, scanHost);
+        setRows(result.folders);
+        setHostScanned(result.hostScanned);
+        setError(result.hostError);
+        // Ticked by default (see the component doc); a standing exclusion stays
+        // ticked, so re-opening the prompt shows the answer already on file.
+        setChecked(new Set(result.folders.map((f) => f.rel)));
+      } catch (e) {
+        setRows([]);
+        setError(String(e));
+      }
+    },
+    [bigFolders, projectId],
+  );
 
+  // The automatic pass — on open, and again when a pool appears so a project that
+  // was still connecting fills in its host column. On a careful host this stays
+  // local-only however often it re-runs; only the explicit button below crosses.
   useEffect(() => {
-    void scan();
-  }, [scan, ssh === "connected"]);
+    void scan(!careful);
+  }, [scan, careful, ssh === "connected"]);
+
+  const measureHost = async () => {
+    setScanningHost(true);
+    try {
+      await scan(true);
+    } finally {
+      setScanningHost(false);
+    }
+  };
 
   const apply = async () => {
     if (!rows) return;
@@ -101,22 +129,17 @@ export function BigFolderExcludeDialog({ projectId }: { projectId: string }) {
     <div className="modal-backdrop" onMouseDown={close}>
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <h2>
-          Large folders in {project?.name ?? "this project"} <UntestedTag />
+          {t("bigFolder.titlePre")} {project?.name ?? t("bigFolder.thisProject")} <UntestedTag />
         </h2>
         <p className="big-folder-intro">
-          These folders are big enough that syncing them would dominate every
-          transfer. Sync copies bytes and <strong>does not read .gitignore</strong>,
-          so data kept on the host on purpose — experiment output, checkpoints,
-          caches, virtualenvs — crosses like any other file unless it is excluded
-          here.
+          {t("bigFolder.introPre")} <strong>{t("bigFolder.doesNotReadGitignore")}</strong>{t("bigFolder.introPost")}
         </p>
 
-        {rows === null && <p className="big-folder-intro">Measuring both sides…</p>}
+        {rows === null && <p className="big-folder-intro">{t("bigFolder.measuring")}</p>}
 
         {rows !== null && rows.length === 0 && (
           <p className="big-folder-intro">
-            Nothing oversized found{hostScanned ? "" : " on the local side"}. Sync
-            away.
+            {hostScanned ? t("bigFolder.nothingOversizedFull") : t("bigFolder.nothingOversizedLocalOnly")}
           </p>
         )}
 
@@ -124,9 +147,9 @@ export function BigFolderExcludeDialog({ projectId }: { projectId: string }) {
           <>
             <div className="big-folder-head">
               <span />
-              <span>Folder</span>
-              <span>This machine</span>
-              <span>Host</span>
+              <span>{t("bigFolder.colFolder")}</span>
+              <span>{t("bigFolder.colThisMachine")}</span>
+              <span>{t("bigFolder.colHost")}</span>
             </div>
             <div className="big-folder-list">
               {rows.map((r) => (
@@ -145,25 +168,39 @@ export function BigFolderExcludeDialog({ projectId }: { projectId: string }) {
               ))}
             </div>
             <p className="big-folder-note">
-              Ticked = <strong>excluded from sync</strong>. Nothing is deleted
-              either way, and any folder can be re-included later from its
-              right-click menu in the file tree. Git-tracked files still travel
-              with your commits — exclusion applies to the byte sync.
+              {t("bigFolder.notePre")} <strong>{t("bigFolder.excludedFromSync")}</strong>{t("bigFolder.notePost")}
             </p>
           </>
         )}
 
-        {!hostScanned && rows !== null && (
+        {/* Two different reasons the host column is empty, said apart. "Not
+            connected" is a state that will fix itself; "marked careful" is a
+            decision, and the only thing that lifts it is the button beside it. */}
+        {!hostScanned && rows !== null && careful && (
           <p className="big-folder-note">
-            The host was not measured{error ? ` (${error})` : " — the project is not connected"}.
-            Only this machine's folders are listed; re-open this from the file
-            view once connected to see the host's.
+            {t("bigFolder.hostSkippedCareful")}
+            {error ? ` (${error})` : ""}{" "}
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => void measureHost()}
+              disabled={scanningHost || ssh !== "connected"}
+            >
+              {scanningHost ? t("bigFolder.measuringHost") : t("bigFolder.measureHost")}
+            </button>
+          </p>
+        )}
+
+        {!hostScanned && rows !== null && !careful && (
+          <p className="big-folder-note">
+            {t("bigFolder.hostNotMeasuredPre")}{error ? ` (${error})` : ` — ${t("bigFolder.hostNotConnected")}`}
+            {t("bigFolder.hostNotMeasuredPost")}
           </p>
         )}
 
         <div className="project-dialog-actions">
           <button type="button" onClick={close} disabled={busy}>
-            Not now
+            {t("bigFolder.notNow")}
           </button>
           <button
             type="button"
@@ -171,7 +208,7 @@ export function BigFolderExcludeDialog({ projectId }: { projectId: string }) {
             onClick={() => void apply()}
             disabled={busy || rows === null}
           >
-            {rows && rows.length === 0 ? "Close" : "Apply"}
+            {rows && rows.length === 0 ? t("bigFolder.close") : t("bigFolder.apply")}
           </button>
         </div>
       </div>

@@ -60,6 +60,14 @@ export interface RemoteUsageReport {
   topProcs: ProcInfo[];
   busy: boolean;
   reasons: string[];
+  /** The host reported itself an HPC node (SLURM on its `PATH`), so this report
+   *  was taken carefully: `users` holds only this account's own sessions and
+   *  `topProcs` only its own processes — a cluster's usage rules don't allow
+   *  collecting other people's (`docs/context/hpc_careful_mode.md`). The
+   *  aggregate CPU/memory/GPU figures are unaffected. On such a host the probe
+   *  also stops firing automatically after the first connect; the report is
+   *  on-demand from the Machines menu. */
+  careful?: boolean;
 }
 
 /** One host the dialog shows a section for. `kind` decides which probe command

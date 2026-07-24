@@ -8,6 +8,11 @@ import { ConnectionLog } from "../common/ConnectionLog";
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { UntestedTag } from "../common/UntestedTag";
+import { TerminalSignInToggle } from "./TerminalSignInToggle";
+import { CarefulHostToggle } from "./CarefulHostToggle";
+import { HpcHostToggle } from "./HpcHostToggle";
+import { primaryTargetOf, targetOfSpec } from "../../lib/carefulHost";
+import { CredentialPasteBar, sshPasteEntries, vpnPasteEntries } from "./CredentialPasteBar";
 import { useRemoteReconnect } from "./useRemoteReconnect";
 import { useConnectDialogStore } from "../../stores/connectDialog";
 import { useProjectsStore, disconnectRemote } from "../../stores/projects";
@@ -15,6 +20,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useVpnSectionVisible } from "../../stores/vpnStatus";
 import { VpnTunnelUpNotice } from "../common/VpnTunnelUpNotice";
 import { formatRemoteTarget, resolveLocalMirror, type ProjectEntry } from "../../types";
+import { useT } from "../../lib/i18n";
 
 /**
  * Centered "Connect" modal for an existing remote (SSH) project — the single
@@ -57,11 +63,19 @@ function RemoteConnectDialogInner({
   project: ProjectEntry;
   host?: import("../../types").ComputeHost;
 }) {
+  const t = useT();
   const close = useConnectDialogStore((s) => s.close);
   const headless = useSettingsStore((s) => s.settings?.connections_headless ?? true);
+  // Which machine the careful switch below governs: the worker this dialog was
+  // opened for, or the project's primary when it was opened for that. A worker is
+  // a `ComputeHost extends RemoteSpec`, so both spellings carry user/host/port.
+  const carefulTarget = host ? targetOfSpec(host) : primaryTargetOf(project);
   const {
     sshStatus,
     vpnStatus,
+    sshUser,
+    setSshUser,
+    commitSshUser,
     vpnConfig,
     vpnConfigs,
     vpnUsername,
@@ -144,6 +158,12 @@ function RemoteConnectDialogInner({
 
   const [sshPassword, setSshPassword] = useState("");
   const [vpnPassword, setVpnPassword] = useState("");
+  // Per-connect "sign in in a terminal" (see `TerminalSignInToggle`): pure view state
+  // — which half of the login section is on screen — so it lives here rather than in
+  // `useRemoteReconnect`, and it resets with the dialog, as a per-connect switch
+  // should. Default off: headless is the mode, this is the escape hatch from it.
+  const [sshViaTerminal, setSshViaTerminal] = useState(false);
+  const [vpnViaTerminal, setVpnViaTerminal] = useState(false);
   // Only a separate secret when the config has BOTH an `auth-user-pass` account and
   // an encrypted key — OpenVPN prompts for the two independently. For a key-only
   // config `vpnPassword` already is the key passphrase, and this field stays hidden.
@@ -201,9 +221,87 @@ function RemoteConnectDialogInner({
   // attempt that made it live, in which case its controls (log, Stop/Disconnect)
   // must stay reachable here. `vpnBusy` already mirrors that via the machine store.
   const showVpnSection = useVpnSectionVisible(vpnBusy);
+
+  // The two "save the secret" rows, defined once and rendered from **both** halves of
+  // the login section. They belong to the *host*, not to how you happen to be signing
+  // in this time: switching to the terminal login must not make a saved password look
+  // discarded (and must certainly never delete it — only unticking does that, and only
+  // by the user's own click). A terminal login is one Eldrun never sees, so nothing
+  // *new* is stored from it; the saved credential is simply kept for the connects that
+  // can use it, which the hint says out loud rather than leaving to be guessed.
+  const sshSaveRow = (
+    <label className="remote-connect-remember">
+      <Toggle
+        size="sm"
+        checked={sshRemember}
+        disabled={connecting || connected}
+        onChange={(e) => {
+          setSshRemember(e.target.checked);
+          // Untick = delete it now. Waiting for the next connect to clear it
+          // leaves the password in the keychain the user just asked to drop.
+          if (!e.target.checked && sshSaved) void forgetSshPassword();
+        }}
+      />
+      {t("remoteConnect.savePassword")}
+      <span className="ssh-optional-hint">
+        {sshSaved
+          ? sshViaTerminal
+            ? t("remoteConnect.saveHintKeptTerminal")
+            : t("remoteConnect.saveHintSaved")
+          : sshViaTerminal
+            ? t("remoteConnect.saveHintNothingTerminal")
+            : t("vpnPrompt.storedSecurely")}
+      </span>
+    </label>
+  );
+  const vpnSaveRow = (
+    <label className="remote-connect-remember">
+      <Toggle
+        size="sm"
+        checked={vpnRemember}
+        disabled={vpnBusy}
+        onChange={(e) => {
+          setVpnRemember(e.target.checked);
+          // Unticking is a request to *not* have the secret stored —
+          // honour it now, not at the next connect (which may never come).
+          if (!e.target.checked && vpnSaved) void forgetVpnPassword();
+        }}
+      />
+      {vpnNeedsKeyPassphrase ? t("vpnPrompt.saveVpnCredentials") : t("vpnPrompt.savePassphrase")}
+      <span className="ssh-optional-hint">
+        {vpnSaved
+          ? vpnViaTerminal
+            ? t("remoteConnect.saveHintKeptTerminal")
+            : t("remoteConnect.saveHintSaved")
+          : vpnViaTerminal
+            ? t("remoteConnect.saveHintNothingTerminal")
+            : t("vpnPrompt.storedSecurely")}
+      </span>
+    </label>
+  );
   // One submit for the whole VPN form: the fields are separate prompts OpenVPN
   // raises, but they're answered in a single connect.
   const submitVpn = () => void connectVpnHeadless(vpnPassword, vpnKeyPassphrase, vpnRemember);
+
+  // What the "Paste …" row above each login terminal offers (see `CredentialPasteBar`).
+  // A terminal login is one Eldrun never sees — but a credential the user saved from a
+  // headless connect is still sitting in the keychain, and retyping it into every
+  // terminal login is exactly the friction the keychain exists to remove. The login
+  // *name* is pasted from here (it is on screen already, in a plain text field); the
+  // secret is only ever named — the backend reads it and types it.
+  const sshPaste = sshPasteEntries(t, {
+    user: sshUser,
+    host: host ? host.host : project.remote?.host,
+    port: host ? host.port : project.remote?.port,
+    saved: sshSaved,
+  });
+  const vpnPaste = vpnPasteEntries(t, {
+    config: vpnConfig,
+    username: vpnUsername,
+    saved: vpnSaved,
+    needsUsername: vpnNeeds.username,
+    needsKeyPassphrase: vpnNeedsKeyPassphrase,
+  });
 
   return createPortal(
     <div className="modal-backdrop modal-backdrop-elevated" onMouseDown={close}>
@@ -214,8 +312,8 @@ function RemoteConnectDialogInner({
         <div className="settings-title-row">
           <h2>
             {host
-              ? `Connect worker · ${host.label || host.host}`
-              : "Connect remote project"}
+              ? t("remoteConnect.titleWorker", { host: host.label || host.host })
+              : t("remoteConnect.titleProject")}
           </h2>
           <button type="button" className="dialog-close-btn" onClick={close}>×</button>
         </div>
@@ -223,7 +321,7 @@ function RemoteConnectDialogInner({
         <div className="dialog-scroll">
         <div className="remote-connect-target">
           <div className="remote-connect-location">
-            <span className="remote-connect-location-label">Remote</span>
+            <span className="remote-connect-location-label">{t("remoteConnect.remoteLabel")}</span>
             <span
               className="remote-connect-location-path"
               title={host ? formatRemoteTarget(host) : project.remote ? formatRemoteTarget(project.remote) : undefined}
@@ -235,7 +333,7 @@ function RemoteConnectDialogInner({
               has no local mirror to show; only the primary does. */}
           {!host && localMirror && (
             <div className="remote-connect-location">
-              <span className="remote-connect-location-label">Local</span>
+              <span className="remote-connect-location-label">{t("remoteConnect.localLabel")}</span>
               <span className="remote-connect-location-path" title={localMirror}>{localMirror}</span>
             </div>
           )}
@@ -246,13 +344,13 @@ function RemoteConnectDialogInner({
             label (it falls back to the host); a project name can't be blank. */}
         <label className="remote-connect-field remote-worker-name">
           <span className="remote-machine-add-label">
-            Name
+            {t("remoteConnect.nameLabel")}
             <UntestedTag />
           </span>
           <input
             type="text"
             value={nameDraft}
-            placeholder={host ? host.host : "Project name"}
+            placeholder={host ? host.host : t("remoteConnect.namePlaceholder")}
             spellCheck={false}
             autoComplete="off"
             onChange={(e) => setNameDraft(e.target.value)}
@@ -263,8 +361,8 @@ function RemoteConnectDialogInner({
           />
           <span className="ssh-optional-hint">
             {host
-              ? "Shown on the pill and in “Remote machines”. Leave blank to use the host name."
-              : "The project name, shown on its pill and across Eldrun."}
+              ? t("remoteConnect.nameHintWorker")
+              : t("remoteConnect.nameHintProject")}
           </span>
         </label>
 
@@ -276,7 +374,7 @@ function RemoteConnectDialogInner({
         {!host && (
           <label className="remote-connect-field remote-worker-name">
             <span className="remote-machine-add-label">
-              Machine name
+              {t("remoteConnect.machineNameLabel")}
               <UntestedTag />
             </span>
             <input
@@ -292,9 +390,7 @@ function RemoteConnectDialogInner({
               }}
             />
             <span className="ssh-optional-hint">
-              Identifies this machine in the System Monitor and connection lamps
-              when the project has more than one host. Leave blank to use the host
-              name.
+              {t("remoteConnect.machineNameHint")}
             </span>
           </label>
         )}
@@ -313,20 +409,19 @@ function RemoteConnectDialogInner({
           </div>
         )}
         {showVpnSection && (
-        <div className="remote-reconnect-section" role="group" aria-label="OpenVPN tunnel">
+        <div className="remote-reconnect-section" role="group" aria-label={t("remoteConnect.vpnSectionAria")}>
           <label className={`toggle-card${vpnEnabled ? " is-on" : ""}`}>
             <span className="toggle-card-body">
               <span className="toggle-card-title">
                 <ConnLamp status={vpnStatus} label="OpenVPN" />
-                Connect via OpenVPN
+                {t("remoteConnect.vpnToggleTitle")}
               </span>
               <span className="toggle-card-desc">
-                Bring up a tunnel first if this host is VPN-gated. Skip it when
-                you're already on the right network — SSH connects directly.
+                {t("remoteConnect.vpnDescLine1")}
                 <br />
-                The tunnel is <strong>machine-wide</strong>: while it is up, this
-                computer's traffic routes through it — your browser too, not just
-                Eldrun.
+                {t("remoteConnect.vpnDescLine2Pre")}{" "}
+                <strong>{t("remoteConnect.vpnDescLine2Strong")}</strong>
+                {t("remoteConnect.vpnDescLine2Post")}
               </span>
             </span>
             <span className="eld-switch">
@@ -343,16 +438,16 @@ function RemoteConnectDialogInner({
               back to the picker. Chosen once, remembered, but never locked in. */}
           {vpnEnabled && vpnConfig && (
             <div className="vpn-config-current">
-              <span className="remote-connect-location-label">Config</span>
+              <span className="remote-connect-location-label">{t("remoteConnect.configLabel")}</span>
               <span className="vpn-config-current-name" title={vpnConfig}>{vpnConfigName}</span>
               <button
                 type="button"
                 className="vpn-config-change-btn"
                 disabled={vpnBusy || changingVpnConfig}
-                title="Pick a different OpenVPN config for this project."
+                title={t("remoteConnect.changeConfigTitle")}
                 onClick={() => setChangingVpnConfig(true)}
               >
-                Change…
+                {t("remoteConnect.changeConfig")}
               </button>
             </div>
           )}
@@ -360,16 +455,16 @@ function RemoteConnectDialogInner({
             <div className="vpn-config-pick">
               <span className="ssh-optional-hint">
                 {vpnConfig
-                  ? "Pick the OpenVPN config to use instead — the new choice replaces the saved one."
-                  : "Choose the OpenVPN config for this host — it's saved to the project so you only pick it once."}
+                  ? t("remoteConnect.pickConfigHintChange")
+                  : t("remoteConnect.pickConfigHintNew")}
               </span>
               {vpnConfigs.length > 0 && (
                 <div className="folder-picker-row">
                   <Dropdown
                     className="dropdown-block vpn-config-recent"
                     value=""
-                    placeholder="Recently used…"
-                    title="Reuse a previously-used OpenVPN config"
+                    placeholder={t("remoteConnect.recentConfigsPlaceholder")}
+                    title={t("remoteConnect.recentConfigsTitle")}
                     onChange={(v) => {
                       if (!v) return;
                       selectVpnConfig(v);
@@ -388,12 +483,12 @@ function RemoteConnectDialogInner({
                     setChangingVpnConfig(false);
                   }}
                 >
-                  Choose .ovpn config…
+                  {t("remoteConnect.chooseConfigBtn")}
                 </button>
                 {/* Only an escape hatch when there is a config to fall back to. */}
                 {vpnConfig && (
                   <button type="button" onClick={() => setChangingVpnConfig(false)}>
-                    Cancel
+                    {t("common.cancel")}
                   </button>
                 )}
               </div>
@@ -402,23 +497,27 @@ function RemoteConnectDialogInner({
               )}
             </div>
           )}
-          {vpnEnabled && vpnConfig && !changingVpnConfig && (headless ? (
+          {/* `!vpnTerm` is what makes the headless→terminal escape hatch below work:
+              once a login terminal has been opened for this config, *that* is where
+              the tunnel is being authenticated, whichever mode the app is in — so the
+              password fields step aside for it rather than sitting there inert. */}
+          {vpnEnabled && vpnConfig && !changingVpnConfig && (headless && !vpnTerm && !vpnViaTerminal ? (
               <>
                 {vpnNeeds.username && (
                   <label className="remote-connect-field">
-                    VPN username
+                    {t("remoteConnect.vpnUsernameLabel")}
                     <input
                       type="text"
                       value={vpnUsername}
                       autoComplete="off"
-                      placeholder="OpenVPN account username…"
+                      placeholder={t("vpnPrompt.usernamePlaceholder")}
                       disabled={vpnBusy}
                       onChange={(e) => setVpnUsername(e.target.value)}
                     />
                   </label>
                 )}
                 <label className="remote-connect-field">
-                  {vpnNeeds.username ? "VPN password" : "VPN passphrase"}
+                  {vpnNeeds.username ? t("remoteConnect.vpnPasswordLabel") : t("remoteConnect.vpnPassphraseLabel")}
                   <PasswordInput
                     value={vpnPassword}
                     autoComplete="off"
@@ -426,10 +525,10 @@ function RemoteConnectDialogInner({
                     // backend — so say so: blank means "use the saved one".
                     placeholder={
                       vpnSaved
-                        ? "Using saved passphrase — leave blank"
+                        ? t("remoteConnect.vpnSavedPlaceholder")
                         : vpnNeeds.username
-                          ? "OpenVPN account password…"
-                          : "OpenVPN passphrase…"
+                          ? t("remoteConnect.vpnAccountPasswordPlaceholder")
+                          : t("remoteConnect.vpnPassphrasePlaceholder")
                     }
                     disabled={vpnBusy}
                     onChange={(e) => setVpnPassword(e.target.value)}
@@ -440,14 +539,14 @@ function RemoteConnectDialogInner({
                 </label>
                 {vpnNeedsKeyPassphrase && (
                   <label className="remote-connect-field">
-                    Private key passphrase
+                    {t("vpnPrompt.keyPassphraseLabel")}
                     <PasswordInput
                       value={vpnKeyPassphrase}
                       autoComplete="off"
                       placeholder={
                         vpnSaved
-                          ? "Using saved passphrase — leave blank"
-                          : "Passphrase for the config's encrypted key…"
+                          ? t("remoteConnect.vpnSavedPlaceholder")
+                          : t("vpnPrompt.keyPassphrasePlaceholder")
                       }
                       disabled={vpnBusy}
                       onChange={(e) => setVpnKeyPassphrase(e.target.value)}
@@ -456,8 +555,7 @@ function RemoteConnectDialogInner({
                       }}
                     />
                     <span className="ssh-optional-hint">
-                      This config's private key is encrypted, so OpenVPN asks for its
-                      passphrase separately from your account password.
+                      {t("vpnPrompt.keyPassphraseHint")}
                     </span>
                   </label>
                 )}
@@ -468,7 +566,7 @@ function RemoteConnectDialogInner({
                       className="dialog-connect-btn"
                       onClick={submitVpn}
                     >
-                      {vpnStatus === "error" ? "Retry VPN" : "Connect VPN"}
+                      {vpnStatus === "error" ? t("remoteConnect.retryVpn") : t("remoteConnect.connectVpn")}
                     </button>
                   )}
                   {/* The tunnel's own teardown, independent of SSH: a VPN that came
@@ -480,34 +578,16 @@ function RemoteConnectDialogInner({
                       className="vpn-disconnect-btn"
                       title={
                         vpnStatus === "connected"
-                          ? "Bring this OpenVPN tunnel down. The SSH connection is left as it is."
-                          : "Stop this VPN connection attempt and reset the tunnel state."
+                          ? t("remoteConnect.vpnStopTitleConnected")
+                          : t("remoteConnect.vpnStopTitleConnecting")
                       }
                       onClick={stopVpn}
                     >
-                      {vpnStatus === "connected" ? "Disconnect VPN" : "Stop"}
+                      {vpnStatus === "connected" ? t("remoteConnect.disconnectVpn") : t("vpnPrompt.stop")}
                     </button>
                   )}
                 </div>
-                <label className="remote-connect-remember">
-                  <Toggle
-                    size="sm"
-                    checked={vpnRemember}
-                    disabled={vpnBusy}
-                    onChange={(e) => {
-                      setVpnRemember(e.target.checked);
-                      // Unticking is a request to *not* have the secret stored —
-                      // honour it now, not at the next connect (which may never come).
-                      if (!e.target.checked && vpnSaved) void forgetVpnPassword();
-                    }}
-                  />
-                  {vpnNeedsKeyPassphrase ? "Save VPN credentials" : "Save passphrase"}
-                  <span className="ssh-optional-hint">
-                    {vpnSaved
-                      ? "saved in your OS keychain — turn off to delete it"
-                      : "stored securely in your OS keychain"}
-                  </span>
-                </label>
+                {vpnSaveRow}
                 {(vpnStatus === "connecting" || vpnLog.length > 0) && (
                   <ConnectionLog lines={vpnLog} busy={vpnStatus === "connecting"} />
                 )}
@@ -521,22 +601,23 @@ function RemoteConnectDialogInner({
                   type="button"
                   className="dialog-connect-btn"
                   disabled={!!vpnTerm}
-                  title="Bring the OpenVPN tunnel up in a terminal below — enter the passphrase there."
+                  title={t("remoteConnect.vpnTermBtnTitle")}
                   onClick={() => void startVpnTerm()}
                 >
                   <span className="dialog-connect-btn-icon" aria-hidden="true">▶_</span>
-                  {vpnTerm ? "VPN terminal open below" : "Open VPN login terminal"}
+                  {vpnTerm ? t("remoteConnect.vpnTermOpenBelow") : t("remoteConnect.vpnTermOpenBtn")}
                 </button>
                 {vpnTerm && (
                   <div className="dialog-connect-terminal">
                     <div className="dialog-connect-terminal-bar">
                       <span className="ssh-optional-hint">
-                        Authenticate the tunnel below — it keeps running for this project.
+                        {t("remoteConnect.vpnTermHint")}
                       </span>
                       <button type="button" className="vpn-disconnect-btn" onClick={stopVpn}>
-                        Disconnect
+                        {t("remoteConnect.disconnect")}
                       </button>
                     </div>
+                    <CredentialPasteBar ptyId={vpnTerm.id} entries={vpnPaste} />
                     <div className="dialog-connect-terminal-host">
                       {/* A re-adopted terminal (tunnel still running from an earlier
                           open of this dialog) attaches to its live PTY instead of
@@ -556,26 +637,81 @@ function RemoteConnectDialogInner({
                 )}
               </div>
             ))}
+            {/* Outside the branch above, so it is reachable from *both* states: it is
+                what switches into the terminal login, and the only way back out of it
+                once the terminal has been disconnected. Only where there is a tunnel
+                to sign in to — with the section collapsed or no config picked, there
+                is nothing for it to switch. */}
+            {headless && (vpnViaTerminal || !!vpnTerm) && vpnEnabled && vpnConfig && !changingVpnConfig && vpnSaveRow}
+            {headless && vpnEnabled && vpnConfig && !changingVpnConfig && (
+              <TerminalSignInToggle
+                channel="vpn"
+                checked={vpnViaTerminal}
+                busy={!!vpnTerm}
+                failed={vpnStatus === "error"}
+                onChange={setVpnViaTerminal}
+              />
+            )}
         </div>
         )}
 
         {/* ── SSH ───────────────────────────────────────────────────────────── */}
-        <div className="remote-reconnect-section" role="group" aria-label="SSH login">
+        <div className="remote-reconnect-section" role="group" aria-label={t("remoteConnect.sshSectionAria")}>
           <div className="remote-field-label">
             <ConnLamp status={sshStatus} label="SSH" />
-            Sign in over SSH
+            {t("remoteConnect.sshSectionLabel")}
           </div>
-          {headless ? (
+          {/* The login name — the other half of the credential, and deliberately
+              OUTSIDE the headless/non-headless split, because it is not a password:
+              it is part of the address in both modes. Headless sends it to
+              `ssh_connect`/`remote_connect`; non-headless types it into the login
+              terminal *and* uses it to find the ControlMaster that login leaves
+              behind (the socket is hashed over user+host+port, so the two disagreeing
+              is a red lamp behind a login that visibly worked). The project's address
+              is fixed at creation, so without this a project created with no user —
+              which authenticates as your *local* account name — or with the wrong one
+              could not be corrected at all. Committed on blur/Enter; connecting
+              commits it first, so it counts even without leaving the field. */}
+          <label className="remote-connect-field">
+            <span className="remote-machine-add-label">
+              {t("remoteConnect.usernameLabel")}
+              <UntestedTag />
+            </span>
+            <input
+              type="text"
+              value={sshUser}
+              spellCheck={false}
+              autoComplete="off"
+              placeholder={t("remoteConnect.usernamePlaceholder")}
+              disabled={connecting || connected}
+              onChange={(e) => setSshUser(e.target.value)}
+              onBlur={() => void commitSshUser()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              }}
+            />
+            <span className="ssh-optional-hint">
+              {t("remoteConnect.usernameHint", { host: host ? host.host : (project.remote?.host ?? "") })}
+            </span>
+          </label>
+          {/* `!sshTerm` keeps a started terminal login on screen even if the switch
+              below is flipped back: the session it is authenticating is real, and the
+              password fields would orphan it. */}
+          {headless && !sshViaTerminal && !sshTerm ? (
             <>
               <label className="remote-connect-field">
-                Password
+                {t("remoteConnect.sshPasswordLabel")}
                 <PasswordInput
                   value={sshPassword}
                   autoFocus
                   autoComplete="off"
                   // The saved password stays in the keychain (the backend never hands
                   // it back), so the field can't be pre-filled. Blank + Connect uses it.
-                  placeholder={sshSaved ? "Using saved password — leave blank" : "SSH password…"}
+                  placeholder={
+                    sshSaved
+                      ? t("remoteConnect.sshSavedPlaceholder")
+                      : t("remoteConnect.sshPasswordPlaceholder")
+                  }
                   disabled={connecting || connected}
                   onChange={(e) => setSshPassword(e.target.value)}
                   onKeyDown={(e) => {
@@ -588,44 +724,26 @@ function RemoteConnectDialogInner({
                   disabled={connecting || connected}
                   onClick={() => void connectSshHeadless(sshPassword, sshRemember)}
                 >
-                  {connected ? "Connected" : connecting ? "Connecting…" : "Connect"}
+                  {connected ? t("remoteConnect.connectedState") : connecting ? t("vpnPrompt.connecting") : t("common.connect")}
                 </button>
                 {connecting && (
                   <button
                     type="button"
                     className="vpn-disconnect-btn"
-                    title="Stop this SSH connection attempt and reset the connection state."
+                    title={t("remoteConnect.sshStopTitle")}
                     onClick={stopSsh}
                   >
-                    Stop
+                    {t("vpnPrompt.stop")}
                   </button>
                 )}
               </label>
-              <label className="remote-connect-remember">
-                <Toggle
-                  size="sm"
-                  checked={sshRemember}
-                  disabled={connecting || connected}
-                  onChange={(e) => {
-                    setSshRemember(e.target.checked);
-                    // Untick = delete it now. Waiting for the next connect to clear it
-                    // leaves the password in the keychain the user just asked to drop.
-                    if (!e.target.checked && sshSaved) void forgetSshPassword();
-                  }}
-                />
-                Save password
-                <span className="ssh-optional-hint">
-                  {sshSaved
-                    ? "saved in your OS keychain — turn off to delete it"
-                    : "stored securely in your OS keychain"}
-                </span>
-              </label>
+              {sshSaveRow}
               <label
                 className="remote-connect-remember"
                 title={
                   autoConnectEligible
-                    ? "Connect this project by itself on launch and when you switch to it. It never asks for anything: it goes straight in when the host is reachable, and brings the VPN up only when it isn't. Note that bringing the VPN up reroutes this whole computer's traffic — with auto-connect that happens without a prompt, so watch the header's VPN indicator."
-                    : "Save the SSH password (or use key authentication) first — auto-connect is only offered when connecting needs nothing from you."
+                    ? t("remoteConnect.autoConnectTitleEligible")
+                    : t("remoteConnect.autoConnectTitleNotEligible")
                 }
               >
                 <Toggle
@@ -634,11 +752,11 @@ function RemoteConnectDialogInner({
                   disabled={!autoConnectEligible}
                   onChange={(e) => setAutoConnect(e.target.checked)}
                 />
-                Auto-connect
+                {t("remoteConnect.autoConnectLabel")}
                 <span className="ssh-optional-hint">
                   {autoConnectEligible
-                    ? "on launch and on switch — VPN only if the host isn’t reachable directly"
-                    : "needs a saved password or key authentication"}
+                    ? t("remoteConnect.autoConnectHintEligible")
+                    : t("remoteConnect.autoConnectHintNotEligible")}
                 </span>
               </label>
               {/* Auto-connect never prompts — so if it can reach for the VPN, this
@@ -646,10 +764,9 @@ function RemoteConnectDialogInner({
                   reroute their machine before they've clicked anything. */}
               {autoConnectEligible && autoConnect && vpnEnabled && (
                 <div className="remote-connect-vpn-warning">
-                  Heads up: if the host isn’t reachable directly, auto-connect brings
-                  the VPN up <strong>without asking</strong> — rerouting this
-                  computer’s traffic on launch. The header’s VPN indicator shows when
-                  a tunnel is up, and can bring it down.
+                  {t("remoteConnect.autoConnectVpnWarningPre")}{" "}
+                  <strong>{t("remoteConnect.autoConnectVpnWarningStrong")}</strong>{" "}
+                  {t("remoteConnect.autoConnectVpnWarningPost")}
                 </div>
               )}
               {sshStatus === "error" && sshError && (
@@ -666,16 +783,16 @@ function RemoteConnectDialogInner({
                 disabled={connecting || connected}
                 onClick={() => void connectSshHeadless("")}
               >
-                {connected ? "Connected" : connecting ? "Connecting…" : "Connect"}
+                {connected ? t("remoteConnect.connectedState") : connecting ? t("vpnPrompt.connecting") : t("common.connect")}
               </button>
               {connecting && (
                 <button
                   type="button"
                   className="vpn-disconnect-btn"
-                  title="Stop this SSH connection attempt and reset the connection state."
+                  title={t("remoteConnect.sshStopTitle")}
                   onClick={stopSsh}
                 >
-                  Stop
+                  {t("vpnPrompt.stop")}
                 </button>
               )}
               {sshStatus === "error" && sshError && (
@@ -688,32 +805,33 @@ function RemoteConnectDialogInner({
                 type="button"
                 className="dialog-connect-btn"
                 disabled={!!sshTerm}
-                title="Open the SSH login in a terminal below — enter the password there."
+                title={t("remoteConnect.sshTermBtnTitle")}
                 onClick={() => void startSshTerm()}
               >
                 <span className="dialog-connect-btn-icon" aria-hidden="true">▶_</span>
-                {sshTerm ? "SSH terminal open below" : "Open SSH login terminal"}
+                {sshTerm ? t("remoteConnect.sshTermOpenBelow") : t("remoteConnect.sshTermOpenBtn")}
               </button>
               {sshTerm && !connected && (
                 <button
                   type="button"
                   className="dialog-connect-btn"
-                  title="If you've finished logging in above, connect now."
+                  title={t("remoteConnect.tryConnectTitle")}
                   onClick={tryConnectNow}
                 >
-                  I've logged in — connect
+                  {t("remoteConnect.tryConnectBtn")}
                 </button>
               )}
               {sshTerm && (
                 <div className="dialog-connect-terminal">
                   <div className="dialog-connect-terminal-bar">
                     <span className="ssh-optional-hint">
-                      Log in below — the pooled connection comes up once you're authenticated.
+                      {t("remoteConnect.sshTermHint")}
                     </span>
                     <button type="button" className="vpn-disconnect-btn" onClick={stopSsh}>
-                      Disconnect
+                      {t("remoteConnect.disconnect")}
                     </button>
                   </div>
+                  <CredentialPasteBar ptyId={sshTerm.id} entries={sshPaste} />
                   <div className="dialog-connect-terminal-host">
                     <TerminalView
                       id={sshTerm.id}
@@ -728,8 +846,53 @@ function RemoteConnectDialogInner({
                   </div>
                 </div>
               )}
+              {/* Auto-connect, non-headless flavour. It is offered here with no
+                  eligibility gate because there is nothing to be eligible against:
+                  Eldrun holds no passwords in this mode, so "connect on launch" means
+                  this same login opens in the root terminal for you to authenticate —
+                  the substitution `autoConnectInteractive` (stores/projects) makes,
+                  and the one the header's "Connect on launch" already makes for a
+                  tunnel. */}
+              <label
+                className="remote-connect-remember"
+                title={t("remoteConnect.autoConnectInteractiveTitle")}
+              >
+                <Toggle
+                  size="sm"
+                  checked={autoConnect}
+                  onChange={(e) => setAutoConnect(e.target.checked)}
+                />
+                {t("remoteConnect.autoConnectLabel")}
+                <UntestedTag />
+                <span className="ssh-optional-hint">
+                  {t("remoteConnect.autoConnectInteractiveHint")}
+                </span>
+              </label>
             </div>
           )}
+          {/* Outside the branch above, for the same reason the VPN one is: it is both
+              the way into the terminal login and the only way back out once that
+              terminal has been disconnected. */}
+          {headless && (sshViaTerminal || !!sshTerm) && sshSaveRow}
+          {headless && !winManual && (
+            <TerminalSignInToggle
+              channel="ssh"
+              checked={sshViaTerminal}
+              busy={!!sshTerm}
+              failed={sshStatus === "error"}
+              onChange={setSshViaTerminal}
+            />
+          )}
+          {/* Outside the headless/non-headless branches, like the two rows above:
+              how gently to treat a machine is a property of the machine, not of how
+              you happen to log into it. Whichever host this dialog is showing —
+              the project's primary or one of its workers — gets its own answer,
+              because a login node and the compute node behind it are not the same
+              kind of machine even when they belong to the same cluster. */}
+          <CarefulHostToggle target={carefulTarget} />
+          {/* The stronger statement about the same machine: careful is how much
+              Eldrun reads, this is what it is allowed to do (`lib/hpcHost.ts`). */}
+          <HpcHostToggle target={carefulTarget} />
         </div>
 
         <div className="project-dialog-actions">
@@ -749,7 +912,7 @@ function RemoteConnectDialogInner({
                 close();
               }}
             >
-              Disconnect
+              {t("remoteConnect.disconnect")}
             </button>
           )}
           {/* Explicitly confirmed teardown. A plain Disconnect also ends tmux
@@ -759,7 +922,7 @@ function RemoteConnectDialogInner({
               <button
                 type="button"
                 className="vpn-disconnect-btn"
-                title="Confirm: this kills every running tmux session on the host — it can't be undone."
+                title={t("remoteConnect.killConfirmTitle")}
                 onClick={() => {
                   setKillArm(false);
                   void invoke("remote_kill_all_jobs", killTarget).catch(() => {});
@@ -769,15 +932,15 @@ function RemoteConnectDialogInner({
                   close();
                 }}
               >
-                Confirm: end all jobs
+                {t("remoteConnect.killConfirmBtn")}
               </button>
             ) : (
               <button
                 type="button"
-                title="Actively disconnect: end every running tmux job on this host and close the connection. Jobs are killed only on this click — never on an Eldrun restart."
+                title={t("remoteConnect.killArmTitle")}
                 onClick={() => setKillArm(true)}
               >
-                Disconnect &amp; end jobs
+                {t("remoteConnect.killArmBtn")}
                 <UntestedTag />
               </button>
             ))}
@@ -788,13 +951,13 @@ function RemoteConnectDialogInner({
           {(sshSaved || vpnSaved) && (
             <button
               type="button"
-              title="Delete this host's saved password from your OS keychain. The current connection stays up; the next connect asks for the password again."
+              title={t("remoteConnect.forgetPasswordTitle")}
               onClick={() => void forgetPasswords()}
             >
-              Forget saved password
+              {t("remoteConnect.forgetPasswordBtn")}
             </button>
           )}
-          <button type="button" onClick={close}>Close</button>
+          <button type="button" onClick={close}>{t("common.close")}</button>
         </div>
         </div>
       </div>

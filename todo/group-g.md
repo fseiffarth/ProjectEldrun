@@ -1001,5 +1001,140 @@ container) — as opposed to the git **push** axis (#21/#22).*
     - [ ] 🖐️ Manual test (cluster, Phase B) — **+ → HPC pipeline…** walks
       login→create→load→run→watch end-to-end; the created project connects; an
       uploaded file lands on the host; Submit opens a tailing log tab.
+    - **Phase C — workspaces, before any data moves (implemented, untested).** The
+      pipeline was missing its actual first step: on a cluster `$HOME` is a small,
+      quota'd, code-only filesystem, and the bulk data of a computation belongs in a
+      **workspace** — a directory on the parallel filesystem with a name, a duration
+      and an expiry after which it is *deleted* — handed out by the `hpc-workspace`
+      tooling (`ws_allocate <name> <days>`, `ws_list`, `ws_find`, `ws_extend`,
+      `ws_release`). Backend `commands::hpc_ws`
+      (`hpc_ws_available`/`_list`/`_allocate`/`_extend`/`_release`/`_link`) reuses
+      `commands::slurm`'s dispatch for a project target and adds an **ad-hoc host**
+      target (`run_ssh_auth`, like `global_machine_usage_check`) because a workspace
+      is allocated *before* the project exists. Nothing is site-specific — the host
+      is asked what it offers (`ws_list -l`); every interpolated value is validated
+      **and** `shell_quote`d; each list/allocate is one round trip that appends a
+      `ws_find` confirmation, since the *path* is what everything downstream uses.
+      Frontend `lib/hpcWorkspace.ts` + a new **Workspace** step in the wizard
+      (between Project and Load data, and now the step that calls `create_project`):
+      the chosen workspace path becomes the project's **remote root**, which is the
+      entire integration — SFTP upload, byte-sync, git lockstep and every run tab
+      then land on the parallel filesystem with no change of their own. The
+      alternative layout (project in `$HOME` + workspace symlinked in as `./data`)
+      is offered with its caveat stated, since byte-sync never follows a symlink
+      (`walk_host_files`, G3). The **Jobs view** additionally lists the project's
+      workspaces with their remaining time (toned) and an **Extend**.
+    - [x] 🤖 Automated test — Rust parsers (`parse_ws_locations` incl. `(default)`
+      + chatter, `parse_ws_list` block/`ws_find`-map merge incl. map-only entries
+      and pathless rows dropped, `parse_ws_allocate` incl. fallback + failure) and
+      the validators (token/injection, day bounds, mail metacharacters, absolute
+      paths, `-F` quoting); frontend `HpcWorkspace.test.ts` (`projectPathIn`,
+      `remainingLabel` incl. singular/fallback, `expiryTone` escalation,
+      `defaultFilesystem`, target shapes).
+    - **Phase C.1/C.2 — the home anchor + surviving expiry (implemented, untested;
+      `docs/hpc_workspace_plan.md`).** Root-in-workspace is only safe if the two
+      things it costs are handled: a workspace path nobody can remember, and an
+      expiry that deletes the project's host tree on a ~1-year certainty.
+      **C.1 (anchor):** `hpc_ws_anchor` creates a small `~/eldrun/<project>/` on the
+      cluster — `logs/`, a `workspace` symlink, and an **append-only**
+      `workspaces.txt` (date, workspace id, path, project, local mirror) — because
+      `ws_restore` is keyed by the workspace *name* and the tree that carried it is
+      what expiry deletes. Recorded on the project as an additive `hpc` block in
+      `project.json` + `extra["hpc"]` (`set_project_hpc`, mirroring
+      `set_project_run_host`), including `anchor_rel` so a later re-anchor passes
+      the `$HOME`-relative path back rather than chopping segments off the absolute
+      one. The wizard offers it (default on) and splices the starter's
+      `--output` to `<logs>/slurm-%j.out`; `slurm_job_out` takes a `log_dir` so
+      **Watch** on a job `scontrol` has forgotten stops guessing `<WorkDir>`.
+      **C.2 (lifecycle):** `hpc_ws_move_root` re-points a primary's `remote_path`
+      (nothing else could — it was fixed at creation), resetting lockstep state and
+      the byte-sync **bases** while keeping every marker, so the empty new root is
+      re-seeded from the local mirror; surfaced as **Move here** on each workspace
+      row, with a confirm that says outputs left in the old workspace stay there.
+      An **expiry banner** (≤7 days, urgent ≤2) is raised in every view with
+      Extend/Workspaces, and **Pull logs** copies the anchor's logs into the mirror.
+      **Portability:** the feature assumes only two *families* — SLURM as the
+      scheduler and `hpc-workspace` as the storage tooling — and no site value
+      appears in any logic (the only `lustre`/`scratch`/`mlnvme` strings are test
+      fixtures). A cluster with SLURM but **no** workspace tooling is covered by
+      `hpc_scratch_candidates`: the step asks whether the site's own profile
+      exports `$SCRATCH`/`$WORK`/`$PROJECT`/… (plus `/scratch|/work|/lustre/$USER`),
+      reports each with writability + `df` free space, and offers them as the
+      project root — otherwise such a project would land in `$HOME`, the exact
+      failure the step exists to prevent.
+    - [x] 🤖 Automated test — Rust `validate_anchor_rel` (home-relative, `.`/`..`
+      and metacharacters rejected) and `parse_scratch_candidates` (dedupe by path,
+      read-only reported not filtered, malformed/relative rows dropped); frontend
+      `freeSpaceLabel`, `defaultAnchorRel`, `logOutputPattern`,
+      `shouldWarnExpiry`, and `findProjectWorkspace` — incl. **id-first resolution**
+      and the prefix trap (`…-demo2` must not match `…-demo`, which would point
+      Extend at the wrong allocation).
+    - [ ] 🖐️ Manual test (cluster, C.1/C.2) — the wizard's anchor checkbox creates
+      `~/eldrun/<project>/{logs,workspace,workspaces.txt}` with the link resolving
+      and the record naming the workspace; a submitted job's log appears in
+      `logs/` and the log tab tails it; **Watch** on a finished job still finds it;
+      **Pull logs** lands them in the mirror's `logs/`; with the workspace inside a
+      week the banner appears in the Files view and **Extend** clears it;
+      **Move here** on another workspace re-points the project (new root created,
+      lockstep re-seeds it from the mirror, tabs reconnect) and appends a second
+      record line; the old workspace is left untouched. On a **cluster without
+      `ws_allocate`** (or a plain SSH host with `$SCRATCH` set), the step instead
+      lists the site's own filesystems with free space and creating the project
+      there puts the tree on the chosen one.
+    - [ ] 🖐️ Manual test (cluster, Phase C) — **+ → HPC pipeline…** → after login
+      the Workspace step lists the site's filesystems and your existing workspaces
+      with days left; **Allocate workspace** creates one (`ws_list` on the host
+      agrees) and a reminder mail is registered; **Create project** puts the project
+      at `<workspace>/<name>` (`project.json`'s `remote_path`); an uploaded file and
+      a synced file both land in the workspace, **nothing** in `$HOME`; the linked
+      layout instead creates `<project>/data → <workspace>`; the Jobs view lists the
+      workspace with its remaining time and **Extend** adds days (extensions drop by
+      one); a non-cluster host skips the step with its note.
+
+91. **rsync for the PUSH direction too (local→host bulk transfer).** rsync is used
+    on exactly one axis today: a **directory pull** (`commands::sync::try_rsync_pull`
+    → `remote_sync::rsync_pull_dir`, gated on `should_use_rsync` = rsync on **both**
+    ends **and** `is_dir`, riding the pooled ControlMaster with `-c`). Everything
+    going *up* is SFTP, per-file: `sync_push`, the whole-project push, the HPC
+    wizard's "Load data" (`remote_upload_file` → `upload_file_streaming_on`), and the
+    worker "Pull outputs" download. That is backwards for the workflow the cluster
+    docs describe — "copy your code/data to the node" is the direction that moves the
+    big trees, and it is the one still walking files one at a time over SFTP.
+    - **Why push is on the SFTP floor, and what must survive.** It is not an
+      oversight: a push honours a per-file **block-on-stale** guard (never clobber a
+      host file that changed under us — `remote_sync`'s `push_decision`, product
+      decision 5), and a bulk `rsync` would overwrite the whole subtree without ever
+      consulting it. A pull has no such problem because overwriting the *mirror* is
+      what the user asked for. So this is not "turn on the flag": the guard has to be
+      re-expressed in rsync's own terms.
+    - **The shape that keeps the guard.** Compute the push set exactly as today (host
+      walk + manifest bases + `push_decision`), then hand rsync **only the agreed
+      files** — `--files-from=-` on stdin, plus `--ignore-times`/`-c` — instead of
+      letting it decide what to send. Stale files are simply absent from the list, so
+      a blocked file cannot be clobbered by construction, and the win (one connection,
+      delta transfer, no per-file round trip) is kept. `--delete` must never appear:
+      deletion on the host is not byte-sync's business.
+    - **The `excluded` marker has to stand down the fast path**, same as it does for
+      pulls (`skipped_excluded == 0`) — a whole-subtree rsync cannot honour a
+      carve-out, and an excluded `node_modules`/`checkpoints` going up is precisely
+      the accident the big-folder census exists to prevent. With `--files-from` this
+      falls out for free, which is a second reason to prefer that shape.
+    - **Also worth routing through it once it exists:** `remote_upload_file` (the HPC
+      wizard's data step, currently one streamed SFTP file at a time) and the worker
+      `pull_outputs` download. Both are bulk, both already know their file list.
+    - **Floor stays.** rsync missing on either end, or any rsync failure, falls back
+      to today's SFTP path — the same bargain the pull side already strikes.
+    - [ ] 🤖 Automated test — pure argv builder (`rsync_push_args`: `--files-from=-`,
+      `-c`, the ControlMaster-riding `-e`, **no** `--delete`, no bare-directory
+      source); `should_use_rsync_push` false when either end lacks rsync, when the
+      set is empty, or when any path in scope is `excluded`; and a real-`sh`
+      round-trip asserting the file list rsync is fed equals the set `push_decision`
+      agreed, so a stale-blocked file can never reach the wire.
+    - [ ] 🖐️ Manual test — live host: push a large folder and confirm it lands
+      byte-identical and materially faster than the SFTP floor; edit one file on the
+      host, then push, and confirm that file is still blocked (amber) and its host
+      bytes untouched while its siblings go up; mark a subfolder excluded and confirm
+      it is not transferred; kill rsync on the host and confirm the push still
+      completes on the SFTP floor.
 
 ---

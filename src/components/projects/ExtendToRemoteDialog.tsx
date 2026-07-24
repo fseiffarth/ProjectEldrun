@@ -9,6 +9,7 @@ import { useRemoteSession, type RemoteStep } from "./useRemoteSession";
 import { RemoteProjectSection } from "./RemoteProjectSection";
 import { targetLabel } from "../header/MachinesIndicator";
 import type { DroppedGlobalMachine } from "../../stores/remoteMachines";
+import { useT } from "../../lib/i18n";
 
 /**
  * "Extend to remote…" modal for an existing **local** project. It attaches a
@@ -39,6 +40,7 @@ export function ExtendToRemoteDialog({
   initialMachine?: DroppedGlobalMachine;
   onClose: () => void;
 }) {
+  const t = useT();
   // The remote path leaf and local-mirror-relative name both use the project's
   // sanitized name, matching direct remote creation (kind "new").
   const safeName = sanitizeName(project.name);
@@ -103,7 +105,7 @@ export function ExtendToRemoteDialog({
   const submit = async () => {
     const spec = buildRemoteSpec(safeName);
     if (!spec) {
-      setError("Connect and choose a remote folder first.");
+      setError(t("extendRemote.connectFirstError"));
       return;
     }
     setBusy(true);
@@ -132,7 +134,14 @@ export function ExtendToRemoteDialog({
       let connectAttempts = 0;
       const maxConnectAttempts = 6;
       const tryConnect = () => {
-        void invoke("remote_connect", { projectId: project.id, password: connectPassword })
+        void invoke("remote_connect", {
+          projectId: project.id,
+          password: connectPassword,
+          // With no password to hand over (non-headless, or a key host), this can only
+          // be riding the master the dialog's login left up — say so, so the backend
+          // doesn't record the very `key_auth: true` lie the comment above describes.
+          viaLogin: !connectPassword,
+        })
           .then(() => useRemoteStatusStore.getState().setSsh(project.id, "connected"))
           .catch((err) => {
             if (++connectAttempts >= maxConnectAttempts) {
@@ -165,22 +174,18 @@ export function ExtendToRemoteDialog({
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog dialog-framed" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>Extend “{project.name}” to remote</h2>
+          <h2>{t("extendRemote.title", { name: project.name })}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <div className="dialog-scroll">
         <p className="ssh-optional-hint">
           {initialMachine ? (
             <>
-              Attach <strong>{initialMachine.label || initialMachine.host}</strong> to this
-              project as its primary remote host. The empty remote folder is created on the
-              host; your existing local files become the synced working copy and stay put.
-              Nothing is uploaded until you push it manually.
+              {t("extendRemote.attachPre")} <strong>{initialMachine.label || initialMachine.host}</strong>{" "}
+              {t("extendRemote.attachMid")}
             </>
           ) : (
-            "Attach a remote SSH host to this project. The empty remote folder is " +
-            "created on the host; your existing local files become the synced working " +
-            "copy and stay put. Nothing is uploaded until you push it manually."
+            t("extendRemote.attachGeneric")
           )}
         </p>
 
@@ -194,13 +199,13 @@ export function ExtendToRemoteDialog({
 
         {step === "details" && (
           <div className="project-dialog-path extend-summary">
-            <span>Creates the remote folder and pairs it with this project’s existing local files:</span>
+            <span>{t("extendRemote.summaryLede")}</span>
             <div className="extend-path-row">
-              <span className="extend-path-label">Local</span>
+              <span className="extend-path-label">{t("extendRemote.local")}</span>
               <code className="extend-remote-path">{localPath}</code>
             </div>
             <div className="extend-path-row">
-              <span className="extend-path-label">Remote</span>
+              <span className="extend-path-label">{t("extendRemote.remote")}</span>
               <code className="extend-remote-path">{remotePath}</code>
             </div>
           </div>
@@ -210,29 +215,25 @@ export function ExtendToRemoteDialog({
 
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>
-            Cancel
+            {t("common.cancel")}
           </button>
           {stepIdx > 0 && (
             <button type="button" disabled={busy} onClick={goBack}>
-              Back
+              {t("common.back")}
             </button>
           )}
           {step !== "details" ? (
             <button type="button" disabled={!canNext || busy} onClick={goNext}>
-              Next
+              {t("common.next")}
             </button>
           ) : (
             <button
               type="button"
               onClick={() => void submit()}
               disabled={busy || !remoteReady}
-              title={
-                remoteReady
-                  ? "Attach the remote host to this project"
-                  : "Connect and choose a remote folder first"
-              }
+              title={t(remoteReady ? "extendRemote.readyTitle" : "extendRemote.notReadyTitle")}
             >
-              {busy ? "Extending…" : "Extend to remote"}
+              {busy ? t("extendRemote.extending") : t("extendRemote.extendToRemote")}
             </button>
           )}
         </div>

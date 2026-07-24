@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { isCloneUrl, repoNameFromCloneUrl, sanitizeName } from "../components/projects/scaffold";
+import {
+  isCloneUrl,
+  providerFromCloneUrl,
+  repoNameFromCloneUrl,
+  sanitizeName,
+} from "../components/projects/scaffold";
 
 // The import dialog's "GitHub / GitLab repository (clone)" source. `isCloneUrl`
 // gates the Import button; the backend's `validate_clone_url` is the real guard
@@ -57,5 +62,26 @@ describe("project name from a clone URL", () => {
     // The clone lands at `<location>/<sanitizeName(name)>`, so a repo name with
     // characters the project-name sanitizer strips must still yield a folder.
     expect(sanitizeName(repoNameFromCloneUrl("https://github.com/owner/My.Repo.git"))).toBe("my-repo");
+  });
+});
+
+// The "fork, then clone" import source: a fork is made by the provider's own CLI
+// (`gh`/`glab`), so which provider a URL belongs to decides which binary runs.
+// Twin of `provider_from_host` in `commands/git_fork.rs`.
+describe("provider from a clone URL", () => {
+  it("reads the provider off a host that names itself", () => {
+    expect(providerFromCloneUrl("https://github.com/owner/repo.git")).toBe("github");
+    expect(providerFromCloneUrl("git@github.com:owner/repo.git")).toBe("github");
+    expect(providerFromCloneUrl("https://gitlab.com/group/sub/repo")).toBe("gitlab");
+    expect(providerFromCloneUrl("ssh://git@gitlab.example.org:2222/owner/repo.git")).toBe("gitlab");
+    // Userinfo and port are not part of the host.
+    expect(providerFromCloneUrl("https://user@github.com:8443/owner/repo")).toBe("github");
+  });
+
+  it("says nothing for a host that does not name itself", () => {
+    // A self-hosted instance — the dialog then asks which it is rather than
+    // guessing a CLI.
+    expect(providerFromCloneUrl("https://git.internal/owner/repo.git")).toBe("");
+    expect(providerFromCloneUrl("")).toBe("");
   });
 });

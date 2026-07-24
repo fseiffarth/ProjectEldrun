@@ -83,7 +83,7 @@ beforeEach(() => {
 async function fillSsh(password: string) {
   await userEvent.type(await screen.findByPlaceholderText(/user@host/i), "alice@host.example");
   if (password) {
-    await userEvent.type(screen.getByPlaceholderText(/leave empty for key/i), password);
+    await userEvent.type(screen.getByPlaceholderText(/key's passphrase/i), password);
   }
 }
 
@@ -185,7 +185,13 @@ describe("the credential the dialog used is the one the project connects with", 
     await userEvent.click(await screen.findByRole("button", { name: /extend to remote/i }));
 
     await waitFor(() =>
-      expect(lastArgs("remote_connect")).toEqual({ projectId: "p1", password: "hunter2" }),
+      expect(lastArgs("remote_connect")).toEqual({
+        projectId: "p1",
+        password: "hunter2",
+        // A password was handed over, so the connect proves how the host
+        // authenticates on its own — nothing is being ridden.
+        viaLogin: false,
+      }),
     );
     // A password-less connect here would have been recorded as key auth (it rides the
     // master the dialog left up), which is what made auto-connect lie.
@@ -201,7 +207,15 @@ describe("the credential the dialog used is the one the project connects with", 
     await userEvent.click(await screen.findByRole("button", { name: /extend to remote/i }));
 
     await waitFor(() =>
-      expect(lastArgs("remote_connect")).toEqual({ projectId: "p1", password: null }),
+      expect(lastArgs("remote_connect")).toEqual({
+        projectId: "p1",
+        password: null,
+        // Nothing to hand over means this connect can only be riding the master the
+        // dialog's own login left up — so it must not be written down as key auth
+        // (the backend's `record_key_auth` skips it). A genuinely key-auth host still
+        // records itself on its next ordinary activation connect.
+        viaLogin: true,
+      }),
     );
   });
 });

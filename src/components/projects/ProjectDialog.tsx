@@ -17,16 +17,19 @@ import {
   collectScaffoldAgentFills,
   isCloneUrl,
   joinRemotePath,
+  providerFromCloneUrl,
   repoNameFromCloneUrl,
   sanitizeName,
   type ScaffoldPreviewItem,
 } from "./scaffold";
 import { useRemoteSession, type RemoteStep } from "./useRemoteSession";
 import { RemoteProjectSection } from "./RemoteProjectSection";
-import { stashRemotePassword } from "../../stores/projects";
+import { stashRemotePassword, stashRemoteViaLogin } from "../../stores/projects";
 import { Dropdown } from "../common/Dropdown";
-import { runInstallInTab } from "../../lib/installCommand";
+import { runInstallInTab, PROVIDER_CLI_INSTALL } from "../../lib/installCommand";
+import { UntestedTag } from "../common/UntestedTag";
 import { IS_WINDOWS, IS_MAC } from "../../lib/platform";
+import { useT } from "../../lib/i18n";
 
 /** OS-appropriate command to install git, used by the one-click "Install git"
  *  prompt shown when creating/importing a git-backed project on a machine with
@@ -37,11 +40,12 @@ const GIT_INSTALL_CMD = IS_WINDOWS
   : IS_MAC
     ? "brew install git"
     : "sudo apt-get install -y git";
-const GIT_INSTALL_LABEL = "Install git";
 
-/** Where an import's files come from: a folder already on this machine, or a
- *  repository cloned from GitHub/GitLab (any git URL). */
-export type ImportSource = "folder" | "git";
+/** Where an import's files come from: a folder already on this machine, a
+ *  repository cloned from GitHub/GitLab (any git URL), or a *fork* of one —
+ *  the same clone, preceded by creating the user's own copy of the repository
+ *  on the host so there is something to push to. */
+export type ImportSource = "folder" | "git" | "fork";
 
 export function ProjectDialog({
   kind,
@@ -54,6 +58,7 @@ export function ProjectDialog({
   onClose: () => void;
   onProject: (project: ProjectEntry) => void | Promise<void>;
 }) {
+  const t = useT();
   const defaultAgentCmd = useSettingsStore((s) => s.settings?.default_agent_cmd ?? "claude");
   // A GitHub/GitLab "connection through Eldrun" = a global access token saved in
   // Settings → Git Hosting (the credential publishing actually uses). Used to
@@ -76,6 +81,13 @@ export function ProjectDialog({
   // Import source: an existing local folder, or a clone from GitHub/GitLab.
   const [importSource, setImportSource] = useState<ImportSource>(initialImportSource);
   const [repoUrl, setRepoUrl] = useState("");
+  // Fork source only: which hosting provider drives the fork. "" = read it off
+  // the URL's host, which is what a github.com/gitlab.com URL says on its own;
+  // a self-hosted instance names neither, so it can also be picked explicitly.
+  const [forkProvider, setForkProvider] = useState("");
+  // Whether that provider's CLI (`gh`/`glab`) is on PATH. `null` while probing,
+  // so a pending probe never blocks submit or flashes the install banner.
+  const [forkCliAvailable, setForkCliAvailable] = useState<boolean | null>(null);
   const [cloning, setCloning] = useState(false);
   const [scaffoldPreview, setScaffoldPreview] = useState<ScaffoldPreviewItem[]>([]);
   const [scaffoldFillModes, setScaffoldFillModes] = useState<Record<string, string>>({});
@@ -128,8 +140,23 @@ export function ProjectDialog({
   const safeName = sanitizeName(name);
   const targetDir = safeName && projectsRoot ? `${projectsRoot}/${safeName}` : "";
   // Cloning from a hosting service. A remote (SSH) project's tree lives on the
-  // host and is never cloned locally, so the two are mutually exclusive.
-  const isCloneImport = kind === "import" && !isRemoteProject && importSource === "git";
+  // host and is never cloned locally, so the two are mutually exclusive. A fork
+  // import *is* a clone import — same URL field, same destination, same "keep"
+  // registration — with the fork created first, so it shares every branch below
+  // and only adds the provider row.
+  const isForkImport = kind === "import" && !isRemoteProject && importSource === "fork";
+  const isCloneImport =
+    (kind === "import" && !isRemoteProject && importSource === "git") || isForkImport;
+  // Which provider a fork goes through: the explicit pick, else what the URL's
+  // host says. "" means "can't tell" — the user has to choose before submitting.
+  const forkProviderResolved = (forkProvider || providerFromCloneUrl(repoUrl)) as
+    | "github"
+    | "gitlab"
+    | "";
+  const forkCli = forkProviderResolved ? PROVIDER_CLI_INSTALL[forkProviderResolved] : null;
+  // Same shape as the git-install banner: only claim the CLI is missing once the
+  // probe has actually answered.
+  const needsForkCliInstall = isForkImport && forkCliAvailable === false && forkCli !== null;
   // "Push to GitHub/GitLab" was chosen, but no Eldrun connection is set up yet.
   // Here "remote" is the git push target (a hosting service), distinct from the
   // SSH host the files may live on — see the git-hosting hint below.
@@ -151,7 +178,7 @@ export function ProjectDialog({
   // freely overridable in the dropdown below.
   const changeImportSource = (next: ImportSource) => {
     setImportSource(next);
-    setGitType(next === "git" ? "remote-private" : "local");
+    setGitType(next === "folder" ? "local" : "remote-private");
   };
 
   const setRepoUrlAndName = (url: string) => {
@@ -178,6 +205,24 @@ export function ProjectDialog({
   useEffect(() => {
     invoke<boolean>("git_available").then(setGitAvailable).catch(() => setGitAvailable(false));
   }, []);
+
+  // Probe the fork provider's CLI whenever the resolved provider changes (it
+  // moves as the URL is typed). Reset to `null` first so the banner never shows
+  // a previous provider's answer while the new one is still being asked.
+  useEffect(() => {
+    if (!isForkImport || !forkProviderResolved) {
+      setForkCliAvailable(null);
+      return;
+    }
+    let cancelled = false;
+    setForkCliAvailable(null);
+    invoke<boolean>("provider_cli_available", { provider: forkProviderResolved })
+      .then((ok) => !cancelled && setForkCliAvailable(ok))
+      .catch(() => !cancelled && setForkCliAvailable(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [isForkImport, forkProviderResolved]);
 
   // Seed the remote local-mirror parent from the backend default (the
   // `projects-ssh` root) so the picker's default agrees with the backend
@@ -349,10 +394,21 @@ export function ProjectDialog({
       if (isCloneImport) {
         setCloning(true);
         try {
-          clonedDir = await invoke<string>("git_clone", {
-            url: repoUrl.trim(),
-            dest: targetDir,
-          });
+          clonedDir = isForkImport
+            ? // The fork is created first, then *it* is cloned — so the project
+              // ends up on a repository the user can push to, with the original
+              // wired as `upstream` by the backend.
+              (
+                await invoke<{ dir: string }>("git_fork_clone", {
+                  url: repoUrl.trim(),
+                  dest: targetDir,
+                  provider: forkProvider || null,
+                })
+              ).dir
+            : await invoke<string>("git_clone", {
+                url: repoUrl.trim(),
+                dest: targetDir,
+              });
         } finally {
           setCloning(false);
         }
@@ -401,6 +457,10 @@ export function ProjectDialog({
         // password host isn't recorded as key-auth). Single-use; not persisted —
         // persisting is what the "Save password" toggle is for.
         stashRemotePassword(project.id, remotePassword);
+        // A login the user typed into the embedded terminal leaves no password to
+        // stash, and in headless mode the mode alone doesn't say so — mark it, or the
+        // credential-less first connect is recorded as key auth on a password host.
+        if (remote.sshTerm) stashRemoteViaLogin(project.id);
       }
       await onProject(project);
       await openScaffoldAgentTabs(project, scaffoldAgentFills);
@@ -420,6 +480,10 @@ export function ProjectDialog({
     // git must be installed before a git-backed project (or a clone import) is
     // created — otherwise `git init`/`git clone` would silently fail underneath.
     !needsGitInstall &&
+    // A fork is made by the provider's CLI, so it must be installed, and we must
+    // know *which* provider (a self-hosted host names neither).
+    !needsForkCliInstall &&
+    (!isForkImport || forkProviderResolved !== "") &&
     (isRemoteProject
       ? // Remote mode: ready (live session when headless, typed path otherwise)
         // and has a remote folder.
@@ -464,7 +528,7 @@ export function ProjectDialog({
   // project. Extracted so the markup isn't duplicated between the two placements.
   const nameField = (
     <label>
-      Project name
+      {t("projectDialog.projectNameLabel")}
       <input
         // A clone starts at the URL field (which pre-fills this one), so the
         // focus belongs there — two autoFocus inputs would fight over it.
@@ -483,14 +547,14 @@ export function ProjectDialog({
   const descriptionField = (
     <label className="project-description-field">
       <div className="project-description-header">
-        <span>Project description</span>
+        <span>{t("projectDialog.descriptionLabel")}</span>
         <Dropdown
-          title="Project description fill mode"
+          title={t("projectDialog.descFillModeTitle")}
           value={descriptionFillMode}
           onChange={setDescriptionFillMode}
           options={[
-            { value: "manual", label: "Manual" },
-            { value: "agent_choice", label: "Agent choice" },
+            { value: "manual", label: t("projectDialog.fillModeManual") },
+            { value: "agent_choice", label: t("projectDialog.fillModeAgentChoice") },
             { value: "claude", label: "Claude" },
             { value: "codex", label: "Codex" },
             { value: "gemini", label: "Gemini" },
@@ -500,7 +564,7 @@ export function ProjectDialog({
       </div>
       <textarea
         value={description}
-        placeholder="What this project is for"
+        placeholder={t("projectDialog.descriptionPlaceholder")}
         rows={3}
         onChange={(e) => setDescription(e.target.value)}
         onKeyDown={(e) => {
@@ -514,17 +578,16 @@ export function ProjectDialog({
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog dialog-framed" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>{kind === "new" ? "New Project" : "Import Project"}</h2>
+          <h2>{kind === "new" ? t("projectDialog.titleNew") : t("projectDialog.titleImport")}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <div className="dialog-scroll">
 
         <label className={`toggle-card${isRemoteProject ? " is-on" : ""}`}>
           <span className="toggle-card-body">
-            <span className="toggle-card-title">Remote (SSH) project</span>
+            <span className="toggle-card-title">{t("projectDialog.remoteToggleTitle")}</span>
             <span className="toggle-card-desc">
-              Work on a project that lives on another machine — terminals, files,
-              and git all run on the host over SSH.
+              {t("projectDialog.remoteToggleDesc")}
             </span>
           </span>
           <span className="eld-switch">
@@ -545,13 +608,13 @@ export function ProjectDialog({
         {isRemoteProject && (
           <>
             <label>
-              Local location
+              {t("projectDialog.localLocationLabel")}
               <div className="folder-picker-row">
-                <span title={mirrorParent}>{mirrorParent || "No folder selected"}</span>
-                <button type="button" onClick={chooseLocalMirrorLocation}>Browse...</button>
+                <span title={mirrorParent}>{mirrorParent || t("projectDialog.noFolderSelected")}</span>
+                <button type="button" onClick={chooseLocalMirrorLocation}>{t("projectDialog.browseBtn")}</button>
               </div>
               <span className="ssh-optional-hint">
-                The synced local working copy lives here as {safeName || "<name>"}.
+                {t("projectDialog.localMirrorHint", { name: safeName || "<name>" })}
               </span>
             </label>
             {nameField}
@@ -571,14 +634,15 @@ export function ProjectDialog({
         <>
         {kind === "import" && !isRemoteProject && (
           <label>
-            Import from
+            {t("projectDialog.importFromLabel")}
             <Dropdown
               className="dropdown-block"
               value={importSource}
               onChange={(v) => changeImportSource(v as ImportSource)}
               options={[
-                { value: "folder", label: "Folder on this machine" },
-                { value: "git", label: "GitHub / GitLab repository (clone)" },
+                { value: "folder", label: t("projectDialog.importFolderOpt") },
+                { value: "git", label: t("projectDialog.importGitOpt") },
+                { value: "fork", label: t("projectDialog.importForkOpt") },
               ]}
             />
           </label>
@@ -586,17 +650,17 @@ export function ProjectDialog({
 
         {kind === "import" && !isRemoteProject && importSource === "folder" && (
           <label>
-            Source folder
+            {t("projectDialog.sourceFolderLabel")}
             <div className="folder-picker-row">
-              <span title={sourceDir}>{sourceDir || "No folder selected"}</span>
-              <button type="button" onClick={chooseFolder}>Browse...</button>
+              <span title={sourceDir}>{sourceDir || t("projectDialog.noFolderSelected")}</span>
+              <button type="button" onClick={chooseFolder}>{t("projectDialog.browseBtn")}</button>
             </div>
           </label>
         )}
 
         {isCloneImport && (
           <label>
-            Repository URL
+            {isForkImport ? t("projectDialog.repoToForkLabel") : t("projectDialog.repoUrlLabel")}
             <input
               autoFocus
               value={repoUrl}
@@ -608,23 +672,83 @@ export function ProjectDialog({
               }}
             />
             <span className="ssh-optional-hint">
-              {gitConnected
-                ? "A private repository is cloned with the access token from Settings → Git Hosting. An SSH URL (git@…) uses your own SSH keys instead."
-                : "Public repositories clone as-is. For a private one, add an access token in Settings → Git Hosting, or use an SSH URL (git@…) to authenticate with your SSH keys."}
+              {isForkImport ? (
+                <>
+                  {t("projectDialog.forkHintPre")}{" "}
+                  <code>upstream</code> {t("projectDialog.forkHintMid")}{forkCli?.bin ?? "gh / glab"}{t("projectDialog.forkHintPost")}{" "}
+                  <UntestedTag />
+                </>
+              ) : gitConnected ? (
+                t("projectDialog.cloneHintPrivateConnected")
+              ) : (
+                t("projectDialog.cloneHintPublicOnly")
+              )}
             </span>
           </label>
         )}
 
+        {isForkImport && (
+          <label>
+            {t("projectDialog.hostTypeLabel")}
+            <Dropdown
+              className="dropdown-block"
+              value={forkProvider}
+              onChange={setForkProvider}
+              options={[
+                {
+                  value: "",
+                  label: forkProviderResolved
+                    ? t("projectDialog.detectFromUrlWithProvider", { provider: forkProviderResolved === "github" ? "GitHub" : "GitLab" })
+                    : t("projectDialog.detectFromUrl"),
+                },
+                { value: "github", label: "GitHub" },
+                { value: "gitlab", label: "GitLab" },
+              ]}
+            />
+            {!forkProviderResolved && (
+              <span className="ssh-optional-hint">
+                {t("projectDialog.hostTypeHint")}
+              </span>
+            )}
+          </label>
+        )}
+
+        {needsForkCliInstall && forkCli && (
+          <div className="tex-install-banner" role="status">
+            <span className="tex-install-banner-text">
+              {t("projectDialog.forkCliMissingPre")} <code>{forkCli.bin}</code> {t("projectDialog.forkCliMissingMid1")}{" "}
+              <code>{forkCli.bin} auth login</code>{t("projectDialog.forkCliMissingPost")}{" "}
+              {forkProviderResolved === "github" ? "GitHub" : "GitLab"}.
+            </span>
+            <code className="ollama-install-cmd">{forkCli.cmd}</code>
+            <button
+              type="button"
+              className="ollama-action-btn primary"
+              title={t("projectDialog.runInTerminalTitle")}
+              onClick={() =>
+                runInstallInTab(
+                  t("projectDialog.installBinLabel", { bin: forkCli.bin }),
+                  forkCli.cmd,
+                  IS_WINDOWS ? "default" : "bash",
+                )
+              }
+            >
+              {t("projectDialog.runInTerminalBtn")}
+            </button>
+          </div>
+        )}
+
         {(kind === "new" || isCloneImport) && !isRemoteProject && (
           <label>
-            Location
+            {t("projectDialog.locationLabel")}
             <div className="folder-picker-row">
-              <span title={projectsRoot}>{projectsRoot || "No folder selected"}</span>
-              <button type="button" onClick={chooseLocation}>Browse...</button>
+              <span title={projectsRoot}>{projectsRoot || t("projectDialog.noFolderSelected")}</span>
+              <button type="button" onClick={chooseLocation}>{t("projectDialog.browseBtn")}</button>
             </div>
             {isCloneImport && (
               <span className="ssh-optional-hint">
-                The repository is cloned into {safeName || "<name>"} here.
+                {isForkImport ? t("projectDialog.cloneDestYourFork") : t("projectDialog.cloneDestTheRepo")} {t("projectDialog.cloneDestMid")}{" "}
+                {safeName || "<name>"} {t("projectDialog.cloneDestPost")}
               </span>
             )}
           </label>
@@ -642,16 +766,16 @@ export function ProjectDialog({
             value={gitType}
             onChange={setGitType}
             options={[
-              { value: "none", label: "No git (plain files, no repo)" },
-              { value: "local", label: "Local repo only (not pushed anywhere)" },
-              { value: "remote-private", label: "Push to GitHub/GitLab · private" },
-              { value: "remote-public", label: "Push to GitHub/GitLab · public" },
+              { value: "none", label: t("projectDialog.gitNoneOpt") },
+              { value: "local", label: t("projectDialog.gitLocalOpt") },
+              { value: "remote-private", label: t("projectDialog.gitRemotePrivateOpt") },
+              { value: "remote-public", label: t("projectDialog.gitRemotePublicOpt") },
             ]}
           />
           <span className="ssh-optional-hint">
-            “Push to GitHub/GitLab” publishes the repo to a hosting service
+            {t("projectDialog.gitHostingHintPre")}
             {isRemoteProject
-              ? " — unrelated to the SSH host above, which is just where the project files live."
+              ? ` ${t("projectDialog.gitHostingHintRemoteSuffix")}`
               : "."}
           </span>
         </label>
@@ -659,11 +783,10 @@ export function ProjectDialog({
         {needsGitConnection && (
           <div className="git-connect-notice" role="status">
             <span>
-              No GitHub/GitLab connection set up in Eldrun yet. Add an access
-              token in Settings → Git Hosting so the repo can be published.
+              {t("projectDialog.needsGitConnectionText")}
             </span>
             <button type="button" onClick={openGitHostingSettings}>
-              Set up GitHub/GitLab…
+              {t("projectDialog.setUpGitHostingBtn")}
             </button>
           </div>
         )}
@@ -671,34 +794,33 @@ export function ProjectDialog({
         {needsGitInstall && (
           <div className="tex-install-banner" role="status">
             <span className="tex-install-banner-text">
-              No git found on this machine — install it to create a git-backed
-              project{isCloneImport ? " or clone a repository" : ""}.
+              {t("projectDialog.needsGitInstallTextPre")}{isCloneImport ? t("projectDialog.needsGitInstallOrClone") : ""}.
             </span>
             <code className="ollama-install-cmd">{GIT_INSTALL_CMD}</code>
             <button
               type="button"
               className="ollama-action-btn primary"
-              title="Run this command in a new terminal tab"
+              title={t("projectDialog.runInTerminalTitle")}
               onClick={() =>
-                runInstallInTab(GIT_INSTALL_LABEL, GIT_INSTALL_CMD, IS_WINDOWS ? "default" : "bash")
+                runInstallInTab(t("projectDialog.installGitLabel"), GIT_INSTALL_CMD, IS_WINDOWS ? "default" : "bash")
               }
             >
-              Run in terminal
+              {t("projectDialog.runInTerminalBtn")}
             </button>
           </div>
         )}
 
         {kind === "import" && !isRemoteProject && importSource === "folder" && (
           <label>
-            Import mode
+            {t("projectDialog.importModeLabel")}
             <Dropdown
               className="dropdown-block"
               value={mode}
               onChange={setMode}
               options={[
-                { value: "keep", label: "Keep location (register in place)" },
-                { value: "copy", label: "Copy into Eldrun's projects folder" },
-                { value: "move", label: "Move into Eldrun's projects folder" },
+                { value: "keep", label: t("projectDialog.modeKeepOpt") },
+                { value: "copy", label: t("projectDialog.modeCopyOpt") },
+                { value: "move", label: t("projectDialog.modeMoveOpt") },
               ]}
             />
           </label>
@@ -706,7 +828,7 @@ export function ProjectDialog({
 
         {kind === "import" && isRemoteProject && (
           <div className="project-dialog-path">
-            Remote import keeps the folder in place on the remote host.
+            {t("projectDialog.remoteImportKeepsFolder")}
           </div>
         )}
 
@@ -716,7 +838,7 @@ export function ProjectDialog({
             checked={skipScaffold}
             onChange={(e) => setSkipScaffold(e.target.checked)}
           />
-          Skip scaffolding (do not generate any scaffold files)
+          {t("projectDialog.skipScaffoldLabel")}
         </label>
 
         {/* The scaffold preview reads the source folder off the disk, so it only
@@ -724,19 +846,19 @@ export function ProjectDialog({
             scaffold files are still written after the clone (unless skipped);
             they just can't be previewed or agent-filled from here. */}
         {kind === "import" && !isRemoteProject && importSource === "folder" && !skipScaffold && (
-          <div className="scaffold-popover" role="group" aria-label="Import scaffold guidance">
-            <div className="scaffold-popover-title">Import guidance</div>
+          <div className="scaffold-popover" role="group" aria-label={t("projectDialog.scaffoldGuidanceAria")}>
+            <div className="scaffold-popover-title">{t("projectDialog.importGuidanceTitle")}</div>
             <ol className="scaffold-steps">
-              <li>Select the source folder and project metadata.</li>
+              <li>{t("projectDialog.stepSelectSource")}</li>
               <li>
                 {mode === "keep"
-                  ? "Register the project in its current location."
+                  ? t("projectDialog.stepRegisterKeep")
                   : mode === "copy"
-                    ? "Copy the project to the Eldrun projects folder after manual validation."
-                    : "Move the project to the Eldrun projects folder after manual validation."}
+                    ? t("projectDialog.stepCopyValidate")
+                    : t("projectDialog.stepMoveValidate")}
               </li>
-              <li>Create missing scaffold files and acknowledge files already there.</li>
-              <li>Write project.json and add the project to the switcher.</li>
+              <li>{t("projectDialog.stepCreateScaffold")}</li>
+              <li>{t("projectDialog.stepWriteProjectJson")}</li>
             </ol>
 
             {mode !== "keep" && (
@@ -746,15 +868,15 @@ export function ProjectDialog({
                   checked={manualValidationConfirmed}
                   onChange={(e) => setManualValidationConfirmed(e.target.checked)}
                 />
-                I manually validated the {mode} destination and source folder.
+                {mode === "copy" ? t("projectDialog.manualValidationCopy") : t("projectDialog.manualValidationMove")}
               </label>
             )}
 
             <label className="scaffold-fill-all-row">
-              <span>Fill all</span>
+              <span>{t("projectDialog.fillAllLabel")}</span>
               <Dropdown
                 value=""
-                placeholder={missingFillableScaffoldCount === 0 ? "No missing files" : "Choose fill mode..."}
+                placeholder={missingFillableScaffoldCount === 0 ? t("projectDialog.noMissingFiles") : t("projectDialog.chooseFillMode")}
                 disabled={missingFillableScaffoldCount === 0}
                 onChange={(v) => {
                   if (v) applyScaffoldFillAll(v);
@@ -780,13 +902,13 @@ export function ProjectDialog({
                       options={SCAFFOLD_FILL_OPTIONS}
                     />
                   ) : (
-                    <span className="scaffold-row-status">Status only</span>
+                    <span className="scaffold-row-status">{t("projectDialog.statusOnly")}</span>
                   )}
                 </div>
               ))}
-              {!sourceDir && <div className="scaffold-empty">Choose a source folder to preview scaffold files.</div>}
+              {!sourceDir && <div className="scaffold-empty">{t("projectDialog.chooseSourceToPreview")}</div>}
               {sourceDir && !scaffoldPreview.length && !scaffoldError && (
-                <div className="scaffold-empty">Loading scaffold preview...</div>
+                <div className="scaffold-empty">{t("projectDialog.loadingScaffoldPreview")}</div>
               )}
               {scaffoldError && <div className="project-dialog-error">{scaffoldError}</div>}
             </div>
@@ -799,8 +921,8 @@ export function ProjectDialog({
               <span className="remote-chosen-summary">
                 <span className="remote-chosen-text">
                   {kind === "new"
-                    ? `Remote destination: ${joinRemotePath(remoteChosenPath, safeName || "<name>")}`
-                    : `Remote location: ${remoteChosenPath}`}
+                    ? t("projectDialog.remoteDestinationLabel", { path: joinRemotePath(remoteChosenPath, safeName || "<name>") })
+                    : t("projectDialog.remoteLocationLabel", { path: remoteChosenPath })}
                 </span>
                 {/* Wrong folder committed at the browse step? Jump straight back
                     to it (the browser keeps its place) to pick another — without
@@ -813,20 +935,20 @@ export function ProjectDialog({
                   onClick={goBack}
                   title={
                     winManual
-                      ? "Go back to change the remote path"
-                      : "Go back to the remote browser to pick a different folder"
+                      ? t("projectDialog.changeFolderTitleWinManual")
+                      : t("projectDialog.changeFolderTitleBrowse")
                   }
                 >
-                  Change folder
+                  {t("projectDialog.changeFolderBtn")}
                 </button>
               </span>
             ) : (
               ""
             )
           ) : kind === "new" || isCloneImport || mode !== "keep" ? (
-            targetDir ? `Destination: ${targetDir}` : ""
+            targetDir ? t("projectDialog.destinationLabel", { path: targetDir }) : ""
           ) : sourceDir ? (
-            `Location: ${sourceDir}`
+            t("projectDialog.locationColonLabel", { path: sourceDir })
           ) : (
             ""
           )}
@@ -836,27 +958,31 @@ export function ProjectDialog({
         )}
 
         <div className="project-dialog-actions">
-          <button type="button" onClick={onClose}>Cancel</button>
+          <button type="button" onClick={onClose}>{t("common.cancel")}</button>
           {isRemoteProject && stepIdx > 0 && (
             <button type="button" disabled={busy} onClick={goBack}>
-              Back
+              {t("common.back")}
             </button>
           )}
           {isRemoteProject && step !== "details" ? (
             <button type="button" disabled={!canNext || busy} onClick={goNext}>
-              Next
+              {t("common.next")}
             </button>
           ) : (
             <button type="button" disabled={!canSubmit || busy} onClick={() => void submit()}>
               {cloning
-                ? "Cloning..."
+                ? isForkImport
+                  ? t("projectDialog.forking")
+                  : t("projectDialog.cloningEllipsis")
                 : busy
-                  ? "Working..."
+                  ? t("projectDialog.working")
                   : kind === "new"
-                    ? "Create"
-                    : isCloneImport
-                      ? "Clone & Import"
-                      : "Import"}
+                    ? t("projectDialog.create")
+                    : isForkImport
+                      ? t("projectDialog.forkAndImport")
+                      : isCloneImport
+                        ? t("projectDialog.cloneAndImport")
+                        : t("projectDialog.import")}
             </button>
           )}
         </div>

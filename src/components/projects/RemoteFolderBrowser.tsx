@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { Dropdown } from "../common/Dropdown";
 import { fileIcon, folderIcon } from "../../lib/viewers/fileUtils";
 import type { RemoteEntry } from "../../types";
+import { useT } from "../../lib/i18n";
 
 /** Extension (".py", ".md", …) of a remote listing entry, for picking its
  *  file-type icon the same way the right-hand file tree does. A leading-dot
@@ -33,7 +34,7 @@ export function RemoteFolderBrowser({
   onUseFolder,
   onCreateFolder,
   footer,
-  useFolderLabel = "Use this folder",
+  useFolderLabel,
 }: {
   path: string;
   entries: RemoteEntry[];
@@ -50,6 +51,7 @@ export function RemoteFolderBrowser({
   footer: ReactNode;
   useFolderLabel?: string;
 }) {
+  const t = useT();
   const [newFolderName, setNewFolderName] = useState("");
   const submitNewFolder = () => {
     const name = newFolderName.trim();
@@ -59,9 +61,9 @@ export function RemoteFolderBrowser({
   };
 
   return (
-    <div className="remote-browser" role="group" aria-label="Remote folder browser">
+    <div className="remote-browser" role="group" aria-label={t("remoteBrowser.ariaLabel")}>
       <div className="remote-browser-header">
-        <button type="button" className="remote-up-btn" onClick={onGoUp} title="Go up">
+        <button type="button" className="remote-up-btn" onClick={onGoUp} title={t("remoteBrowser.goUp")}>
           ..
         </button>
         <span className="remote-breadcrumb" title={path}>
@@ -71,8 +73,8 @@ export function RemoteFolderBrowser({
           <Dropdown
             className="vpn-config-recent"
             value=""
-            placeholder="Recently used…"
-            title="Jump to a previously-used remote path for this host"
+            placeholder={t("remoteBrowser.recentlyUsed")}
+            title={t("remoteBrowser.jumpTitle")}
             onChange={(v) => {
               if (v) onJumpPath(v);
             }}
@@ -80,14 +82,14 @@ export function RemoteFolderBrowser({
           />
         )}
         <button type="button" onClick={onUseFolder}>
-          {useFolderLabel}
+          {useFolderLabel ?? t("remoteBrowser.useThisFolder")}
         </button>
       </div>
       <div className="remote-newfolder">
         <input
           type="text"
           className="remote-newfolder-input"
-          placeholder="New folder name…"
+          placeholder={t("remoteBrowser.newFolderPlaceholder")}
           value={newFolderName}
           onChange={(e) => setNewFolderName(e.target.value)}
           onKeyDown={(e) => {
@@ -102,16 +104,16 @@ export function RemoteFolderBrowser({
           type="button"
           onClick={submitNewFolder}
           disabled={busy || !newFolderName.trim()}
-          title="Create a new folder here"
+          title={t("remoteBrowser.addFolderTitle")}
         >
-          + Add folder
+          {t("remoteBrowser.addFolder")}
         </button>
       </div>
       <div className="remote-list">
-        {busy && <div className="scaffold-empty">Listing...</div>}
+        {busy && <div className="scaffold-empty">{t("remoteBrowser.listing")}</div>}
         {!busy && error && <div className="project-dialog-error">{error}</div>}
         {!busy && !error && entries.length === 0 && (
-          <div className="scaffold-empty">Empty folder.</div>
+          <div className="scaffold-empty">{t("remoteBrowser.emptyFolder")}</div>
         )}
         {!busy &&
           !error &&

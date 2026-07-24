@@ -4,9 +4,10 @@ import { createPortal } from "react-dom";
 import { useTimerStore } from "../../stores/timer";
 import { useEnergySaver, saverInterval } from "../../stores/power";
 import { ActivityCalendar } from "../projects/ActivityCalendar";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
-function formatTime(secs: number): string {
-  if (secs < 60) return "< 1m";
+function formatTime(t: (key: TranslationKey) => string, secs: number): string {
+  if (secs < 60) return t("projectHoverCard.timeUnderMinute");
   const h = Math.floor(secs / 3600);
   const m = Math.floor((secs % 3600) / 60);
   if (h > 0) return `${h}h ${m}m`;
@@ -14,6 +15,7 @@ function formatTime(secs: number): string {
 }
 
 function GlobalActivityWindow({ onClose }: { onClose: () => void }) {
+  const t = useT();
   const [data, setData] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
 
@@ -28,12 +30,12 @@ function GlobalActivityWindow({ onClose }: { onClose: () => void }) {
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="activity-window" onMouseDown={(e) => e.stopPropagation()}>
         <div className="activity-window-header">
-          <span className="activity-window-title">Global Activity</span>
+          <span className="activity-window-title">{t("appTimer.globalActivityTitle")}</span>
           <button className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <div className="activity-window-body">
           {loading ? (
-            <div className="activity-loading">Loading…</div>
+            <div className="activity-loading">{t("common.loading")}</div>
           ) : (
             <ActivityCalendar data={data} />
           )}
@@ -45,27 +47,28 @@ function GlobalActivityWindow({ onClose }: { onClose: () => void }) {
 }
 
 export function AppTimerDisplay() {
+  const t = useT();
   const paused = useTimerStore((s) => s.paused);
   const toggle = useTimerStore((s) => s.toggle);
-  const [displayText, setDisplayText] = useState("< 1m");
+  const [displayText, setDisplayText] = useState(t("projectHoverCard.timeUnderMinute"));
   const [showActivity, setShowActivity] = useState(false);
   const energySaver = useEnergySaver();
 
   useEffect(() => {
     const update = () => {
-      setDisplayText(formatTime(useTimerStore.getState().getAppSecs()));
+      setDisplayText(formatTime(t, useTimerStore.getState().getAppSecs()));
     };
     update();
     if (paused) return;
     const id = setInterval(update, saverInterval(1000, energySaver));
     return () => clearInterval(id);
-  }, [paused, energySaver]);
+  }, [paused, energySaver, t]);
 
   return (
     <>
       <button
         className={`app-timer-btn${paused ? " paused" : ""}`}
-        title={`Today: ${displayText}${paused ? "\nPaused — click to resume" : "\nClick to pause • Right-click for activity"}`}
+        title={`${t("projectHoverCard.todayPrefix")} ${displayText}\n${paused ? t("appTimer.pausedResumeHint") : t("appTimer.clickPauseHint")}`}
         onClick={() => void toggle()}
         onContextMenu={(e) => {
           e.preventDefault();

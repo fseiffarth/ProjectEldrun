@@ -16,6 +16,7 @@ import {
   fmtSize,
   fmtModified,
 } from "../../lib/viewers/fileUtils";
+import { useT } from "../../lib/i18n";
 
 /**
  * A node in the 3D cloud. In the project cloud it's a project or a box; once a
@@ -139,6 +140,7 @@ interface BlobMenu {
  * depth-shaded (front bright, back dim) so the cloud reads as a solid sphere.
  */
 export function ProjectBlobPane() {
+  const t = useT();
   const projects = useProjectsStore((s) => s.projects);
   const activeId = useProjectsStore((s) => s.activeId);
   const setActive = useProjectsStore((s) => s.setActive);
@@ -685,7 +687,7 @@ export function ProjectBlobPane() {
   if (nodes.length === 0 && !focus) {
     return (
       <div className="blob-viewport blob-empty">
-        <div className="blob-empty-card">No projects yet — create one to populate the cloud.</div>
+        <div className="blob-empty-card">{t("blob.noProjectsYet")}</div>
       </div>
     );
   }
@@ -699,7 +701,7 @@ export function ProjectBlobPane() {
     >
       {focus && (
         <div className="blob-breadcrumb" onPointerDown={(e) => e.stopPropagation()}>
-          <button className="blob-crumb blob-crumb-exit" title="Back to projects" onClick={exitToCloud}>
+          <button className="blob-crumb blob-crumb-exit" title={t("blob.backToProjects")} onClick={exitToCloud}>
             ✕
           </button>
           <button className="blob-crumb" onClick={() => jumpTo("")}>
@@ -715,7 +717,7 @@ export function ProjectBlobPane() {
                 </Fragment>
               ))
             : null}
-          {entriesLoading && <span className="blob-crumb-loading">loading…</span>}
+          {entriesLoading && <span className="blob-crumb-loading">{t("blob.loadingLower")}</span>}
         </div>
       )}
       {!focus && (
@@ -723,29 +725,29 @@ export function ProjectBlobPane() {
           <button
             className={viewMode === "sphere" ? "is-active" : ""}
             onClick={() => selectView("sphere")}
-            title="3D project sphere"
+            title={t("blob.sphereViewTitle")}
           >
-            Sphere
+            {t("blob.sphereView")}
           </button>
           <button
             className={viewMode === "pie" ? "is-active" : ""}
             onClick={() => selectView("pie")}
-            title="Time-tracked pie chart"
+            title={t("blob.pieViewTitle")}
           >
-            Pie
+            {t("blob.pieView")}
           </button>
         </div>
       )}
       <div className="blob-hint">
         {focus
-          ? "Click a folder to enter · click a file to open · center or Esc to go back"
+          ? t("blob.hintFocused")
           : isPie
-            ? "Slice size = time tracked · click to open a project · right-click for menu"
-            : "Drag to orbit · scroll to zoom · click to explore files · double-click to open · right-click for menu"}
+            ? t("blob.hintPie")
+            : t("blob.hintCloud")}
       </div>
       {isPie ? (
         pieSlices.length === 0 ? (
-          <div className="blob-pie-empty">No projects to chart yet.</div>
+          <div className="blob-pie-empty">{t("blob.noProjectsToChart")}</div>
         ) : (
           <div className="blob-pie-stage">
             <svg className="blob-pie-svg" viewBox="0 0 320 320" preserveAspectRatio="xMidYMid meet">
@@ -783,7 +785,7 @@ export function ProjectBlobPane() {
                 );
               })}
               <text className="blob-pie-center" x="160" y="153" textAnchor="middle">
-                {projects.length} {projects.length === 1 ? "project" : "projects"}
+                {t(projects.length === 1 ? "blob.projectCountOne" : "blob.projectCountMany", { count: projects.length })}
               </text>
               <text className="blob-pie-center-sub" x="160" y="173" textAnchor="middle">
                 {fmtWorked(pieSlices.reduce((a, s) => a + s.secs, 0))}
@@ -883,7 +885,7 @@ export function ProjectBlobPane() {
               void setActive(menu.project.id);
             }}
           >
-            Open
+            {t("blob.open")}
           </button>
           <button
             onClick={() => {
@@ -892,7 +894,7 @@ export function ProjectBlobPane() {
               setCatProject(p);
             }}
           >
-            Categories…
+            {t("blob.categoriesEllipsis")}
           </button>
           {menu.project.status === "inactive" ? (
             <button
@@ -901,7 +903,7 @@ export function ProjectBlobPane() {
                 void activateProject(menu.project.id);
               }}
             >
-              Activate
+              {t("blob.activate")}
             </button>
           ) : (
             <button
@@ -910,7 +912,7 @@ export function ProjectBlobPane() {
                 void deactivateProject(menu.project.id);
               }}
             >
-              Inactivate
+              {t("blob.inactivate")}
             </button>
           )}
         </div>,
@@ -935,12 +937,12 @@ export function ProjectBlobPane() {
                 {hover.node.kind === "center"
                   ? hover.node.rel
                     ? `/${hover.node.rel}`
-                    : "project root"
+                    : t("blob.projectRoot")
                   : `${hover.node.project.status} · ${fmtWorked(totals[hover.node.project.id])}`}
               </div>
               {hover.node.kind === "project" && (
                 <div className="blob-hover-desc">
-                  {hover.node.project.description?.trim() || "No description yet."}
+                  {hover.node.project.description?.trim() || t("blob.noDescriptionYet")}
                 </div>
               )}
               {hover.node.kind === "project" && projectCategories(hover.node.project).length > 0 && (
@@ -964,8 +966,8 @@ export function ProjectBlobPane() {
               )}
               <div className="blob-hover-hint">
                 {hover.node.kind === "center"
-                  ? "Click to go up · double-click to open · Esc to exit"
-                  : "Click to explore files · double-click to open"}
+                  ? t("blob.hintCenterUp")
+                  : t("blob.hintExploreOpen")}
               </div>
             </>
           )}
@@ -973,10 +975,12 @@ export function ProjectBlobPane() {
             <>
               <div className="blob-hover-title">{hover.node.box.name}</div>
               <div className="blob-hover-meta">
-                Box · {hover.node.box.member_ids.length} project
-                {hover.node.box.member_ids.length === 1 ? "" : "s"}
+                {t(
+                  hover.node.box.member_ids.length === 1 ? "blob.boxMetaOne" : "blob.boxMetaMany",
+                  { count: hover.node.box.member_ids.length },
+                )}
               </div>
-              <div className="blob-hover-hint">Double-click to open</div>
+              <div className="blob-hover-hint">{t("blob.doubleClickToOpen")}</div>
             </>
           )}
           {hover.node.kind === "file" && (
@@ -984,15 +988,15 @@ export function ProjectBlobPane() {
               <div className="blob-hover-title">{hover.node.entry.name}</div>
               <div className="blob-hover-meta">
                 {hover.node.entry.is_dir
-                  ? "Folder"
+                  ? t("blob.folder")
                   : `${
                       hover.node.entry.extension
-                        ? `${hover.node.entry.extension.replace(/^\./, "").toUpperCase()} file`
-                        : "File"
+                        ? t("blob.extFile", { ext: hover.node.entry.extension.replace(/^\./, "").toUpperCase() })
+                        : t("blob.file")
                     } · ${fmtSize(hover.node.entry.size)}`}
               </div>
               <div className="blob-hover-hint">
-                {hover.node.entry.is_dir ? "Click to enter folder" : "Click to open"} ·{" "}
+                {hover.node.entry.is_dir ? t("blob.clickToEnterFolder") : t("blob.clickToOpen")} ·{" "}
                 {fmtModified(hover.node.entry.modified_secs)}
               </div>
             </>

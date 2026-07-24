@@ -68,7 +68,15 @@ pub struct ScontrolPaths {
 /// projects run it over the pooled ControlMaster (the primary, or a named worker);
 /// a local project (a login node with SLURM) runs it through the local shell with
 /// the project dir as cwd. `host_id` defaults to the primary.
-fn run_slurm_script(project_dir: &str, host_id: &str, script: &str) -> Result<String, String> {
+///
+/// `pub(crate)` because `commands::hpc_ws` (workspaces) runs *its* tooling at the
+/// exact same place a job is submitted — one dispatch, so the two can never
+/// disagree about which machine "the project's host" is.
+pub(crate) fn run_slurm_script(
+    project_dir: &str,
+    host_id: &str,
+    script: &str,
+) -> Result<String, String> {
     if let Some(primary) = remote_target_for_dir(project_dir) {
         let target = if host_id == PRIMARY_HOST {
             primary
@@ -298,13 +306,22 @@ pub async fn slurm_queue(
 
 /// Resolve a job's stdout path via `scontrol` — for **Watch** on a job Eldrun did
 /// not submit this session (so the session store has no path for it). Returns the
-/// absolute `StdOut`, or a `slurm-<id>.out` fallback in `WorkDir` when scontrol is
-/// silent (a job that already finished). The id is validated numeric.
+/// absolute `StdOut`, or a `slurm-<id>.out` fallback when scontrol is silent (a
+/// job that already finished). The id is validated numeric.
+///
+/// `log_dir` is the project's recorded HPC log folder
+/// (`Project.hpc.logs_dir`, `docs/hpc_workspace_plan.md`): when the pipeline
+/// routes `--output` into the home anchor, `<WorkDir>/slurm-<id>.out` is simply
+/// the wrong guess, and Watch on an older job would tail a file that never
+/// existed. Given one, it wins over `WorkDir` — but only for the *fallback*;
+/// whatever `scontrol` states still beats both, since that is what SLURM
+/// actually used.
 #[tauri::command]
 pub async fn slurm_job_out(
     project_dir: String,
     job_id: String,
     host_id: Option<String>,
+    log_dir: Option<String>,
 ) -> Result<String, String> {
     run_off_thread(move || {
         let host = host_id.as_deref().unwrap_or(PRIMARY_HOST);
@@ -315,10 +332,14 @@ pub async fn slurm_job_out(
             run_slurm_script(&project_dir, host, &format!("scontrol show job {job_id}"))?;
         let paths = parse_scontrol_paths(&stdout);
         if !paths.out_file.is_empty() {
-            Ok(paths.out_file)
-        } else {
-            Ok(default_out_file(&paths.work_dir, &job_id))
+            return Ok(paths.out_file);
         }
+        let dir = log_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .unwrap_or(&paths.work_dir);
+        Ok(default_out_file(dir, &job_id))
     })
     .await
 }

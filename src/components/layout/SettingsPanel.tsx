@@ -54,11 +54,11 @@ import type { StoredVpnConfig } from "../../types";
 // useKeyboard); on macOS the Meta key is reserved for Cmd shortcuts, so the
 // lone-key toggle is disabled — there the panels stay reachable via the
 // cursor-to-edge reveal. Keep the copy honest per OS.
-const WORKSPACE_LAYOUT_INTRO = IS_MAC
-  ? "Eldrun keeps your AI-assisted development in a single window. Push your cursor to a screen edge to reveal the panels, and press F11 for fullscreen."
-  : `Eldrun keeps your AI-assisted development in a single window. Press ${
-      IS_WINDOWS ? "F9" : "Super"
-    } while Eldrun is focused to toggle the panels, and F11 for fullscreen.`;
+function workspaceLayoutIntro(t: ReturnType<typeof useT>): string {
+  return IS_MAC
+    ? t("help.workspaceLayout.introMac")
+    : t("help.workspaceLayout.introOther", { key: IS_WINDOWS ? "F9" : "Super" });
+}
 
 /** A toggle with an explanatory paragraph, as one card (matches .settings-nav-item
  *  / .lesson-item) instead of a bare switch-row bleeding into a trailing paragraph. */
@@ -85,49 +85,49 @@ function ToggleCard({
 }
 
 interface HelpItem {
-  term: string;
-  desc: string;
+  termKey: TranslationKey;
+  descKey: TranslationKey;
 }
 
 interface HelpSection {
-  title: string;
-  intro?: string;
+  titleKey: TranslationKey;
+  hasIntro?: boolean;
   items: HelpItem[];
 }
 
 const HELP_SECTIONS: HelpSection[] = [
   {
-    title: "Workspace layout",
-    intro: WORKSPACE_LAYOUT_INTRO,
+    titleKey: "help.workspaceLayout.title",
+    hasIntro: true,
     items: [
-      { term: "Root terminal (▣)", desc: "The control terminal that always lives in Eldrun's root folder, independent of any project." },
-      { term: "Project pills", desc: "One pill per active project in the project switcher. Click to switch; each project keeps its own terminal and tabs. Drag pills to reorder them." },
-      { term: "Center panel & tabs", desc: "The active project's terminals. Right-click the tab bar to add a Claude/Codex/Gemini agent or a plain shell, rename, or close tabs. Drag tabs to reorder." },
-      { term: "Right file panel", desc: "A file-tree overlay for the active project. Open files, rename, and toggle hidden file types. The panel remembers the last folder per project." },
+      { termKey: "help.workspaceLayout.item1.term", descKey: "help.workspaceLayout.item1.desc" },
+      { termKey: "help.workspaceLayout.item2.term", descKey: "help.workspaceLayout.item2.desc" },
+      { termKey: "help.workspaceLayout.item3.term", descKey: "help.workspaceLayout.item3.desc" },
+      { termKey: "help.workspaceLayout.item4.term", descKey: "help.workspaceLayout.item4.desc" },
     ],
   },
   {
-    title: "Projects",
+    titleKey: "help.projects.title",
     items: [
-      { term: "Add (+)", desc: "Create a New Project (scaffolds files and a git repo in Eldrun's projects folder) or Import an existing folder without touching its contents." },
-      { term: "Search inactive", desc: "The search box finds projects that aren't currently open; pick one to activate its pill and terminal." },
-      { term: "Remote (SSH) projects", desc: "Projects on a remote host are sshfs-mounted locally and behave like any other project. Requires sshfs/FUSE installed." },
-      { term: "Tasks", desc: "Right-click a tab to set, complete, or clear an agent task. Tasks persist in the project's project.json and can seed a new agent's prompt." },
+      { termKey: "help.projects.item1.term", descKey: "help.projects.item1.desc" },
+      { termKey: "help.projects.item2.term", descKey: "help.projects.item2.desc" },
+      { termKey: "help.projects.item3.term", descKey: "help.projects.item3.desc" },
+      { termKey: "help.projects.item4.term", descKey: "help.projects.item4.desc" },
     ],
   },
   {
-    title: "AI & terminals",
+    titleKey: "help.aiTerminals.title",
     items: [
-      { term: "Agents", desc: "Open an agent (claude, codex, gemini, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) or a plain shell from the + menu on the tab bar. Missing commands fall back to a shell; closed agents respawn." },
-      { term: "Ollama models", desc: "When Ollama is installed, the gear menu shows local models. Ctrl+K opens the local-model prompt dialog for the active context." },
+      { termKey: "help.aiTerminals.item1.term", descKey: "help.aiTerminals.item1.desc" },
+      { termKey: "help.aiTerminals.item2.term", descKey: "help.aiTerminals.item2.desc" },
     ],
   },
   {
-    title: "Settings & extras",
+    titleKey: "help.settingsExtras.title",
     items: [
-      { term: "Settings (⚙)", desc: "Theme, Git hosting profile/token, workspace management, background scripts, and debug mode." },
-      { term: "Workspace integration", desc: "Per-project KDE/X11 virtual-desktop isolation (Linux only): each project's launched windows park on their own desktop." },
-      { term: "Time tracking", desc: "Eldrun records active session time so you can see how long you spend per project." },
+      { termKey: "help.settingsExtras.item1.term", descKey: "help.settingsExtras.item1.desc" },
+      { termKey: "help.settingsExtras.item2.term", descKey: "help.settingsExtras.item2.desc" },
+      { termKey: "help.settingsExtras.item3.term", descKey: "help.settingsExtras.item3.desc" },
     ],
   },
 ];
@@ -139,6 +139,7 @@ const HELP_SECTIONS: HelpSection[] = [
  * clears an override back to its built-in default.
  */
 function ShortcutsSettings({ onBack }: { onBack: () => void }) {
+  const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const overrides = (settings?.keyboard_shortcuts ?? {}) as ShortcutMap;
   const [capturing, setCapturing] = useState<ShortcutAction | null>(null);
@@ -183,13 +184,10 @@ function ShortcutsSettings({ onBack }: { onBack: () => void }) {
   return (
     <>
       <div className="settings-title-row">
-        <h2>Keyboard Shortcuts</h2>
-        <button type="button" onClick={onBack}>Back</button>
+        <h2>{t("nav.shortcuts.title")}</h2>
+        <button type="button" onClick={onBack}>{t("common.back")}</button>
       </div>
-      <p className="settings-help">
-        Click a shortcut, then press the new key combination. F11 (OS fullscreen)
-        and Escape (exit fullscreen) are fixed and cannot be rebound.
-      </p>
+      <p className="settings-help">{t("shortcuts.help")}</p>
       <div className="settings-list">
         {SHORTCUT_DEFS.map((def) => {
           const active = capturing === def.action;
@@ -202,18 +200,18 @@ function ShortcutsSettings({ onBack }: { onBack: () => void }) {
                 type="button"
                 className={`shortcut-capture-btn${active ? " capturing" : ""}`}
                 onClick={() => setCapturing(active ? null : def.action)}
-                title="Click, then press a key combination"
+                title={t("shortcuts.captureTitle")}
               >
-                {active ? "Press keys…" : chordLabel(effective)}
+                {active ? t("shortcuts.pressKeys") : chordLabel(effective)}
               </button>
               <button
                 type="button"
                 className="settings-back-btn"
                 disabled={!isCustom}
                 onClick={() => reset(def.action)}
-                title="Reset to default"
+                title={t("shortcuts.resetTitle")}
               >
-                Reset
+                {t("common.reset")}
               </button>
             </div>
           );
@@ -229,6 +227,7 @@ function ShortcutsSettings({ onBack }: { onBack: () => void }) {
  * settings) and persists on blur / Enter, same as it did inline.
  */
 function GitHostingSettings({ onBack }: { onBack: () => void }) {
+  const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const [gitProfileUrl, setGitProfileUrl] = useState(settings?.git_profile_url ?? "");
   const [gitToken, setGitToken] = useState(settings?.git_token ?? "");
@@ -249,18 +248,15 @@ function GitHostingSettings({ onBack }: { onBack: () => void }) {
   return (
     <>
       <div className="settings-title-row">
-        <h2>Git Hosting</h2>
-        <button type="button" onClick={onBack}>Back</button>
+        <h2>{t("nav.git.title")}</h2>
+        <button type="button" onClick={onBack}>{t("common.back")}</button>
       </div>
-      <p className="settings-help">
-        Your hosting profile and access token are used when publishing a
-        project's repo to GitHub or GitLab.
-      </p>
+      <p className="settings-help">{t("git.help")}</p>
       <label className="settings-field">
-        Profile URL
+        {t("git.profileUrl")}
         <input
           value={gitProfileUrl}
-          placeholder="https://github.com/me or https://gitlab.com/me"
+          placeholder={t("git.profileUrlPlaceholder")}
           onChange={(e) => setGitProfileUrl(e.target.value)}
           onBlur={saveGitProfileUrl}
           onKeyDown={(e) => {
@@ -269,10 +265,10 @@ function GitHostingSettings({ onBack }: { onBack: () => void }) {
         />
       </label>
       <label className="settings-field">
-        Access token
+        {t("git.accessToken")}
         <PasswordInput
           value={gitToken}
-          placeholder="ghp_... / glpat-..."
+          placeholder={t("git.tokenPlaceholder")}
           onChange={(e) => setGitToken(e.target.value)}
           onBlur={saveGitToken}
           onKeyDown={(e) => {
@@ -290,6 +286,7 @@ function GitHostingSettings({ onBack }: { onBack: () => void }) {
  * up once a tunnel exists, which makes this opt-in easy to miss.
  */
 function VpnAutoConnectSettings({ onBack }: { onBack: () => void }) {
+  const t = useT();
   const { settings } = useSettingsStore();
   const armed = settings?.vpn_auto_connect ?? null;
   const headless = settings?.connections_headless ?? true;
@@ -319,22 +316,14 @@ function VpnAutoConnectSettings({ onBack }: { onBack: () => void }) {
   return (
     <>
       <div className="settings-title-row">
-        <h2>VPN Auto-Connect</h2>
-        <button type="button" onClick={onBack}>Back</button>
+        <h2>{t("nav.vpn.title")}</h2>
+        <button type="button" onClick={onBack}>{t("common.back")}</button>
       </div>
-      <p className="settings-help">
-        Arm one stored OpenVPN tunnel to come up automatically when Eldrun starts.
-        It reroutes this computer's traffic — not just Eldrun's — for as long as it
-        is up, so only one config can be armed at a time; arming another disarms the
-        first. Stored configs are added from a remote project's Connect dialog or the
-        VPN menu in the header.
-      </p>
+      <p className="settings-help">{t("vpn.autoConnectHelp")}</p>
       {configs === null ? (
-        <p className="settings-help">Loading…</p>
+        <p className="settings-help">{t("common.loading")}</p>
       ) : configs.length === 0 ? (
-        <div className="settings-empty">
-          No OpenVPN config stored yet. Add one from a remote project's Connect dialog.
-        </div>
+        <div className="settings-empty">{t("vpn.noConfig")}</div>
       ) : (
         <div className="settings-list">
           {configs.map((c) => {
@@ -352,13 +341,14 @@ function VpnAutoConnectSettings({ onBack }: { onBack: () => void }) {
                 </label>
                 {!eligible && !on && (
                   <p className="settings-help">
-                    Connect once with <b>Save passphrase</b> ticked to enable this —
-                    auto-connect never prompts.
+                    {t("vpn.needsSavedPre")} <b>{t("vpn.needsSavedBold")}</b>{" "}
+                    {t("vpn.needsSavedPost")}
                   </p>
                 )}
                 {on && (
                   <p className="settings-help">
-                    Starts with Eldrun{headless ? "" : " (waits in the root terminal)"}.
+                    {t("vpn.startsWithEldrun")}
+                    {headless ? "" : ` ${t("vpn.waitsInRootTerminal")}`}.
                   </p>
                 )}
               </div>
@@ -371,6 +361,7 @@ function VpnAutoConnectSettings({ onBack }: { onBack: () => void }) {
 }
 
 function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
+  const t = useT();
   const [items, setItems] = useState<ArchivedProject[] | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -470,19 +461,15 @@ function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
   return (
     <>
       <div className="settings-title-row">
-        <h2>Archived Projects</h2>
-        <button type="button" onClick={onBack}>Back</button>
+        <h2>{t("nav.archive.title")}</h2>
+        <button type="button" onClick={onBack}>{t("common.back")}</button>
       </div>
-      <p className="settings-help">
-        Deleted projects are kept here so you can restore them. Permanent deletion
-        removes the archived copy and its time-tracking history. A remote (SSH)
-        project's files on its host are never touched.
-      </p>
+      <p className="settings-help">{t("archive.help")}</p>
       {error && <div className="project-dialog-error">{error}</div>}
       {items === null ? (
-        <p className="settings-help">Loading…</p>
+        <p className="settings-help">{t("common.loading")}</p>
       ) : items.length === 0 ? (
-        <p className="settings-help">No archived projects.</p>
+        <p className="settings-help">{t("archive.empty")}</p>
       ) : (
         <ul className="archived-projects-list">
           {items.map((a) => {
@@ -492,54 +479,49 @@ function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
               <li key={a.id} className="archived-project-row">
                 <div className="archived-project-info">
                   <span className="archived-project-name">{a.name}</span>
-                  {a.remote && <span className="archived-project-tag">remote</span>}
+                  {a.remote && <span className="archived-project-tag">{t("archive.remoteTag")}</span>}
                   <span className="archived-project-date">{a.archived_at.slice(0, 10)}</span>
                 </div>
                 {armed ? (
                   <div className="archived-project-confirm-group">
                     {unsynced && unsynced.total > 0 && (
                       <p className="archived-project-warn">
-                        ⚠ {unsynced.verified ? (
-                          <>
-                            {unsynced.total} local commit{unsynced.total === 1 ? "" : "s"} on{" "}
-                            {unsynced.branches.map((b) => b.name).join(", ")} {unsynced.total === 1 ? "was" : "were"}{" "}
-                            never synced to the host and will be lost. The host's own files are unaffected.
-                          </>
-                        ) : (
-                          <>
-                            This mirror holds {unsynced.total} commit{unsynced.total === 1 ? "" : "s"} that could not
-                            be verified against the host; deleting discards the local copy. The host's own files are
-                            unaffected.
-                          </>
-                        )}
+                        ⚠ {unsynced.verified
+                          ? t(unsynced.total === 1 ? "archive.unsyncedVerifiedOne" : "archive.unsyncedVerifiedMany", {
+                              count: unsynced.total,
+                              branches: unsynced.branches.map((b) => b.name).join(", "),
+                            })
+                          : t(unsynced.total === 1 ? "archive.unsyncedUnverifiedOne" : "archive.unsyncedUnverifiedMany", {
+                              count: unsynced.total,
+                            })}
                       </p>
                     )}
                   <div className="archived-project-confirm">
                     <input
                       type="text"
                       autoFocus
-                      placeholder={`Type “${a.name}” to delete`}
+                      placeholder={t("archive.typeToDelete", { name: a.name })}
                       value={typed}
                       onChange={(e) => setTyped(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Escape") resetConfirm();
                       }}
                     />
-                    <button type="button" onClick={resetConfirm} disabled={rowBusy}>Cancel</button>
+                    <button type="button" onClick={resetConfirm} disabled={rowBusy}>{t("common.cancel")}</button>
                     <button
                       type="button"
                       className="danger"
                       disabled={rowBusy || typed.trim() !== a.name.trim()}
                       onClick={() => void deleteForever(a)}
                     >
-                      {rowBusy ? "Deleting…" : "Delete forever"}
+                      {rowBusy ? t("archive.deleting") : t("archive.deleteForever")}
                     </button>
                   </div>
                   </div>
                 ) : (
                   <div className="archived-project-actions">
                     <button type="button" disabled={rowBusy} onClick={() => void restore(a)}>
-                      {rowBusy ? "Restoring…" : "Restore"}
+                      {rowBusy ? t("archive.restoring") : t("archive.restore")}
                     </button>
                     <button
                       type="button"
@@ -547,7 +529,7 @@ function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
                       disabled={rowBusy}
                       onClick={() => armDelete(a)}
                     >
-                      Delete permanently…
+                      {t("archive.deletePermanently")}
                     </button>
                   </div>
                 )}
@@ -562,27 +544,27 @@ function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
             <input
               type="text"
               autoFocus
-              placeholder="Type “delete” to clear all"
+              placeholder={t("archive.typeDeleteAll")}
               value={clearTyped}
               onChange={(e) => setClearTyped(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Escape") { setClearing(false); setClearTyped(""); }
               }}
             />
-            <button type="button" onClick={() => { setClearing(false); setClearTyped(""); }}>Cancel</button>
+            <button type="button" onClick={() => { setClearing(false); setClearTyped(""); }}>{t("common.cancel")}</button>
             <button
               type="button"
               className="danger"
               disabled={busyId === "__all__" || clearTyped.trim().toLowerCase() !== "delete"}
               onClick={() => void clearAll()}
             >
-              {busyId === "__all__" ? "Clearing…" : "Clear archive"}
+              {busyId === "__all__" ? t("archive.clearing") : t("archive.clearArchive")}
             </button>
           </div>
         ) : (
           <div className="settings-link-row">
             <button type="button" className="danger" onClick={() => setClearing(true)}>
-              Clear archive…
+              {t("archive.clearArchiveEllipsis")}
             </button>
           </div>
         )
@@ -592,6 +574,7 @@ function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
 }
 
 function ScaffoldRepairPanel({ onBack }: { onBack: () => void }) {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [results, setResults] = useState<ProjectScaffoldRepair[] | null>(null);
@@ -612,26 +595,19 @@ function ScaffoldRepairPanel({ onBack }: { onBack: () => void }) {
   return (
     <>
       <div className="settings-title-row">
-        <h2>Repair Project Scaffold</h2>
-        <button type="button" onClick={onBack}>Back</button>
+        <h2>{t("nav.scaffoldRepair.title")}</h2>
+        <button type="button" onClick={onBack}>{t("common.back")}</button>
       </div>
-      <p className="settings-help">
-        Fills in any scaffold file (AGENTS.md, CLAUDE.md, .claude/settings.json, …)
-        or default .gitignore pattern that a project is missing — e.g. because it
-        was created before that file/pattern was added to the default scaffold.
-        Existing files are never overwritten; a pre-existing .gitignore only has
-        missing default lines appended. Runs across every managed project (local
-        directory or, for remote projects, their local mirror).
-      </p>
+      <p className="settings-help">{t("scaffoldRepair.help")}</p>
       {error && <div className="project-dialog-error">{error}</div>}
       <div className="settings-link-row">
         <button type="button" disabled={busy} onClick={() => void run()}>
-          {busy ? "Repairing…" : "Repair all projects now"}
+          {busy ? t("scaffoldRepair.running") : t("scaffoldRepair.runNow")}
         </button>
       </div>
       {results !== null && (
         results.length === 0 ? (
-          <p className="settings-help">Every project's scaffold is already up to date.</p>
+          <p className="settings-help">{t("scaffoldRepair.upToDate")}</p>
         ) : (
           <ul className="archived-projects-list">
             {results.map((r) => (
@@ -650,26 +626,25 @@ function ScaffoldRepairPanel({ onBack }: { onBack: () => void }) {
 }
 
 function HelpPanel({ onBack }: { onBack: () => void }) {
+  const t = useT();
   return (
     <>
       <div className="settings-title-row">
-        <h2>Eldrun Help</h2>
-        <button type="button" onClick={onBack}>Back</button>
+        <h2>{t("help.title")}</h2>
+        <button type="button" onClick={onBack}>{t("common.back")}</button>
       </div>
 
-      <p className="settings-help">
-        A quick guide to what each part of Eldrun does. Hover the toolbar buttons for shortcuts too.
-      </p>
+      <p className="settings-help">{t("help.intro")}</p>
 
       {HELP_SECTIONS.map((section) => (
-        <div key={section.title} className="help-section">
-          <div className="settings-section-title">{section.title}</div>
-          {section.intro && <p className="settings-help">{section.intro}</p>}
+        <div key={section.titleKey} className="help-section">
+          <div className="settings-section-title">{t(section.titleKey)}</div>
+          {section.hasIntro && <p className="settings-help">{workspaceLayoutIntro(t)}</p>}
           <dl className="help-list">
             {section.items.map((item) => (
-              <div key={item.term} className="help-row">
-                <dt>{item.term}</dt>
-                <dd>{item.desc}</dd>
+              <div key={item.termKey} className="help-row">
+                <dt>{t(item.termKey)}</dt>
+                <dd>{t(item.descKey)}</dd>
               </div>
             ))}
           </dl>
@@ -718,16 +693,14 @@ export function SettingsDialog({
   const powerSupported = usePowerStore((s) => s.supported);
   const energyStatus = (() => {
     if (energyMode === "battery" && powerReady && !powerSupported) {
-      return "Power state unavailable — treating as AC (inactive).";
+      return t("settings.energyUnavailable");
     }
     if (energyActive) {
       return energyMode === "always"
-        ? "Currently active — always on."
-        : "Currently active — running on battery.";
+        ? t("settings.energyActiveAlways")
+        : t("settings.energyActiveBattery");
     }
-    return energyMode === "off"
-      ? "Off — never throttles."
-      : "Inactive — on AC power.";
+    return energyMode === "off" ? t("settings.energyOff") : t("settings.energyInactive");
   })();
 
   return (
@@ -769,31 +742,10 @@ export function SettingsDialog({
             />
 
             <ToggleCard
-              label={t("settings.claudeRemote")}
-              checked={settings?.agent_remote_control ?? true}
-              onChange={(e) => void updateSettings({ agent_remote_control: e.target.checked })}
-              help={
-                <>
-                  Spawns Claude agent tabs with <code>--remote-control</code> so you can
-                  monitor and steer them from the Claude app or web. Requires a Claude
-                  subscription login (not an API key); only Claude supports it.
-                </>
-              }
-            />
-
-            <ToggleCard
               label={t("settings.headlessRemote")}
               checked={settings?.connections_headless ?? true}
               onChange={(e) => void updateSettings({ connections_headless: e.target.checked })}
-              help={
-                <>
-                  When on (default), Eldrun makes SSH/OpenVPN connections in the
-                  background, handling the password transiently. Turn it off to instead
-                  open each connection as an interactive terminal in the Eldrun root —
-                  you type the password directly into that terminal and Eldrun never
-                  handles it.
-                </>
-              }
+              help={t("settings.headlessRemoteHelp")}
             />
 
             {!IS_WINDOWS && (
@@ -803,10 +755,8 @@ export function SettingsDialog({
                 onChange={(e) => void updateSettings({ persist_local_sessions: e.target.checked })}
                 help={
                   <>
-                    When on (default), a local project's shell and Python/script tabs run
-                    inside a tmux session on this machine, so a long run keeps going if
-                    Eldrun crashes and the tab reattaches on restart. Closing a tab still
-                    ends its session. Requires <code>tmux</code>; agent tabs are unaffected.
+                    {t("settings.persistLocalHelp1")} <code>tmux</code>
+                    {t("settings.persistLocalHelp2")}
                   </>
                 }
               />
@@ -828,12 +778,7 @@ export function SettingsDialog({
                   onChange={(e) => void updateSettings({ machines_enabled: e.target.checked })}
                 />
               </label>
-              <p className="settings-help">
-                Both add a machine-wide control to the header: an OpenVPN tunnel
-                (routes this whole computer's traffic while up) and a list of SSH
-                machines no project owns. Off by default; asked about once on
-                first launch.
-              </p>
+              <p className="settings-help">{t("settings.remoteFeaturesHelp")}</p>
             </div>
 
             <div className="settings-row">
@@ -849,9 +794,7 @@ export function SettingsDialog({
               />
             </div>
             <p className="settings-help">
-              When active, Eldrun eases off to save power: it pauses the project
-              blob's idle spin, calms the status glows, and slows background
-              refreshes. "On battery" (default) does this only while unplugged.
+              {t("settings.energyHelp")}
               {" "}{energyStatus}
             </p>
 
@@ -863,11 +806,8 @@ export function SettingsDialog({
 
             <div className="settings-section-title">{t("settings.experimental")}</div>
             <p className="settings-help">
-              Features that are still moving. Each is off by default and{" "}
-              <b>on by default in Debug mode</b> — so building Eldrun means seeing them
-              without re-ticking this list every time a new one lands. A switch here
-              always wins, in either direction: you can take one on without Debug mode,
-              or turn one off while in it.
+              {t("settings.experimentalHelp1")}{" "}
+              <b>{t("settings.experimentalHelpBold")}</b> {t("settings.experimentalHelp2")}
             </p>
 
             <ToggleCard
@@ -876,13 +816,8 @@ export function SettingsDialog({
               onChange={(e) => void updateSettings({ agent_mode_toggle: e.target.checked })}
               help={
                 <>
-                  Puts a badge on each agent tab that switches it between <b>Plan</b> (reads
-                  and proposes, never edits) and <b>Auto</b> (auto-accepts edits; shell and
-                  network commands still ask) — so one tab can plan while another does the
-                  work, and each comes back in its mode after a restart. Switching restarts
-                  the agent: the conversation is resumed, but the terminal's scrollback is
-                  lost. Only Claude supports it — it is the one agent that can both be
-                  launched into a mode and resume its conversation on restart.
+                  {t("settings.agentModeHelp1")} <b>Plan</b> {t("settings.agentModeHelp2")}{" "}
+                  <b>Auto</b> {t("settings.agentModeHelp3")}
                 </>
               }
             />
@@ -893,13 +828,10 @@ export function SettingsDialog({
               onChange={(e) => void updateSettings({ python_run_debug: e.target.checked })}
               help={
                 <>
-                  Gives a <code>.py</code> file open in the editor a <b>▶ Run</b> and a{" "}
-                  <b>🐞 Debug</b> button, and turns its line numbers into a breakpoint
-                  gutter. Both open a terminal tab in the project — so they run on the host
-                  of a remote project and inside the container of a containerised one — and
-                  use the project's own interpreter. Debug is <code>pdb</code>, pre-loaded
-                  with the gutter's breakpoints. Off by default because Run executes the
-                  file. Ctrl+Click to a definition is not gated: it only reads.
+                  {t("settings.pythonRunHelp1")} <code>.py</code> {t("settings.pythonRunHelp2")}{" "}
+                  <b>▶ Run</b> {t("settings.pythonRunHelp3")} <b>🐞 Debug</b>{" "}
+                  {t("settings.pythonRunHelp4")} <code>pdb</code>
+                  {t("settings.pythonRunHelp5")}
                 </>
               }
             />
@@ -927,11 +859,7 @@ export function SettingsDialog({
                   onChange={(e) => void updateSettings({ show_gpu_usage: e.target.checked })}
                 />
               </label>
-              <p className="settings-help">
-                CPU and RAM cover Eldrun's own process tree; GPU shows VRAM in use by
-                local models loaded in Ollama. The pill appears in the header next to
-                the timer.
-              </p>
+              <p className="settings-help">{t("settings.resourceMonitorHelp")}</p>
               <label className="settings-toggle-card-row">
                 <span>{t("settings.showClockSeconds")}</span>
                 <Toggle
@@ -1005,11 +933,7 @@ export function SettingsDialog({
                 ]}
               />
             </div>
-            <p className="settings-help">
-              Reminders fire as a desktop notification and as an in-app popup you can
-              snooze. “Day grid starts at” only sets where the day and week views
-              scroll to — earlier events are still there, just above the fold.
-            </p>
+            <p className="settings-help">{t("settings.reminderHelp")}</p>
 
             <div className="settings-section-title">{t("settings.hintsOnboarding")}</div>
             <ToggleCard
@@ -1052,11 +976,8 @@ export function SettingsDialog({
 
             <div className="settings-section-title">{t("settings.layout")}</div>
             <p className="settings-help">
-              Window zoom scales the entire Eldrun interface — handy on 4K /
-              high-DPI monitors. 100% is the default. Zoom is <strong>per
-              window</strong>: this sets the main window, and each popped-out
-              subwindow keeps its own. Ctrl&nbsp;+ / Ctrl&nbsp;− zoom the focused
-              window and Ctrl&nbsp;0 resets it. <UntestedTag />
+              {t("settings.zoomHelp1")} <strong>{t("settings.zoomHelpBold")}</strong>
+              {t("settings.zoomHelp2")} <UntestedTag />
             </p>
             <div className="settings-row">
               <label>{t("settings.windowZoom")}</label>
@@ -1077,8 +998,7 @@ export function SettingsDialog({
               />
             </div>
             <p className="settings-help">
-              Smallest a subwindow may be made by dragging a split divider.
-              Defaults to {DEFAULT_MIN_SUBWINDOW_PX}px when left blank.
+              {t("settings.minSubwindowHelp", { px: DEFAULT_MIN_SUBWINDOW_PX })}
             </p>
             <div className="settings-row">
               <label htmlFor="min-subwindow-width">{t("settings.minSubWidth")}</label>
@@ -1116,12 +1036,7 @@ export function SettingsDialog({
             </div>
 
             <div className="settings-section-title">{t("settings.downloads")}</div>
-            <p className="settings-help">
-              Folders scanned by the right-panel Downloads section (the 📥 toggle),
-              for quickly copying freshly downloaded files into a project. Read-only
-              — Eldrun never changes any browser's download path. Defaults to your
-              system Downloads folder when empty.
-            </p>
+            <p className="settings-help">{t("settings.downloadsHelp")}</p>
             <div className="settings-list">
               {(settings?.download_sources ?? []).length === 0 ? (
                 <div className="settings-empty">
@@ -1151,7 +1066,7 @@ export function SettingsDialog({
                           ),
                         })
                       }
-                      title="Remove this folder"
+                      title={t("settings.removeFolderTitle")}
                     >
                       {t("common.remove")}
                     </button>
@@ -1184,13 +1099,7 @@ export function SettingsDialog({
               label={t("settings.dailyRecap")}
               checked={settings?.daily_stats_recap ?? true}
               onChange={(e) => void updateSettings({ daily_stats_recap: e.target.checked })}
-              help={
-                <>
-                  A summary of the day just finished: which agents you used and how much you
-                  asked them, files created/modified/deleted, commits, and time per project.
-                  Turning this off stops the popup, not the counting — everything stays local.
-                </>
-              }
+              help={t("settings.dailyRecapHelp")}
             />
             <button
               type="button"

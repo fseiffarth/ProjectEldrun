@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ProjectPill, PILL_DRAG_TYPE } from "../projects/ProjectPill";
+import { ProjectPill } from "../projects/ProjectPill";
 import { BoxPill } from "../projects/BoxPill";
+import { usePillDragStore } from "../../stores/pillDrag";
 import { ProjectSearch } from "../projects/ProjectSearch";
 import { ProjectDialog } from "../projects/ProjectDialog";
 import { SettingsDialog, type SettingsPanelKind } from "./SettingsPanel";
@@ -15,6 +16,7 @@ import { useTabsStore } from "../../stores/tabs";
 import { useGitDirtyStore } from "../../stores/gitDirty";
 import { useEnergySaver, saverInterval } from "../../stores/power";
 import { resolveProjectDirectory, type ProjectBox, type ProjectEntry } from "../../types";
+import { useT } from "../../lib/i18n";
 
 // Re-exported for tests and any external callers that imported these scaffold
 // helpers from ProjectSwitcher before the dialog was extracted (the public
@@ -27,6 +29,7 @@ export {
 } from "../projects/scaffold";
 
 export function ProjectSwitcher({ open = true }: { open?: boolean }) {
+  const t = useT();
   const { projects, setActive, addProject, deactivateProject, reorderProjects } = useProjectsStore();
   const boxes = useBoxesStore((s) => s.boxes);
   const createBox = useBoxesStore((s) => s.createBox);
@@ -229,6 +232,43 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     return items.sort((a, b) => a.position - b.position);
   }, [activeProjects, boxes, boxesById]);
 
+  // Pointer-driven pill reorder (stores/pillDrag): every OTHER visible project
+  // pill "parts" to open the dragged one's landing slot — a `shiftPx` per id,
+  // computed here (not in each pill) since it needs the FULL rendered order.
+  // Mirrors MachinesIndicator's row-parting FLIP math, generalized to width:
+  // removing an item of the dragged pill's own width from the strip and
+  // reinserting it elsewhere shifts every OTHER pill between the old and new
+  // slot by exactly that width, regardless of their own widths — so idx
+  // (this pill's index in the full project-only list) vs. fromIdx (the
+  // dragged pill's) and overIndex (the without-self landing index the drag
+  // gesture computed) alone decide the shift; a box-assign or Alt-group
+  // target suppresses it entirely (nothing will actually move).
+  const pillDrag = usePillDragStore((s) => s.drag);
+  const projectItems = useMemo(
+    () =>
+      switcherItems.filter(
+        (it): it is Extract<SwitcherItem, { kind: "project" }> => it.kind === "project",
+      ),
+    [switcherItems],
+  );
+  const pillShifts = useMemo(() => {
+    const shifts = new Map<string, number>();
+    if (!pillDrag || pillDrag.overBoxId || pillDrag.groupTargetId) return shifts;
+    const fromIdx = projectItems.findIndex((it) => it.project.id === pillDrag.id);
+    if (fromIdx < 0) return shifts;
+    projectItems.forEach((it, idx) => {
+      if (idx === fromIdx) return;
+      const shift =
+        idx > fromIdx && idx <= pillDrag.overIndex
+          ? -pillDrag.width
+          : idx < fromIdx && idx >= pillDrag.overIndex
+            ? pillDrag.width
+            : 0;
+      if (shift) shifts.set(it.project.id, shift);
+    });
+    return shifts;
+  }, [pillDrag, projectItems]);
+
   // Signature of the bucketing so the overflow/edge-fade effect re-runs when
   // membership moves between a box and ungrouped (not just on count change) (S3).
   const bucketSignature = useMemo(
@@ -289,7 +329,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   // dragged pill, so both land in the new box; the user renames it via the chip.
   const groupProjects = async (fromId: string, toId: string) => {
     if (fromId === toId) return;
-    const box = await createBox("New Box");
+    const box = await createBox(t("projectSwitcher.newBox"));
     await assignToBox(toId, box.id);
     await assignToBox(fromId, box.id);
   };
@@ -383,6 +423,48 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
         // right-click only ever surfaces our own pill context menu.
         onContextMenu={(e) => e.preventDefault()}
       >
+        <div
+          className="project-switcher-add-wrap"
+          ref={settingsMenuRef}
+          onClick={(e) => e.stopPropagation()}
+          onMouseEnter={revealSettingsMenu}
+          onMouseLeave={scheduleCloseSettingsMenu}
+        >
+          <button
+            className="project-switcher-action-btn"
+            data-hint-anchor="settings"
+            title={t("settings.title")}
+            // Hover-opened, like its sibling header menus (GlobalAppMenu,
+            // LocalModelMenu, VpnIndicator). Click reveals rather than toggling: a
+            // click also fires mouseenter, so a toggle here would open on enter and
+            // immediately shut.
+            onClick={revealSettingsMenu}
+            onFocus={revealSettingsMenu}
+          >
+            ⚙
+          </button>
+          {showSettingsMenu && (
+            <div className="project-switcher-add-menu">
+              <button onClick={() => { setShowSettingsMenu(false); setSettingsPanel("main"); setShowSettings(true); }}>
+                {t("settings.title")}
+              </button>
+              <button onClick={() => { setShowSettingsMenu(false); setSettingsPanel("help"); setShowSettings(true); }}>
+                {t("nav.help.title")}
+              </button>
+              <button onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new Event("eldrun:open-how-to-start")); }}>
+                {t("projectSwitcher.howToStartMenu")}
+              </button>
+              <button onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new Event("eldrun:start-tour")); }}>
+                {t("settings.takeTour")}
+              </button>
+              <button onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new Event("eldrun:open-lessons")); }}>
+                {t("settings.lessons")}
+              </button>
+            </div>
+          )}
+        </div>
+        <div className="project-switcher-separator" />
+
         <ProjectSearch
           projects={projects}
           boxes={boxes}
@@ -400,7 +482,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             type="button"
             className="pills-scroll-btn left"
             tabIndex={-1}
-            aria-label="Scroll projects left"
+            aria-label={t("projectSwitcher.scrollLeft")}
             onMouseEnter={() => startHoverScroll(-1)}
             onMouseLeave={stopHoverScroll}
             onClick={(e) => {
@@ -416,20 +498,6 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             // Pressing the bare strip (no pill under the cursor) drags the
             // window; pills/boxes are nested so their press is left untouched.
             onMouseDown={startWindowDrag}
-            // Ungrouped drop zone (S4): dropping a pill on the bare strip (not on
-            // a pill or a BoxPill, both of which stopPropagation) ungroups it.
-            onDragOver={(e) => {
-              if (!e.dataTransfer.types.includes(PILL_DRAG_TYPE)) return;
-              e.preventDefault();
-              e.dataTransfer.dropEffect = "move";
-            }}
-            onDrop={(e) => {
-              if (!e.dataTransfer.types.includes(PILL_DRAG_TYPE)) return;
-              const fromId = e.dataTransfer.getData(PILL_DRAG_TYPE);
-              if (!fromId) return;
-              e.preventDefault();
-              void assignToBox(fromId, null);
-            }}
           >
             {switcherItems.map((item) =>
               item.kind === "box" ? (
@@ -438,11 +506,11 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
                   box={item.box}
                   members={item.members}
                   onOpen={() => void openBox(item.box.id)}
-                  onAssign={(projectId) => void assignToBox(projectId, item.box.id)}
                   onSelectMember={(projectId) => void setActive(projectId)}
                   onRemoveMember={(projectId) => void assignToBox(projectId, null)}
                   onRename={(name) => void renameBox(item.box.id, name)}
                   onDelete={() => void deleteBox(item.box.id)}
+                  forcedDragOver={pillDrag?.overBoxId === item.box.id}
                 />
               ) : (
                 <ProjectPill
@@ -453,6 +521,11 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
                   onClose={() => deactivateProject(item.project.id)}
                   onReorder={(fromId, toId) => void reorderProjects(fromId, toId)}
                   onGroup={(fromId, toId) => void groupProjects(fromId, toId)}
+                  onAssignToBox={(boxId) => void assignToBox(item.project.id, boxId)}
+                  isDragged={pillDrag?.id === item.project.id}
+                  dragDx={pillDrag?.id === item.project.id ? pillDrag.dx : undefined}
+                  shiftPx={pillShifts.get(item.project.id)}
+                  groupHintActive={pillDrag?.groupTargetId === item.project.id}
                 />
               ),
             )}
@@ -461,7 +534,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             type="button"
             className="pills-scroll-btn right"
             tabIndex={-1}
-            aria-label="Scroll projects right"
+            aria-label={t("projectSwitcher.scrollRight")}
             onMouseEnter={() => startHoverScroll(1)}
             onMouseLeave={stopHoverScroll}
             onClick={(e) => {
@@ -476,48 +549,6 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
 
         <div
           className="project-switcher-add-wrap"
-          ref={settingsMenuRef}
-          onClick={(e) => e.stopPropagation()}
-          onMouseEnter={revealSettingsMenu}
-          onMouseLeave={scheduleCloseSettingsMenu}
-        >
-          <button
-            className="project-switcher-action-btn"
-            data-hint-anchor="settings"
-            title="Settings"
-            // Hover-opened, like its sibling header menus (GlobalAppMenu,
-            // LocalModelMenu, VpnIndicator). Click reveals rather than toggling: a
-            // click also fires mouseenter, so a toggle here would open on enter and
-            // immediately shut.
-            onClick={revealSettingsMenu}
-            onFocus={revealSettingsMenu}
-          >
-            ⚙
-          </button>
-          {showSettingsMenu && (
-            <div className="project-switcher-add-menu">
-              <button onClick={() => { setShowSettingsMenu(false); setSettingsPanel("main"); setShowSettings(true); }}>
-                Settings
-              </button>
-              <button onClick={() => { setShowSettingsMenu(false); setSettingsPanel("help"); setShowSettings(true); }}>
-                Feature Guide
-              </button>
-              <button onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new Event("eldrun:open-how-to-start")); }}>
-                How to start
-              </button>
-              <button onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new Event("eldrun:start-tour")); }}>
-                Take a tour
-              </button>
-              <button onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new Event("eldrun:open-lessons")); }}>
-                Lessons
-              </button>
-            </div>
-          )}
-        </div>
-
-
-        <div
-          className="project-switcher-add-wrap"
           ref={addMenuRef}
           onClick={(e) => e.stopPropagation()}
           onMouseEnter={revealAddMenu}
@@ -526,7 +557,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
           <button
             className="project-switcher-add-btn"
             data-hint-anchor="add-project"
-            title="Add or import project"
+            title={t("projectSwitcher.addOrImport")}
             // Hover-opened, like its sibling header menus (GlobalAppMenu,
             // LocalModelMenu, VpnIndicator). Click reveals rather than toggling: a
             // click also fires mouseenter, so a toggle here would open on enter and
@@ -539,31 +570,31 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
           {showAddMenu && (
             <div className="project-switcher-add-menu">
               <button onClick={() => { setShowAddMenu(false); setDialog("new"); }}>
-                New Project
+                {t("projectSwitcher.newProject")}
               </button>
               <button onClick={() => { setShowAddMenu(false); setDialog("import"); }}>
-                Import Project
+                {t("projectSwitcher.importProject")}
               </button>
               <button
                 className="untested"
                 onClick={() => { setShowAddMenu(false); setDialog("clone"); }}
               >
-                Import from GitHub/GitLab <UntestedTag />
+                {t("projectSwitcher.importFromGitHub")} <UntestedTag />
               </button>
               <button
                 className="untested"
                 onClick={() => { setShowAddMenu(false); openHpcWizard(); }}
               >
-                HPC pipeline… <UntestedTag />
+                {t("projectSwitcher.hpcPipeline")} <UntestedTag />
               </button>
               <button
                 className="untested"
                 onClick={() => {
                   setShowAddMenu(false);
-                  void createBox("New Box");
+                  void createBox(t("projectSwitcher.newBox"));
                 }}
               >
-                New Box <UntestedTag />
+                {t("projectSwitcher.newBox")} <UntestedTag />
               </button>
             </div>
           )}

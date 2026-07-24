@@ -3,6 +3,7 @@ pub mod big_folders;
 pub mod codex_bind;
 pub mod git_credentials;
 pub mod git_peer;
+pub mod hpc_mode;
 pub mod local_loss;
 pub mod net_usage;
 pub mod openvpn;

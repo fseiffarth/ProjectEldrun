@@ -5,6 +5,7 @@ import {
   LogicalPosition,
 } from "@tauri-apps/api/window";
 import { IS_MAC, IS_LINUX } from "../../lib/platform";
+import { useT } from "../../lib/i18n";
 
 // Toggle maximize with a clean restore geometry on Linux.
 //
@@ -41,6 +42,7 @@ async function toggleMaximize() {
 }
 
 export function WindowControls() {
+  const t = useT();
   // macOS draws native traffic-light buttons (top-left) via the Overlay title-bar
   // style configured in tauri.macos.conf.json, so Eldrun's own controls would be
   // redundant — and on the wrong side. Render nothing there.
@@ -66,22 +68,22 @@ export function WindowControls() {
         className="wm-btn wm-minimize"
         onMouseDown={isolate}
         onClick={() => run("minimize", () => getCurrentWindow().minimize())}
-        title="Minimize"
-        aria-label="Minimize"
+        title={t("windowControls.minimize")}
+        aria-label={t("windowControls.minimize")}
       />
       <button
         className="wm-btn wm-maximize"
         onMouseDown={isolate}
         onClick={() => run("toggle-maximize", toggleMaximize)}
-        title="Maximize"
-        aria-label="Maximize"
+        title={t("windowControls.maximize")}
+        aria-label={t("windowControls.maximize")}
       />
       <button
         className="wm-btn wm-close"
         onMouseDown={isolate}
         onClick={() => run("close", () => getCurrentWindow().close())}
-        title="Close"
-        aria-label="Close"
+        title={t("common.close")}
+        aria-label={t("common.close")}
       />
     </div>
   );

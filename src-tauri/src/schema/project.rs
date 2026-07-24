@@ -348,6 +348,48 @@ pub struct Project {
     /// seeds its live preference store from on load.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_host: Option<String>,
+    /// The HPC **workspace** this project's tree lives in, plus the small anchor
+    /// folder kept in the user's cluster home (`docs/hpc_workspace_plan.md`).
+    /// Recorded because **none of it can be re-derived once the workspace
+    /// expires**: the tooling's recovery path (`ws_restore`) is keyed by the
+    /// workspace *name*, and the host tree that would have told you which one it
+    /// was is exactly what got deleted. Mirrored into the `projects.json` entry's
+    /// `extra["hpc"]`. Absent for every project that isn't in a workspace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hpc: Option<HpcInfo>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+}
+
+/// What a project remembers about its HPC workspace and home anchor. Every field
+/// is optional: a project may have a workspace but no anchor (or the reverse,
+/// after a workspace expired and was released), and a site's tooling may not
+/// report a filesystem name.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HpcInfo {
+    /// The workspace id (`ws_allocate <id>`) — the handle `ws_extend`/`ws_release`
+    /// /`ws_restore` take, and the only one that survives the directory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// Its absolute path on the host at the time it was recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_path: Option<String>,
+    /// The workspace filesystem (`-F`), which `ws_extend` must be given again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filesystem: Option<String>,
+    /// The per-project folder in the user's cluster home (logs + workspace link +
+    /// the append-only record). Outside the project root, so nothing syncs it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor_dir: Option<String>,
+    /// The same folder as the `$HOME`-relative path it was created from. Kept
+    /// beside the absolute one because re-anchoring (a move to another workspace)
+    /// must pass the *rel* back — deriving it by chopping segments off
+    /// `anchor_dir` guesses wrong the moment the user picks a path that isn't two
+    /// segments deep.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor_rel: Option<String>,
+    /// `<anchor_dir>/logs` — where `#SBATCH --output` points, and the fallback
+    /// `slurm_job_out` uses for a job `scontrol` has already forgotten.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logs_dir: Option<String>,
 }

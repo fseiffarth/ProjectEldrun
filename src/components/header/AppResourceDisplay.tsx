@@ -10,6 +10,7 @@ import {
   gpuTotals,
   type GpuSample,
 } from "../../lib/gpu";
+import { useT } from "../../lib/i18n";
 
 interface AppResourceUsage {
   cpu_percent: number;
@@ -32,6 +33,7 @@ function usageTone(kind: "cpu" | "ram", value: number): "low" | "medium" | "high
 }
 
 export function AppResourceDisplay() {
+  const t = useT();
   // Each row defaults ON (undefined → shown) and is independent of debug mode.
   const showCpu = useSettingsStore((s) => s.settings?.show_cpu_usage ?? true);
   const showRam = useSettingsStore((s) => s.settings?.show_ram_usage ?? true);
@@ -68,7 +70,13 @@ export function AppResourceDisplay() {
   if (!anyShown || !usage) return null;
 
   return (
-    <div className="app-resource-display" title={`${usage.process_count} Eldrun processes`}>
+    <div
+      className="app-resource-display"
+      title={t(
+        usage.process_count === 1 ? "appResource.processCountOne" : "appResource.processCountMany",
+        { count: usage.process_count },
+      )}
+    >
       {showCpu && (
         <span className={`app-resource-row ${usageTone("cpu", usage.cpu_percent)}`} title="CPU">
           <span className="app-resource-symbol" aria-hidden>CPU</span>
@@ -92,6 +100,7 @@ export function AppResourceDisplay() {
  * as one line of its tooltip.
  */
 function GpuRow({ gpus, ollamaBytes }: { gpus: GpuSample[]; ollamaBytes: number }) {
+  const t = useT();
   // No GPU we can read (macOS, an Intel-only box, no `nvidia-smi`): fall back to
   // exactly what this row did before — Ollama's models, and "—" when none are
   // loaded. Better a narrow reading than a zero pretending to be a measurement.
@@ -99,7 +108,7 @@ function GpuRow({ gpus, ollamaBytes }: { gpus: GpuSample[]; ollamaBytes: number 
     return (
       <span
         className={`app-resource-row ${usageTone("ram", ollamaBytes)}`}
-        title="GPU memory in use by local models (Ollama) — this machine's GPU reports no memory of its own"
+        title={t("appResource.gpuNoDeviceTitle")}
       >
         <span className="app-resource-symbol" aria-hidden>GPU</span>
         <span>{ollamaBytes > 0 ? formatBytes(ollamaBytes) : "—"}</span>

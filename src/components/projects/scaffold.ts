@@ -211,6 +211,28 @@ export function repoNameFromCloneUrl(raw: string): string {
   return last.replace(/\.git$/i, "");
 }
 
+/**
+ * The hosting provider a clone URL's host names itself as ("github"/"gitlab"),
+ * or "" when it doesn't — a self-hosted instance usually doesn't, and the fork
+ * import then needs the user to say which it is (forking goes through the
+ * provider's own CLI, so guessing wrong picks the wrong binary and API).
+ * Frontend twin of `provider_from_host` in `commands/git_fork.rs`.
+ */
+export function providerFromCloneUrl(raw: string): "github" | "gitlab" | "" {
+  const url = raw.trim();
+  if (!url) return "";
+  const schemeEnd = url.toLowerCase().indexOf("://");
+  const afterScheme = schemeEnd >= 0 ? url.slice(schemeEnd + 3) : url;
+  // Authority = everything before the first `/` (URL form) or `:` (scp-like),
+  // minus any userinfo and port.
+  const authority = afterScheme.split(/[/:]/)[0] ?? "";
+  const host = (authority.split("@").pop() ?? "").toLowerCase();
+  if (!host) return "";
+  if (host.includes("github")) return "github";
+  if (host.includes("gitlab")) return "gitlab";
+  return "";
+}
+
 /** Join a remote directory path with a child segment using POSIX separators. */
 export function joinRemotePath(base: string, child: string): string {
   if (!base || base === "/") return `/${child}`;

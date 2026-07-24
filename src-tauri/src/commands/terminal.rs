@@ -24,6 +24,7 @@ fn settings_agent_remote_control() -> bool {
 pub async fn pty_spawn(
     app: AppHandle,
     registry: State<'_, RegistryState>,
+    pool: State<'_, crate::services::remote::RemotePoolState>,
     mut opts: PtyOptions,
 ) -> Result<(), String> {
     // Resolve empty cwd to Eldrun's root workspace directory.
@@ -139,6 +140,23 @@ pub async fn pty_spawn(
         #[cfg(windows)]
         return Err("Project containers are not supported on Windows yet. Turn the container toggle off for this project to run this tab.".to_string());
     } else if !opts.local_only {
+        // `wrap_pty_options` below spawns a bare `ssh` with no BatchMode and no
+        // askpass — it only ever rides an already-authenticated ControlMaster.
+        // The pool is normally primed at project activation, but that master can
+        // die quietly (keepalive kill on a dropped VPN/laptop sleep, or an HPC
+        // job's long queue wait past `ControlPersist`) long before this tab opens.
+        // Re-run the same silent connect used at activation here, best-effort:
+        // on a healthy headless host this re-authenticates via the saved
+        // password/askpass with no prompt, so the tab's own ssh always has a live
+        // master to ride; on a genuinely unreachable host it fails harmlessly and
+        // today's raw-ssh fallback (with its native prompt) still applies.
+        if let Some(project_id) = opts.project_id.clone() {
+            let host_id = opts
+                .remote_host_id
+                .clone()
+                .unwrap_or_else(|| crate::services::remote::PRIMARY_HOST.to_string());
+            let _ = crate::services::remote::connect_host(&pool, &project_id, &host_id, None).await;
+        }
         crate::services::ssh_exec::wrap_pty_options(&mut opts)?;
     }
 

@@ -111,22 +111,84 @@ struct RunOut {
     text: String,
 }
 
+/// How long a single TeX/bibtex invocation may run before it is killed.
+///
+/// `compile_tex` is a **synchronous** command, so a run that never returns holds
+/// a Tauri worker thread for the rest of the session and the frontend has no way
+/// to abort it — the deck editor and the TeX viewer both just sit on a spinner.
+/// `-interaction=nonstopmode` already rules out the classic prompt-for-input
+/// hang; what is left is a genuinely pathological document (a runaway macro, a
+/// `\loop` with no exit), and for that a ceiling is the only defence. Ten minutes
+/// is far beyond any healthy build, including a first run that is downloading
+/// packages on MiKTeX.
+const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Run `bin args…` with `dir` as the working directory, capturing stdout+stderr.
 /// Spawned via `command_no_window` so MiKTeX's console tools (engine, `bibtex`,
 /// `synctex`) don't flash a console window per invocation on Windows.
+///
+/// Killed after {@link RUN_TIMEOUT}. The output is read on a worker thread rather
+/// than with `output()` so the wait can time out at all: `output()` blocks until
+/// the pipes close, which a wedged child never does.
 fn run_in<S: AsRef<std::ffi::OsStr>>(dir: &Path, bin: &str, args: &[S]) -> Result<RunOut, String> {
-    let out = crate::paths::command_no_window(bin)
+    let mut child = crate::paths::command_no_window(bin)
         .args(args)
         .current_dir(dir)
         .stdin(Stdio::null())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("run {bin}: {e}"))?;
-    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-    text.push_str(&String::from_utf8_lossy(&out.stderr));
-    Ok(RunOut {
-        ok: out.status.success(),
-        text,
-    })
+
+    // Drain both pipes on their own threads. A child that fills a pipe buffer
+    // deadlocks if nobody is reading, which would make the timeout fire on
+    // perfectly healthy builds with a lot of log output.
+    let mut out_pipe = child.stdout.take();
+    let mut err_pipe = child.stderr.take();
+    let out_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = out_pipe.as_mut() {
+            let _ = std::io::Read::read_to_end(p, &mut buf);
+        }
+        buf
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = err_pipe.as_mut() {
+            let _ = std::io::Read::read_to_end(p, &mut buf);
+        }
+        buf
+    });
+
+    let deadline = std::time::Instant::now() + RUN_TIMEOUT;
+    let status = loop {
+        match child.try_wait().map_err(|e| format!("wait {bin}: {e}"))? {
+            Some(s) => break Some(s),
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    };
+
+    let mut text = String::from_utf8_lossy(&out_reader.join().unwrap_or_default()).into_owned();
+    text.push_str(&String::from_utf8_lossy(&err_reader.join().unwrap_or_default()));
+
+    match status {
+        Some(s) => Ok(RunOut {
+            ok: s.success(),
+            text,
+        }),
+        None => {
+            text.push_str(&format!(
+                "\n! Eldrun stopped {bin} after {} seconds — the build appears to be stuck.\n",
+                RUN_TIMEOUT.as_secs()
+            ));
+            Ok(RunOut { ok: false, text })
+        }
+    }
 }
 
 /// True when the `.aux` references a bibliography (so a `bibtex` pass is wanted).

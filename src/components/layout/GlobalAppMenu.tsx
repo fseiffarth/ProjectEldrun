@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { GlobalAppBar } from "./GlobalAppBar";
+import { useT } from "../../lib/i18n";
 
 /**
  * Header button that reveals the global-app launcher as a hover dropdown.
@@ -7,6 +8,7 @@ import { GlobalAppBar } from "./GlobalAppBar";
  * top-edge reveal strip.
  */
 export function GlobalAppMenu() {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const closeTimer = useRef<number | null>(null);
 
@@ -35,18 +37,14 @@ export function GlobalAppMenu() {
       <button
         type="button"
         className="global-apps-menu-btn"
-        title="Global apps"
-        aria-label="Global apps"
+        title={t("globalAppMenu.title")}
+        aria-label={t("globalAppMenu.title")}
         aria-haspopup="menu"
         aria-expanded={open}
       >
         ▦
       </button>
-      {open && (
-        <div className="global-apps-menu-dropdown">
-          <GlobalAppBar />
-        </div>
-      )}
+      {open && <GlobalAppBar />}
     </div>
   );
 }

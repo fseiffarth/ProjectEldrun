@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useT } from "../../lib/i18n";
 
 /**
  * One log line plus a stable, monotonically-increasing id minted at the push
@@ -16,14 +17,15 @@ export type LogLine = { id: number; text: string };
  * project dialog and the activation-time VPN password prompt.
  */
 export function ConnectionLog({ lines, busy }: { lines: LogLine[]; busy: boolean }) {
+  const t = useT();
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
   }, [lines.length]);
   return (
-    <div className="connection-log" role="log" aria-label="OpenVPN connection log">
+    <div className="connection-log" role="log" aria-label={t("connLog.ariaLabel")}>
       {lines.length === 0 && busy ? (
-        <div className="connection-log-line connection-log-waiting">Starting OpenVPN…</div>
+        <div className="connection-log-line connection-log-waiting">{t("connLog.startingVpn")}</div>
       ) : (
         lines.map((line) => (
           <div key={line.id} className="connection-log-line">

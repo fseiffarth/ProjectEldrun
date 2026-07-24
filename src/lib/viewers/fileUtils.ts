@@ -59,7 +59,11 @@ export type InternalViewer =
   | "gif"
   | "html"
   | "sqlite"
-  | "yaml";
+  | "yaml"
+  // The native presenter's deck sidecar (`*.eldeck.json`, EXPERIMENTAL — see
+  // `docs/deck_presenter_plan.md`). A deck is JSON, so this must be matched by
+  // FILENAME before the generic `.json` rule; see `naturalViewerFor`.
+  | "eldeck";
 
 // Audio/video formats the webview plays natively via <audio>/<video> from a
 // Blob URL (Dev D). Kept separate from IMAGE_EXTS so the media viewer wins.
@@ -143,7 +147,21 @@ const VIEWER_FALLBACK: Partial<Record<InternalViewer, InternalViewer>> = {
   // the plain image viewer still animates them honestly (the webview animates
   // <img> GIFs natively) — it just offers no frame control.
   gif: "image",
+  // A deck IS JSON, so opting the presenter out should leave you editing the
+  // sidecar by hand in the tree rather than handing a `.json` to an external app.
+  eldeck: "yaml",
 };
+
+/** A presentation deck sidecar: `<name>.eldeck.json`, case-insensitive. Exported
+ *  so the deck viewer and its "new presentation" flow name the file exactly one
+ *  way. `.eldeck.json` alone (an empty stem) is deliberately NOT a deck. */
+export const DECK_SUFFIX = ".eldeck.json";
+const DECK_SUFFIX_RE = /.+\.eldeck\.json$/i;
+
+/** Whether `name` (or a path ending in one) is a deck sidecar. */
+export function isDeckFile(name: string): boolean {
+  return DECK_SUFFIX_RE.test(name);
+}
 
 /** The viewer a file *type* maps to, ignoring any user opt-out. */
 function naturalViewerFor(entry: FileEntry): InternalViewer | null {
@@ -191,6 +209,14 @@ function naturalViewerFor(entry: FileEntry): InternalViewer | null {
   // one. All three are also in TEXT_EXTS, so this specific return must win, like
   // .tex above. Opting it out (#48) falls back to the plain code editor, not the
   // external app (see VIEWER_FALLBACK).
+  // A presentation deck (`talk.eldeck.json`) is matched on the FILENAME, not the
+  // extension, and must win over the `.json` rule below. `entry.extension` is only
+  // the last dotted component — the backend builds it with `Path::extension()` —
+  // so a deck arrives here claiming to be a plain `.json` and would otherwise open
+  // as a YAML tree. Opting the viewer out lands it there deliberately instead (see
+  // VIEWER_FALLBACK); the experimental gate is applied at the dispatch site, not
+  // here, so a deck still resolves to a viewer for drag-to-tab either way.
+  if (DECK_SUFFIX_RE.test(entry.name)) return "eldeck";
   if (ext === ".yaml" || ext === ".yml" || ext === ".json") return "yaml";
   if (ext && TEXT_EXTS.has(ext)) return "text";
   if (!ext && TEXT_FILENAMES.has(entry.name.toLowerCase())) return "text";
@@ -329,6 +355,12 @@ export const VIEWER_PREF_TYPES: ViewerTypeMeta[] = [
     id: "sqlite",
     label: "SQLite database",
     extensions: [".db", ".sqlite", ".sqlite3"],
+    autocomplete: false,
+  },
+  {
+    id: "eldeck",
+    label: "Presentation (deck)",
+    extensions: [".eldeck.json"],
     autocomplete: false,
   },
 ];

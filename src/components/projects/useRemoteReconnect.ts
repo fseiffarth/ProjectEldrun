@@ -20,6 +20,7 @@ import {
   releaseVpn,
 } from "../../stores/vpnStatus";
 import type { LogLine } from "../common/ConnectionLog";
+import { withHostKeyConfirm } from "../../lib/hostKey";
 
 // OpenVPN prints this once the tunnel is fully up (mirrors the backend's
 // READY_MARKER in services/openvpn.rs). The embedded VPN login terminal is
@@ -141,6 +142,35 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
     };
   }, [vpnConfig]);
 
+  // ── The SSH login name ───────────────────────────────────────────────────────
+  // Editable here, and it has to be: the address is fixed when the project is
+  // created (`user@host` in the new/extend dialog), so a project created with no
+  // user — or the wrong one — had no surface that could correct it. That is not a
+  // headless-only gap, and it fails differently on each side. In **headless** mode
+  // there was simply no field, so Eldrun authenticated as the local account name and
+  // no password could ever be right. In **non-headless** the same wrong name is typed
+  // into the login terminal (`initialInput` submits it on the user's behalf) and the
+  // host rejects it in plain view — and the obvious recovery, retyping
+  // `ssh right@host` by hand in that same terminal, does not help either: the
+  // ControlMaster socket is `cm-%C`, whose hash covers the remote **user** as well as
+  // host and port, so `pollSshReady`'s probe — still built from the *stored* name —
+  // looks for a master that account never opened, finds none, and paints the lamp red
+  // two minutes after a login that visibly succeeded on screen.
+  //
+  // So it is a draft, committed to the spec (blur/Enter, and defensively before
+  // every connect) rather than passed loose: the pooled `remote_connect` and the
+  // backend's tmux/git/sftp legs all re-read the *persisted* spec, so a user that
+  // lived only in this component would connect the probe as one account and
+  // everything after it as another.
+  const [sshUser, setSshUser] = useState(remote?.user ?? "");
+  useEffect(() => setSshUser(remote?.user ?? ""), [remote?.user]);
+  // Mirrored into a ref so an in-flight poll/connect closure reads the current
+  // value instead of the one captured when it started.
+  const sshUserRef = useRef(sshUser);
+  sshUserRef.current = sshUser;
+  /** The login name as ssh should receive it: `null` = "unset, use ssh's default". */
+  const effectiveUser = (): string | null => sshUserRef.current.trim() || null;
+
   const status = useRemoteStatusStore((s) =>
     hostId === "primary" ? s.byProject[projectId] : s.byHost[projectId]?.[hostId],
   );
@@ -219,6 +249,14 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
   // without waiting for the project to reload. This is what a worker relied on:
   // its `key_auth` was never recorded at all (the connect returned early), so its
   // toggle stayed disabled forever — see `record_worker_key_auth`.
+  //
+  // Only the **headless** connect may set it. A connect that rode an interactive
+  // login's ControlMaster is credential-less for a completely different reason, and
+  // reading that as key auth is what used to mark password hosts auto-connect-
+  // eligible and then fail on every launch (`record_key_auth`, backend). Which is
+  // why this gate is headless-only in the first place: the non-headless branch
+  // renders its own ungated toggle, since there "auto-connect" means the login
+  // opening in the root terminal, not a connect Eldrun completes by itself.
   const [keyAuth, setKeyAuth] = useState(remote?.key_auth === true);
   useEffect(() => setKeyAuth(remote?.key_auth === true), [remote?.key_auth]);
   const autoConnectEligible = sshSaved || keyAuth;
@@ -262,6 +300,37 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
       .getState()
       .setProjectRemoteLabel(projectId, label)
       .catch((e) => setSshError(String(e)));
+  };
+
+  /**
+   * Write the edited login name onto this host's spec (the primary's `remote.user`,
+   * or the worker's). Called on blur/Enter *and* at the top of every connect, so a
+   * user who typed a name and hit Connect without leaving the field still connects
+   * as that account rather than the stale one.
+   *
+   * A no-op when unchanged, so an ordinary connect costs no write. Returns the
+   * committed value (`null` = cleared) so the caller can use it directly instead of
+   * waiting for the store round-trip to reach `remote`.
+   */
+  const commitSshUser = async (): Promise<string | null> => {
+    const next = effectiveUser();
+    const current = remote?.user ?? null;
+    if (next === current) return current;
+    try {
+      if (host) {
+        const hosts = await invoke<ComputeHost[]>("patch_compute_host", {
+          projectId,
+          hostId,
+          user: next ?? "",
+        });
+        applyPatchedHosts(hosts);
+      } else {
+        await useProjectsStore.getState().setProjectRemoteUser(projectId, next ?? "");
+      }
+    } catch (e) {
+      setSshError(String(e));
+    }
+    return next;
   };
 
   // Load the recently-used OpenVPN configs so a project that carries none yet can
@@ -441,7 +510,11 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
     if (!remote || gen !== sshGen.current) return; // stopped mid-poll
     const maxAttempts = 40; // ~2 min at 3s cadence
     void invoke<void>("ssh_connect", {
-      user: remote.user ?? null,
+      // The *live* login name, not the one captured when the poll started. The
+      // ControlMaster socket is hashed over (user, host, port), so probing as a
+      // different account than the login terminal authenticated as finds no master
+      // and polls out — a red lamp behind a login that visibly succeeded.
+      user: effectiveUser(),
       host: remote.host,
       port: remote.port ?? null,
       password: null,
@@ -451,12 +524,16 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
         clearSshPoll();
         // Master is up; bring the pool up so every later channel rides it.
         try {
-          await invoke("remote_connect", { projectId, hostId, password: null });
+          // `viaLogin`: this connect rode the master the login terminal above just
+          // established, so its credential-less success says nothing about how the
+          // host authenticates — the backend must not read it as key auth. It used
+          // to (and this hook used to mirror that reading into `keyAuth`), which
+          // stamped `key_auth: true` onto password hosts and made them advertise a
+          // promptless auto-connect that failed on every launch. In this mode the
+          // toggle needs no such evidence: it is offered unconditionally, because
+          // "auto-connect" here *means* this same login opening by itself.
+          await invoke("remote_connect", { projectId, hostId, password: null, viaLogin: true });
           if (gen !== sshGen.current) return;
-          // Rode the ControlMaster with no password and no saved credential →
-          // key/agent auth, which the backend just recorded. Reflect it now so the
-          // Auto-connect toggle un-greys without a reload.
-          if (!sshSaved) setKeyAuth(true);
           setSsh(projectId, "connected", hostId);
         } catch {
           if (gen !== sshGen.current) return;
@@ -481,12 +558,16 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
   const startSshTerm = async () => {
     if (!remote || sshTermRef.current || winManual) return;
     try {
+      // Commit the edited login name FIRST: it is what the command types, what the
+      // readiness probe rides the resulting master with, and what the pooled
+      // `remote_connect` re-reads from the spec. All three must agree.
+      const user = await commitSshUser();
       const command = await invoke<string>("remote_login_command", {
-        user: remote.user ?? null,
+        user,
         host: remote.host,
         port: remote.port ?? null,
       });
-      const target = `${remote.user ? `${remote.user}@` : ""}${remote.host}`;
+      const target = `${user ? `${user}@` : ""}${remote.host}`;
       const key = `ssh:${target}:${remote.port ?? ""}`;
       markConnectionOpened(key);
       const term = { id: nextReconnectTermId("ssh"), command, key };
@@ -596,8 +677,15 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
     // back to the keychain, where `""` would be taken as the password itself.
     const secret = password || null;
     try {
-      await invoke("ssh_connect", {
-        user: remote.user ?? null,
+      // Commit the edited login name before either leg runs: `remote_connect` reads
+      // the *persisted* spec, so a name that lived only in this component would
+      // authenticate the probe as one account and the pool as another.
+      const user = await commitSshUser();
+      // First contact: if this host's key has never been accepted here, show its
+      // fingerprint before the password goes anywhere, and retry once if accepted.
+      await withHostKeyConfirm(() =>
+        invoke("ssh_connect", {
+        user,
         host: remote.host,
         port: remote.port ?? null,
         password: secret,
@@ -605,7 +693,8 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
         // Connect button): `false` means "the user unticked it" and clears the
         // saved password — never say that on the user's behalf.
         remember: remember ?? null,
-      });
+        }),
+      );
       if (gen !== sshGen.current) return; // stopped mid-connect
       // The password must be handed to `remote_connect` too, not just the probe.
       // `ssh_connect` authenticates a throwaway process with `ControlMaster=no`
@@ -614,7 +703,9 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
       // master-owning pooled session, and with a null password it drops to
       // key/agent auth — which a password-auth host rejects. It falls back to a
       // *saved* password, so this only ever worked with "Save password" ticked.
-      await invoke("remote_connect", { projectId, hostId, password: secret });
+      await withHostKeyConfirm(() =>
+        invoke("remote_connect", { projectId, hostId, password: secret }),
+      );
       if (gen !== sshGen.current) return;
       // Only a checkbox-driven connect changed what's in the keychain.
       if (remember !== undefined) setSshSaved(remember);
@@ -695,6 +786,10 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
   return {
     sshStatus,
     vpnStatus,
+    // The SSH login name, editable in both modes (see `commitSshUser`).
+    sshUser,
+    setSshUser,
+    commitSshUser,
     vpnConfig,
     vpnConfigs,
     vpnUsername,

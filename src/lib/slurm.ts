@@ -65,9 +65,19 @@ export function slurmCancel(projectDir: string, jobId: string, hostId?: string):
   return invoke("slurm_cancel", { projectDir, jobId, hostId });
 }
 
-/** Resolve a job's stdout path (for Watch on a job we didn't submit this session). */
-export function slurmJobOut(projectDir: string, jobId: string, hostId?: string): Promise<string> {
-  return invoke<string>("slurm_job_out", { projectDir, jobId, hostId });
+/** Resolve a job's stdout path (for Watch on a job we didn't submit this session).
+ *  `logDir` is the project's recorded HPC log folder (`hpc.logs_dir`): when the
+ *  pipeline routes `--output` into the home anchor, the backend's
+ *  `<WorkDir>/slurm-<id>.out` fallback names a file that never existed, so the
+ *  recorded folder is passed as the better guess. Whatever `scontrol` states
+ *  still wins over both. */
+export function slurmJobOut(
+  projectDir: string,
+  jobId: string,
+  hostId?: string,
+  logDir?: string,
+): Promise<string> {
+  return invoke<string>("slurm_job_out", { projectDir, jobId, hostId, logDir });
 }
 
 // ── #SBATCH directive parsing / splicing (render rows, edit text) ─────────────

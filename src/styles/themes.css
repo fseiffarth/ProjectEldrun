@@ -773,7 +773,10 @@ select option {
   display: flex;
   align-items: stretch;
   overflow: visible;
-
+  /* Equal spacing between the brain/global-apps buttons and the project
+     switcher's leading settings gear — .project-switcher supplies none of its
+     own left padding, so this gap is the only thing between any of the three. */
+  gap: 6px;
 }
 
 .header-right {
@@ -1553,6 +1556,53 @@ select option {
 }
 .hpc-wizard-uploaded li {
   padding: 1px 0;
+}
+/* Workspace step (Phase C): the allocate form, the existing-workspace picker and
+   the project-layout choice. A workspace is DELETED at expiry, so its remaining
+   time is toned rather than being one more grey line. */
+.hpc-ws-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px 8px;
+  margin: 4px 0;
+}
+.hpc-ws-list,
+.hpc-ws-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 8px 0 4px;
+}
+.hpc-ws-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  min-width: 0;
+}
+.hpc-ws-id {
+  font-weight: 600;
+}
+.hpc-ws-path {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+.hpc-ws-remaining {
+  white-space: nowrap;
+}
+.hpc-ws-remaining.tone-ok {
+  color: var(--text-muted);
+}
+.hpc-ws-remaining.tone-warn {
+  color: var(--warning, #d29922);
+}
+.hpc-ws-remaining.tone-urgent {
+  color: var(--danger, #f85149);
+  font-weight: 600;
 }
 /* Hover hint showing the saved run arguments. The native `title` tooltip is
    unreliable under WebKitGTK, so this is an explicit in-DOM popover — same panel
@@ -7250,7 +7300,10 @@ select option {
   background-color: transparent;
   display: flex;
   align-items: center;
-  padding: 0 6px;
+  /* No left padding: the leading settings gear's gap to .global-apps-menu is
+     supplied entirely by .header-center's gap, so it matches the brain/global-
+     apps gap instead of stacking on top of it. */
+  padding: 0 6px 0 0;
   gap: 4px;
   /* Fill the header-center track and stay shrinkable so the pill row can never
      push past it into the right-side clock/controls. min-width:0 lets the
@@ -7298,11 +7351,26 @@ select option {
 
 .project-pill.dragging {
   opacity: 0.45;
-  transform: scale(0.94);
-  transition: transform var(--transition), opacity var(--transition);
+  /* No transform transition here: the inline translateX follows the pointer
+     1:1 every move (see ProjectPill's startPillDrag) — animating it would lag
+     the pill behind the cursor. Only the dim fades in smoothly. */
+  transition: opacity var(--transition);
+  position: relative;
+  z-index: 2;
 }
 
-/* Make room before the drop target and show a pulsing insertion bar. */
+/* The pills the dragged one is NOT: they slide aside via an inline translateX
+   (ProjectSwitcher's `shiftPx`, mirroring MachinesIndicator's row-parting) to
+   open its landing slot. Only the transition lives here, scoped to an actual
+   drag in progress, so an ordinary pill never animates. */
+.project-pill.reorder-parting {
+  transition: transform 140ms ease;
+}
+
+/* A box pill under a project-pill drag (assign-to-box target, see
+   ProjectSwitcher's `forcedDragOver`): nudge + a pulsing insertion-style bar.
+   A plain project pill never gets this anymore — reordering past one is now
+   the parting slide above, not an insertion bar. */
 .project-pill.drag-over {
   position: relative;
   margin-left: 8px;
@@ -7790,6 +7858,7 @@ select option {
 
 .pill-popup-path {
   font-size: 11px;
+  font-style: italic;
   color: var(--text-secondary);
   max-width: 300px;
   overflow: hidden;
@@ -8876,7 +8945,7 @@ select option {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  /* Menu section header: accent so the groups ("Local Model" / "Load into
+  /* Menu section header: accent so the groups ("Local Models" / "Load into
      memory" / "Agents") separate from the item rows instead of reading like a
      dimmed, disabled entry. */
   color: var(--accent);
@@ -9430,9 +9499,9 @@ select option {
 }
 
 /* Compact (docked subwindow) viewer: the Remote/Local switch alone, on its own
-   row directly above the tree's find-files search box (the compact viewer
-   strips the full header that normally carries the switch). Left-aligned with
-   the tree content below it. */
+   row where the stripped header would have been — above the Files/Git/Search/
+   Apps toolbar, so the compact viewer stacks in the same order as the right
+   panel. Left-aligned with the tree content below it. */
 .right-panel-source--compact {
   padding: 4px 6px;
   /* A docked subwindow viewer is narrow: the switch + the run-host picker do not
@@ -10069,6 +10138,48 @@ select option {
   font-size: 11px;
   text-align: center;
 }
+/* Section caption inside the Jobs view (the workspaces block above the queue). */
+.right-panel-orange-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 8px 2px;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+/* The workspace-expiry warning. Raised in every view of a project whose host
+   tree lives in a workspace, because expiry deletes that tree — not just data. */
+.hpc-expiry-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  font-size: 11px;
+  border-bottom: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--warning, #d29922) 14%, transparent);
+  color: var(--text-primary);
+}
+.hpc-expiry-banner.tone-urgent {
+  background: color-mix(in srgb, var(--danger, #f85149) 16%, transparent);
+}
+.hpc-expiry-actions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+.hpc-expiry-actions button {
+  font-size: 10px;
+  padding: 1px 6px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
 
 /* Bulk "…for all" resolution bar atop the diverged list. */
 .orange-bulk-bar {
@@ -10164,13 +10275,53 @@ select option {
   border-color: color-mix(in srgb, var(--text-secondary) 30%, transparent);
 }
 
-/* Persistent (tmux) sessions view (TODO #85): the per-row window/age/open meta,
-   dimmed so the session name stays the row's focus. */
+/* Persistent (tmux) sessions view (TODO #85): the row's "open" hint (a shell
+   tab already has this session attached), dimmed so the session name stays
+   the row's focus. Windows/uptime/idle-time moved to the dwell-hover stats
+   card (`.file-tooltip`, shared with the file tree) rather than crowding the
+   row. */
 .tmux-session-meta {
   margin-left: 6px;
   color: var(--text-secondary, #8b949e);
   font-size: 10px;
   flex-shrink: 0;
+}
+
+/* The row's own name label: a short, stable stand-in (`sessionDisplayName`)
+   for the raw `eldrun-<uuid>`, which lives in full in the hover stats card
+   instead of overflowing the row. */
+.tmux-session-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Working indicator (TODO #85): the active pane is running something other
+   than a bare shell — reuses the "host has live work on it" pulse vocabulary
+   `.conn-lamp-busy` already established for the connection lamps, so a
+   breathing dot means the same thing everywhere in the app. `opacity`-only
+   animation on a pseudo-element, not `box-shadow` on the dot itself — see the
+   perf note above `.conn-lamp-busy` (rasterising a blurred shadow every frame
+   is pure CPU with the DMABUF renderer disabled). */
+.tmux-work-dot {
+  position: relative;
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  margin-left: 2px;
+  border-radius: 50%;
+  background: var(--success);
+}
+.tmux-work-dot::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  pointer-events: none;
+  box-shadow:
+    0 0 6px color-mix(in srgb, var(--success) 90%, transparent),
+    0 0 10px color-mix(in srgb, var(--success) 45%, transparent);
+  will-change: opacity;
+  animation: conn-lamp-busy-pulse 1.8s ease-in-out infinite;
 }
 
 /* Machine sections in the persistent-session view. Uses the shared elevation,
@@ -10802,6 +10953,11 @@ select option {
   flex-shrink: 0;
 }
 
+/* Flush with the header at rest (same background as .app-header, no boxed
+   outline) so this and its .local-model-btn sibling read as part of the top
+   frame's chrome rather than standing controls; the boxed control surface
+   only appears on hover/expanded, same reveal-on-touch treatment as
+   .vpn-indicator-btn/.machines-indicator-btn. */
 .global-apps-menu-btn {
   display: flex;
   align-items: center;
@@ -10809,11 +10965,12 @@ select option {
   min-width: 32px;
   height: 32px;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--control-border);
-  background: var(--control-bg);
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
   font-size: 14px;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
 }
 
 .global-apps-menu-btn:hover,
@@ -10823,68 +10980,32 @@ select option {
   border-color: var(--text-muted);
 }
 
-/* Drops straight down from the button, aligned to its right edge so it
-   stays clear of the clock/window controls. */
-.global-apps-menu-dropdown {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  z-index: 90;
-}
-
-.global-apps-menu-dropdown .global-apps-toolbar {
-  border-top: 1px solid var(--border-color);
-}
-
-.global-apps-toolbar {
-  align-self: center;
-  display: flex;
-  gap: 2px;
-  padding: 4px 6px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-color);
-  border-top: none;
-  border-radius: 0;
-  box-shadow: var(--shadow-2);
-}
-
-.global-app-btn {
-  width: 30px;
-  height: 28px;
-  border-radius: var(--radius-sm);
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.global-app-btn:hover {
-  background: var(--pill-hover-bg);
-  color: var(--text-primary);
-}
-
-.global-app-btn[aria-disabled="true"] {
+/* Global-app launcher rows: rides the shared .tab-new-menu/.tab-new-menu-item
+   one-column list chrome (same shape as the Local Model / Machines / VPN
+   dropdowns) — an icon (real app icon, or the role's fallback glyph) followed
+   by the program's label, instead of the old icon-only tile grid. */
+.global-app-menu-row[aria-disabled="true"] {
   cursor: default;
   opacity: 0.55;
 }
 
-.global-app-btn[aria-disabled="true"]:hover {
-  background: transparent;
-  color: var(--text-secondary);
+.global-app-menu-row[aria-disabled="true"]:hover {
+  background: var(--control-bg);
 }
 
 .global-app-icon {
   width: 18px;
   height: 18px;
   object-fit: contain;
+  flex-shrink: 0;
 }
 
 .global-app-fallback-icon {
+  width: 18px;
   font-size: 15px;
   line-height: 1;
+  text-align: center;
+  flex-shrink: 0;
 }
 
 .global-app-edit-popover {
@@ -10930,9 +11051,7 @@ select option {
   pointer-events: auto;
 }
 
-.project-switcher-root-btn,
-.project-switcher-action-btn,
-.project-switcher-add-btn {
+.project-switcher-root-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -10942,16 +11061,11 @@ select option {
   border: 1px solid var(--control-border);
   cursor: pointer;
   flex-shrink: 0;
-}
-
-.project-switcher-root-btn,
-.project-switcher-action-btn {
   background: var(--control-bg);
   color: var(--text-secondary);
 }
 
-.project-switcher-root-btn:hover,
-.project-switcher-action-btn:hover {
+.project-switcher-root-btn:hover {
   background: var(--control-hover-bg);
   color: var(--text-primary);
   border-color: var(--text-muted);
@@ -10964,15 +11078,32 @@ select option {
   box-shadow: inset 0 4px 0 var(--accent);
 }
 
+/* Settings gear + add-project button: same compact, blend-into-the-header
+   style as .global-apps-menu-btn (the Local Model / Global Apps buttons) —
+   transparent at rest, boxed chrome only on hover/reveal — instead of the
+   old 40px filled buttons that stood out against the quieter header. */
+.project-switcher-action-btn,
 .project-switcher-add-btn {
-  background: var(--accent);
-  color: var(--bg-main);
-  font-size: 20px;
-  border-color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  font-size: 14px;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
 }
 
+.project-switcher-action-btn:hover,
 .project-switcher-add-btn:hover {
-  background: var(--accent-hover);
+  background: var(--control-hover-bg);
+  color: var(--text-primary);
+  border-color: var(--text-muted);
 }
 
 .project-switcher-separator {
@@ -11008,50 +11139,31 @@ select option {
   align-items: center;
 }
 
-/* Chevron overlays that appear over whichever edge has hidden pills. They sit
-   above the pill row and scroll it on click, giving a clear "more this way"
-   cue beyond the edge fade. */
+/* Chevrons live on the bar itself — ordinary flex siblings of
+   .project-pills-scroll (left btn, scroll strip, right btn), taking their own
+   slice of width rather than absolutely overlaying the edge pills. Flat/no
+   background at rest, matching the header's other quiet-until-touched
+   buttons; only the icon's color shifts on hover. */
 .pills-scroll-btn {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 34px;
+  flex-shrink: 0;
+  width: 20px;
+  height: 32px;
   display: none;
   align-items: center;
   justify-content: center;
   padding: 0;
   border: none;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  z-index: 2;
-  font-size: 26px;
+  font-size: 20px;
   line-height: 1;
-  color: var(--text-primary);
-  background: var(--bg-header);
+  color: var(--text-secondary);
+  background: transparent;
   transition: color var(--transition);
 }
 
 .pills-scroll-btn:hover {
   color: var(--accent);
-}
-
-.pills-scroll-btn.left {
-  left: 0;
-  justify-content: flex-start;
-  background: linear-gradient(
-    to right,
-    var(--bg-header) 55%,
-    transparent 100%
-  );
-}
-
-.pills-scroll-btn.right {
-  right: 0;
-  justify-content: flex-end;
-  background: linear-gradient(
-    to left,
-    var(--bg-header) 55%,
-    transparent 100%
-  );
 }
 
 .project-pills-region.overflow-left .pills-scroll-btn.left {
@@ -11062,8 +11174,8 @@ select option {
   display: flex;
 }
 
-/* Hidden scrollbar — overflow is conveyed by the edge fade above and wheel
-   scrolling, keeping the pills at full height inside the 40px row. */
+/* Hidden scrollbar — overflow is conveyed by the on-bar chevrons above and
+   wheel scrolling, keeping the pills at full height inside the 40px row. */
 .project-pills-scroll::-webkit-scrollbar {
   height: 0;
 }
@@ -11095,6 +11207,24 @@ select option {
   display: inline-flex;
   flex-shrink: 0;
   font-size: 15px;
+  position: relative;
+}
+
+/* Paused-timer marker: a small badge over the git-colored folder, so pausing
+   the app timer no longer erases the folder's git-state color (it used to
+   replace the whole icon). Kept tiny + corner-anchored so the folder + its
+   red/orange/green tint stay legible underneath. */
+.pill-folder-pause {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  font-size: 8px;
+  line-height: 1;
+  color: var(--text-muted);
+  background: var(--bg-panel);
+  border-radius: 50%;
+  padding: 1px;
+  pointer-events: none;
 }
 
 /* Folder icon color signals the project's pending git state at a glance —
@@ -11124,20 +11254,37 @@ select option {
   flex-shrink: 0;
 }
 
+/* Rarely used (most projects stay active, so this box sits empty most of the
+   time) — kept flush with the header at rest instead of a standing boxed
+   input, and only picks up its control chrome on hover/focus, like the
+   header's other quiet-until-touched buttons (.global-apps-menu-btn,
+   .vpn-indicator-btn/.machines-indicator-btn). */
 .project-search-entry {
   width: 100%;
   height: 40px;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--control-border);
-  background: var(--control-bg);
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--text-primary);
   padding: 0 9px;
   font-size: 12px;
   outline: none;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.project-search-entry::placeholder {
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.project-search-entry:hover {
+  border-color: var(--control-border);
+  background: var(--control-bg);
 }
 
 .project-search-entry:focus {
   border-color: var(--accent);
+  background: var(--control-bg);
 }
 
 .project-search-popover {
@@ -11212,11 +11359,19 @@ select option {
 .project-switcher-add-wrap {
   position: relative;
   flex-shrink: 0;
+  /* `.project-switcher` centers its children (like `.header-right` does for
+     VPN/Machines), so this wrap would otherwise shrink to its 40px button and
+     place `top: calc(100% + 4px)` above the header-right menus' shared line.
+     Stretch to the full 44px row and re-center the button inside it, mirroring
+     `.header-status-menu-anchor`. */
+  display: flex;
+  align-items: center;
+  align-self: stretch;
 }
 
 .project-switcher-add-menu {
   position: absolute;
-  right: 0;
+  left: 0;
   top: calc(100% + 4px);
   min-width: 150px;
   display: flex;
@@ -12013,7 +12168,7 @@ select option {
 }
 
 .settings-row label,
-.settings-switch-row span {
+.settings-switch-row span:first-child {
   flex: 1;
   color: var(--text-primary);
 }
@@ -12606,6 +12761,59 @@ select option {
 .vpn-prompt-text {
   color: var(--text-primary);
   margin: 0 0 8px;
+  /* A project name is user-chosen and a header-started connect substitutes the
+     `.ovpn` filename — both routinely long and both unbreakable to the normal
+     wrapper (no spaces). Without this the name overflowed the 380px dialog and
+     dragged its whole layout wide. */
+  overflow-wrap: anywhere;
+}
+
+/* Title row: heading on the left, × on the right. The canonical accent-header
+   divider moves from the h2 onto the row itself — left on the h2 it would end
+   where the text ends instead of spanning the dialog. */
+.vpn-prompt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.vpn-prompt-header h2 {
+  min-width: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+  overflow-wrap: anywhere;
+}
+
+/* The project (or `.ovpn`) name inside the prose line — see `.vpn-prompt-text`. */
+.vpn-prompt-name {
+  overflow-wrap: anywhere;
+}
+
+.vpn-prompt-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: background var(--transition), opacity var(--transition);
+}
+
+.vpn-prompt-close:hover {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 18%, transparent);
 }
 
 .vpn-prompt-actions {
@@ -12634,6 +12842,53 @@ select option {
 .vpn-prompt-actions button.primary:hover:not(:disabled) {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
+}
+
+/* "Sign in in a terminal" — the same escape hatch inside the connect dialogs, as a
+   switch rather than a button: it is a *mode* for this connect (which half of the
+   login section is on screen), and it has to be flippable back. It borrows the
+   `.remote-connect-remember` row layout so it reads as one of that section's options,
+   set apart only by the rule above it. */
+.terminal-signin-toggle {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+/* Once a login has actually failed, the hint stops being a footnote about an option
+   and becomes the suggestion — so it is toned like one. */
+.terminal-signin-toggle .terminal-signin-suggest {
+  color: var(--warning, var(--text-primary));
+  opacity: 0.9;
+}
+
+/* "Go easy on this machine" — same borrowed `.remote-connect-remember` row as the
+   terminal-login switch above it, and set apart the same way. It is last in the
+   section on purpose: it says nothing about *this* connect, only about how Eldrun
+   should behave on this host from now on. */
+.careful-host-toggle {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+/* "Log in in terminal" — an alternative *route*, not a step in this dialog's flow, so
+   it sits apart from the Cancel/Connect pair rather than becoming a third thing to
+   choose between at the same spot. */
+.vpn-prompt-actions button.vpn-prompt-terminal-btn {
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.vpn-prompt-actions button.vpn-prompt-terminal-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.vpn-prompt-actions button.vpn-prompt-terminal-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .folder-picker-row span {
@@ -13089,6 +13344,83 @@ select option {
   color: var(--text-primary);
 }
 
+/* ── The HPC tag ───────────────────────────────────────────────────────────
+   The badge that marks a machine as a shared cluster login node (Machines menu
+   row, connect dialog, the guard modal). Deliberately loud enough to notice on a
+   row and small enough not to shout: it is a fact about the machine, not a
+   warning about it. */
+.hpc-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 15px;
+  color: var(--accent);
+  background: transparent;
+  flex: none;
+}
+
+.hpc-guard-dialog {
+  max-width: 520px;
+}
+.hpc-guard-title {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+.hpc-guard-target {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.hpc-guard-target code {
+  font-size: 11px;
+  color: var(--text-primary);
+}
+.hpc-guard-badge {
+  padding: 0 5px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 15px;
+  color: var(--accent);
+}
+.hpc-guard-body {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+.hpc-guard-note {
+  margin: 0 0 14px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* The HPC-host note: why this section lists only the user's own sessions and
+   processes. Informational, so it is toned down against the reasons list above
+   it — it explains the reading, it is not one of the warnings. */
+.remote-usage-careful {
+  padding: 6px 8px;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background: var(--bg-subtle, rgba(127, 127, 127, 0.08));
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
 .remote-usage-stats {
   display: flex;
   gap: 16px;
@@ -13248,6 +13580,21 @@ select option {
 .remote-usage-user {
   font-weight: 650;
   white-space: nowrap;
+}
+/* "you" chip on the connected account's own row in the "Logged in" table — the
+   row is pinned to the top, and this is what says why it is there (on a host
+   where the login name differs from the local one, the name alone doesn't). */
+.remote-usage-user-you {
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft, rgba(88, 166, 255, 0.22));
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  vertical-align: 1px;
 }
 .remote-usage-user-cpu,
 .remote-usage-user-sessions,
@@ -13883,6 +14230,28 @@ select option {
   flex: 0 0 auto;
 }
 
+/* "Paste username / password" above a login terminal (see CredentialPasteBar):
+   small, secondary buttons — the login itself happens in the terminal below, this
+   only saves retyping a credential the keychain already holds. */
+.credential-paste-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.credential-paste-btn {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 0.8em;
+  border-radius: var(--radius-sm);
+}
+
+.credential-paste-note {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 /* "Push to GitHub/GitLab" picked but no Eldrun connection yet: a nudge to set
    the access token up in Settings → Git Hosting, with a one-click redirect. */
 .git-connect-notice {
@@ -14182,6 +14551,40 @@ select option {
   color: var(--text-muted);
 }
 
+/* The "measure the host anyway" action inside that note. It is deliberately a
+   link and not a dialog button: on a careful host the host scan is the exception
+   the user asks for by name, so it belongs in the sentence explaining why it did
+   not happen — not in the action row beside Apply, where it would read as part of
+   the normal flow. */
+.big-folder-note .link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent, var(--text-primary));
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.big-folder-note .link-button:disabled {
+  color: var(--text-muted);
+  text-decoration: none;
+  cursor: default;
+}
+
+/* A hint sentence's inline action (e.g. "Create a GitHub access token…") —
+   reads as part of the sentence, not a dialog button. Unscoped (unlike
+   .big-folder-note .link-button above) so any hint row can use it. */
+.inline-link-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent, var(--text-primary));
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 /* ── Orbit spinner (active-tracking indicator) ───────────────────────── */
 @keyframes orbit-spin {
   from { transform: rotate(0deg); }
@@ -14308,6 +14711,35 @@ select option {
   background: var(--bg-elevated, rgba(255, 255, 255, 0.03));
 }
 .agent-list-entry .settings-section-title {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+.agent-list-entry-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+/* Enabled/Disabled toggle on an installed agent's row: hides it from tab-choice
+   menus (add-tab Agents group, Local Model drivers) without uninstalling it. */
+.agent-disable-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+/* Codex's session-hook-trust notice, nested inside its own agent-list-entry
+   card rather than floating as a separate top-of-panel section. */
+.agent-codex-hook {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+.agent-codex-hook .settings-section-title {
   margin-top: 0;
   padding-top: 0;
   border-top: none;
@@ -14717,11 +15149,23 @@ select option {
 .local-model-download-action.danger { color: var(--danger); }
 .local-model-download-action.danger:hover { border-color: var(--danger); }
 
-/* A "load into memory" row in the brain menu: the menu item plus, while the
+/* A "load into memory" row in the brain menu: the entry line plus, while the
    model is warming, an indeterminate bar under it (Ollama streams no load %). */
 .local-model-load-row {
   display: flex;
   flex-direction: column;
+}
+/* The entry line itself: a plain (non-button) row, matching .local-model-agent-row,
+   with a trailing Load button — not a full-row button like the resident-model pick. */
+.local-model-load-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 4px 10px;
+}
+.local-model-load-action {
+  margin-left: auto;
 }
 .local-model-load-bar {
   margin: 2px 12px 4px;
@@ -15192,6 +15636,38 @@ select option {
   color: var(--text-secondary);
 }
 
+/* Success banner shown when the tunnel came up — the modal says so and offers Close,
+   instead of just vanishing (which read as "did it actually connect?"). */
+/* Why this prompt is on screen when the connect was meant to be silent (rejected
+   credentials, an unreadable keyring, none saved yet). Informational, not an error —
+   the modal is still perfectly usable, it just owes the user an explanation. */
+.vpn-prompt-reason {
+  margin: 4px 0 2px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  background: var(--bg-hover, color-mix(in srgb, var(--text-primary) 6%, transparent));
+  border: 1px solid var(--border);
+}
+.vpn-prompt-connected {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 2px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--success) 40%, transparent);
+}
+.vpn-connected-check {
+  font-weight: 700;
+}
+
 /* Auto-connect + VPN: the one combination that changes the machine's routing with
    no prompt at all, so it gets said out loud rather than buried in a tooltip. */
 .remote-connect-vpn-warning {
@@ -15242,7 +15718,10 @@ select option {
 .vpn-indicator-btn[aria-expanded="true"],
 .machines-indicator-btn:hover,
 .machines-indicator-btn[aria-expanded="true"] {
-  background: transparent;
+  /* Same accent-tinted highlight as .tab-new-btn:hover (the + button), so the
+     header's three "quiet until touched" controls (+, VPN, Machines) all light
+     up the same way instead of these two staying flat while the + brightens. */
+  background: var(--pill-hover-bg);
   border-color: transparent;
 }
 .vpn-indicator-btn:hover .vpn-indicator-label,
@@ -15258,6 +15737,36 @@ select option {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   transition: color var(--transition);
+}
+/* Title row carries the pinned "OpenVPN" label plus a top-right × (unified with the
+   other menus). The label keeps its accent styling; the row just lays the two out. */
+.vpn-indicator-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.vpn-indicator-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.75;
+  transition: background var(--transition), opacity var(--transition);
+}
+.vpn-indicator-close:hover {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 18%, transparent);
 }
 .vpn-indicator-menu {
   width: 268px;
@@ -15409,6 +15918,23 @@ select option {
 .vpn-indicator-error {
   color: var(--danger, var(--text-primary));
   word-break: break-word;
+}
+/* The locked-keyring banner: a warning with one action, sitting above the tunnel
+   rows because it explains all of them at once (nothing saved can be read while it
+   is up). Toned like a warning, not an error — nothing is broken, it is just shut. */
+.vpn-indicator-locked {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 4px 8px 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--warning, #d08a2c) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning, #d08a2c) 40%, transparent);
 }
 
 /* ── Header Machines indicator (MachinesIndicator) ──────────────────────────
@@ -16325,79 +16851,46 @@ select option {
 
 /* ── Fancy themes: make the buttons live up to the name ──────────────────
    The plain `dark`/`light` themes keep flat, utilitarian buttons. The
-   `fancy_*` themes earn their label here: the always-visible chrome buttons
-   (header app-menu button + Ollama model button, the app-launcher tiles, and
-   the project pills) get an accent-tinted gradient surface, a soft glow
-   border, and a hover lift + glow. Scoped to `[data-theme="fancy_*"]` so the
-   plain themes are untouched. Only color/shadow/transform are themed — sizing
-   and layout stay owned by the base component rules above. */
-[data-theme="fancy_dark"] .global-apps-menu-btn,
-[data-theme="fancy_light"] .global-apps-menu-btn {
-  background:
-    linear-gradient(160deg,
-      color-mix(in srgb, var(--accent) 14%, var(--control-bg)) 0%,
-      var(--control-bg) 70%);
-  border-color: var(--border-color);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 0 0 1px rgba(0, 0, 0, 0.18);
-  transition: background var(--transition), box-shadow var(--transition), border-color var(--transition), color var(--transition), transform var(--transition);
-}
-
-[data-theme="fancy_dark"] .global-apps-menu-btn:hover,
-[data-theme="fancy_dark"] .global-apps-menu-btn[aria-expanded="true"],
-[data-theme="fancy_light"] .global-apps-menu-btn:hover,
-[data-theme="fancy_light"] .global-apps-menu-btn[aria-expanded="true"] {
-  background:
-    linear-gradient(160deg,
-      color-mix(in srgb, var(--accent) 26%, var(--control-hover-bg)) 0%,
-      var(--control-hover-bg) 80%);
-  border-color: var(--accent);
-  color: var(--text-primary);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    0 0 12px -2px color-mix(in srgb, var(--accent) 65%, transparent);
-}
-
-[data-theme="fancy_dark"] .global-apps-menu-btn:active,
-[data-theme="fancy_light"] .global-apps-menu-btn:active {
-  transform: translateY(1px);
-}
+   `fancy_*` themes earn their label here: the project pills get an
+   accent-tinted gradient surface, a soft glow border, and a hover lift +
+   glow. Scoped to `[data-theme="fancy_*"]` so the plain themes are
+   untouched. Only color/shadow/transform are themed — sizing and layout
+   stay owned by the base component rules above.
+   The header's icon buttons (Local Model, Global Apps, the settings gear,
+   the add-project +) are deliberately NOT themed here — they stay the same
+   flat, transparent-at-rest style in every theme, like the VPN/Machines
+   status readouts below. */
 
 /* The VPN and Machines indicators opt back out of the fancy gradient-button
-   treatment above (they're status readouts, not buttons — see the
-   plain-theme rule on .vpn-indicator-btn/.machines-indicator-btn for why). */
+   treatment this section otherwise applies (they're status readouts, not
+   buttons — see the plain-theme rule on .vpn-indicator-btn/.machines-indicator-btn
+   for why): no glow border, lift or shadow. Their hover/expanded state still
+   gets the flat .pill-hover-bg tint (set above, same as .tab-new-btn:hover) —
+   only the rest state is forced transparent here, and only shadow/transform/
+   border stay suppressed on hover, so a future gradient rule added above can't
+   silently start theming them again. */
 [data-theme="fancy_dark"] .vpn-indicator-btn,
 [data-theme="fancy_light"] .vpn-indicator-btn,
-[data-theme="fancy_dark"] .vpn-indicator-btn:hover,
-[data-theme="fancy_light"] .vpn-indicator-btn:hover,
-[data-theme="fancy_dark"] .vpn-indicator-btn[aria-expanded="true"],
-[data-theme="fancy_light"] .vpn-indicator-btn[aria-expanded="true"],
 [data-theme="fancy_dark"] .machines-indicator-btn,
-[data-theme="fancy_light"] .machines-indicator-btn,
-[data-theme="fancy_dark"] .machines-indicator-btn:hover,
-[data-theme="fancy_light"] .machines-indicator-btn:hover,
-[data-theme="fancy_dark"] .machines-indicator-btn[aria-expanded="true"],
-[data-theme="fancy_light"] .machines-indicator-btn[aria-expanded="true"] {
+[data-theme="fancy_light"] .machines-indicator-btn {
   background: transparent;
   border-color: transparent;
   box-shadow: none;
   transform: none;
 }
 
-/* App-launcher tiles: a transparent rest state that blooms into an
-   accent-tinted, glowing tile on hover. */
-[data-theme="fancy_dark"] .global-app-btn:hover:not([aria-disabled="true"]),
-[data-theme="fancy_light"] .global-app-btn:hover:not([aria-disabled="true"]) {
-  background:
-    radial-gradient(120% 120% at 50% 0%,
-      color-mix(in srgb, var(--accent) 30%, transparent) 0%,
-      var(--pill-hover-bg) 75%);
-  color: var(--text-primary);
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent),
-    0 0 10px -3px color-mix(in srgb, var(--accent) 70%, transparent);
-  transition: background var(--transition), box-shadow var(--transition), color var(--transition);
+[data-theme="fancy_dark"] .vpn-indicator-btn:hover,
+[data-theme="fancy_light"] .vpn-indicator-btn:hover,
+[data-theme="fancy_dark"] .vpn-indicator-btn[aria-expanded="true"],
+[data-theme="fancy_light"] .vpn-indicator-btn[aria-expanded="true"],
+[data-theme="fancy_dark"] .machines-indicator-btn:hover,
+[data-theme="fancy_light"] .machines-indicator-btn:hover,
+[data-theme="fancy_dark"] .machines-indicator-btn[aria-expanded="true"],
+[data-theme="fancy_light"] .machines-indicator-btn[aria-expanded="true"] {
+  background: var(--pill-hover-bg);
+  border-color: transparent;
+  box-shadow: none;
+  transform: none;
 }
 
 /* No generic bottom stripe on fancy-theme pills — the old --warning (yellow)
@@ -18571,4 +19064,1158 @@ select option {
   margin-top: 4px;
   padding-top: 10px;
   border-top: 1px solid var(--border-subtle);
+}
+
+/* ── Native presenter ("deck") ───────────────────────────────────────────────
+   The experimental presentation editor (docs/deck_presenter_plan.md). Objects
+   render as DOM/SVG over the base page canvas rather than into it, so selection
+   outlines, handles and z-order come from the browser.
+
+   Two constraints from this codebase are baked in below. Nothing here animates a
+   BLURRED box-shadow — under software rendering (DMABUF is off) that is a paint
+   killer, so the selection uses outlines and flat borders. And every gesture is
+   pointer-based, so the interactive bits set `touch-action: none` rather than
+   relying on drag events WebKitGTK does not deliver. */
+
+.deck-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+}
+
+.deck-toolbar-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.deck-save-state {
+  padding: 0 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.deck-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* --- slide rail --- */
+
+.deck-rail {
+  /* Width is set inline (user-resizable, persisted per tab) — no fixed value
+     here, just the flex behaviour that keeps it from stretching or shrinking
+     under the stage. */
+  flex: 0 0 auto;
+  overflow-y: auto;
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--bg-panel);
+}
+
+/* Drag handle between the rail and the stage. A flex sibling, not an overlay —
+   the rail's own width is exactly what it says, with nothing absolutely
+   positioned over its edge to get the hit-test wrong. */
+.deck-rail-resize {
+  flex: 0 0 auto;
+  width: 5px;
+  cursor: col-resize;
+  touch-action: none;
+  background: var(--border-color);
+}
+.deck-rail-resize:hover {
+  background: var(--accent);
+}
+
+.deck-rail-head {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  padding: 0 2px 2px;
+}
+
+.deck-rail-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 9; /* fallback before the deck's own page box is known; the
+                            rendered item overrides this inline per-deck */
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.deck-rail-item:hover {
+  background: var(--control-hover-bg);
+}
+
+.deck-rail-item.active {
+  border-color: var(--accent);
+  background: var(--pill-active-bg);
+  color: var(--text-primary);
+}
+
+/* The slide preview. Sits behind the number/badges (z-order = paint order, no
+   z-index needed since it's simply first in the DOM), filling the item box the
+   same way `.deck-stage-canvas` fills the stage. */
+.deck-rail-thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: var(--radius-sm);
+  background: #ffffff;
+}
+
+.deck-rail-num {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  padding: 0 3px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-header-solid) 75%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+
+.deck-rail-badge,
+.deck-rail-gif {
+  position: absolute;
+  bottom: 2px;
+  font-size: 9px;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  color: var(--bg-main);
+}
+
+.deck-rail-badge { right: 2px; }
+.deck-rail-gif { left: 2px; background: var(--accent-secondary); }
+
+.deck-rail-actions {
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+
+.deck-rail-item:hover .deck-rail-actions,
+.deck-rail-item.active .deck-rail-actions,
+.deck-rail-actions:focus-within {
+  opacity: 1;
+}
+
+.deck-rail-act-btn {
+  width: 16px;
+  height: 14px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  line-height: 1;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-header-solid);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.deck-rail-act-btn:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  color: var(--text-primary);
+}
+
+.deck-rail-act-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* --- stage --- */
+
+.deck-stage {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--bg-main);
+}
+
+.deck-stage-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.deck-stage-page {
+  position: relative;
+  background: #ffffff;
+  box-shadow: var(--shadow-2);
+  touch-action: none;
+  user-select: none;
+}
+
+.deck-stage-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+/* The safe area. Deliberately faint: it is a snapping target and a hint, not a
+   frame anyone should be reading around. */
+.deck-stage-margin {
+  position: absolute;
+  border: 1px dashed color-mix(in srgb, var(--accent) 35%, transparent);
+  pointer-events: none;
+}
+
+/* --- objects --- */
+
+.deck-object {
+  pointer-events: auto;
+  cursor: move;
+}
+
+.deck-object.locked {
+  cursor: default;
+}
+
+.deck-object.selected {
+  /* Outline, not box-shadow: it needs no blur and costs no paint. */
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+
+.deck-object-missing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-muted);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px;
+}
+
+.deck-text-line {
+  display: flex;
+  gap: 0.4em;
+  align-items: baseline;
+}
+
+.deck-text-marker {
+  flex: 0 0 auto;
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- selection, handles, marquee --- */
+
+.deck-selection {
+  position: absolute;
+  border: 1px solid var(--accent);
+  pointer-events: none;
+}
+
+.deck-handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  background: var(--bg-main);
+  border: 1.5px solid var(--accent);
+  border-radius: 2px;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.deck-handle-nw { left: 0;    top: 0;    cursor: nwse-resize; }
+.deck-handle-n  { left: 50%;  top: 0;    cursor: ns-resize; }
+.deck-handle-ne { left: 100%; top: 0;    cursor: nesw-resize; }
+.deck-handle-e  { left: 100%; top: 50%;  cursor: ew-resize; }
+.deck-handle-se { left: 100%; top: 100%; cursor: nwse-resize; }
+.deck-handle-s  { left: 50%;  top: 100%; cursor: ns-resize; }
+.deck-handle-sw { left: 0;    top: 100%; cursor: nesw-resize; }
+.deck-handle-w  { left: 0;    top: 50%;  cursor: ew-resize; }
+
+.deck-rotate {
+  position: absolute;
+  left: 50%;
+  top: -22px;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  border: 1.5px solid var(--accent);
+  border-radius: var(--radius-full);
+  background: var(--bg-main);
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.deck-marquee {
+  position: absolute;
+  border: 1px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  pointer-events: none;
+}
+
+/* --- alignment guides ---
+   Colour-coded by WHY the snap fired, because a guide is evidence: a snap that
+   engages for the wrong reason should be visible, not merely felt. */
+
+.deck-guides {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.deck-guide {
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.deck-guide-page    { stroke: var(--accent); }
+.deck-guide-margin  { stroke: var(--accent); stroke-dasharray: 3 3; }
+.deck-guide-object  { stroke: var(--accent-secondary); }
+.deck-guide-spacing { stroke: var(--success); stroke-dasharray: 2 3; }
+.deck-guide-size    { stroke: var(--warning); stroke-dasharray: 4 2; }
+
+/* --- deck: inspector --- */
+
+.deck-inspector {
+  flex: 0 0 auto;
+  width: 232px;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border-color);
+  font-size: 11px;
+}
+
+.deck-inspector-empty {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.deck-inspector-head {
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: capitalize;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.deck-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.deck-field > span {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.deck-field input,
+.deck-field select,
+.deck-field textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 3px 5px;
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+}
+
+.deck-field textarea {
+  resize: vertical;
+  font-family: var(--font-sans);
+}
+
+.deck-field-row {
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.deck-field-narrow { flex: 0 1 68px; }
+.deck-field-wide { flex: 1 1 100%; }
+
+.deck-field-color { flex: 0 0 auto; }
+.deck-field-color input[type="color"] {
+  width: 28px;
+  height: 24px;
+  padding: 1px;
+  cursor: pointer;
+}
+
+.deck-toggle {
+  flex: 0 0 auto;
+  min-width: 26px;
+  height: 24px;
+  padding: 0 5px;
+  color: var(--text-secondary);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.deck-toggle:hover { background: var(--control-hover-bg); }
+
+.deck-toggle.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-main);
+}
+
+.deck-inspector-btn {
+  flex: 1;
+  padding: 4px 8px;
+  color: var(--text-primary);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.deck-inspector-btn:hover { background: var(--control-hover-bg); }
+.deck-inspector-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.deck-tex-field {
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* --- notes mode --- */
+
+.deck-notes {
+  width: 260px;
+}
+
+.deck-notes-textarea {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  padding: 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  resize: none;
+}
+
+/* --- TeX-figures list mode --- */
+
+.deck-tex-panel {
+  width: 260px;
+  gap: 4px;
+}
+
+.deck-tex-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.deck-tex-list-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.deck-tex-list-jump {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 0;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.deck-tex-list-slide {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.deck-tex-list-name {
+  font-size: 11px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.deck-tex-list-actions {
+  display: flex;
+  gap: 6px;
+}
+.deck-tex-list-actions .deck-inspector-btn {
+  font-size: 10px;
+  padding: 3px 6px;
+}
+
+/* A text box shorter than its text. A hairline, not a banner: it is an
+   authoring nudge, and the author is looking at the box already. */
+.deck-text-overflow {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--warning);
+  pointer-events: none;
+}
+
+/* --- deck: icon picker --- */
+
+.deck-icon-picker {
+  width: min(560px, 100vw - 32px);
+  max-height: min(70vh, 620px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.deck-icon-search {
+  width: 100%;
+  padding: 6px 10px;
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+}
+
+.deck-icon-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.deck-icon-cat {
+  padding: 3px 9px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--pill-bg);
+  border: 1px solid transparent;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.deck-icon-cat:hover { background: var(--pill-hover-bg); }
+
+.deck-icon-cat.active {
+  background: var(--pill-active-bg);
+  border-color: var(--pill-active-border);
+  color: var(--text-primary);
+}
+
+.deck-icon-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 4px;
+}
+
+.deck-icon-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 4px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.deck-icon-cell:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+.deck-icon-label {
+  font-size: 9px;
+  line-height: 1.2;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.deck-icon-empty {
+  grid-column: 1 / -1;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* --- deck: animate mode --- */
+
+.deck-animate .deck-inspector-head:not(:first-child) {
+  margin-top: 6px;
+}
+
+.deck-animate-file {
+  padding: 4px 6px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--control-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A numbered badge on every object with a build step. Without it the reveal
+   order is invisible and the mode is unusable. */
+.deck-build-badge {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--bg-main);
+  background: var(--accent-secondary);
+  border-radius: var(--radius-full);
+  pointer-events: none;
+}
+
+/* --- deck: presenter --- */
+
+.deck-presenter {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  background: #000;
+  outline: none;
+}
+
+.deck-presenter-main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.deck-presenter-stage {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.deck-presenter-fit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.deck-presenter-page {
+  position: relative;
+  background: #fff;
+}
+
+.deck-presenter-gif {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.deck-presenter-loading {
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 13px;
+}
+
+.deck-presenter-blank {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+}
+
+.deck-presenter-blank.is-black { background: #000; }
+.deck-presenter-blank.is-white { background: #fff; }
+
+.deck-presenter-goto {
+  position: absolute;
+  left: 50%;
+  bottom: 64px;
+  transform: translateX(-50%);
+  z-index: 70;
+  padding: 6px 14px;
+  font-size: 13px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.72);
+  border-radius: var(--radius-full);
+}
+
+/* --- presenter: overview grid --- */
+
+.deck-presenter-grid {
+  position: absolute;
+  inset: 0;
+  z-index: 65;
+  overflow-y: auto;
+  padding: 24px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+  align-content: start;
+  background: rgba(0, 0, 0, 0.88);
+}
+
+.deck-presenter-grid-cell {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.deck-presenter-grid-cell:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.deck-presenter-grid-cell.active {
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.deck-presenter-grid-note {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+
+/* --- presenter: notes column --- */
+
+.deck-presenter-notes {
+  flex: 0 0 auto;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  color: var(--text-primary);
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border-color);
+}
+
+.deck-presenter-notes-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.deck-presenter-timer {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.deck-presenter-notes-body {
+  flex: 1;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  color: var(--text-primary);
+}
+
+.deck-presenter-notes-body em { color: var(--text-muted); }
+
+.deck-presenter-next {
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* --- presenter: control bar ---
+   Fades out until the pointer is near it: a talk should not be framed by
+   permanent chrome, and the keys are the real interface. */
+
+.deck-presenter-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 75;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: rgba(0, 0, 0, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--radius-full);
+  opacity: 0.18;
+  transition: opacity var(--transition);
+}
+
+.deck-presenter-bar:hover { opacity: 1; }
+
+.deck-presenter-bar button {
+  min-width: 26px;
+  height: 24px;
+  padding: 0 7px;
+  color: rgba(255, 255, 255, 0.85);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.deck-presenter-bar button:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
+.deck-presenter-bar button.active { background: var(--accent); color: var(--bg-main); }
+
+.deck-presenter-pos {
+  padding: 0 8px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.8);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- presenter: build entrances ---
+   Transform and opacity only. Nothing here animates a blurred shadow: under
+   software rendering that is a paint killer, and a stutter mid-talk is the one
+   place it would actually be noticed. */
+
+.deck-build { will-change: transform, opacity; }
+
+.deck-build-fade  { animation: deck-fade 260ms ease both; }
+.deck-build-rise  { animation: deck-rise 300ms ease both; }
+.deck-build-scale { animation: deck-scale 260ms ease both; }
+.deck-build-wipe  { animation: deck-wipe 320ms ease both; }
+.deck-build-draw  { animation: deck-draw 420ms ease both; }
+
+@keyframes deck-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes deck-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes deck-scale {
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes deck-wipe {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+
+@keyframes deck-draw {
+  from { clip-path: inset(0 0 100% 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deck-build-fade,
+  .deck-build-rise,
+  .deck-build-scale,
+  .deck-build-wipe,
+  .deck-build-draw {
+    animation-duration: 1ms;
+  }
+}
+
+/* --- deck: slide transitions ---
+   Transform and opacity only, for the same paint-cost reason as the build
+   entrances. `push` and `wipe` are directionless on purpose: a deck can be
+   navigated backwards, and a push that always goes left reads as broken when
+   you step back through it. */
+
+.deck-trans-fade { animation: deck-trans-fade 240ms ease both; }
+.deck-trans-push { animation: deck-trans-push 280ms ease both; }
+.deck-trans-wipe { animation: deck-trans-wipe 300ms ease both; }
+
+@keyframes deck-trans-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes deck-trans-push {
+  from { opacity: 0; transform: translateX(4%); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes deck-trans-wipe {
+  from { clip-path: inset(0 0 0 100%); }
+  to { clip-path: inset(0 0 0 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deck-trans-fade,
+  .deck-trans-push,
+  .deck-trans-wipe {
+    animation-duration: 1ms;
+  }
+}
+
+/* --- presenter: the dual-window (second display) mode ---
+   With the audience on its own screen, THIS window stops being a copy of the
+   projector and becomes the speaker's console: the notes column is permanent and
+   carries a still preview of the next slide. The audience window itself is the
+   plain `.deck-presenter` — no chrome at all, because everything on it is
+   something the room can see. */
+
+/* The audience window hides the pointer: an arrow parked in the middle of a
+   projected slide is the most-noticed artefact of presenting from a laptop. The
+   speaker's own window keeps its cursor (it is where they click). */
+.deck-audience {
+  cursor: none;
+}
+
+.deck-presenter.is-dual .deck-presenter-notes {
+  width: 340px;
+}
+
+.deck-presenter-audience-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+}
+
+.deck-presenter-audience-note.is-error {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: transparent;
+}
+
+.deck-presenter-audience-note kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 0 4px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+
+.deck-presenter-next-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.deck-presenter-next-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+/* A fixed-height frame: the preview must not resize as slides of different
+   aspect go by, or the notes below it would jump on every advance. */
+.deck-presenter-next-frame {
+  position: relative;
+  height: 150px;
+  display: flex;
+  background: #000;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.deck-presenter-wall {
+  float: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The set-aside-layers banner. Wraps to its own row of actions because the
+   count is unbounded — a base PDF that lost ten pages produces ten. */
+.deck-detached-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.deck-detached-banner .deck-inspector-btn {
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+
+/* First-contact host-key confirmation. Reuses the one dialog surface; only the
+   title takes the warning colour, because nothing has gone wrong yet — this is a
+   question asked before a password is sent, not a report of a failure. */
+.host-key-dialog {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.host-key-title {
+  color: var(--warning);
+}
+
+.host-key-lede {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.host-key-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.host-key-status-error {
+  color: var(--danger);
+}
+
+.host-key-error-detail {
+  margin-top: 6px;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+
+.host-key-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.host-key-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius);
+}
+
+.host-key-type {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* The fingerprint is the thing being compared character by character against
+   what an admin reads out, so it must never wrap mid-token or be re-flowed. */
+.host-key-fp {
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.host-key-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 0;
 }

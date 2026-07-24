@@ -229,7 +229,7 @@ describe("the header can bring a tunnel up, with no project behind it", () => {
    * dialog. So the empty state now carries a Connect button that browses for a
    * `.ovpn`, stores it, and brings it straight up — no project required.
    */
-  it("with no config stored, Connect browses for a .ovpn, stores it, then connects", async () => {
+  it("with no config stored, Add config browses for a .ovpn and stores it without dialling", async () => {
     const PICKED = "/home/alice/Downloads/office.ovpn";
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "openvpn_active") return Promise.resolve([]);
@@ -242,26 +242,22 @@ describe("the header can bring a tunnel up, with no project behind it", () => {
     render(<VpnIndicator />);
 
     await userEvent.hover(screen.getByRole("button", { name: /openvpn/i }));
-    await userEvent.click(await screen.findByRole("button", { name: /^connect…$/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^add config…$/i }));
 
-    // The picked file is copied into Eldrun's store before anything is dialled.
+    // The picked file is copied into Eldrun's store…
     await waitFor(() =>
       expect(
         invokeMock.mock.calls.filter(([name]) => name === "openvpn_store_config"),
       ).toEqual([["openvpn_store_config", { config: PICKED }]]),
     );
-    // …and then the stored copy — not the original path — is brought up.
-    await waitFor(() =>
-      expect(invokeMock.mock.calls.filter(([name]) => name === "openvpn_connect")).toHaveLength(1),
-    );
-    const [, args] = invokeMock.mock.calls.find(([name]) => name === "openvpn_connect")!;
-    expect((args as { config: string }).config).toBe(CONFIG);
-    await waitFor(() =>
-      expect(useVpnStatusStore.getState().byConfig[CONFIG]).toBe("connected"),
-    );
+    // …and then it is only *listed*, never auto-dialled: connecting is a separate,
+    // explicit click on its row (where the password prompt lives).
+    expect(invokeMock.mock.calls.filter(([name]) => name === "openvpn_connect")).toHaveLength(0);
+    await waitFor(() => expect(screen.getByText("office.ovpn")).toBeTruthy());
+    expect(useVpnStatusStore.getState().byConfig[CONFIG]).toBeUndefined();
   });
 
-  it("cancelling the file browse stores and connects nothing", async () => {
+  it("cancelling the file browse adds nothing", async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "openvpn_active") return Promise.resolve([]);
       if (cmd === "openvpn_list_configs") return Promise.resolve([]);
@@ -271,19 +267,19 @@ describe("the header can bring a tunnel up, with no project behind it", () => {
     render(<VpnIndicator />);
 
     await userEvent.hover(screen.getByRole("button", { name: /openvpn/i }));
-    await userEvent.click(await screen.findByRole("button", { name: /^connect…$/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^add config…$/i }));
 
     expect(invokeMock.mock.calls.filter(([name]) => name === "openvpn_store_config")).toHaveLength(0);
     expect(invokeMock.mock.calls.filter(([name]) => name === "openvpn_connect")).toHaveLength(0);
   });
 
   /**
-   * A VPN need not belong to a project, so switching to a different `.ovpn` can't
-   * require opening some project's Connect dialog. Even with configs already listed,
-   * a "Browse for a config…" action adds/switches through the same
-   * browse→store→connect path.
+   * A VPN need not belong to a project, so adding another `.ovpn` can't require
+   * opening some project's Connect dialog. Even with configs already listed, an
+   * "Add config…" action stores + lists a new one — connecting stays an explicit
+   * per-row click (with its password prompt), never an auto-dial.
    */
-  it("with configs stored, Browse adds a different .ovpn and connects it", async () => {
+  it("with configs stored, Add config adds a different .ovpn without dialling it", async () => {
     const OTHER_STORED = "/store/other.ovpn";
     const PICKED = "/home/alice/Downloads/other.ovpn";
     invokeMock.mockImplementation((cmd: string) => {
@@ -297,16 +293,17 @@ describe("the header can bring a tunnel up, with no project behind it", () => {
     render(<VpnIndicator />);
 
     await userEvent.hover(screen.getByRole("button", { name: /openvpn/i }));
-    await userEvent.click(await screen.findByRole("button", { name: /browse for a config/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^add config…$/i }));
 
     await waitFor(() =>
       expect(
         invokeMock.mock.calls.filter(([name]) => name === "openvpn_store_config"),
       ).toEqual([["openvpn_store_config", { config: PICKED }]]),
     );
-    await waitFor(() =>
-      expect(useVpnStatusStore.getState().byConfig[OTHER_STORED]).toBe("connected"),
-    );
+    // Added and listed, not connected.
+    expect(invokeMock.mock.calls.filter(([name]) => name === "openvpn_connect")).toHaveLength(0);
+    await waitFor(() => expect(screen.getByText("other.ovpn")).toBeTruthy());
+    expect(useVpnStatusStore.getState().byConfig[OTHER_STORED]).toBeUndefined();
   });
 
   it("is present even when nothing is up — that is how you find it", async () => {

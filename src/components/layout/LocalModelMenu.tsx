@@ -11,6 +11,7 @@ import {
   gpuTotals,
   type GpuSample,
 } from "../../lib/gpu";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 /** Subset of the backend `OllamaModelInfo` the menu needs (installed models). */
 interface LocalModelInfo {
@@ -36,10 +37,10 @@ interface AgentInfo {
  * resident models can each own a different job. A task with no tag falls back to
  * the default `ollama_model`. Mirrors the consumers in `FileViewerPane`/`TabBar`.
  */
-const MODEL_ROLES: Array<{ key: string; label: string }> = [
-  { key: "autocomplete", label: "Autocomplete" },
-  { key: "grammar", label: "Grammar" },
-  { key: "tabs", label: "Tabs" },
+const MODEL_ROLES: Array<{ key: string; labelKey: TranslationKey }> = [
+  { key: "autocomplete", labelKey: "localModel.role.autocomplete" },
+  { key: "grammar", labelKey: "localModel.role.grammar" },
+  { key: "tabs", labelKey: "localModel.role.tabs" },
 ];
 
 
@@ -56,6 +57,7 @@ const MODEL_ROLES: Array<{ key: string; label: string }> = [
  * the Ollama Settings panel, where Ollama itself and any model can be installed.
  */
 export function LocalModelMenu() {
+  const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const activeModel = settings?.ollama_model;
   const energySaver = useEnergySaver();
@@ -199,7 +201,7 @@ export function LocalModelMenu() {
       .then((all) => setModels(all))
       .catch((e: string) => {
         setModels([]);
-        setError(e === "not_running" ? "Ollama not running" : "Failed to load models");
+        setError(e === "not_running" ? t("localModel.notRunning") : t("localModel.failedToLoadModels"));
       })
       .finally(() => setLoading(false));
   };
@@ -233,7 +235,7 @@ export function LocalModelMenu() {
       .then(() => fetchModels())
       .catch((e: string) => {
         setLoads((d) => ({ ...d, [model]: "error" }));
-        setError(typeof e === "string" && e === "not_running" ? "Ollama not running" : "Failed to load model");
+        setError(typeof e === "string" && e === "not_running" ? t("localModel.notRunning") : t("localModel.failedToLoadModel"));
       });
   };
 
@@ -246,7 +248,7 @@ export function LocalModelMenu() {
     invoke("stop_ollama_model", { model })
       .then(() => fetchModels())
       .catch((e: string) =>
-        setError(typeof e === "string" && e === "not_running" ? "Ollama not running" : "Failed to unload model"),
+        setError(typeof e === "string" && e === "not_running" ? t("localModel.notRunning") : t("localModel.failedToUnloadModel")),
       )
       .finally(() =>
         setUnloading((s) => {
@@ -361,16 +363,16 @@ export function LocalModelMenu() {
         className="global-apps-menu-btn local-model-btn"
         title={
           !installed
-            ? "Install a local model"
-            : `${
+            ? t("localModel.installTitle")
+            : `${t(
                 status === "loaded"
-                  ? "Ollama running · model loaded"
+                  ? "localModel.runningLoaded"
                   : status === "idle"
-                    ? "Ollama running"
-                    : "Ollama stopped"
-              }${activeModel ? ` · model: ${activeModel}` : " · no model selected"}`
+                    ? "localModel.running"
+                    : "localModel.stopped",
+              )}${activeModel ? t("localModel.modelSuffix", { name: activeModel }) : t("localModel.noModelSelected")}`
         }
-        aria-label="Local model"
+        aria-label={t("localModel.ariaLabel")}
         aria-haspopup="menu"
         aria-expanded={open}
         style={{ color: "var(--warning)" }}
@@ -385,11 +387,25 @@ export function LocalModelMenu() {
       </button>
       {open && (
         <div className="tab-new-menu">
-          <div className="tab-new-menu-group-label">Local Model</div>
+          <div className="tab-new-menu-group-label">{t("localModel.agentsGroup")}</div>
+          {agents.map((a) => (
+            <div key={a.id} className="local-model-agent-row" title={t("localModel.agentInstalled", { label: a.label })}>
+              {/* Green lamp mirrors a loaded model: this agent CLI is installed. */}
+              <span className="local-model-lamp" aria-hidden="true" />
+              <span className="local-model-loaded-name">{a.label}</span>
+            </div>
+          ))}
+          <button className="tab-new-menu-item" onClick={openAgents}>
+            <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
+              ●
+            </span>
+            {t("localModel.manageAgents")}
+          </button>
+          <div className="tab-new-menu-group-label">{t("localModel.localModelsGroup")}</div>
           {installed && (Object.keys(downloads).length > 0 || paused.size > 0) && (
             <div className="local-model-downloads">
               {Object.entries(downloads).map(([model, d]) => (
-                <div key={model} className="local-model-download-row" title="Downloading">
+                <div key={model} className="local-model-download-row" title={t("localModel.downloadingTitle")}>
                   <div className="local-model-download-head">
                     <span className="local-model-loaded-name">{model}</span>
                     <span className="local-model-download-pct">
@@ -398,10 +414,10 @@ export function LocalModelMenu() {
                     <button
                       type="button"
                       className="local-model-download-action"
-                      title="Pause download"
+                      title={t("localModel.pauseDownloadTitle")}
                       onClick={() => pausePull(model)}
                     >
-                      Pause
+                      {t("ollama.pause")}
                     </button>
                   </div>
                   <div className="ollama-download-bar">
@@ -413,25 +429,25 @@ export function LocalModelMenu() {
                 </div>
               ))}
               {[...paused].map((model) => (
-                <div key={`paused:${model}`} className="local-model-download-row" title="Paused">
+                <div key={`paused:${model}`} className="local-model-download-row" title={t("localModel.pausedTitle")}>
                   <div className="local-model-download-head">
                     <span className="local-model-loaded-name">{model}</span>
-                    <span className="local-model-download-pct">paused</span>
+                    <span className="local-model-download-pct">{t("ollama.pausedBadge")}</span>
                     <button
                       type="button"
                       className="local-model-download-action"
-                      title="Resume download"
+                      title={t("localModel.resumeDownloadTitle")}
                       onClick={() => resumePull(model)}
                     >
-                      Resume
+                      {t("ollama.resume")}
                     </button>
                     <button
                       type="button"
                       className="local-model-download-action danger"
-                      title="Delete partial download"
+                      title={t("localModel.deletePartialDownloadTitle")}
                       onClick={() => deletePausedPull(model)}
                     >
-                      Delete
+                      {t("ollama.delete")}
                     </button>
                   </div>
                 </div>
@@ -446,44 +462,42 @@ export function LocalModelMenu() {
               className={`tab-new-menu-hint local-model-gpu ${gpuTone(gpuUsed, gpuTotal)}`}
               title={gpus.map(gpuAdapterTooltip).join("\n")}
             >
-              <span>
-                GPU {formatBytes(gpuUsed)} / {formatBytes(gpuTotal)}
-              </span>
-              <span>{formatBytes(Math.max(0, gpuTotal - gpuUsed))} free</span>
+              <span>{t("localModel.gpuUsedTotal", { used: formatBytes(gpuUsed), total: formatBytes(gpuTotal) })}</span>
+              <span>{t("localModel.gpuFree", { free: formatBytes(Math.max(0, gpuTotal - gpuUsed)) })}</span>
             </div>
           )}
           {!installed ? (
-            <div className="tab-new-menu-hint">Ollama not installed</div>
+            <div className="tab-new-menu-hint">{t("localModel.notInstalled")}</div>
           ) : loading && models.length === 0 ? (
-            <div className="tab-new-menu-hint">Loading…</div>
+            <div className="tab-new-menu-hint">{t("common.loading")}</div>
           ) : error ? (
             <div className="tab-new-menu-hint">{error}</div>
           ) : models.length === 0 ? (
             <div className="tab-new-menu-hint">
-              {status === "stopped" ? "Server stopped" : "No models installed"}
+              {status === "stopped" ? t("localModel.serverStopped") : t("localModel.noModelsInstalled")}
             </div>
           ) : (
             <>
               {/* Resident models — selectable as the active local model. */}
               {running.length === 0 ? (
-                <div className="tab-new-menu-hint">No model loaded</div>
+                <div className="tab-new-menu-hint">{t("ollama.noModelLoaded")}</div>
               ) : (
                 running.map((m) => (
                   <div key={m.name} className="local-model-row">
                     <button
                       className="tab-new-menu-item local-model-pick"
-                      title={
+                      title={t(
                         activeModel === m.name
-                          ? "Default local model · loaded in memory"
-                          : "Loaded in memory — click to make default"
-                      }
+                          ? "localModel.defaultLoadedTitle"
+                          : "localModel.loadedClickDefaultTitle",
+                      )}
                       onClick={() => select(m.name)}
                     >
                       {/* Green lamp: this model is resident in Ollama's memory. */}
                       <span className="local-model-lamp" aria-hidden="true" />
                       <span className="local-model-loaded-name">{m.name}</span>
                       {activeModel === m.name && (
-                        <span className="local-model-default-tag">default</span>
+                        <span className="local-model-default-tag">{t("localModel.defaultTag")}</span>
                       )}
                       <span className="local-model-loaded-badges">
                         {m.parameter_size && <span>{m.parameter_size}</span>}
@@ -498,19 +512,19 @@ export function LocalModelMenu() {
                     <div className="local-model-roles">
                       {MODEL_ROLES.map((r) => {
                         const on = roles[r.key] === m.name;
+                        const roleLabel = t(r.labelKey);
                         return (
                           <button
                             key={r.key}
                             type="button"
                             className={`local-model-role-chip${on ? " on" : ""}`}
-                            title={
-                              on
-                                ? `Used for ${r.label.toLowerCase()} — click to unassign`
-                                : `Use ${m.name} for ${r.label.toLowerCase()}`
-                            }
+                            title={t(on ? "localModel.usedForRole" : "localModel.useForRole", {
+                              role: roleLabel.toLowerCase(),
+                              name: m.name,
+                            })}
                             onClick={() => toggleRole(r.key, m.name)}
                           >
-                            {r.label}
+                            {roleLabel}
                           </button>
                         );
                       })}
@@ -519,10 +533,10 @@ export function LocalModelMenu() {
                         type="button"
                         className="local-model-role-chip local-model-unload"
                         disabled={unloading.has(m.name)}
-                        title={`Unload ${m.name} from memory`}
+                        title={t("localModel.unloadFromMemoryTitle", { name: m.name })}
                         onClick={() => unloadFromMemory(m.name)}
                       >
-                        {unloading.has(m.name) ? "Unloading…" : "Unload"}
+                        {unloading.has(m.name) ? t("localModel.unloading") : t("ollama.unload")}
                       </button>
                     </div>
                   </div>
@@ -531,32 +545,31 @@ export function LocalModelMenu() {
               {/* Installed-but-not-resident models — click to load into memory. */}
               {available.length > 0 && (
                 <>
-                  <div className="tab-new-menu-group-label">Load into memory</div>
+                  <div className="tab-new-menu-group-label">{t("localModel.loadIntoMemoryGroup")}</div>
                   {available.map((m) => {
                     const st = loads[m.name];
                     return (
                       <div key={m.name} className="local-model-load-row">
-                        <button
-                          className="tab-new-menu-item"
-                          disabled={st === "loading"}
-                          title={
-                            st === "error"
-                              ? "Failed to load — click to retry"
-                              : "Load into memory"
-                          }
-                          onClick={() => loadIntoMemory(m.name)}
-                        >
+                        <div className="local-model-load-line">
                           <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
                             ●
                           </span>
                           <span className="local-model-loaded-name">{m.name}</span>
-                          <span className="local-model-loaded-badges">
-                            {m.parameter_size && <span>{m.parameter_size}</span>}
-                            <span>
-                              {st === "loading" ? "Loading…" : st === "error" ? "Failed" : "Load"}
+                          {m.parameter_size && (
+                            <span className="local-model-loaded-badges">
+                              <span>{m.parameter_size}</span>
                             </span>
-                          </span>
-                        </button>
+                          )}
+                          <button
+                            type="button"
+                            className="local-model-role-chip local-model-load-action"
+                            disabled={st === "loading"}
+                            title={t(st === "error" ? "localModel.failedRetryTitle" : "localModel.loadIntoMemoryTitle")}
+                            onClick={() => loadIntoMemory(m.name)}
+                          >
+                            {st === "loading" ? t("common.loading") : st === "error" ? t("localModel.failed") : t("ollama.load")}
+                          </button>
+                        </div>
                         {st === "loading" && (
                           <div className="ollama-download-bar local-model-load-bar">
                             <div className="ollama-download-bar-fill indeterminate" />
@@ -573,21 +586,7 @@ export function LocalModelMenu() {
             <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
               ●
             </span>
-            {installed ? "Manage local models…" : "Install Ollama…"}
-          </button>
-          <div className="tab-new-menu-group-label">Agents</div>
-          {agents.map((a) => (
-            <div key={a.id} className="local-model-agent-row" title={`${a.label} installed`}>
-              {/* Green lamp mirrors a loaded model: this agent CLI is installed. */}
-              <span className="local-model-lamp" aria-hidden="true" />
-              <span className="local-model-loaded-name">{a.label}</span>
-            </div>
-          ))}
-          <button className="tab-new-menu-item" onClick={openAgents}>
-            <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
-              ●
-            </span>
-            Manage agents…
+            {installed ? t("localModel.manageLocalModels") : t("localModel.installOllamaEllipsis")}
           </button>
         </div>
       )}

@@ -66,7 +66,7 @@ fn local_non_repo(target: Option<&RemoteTarget>, project_dir: &str) -> bool {
 /// blocking work runs on tokio's blocking pool and the UI thread stays free. The
 /// bodies live in sibling `*_blocking` fns (kept sync, so they remain directly
 /// unit-testable without a tokio runtime).
-async fn run_off_thread<T: Send + 'static>(
+pub(crate) async fn run_off_thread<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     tokio::task::spawn_blocking(f)
@@ -628,30 +628,45 @@ pub async fn git_push(project_dir: String, project_id: Option<String>) -> Result
     run_off_thread(move || git_push_blocking(project_dir, project_id)).await
 }
 
+/// `git push` in a local directory, authenticating an https remote with `token`
+/// when one is set (see `TOKEN_CREDENTIAL_HELPER`). Shared by the local-project
+/// push and the mirror-side push below, so both sides get identical auth.
+fn push_local(dir: &std::path::Path, token: Option<&str>) -> Result<std::process::Output, String> {
+    let mut cmd = crate::paths::command_no_window("git");
+    cmd.current_dir(dir);
+    if let Some(tok) = token {
+        cmd.args(["-c", "credential.helper=", "-c", TOKEN_CREDENTIAL_HELPER, "push"]);
+        cmd.env("ELDRUN_GIT_TOKEN", tok);
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
+    } else {
+        cmd.args(["push"]);
+    }
+    cmd.output().map_err(|e| e.to_string())
+}
+
 fn git_push_blocking(project_dir: String, project_id: Option<String>) -> Result<String, String> {
     let out = if let Some(target) = remote_target_for_dir(&project_dir) {
-        // Remote project: the push runs on the host and authenticates with the
-        // host's own git credentials/SSH keys. The local effective token does not
-        // apply (it would be the wrong machine's secret), so it is not forwarded.
-        crate::services::ssh_exec::run_git_remote(&target.spec, &["push".to_string()])?
+        // A remote project published from THIS machine has its `origin` on the
+        // lockstep mirror, not on the host (see `commands::git_publish`) — so the
+        // push has to run there, where the remote exists and the effective token
+        // is the right machine's secret.
+        match crate::commands::git_publish::mirror_origin_repo(&target.project_id) {
+            Some(mirror) => {
+                let token = crate::commands::git_hosting::effective_git_creds(&target.project_id).1;
+                push_local(&mirror, token.as_deref())?
+            }
+            // No mirror-side origin: the repo was published (or wired by hand) on
+            // the host, so the push runs there and authenticates with the host's
+            // own git credentials/SSH keys. The local effective token does not
+            // apply (it would be the wrong machine's secret) and is not forwarded.
+            None => crate::services::ssh_exec::run_git_remote(&target.spec, &["push".to_string()])?,
+        }
     } else {
         // Local project: effective per-project → global token (if any).
         let token = project_id
             .as_deref()
             .and_then(|id| crate::commands::git_hosting::effective_git_creds(id).1);
-
-        let mut cmd = crate::paths::command_no_window("git");
-        cmd.current_dir(&project_dir);
-        if let Some(tok) = token.as_deref() {
-            // Authenticate an https push with the effective token (see
-            // TOKEN_CREDENTIAL_HELPER).
-            cmd.args(["-c", "credential.helper=", "-c", TOKEN_CREDENTIAL_HELPER, "push"]);
-            cmd.env("ELDRUN_GIT_TOKEN", tok);
-            cmd.env("GIT_TERMINAL_PROMPT", "0");
-        } else {
-            cmd.args(["push"]);
-        }
-        cmd.output().map_err(|e| e.to_string())?
+        push_local(std::path::Path::new(&project_dir), token.as_deref())?
     };
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -747,7 +762,7 @@ pub async fn git_clone(url: String, dest: String) -> Result<String, String> {
     run_off_thread(move || git_clone_blocking(url, dest)).await
 }
 
-fn git_clone_blocking(url: String, dest: String) -> Result<String, String> {
+pub(crate) fn git_clone_blocking(url: String, dest: String) -> Result<String, String> {
     let url = url.trim().to_string();
     validate_clone_url(&url)?;
 

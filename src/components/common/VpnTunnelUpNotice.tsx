@@ -1,4 +1,5 @@
 import { ConnLamp } from "./ConnLamp";
+import { useT } from "../../lib/i18n";
 
 /**
  * What a remote dialog shows in place of its "Connect via OpenVPN" section once a
@@ -8,16 +9,14 @@ import { ConnLamp } from "./ConnLamp";
  * machine-wide tunnel is managed.
  */
 export function VpnTunnelUpNotice() {
+  const t = useT();
   return (
-    <div className="vpn-up-card" role="group" aria-label="OpenVPN tunnel">
+    <div className="vpn-up-card" role="group" aria-label={t("vpnNotice.ariaLabel")}>
       <span className="toggle-card-title">
         <ConnLamp status="connected" label="OpenVPN" />
-        OpenVPN tunnel already up
+        {t("vpnNotice.alreadyUp")}
       </span>
-      <span className="toggle-card-desc">
-        This computer already routes through a tunnel, so this project needs no
-        second one. Manage tunnels from the VPN control in the header.
-      </span>
+      <span className="toggle-card-desc">{t("vpnNotice.desc")}</span>
     </div>
   );
 }

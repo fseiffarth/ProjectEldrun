@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -225,6 +225,17 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       )
       .catch(() => setInstalledAgents(new Set()));
   }, []);
+  // Built-in agents the user turned off in "Manage Agents" (Settings) despite
+  // being installed — hidden from this menu without uninstalling the CLI.
+  const disabledAgents = useSettingsStore((s) => s.settings?.disabled_agents);
+  // installedAgents minus disabledAgents — the set every tab-choice consumer
+  // below (Agents group, Mistral/vibe local-model driver) should use.
+  const enabledAgents = useMemo(() => {
+    if (!installedAgents) return null;
+    if (!disabledAgents?.length) return installedAgents;
+    const skip = new Set(disabledAgents);
+    return new Set([...installedAgents].filter((id) => !skip.has(id)));
+  }, [installedAgents, disabledAgents]);
   // User-defined custom agents (Settings.custom_agents) + the manage-dialog it
   // opens. Their commands aren't in the built-in registry, so they're probed
   // separately (`probe_binaries`); `null` until resolved. See agentMenuEntries.
@@ -1277,7 +1288,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               {
                 label: "Agents",
                 entries: agentMenuEntries({
-                  installedBuiltins: installedAgents,
+                  installedBuiltins: enabledAgents,
                   installedCmds: installedCustom,
                   customAgents,
                   pick: handleAdd,
@@ -1295,7 +1306,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                 entries: localModel
                   ? [
                       // Mistral/vibe keeps its bespoke per-model VIBE_HOME path.
-                      ...(installedAgents?.has("vibe")
+                      ...(enabledAgents?.has("vibe")
                         ? [{
                             key: "vibe",
                             label: "Mistral",

@@ -8,13 +8,16 @@
  * Inside a `.context-menu` button, also put `className="untested"` on the
  * button so the label and the tag lay out in a row (the tag floats right).
  */
+import { useT } from "../../lib/i18n";
+
 export function UntestedTag() {
+  const t = useT();
   return (
     <span
       className="untested-tag"
-      title="This feature is implemented but not yet live-tested"
+      title={t("untested.title")}
     >
-      untested
+      {t("untested.label")}
     </span>
   );
 }

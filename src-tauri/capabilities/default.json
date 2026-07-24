@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/schema/capability.json",
   "identifier": "default",
   "description": "Eldrun default capabilities — commands and window management",
-  "windows": ["main", "detached-*"],
+  "windows": ["main", "detached-*", "present-*"],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",

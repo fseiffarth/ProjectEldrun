@@ -446,3 +446,91 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       text for a splice to land in.
 
 ---
+
+90. **Native presenter ("deck"): a PDF-based presentation editor and presenter.**
+    A TeX/PDF-first presentation surface, behind the experimental
+    `deck_presenter` flag. Plan and rationale: `docs/deck_presenter_plan.md`.
+    Three separable halves: **generation** (a base PDF from `.tex`, from an
+    imported PDF, or from a generated starter template), **design** (editable
+    object layers — text with list styles, images, shapes, single-path icons —
+    with snapping and alignment guides), and **presenting** (fullscreen, speaker
+    notes, per-object build steps, and **GIF interstitials**: a clip that plays
+    *between* two slides, which is the only way a TeX-generated PDF can carry
+    animation at all).
+
+    The structural decision is that the **sidecar is the document**: layers live
+    in `talk.eldeck.json` beside `talk.pdf`, never inside it, because `latexmk`
+    rewrites the PDF on every compile. Slides re-anchor across a recompile by
+    SyncTeX source line (already emitted, previously thrown away) and fall back
+    to a content fingerprint; anything that cannot be placed is set aside in a
+    detached bin rather than dropped.
+
+    - [x] **Phase 0** — experimental flag (TS + Rust), `*.eldeck.json` viewer
+      registration (matched on the *filename*: the backend's `extension` is only
+      the last dotted component, so a deck arrives claiming to be `.json`).
+    - [x] **Phase 1** — `lib/viewers/deck/model.ts` (pure object/slide ops, the
+      presenter sequence) and `sidecar.ts` (defensive parse, fingerprinting,
+      re-anchoring, detached bin).
+    - [x] **Phase 2** — `DeckStage` (base page, object layer, select/move/resize/
+      rotate/z-order, marquee) and `deck/snap.ts` (page/margin/object/equal-gap/
+      same-size snapping with painted guides).
+    - [x] 🤖 Automated test — 119 cases across `DeckModel`, `DeckSidecar`,
+      `DeckSnap`, `DeckTransform`, `DeckExport` and `DeckTemplate`. Notable:
+      re-anchoring when a slide is inserted, SyncTeX beating a stale fingerprint,
+      ambiguous fingerprints being refused, orphan layers detached not dropped,
+      the y-flip and rotate-about-centre worked by hand, wrap parity, and every
+      export limitation surfacing as a warning.
+    - [x] **Phase 3** — text (list styles + standard-14 metric wrapping via
+      `deck/fonts.ts`, shared with the exporter so the export cannot reflow),
+      images, `deck/shapes.ts`, and `deck/icons.ts` (~80 icons, directional
+      variants derived by rotation) with a searchable picker + property inspector.
+    - [x] **Phase 4** — generation: **from a PDF** (the PDF viewer's "Present"
+      button writes the sidecar and opens it), **from TeX** (a `.tex` compiles to
+      a PDF tab, which then presents), and **from blank** (a deck with no plate
+      offers to write a starter Beamer `.tex` and compile it — it never
+      overwrites an existing one). Plus a **10-minute timeout for `compile_tex`**
+      with pipe-draining reader threads, so a wedged `latexmk` can no longer hold
+      a Tauri worker for the session.
+    - [x] **Phase 5** — `deck/export.ts`, the single pdf-lib flatten, on top of
+      `deck/transform.ts` (the bottom-left flip and rotate-about-centre anchor,
+      which existed nowhere in the repo). Reports what PDF cannot do — a cropped
+      `cover` image, a missing icon — instead of dropping it silently.
+    - [x] **Phase 6** — animate mode (a separate mode, as specified): per-object
+      build steps with numbered badges, slide transitions, and **GIF
+      interstitials** — `Slide.after`, a clip that plays *between* two slides as
+      its own stop, which is the only way a TeX-generated PDF can carry animation.
+      Exports as its poster frame.
+    - [x] **Phase 7** — the presenter: fullscreen portal, `sequence()`-driven
+      navigation (so `←` steps a build backwards rather than losing the slide),
+      speaker notes + elapsed timer, overview grid, black/white screens,
+      type-a-number-to-jump, and `PresentationOverlay`'s laser + marker reused
+      verbatim.
+    - [x] **Dual-window presenter** (`D` / ⧉): a second OS window shows the
+      audience view — fullscreen on the first monitor the main window is *not*
+      on — while the presenter window becomes the speaker's console (current
+      slide, next slide still-preview, notes, elapsed + wall clock, build
+      indicator). Deliberately **not** a detached subwindow (#42): a popout is
+      *parked* when its project goes inactive, which mid-talk would blank the
+      projector. One owner, two heaps — the presenter window owns the stop, the
+      audience window renders what it is told and forwards its own keys back
+      (`lib/viewers/deck/present.ts`, pure + tested), so the two displays cannot
+      drift apart. The deck crosses as its serialized sidecar; the base PDF,
+      images and GIF frames do not — the audience window loads those itself.
+    - [ ] **Known gap:** the laser/marker overlay is drawn on the presenter
+      window and is **not** mirrored to the audience one, so in dual-window mode
+      the room does not see the pointer. Needs the stroke/laser stream to cross
+      windows (the `DETACHED_DRAG_*` cursor stream is the precedent).
+    - [ ] 🖐️ Manual test — open a `.eldeck.json` beside a compiled PDF; drag,
+      resize and rotate objects and confirm the guides name the right reason;
+      recompile the `.tex` with a slide inserted and confirm layers follow their
+      slides; confirm the autosave lands (there is no save button by design).
+    - [ ] 🖐️ Manual test (dual-window, **on real hardware with a projector or
+      second monitor**) — `D` opens the audience window fullscreen on the *other*
+      display, not over the notes; advancing on either window moves both; `←`
+      steps a build backwards on both; `B`/`W` blank the audience screen too;
+      closing the audience window from the WM drops back to one screen without
+      ending the talk; `Esc` ends the talk and takes the audience window with it;
+      opening the second display twice re-uses one window. With **one** monitor
+      it opens windowed and decorated, draggable onto the projector.
+    - [ ] **Known gap:** `compile_tex` is **local-only** (no remote dispatch), so
+      a remote project must compile on its local mirror.

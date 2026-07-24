@@ -16,6 +16,7 @@ import {
 import type { GlobalAppEntry } from "../../types";
 import { parseSshAddress } from "../projects/scaffold";
 import { useProjectsStore } from "../../stores/projects";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 interface OllamaModelInfo {
   name: string;
@@ -68,13 +69,13 @@ function parsePulls(s: string): number {
 /** Sort options for the registry browser. "popular"/"newest" map to Ollama's
  *  server-side `o=` param; the rest reorder the loaded rows client-side. */
 const SORT_OPTIONS = [
-  { key: "popular", label: "Most popular" },
-  { key: "newest", label: "Newest" },
-  { key: "pulls", label: "Most pulls" },
-  { key: "name", label: "Name (A–Z)" },
-  { key: "params-asc", label: "Size: small → large" },
-  { key: "params-desc", label: "Size: large → small" },
-] as const;
+  { key: "popular", labelKey: "ollama.sort.popular" },
+  { key: "newest", labelKey: "ollama.sort.newest" },
+  { key: "pulls", labelKey: "ollama.sort.pulls" },
+  { key: "name", labelKey: "ollama.sort.name" },
+  { key: "params-asc", labelKey: "ollama.sort.sizeAsc" },
+  { key: "params-desc", labelKey: "ollama.sort.sizeDesc" },
+] as const satisfies { key: string; labelKey: TranslationKey }[];
 type SortKey = (typeof SORT_OPTIONS)[number]["key"];
 
 /** True if any of a model's size tags falls into any selected bucket. */
@@ -88,6 +89,7 @@ function matchesSizeBuckets(sizes: string[], selected: Set<string>): boolean {
 }
 
 export function GlobalAppsSettings({ onBack }: { onBack: () => void }) {
+  const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const [apps, setApps] = useState<Record<string, GlobalAppEntry>>(settings?.global_apps ?? {});
 
@@ -115,26 +117,27 @@ export function GlobalAppsSettings({ onBack }: { onBack: () => void }) {
   return (
     <>
       <div className="settings-title-row">
-        <h2>Global Apps</h2>
-        <button type="button" onClick={onBack}>Back</button>
+        <h2>{t("globalApps.title")}</h2>
+        <button type="button" onClick={onBack}>{t("common.back")}</button>
       </div>
-      <p className="settings-help">Apps that stay visible across workspaces. Checked apps appear in the top toolbar.</p>
+      <p className="settings-help">{t("globalApps.help")}</p>
       <div className="settings-list">
         {GLOBAL_APP_ROLES.map((role) => {
           const entry = apps[role.key] ?? { exec: "", visible: true };
+          const roleLabel = t(role.labelKey);
           return (
             <div className="global-app-settings-row" key={role.key}>
               <Toggle
                 size="sm"
                 checked={entry.visible !== false}
                 onChange={(e) => updateRole(role.key, { visible: e.target.checked })}
-                title={`Show ${role.label}`}
+                title={t("globalApps.showRole", { role: roleLabel })}
               />
               <span className="settings-role-icon" aria-hidden>{role.fallback}</span>
-              <span className="settings-role-label">{role.label}</span>
+              <span className="settings-role-label">{roleLabel}</span>
               <input
                 value={entry.exec}
-                placeholder="not found"
+                placeholder={t("globalApps.notFoundPlaceholder")}
                 onChange={(e) => setApps({ ...apps, [role.key]: { ...entry, exec: e.target.value } })}
                 onBlur={(e) => updateRole(role.key, { exec: e.target.value.trim() })}
                 onKeyDown={(e) => {
@@ -151,6 +154,7 @@ export function GlobalAppsSettings({ onBack }: { onBack: () => void }) {
 }
 
 export function FileTypeSettings({ onBack }: { onBack: () => void }) {
+  const t = useT();
   const [apps, setApps] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState({ ext: "", app: "" });
   const [error, setError] = useState("");
@@ -190,10 +194,10 @@ export function FileTypeSettings({ onBack }: { onBack: () => void }) {
   return (
     <>
       <div className="settings-title-row">
-        <h2>File Type Apps</h2>
-        <button type="button" onClick={onBack}>Back</button>
+        <h2>{t("filetypes.title")}</h2>
+        <button type="button" onClick={onBack}>{t("common.back")}</button>
       </div>
-      <p className="settings-help">Double-clicking a project file opens it with the app below.</p>
+      <p className="settings-help">{t("filetypes.help")}</p>
       {error && <div className="project-dialog-error">{error}</div>}
       <div className="settings-list">
         {Object.entries(apps).sort(([a], [b]) => a.localeCompare(b)).map(([ext, app]) => (
@@ -221,7 +225,7 @@ export function FileTypeSettings({ onBack }: { onBack: () => void }) {
                 const { [ext]: _removed, ...rest } = apps;
                 saveApps(rest);
               }}
-              title="Remove"
+              title={t("common.remove")}
             >
               ×
             </button>
@@ -230,18 +234,18 @@ export function FileTypeSettings({ onBack }: { onBack: () => void }) {
         <div className="filetype-settings-row">
           <input
             value={draft.ext}
-            placeholder=".ext"
+            placeholder={t("filetypes.extPlaceholder")}
             onChange={(e) => setDraft({ ...draft, ext: e.target.value })}
           />
           <input
             value={draft.app}
-            placeholder="app command"
+            placeholder={t("filetypes.appPlaceholder")}
             onChange={(e) => setDraft({ ...draft, app: e.target.value })}
             onKeyDown={(e) => {
               if (e.key === "Enter") addEntry();
             }}
           />
-          <button type="button" onClick={addEntry}>Add</button>
+          <button type="button" onClick={addEntry}>{t("common.add")}</button>
         </div>
       </div>
     </>
@@ -262,6 +266,7 @@ export function FileTypeSettings({ onBack }: { onBack: () => void }) {
  * only here.
  */
 export function RemoteHostsSettings({ onBack }: { onBack: () => void }) {
+  const t = useT();
   const [defaults, setDefaults] = useState<Record<string, string> | null>(null);
   const [draftHost, setDraftHost] = useState("");
   const [draftPath, setDraftPath] = useState("");
@@ -321,20 +326,15 @@ export function RemoteHostsSettings({ onBack }: { onBack: () => void }) {
   return (
     <>
       <div className="settings-title-row">
-        <h2>Remote Connections</h2>
-        <button type="button" onClick={onBack}>Back</button>
+        <h2>{t("nav.remoteHosts.title")}</h2>
+        <button type="button" onClick={onBack}>{t("common.back")}</button>
       </div>
-      <p className="settings-help">
-        The folder a connect or browse opens in for a given SSH host, instead of
-        the host's home directory. Set once here and it applies the next time you
-        connect to that host — for a new remote project's folder browser and for
-        reconnecting an existing one.
-      </p>
+      <p className="settings-help">{t("remoteHosts.help")}</p>
       {error && <div className="project-dialog-error">{error}</div>}
       {defaults === null ? (
-        <p className="settings-help">Loading…</p>
+        <p className="settings-help">{t("common.loading")}</p>
       ) : entries.length === 0 ? (
-        <div className="settings-empty">No standard paths set — hosts default to their home directory.</div>
+        <div className="settings-empty">{t("remoteHosts.empty")}</div>
       ) : (
         <div className="settings-list">
           {entries.map(([host, path]) => (
@@ -348,7 +348,7 @@ export function RemoteHostsSettings({ onBack }: { onBack: () => void }) {
                   if (e.key === "Enter") savePath(host, e.currentTarget.value);
                 }}
               />
-              <button type="button" onClick={() => removeHost(host)} title="Remove">
+              <button type="button" onClick={() => removeHost(host)} title={t("common.remove")}>
                 ×
               </button>
             </div>
@@ -359,7 +359,7 @@ export function RemoteHostsSettings({ onBack }: { onBack: () => void }) {
         <input
           list="remote-host-suggestions"
           value={draftHost}
-          placeholder="host"
+          placeholder={t("remoteHosts.hostPlaceholder")}
           onChange={(e) => setDraftHost(e.target.value)}
         />
         <datalist id="remote-host-suggestions">
@@ -369,13 +369,13 @@ export function RemoteHostsSettings({ onBack }: { onBack: () => void }) {
         </datalist>
         <input
           value={draftPath}
-          placeholder="/path/on/host"
+          placeholder={t("remoteHosts.pathPlaceholder")}
           onChange={(e) => setDraftPath(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") addEntry();
           }}
         />
-        <button type="button" onClick={addEntry}>Add</button>
+        <button type="button" onClick={addEntry}>{t("common.add")}</button>
       </div>
     </>
   );
@@ -411,6 +411,8 @@ interface AgentInfo {
   shell: string;
   /** Machine-readable shell selection; display labels are not executable policy. */
   shell_kind: InstallShellKind;
+  /** `npm uninstall -g <pkg>` for an npm-installed agent; empty otherwise. */
+  uninstall_cmd: string;
   docs: string;
   installed: boolean;
 }
@@ -458,8 +460,13 @@ const NODE_DOWNLOAD_URL = "https://nodejs.org/en/download";
  * The contextual hint says the same thing, but it is dismissible for good and is
  * suppressed outright when hints are off — so this is where a user who waved it
  * away can still find the fix.
+ *
+ * Rendered nested inside the Codex row of Manage Agents (not as a free-floating
+ * top-of-panel notice) — the hook is Codex-specific, so it belongs with the
+ * agent it's about, same as the Remove/Reinstall actions.
  */
 function CodexHookNotice() {
+  const t = useT();
   // null = still probing.
   const [state, setState] = useState<CodexHookState | null>(null);
   const recheck = () =>
@@ -470,19 +477,17 @@ function CodexHookNotice() {
   if (!codexHookNeedsTrust(state)) return null;
 
   return (
-    <div className="ollama-vibe-section agent-list-entry">
+    <div className="agent-codex-hook">
       <div className="settings-section-title">
-        Codex session hook{" "}
+        {t("agents.codexHookLabel")}{" "}
         <span className="ollama-status-text">
-          {state === "disabled" ? "disabled" : "not trusted"}
+          {state === "disabled" ? t("agents.codexHookDisabled") : t("agents.codexHookNotTrusted")}
         </span>
       </div>
       <p className="settings-help">
-        Codex won't run Eldrun's session hook until you trust it, so Eldrun falls
-        back to working out which conversation belongs to which tab from Codex's
-        own logs. That works, but it can mix up two Codex tabs open in the same
-        folder. Enable <strong>eldrun_session_start</strong> in Codex's{" "}
-        <code>/hooks</code> list for exact resume:
+        {t("agents.codexHookHelpPre")} <strong>eldrun_session_start</strong>{" "}
+        {t("agents.codexHookHelpPost")}{" "}
+        <code>/hooks</code> {t("agents.codexHookHelpPost2")}
       </p>
       <div className="ollama-install-cmd-row">
         <code className="ollama-install-cmd">/hooks</code>
@@ -491,12 +496,38 @@ function CodexHookNotice() {
           className="ollama-action-btn primary"
           onClick={openCodexHooksTab}
         >
-          Open in Codex
+          {t("agents.openInCodex")}
         </button>
         <button type="button" className="ollama-action-btn" onClick={() => void recheck()}>
-          Re-check
+          {t("common.recheck")}
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Claude's `--remote-control` toggle, moved here from the main Settings panel
+ * (Group: nav "Manage Agents") since the flag only affects `claude` agent
+ * tabs — it belongs with the agent it's about, same reasoning as
+ * `CodexHookNotice`. Rendered nested inside the Claude row.
+ */
+function ClaudeRemoteControlNotice() {
+  const t = useT();
+  const { settings, updateSettings } = useSettingsStore();
+  return (
+    <div className="settings-toggle-card agent-claude-remote-control">
+      <label className="settings-toggle-card-row">
+        <span>{t("settings.claudeRemote")}</span>
+        <Toggle
+          checked={settings?.agent_remote_control ?? true}
+          onChange={(e) => void updateSettings({ agent_remote_control: e.target.checked })}
+        />
+      </label>
+      <p className="settings-help">
+        {t("settings.claudeRemoteHelp1")} <code>--remote-control</code>{" "}
+        {t("settings.claudeRemoteHelp2")}
+      </p>
     </div>
   );
 }
@@ -508,6 +539,7 @@ function CodexHookNotice() {
  * once npm is detected). Follows Eldrun's install-via-terminal-tab policy.
  */
 function NodeRuntimeNotice() {
+  const t = useT();
   // null = still probing; true/false = npm present or not.
   const [hasNpm, setHasNpm] = useState<boolean | null>(null);
   const recheck = () =>
@@ -522,12 +554,11 @@ function NodeRuntimeNotice() {
     <div className="ollama-vibe-section agent-list-entry">
       <div className="settings-section-title">
         Node.js / npm{" "}
-        <span className="ollama-status-text">not detected</span>
+        <span className="ollama-status-text">{t("agents.nodeNotDetected")}</span>
       </div>
       <p className="settings-help">
-        Most agent CLIs install with <code>npm</code>, which ships with Node.js.
-        Install it once (no administrator rights needed) in a{" "}
-        <strong>{shell}</strong> terminal tab, then install your agents below:
+        {t("agents.nodeHelpPre")} <code>npm</code> {t("agents.nodeHelpMid")}{" "}
+        <strong>{shell}</strong> {t("agents.nodeHelpPost")}
       </p>
       <div className="ollama-install-cmd-row">
         <code className="ollama-install-cmd">{command}</code>
@@ -536,16 +567,16 @@ function NodeRuntimeNotice() {
           className="ollama-action-btn primary"
           onClick={() => runInstallInTab("Install Node.js (npm)", command, shellKind)}
         >
-          Run in terminal
+          {t("agents.runInTerminal")}
         </button>
         <button type="button" className="ollama-action-btn" onClick={() => void recheck()}>
-          Re-check
+          {t("common.recheck")}
         </button>
       </div>
       <p className="settings-help">
-        Prefer a manual install? See{" "}
+        {t("agents.nodeManualPre")}{" "}
         <a href={NODE_DOWNLOAD_URL} target="_blank" rel="noreferrer">
-          the Node.js downloads
+          {t("agents.nodeDownloads")}
         </a>
         .
       </p>
@@ -561,9 +592,21 @@ function NodeRuntimeNotice() {
  * entry with an install button, a live install log, and a manual fallback.
  */
 export function AgentsPanel({ onBack }: { onBack: () => void }) {
+  const t = useT();
+  const { settings, updateSettings } = useSettingsStore();
+  const disabledAgents = settings?.disabled_agents ?? [];
+  const setAgentDisabled = (id: string, disabled: boolean) => {
+    const next = disabled
+      ? [...disabledAgents, id]
+      : disabledAgents.filter((a) => a !== id);
+    void updateSettings({ disabled_agents: next });
+  };
   const [agents, setAgents] = useState<AgentInfo[] | null>(null);
   // The agent id whose installer is currently running (only one at a time).
   const [installing, setInstalling] = useState<string | null>(null);
+  // The agent id currently being removed (Remove, or the first half of
+  // Reinstall) — disjoint from `installing` so the two actions never overlap.
+  const [removing, setRemoving] = useState<string | null>(null);
   // Per-agent live install log, keyed by agent id.
   const [logs, setLogs] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -606,6 +649,31 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
     }
   };
 
+  // Removes the detected binary (an npm-based agent goes through `npm
+  // uninstall -g` instead, so the package doesn't linger — see `uninstall_agent`).
+  // Returns whether it succeeded, so `reinstallAgent` knows whether to proceed.
+  const removeAgent = async (id: string): Promise<boolean> => {
+    setRemoving(id);
+    setErrors(({ [id]: _drop, ...rest }) => rest);
+    try {
+      await invoke<string>("uninstall_agent", { id });
+      refresh();
+      return true;
+    } catch (err) {
+      setErrors((e) => ({ ...e, [id]: String(err) }));
+      return false;
+    } finally {
+      setRemoving(null);
+    }
+  };
+
+  // Remove then immediately re-run the official installer — the one-click fix
+  // for an install that half-succeeded (binary present but broken) or that
+  // Eldrun's stale detection missed (see paths.rs's Windows install-dir list).
+  const reinstallAgent = async (id: string) => {
+    if (await removeAgent(id)) await installAgent(id);
+  };
+
   const recheck = (id: string) => {
     void invoke<boolean>("agent_is_installed", { id })
       .then((ok) => {
@@ -615,7 +683,7 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
         if (!ok) {
           setErrors((e) => ({
             ...e,
-            [id]: "Still not detected — try a fresh terminal so the install dir is on PATH.",
+            [id]: t("agents.stillNotDetected"),
           }));
         }
       })
@@ -625,35 +693,104 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
   return (
     <>
       <div className="settings-title-row">
-        <h2>Manage Agents</h2>
-        <button type="button" onClick={onBack}>Back</button>
+        <h2>{t("nav.agents.title")}</h2>
+        <button type="button" onClick={onBack}>{t("common.back")}</button>
       </div>
       <p className="settings-help">
-        AI coding agents Eldrun can launch as agent tabs. Install one with a
-        single click (no administrator rights needed), then add it from a tab
-        bar's <strong>+</strong> menu. Many installers need <code>npm</code> on
-        your <code>PATH</code> — if it's missing, install Node.js first below.
+        {t("agents.help1")} <strong>+</strong> {t("agents.help2")} <code>npm</code>{" "}
+        {t("agents.help3")} <code>PATH</code> {t("agents.help4")}
       </p>
       <NodeRuntimeNotice />
-      <CodexHookNotice />
       {agents === null ? (
-        <p className="settings-help">Checking installed agents…</p>
+        <p className="settings-help">{t("agents.checkingInstalled")}</p>
       ) : (
         <div className="settings-list">
           {[...agents]
             .sort((a, b) => Number(b.installed) - Number(a.installed))
             .map((a) => (
             <div key={a.id} className="ollama-vibe-section agent-list-entry">
-              <div className="settings-section-title">
-                {a.label}{" "}
-                {a.installed ? (
-                  <span className="ollama-status-text">
-                    <span className="ollama-status-dot running" /> installed
-                  </span>
-                ) : (
-                  <span className="ollama-status-text">not installed</span>
+              <div className="agent-list-entry-head">
+                <div className="settings-section-title">
+                  {a.label}{" "}
+                  {a.installed ? (
+                    <span className="ollama-status-text">
+                      <span className="ollama-status-dot running" /> {t("agents.installed")}
+                    </span>
+                  ) : (
+                    <span className="ollama-status-text">{t("agents.notInstalled")}</span>
+                  )}
+                </div>
+                {a.installed && (
+                  <label
+                    className="agent-disable-toggle"
+                    title={t("agents.disableToggleTitle")}
+                  >
+                    <Toggle
+                      checked={!disabledAgents.includes(a.id)}
+                      onChange={(e) => setAgentDisabled(a.id, !e.target.checked)}
+                      size="sm"
+                      aria-label={t(
+                        disabledAgents.includes(a.id) ? "agents.disableAriaEnable" : "agents.disableAriaDisable",
+                        { label: a.label },
+                      )}
+                    />
+                    {disabledAgents.includes(a.id) ? t("agents.disabled") : t("agents.enabled")}
+                  </label>
                 )}
               </div>
+              {a.installed && (
+                <>
+                  <div className="ollama-install-cmd-row">
+                    <button
+                      type="button"
+                      className="ollama-action-btn"
+                      disabled={installing !== null || removing !== null}
+                      title={t("agents.removeTitle")}
+                      onClick={() => void removeAgent(a.id)}
+                    >
+                      {removing === a.id ? t("agents.removing") : t("agents.remove")}
+                    </button>
+                    <button
+                      type="button"
+                      className="ollama-action-btn"
+                      disabled={installing !== null || removing !== null}
+                      title={t("agents.reinstallTitle")}
+                      onClick={() => void reinstallAgent(a.id)}
+                    >
+                      {removing === a.id || installing === a.id ? t("agents.reinstalling") : t("agents.reinstall")}
+                    </button>
+                  </div>
+                  {errors[a.id] && (
+                    <div className="project-dialog-error">{errors[a.id]}</div>
+                  )}
+                  {/* npm-installed agents only (uninstall_cmd empty otherwise):
+                      npm's global dir is root-owned on a system-wide Linux
+                      Node install, so Remove can fail with EACCES — the same
+                      run-in-a-terminal escape hatch the install flow offers,
+                      so the user can prefix `sudo` themselves. */}
+                  {a.uninstall_cmd !== "" && (
+                    <>
+                      <p className="settings-help">
+                        {t("agents.permissionHelpPre")}{" "}
+                        <strong>{a.shell}</strong> {t("agents.permissionHelpPost")}{" "}
+                        <code>sudo</code> {t("agents.permissionHelpPost2")}
+                      </p>
+                      <div className="ollama-install-cmd-row">
+                        <code className="ollama-install-cmd">{a.uninstall_cmd}</code>
+                        <button
+                          type="button"
+                          className="ollama-action-btn"
+                          onClick={() =>
+                            runInstallInTab(`Remove ${a.label}`, a.uninstall_cmd, a.shell_kind)
+                          }
+                        >
+                          {t("agents.runInTerminal")}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
               {!a.installed && (
                 <>
                   {/* Auto-install runs the official installer via `sh` on
@@ -670,10 +807,10 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
                           disabled={installing !== null}
                           onClick={() => void installAgent(a.id)}
                         >
-                          {installing === a.id ? "Installing…" : `Install ${a.label}`}
+                          {installing === a.id ? t("agents.installing") : t("agents.installLabel", { label: a.label })}
                         </button>
                         {installing === a.id && (
-                          <span className="ollama-status-text">Running installer…</span>
+                          <span className="ollama-status-text">{t("agents.runningInstaller")}</span>
                         )}
                       </div>
                       {logs[a.id] && (
@@ -694,7 +831,8 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
                       {/* Whenever install_cmd is non-empty the one-click button
                           above is also shown, so this is always the "or". */}
                       <p className="settings-help">
-                        Or install it in a <strong>{a.shell}</strong> terminal tab:
+                        {t("agents.orInstallInShellPre")} <strong>{a.shell}</strong>{" "}
+                        {t("agents.orInstallInShellPost")}
                       </p>
                       <div className="ollama-install-cmd-row">
                         <code className="ollama-install-cmd">{a.install_cmd}</code>
@@ -705,7 +843,7 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
                             runInstallInTab(`Install ${a.label}`, a.install_cmd, a.shell_kind)
                           }
                         >
-                          Run in terminal
+                          {t("agents.runInTerminal")}
                         </button>
                         <button
                           type="button"
@@ -713,30 +851,32 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
                           disabled={installing !== null}
                           onClick={() => recheck(a.id)}
                         >
-                          Re-check
+                          {t("common.recheck")}
                         </button>
                       </div>
                     </>
                   ) : (
                     <p className="settings-help">
-                      No one-line Windows installer yet — see{" "}
+                      {t("agents.noWindowsInstallerPre")}{" "}
                       <a href={a.docs} target="_blank" rel="noreferrer">
-                        the install docs
+                        {t("agents.installDocs")}
                       </a>
-                      , then click{" "}
+                      {t("agents.noWindowsInstallerPost")}{" "}
                       <button
                         type="button"
                         className="ollama-action-btn"
                         disabled={installing !== null}
                         onClick={() => recheck(a.id)}
                       >
-                        Re-check
+                        {t("common.recheck")}
                       </button>
                       .
                     </p>
                   )}
                 </>
               )}
+              {a.id === "codex" && <CodexHookNotice />}
+              {a.id === "claude" && <ClaudeRemoteControlNotice />}
             </div>
           ))}
         </div>
@@ -772,6 +912,7 @@ interface OllamaInstallStrategy {
 }
 
 export function OllamaPanel({ onBack }: { onBack: () => void }) {
+  const t = useT();
   const [installed, setInstalled] = useState<boolean | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installLog, setInstallLog] = useState<string | null>(null);
@@ -1217,30 +1358,26 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
   const loadedLabel =
     runningModels.length === 0
       ? serverRunning
-        ? "No model loaded"
-        : "No loaded model"
-      : `Loaded: ${runningModels.map((m) => m.name).join(", ")}`;
+        ? t("ollama.noModelLoaded")
+        : t("ollama.noLoadedModel")
+      : t("ollama.loadedModels", { names: runningModels.map((m) => m.name).join(", ") });
 
   // Vibe runtime section — required to launch Local Model tabs. Shown in both
   // the install-Ollama and main panels; collapses to a one-line "ready" note
   // once Vibe is detected, and expands to an installer when it is missing.
   const vibeSection = (
     <div className="ollama-vibe-section">
-      <div className="settings-section-title">Local model runtime (Vibe)</div>
+      <div className="settings-section-title">{t("ollama.vibeTitle")}</div>
       {vibeInstalled === null ? (
-        <p className="settings-help">Checking for Vibe…</p>
+        <p className="settings-help">{t("ollama.vibeChecking")}</p>
       ) : vibeInstalled ? (
         <p className="settings-help">
-          <span className="ollama-status-dot running" /> Vibe is installed — local
-          models can launch as agent tabs.
+          <span className="ollama-status-dot running" /> {t("ollama.vibeInstalled")}
         </p>
       ) : (
         <>
           <p className="settings-help">
-            Local Ollama models run through Mistral's <code>vibe</code> CLI. It
-            isn't installed yet, so a Local Model tab fails with{" "}
-            <em>“unable to spawn vibe”</em>. Install it once (no administrator
-            rights needed) and local models will launch.
+            {t("ollama.vibeMissing1")} <code>vibe</code> {t("ollama.vibeMissing2")}
           </p>
           <div className="ollama-install-cmd-row">
             <button
@@ -1249,17 +1386,18 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
               disabled={vibeInstalling}
               onClick={() => void installVibe()}
             >
-              {vibeInstalling ? "Installing…" : "Install Vibe"}
+              {vibeInstalling ? t("ollama.installingEllipsis") : t("ollama.installVibe")}
             </button>
-            {vibeInstalling && <span className="ollama-status-text">Running installer…</span>}
+            {vibeInstalling && <span className="ollama-status-text">{t("ollama.runningInstaller")}</span>}
           </div>
           {vibeInstallLog !== null && (
             <pre className="ollama-install-log" ref={vibeInstallLogRef}>
-              {vibeInstallLog || "Starting…"}
+              {vibeInstallLog || t("ollama.startingEllipsis")}
             </pre>
           )}
           <p className="settings-help">
-            Or install it in a {vibeStrategy?.os === "windows" ? "PowerShell" : "terminal"} tab:
+            {t("ollama.orInstallInShellPre")} {vibeStrategy?.os === "windows" ? "PowerShell" : "terminal"}{" "}
+            {t("ollama.orInstallInShellPost")}
           </p>
           <div className="ollama-install-cmd-row">
             <code className="ollama-install-cmd">{vibeStrategy?.command ?? VIBE_INSTALL_CMD}</code>
@@ -1274,7 +1412,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                 )
               }
             >
-              Run in terminal
+              {t("ollama.runInTerminal")}
             </button>
             <button
               type="button"
@@ -1287,14 +1425,14 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                     if (!ok)
                       setError(
                         vibeStrategy?.os === "windows"
-                          ? "Vibe is still not detected (open a fresh terminal so the install location is on PATH)."
-                          : "Vibe is still not detected (try a fresh terminal so ~/.local/bin is on PATH).",
+                          ? t("ollama.vibeStillNotDetectedWindows")
+                          : t("ollama.vibeStillNotDetectedOther"),
                       );
                   })
                   .catch(() => {})
               }
             >
-              Re-check
+              {t("common.recheck")}
             </button>
           </div>
         </>
@@ -1312,32 +1450,15 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
     return (
       <>
         <div className="settings-title-row">
-          <h2>Install Ollama</h2>
-          <button type="button" onClick={onBack}>Back</button>
+          <h2>{t("ollama.installTitle")}</h2>
+          <button type="button" onClick={onBack}>{t("common.back")}</button>
         </div>
 
-        <p className="settings-help">
-          Ollama runs open-weight models locally on your machine. It isn't
-          installed yet. Install it once and Eldrun will list the models you can
-          download right here.
-        </p>
+        <p className="settings-help">{t("ollama.notInstalledHelp")}</p>
 
-        <div className="settings-section-title">Automatic install</div>
+        <div className="settings-section-title">{t("ollama.automaticInstall")}</div>
         <p className="settings-help">
-          {isWindows ? (
-            <>
-              Installs Ollama with <code>winget</code> (silent, per-user). winget
-              ships with Windows 10/11; if it's missing or the install fails,
-              follow the manual steps below.
-            </>
-          ) : (
-            <>
-              Runs the official install script. It needs administrator rights to
-              add the <code>ollama</code> service, so this works without prompting
-              only when your account has passwordless <code>sudo</code>. If it
-              fails, follow the manual steps below.
-            </>
-          )}
+          {isWindows ? t("ollama.autoInstallHelpWindows") : t("ollama.autoInstallHelpOther")}
         </p>
         <div className="ollama-install-cmd-row">
           <button
@@ -1346,23 +1467,23 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
             disabled={installing}
             onClick={() => void installOllama()}
           >
-            {installing ? "Installing…" : "Install Ollama"}
+            {installing ? t("ollama.installingEllipsis") : t("ollama.installBtn")}
           </button>
-          {installing && <span className="ollama-status-text">Running installer…</span>}
+          {installing && <span className="ollama-status-text">{t("ollama.runningInstaller")}</span>}
         </div>
 
         {error && <div className="project-dialog-error">{error}</div>}
         {installLog !== null && (
           <pre className="ollama-install-log" ref={installLogRef}>
-            {installLog || "Starting…"}
+            {installLog || t("ollama.startingEllipsis")}
           </pre>
         )}
 
-        <div className="settings-section-title">Install in a terminal</div>
+        <div className="settings-section-title">{t("ollama.installInTerminalTitle")}</div>
         <ol className="ollama-install-steps">
           <li>
-            Run the installer for your system in a new{" "}
-            {isWindows ? "PowerShell" : "terminal"} tab:
+            {t("ollama.runInstallerNewPre")}{" "}
+            {isWindows ? "PowerShell" : "terminal"} {t("ollama.runInstallerNewPost")}
             <div className="ollama-install-cmd-row">
               <code className="ollama-install-cmd">{installCmd}</code>
               <button
@@ -1372,22 +1493,20 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                   runInstallInTab("Install Ollama", installCmd, isWindows ? "default" : "bash")
                 }
               >
-                Run in terminal
+                {t("ollama.runInTerminal")}
               </button>
             </div>
             <span className="settings-help">
-              You can also download the installer directly from{" "}
+              {t("ollama.alsoDownloadFrom")}{" "}
               <code>{downloadUrl}</code>.
             </span>
           </li>
           <li>
-            {isWindows
-              ? "Approve the User Account Control prompt if Windows asks."
-              : "Enter your password if the installer asks for sudo."}
+            {isWindows ? t("ollama.approveUacPrompt") : t("ollama.enterPasswordSudo")}
           </li>
           <li>
-            Once it finishes, click <strong>Re-check</strong> below — the
-            installable models will appear automatically.
+            {t("ollama.onceFinishedClickPre")} <strong>{t("common.recheck")}</strong>{" "}
+            {t("ollama.onceFinishedClickPost")}
           </li>
         </ol>
         <button
@@ -1402,12 +1521,12 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                 loadAfterInstall();
                 await startServer();
               } else {
-                setError("Ollama is still not detected.");
+                setError(t("ollama.stillNotDetected"));
               }
             })()
           }
         >
-          Re-check
+          {t("common.recheck")}
         </button>
 
         {vibeSection}
@@ -1418,22 +1537,22 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
   return (
     <>
       <div className="settings-title-row">
-        <h2>Ollama Models</h2>
-        <button type="button" onClick={onBack}>Back</button>
+        <h2>{t("ollama.modelsTitle")}</h2>
+        <button type="button" onClick={onBack}>{t("common.back")}</button>
       </div>
 
       <div className="ollama-status-bar">
         <span className={`ollama-status-dot ${serverRunning ? "running" : "stopped"}`} />
         <span className="ollama-status-text">
           {serverRunning === null
-            ? "Checking..."
+            ? t("ollama.checkingEllipsis")
             : serverRunning
-              ? `Server running · ${loadedLabel}`
-              : "Server not running"}
+              ? t("ollama.serverRunningLabel", { label: loadedLabel })
+              : t("ollama.serverNotRunning")}
         </span>
         {serverRunning === false && (
           <button type="button" className="ollama-action-btn" onClick={() => void startServer()}>
-            Start
+            {t("ollama.start")}
           </button>
         )}
         {serverRunning === true && (
@@ -1443,7 +1562,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
             disabled={loading}
             onClick={() => void refresh()}
           >
-            {loading ? "..." : "Refresh"}
+            {loading ? "..." : t("ollama.refresh")}
           </button>
         )}
       </div>
@@ -1465,7 +1584,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
           return null;
         return (
           <>
-            <div className="settings-section-title">Downloading</div>
+            <div className="settings-section-title">{t("ollama.downloadingTitle")}</div>
             <div className="settings-list">
               {Object.entries(pullProgress).map(([model, pr]) => (
                 <div className="ollama-model-row" key={model}>
@@ -1486,10 +1605,10 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                     <button
                       type="button"
                       className="ollama-action-btn"
-                      title="Pause this download (resume later)"
+                      title={t("ollama.pauseTitle")}
                       onClick={() => pausePull(model)}
                     >
-                      Pause
+                      {t("ollama.pause")}
                     </button>
                   </div>
                 </div>
@@ -1498,26 +1617,24 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                 <div className="ollama-model-row" key={`paused:${model}`}>
                   <div className="ollama-model-header">
                     <span className="ollama-model-name">{model}</span>
-                    <span className="ollama-model-size">paused</span>
+                    <span className="ollama-model-size">{t("ollama.pausedBadge")}</span>
                   </div>
-                  <div className="ollama-download-status">
-                    Download paused — resume to finish it, or delete the partial data.
-                  </div>
+                  <div className="ollama-download-status">{t("ollama.downloadPaused")}</div>
                   <div className="ollama-model-actions">
                     <button
                       type="button"
                       className="ollama-action-btn"
                       onClick={() => resumePull(model)}
                     >
-                      Resume
+                      {t("ollama.resume")}
                     </button>
                     <button
                       type="button"
                       className="ollama-action-btn danger"
-                      title="Delete the partial download to reclaim disk space"
+                      title={t("ollama.deletePartialTitle")}
                       onClick={() => deletePausedPull(model)}
                     >
-                      Delete
+                      {t("ollama.delete")}
                     </button>
                   </div>
                 </div>
@@ -1526,52 +1643,50 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                 <div className="ollama-model-row" key={`int:${model}`}>
                   <div className="ollama-model-header">
                     <span className="ollama-model-name">{model}</span>
-                    <span className="ollama-model-size">interrupted</span>
+                    <span className="ollama-model-size">{t("ollama.interruptedBadge")}</span>
                   </div>
-                  <div className="ollama-download-status">
-                    Download was interrupted — resume to finish it.
-                  </div>
+                  <div className="ollama-download-status">{t("ollama.downloadInterrupted")}</div>
                   <div className="ollama-model-actions">
                     <button
                       type="button"
                       className="ollama-action-btn"
                       onClick={() => continuePull(model)}
                     >
-                      Continue download
+                      {t("ollama.continueDownload")}
                     </button>
                     <button
                       type="button"
                       className="ollama-action-btn"
-                      title="Forget this interrupted download"
+                      title={t("ollama.dismissTitle")}
                       onClick={() => dismissPull(model)}
                     >
-                      Dismiss
+                      {t("ollama.dismiss")}
                     </button>
                   </div>
                 </div>
               ))}
               {orphans.length > 0 && (
                 <div className="ollama-download-status">
-                  {orphans.length} orphaned partial layer{orphans.length > 1 ? "s" : ""} (
-                  {fmtBytes(orphans.reduce((sum, o) => sum + o.size, 0))}) — interrupted downloads
-                  with no recoverable model name. Re-pull the model to resume, or delete to reclaim
-                  space.
+                  {t(orphans.length === 1 ? "ollama.orphansSummaryOne" : "ollama.orphansSummaryMany", {
+                    count: orphans.length,
+                    size: fmtBytes(orphans.reduce((sum, o) => sum + o.size, 0)),
+                  })}
                 </div>
               )}
               {orphans.map((o) => (
                 <div className="ollama-model-row" key={o.path}>
                   <div className="ollama-model-header">
-                    <span className="ollama-model-name">layer {o.digest}…</span>
+                    <span className="ollama-model-name">{t("ollama.orphanLayer", { digest: o.digest })}</span>
                     <span className="ollama-model-size">{fmtBytes(o.size)}</span>
                   </div>
                   <div className="ollama-model-actions">
                     <button
                       type="button"
                       className="ollama-action-btn danger"
-                      title="Delete this partial layer to reclaim disk space"
+                      title={t("ollama.deleteLayerTitle")}
                       onClick={() => deleteOrphan(o.path)}
                     >
-                      Delete
+                      {t("ollama.delete")}
                     </button>
                   </div>
                 </div>
@@ -1581,11 +1696,11 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
         );
       })()}
 
-      <div className="settings-section-title">Downloaded Models</div>
+      <div className="settings-section-title">{t("ollama.downloadedModelsTitle")}</div>
       {loading ? (
-        <div className="ollama-empty">Loading...</div>
+        <div className="ollama-empty">{t("common.loading")}</div>
       ) : models.length === 0 ? (
-        <div className="ollama-empty">No models downloaded</div>
+        <div className="ollama-empty">{t("ollama.noModelsDownloaded")}</div>
       ) : (
         <div className="settings-list">
           {models.map((m) => (
@@ -1610,63 +1725,63 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                     type="button"
                     className="ollama-action-btn"
                     disabled={busy[`${m.name}:stop`]}
-                    title="Unload from memory"
+                    title={t("ollama.unloadTitle")}
                     onClick={() =>
                       void withBusy(`${m.name}:stop`, () =>
                         invoke("stop_ollama_model", { model: m.name }),
                       )
                     }
                   >
-                    {busy[`${m.name}:stop`] ? "..." : "Unload"}
+                    {busy[`${m.name}:stop`] ? "..." : t("ollama.unload")}
                   </button>
                 ) : (
                   <button
                     type="button"
                     className="ollama-action-btn"
                     disabled={busy[`${m.name}:load`] || loadingMem[m.name]}
-                    title="Load into memory now and keep it resident"
+                    title={t("ollama.loadTitle")}
                     onClick={() =>
                       void withBusy(`${m.name}:load`, () =>
                         invoke("load_ollama_model", { model: m.name }),
                       )
                     }
                   >
-                    {busy[`${m.name}:load`] || loadingMem[m.name] ? "Loading…" : "Load"}
+                    {busy[`${m.name}:load`] || loadingMem[m.name] ? t("ollama.loading") : t("ollama.load")}
                   </button>
                 )}
                 <button
                   type="button"
                   className="ollama-action-btn"
                   disabled={busy[`${m.name}:pull`]}
-                  title="Check for update and download latest"
+                  title={t("ollama.updateTitle")}
                   onClick={() =>
                     void withBusy(`${m.name}:pull`, () =>
                       invoke("pull_ollama_model", { model: m.name }),
                     )
                   }
                 >
-                  {busy[`${m.name}:pull`] ? pullText(m.name, "Updating…") : "Update"}
+                  {busy[`${m.name}:pull`] ? pullText(m.name, t("ollama.updating")) : t("ollama.update")}
                 </button>
                 <button
                   type="button"
                   className="ollama-action-btn danger"
                   disabled={busy[`${m.name}:del`]}
-                  title="Delete this model"
+                  title={t("ollama.deleteModelTitle")}
                   onClick={() =>
                     void withBusy(`${m.name}:del`, () =>
                       invoke("delete_ollama_model", { model: m.name }),
                     )
                   }
                 >
-                  {busy[`${m.name}:del`] ? "..." : "Delete"}
+                  {busy[`${m.name}:del`] ? "..." : t("ollama.delete")}
                 </button>
               </div>
               {(busy[`${m.name}:load`] || loadingMem[m.name]) && (
-                <div className="ollama-load-progress" title="Loading into memory…">
+                <div className="ollama-load-progress" title={t("ollama.loadingIntoMemoryTitle")}>
                   <div className="ollama-download-bar">
                     <div className="ollama-download-bar-fill indeterminate" />
                   </div>
-                  <span className="ollama-download-status">Loading into memory…</span>
+                  <span className="ollama-download-status">{t("ollama.loadingIntoMemory")}</span>
                 </div>
               )}
             </div>
@@ -1675,27 +1790,26 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
       )}
 
       <div className="settings-section-title ollama-section-title-row">
-        <span>Browse the Ollama registry</span>
+        <span>{t("ollama.browseRegistry")}</span>
         <button
           type="button"
           className="ollama-action-btn"
           disabled={regLoading}
           onClick={() => void loadRegistryPage(1, true)}
         >
-          {regLoading ? "..." : "Refresh"}
+          {regLoading ? "..." : t("ollama.refresh")}
         </button>
       </div>
 
       <p className="settings-help">
-        Pull any model from the Ollama registry. Type an exact ref to pull directly,
-        or search and filter the full list below. Use a full ref like{" "}
-        <code>llama3.1:8b</code> or <code>namespace/model:tag</code>.
+        {t("ollama.pullHelp1")}{" "}
+        <code>llama3.1:8b</code> {t("ollama.pullHelp2")} <code>namespace/model:tag</code>.
       </p>
       <div className="ollama-install-cmd-row">
         <input
           type="text"
           className="ollama-pull-input"
-          placeholder="model name or namespace/model:tag"
+          placeholder={t("ollama.pullPlaceholder")}
           value={pullName}
           spellCheck={false}
           autoCapitalize="off"
@@ -1712,7 +1826,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
           disabled={!pullName.trim() || !!busy[`${pullName.trim()}:pull`]}
           onClick={() => void pullTyped()}
         >
-          {busy[`${pullName.trim()}:pull`] ? pullText(pullName.trim(), "Pulling…") : "Pull"}
+          {busy[`${pullName.trim()}:pull`] ? pullText(pullName.trim(), t("ollama.pulling")) : t("ollama.pull")}
         </button>
       </div>
 
@@ -1720,32 +1834,32 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
         <input
           type="text"
           className="ollama-pull-input"
-          placeholder="Search all models by name or description…"
+          placeholder={t("ollama.searchPlaceholder")}
           value={regQuery}
           spellCheck={false}
           autoCapitalize="off"
           autoCorrect="off"
           onChange={(e) => setRegQuery(e.target.value)}
         />
-        <label className="ollama-sort-label" title="Sort the results">
-          Sort by
+        <label className="ollama-sort-label" title={t("ollama.sortBy")}>
+          {t("ollama.sortBy")}
           <Dropdown
             className="ollama-catalog-sort"
             value={sortBy}
             onChange={(v) => setSortBy(v as SortKey)}
-            options={SORT_OPTIONS.map((o) => ({ value: o.key, label: o.label }))}
+            options={SORT_OPTIONS.map((o) => ({ value: o.key, label: t(o.labelKey) }))}
           />
         </label>
       </div>
 
       <div className="ollama-filter-row">
-        <span className="ollama-filter-label">Type</span>
+        <span className="ollama-filter-label">{t("ollama.filterType")}</span>
         <button
           type="button"
           className={`ollama-chip${regTypes.size === 0 ? " active" : ""}`}
           onClick={() => setRegTypes(new Set())}
         >
-          Any
+          {t("ollama.any")}
         </button>
         {REGISTRY_TYPES.map((cap) => (
           <button
@@ -1754,19 +1868,19 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
             className={`ollama-chip${regTypes.has(cap) ? " active" : ""}`}
             onClick={() => toggleType(cap)}
           >
-            {cap}
+            {t(`ollama.cap.${cap}` as TranslationKey)}
           </button>
         ))}
       </div>
 
       <div className="ollama-filter-row">
-        <span className="ollama-filter-label">Params</span>
+        <span className="ollama-filter-label">{t("ollama.filterParams")}</span>
         <button
           type="button"
           className={`ollama-chip${regSizes.size === 0 ? " active" : ""}`}
           onClick={() => setRegSizes(new Set())}
         >
-          Any
+          {t("ollama.any")}
         </button>
         {SIZE_BUCKETS.map((b) => (
           <button
@@ -1788,7 +1902,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
             <div className="ollama-catalog-header">
               <span className="ollama-model-name">{m.name}</span>
               <span className="ollama-catalog-hint">
-                {m.pulls && `${m.pulls} pulls`}
+                {m.pulls && t("ollama.pullsSuffix", { pulls: m.pulls })}
                 {m.pulls && m.updated ? " · " : ""}
                 {m.updated}
               </span>
@@ -1812,7 +1926,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                     sz === undefined
                       ? ""
                       : sz === "loading"
-                        ? " — size…"
+                        ? t("ollama.sizeLoadingSuffix")
                         : sz === "error"
                           ? ""
                           : ` — ${fmtBytes(sz)}`;
@@ -1821,7 +1935,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                       type="button"
                       className={`ollama-tag-btn${isInstalled ? " installed" : ""}`}
                       disabled={!!busy[`${m.name}:pull`]}
-                      title={`${isInstalled ? "Update" : "Download"} ${m.name}${sizeLabel}`}
+                      title={t(isInstalled ? "ollama.tagUpdateTitle" : "ollama.tagDownloadTitle", { name: m.name, size: sizeLabel })}
                       onMouseEnter={() => fetchTagSize(m.name)}
                       onFocus={() => fetchTagSize(m.name)}
                       onClick={() =>
@@ -1830,7 +1944,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                         )
                       }
                     >
-                      {busy[`${m.name}:pull`] ? pullText(m.name, "…") : "pull"}
+                      {busy[`${m.name}:pull`] ? pullText(m.name, "…") : t("ollama.pullLower")}
                     </button>
                   );
                 })()
@@ -1844,7 +1958,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                     sz === undefined
                       ? ""
                       : sz === "loading"
-                        ? " — size…"
+                        ? t("ollama.sizeLoadingSuffix")
                         : sz === "error"
                           ? ""
                           : ` — ${fmtBytes(sz)}`;
@@ -1854,7 +1968,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                       type="button"
                       className={`ollama-tag-btn${isInstalled ? " installed" : ""}`}
                       disabled={!!isBusy}
-                      title={`${isInstalled ? "Update" : "Download"} ${fullName}${sizeLabel}`}
+                      title={t(isInstalled ? "ollama.tagUpdateTitle" : "ollama.tagDownloadTitle", { name: fullName, size: sizeLabel })}
                       onMouseEnter={() => fetchTagSize(fullName)}
                       onFocus={() => fetchTagSize(fullName)}
                       onClick={() =>
@@ -1873,17 +1987,17 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
         ))}
 
         {/* Lazy-load sentinel + status line. */}
-        {regLoading && <div className="ollama-empty">Loading…</div>}
+        {regLoading && <div className="ollama-empty">{t("common.loading")}</div>}
         {!regLoading && shownRegistry.length === 0 && (
           <div className="ollama-empty">
             {regModels.length === 0
-              ? "No models found"
-              : "No loaded models match the selected size — load more or clear the Params filter"}
+              ? t("ollama.noModelsFound")
+              : t("ollama.noMatchSizeFilter")}
           </div>
         )}
         <div ref={sentinelRef} aria-hidden="true" />
         {regDone && regModels.length > 0 && (
-          <div className="ollama-empty">End of results</div>
+          <div className="ollama-empty">{t("ollama.endOfResults")}</div>
         )}
       </div>
     </>

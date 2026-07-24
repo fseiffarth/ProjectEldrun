@@ -23,8 +23,9 @@ use openssh_sftp_client::{Sftp, SftpOptions};
 use tokio::process::{Child, ChildStderr, Command};
 
 use crate::services::ssh_common::{
-    explain_ssh_error, ssh_base_args, ssh_master_base_args, ssh_password_base_args,
-    ssh_password_master_base_args, validate_arg,
+    explain_ssh_error, ssh_base_args, ssh_master_base_args, ssh_passphrase_base_args,
+    ssh_passphrase_master_base_args, ssh_password_base_args, ssh_password_master_base_args,
+    validate_arg,
 };
 
 /// How much of ssh's stderr to keep. Auth failures are a line or two; the cap only
@@ -68,7 +69,14 @@ fn drain_stderr(mut stderr: ChildStderr) -> tokio::task::JoinHandle<String> {
 /// briefly for the drain (ssh has already exited, so this returns at once) and
 /// prefer its explanation. Falls back to the raw stderr, then to the handshake
 /// error, so no information is ever lost — only re-ranked by usefulness.
-async fn handshake_error(drain: Option<tokio::task::JoinHandle<String>>, err: String) -> String {
+/// Returns `(explained, raw stderr)`. The raw text is kept, not just folded into
+/// the message, because the auth-method loop in [`open_any`] has to distinguish a
+/// *local* failure (a wrong key passphrase) from a server-side one, and the
+/// explained form is deliberately lossy.
+async fn handshake_error(
+    drain: Option<tokio::task::JoinHandle<String>>,
+    err: String,
+) -> (String, String) {
     let stderr = match drain {
         Some(handle) => {
             tokio::time::timeout(std::time::Duration::from_secs(3), handle)
@@ -80,9 +88,25 @@ async fn handshake_error(drain: Option<tokio::task::JoinHandle<String>>, err: St
         None => String::new(),
     };
     if stderr.is_empty() {
-        return err;
+        return (err, stderr);
     }
-    explain_ssh_error(&stderr).unwrap_or(stderr)
+    let explained = explain_ssh_error(&stderr).unwrap_or_else(|| stderr.clone());
+    (explained, stderr)
+}
+
+/// Prefer the prompt the askpass shim refused over whatever ssh said afterwards.
+/// A refusal ends the handshake as a plain auth failure, so without this the user
+/// is told "Permission denied" for a host that actually asked them for a
+/// verification code — see `ssh_common::Askpass`. Must run before the guard drops.
+#[cfg(any(unix, windows))]
+fn refusal_override(
+    askpass: &Option<crate::services::ssh_common::Askpass>,
+    err: String,
+) -> String {
+    match askpass.as_ref().and_then(|a| a.refused_prompt()) {
+        Some(prompt) => crate::services::ssh_common::unexpected_prompt_error(&prompt),
+        None => err,
+    }
 }
 
 /// One entry in a remote directory listing. Structurally identical to the
@@ -133,63 +157,169 @@ async fn open_session(
     port: Option<u16>,
     password: Option<&str>,
 ) -> Result<(Sftp, Child), String> {
-    #[cfg(any(unix, windows))]
-    let mut _askpass: Option<crate::services::ssh_common::Askpass> = None;
-    let mut cmd = match password.filter(|p| !p.is_empty()) {
-        Some(pw) => {
-            let args = sftp_subsystem_args(ssh_password_base_args(user, host, port)?)?;
-            let c;
-            #[cfg(unix)]
-            {
-                let mut cc = Command::new("ssh");
-                cc.args(&args);
-                let ap = crate::services::ssh_common::make_askpass(pw)?;
-                for (k, v) in ap.env_vars() {
-                    cc.env(k, v);
-                }
-                _askpass = Some(ap);
-                c = cc;
-            }
-            #[cfg(not(unix))]
-            {
-                // Windows: askpass when OpenSSH ≥ 8.4, else the sshpass fallback.
-                if crate::services::ssh_common::ssh_supports_askpass() {
-                    let mut cc = Command::new("ssh");
-                    cc.args(&args);
-                    let ap = crate::services::ssh_common::make_askpass(pw)?;
-                    for (k, v) in ap.env_vars() {
-                        cc.env(k, v);
-                    }
-                    _askpass = Some(ap);
-                    c = cc;
-                } else if crate::services::ssh_common::sshpass_available() {
-                    let mut cc = Command::new("sshpass");
-                    cc.arg("-e"); // read the password from $SSHPASS, never argv
-                    cc.env("SSHPASS", pw);
-                    cc.arg("ssh");
-                    cc.args(&args);
-                    c = cc;
-                } else {
-                    return Err(
-                        "password auth needs OpenSSH 8.4+ or sshpass — update OpenSSH, \
-                         install sshpass, or set up SSH keys"
-                            .to_string(),
-                    );
-                }
-            }
-            c
-        }
-        None => {
-            let args = sftp_subsystem_args(ssh_base_args(user, host, port)?)?;
-            let mut c = Command::new("ssh");
-            c.args(&args);
-            c
-        }
+    open_any(user, host, port, password, false).await
+}
+
+/// The auth-method loop both openers share: key/agent when no secret was typed,
+/// otherwise each kind in [`secret_attempt_order`](crate::services::ssh_common::secret_attempt_order)
+/// until one authenticates. `master` selects the master-owning argv builders.
+///
+/// Attempting more than once is what lets a single credential field serve a host
+/// whose key is locked *and* a host that wants a login password, without the user
+/// having to know which they are giving us — see `secret_attempt_order` for why
+/// the order is a security property rather than a preference. The loop stops early
+/// on a wrong *passphrase*, since retrying that secret as a password would send it
+/// to the server.
+async fn open_any(
+    user: &Option<String>,
+    host: &str,
+    port: Option<u16>,
+    password: Option<&str>,
+    master: bool,
+) -> Result<(Sftp, Child), String> {
+    use crate::services::ssh_common::SecretKind;
+
+    let what = if master {
+        "pooled sftp connection failed"
+    } else {
+        "sftp connection failed"
     };
+
+    let Some(pw) = password.filter(|p| !p.is_empty()) else {
+        let base = if master {
+            ssh_master_base_args(user, host, port)?
+        } else {
+            ssh_base_args(user, host, port)?
+        };
+        let args = sftp_subsystem_args(base)?;
+        let mut cmd = Command::new("ssh");
+        cmd.args(&args);
+        return match spawn_sftp(cmd, None, None, what).await {
+            // A key-auth denial against a host whose key is encrypted on disk is
+            // the one failure OpenSSH cannot explain itself: `BatchMode=yes` means
+            // it never asked for the passphrase, so all the user sees is
+            // "Permission denied (publickey)". Say what actually happened.
+            Err((err, _)) => Err(match crate::services::ssh_common::locked_key_hint_async(
+                user, host, port,
+            )
+            .await
+            {
+                Some(hint) => format!("{err}\n\n{hint}"),
+                None => err,
+            }),
+            Ok(session) => Ok(session),
+        };
+    };
+
+    let kinds = crate::services::ssh_common::secret_attempt_order_async(user, host, port).await;
+    let last = kinds.len() - 1;
+    let mut error = String::new();
+    for (i, kind) in kinds.iter().copied().enumerate() {
+        if kind == SecretKind::Password {
+            // Never release a password to a host key nobody has vetted. (A
+            // passphrase needs no such gate — it never leaves this machine.)
+            crate::services::ssh_common::guard_first_contact_async(host, port).await?;
+        }
+        let base = match (kind, master) {
+            (SecretKind::Password, false) => ssh_password_base_args(user, host, port)?,
+            (SecretKind::Password, true) => ssh_password_master_base_args(user, host, port)?,
+            (SecretKind::KeyPassphrase, false) => ssh_passphrase_base_args(user, host, port)?,
+            (SecretKind::KeyPassphrase, true) => {
+                ssh_passphrase_master_base_args(user, host, port)?
+            }
+        };
+        let args = sftp_subsystem_args(base)?;
+        let (cmd, askpass) = secret_cmd(kind, pw, &args)?;
+        match spawn_sftp(cmd, askpass, Some(kind), what).await {
+            Ok(session) => return Ok(session),
+            Err((explained, rejected_locally)) => {
+                error = explained;
+                // The secret is definitively a wrong passphrase — trying it
+                // against the server would disclose it for nothing.
+                if rejected_locally || i == last {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    Err(error)
+}
+
+/// Build the `ssh` command for one secret-auth attempt, with the askpass shim for
+/// `kind` attached. Returns the guard alongside, which the caller must keep alive
+/// until the handshake completes (see [`spawn_sftp`], which owns it).
+fn secret_cmd(
+    kind: crate::services::ssh_common::SecretKind,
+    secret: &str,
+    args: &[String],
+) -> Result<(Command, Option<crate::services::ssh_common::Askpass>), String> {
+    #[cfg(unix)]
+    {
+        let mut cmd = Command::new("ssh");
+        cmd.args(args);
+        let ap = crate::services::ssh_common::make_askpass_for(kind, secret, args)?;
+        for (k, v) in ap.env_vars() {
+            cmd.env(k, v);
+        }
+        Ok((cmd, Some(ap)))
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows: askpass when OpenSSH ≥ 8.4, else the sshpass fallback.
+        if crate::services::ssh_common::ssh_supports_askpass() {
+            let mut cmd = Command::new("ssh");
+            cmd.args(args);
+            let ap = crate::services::ssh_common::make_askpass_for(kind, secret, args)?;
+            for (k, v) in ap.env_vars() {
+                cmd.env(k, v);
+            }
+            Ok((cmd, Some(ap)))
+        } else if kind == crate::services::ssh_common::SecretKind::KeyPassphrase {
+            // `sshpass` answers the *password* prompt only; it has no way to feed a
+            // key passphrase. Say so rather than silently sending it to the server.
+            Err(
+                "unlocking a passphrase-protected SSH key needs OpenSSH 8.4+ — update \
+                 OpenSSH, or run `ssh-add` to load the key before connecting"
+                    .to_string(),
+            )
+        } else if crate::services::ssh_common::sshpass_available() {
+            let mut cmd = Command::new("sshpass");
+            cmd.arg("-e"); // read the password from $SSHPASS, never argv
+            cmd.env("SSHPASS", secret);
+            cmd.arg("ssh");
+            cmd.args(args);
+            Ok((cmd, None))
+        } else {
+            Err(
+                "password auth needs OpenSSH 8.4+ or sshpass — update OpenSSH, \
+                 install sshpass, or set up SSH keys"
+                    .to_string(),
+            )
+        }
+    }
+}
+
+/// Spawn `cmd` (an `ssh -s sftp`) and complete the SFTP handshake over its pipes.
+/// Takes ownership of the askpass guard so the shim outlives authentication —
+/// which happens during `Sftp::new`, not at spawn.
+///
+/// On failure returns `(explained, raw stderr)`: the explained form is what the
+/// user reads, while the raw text is what [`open_any`] inspects to decide whether
+/// another auth method is worth trying.
+async fn spawn_sftp(
+    mut cmd: Command,
+    askpass: Option<crate::services::ssh_common::Askpass>,
+    kind: Option<crate::services::ssh_common::SecretKind>,
+    what: &str,
+) -> Result<(Sftp, Child), (String, bool)> {
+    let launch = |e: std::io::Error| (format!("failed to launch ssh for sftp: {e}"), false);
+    let missing = |s: &str| (s.to_string(), false);
 
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         // Piped, not null: this is where ssh says *why* it failed (see drain_stderr).
+        // This is the connect the headless Connect modal drives, so its error text
+        // is what the user reads — it must carry the reason, not an EOF.
         .stderr(Stdio::piped());
     if let Some(path) = crate::paths::effective_path() {
         cmd.env("PATH", path);
@@ -198,22 +328,40 @@ async fn open_session(
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("failed to launch ssh for sftp: {e}"))?;
+    let mut child = cmd.spawn().map_err(launch)?;
     let stdin = child
         .stdin
         .take()
-        .ok_or_else(|| "ssh stdin unavailable".to_string())?;
+        .ok_or_else(|| missing("ssh stdin unavailable"))?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "ssh stdout unavailable".to_string())?;
+        .ok_or_else(|| missing("ssh stdout unavailable"))?;
     let drain = child.stderr.take().map(drain_stderr);
 
     match Sftp::new(stdin, stdout, SftpOptions::default()).await {
         Ok(sftp) => Ok((sftp, child)),
-        Err(e) => Err(handshake_error(drain, format!("sftp connection failed: {e}")).await),
+        Err(e) => {
+            let (err, raw) = handshake_error(drain, format!("{what}: {e}")).await;
+            // Both reads must happen before the guard drops (it deletes its files).
+            #[cfg(any(unix, windows))]
+            let rejected = kind.is_some_and(|k| {
+                crate::services::ssh_common::secret_rejected_locally(k, askpass.as_ref(), &raw)
+            });
+            #[cfg(not(any(unix, windows)))]
+            let rejected = kind.is_some_and(|k| {
+                k == crate::services::ssh_common::SecretKind::KeyPassphrase
+                    && crate::services::ssh_common::is_wrong_passphrase(&raw)
+            });
+            #[cfg(any(unix, windows))]
+            let err = refusal_override(&askpass, err);
+            let err = if rejected {
+                crate::services::ssh_common::wrong_passphrase_error()
+            } else {
+                err
+            };
+            Err((err, rejected))
+        }
     }
 }
 
@@ -235,90 +383,7 @@ pub async fn open_pooled_session(
     #[cfg(not(target_os = "windows"))]
     let _ = std::fs::create_dir_all(crate::services::ssh_exec::control_dir());
 
-    #[cfg(any(unix, windows))]
-    let mut _askpass: Option<crate::services::ssh_common::Askpass> = None;
-    let mut cmd = match password.filter(|p| !p.is_empty()) {
-        Some(pw) => {
-            let args = sftp_subsystem_args(ssh_password_master_base_args(user, host, port)?)?;
-            let c;
-            #[cfg(unix)]
-            {
-                let mut cc = Command::new("ssh");
-                cc.args(&args);
-                let ap = crate::services::ssh_common::make_askpass(pw)?;
-                for (k, v) in ap.env_vars() {
-                    cc.env(k, v);
-                }
-                _askpass = Some(ap);
-                c = cc;
-            }
-            #[cfg(not(unix))]
-            {
-                // Windows: askpass when OpenSSH ≥ 8.4, else the sshpass fallback.
-                if crate::services::ssh_common::ssh_supports_askpass() {
-                    let mut cc = Command::new("ssh");
-                    cc.args(&args);
-                    let ap = crate::services::ssh_common::make_askpass(pw)?;
-                    for (k, v) in ap.env_vars() {
-                        cc.env(k, v);
-                    }
-                    _askpass = Some(ap);
-                    c = cc;
-                } else if crate::services::ssh_common::sshpass_available() {
-                    let mut cc = Command::new("sshpass");
-                    cc.arg("-e"); // read the password from $SSHPASS, never argv
-                    cc.env("SSHPASS", pw);
-                    cc.arg("ssh");
-                    cc.args(&args);
-                    c = cc;
-                } else {
-                    return Err(
-                        "password auth needs OpenSSH 8.4+ or sshpass — update OpenSSH, \
-                         install sshpass, or set up SSH keys"
-                            .to_string(),
-                    );
-                }
-            }
-            c
-        }
-        None => {
-            let args = sftp_subsystem_args(ssh_master_base_args(user, host, port)?)?;
-            let mut c = Command::new("ssh");
-            c.args(&args);
-            c
-        }
-    };
-
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        // Piped, not null: this is where ssh says *why* it failed (see drain_stderr).
-        // This is the connect the headless Connect modal drives, so its error text
-        // is what the user reads — it must carry the reason, not an EOF.
-        .stderr(Stdio::piped());
-    if let Some(path) = crate::paths::effective_path() {
-        cmd.env("PATH", path);
-    }
-    // Don't pop a console window for the child ssh on Windows.
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("failed to launch ssh for pooled sftp: {e}"))?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "ssh stdin unavailable".to_string())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "ssh stdout unavailable".to_string())?;
-    let drain = child.stderr.take().map(drain_stderr);
-
-    match Sftp::new(stdin, stdout, SftpOptions::default()).await {
-        Ok(sftp) => Ok((sftp, child)),
-        Err(e) => Err(handshake_error(drain, format!("pooled sftp connection failed: {e}")).await),
-    }
+    open_any(user, host, port, password, true).await
 }
 
 /// Wait for the ssh child to exit after the `Sftp` client has been dropped, so we

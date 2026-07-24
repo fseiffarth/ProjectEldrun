@@ -67,6 +67,12 @@ pub struct LoginSession {
     pub user: String,
     pub tty: String,
     pub detail: String,
+    /// Whether this session belongs to the account Eldrun is sampling *as* (the
+    /// host's `ME` line — see [`parse_who`]). The pane marks the row "you"; it is
+    /// also what lets the sampling account appear at all on a host where `who`
+    /// has no record of it (the synthesized row below).
+    #[serde(default)]
+    pub is_self: bool,
 }
 
 /// A single whole-system sample backing the htop-like monitor pane. Everything
@@ -115,6 +121,14 @@ pub struct SystemSnapshot {
     /// user, so it would be a single trivial row).
     #[serde(default)]
     pub sessions: Vec<LoginSession>,
+    /// Whether the sample was taken in **careful mode** — the reduced collection
+    /// an HPC login node's usage rules require (see [`REMOTE_SNAPSHOT_SCRIPT`]
+    /// and `docs/context/hpc_careful_mode.md`). Decided by the *host* (SLURM on
+    /// `PATH`), so the pane learns it from the first sample rather than being
+    /// told; it then polls more gently and says what it is (and isn't) showing.
+    /// Always `false` for a local sample — this machine is the user's own.
+    #[serde(default)]
+    pub careful: bool,
 }
 
 /// Generation counter bumped whenever a PTY is spawned or dies (see
@@ -378,19 +392,44 @@ fn parse_passwd(content: &str) -> HashMap<u32, String> {
 /// Resolve a numeric uid to a display name via a passwd map, falling back to
 /// `#<uid>` for a uid the map doesn't cover (an NSS-only account the file walk
 /// missed, or a process whose owner was removed) rather than an empty string.
+/// The one label every foreign process carries in careful mode. Not a user name
+/// and deliberately not a uid: the point is that a careful sample can say how
+/// loaded the machine is without attributing any of that load to a person.
+pub const OTHER_USERS: &str = "other users";
+
 fn username_for(uid: u32, map: &HashMap<u32, String>) -> String {
     map.get(&uid)
         .cloned()
         .unwrap_or_else(|| format!("#{uid}"))
 }
 
+/// The `tty`/`detail` a synthesized self-session carries — the row that says "you
+/// are on this host" when `who` has no record of the sampling account (see
+/// [`parse_who`]). Not a terminal name, because there is no terminal: it is the
+/// pooled SSH connection this very sample arrived over.
+const SELF_SESSION_TTY: &str = "ssh";
+const SELF_SESSION_DETAIL: &str = "(this Eldrun connection — no tty)";
+
 /// Parse `who` output into one [`LoginSession`] per non-blank line. Each line is
 /// `user  tty  <login-time> (<origin>)`; the first two whitespace fields are the
 /// user and tty, everything after is kept verbatim as `detail`. Matches
 /// `services::remote_usage::parse_who` so the pane's "Logged in" panel reads
 /// identically to the connect-time dialog's.
-fn parse_who(content: &str) -> Vec<LoginSession> {
-    content
+///
+/// `me` is the sampling account's login name **on that host** (the script's `ME`
+/// line), and it is what fixes the panel's oldest oddity: it listed everyone
+/// *except* the person reading it. `who` reports utmp, and utmp only gets an entry
+/// when sshd allocates a **pty** — the monitor's own probe (and the pooled
+/// ControlMaster behind it) runs without one, so unless the user happens to have an
+/// interactive terminal tab open on that host, their own presence is invisible while
+/// every other logged-in person shows. So a matching row is flagged `is_self`, and
+/// when there is no matching row at all one is **synthesized**: the connection this
+/// snapshot arrived over is a real session on that machine, it simply is not one
+/// utmp records. On a careful (HPC) host, where `who` is pre-filtered to this
+/// account, that synthesized row is also what turns a panel reading "no interactive
+/// logins" into the truthful "you, and nothing collected about anyone else".
+fn parse_who(content: &str, me: &str) -> Vec<LoginSession> {
+    let mut sessions: Vec<LoginSession> = content
         .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| {
@@ -398,9 +437,27 @@ fn parse_who(content: &str) -> Vec<LoginSession> {
             let user = parts.next()?.to_string();
             let tty = parts.next().unwrap_or("").to_string();
             let detail = parts.collect::<Vec<_>>().join(" ");
-            Some(LoginSession { user, tty, detail })
+            let is_self = !me.is_empty() && user == me;
+            Some(LoginSession {
+                user,
+                tty,
+                detail,
+                is_self,
+            })
         })
-        .collect()
+        .collect();
+    if !me.is_empty() && !sessions.iter().any(|s| s.is_self) {
+        sessions.insert(
+            0,
+            LoginSession {
+                user: me.to_string(),
+                tty: SELF_SESSION_TTY.to_string(),
+                detail: SELF_SESSION_DETAIL.to_string(),
+                is_self: true,
+            },
+        );
+    }
+    sessions
 }
 
 /// hwmon `name` values that identify a CPU **package** temperature sensor: Intel
@@ -457,25 +514,119 @@ fn pick_cpu_temp(channels: &[(Option<String>, f64)]) -> Option<f64> {
 /// the same parsers as the local read), and `AMD\t<card>\t<key>\t<value>` lines
 /// ship one DRM sysfs file each so `parse_drm_card` runs unchanged on them. The
 /// `@WHO@` block carries the host's `who` output verbatim for the pane's "Logged
-/// in" panel ([`parse_who`]). The
+/// in" panel ([`parse_who`]), preceded by an `ME` line naming the account the
+/// script is running as — `who` reports utmp, which has no entry for a session
+/// without a pty, so without it the one person the panel could never list was the
+/// user reading it. The
 /// `@PASSWD@` block ships the host's `getent passwd` (or `/etc/passwd`) verbatim so
 /// [`parse_passwd`] can map each process's owner uid to a name on the *host's*
-/// account database, not this machine's. Under `@PROCS@` comes one `S`/`U`/`R`/`C`
-/// quad per process (the raw `/proc/<pid>/stat` line, its owner uid from
-/// `/proc/<pid>/status`, its `VmRSS` in KiB, and its NUL-flattened cmdline).
-/// cmdline NULs become spaces so every field stays on one line, which is what lets
-/// the parser split on line prefixes alone.
+/// account database, not this machine's.
+///
+/// **The process walk is fork-bounded, and that is the whole point.** Under
+/// `@PROCS@` comes one `S`/`U`/`R` line per process, each *keyed by pid*
+/// (`<tag>\t<pid>\t<value>`): the raw `/proc/<pid>/stat` line, the owner uid from
+/// `/proc/<pid>/status`, and `VmRSS` in KiB. All three come from a **single**
+/// `awk` that walks every `/proc/<pid>` itself via `getline`. The earlier shape —
+/// a `sh` loop forking `cat` + `awk` + `tr` *per process* — cost ~3 execs per pid,
+/// which on a busy multi-user host (an HPC login node) is thousands of process
+/// spawns every poll: measured at **2.3 s of host CPU for 544 processes**, i.e.
+/// ~78% of a core sustained against this pane's 3 s cadence. The same capture as
+/// one `awk` pass measures ~0.02 s. A poll must cost the host less than the host
+/// is worth watching for.
+///
+/// Cmdlines therefore ride their own `@CMDLINE@` block, captured by **one**
+/// `grep -aH '' /proc/[0-9]*/cmdline` piped through **one** `tr '\0' ' '` (NULs
+/// become spaces so each process stays on one line, as before). They are keyed by
+/// the `/proc/<pid>/cmdline:` prefix grep emits rather than zipped positionally
+/// with `@PROCS@`, because a kernel thread's cmdline is empty and so contributes
+/// no line at all — the two blocks genuinely do not line up. A host with no
+/// `grep` degrades to every process showing its `[comm]`, never to a wrong name.
+///
+/// `@PASSWD2@`, shipped *after* `@PROCS@`, resolves each uid the walk actually saw
+/// via a **targeted** `getent passwd <uid>` lookup — the supplement that makes the
+/// "Logged in" panel's per-user CPU/MEM match `who`'s names on an NSS setup that
+/// serves point lookups but not enumeration (SSSD's default `enumerate = false`,
+/// common on LDAP-backed and HPC/institutional hosts): a bare `getent
+/// passwd`/`/etc/passwd` dump then lists only local accounts, so a directory-backed
+/// user's processes fall back to `#<uid>` and never match their `who` session name,
+/// reading as a permanently 0% row. It is **one** `getent` for every uid at once
+/// (it takes many keys), not one per uid — the same fork-per-item trap, and on a
+/// directory-backed host each of those forks was also an LDAP round trip.
+/// `parse_remote_snapshot` defers owner resolution until both blocks have arrived,
+/// merging `@PASSWD2@` into whatever `@PASSWD@` left unmapped.
+///
+/// A process whose `status` withheld `Uid:` ships **no** `U` line rather than a
+/// `0`, which would silently read as root; the parser leaves such an owner blank.
+/// The `/proc/[0-9]*` globs are now `exec` **arguments** rather than shell-loop
+/// iterations, so they are bounded by `ARG_MAX` where the old loop was not — at
+/// ~21 bytes per pid against a typical 2 MB limit that is ~100k processes, some
+/// 20× beyond any host this pane is pointed at, but it is the reason the walk is
+/// two awk invocations over one glob each and not one over several.
+/// The script also ends in a `:` so its exit status is always 0 — the
+/// global-machine path (`run_ssh_auth` → `capture`) treats a non-zero remote exit
+/// as a failed probe, and a trailing `getent` that simply found no match must not
+/// discard an otherwise complete snapshot.
+///
+/// ## Careful mode (HPC hosts)
+///
+/// A shared cluster login node is not an ordinary dev box: its usage rules forbid
+/// determining other users' account names and using information about them that
+/// happens to be readable, and its operators expect a login node not to carry a
+/// sustained background load (`docs/context/hpc_careful_mode.md`). So on a host
+/// that looks like a cluster — SLURM on `PATH` — this script **collects less**:
+///
+/// * `@PASSWD@` ships only the *sampling* user's own entry, never the directory
+///   dump, and `@PASSWD2@` (the per-uid supplement) is skipped entirely, so no
+///   foreign account name is ever read;
+/// * `@CMDLINE@` covers only the sampling user's own processes — a foreign
+///   process ships no argv, and its `comm` is redacted to `(other)` inside the
+///   `@PROCS@` walk, so what other people run never leaves the cluster;
+/// * a foreign process ships **no** `U` line, so it cannot be attributed to a
+///   person; the parser buckets all of them into one `other users` row, which is
+///   the only figure the pane actually needs from them ("how much of this machine
+///   isn't mine");
+/// * `@WHO@` is filtered to the sampling user's own sessions, and `nvidia-smi`'s
+///   per-process query (`NVPROC`) is not run at all.
+///
+/// The mode is reported back on the leading `CAREFUL` line so the pane can also
+/// poll more gently (`SystemMonitorPane`'s `CAREFUL_POLL_MS`) and say what it is
+/// doing.
+///
+/// **Who decides.** The `sbatch` probe below is now only a fallback: the monitor
+/// passes the machine's stored mode on every poll ([`remote_snapshot_script`]),
+/// and careful is the default for every remote machine — so the probe matters
+/// only for a caller with no answer to pass. That is why the script reads
+/// `ELDRUN_CAREFUL` *before* probing, and why an explicit `0` has to be honoured
+/// as well as an explicit `1`: without it, a machine the user owns and told
+/// Eldrun to read fully would still be redacted the moment it happened to have a
+/// scheduler installed.
 pub const REMOTE_SNAPSHOT_SCRIPT: &str = r#"
+_careful="${ELDRUN_CAREFUL:-}"
+if [ -z "$_careful" ]; then
+  if command -v sbatch >/dev/null 2>&1 || command -v sinfo >/dev/null 2>&1 \
+     || command -v squeue >/dev/null 2>&1; then _careful=1; else _careful=0; fi
+fi
+_myuid=$(id -u 2>/dev/null || echo -1)
+_myname=$(id -un 2>/dev/null || echo '')
+printf 'CAREFUL\t%s\n' "$_careful"
+printf 'ME\t%s\n' "$_myname"
 printf 'CLK\t%s\n' "$(getconf CLK_TCK 2>/dev/null || echo 100)"
 printf '@STAT@\n'; cat /proc/stat 2>/dev/null
 printf '@MEM@\n'; cat /proc/meminfo 2>/dev/null
 printf '@LOAD@\n'; cat /proc/loadavg 2>/dev/null
 printf '@UP@\n'; cat /proc/uptime 2>/dev/null
-printf '@WHO@\n'; who 2>/dev/null
+printf '@WHO@\n'
+if [ "$_careful" = 1 ]; then
+  who 2>/dev/null | awk -v me="$_myname" '$1 == me'
+else
+  who 2>/dev/null
+fi
 printf '@GPU@\n'
 if command -v nvidia-smi >/dev/null 2>&1; then
   nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw,power.limit,clocks.sm,clocks.mem,fan.speed,driver_version,pcie.link.gen.current,pcie.link.width.current --format=csv,noheader,nounits 2>/dev/null | sed 's/^/NVSMI\t/'
-  nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null | sed 's/^/NVPROC\t/'
+  if [ "$_careful" != 1 ]; then
+    nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null | sed 's/^/NVPROC\t/'
+  fi
 fi
 for c in /sys/class/drm/card[0-9]*; do
   d="$c/device"
@@ -515,21 +666,109 @@ for h in /sys/class/hwmon/hwmon*; do
   case "$n" in jc42|spd5118) ;; *) continue ;; esac
   printf 'M\t%s\n' "$(cat "$h/temp1_input" 2>/dev/null)"
 done
-printf '@PASSWD@\n'; getent passwd 2>/dev/null || cat /etc/passwd 2>/dev/null
+printf '@PASSWD@\n'
+if [ "$_careful" = 1 ]; then
+  getent passwd "$_myuid" 2>/dev/null
+else
+  getent passwd 2>/dev/null || cat /etc/passwd 2>/dev/null
+fi
 printf '@PROCS@\n'
-for d in /proc/[0-9]*; do
-  [ -r "$d/stat" ] || continue
-  s=$(cat "$d/stat" 2>/dev/null) || continue
-  [ -n "$s" ] || continue
-  ru=$(awk '/^Uid:/{u=$2} /^VmRSS:/{r=$2} END{print (u==""?0:u)" "(r==""?0:r)}' "$d/status" 2>/dev/null)
-  u=${ru%% *}; r=${ru##* }
-  c=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)
-  printf 'S\t%s\n' "$s"
-  printf 'U\t%s\n' "${u:-0}"
-  printf 'R\t%s\n' "${r:-0}"
-  printf 'C\t%s\n' "$c"
-done
+awk -v careful="$_careful" -v me="$_myuid" '
+BEGIN {
+  careful = careful + 0; me = me + 0
+  for (i = 1; i < ARGC; i++) {
+    d = ARGV[i]
+    if ((getline s < (d "/stat")) <= 0) { close(d "/stat"); continue }
+    close(d "/stat")
+    if (s == "") continue
+    p = substr(d, 7)
+    u = -1; r = 0
+    while ((getline l < (d "/status")) > 0) {
+      if (l ~ /^Uid:/) { split(l, f, "[ \t]+"); u = f[2] + 0 }
+      else if (l ~ /^VmRSS:/) { split(l, f, "[ \t]+"); r = f[2] + 0 }
+    }
+    close(d "/status")
+    mine = (u == me)
+    if (careful == 1 && !mine) { sub(/\(.*\)/, "(other)", s) }
+    printf "S\t%s\t%s\n", p, s
+    if (u >= 0 && (careful != 1 || mine)) printf "U\t%s\t%s\n", p, u
+    printf "R\t%s\t%s\n", p, r
+  }
+  exit
+}' /proc/[0-9]*
+printf '@CMDLINE@\n'
+if [ "$_careful" = 1 ]; then
+  _mypids=$(ps -u "$_myuid" -o pid= 2>/dev/null)
+  if [ -z "$_mypids" ]; then
+    _mypids=$(awk -v me="$_myuid" '
+BEGIN {
+  me = me + 0
+  for (i = 1; i < ARGC; i++) {
+    d = ARGV[i]; u = -1
+    while ((getline l < (d "/status")) > 0) {
+      if (l ~ /^Uid:/) { split(l, f, "[ \t]+"); u = f[2] + 0; break }
+    }
+    close(d "/status")
+    if (u == me) print substr(d, 7)
+  }
+  exit
+}' /proc/[0-9]*)
+  fi
+  for p in $_mypids; do
+    [ -r "/proc/$p/cmdline" ] || continue
+    printf '/proc/%s/cmdline:' "$p"
+    tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null
+    printf '\n'
+  done
+else
+  grep -aH '' /proc/[0-9]*/cmdline 2>/dev/null | tr '\0' ' '
+fi
+printf '@PASSWD2@\n'
+if [ "$_careful" = 1 ]; then
+  :
+else
+_uids=$(awk '
+BEGIN {
+  for (i = 1; i < ARGC; i++) {
+    f = ARGV[i] "/status"
+    while ((getline l < f) > 0) {
+      if (l ~ /^Uid:/) {
+        split(l, a, "[ \t]+")
+        if (!(a[2] in seen)) { seen[a[2]] = 1; printf "%s ", a[2] }
+        break
+      }
+    }
+    close(f)
+  }
+  exit
+}' /proc/[0-9]*)
+if [ -n "$_uids" ]; then getent passwd $_uids 2>/dev/null; fi
+fi
+:
 "#;
+
+/// [`REMOTE_SNAPSHOT_SCRIPT`] with careful mode pinned by the caller, or left to
+/// the host to decide.
+///
+/// `Some(true)`/`Some(false)` pin `ELDRUN_CAREFUL`, so the script skips its own
+/// `sbatch` probe entirely; `None` leaves the probe in place. **Both** directions
+/// are pinnable, which is the change the per-machine switch needed: careful is
+/// now the default for every remote machine (`src/lib/carefulHost.ts`), so the
+/// only way to get a full reading of a machine the user owns is for their answer
+/// to outrank host-side detection. That answer is the *user's*, recorded per SSH
+/// target and deliberate — the asymmetry the old force-on-only signature encoded
+/// (a probe must never talk a cluster down) applies to a guess, not to a person
+/// telling Eldrun whose machine it is.
+///
+/// `None` is now only for a caller with no stored answer to pass on, where the
+/// host's own SLURM check is still the best available signal.
+pub fn remote_snapshot_script(careful: Option<bool>) -> String {
+    match careful {
+        Some(true) => format!("ELDRUN_CAREFUL=1\n{REMOTE_SNAPSHOT_SCRIPT}"),
+        Some(false) => format!("ELDRUN_CAREFUL=0\n{REMOTE_SNAPSHOT_SCRIPT}"),
+        None => REMOTE_SNAPSHOT_SCRIPT.to_string(),
+    }
+}
 
 /// Assemble a [`SystemSnapshot`] from the output of [`REMOTE_SNAPSHOT_SCRIPT`],
 /// reusing the same pure `/proc` parsers the local Linux backend uses. `supported`
@@ -552,21 +791,34 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
         CpuTemp,
         MemTemp,
         Passwd,
+        Passwd2,
         Procs,
+        Cmdline,
     }
     let mut sec = Sec::None;
     let mut clk: u64 = 100;
+    // Set by the host's leading `CAREFUL` line: this sample deliberately carries
+    // no third-party account name, argv or session (see `REMOTE_SNAPSHOT_SCRIPT`).
+    let mut careful = false;
+    // The sampling account's login name on the host, from the leading `ME` line;
+    // empty when the host couldn't say (`id -un` failed), which simply leaves the
+    // session rows unflagged rather than inventing an owner.
+    let mut me = String::new();
     let mut stat_buf = String::new();
     let mut mem_buf = String::new();
     let mut load_buf = String::new();
     let mut up_buf = String::new();
     let mut who_buf = String::new();
-    // The host's passwd db (shipped under @PASSWD@), accumulated then parsed into a
-    // uid → name map the instant @PROCS@ starts — fully built before any process
-    // line, so `flush` can resolve each owner immediately.
+    // The host's bulk passwd db (shipped under @PASSWD@) and, after @PROCS@, the
+    // targeted per-uid supplement (@PASSWD2@ — see `REMOTE_SNAPSHOT_SCRIPT`'s doc
+    // for why enumeration alone can miss an NSS/LDAP-backed account). Owner
+    // resolution is deferred until both have fully arrived, so `processes` is
+    // built with each entry's raw uid alongside it (`proc_uid`, 1:1 by index) and
+    // resolved to a name in one final pass below.
     let mut passwd_buf = String::new();
-    let mut uid_to_name: HashMap<u32, String> = HashMap::new();
+    let mut passwd2_buf = String::new();
     let mut processes: Vec<ProcSample> = Vec::new();
+    let mut proc_uid: Vec<Option<u32>> = Vec::new();
     // GPU accumulators: the `nvidia-smi` CSV rebuilt line-by-line for its parsers,
     // and one `DrmFiles` per AMD card index assembled from its shipped sysfs files.
     let mut nvsmi = String::new();
@@ -577,57 +829,19 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
     // Hottest DIMM temp in °C, from `M\t<milli>` lines under @MEMTEMP@ (one per module).
     let mut mem_temp_c: Option<f64> = None;
 
-    // A process is assembled from its consecutive S/U/R/C lines; `flush` finalizes
-    // the pending one when the next `S` arrives (or at end of input).
-    let mut p_stat: Option<String> = None;
-    let mut p_uid: Option<u32> = None;
-    let mut p_rss: u64 = 0;
-    let mut p_cmd: Option<String> = None;
-
-    fn flush(
-        processes: &mut Vec<ProcSample>,
-        p_stat: &mut Option<String>,
-        p_uid: &mut Option<u32>,
-        p_rss: &mut u64,
-        p_cmd: &mut Option<String>,
-        uid_to_name: &HashMap<u32, String>,
-    ) {
-        if let Some(line) = p_stat.take() {
-            if let Some((comm, state, ppid, cpu_jiffies, threads)) = parse_pid_stat(&line) {
-                // The pid is field 1 of the stat line, before `(comm)`.
-                let pid = line
-                    .trim_start()
-                    .split('(')
-                    .next()
-                    .and_then(|p| p.trim().parse::<u32>().ok())
-                    .unwrap_or(0);
-                let cmdline = p_cmd
-                    .take()
-                    .filter(|c| !c.trim().is_empty())
-                    .unwrap_or_else(|| format!("[{comm}]"));
-                // An owner uid the host didn't report (unreadable status) leaves the
-                // user empty rather than mislabelling it `#0` (root).
-                let user = p_uid
-                    .take()
-                    .map(|uid| username_for(uid, uid_to_name))
-                    .unwrap_or_default();
-                processes.push(ProcSample {
-                    pid,
-                    ppid,
-                    comm,
-                    cmdline,
-                    state,
-                    rss_kib: *p_rss,
-                    cpu_jiffies,
-                    threads,
-                    user,
-                });
-            }
-        }
-        *p_uid = None;
-        *p_rss = 0;
-        *p_cmd = None;
+    // One accumulator per pid, filled from the pid-keyed `@PROCS@` lines and then
+    // the separate `@CMDLINE@` block. Keyed rather than positional because those
+    // two blocks are captured by two independent passes over `/proc` (see
+    // `REMOTE_SNAPSHOT_SCRIPT`) and a kernel thread appears in only the first, so
+    // there is no position to zip them by.
+    #[derive(Default)]
+    struct ProcAccum {
+        stat: String,
+        uid: Option<u32>,
+        rss_kib: u64,
+        cmdline: Option<String>,
     }
+    let mut proc_acc: BTreeMap<u32, ProcAccum> = BTreeMap::new();
 
     for line in raw.lines() {
         match line {
@@ -667,14 +881,29 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
                 sec = Sec::Passwd;
                 continue;
             }
+            "@PASSWD2@" => {
+                sec = Sec::Passwd2;
+                continue;
+            }
             "@PROCS@" => {
-                // @PASSWD@ has fully arrived by now (it precedes @PROCS@), so parse
-                // it into the uid → name map before the first process line.
-                uid_to_name = parse_passwd(&passwd_buf);
                 sec = Sec::Procs;
                 continue;
             }
+            "@CMDLINE@" => {
+                sec = Sec::Cmdline;
+                continue;
+            }
             _ => {}
+        }
+        if let Some(rest) = line.strip_prefix("CAREFUL\t") {
+            careful = rest.trim() == "1";
+            continue;
+        }
+        // Who Eldrun is on this host — the account the "Logged in" panel would
+        // otherwise be the only one never to mention (see `parse_who`).
+        if let Some(rest) = line.strip_prefix("ME\t") {
+            me = rest.trim().to_string();
+            continue;
         }
         if let Some(rest) = line.strip_prefix("CLK\t") {
             if let Ok(v) = rest.trim().parse::<u64>() {
@@ -754,36 +983,110 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
                 passwd_buf.push_str(line);
                 passwd_buf.push('\n');
             }
+            Sec::Passwd2 => {
+                passwd2_buf.push_str(line);
+                passwd2_buf.push('\n');
+            }
             Sec::Procs => {
-                if let Some(rest) = line.strip_prefix("S\t") {
-                    flush(
-                        &mut processes,
-                        &mut p_stat,
-                        &mut p_uid,
-                        &mut p_rss,
-                        &mut p_cmd,
-                        &uid_to_name,
-                    );
-                    p_stat = Some(rest.to_string());
-                } else if let Some(rest) = line.strip_prefix("U\t") {
-                    p_uid = rest.trim().parse().ok();
-                } else if let Some(rest) = line.strip_prefix("R\t") {
-                    p_rss = rest.trim().parse().unwrap_or(0);
-                } else if let Some(rest) = line.strip_prefix("C\t") {
-                    p_cmd = Some(rest.to_string());
+                // `<tag>\t<pid>\t<value>` — `S` the raw `/proc/<pid>/stat` line,
+                // `U` the owner uid, `R` `VmRSS` in KiB. `S` is what declares a
+                // process exists, so `U`/`R` only ever fill an entry it opened.
+                let mut it = line.splitn(3, '\t');
+                let (Some(tag), Some(pid), Some(val)) = (it.next(), it.next(), it.next()) else {
+                    continue;
+                };
+                let Ok(pid) = pid.trim().parse::<u32>() else {
+                    continue;
+                };
+                match tag {
+                    "S" => proc_acc.entry(pid).or_default().stat = val.to_string(),
+                    "U" => {
+                        if let Some(acc) = proc_acc.get_mut(&pid) {
+                            acc.uid = val.trim().parse().ok();
+                        }
+                    }
+                    "R" => {
+                        if let Some(acc) = proc_acc.get_mut(&pid) {
+                            acc.rss_kib = val.trim().parse().unwrap_or(0);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Sec::Cmdline => {
+                // `/proc/<pid>/cmdline:<args>` — `grep -aH` over the whole glob,
+                // NULs already spaces. A pid with no `@PROCS@` entry (a process
+                // that started between the two passes) is dropped rather than
+                // invented, and an arg containing a literal newline splits into a
+                // prefix-less continuation line that is dropped, as before.
+                let Some(rest) = line.strip_prefix("/proc/") else {
+                    continue;
+                };
+                let Some((pid, tail)) = rest.split_once('/') else {
+                    continue;
+                };
+                let Some(args) = tail.strip_prefix("cmdline:") else {
+                    continue;
+                };
+                let Ok(pid) = pid.parse::<u32>() else {
+                    continue;
+                };
+                if let Some(acc) = proc_acc.get_mut(&pid) {
+                    acc.cmdline = Some(args.to_string());
                 }
             }
             Sec::None => {}
         }
     }
-    flush(
-        &mut processes,
-        &mut p_stat,
-        &mut p_uid,
-        &mut p_rss,
-        &mut p_cmd,
-        &uid_to_name,
-    );
+
+    // Build the process table now that both blocks are in. Owner resolution is
+    // deferred one step further (until @PASSWD2@'s targeted lookups below), so
+    // `user` starts empty and the raw uid rides alongside in `proc_uid`, 1:1 by
+    // index.
+    for (pid, acc) in proc_acc {
+        let Some((comm, state, ppid, cpu_jiffies, threads)) = parse_pid_stat(&acc.stat) else {
+            continue;
+        };
+        let cmdline = acc
+            .cmdline
+            .filter(|c| !c.trim().is_empty())
+            .unwrap_or_else(|| format!("[{comm}]"));
+        processes.push(ProcSample {
+            pid,
+            ppid,
+            comm,
+            cmdline,
+            state,
+            rss_kib: acc.rss_kib,
+            cpu_jiffies,
+            threads,
+            user: String::new(),
+        });
+        proc_uid.push(acc.uid);
+    }
+
+    // Resolve every process's owner now that both passwd blocks are in: the bulk
+    // `@PASSWD@` dump first, then `@PASSWD2@`'s per-uid lookups filling whatever
+    // uid it left unmapped (an enumeration-only gap, not a real unmapped uid, so
+    // the bulk name wins on a conflict rather than being overwritten).
+    let mut uid_to_name = parse_passwd(&passwd_buf);
+    for (uid, name) in parse_passwd(&passwd2_buf) {
+        uid_to_name.entry(uid).or_insert(name);
+    }
+    for (proc, uid) in processes.iter_mut().zip(proc_uid.iter()) {
+        // An owner uid the host didn't report (unreadable status) leaves the user
+        // empty rather than mislabelling it `#0` (root).
+        if let Some(uid) = uid {
+            proc.user = username_for(*uid, &uid_to_name);
+        } else if careful {
+            // Careful mode ships no `U` line for a process that isn't ours, so
+            // every one of them lands here — bucketed under a single label rather
+            // than a uid each, which would be a per-person breakdown by another
+            // name. "How much of this machine isn't mine" is the whole figure the
+            // pane needs from them.
+            proc.user = OTHER_USERS.to_string();
+        }
+    }
 
     let (cpu, per_core) = parse_cpu_stat(&stat_buf);
     let (mem_total_kib, mem_available_kib, swap_total_kib, swap_free_kib) = parse_meminfo(&mem_buf);
@@ -803,7 +1106,7 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
     gpus.extend(crate::gpustat::parse_nvidia_smi(&nvsmi));
     let gpu_procs = crate::gpustat::parse_nvidia_apps(&nvproc);
     let cpu_temp_c = pick_cpu_temp(&cpu_temp_channels);
-    let sessions = parse_who(&who_buf);
+    let sessions = parse_who(&who_buf, &me);
 
     SystemSnapshot {
         supported: true,
@@ -823,6 +1126,7 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
         cpu_temp_c,
         mem_temp_c,
         sessions,
+        careful,
     }
 }
 
@@ -1134,6 +1438,7 @@ mod platform {
             cpu_temp_c: cpu_temp_c(),
             mem_temp_c: mem_temp_c(),
             sessions: Vec::new(), // remote-only (the pane's "Logged in" panel)
+            careful: false,       // a local sample: this machine is the user's own
         }
     }
 }
@@ -1401,6 +1706,7 @@ mod platform {
             cpu_temp_c: None, // no cheap CPU thermal read on this backend
             mem_temp_c: None, // nor a memory thermal read
             sessions: Vec::new(), // remote-only (the pane's "Logged in" panel)
+            careful: false,       // a local sample: this machine is the user's own
         }
     }
 }
@@ -1742,6 +2048,7 @@ mod platform {
             cpu_temp_c: None, // no cheap CPU thermal read on this backend
             mem_temp_c: None, // nor a memory thermal read
             sessions: Vec::new(), // remote-only (the pane's "Logged in" panel)
+            careful: false,       // a local sample: this machine is the user's own
         }
     }
 }
@@ -2119,8 +2426,10 @@ SwapFree:        2000000 kB
     fn parse_remote_snapshot_assembles_from_script_output() {
         // A minimal but complete capture in the wire format REMOTE_SNAPSHOT_SCRIPT
         // emits: a CLK line, `@SECTION@` blocks of raw kernel files (incl. `who`),
-        // then S/R/C triples per process. One core, 8 GiB RAM, two processes — one
-        // with a real cmdline, one kernel thread (empty cmdline → `[comm]` fallback).
+        // pid-keyed S/R lines under `@PROCS@`, then the separate `@CMDLINE@` block.
+        // One core, 8 GiB RAM, two processes — one with a real cmdline, one kernel
+        // thread, which (having an empty cmdline) `grep` emits NO line for at all,
+        // exercising the `[comm]` fallback on a genuinely absent entry.
         let raw = "CLK\t100\n\
 @STAT@\n\
 cpu  100 0 50 800 0 0 0 0 0 0\n\
@@ -2140,12 +2449,12 @@ alice    pts/0        2026-07-18 09:12 (203.0.113.5)\n\
 alice    pts/1        2026-07-18 09:20 (203.0.113.5)\n\
 bob      tty1         2026-07-17 22:03\n\
 @PROCS@\n\
-S\t42 (bash) S 1 42 42 0 -1 4194304 100 0 0 0 12 8 0 0 20 0 3 0 999 0 0\n\
-R\t2048\n\
-C\t/usr/bin/bash -i\n\
-S\t7 (kworker/0:1) I 2 0 0 0 -1 69238880 0 0 0 0 5 2 0 0 20 0 1 0 50 0 0\n\
-R\t0\n\
-C\t\n";
+S\t42\t42 (bash) S 1 42 42 0 -1 4194304 100 0 0 0 12 8 0 0 20 0 3 0 999 0 0\n\
+R\t42\t2048\n\
+S\t7\t7 (kworker/0:1) I 2 0 0 0 -1 69238880 0 0 0 0 5 2 0 0 20 0 1 0 50 0 0\n\
+R\t7\t0\n\
+@CMDLINE@\n\
+/proc/42/cmdline:/usr/bin/bash -i\n";
 
         let snap = parse_remote_snapshot(raw);
         assert!(snap.supported);
@@ -2162,9 +2471,11 @@ C\t\n";
         assert_eq!(snap.uptime_secs as u64, 123_456);
         assert!(snap.gpus.is_empty());
 
+        // Looked up by pid, not by index: the blocks are joined on the pid key, so
+        // the table's order is not what this is asserting.
         assert_eq!(snap.processes.len(), 2);
-        let bash = &snap.processes[0];
-        assert_eq!(bash.pid, 42);
+        let by_pid = |pid: u32| snap.processes.iter().find(|p| p.pid == pid).unwrap();
+        let bash = by_pid(42);
         assert_eq!(bash.ppid, 1);
         assert_eq!(bash.comm, "bash");
         assert_eq!(bash.state, "S");
@@ -2172,9 +2483,8 @@ C\t\n";
         assert_eq!(bash.cpu_jiffies, 12 + 8);
         assert_eq!(bash.threads, 3);
         assert_eq!(bash.cmdline, "/usr/bin/bash -i");
-        // Kernel thread: empty cmdline falls back to `[comm]`.
-        let kworker = &snap.processes[1];
-        assert_eq!(kworker.pid, 7);
+        // Kernel thread: no `@CMDLINE@` line at all falls back to `[comm]`.
+        let kworker = by_pid(7);
         assert_eq!(kworker.rss_kib, 0);
         assert_eq!(kworker.cmdline, "[kworker/0:1]");
 
@@ -2186,6 +2496,45 @@ C\t\n";
         assert!(snap.sessions[0].detail.contains("203.0.113.5"));
         assert_eq!(snap.sessions[2].user, "bob");
         assert_eq!(snap.sessions[2].tty, "tty1");
+        // No `ME` line (a host whose `id -un` said nothing): no row is invented and
+        // none is flagged, rather than an owner being guessed.
+        assert!(!snap.sessions.iter().any(|s| s.is_self));
+    }
+
+    #[test]
+    fn who_synthesizes_the_sampling_account_when_utmp_has_no_record() {
+        // The bug this fixes: `who` reads utmp, which only gets an entry when sshd
+        // allocated a pty. The monitor's own probe rides the pooled (non-pty)
+        // master, so a user with no terminal tab open on the host saw everyone
+        // logged in EXCEPT themselves.
+        let who = "\
+alice    pts/0        2026-07-18 09:12 (203.0.113.5)\n\
+bob      tty1         2026-07-17 22:03\n";
+        let sessions = parse_who(who, "carol");
+        assert_eq!(sessions.len(), 3);
+        // The synthesized row comes first and is flagged; the others are untouched.
+        assert_eq!(sessions[0].user, "carol");
+        assert!(sessions[0].is_self);
+        assert_eq!(sessions[0].tty, SELF_SESSION_TTY);
+        assert!(!sessions[1].is_self && !sessions[2].is_self);
+
+        // An account that DOES hold a pty session is only flagged — never doubled.
+        let sessions = parse_who(who, "alice");
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].user, "alice");
+        assert!(sessions[0].is_self);
+        assert_eq!(sessions[0].tty, "pts/0");
+        assert!(!sessions[1].is_self);
+
+        // Careful mode ships only this account's own `who` lines — and an HPC login
+        // node the user reached without a pty ships none at all, which is exactly
+        // the case that used to read "no interactive logins on this host".
+        let sessions = parse_who("", "carol");
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions[0].is_self);
+
+        // Unknown account: nothing invented.
+        assert!(parse_who("", "").is_empty());
     }
 
     #[test]
@@ -2209,6 +2558,37 @@ daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
     }
 
     #[test]
+    fn parse_remote_snapshot_joins_cmdline_by_pid() {
+        // `@CMDLINE@` is captured by its own pass over `/proc` (one `grep`, not a
+        // fork per process), so it neither lines up positionally with `@PROCS@`
+        // nor is guaranteed to describe the same set of pids. The join is on the
+        // pid grep puts in its `/proc/<pid>/cmdline:` prefix, and this pins the
+        // four ways that block can disagree with the process table.
+        let raw = "CLK\t100\n\
+@PROCS@\n\
+S\t42\t42 (bash) S 1 42 42 0 -1 4194304 100 0 0 0 12 8 0 0 20 0 3 0 999 0 0\n\
+R\t42\t2048\n\
+S\t7\t7 (kworker/0:1) I 2 0 0 0 -1 69238880 0 0 0 0 5 2 0 0 20 0 1 0 50 0 0\n\
+R\t7\t0\n\
+@CMDLINE@\n\
+/proc/999/cmdline:started-after-the-procs-pass\n\
+/proc/42/cmdline:env PATH=/usr/bin:/bin prog --flag\n\
+a continuation line from an arg containing a newline\n";
+
+        let snap = parse_remote_snapshot(raw);
+        let by_pid = |pid: u32| snap.processes.iter().find(|p| p.pid == pid).unwrap();
+        // A cmdline is not split on its own colons — only the grep prefix is.
+        assert_eq!(by_pid(42).cmdline, "env PATH=/usr/bin:/bin prog --flag");
+        // No `@CMDLINE@` line at all (a kernel thread's is empty, so grep emits
+        // nothing for it) → the `[comm]` fallback, not a blank name.
+        assert_eq!(by_pid(7).cmdline, "[kworker/0:1]");
+        // A cmdline for a pid the `@PROCS@` pass never saw invents no process:
+        // `S` is what declares one exists.
+        assert_eq!(snap.processes.len(), 2);
+        assert!(snap.processes.iter().all(|p| p.pid != 999));
+    }
+
+    #[test]
     fn parse_remote_snapshot_resolves_process_owner() {
         // The @PASSWD@ block feeds the uid→name map; each process's `U` line names
         // its owner uid, resolved against that map (an unmapped uid → `#<uid>`).
@@ -2217,25 +2597,151 @@ daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
 root:x:0:0:root:/root:/bin/bash\n\
 alice:x:1000:1000:Alice:/home/alice:/bin/bash\n\
 @PROCS@\n\
-S\t42 (bash) S 1 42 42 0 -1 4194304 100 0 0 0 12 8 0 0 20 0 3 0 999 0 0\n\
-U\t1000\n\
-R\t2048\n\
-C\t/usr/bin/bash -i\n\
-S\t1 (systemd) S 0 1 1 0 -1 4194560 200 0 0 0 5 5 0 0 20 0 1 0 5 0 0\n\
-U\t0\n\
-R\t4096\n\
-C\t/sbin/init\n\
-S\t99 (weird) S 1 99 99 0 -1 4194304 1 0 0 0 1 1 0 0 20 0 1 0 100 0 0\n\
-U\t7777\n\
-R\t128\n\
-C\tweird\n";
+S\t42\t42 (bash) S 1 42 42 0 -1 4194304 100 0 0 0 12 8 0 0 20 0 3 0 999 0 0\n\
+U\t42\t1000\n\
+R\t42\t2048\n\
+S\t1\t1 (systemd) S 0 1 1 0 -1 4194560 200 0 0 0 5 5 0 0 20 0 1 0 5 0 0\n\
+U\t1\t0\n\
+R\t1\t4096\n\
+S\t99\t99 (weird) S 1 99 99 0 -1 4194304 1 0 0 0 1 1 0 0 20 0 1 0 100 0 0\n\
+U\t99\t7777\n\
+R\t99\t128\n\
+S\t55\t55 (silent) S 1 55 55 0 -1 4194304 1 0 0 0 1 1 0 0 20 0 1 0 100 0 0\n\
+R\t55\t64\n\
+@CMDLINE@\n\
+/proc/42/cmdline:/usr/bin/bash -i\n\
+/proc/1/cmdline:/sbin/init\n\
+/proc/99/cmdline:weird\n";
 
         let snap = parse_remote_snapshot(raw);
-        assert_eq!(snap.processes.len(), 3);
-        assert_eq!(snap.processes[0].user, "alice");
-        assert_eq!(snap.processes[1].user, "root");
+        let by_pid = |pid: u32| snap.processes.iter().find(|p| p.pid == pid).unwrap();
+        assert_eq!(snap.processes.len(), 4);
+        assert_eq!(by_pid(42).user, "alice");
+        assert_eq!(by_pid(1).user, "root");
         // An owner uid with no passwd entry falls back to `#<uid>`.
-        assert_eq!(snap.processes[2].user, "#7777");
+        assert_eq!(by_pid(99).user, "#7777");
+        // pid 55 shipped no `U` line at all (its `status` withheld `Uid:`). That
+        // must read as "owner unknown" — blank — and NOT as uid 0, which the old
+        // `${u:-0}` default turned every unreadable process into root.
+        assert_eq!(by_pid(55).user, "");
+        // No `CAREFUL` line at all is an ordinary (non-HPC) host: full collection,
+        // and an unknown owner stays unknown rather than being bucketed.
+        assert!(!snap.careful);
+    }
+
+    #[test]
+    fn a_careful_sample_keeps_own_processes_and_buckets_everyone_else() {
+        // What an HPC login node ships (`docs/context/hpc_careful_mode.md`): the
+        // leading `CAREFUL` flag, a `@PASSWD@` holding ONLY the sampling account,
+        // `U` lines only for its own processes, every foreign `comm` redacted to
+        // `(other)` in the stat line, and cmdlines only for its own pids.
+        let raw = "CAREFUL\t1\n\
+CLK\t100\n\
+@WHO@\n\
+alice    pts/0        2026-07-18 09:12\n\
+@PASSWD@\n\
+alice:x:1000:1000:Alice:/home/alice:/bin/bash\n\
+@PROCS@\n\
+S\t42\t42 (python3) S 1 42 42 0 -1 4194304 100 0 0 0 12 8 0 0 20 0 3 0 999 0 0\n\
+U\t42\t1000\n\
+R\t42\t2048\n\
+S\t77\t77 (other) S 1 77 77 0 -1 4194304 100 0 0 0 90 10 0 0 20 0 8 0 400 0 0\n\
+R\t77\t8192\n\
+S\t78\t78 (other) S 1 78 78 0 -1 4194304 100 0 0 0 30 5 0 0 20 0 2 0 410 0 0\n\
+R\t78\t4096\n\
+@CMDLINE@\n\
+/proc/42/cmdline:python3 train.py --epochs 3\n\
+@PASSWD2@\n";
+
+        let snap = parse_remote_snapshot(raw);
+        assert!(snap.careful);
+        let by_pid = |pid: u32| snap.processes.iter().find(|p| p.pid == pid).unwrap();
+        // Own process: full detail, resolved against the one passwd entry shipped.
+        assert_eq!(by_pid(42).user, "alice");
+        assert_eq!(by_pid(42).cmdline, "python3 train.py --epochs 3");
+        // Everyone else: still counted (that is the "how loaded is this node"
+        // half), but under ONE label — not a uid each, which would be the same
+        // per-person breakdown by another name — and with no command to read.
+        assert_eq!(by_pid(77).user, OTHER_USERS);
+        assert_eq!(by_pid(78).user, OTHER_USERS);
+        assert_eq!(by_pid(77).cmdline, "[other]");
+        assert_eq!(by_pid(77).rss_kib, 8192);
+        assert_eq!(by_pid(77).cpu_jiffies, 90 + 10);
+        // The bucket is one row in the pane's per-user breakdown, whatever the
+        // number of foreign processes behind it.
+        let labels: std::collections::BTreeSet<&str> =
+            snap.processes.iter().map(|p| p.user.as_str()).collect();
+        assert_eq!(labels.len(), 2);
+    }
+
+    #[test]
+    fn careful_mode_is_pinned_by_prefix_or_left_to_the_host() {
+        // A caller with an answer pins it in either direction; `None` leaves the
+        // script's own SLURM probe to decide.
+        let forced = remote_snapshot_script(Some(true));
+        assert!(forced.starts_with("ELDRUN_CAREFUL=1\n"));
+        assert!(forced.ends_with(REMOTE_SNAPSHOT_SCRIPT));
+        assert!(remote_snapshot_script(Some(false)).starts_with("ELDRUN_CAREFUL=0\n"));
+        assert_eq!(remote_snapshot_script(None), REMOTE_SNAPSHOT_SCRIPT);
+        // The host-side detection and every collection branch it gates.
+        assert!(REMOTE_SNAPSHOT_SCRIPT.contains("command -v sbatch"));
+        assert!(REMOTE_SNAPSHOT_SCRIPT.contains("getent passwd \"$_myuid\""));
+        assert!(REMOTE_SNAPSHOT_SCRIPT.contains("(other)"));
+    }
+
+    #[test]
+    fn parse_remote_snapshot_falls_back_to_passwd2_for_a_missing_uid() {
+        // Regression for the "Logged in" panel reading a permanent 0%: on an NSS
+        // setup that serves point lookups but not enumeration (SSSD's default
+        // `enumerate = false`), the bulk `@PASSWD@` dump lists only `root` — a
+        // directory-backed user like `carol` (uid 2000) is missing from it — but
+        // `@PASSWD2@`'s targeted per-uid lookup (which the script runs for every
+        // uid actually seen under `@PROCS@`) still resolves it. Her `who` name and
+        // her process owner must end up as the exact same string, or the "Logged
+        // in" panel's username-keyed CPU/MEM lookup misses and reads 0.
+        let raw = "CLK\t100\n\
+@WHO@\n\
+carol    pts/0        2026-07-18 09:12\n\
+@PASSWD@\n\
+root:x:0:0:root:/root:/bin/bash\n\
+@PROCS@\n\
+S\t42\t42 (bash) S 1 42 42 0 -1 4194304 100 0 0 0 12 8 0 0 20 0 3 0 999 0 0\n\
+U\t42\t2000\n\
+R\t42\t2048\n\
+@CMDLINE@\n\
+/proc/42/cmdline:/usr/bin/bash -i\n\
+@PASSWD2@\n\
+carol:x:2000:2000:Carol:/home/carol:/bin/bash\n";
+
+        let snap = parse_remote_snapshot(raw);
+        assert_eq!(snap.processes.len(), 1);
+        assert_eq!(snap.processes[0].user, "carol", "resolved via the @PASSWD2@ supplement");
+        assert_eq!(snap.sessions[0].user, "carol");
+        assert_eq!(
+            snap.processes[0].user, snap.sessions[0].user,
+            "the process owner and the who-reported name must match for the \
+             \"Logged in\" panel's username-keyed lookup to attribute her CPU/MEM"
+        );
+    }
+
+    #[test]
+    fn parse_remote_snapshot_prefers_bulk_passwd_over_passwd2_on_conflict() {
+        // @PASSWD2@ only fills gaps the bulk dump left — it must never override an
+        // already-resolved name (`or_insert`, not overwrite).
+        let raw = "CLK\t100\n\
+@PASSWD@\n\
+alice:x:1000:1000:Alice:/home/alice:/bin/bash\n\
+@PROCS@\n\
+S\t42\t42 (bash) S 1 42 42 0 -1 4194304 100 0 0 0 12 8 0 0 20 0 3 0 999 0 0\n\
+U\t42\t1000\n\
+R\t42\t2048\n\
+@CMDLINE@\n\
+/proc/42/cmdline:/usr/bin/bash -i\n\
+@PASSWD2@\n\
+someone-else:x:1000:1000:Someone Else:/home/x:/bin/bash\n";
+
+        let snap = parse_remote_snapshot(raw);
+        assert_eq!(snap.processes[0].user, "alice");
     }
 
     #[test]

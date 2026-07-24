@@ -189,6 +189,12 @@ pub struct AgentInfo {
     pub shell: String,
     /// Machine-readable terminal shell policy for the frontend.
     pub shell_kind: String,
+    /// `npm uninstall -g <pkg>` for an npm-installed agent, empty otherwise —
+    /// the terminal fallback the frontend offers next to "Remove" when the
+    /// one-click uninstall hits a permission error (a system-wide npm global
+    /// directory owned by root, common on non-nvm Linux Node installs, needs a
+    /// sudo prompt Eldrun cannot answer itself).
+    pub uninstall_cmd: String,
     pub docs: String,
     pub installed: bool,
 }
@@ -197,29 +203,43 @@ fn find_spec(id: &str) -> Option<&'static AgentSpec> {
     AGENTS.iter().find(|a| a.id == id)
 }
 
-/// True when an agent's binary is reachable on `PATH` or in one of its
-/// well-known user install locations.
+/// Where `spec`'s binary actually lives — on `PATH` (including Eldrun's
+/// supplemental Windows/macOS fallback dirs) or in one of its well-known
+/// per-user install locations — or `None` when it isn't installed. The single
+/// resolver behind both `spec_is_installed` and `uninstall_agent` (removal
+/// deletes exactly the file detection found, never a guess).
 ///
 /// PATH lookup goes through the shared cross-platform helper (`where` on Windows,
 /// `which` elsewhere): `which` does not exist on Windows, so probing it directly
 /// reported every Windows install — Claude included — as missing.
-fn spec_is_installed(spec: &AgentSpec) -> bool {
-    if crate::paths::binary_on_path(spec.bin) {
-        return true;
+fn resolve_spec_path(spec: &AgentSpec) -> Option<std::path::PathBuf> {
+    if let Some(path) = crate::paths::resolve_executable(spec.bin) {
+        return Some(path);
     }
     let home = crate::paths::home_dir();
-    spec.extra_paths.iter().any(|rel| {
+    spec.extra_paths.iter().find_map(|rel| {
         let base = home.join(rel);
         if base.exists() {
-            return true;
+            return Some(base);
         }
         // On Windows the extra paths omit the executable extension that the
         // installer actually writes (e.g. `.local/bin/claude` → `claude.exe`).
-        cfg!(target_os = "windows")
-            && ["exe", "cmd", "bat", "ps1"]
-                .iter()
-                .any(|ext| base.with_extension(ext).exists())
+        if cfg!(target_os = "windows") {
+            for ext in ["exe", "cmd", "bat", "ps1"] {
+                let cand = base.with_extension(ext);
+                if cand.exists() {
+                    return Some(cand);
+                }
+            }
+        }
+        None
     })
+}
+
+/// True when an agent's binary is reachable on `PATH` or in one of its
+/// well-known user install locations.
+fn spec_is_installed(spec: &AgentSpec) -> bool {
+    resolve_spec_path(spec).is_some()
 }
 
 /// True when the given agent (by id) is installed. Unknown ids return false.
@@ -282,6 +302,10 @@ pub async fn list_agents() -> Vec<AgentInfo> {
         .iter()
         .map(|spec| {
             let (cmd, shell, shell_kind) = platform_install(spec);
+            let uninstall_cmd = cmd
+                .and_then(npm_package_from_cmd)
+                .map(|pkg| format!("npm uninstall -g {pkg}"))
+                .unwrap_or_default();
             AgentInfo {
                 id: spec.id.to_string(),
                 label: spec.label.to_string(),
@@ -289,6 +313,7 @@ pub async fn list_agents() -> Vec<AgentInfo> {
                 install_cmd: cmd.unwrap_or("").to_string(),
                 shell,
                 shell_kind: shell_kind.to_string(),
+                uninstall_cmd,
                 docs: spec.docs.to_string(),
                 installed: spec_is_installed(spec),
             }
@@ -432,6 +457,136 @@ pub async fn install_agent(app: tauri::AppHandle, id: String) -> Result<String, 
     })
 }
 
+/// The npm package spec an `npm install -g <pkg>` command installs, or `None`
+/// for a curl/irm script installer (which has no npm package to remove — its
+/// binary is deleted directly instead). Used so uninstall targets the exact
+/// package the installer added rather than guessing from the agent id.
+fn npm_package_from_cmd(cmd: &str) -> Option<&str> {
+    cmd.trim()
+        .strip_prefix("npm install -g ")?
+        .split_whitespace()
+        .next()
+}
+
+/// Run `cmd` to completion and return its combined stdout+stderr, trimmed.
+/// `Err` carries that same output (or a status-only message when the command
+/// produced none) on a non-zero exit.
+fn run_capture(mut cmd: std::process::Command) -> Result<String, String> {
+    let output = cmd
+        .output()
+        .map_err(|e| format!("failed to run command: {e}"))?;
+    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&output.stderr));
+    let combined = combined.trim().to_string();
+    if !output.status.success() {
+        return Err(if combined.is_empty() {
+            format!("command exited unsuccessfully ({})", output.status)
+        } else {
+            combined
+        });
+    }
+    Ok(combined)
+}
+
+/// True when an error message reads as a permission/lock failure rather than
+/// a genuine "nothing to remove" — `EACCES`/"permission denied" (a system-wide
+/// npm global directory owned by root, the default on a non-nvm Linux Node
+/// install) and `EPERM`/`EBUSY` (a file locked by a running process, common on
+/// Windows). Used to swap in guidance pointing at a terminal Eldrun can't
+/// elevate on the user's behalf, instead of a bare stack of npm's own output.
+fn is_permission_error(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    ["eacces", "eperm", "ebusy", "permission denied"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+}
+
+/// Build the `npm uninstall -g <pkg>` process for the host OS (same shell
+/// choice as the npm branch of `installer_command`: `cmd /C` on Windows, `sh -c`
+/// elsewhere).
+fn npm_uninstall_command(pkg: &str) -> std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut c = crate::paths::command_no_window("cmd");
+        c.raw_arg(format!("/C npm uninstall -g {pkg} 2>&1"));
+        c
+    }
+    #[cfg(not(windows))]
+    {
+        let mut c = crate::paths::command_no_window("sh");
+        c.arg("-c").arg(format!("npm uninstall -g {pkg} 2>&1"));
+        c
+    }
+}
+
+/// Remove an installed agent CLI so it can be cleanly reinstalled — the
+/// "Remove" action in Manage Agents, and the first half of "Reinstall".
+///
+/// An agent installed via `npm install -g <pkg>` is removed with the matching
+/// `npm uninstall -g` — deleting just the PATH shim would leave the package
+/// registered, so a subsequent install becomes a no-op re-link instead of a
+/// fresh fetch. Every other agent (curl/irm script installers) drops exactly
+/// the binary/shim `resolve_spec_path` found — enough to flip
+/// `spec_is_installed` back to false and let the official installer run again
+/// from scratch; any support files the installer left behind (an updater, a
+/// packages cache) are none of Eldrun's business to guess at and clean up.
+#[tauri::command]
+pub async fn uninstall_agent(id: String) -> Result<String, String> {
+    let spec = find_spec(&id).ok_or_else(|| format!("unknown agent: {id}"))?;
+
+    let cmd_for_platform = if cfg!(windows) {
+        spec.install_cmd_windows.unwrap_or(spec.install_cmd)
+    } else {
+        spec.install_cmd
+    };
+
+    if let Some(pkg) = npm_package_from_cmd(cmd_for_platform) {
+        if !spec_is_installed(spec) {
+            return Ok(format!("{} is not installed.", spec.label));
+        }
+        let out = run_capture(npm_uninstall_command(pkg)).map_err(|e| {
+            if is_permission_error(&e) {
+                format!(
+                    "Permission denied — this machine's npm global directory needs \
+                    elevated rights (common when Node was installed system-wide rather \
+                    than per-user). Eldrun never prompts for a password itself: run \
+                    `npm uninstall -g {pkg}` yourself in an elevated terminal (or via \
+                    the terminal button below).\n\n{e}"
+                )
+            } else {
+                e
+            }
+        })?;
+        if spec_is_installed(spec) {
+            return Err(format!(
+                "npm uninstall ran but `{}` is still detected on PATH.\n\n{out}",
+                spec.bin
+            ));
+        }
+        return Ok(if out.is_empty() {
+            format!("{} removed.", spec.label)
+        } else {
+            out
+        });
+    }
+
+    let path = resolve_spec_path(spec).ok_or_else(|| format!("{} is not installed.", spec.label))?;
+    std::fs::remove_file(&path).map_err(|e| {
+        let shown = path.display();
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            format!(
+                "Permission denied removing {shown} — it's owned by another user \
+                (likely installed as root/admin). Remove it yourself in an elevated \
+                terminal (`rm {shown}`, or the OS equivalent)."
+            )
+        } else {
+            format!("failed to remove {shown}: {e}")
+        }
+    })?;
+    Ok(format!("{} removed ({}).", spec.label, path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,6 +619,75 @@ mod tests {
             !win.contains("curl"),
             "Windows installer must not use curl/bash"
         );
+    }
+
+    #[test]
+    fn npm_package_from_cmd_extracts_the_package_spec() {
+        assert_eq!(
+            npm_package_from_cmd("npm install -g @google/gemini-cli"),
+            Some("@google/gemini-cli")
+        );
+        assert_eq!(
+            npm_package_from_cmd("npm install -g opencode-ai"),
+            Some("opencode-ai")
+        );
+        // curl/irm script installers have no npm package to uninstall.
+        assert_eq!(
+            npm_package_from_cmd("curl -fsSL https://claude.ai/install.sh | bash"),
+            None
+        );
+        assert_eq!(
+            npm_package_from_cmd("irm https://chatgpt.com/codex/install.ps1 | iex"),
+            None
+        );
+    }
+
+    #[test]
+    fn is_permission_error_matches_npm_and_windows_lock_failures() {
+        // Real npm output, old and new formats, both cases.
+        assert!(is_permission_error("npm ERR! code EACCES\nnpm ERR! syscall rename"));
+        assert!(is_permission_error("npm error code EACCES"));
+        assert!(is_permission_error("Access is denied. (os error 5) EPERM"));
+        assert!(is_permission_error("resource busy or locked, rename 'x' EBUSY"));
+        assert!(is_permission_error("Permission denied (os error 13)"));
+        assert!(!is_permission_error("npm ERR! 404 Not Found"));
+        assert!(!is_permission_error("command exited unsuccessfully (exit status: 1)"));
+    }
+
+    #[test]
+    fn uninstall_cmd_is_populated_only_for_npm_installed_agents() {
+        // Gemini installs via npm on every platform, so its uninstall command
+        // must be derivable regardless of host OS this test runs on.
+        let gemini = find_spec("gemini").expect("gemini in registry");
+        let (cmd, _, _) = platform_install(gemini);
+        let uninstall = cmd
+            .and_then(npm_package_from_cmd)
+            .map(|pkg| format!("npm uninstall -g {pkg}"));
+        assert_eq!(uninstall.as_deref(), Some("npm uninstall -g @google/gemini-cli"));
+
+        // Claude's curl/irm script installer has no npm package, so no
+        // uninstall command should be synthesized for it.
+        let claude = find_spec("claude").expect("claude in registry");
+        let (cmd, _, _) = platform_install(claude);
+        assert!(cmd.and_then(npm_package_from_cmd).is_none());
+    }
+
+    #[test]
+    fn every_npm_installed_agent_resolves_to_its_package() {
+        // Every agent whose install command is npm-based must round-trip
+        // through `npm_package_from_cmd`, since `uninstall_agent` relies on it
+        // to target `npm uninstall -g` rather than deleting a shim.
+        for spec in AGENTS {
+            for cmd in [Some(spec.install_cmd), spec.install_cmd_windows].into_iter().flatten() {
+                if cmd.trim_start().starts_with("npm install -g") {
+                    assert!(
+                        npm_package_from_cmd(cmd).is_some(),
+                        "{}'s npm install command did not parse: {cmd}",
+                        spec.id
+                    );
+                }
+            }
+        }
     }
 
     #[test]

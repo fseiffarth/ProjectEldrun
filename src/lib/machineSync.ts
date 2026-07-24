@@ -90,10 +90,15 @@ function projectHostsMatching(target: Target): ProjectHostRef[] {
   return out;
 }
 
+// `viaLogin` is unconditional here and says what this function *is*: the machine was
+// authenticated in the header's Machines list, and this connect only succeeds because
+// it rides the master that left behind. Without it the backend reads the missing
+// password as key/agent auth and stamps `key_auth: true` on a password host, which
+// then advertises a promptless auto-connect it cannot deliver (`record_key_auth`).
 function remoteConnectArgs(ref: ProjectHostRef): Record<string, unknown> {
   return ref.hostId === PRIMARY_HOST
-    ? { projectId: ref.projectId, password: null }
-    : { projectId: ref.projectId, hostId: ref.hostId, password: null };
+    ? { projectId: ref.projectId, password: null, viaLogin: true }
+    : { projectId: ref.projectId, hostId: ref.hostId, password: null, viaLogin: true };
 }
 
 /** A global machine connected — reflect it onto every project that also holds

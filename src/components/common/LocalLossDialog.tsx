@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useProjectsStore } from "../../stores/projects";
 import { useLocalLossStore, type LocalLoss } from "../../stores/localLoss";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 /**
  * Warns that something on the LOCAL side was destroyed by git lockstep or by sync
@@ -21,14 +22,14 @@ import { useLocalLossStore, type LocalLoss } from "../../stores/localLoss";
  * they deliberately let through.
  */
 
-const KIND_LABEL: Record<LocalLoss["kind"], string> = {
-  deleted: "deleted locally",
-  overwritten: "overwritten locally",
+const KIND_LABEL_KEY: Record<LocalLoss["kind"], TranslationKey> = {
+  deleted: "localLoss.kindDeleted",
+  overwritten: "localLoss.kindOverwritten",
 };
 
-const SOURCE_LABEL: Record<LocalLoss["source"], string> = {
-  git: "Git lockstep",
-  sync: "File sync",
+const SOURCE_LABEL_KEY: Record<LocalLoss["source"], TranslationKey> = {
+  git: "localLoss.sourceGit",
+  sync: "localLoss.sourceSync",
 };
 
 function timeLabel(ts: number): string {
@@ -41,15 +42,19 @@ function timeLabel(ts: number): string {
 }
 
 function LossEntry({ loss }: { loss: LocalLoss }) {
+  const t = useT();
   const hidden = loss.total - loss.paths.length;
   return (
     <div className="local-loss-entry">
       <div className="local-loss-entry-head">
         <span className={`local-loss-badge local-loss-badge-${loss.kind}`}>
-          {loss.total} file{loss.total === 1 ? "" : "s"} {KIND_LABEL[loss.kind]}
+          {t(loss.total === 1 ? "localLoss.entryCountOne" : "localLoss.entryCountMany", {
+            count: loss.total,
+            kind: t(KIND_LABEL_KEY[loss.kind]),
+          })}
         </span>
         <span className="local-loss-when">
-          {SOURCE_LABEL[loss.source]} · {timeLabel(loss.ts)}
+          {t(SOURCE_LABEL_KEY[loss.source])} · {timeLabel(loss.ts)}
         </span>
       </div>
       <div className="local-loss-op">{loss.op}</div>
@@ -57,16 +62,17 @@ function LossEntry({ loss }: { loss: LocalLoss }) {
         {loss.paths.map((p) => (
           <li key={p}>{p}</li>
         ))}
-        {hidden > 0 && <li className="local-loss-more">…and {hidden} more</li>}
+        {hidden > 0 && <li className="local-loss-more">{t("localLoss.moreCount", { count: hidden })}</li>}
       </ul>
       <div className={`local-loss-recovery${loss.recovery ? "" : " local-loss-gone"}`}>
-        {loss.recovery ?? "This content was only ever on this machine — it cannot be recovered."}
+        {loss.recovery ?? t("localLoss.unrecoverable")}
       </div>
     </div>
   );
 }
 
 export function LocalLossDialog() {
+  const t = useT();
   const activeId = useProjectsStore((s) => s.activeId);
   const entries = useLocalLossStore((s) => s.entries);
   const loadedFor = useLocalLossStore((s) => s.projectId);
@@ -108,15 +114,15 @@ export function LocalLossDialog() {
     // permanent. A stray click on the backdrop must not be able to make it go away.
     <div className="modal-backdrop">
       <div className="project-dialog local-loss-dialog">
-        <h2 className="local-loss-title">Files changed on your local copy</h2>
+        <h2 className="local-loss-title">{t("localLoss.title")}</h2>
         <p className="local-loss-lede">
-          Syncing this project with the host destroyed something in your local copy —{" "}
+          {t("localLoss.ledePre")}{" "}
           <strong>
-            {files} file{files === 1 ? "" : "s"}
+            {t(files === 1 ? "localLoss.filesCountOne" : "localLoss.filesCountMany", { count: files })}
           </strong>{" "}
-          across {unseen.length} operation{unseen.length === 1 ? "" : "s"}. This is what git
-          and sync are supposed to do when the two sides move; it is listed here because
-          it happened to your machine, and it happened without asking.
+          {t("localLoss.ledeMid")}{" "}
+          {t(unseen.length === 1 ? "localLoss.opsCountOne" : "localLoss.opsCountMany", { count: unseen.length })}
+          {t("localLoss.ledePost")}
         </p>
         <div className="local-loss-list">
           {/* Two ops in the same second share a `ts` (a fast-forward and the clean that
@@ -127,7 +133,7 @@ export function LocalLossDialog() {
         </div>
         <div className="project-dialog-actions">
           <button type="button" onClick={() => void ack(activeId)}>
-            Got it
+            {t("howToStart.gotIt")}
           </button>
         </div>
       </div>

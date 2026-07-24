@@ -930,6 +930,46 @@ pub fn set_project_remote_label(
     Ok(normalized)
 }
 
+/// Set (or clear) the **SSH login name** a remote project's primary host is
+/// reached as. The half of the credential the Connect dialog never let you enter:
+/// the address is fixed at creation (`user@host`), so a project created without a
+/// user — or with the wrong one — authenticated as the *local* account name with
+/// no way to correct it short of recreating the project. Every login surface needs
+/// it, not just the headless one: it is what `ssh_connect`/`remote_connect` send
+/// **and** what `remote_login_command` types into the interactive login terminal.
+///
+/// A blank/whitespace-only string clears it (ssh then falls back to the local
+/// account name / `~/.ssh/config`). Returns the resulting user (`None` = cleared).
+///
+/// Changing it **clears `key_auth`**, which is not bookkeeping: that flag records
+/// that *the previous login* authenticated with no password at all, and it is what
+/// makes the pill offer a promptless auto-connect. Carried over to a different
+/// account it would advertise a silent connect nothing has ever proved — exactly
+/// the failure `record_key_auth`'s `via_login` case exists to prevent. The saved
+/// password needs no such handling: the keychain is keyed by `user@host:port`, so
+/// a new login name simply addresses a different (empty) account.
+#[tauri::command]
+pub fn set_project_remote_user(
+    project_id: String,
+    user: Option<String>,
+) -> Result<Option<String>, String> {
+    let normalized = user
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string);
+    let current =
+        crate::services::remote::remote_target_for(&project_id).and_then(|t| t.spec.user.clone());
+    if current == normalized {
+        return Ok(normalized);
+    }
+    patch_remote_spec(&project_id, |remote| {
+        remote.user = normalized.clone();
+        remote.key_auth = None;
+    })?;
+    Ok(normalized)
+}
+
 /// Record how a remote project's host authenticated on its last successful connect
 /// (`key_auth` = no password was used at all — key/agent auth). Called by
 /// `remote_connect`; this is the only way the UI can know a passwordless host is
@@ -1100,9 +1140,13 @@ pub fn remove_compute_host(
 }
 
 /// Patch a worker host's toggles (`sync_code` / `pull_outputs` / `auto_connect` /
-/// `shared_fs` / `label`). Each argument is applied only when `Some`, so a caller
-/// can flip one flag without restating the others. Unknown `host_id` is a silent
-/// no-op (returns the unchanged list).
+/// `shared_fs` / `label` / `user`). Each argument is applied only when `Some`, so a
+/// caller can flip one flag without restating the others. Unknown `host_id` is a
+/// silent no-op (returns the unchanged list).
+///
+/// `user` is the worker twin of [`set_project_remote_user`] — the SSH login name,
+/// editable from the same Connect dialog — and clears `key_auth` for the same
+/// reason: it was recorded for the account being replaced.
 #[tauri::command]
 pub fn patch_compute_host(
     project_id: String,
@@ -1112,9 +1156,18 @@ pub fn patch_compute_host(
     auto_connect: Option<bool>,
     shared_fs: Option<bool>,
     label: Option<String>,
+    user: Option<String>,
 ) -> Result<Vec<ComputeHost>, String> {
     patch_compute_hosts(&project_id, |hosts| {
         if let Some(h) = hosts.iter_mut().find(|h| h.id == host_id) {
+            if let Some(v) = &user {
+                let t = v.trim();
+                let next = if t.is_empty() { None } else { Some(t.to_string()) };
+                if h.spec.user != next {
+                    h.spec.user = next;
+                    h.spec.key_auth = None;
+                }
+            }
             if let Some(v) = shared_fs {
                 h.shared_fs = v;
             }

@@ -170,6 +170,14 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     null,
   );
 
+  // Per-connect "sign in in a terminal" (see `TerminalSignInToggle`): in headless
+  // mode these swap the password fields for the same embedded login terminal the
+  // non-headless mode uses, for this one connect. Default off — headless is the mode;
+  // this is only the escape hatch for a host or tunnel that asks something the fields
+  // cannot answer (a challenge code, a second prompt).
+  const [sshViaTerminal, setSshViaTerminal] = useState(false);
+  const [vpnViaTerminal, setVpnViaTerminal] = useState(false);
+
   const isRemote = sshStatus === "connected" && remoteConn !== null;
 
   // Windows has no ssh ControlMaster socket, so a non-headless login can't be
@@ -754,6 +762,10 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     remoteConn,
     headless,
     winManual,
+    sshViaTerminal,
+    setSshViaTerminal,
+    vpnViaTerminal,
+    setVpnViaTerminal,
     remoteReady,
     step,
     setStep,

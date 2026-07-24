@@ -35,6 +35,16 @@ export function getTexCapability(): Promise<TexCapability> {
   return texCapPromise;
 }
 
+/** Drop the cached probe and re-query the backend. The one-shot cache above is
+ *  right for a probe that never changes mid-session, but it goes stale the
+ *  moment the user installs a TeX distribution from the "no engine found"
+ *  banner — call this after that install (or from a manual "Recheck") so the
+ *  viewer picks up the newly-detected engine without an app restart. */
+export function refreshTexCapability(): Promise<TexCapability> {
+  texCapPromise = null;
+  return getTexCapability();
+}
+
 /** Last meaningful line of a build log, for a terse error message. */
 export function lastLogLine(log: string): string {
   const lines = log.split("\n").map((l) => l.trim()).filter(Boolean);

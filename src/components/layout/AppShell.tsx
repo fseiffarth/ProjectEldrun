@@ -25,6 +25,8 @@ import { GlobalMachineMonitorDialogHost } from "../monitoring/GlobalMachineMonit
 import { HpcPipelineWizardHost } from "../projects/HpcPipelineWizard";
 import { BigFolderDialogHost } from "../projects/BigFolderExcludeDialog";
 import { LocalLossDialog } from "../common/LocalLossDialog";
+import { HostKeyConfirmDialog } from "../common/HostKeyConfirmDialog";
+import { HpcGuardDialog } from "../common/HpcGuardDialog";
 import { RemoteUsageWarningDialog } from "../common/RemoteUsageWarningDialog";
 import { QuickOpen } from "../files/QuickOpen";
 import { HintHost } from "./HintHost";
@@ -34,7 +36,11 @@ import { HowToStart } from "./HowToStart";
 import { RemoteFeaturesPrompt } from "./RemoteFeaturesPrompt";
 import { LessonsMenu } from "./LessonsMenu";
 import { useHintsStore } from "../../stores/hints";
-import { useProjectsStore, listenProjectRuntimeSwitched } from "../../stores/projects";
+import {
+  useProjectsStore,
+  listenProjectRuntimeSwitched,
+  silentReconnectDeadHost,
+} from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { disconnectAllTunnelsOnQuit } from "../../stores/vpnStatus";
 import { listenDetachedHost, shutdownDetachedWindows } from "../../stores/detached";
@@ -51,6 +57,7 @@ import { useTabsStore } from "../../stores/tabs";
 import { useTimerStore } from "../../stores/timer";
 import { flushUsage } from "../../stores/usage";
 import { useKeyboard } from "../../hooks/useKeyboard";
+import { useT, useI18nStore, translate } from "../../lib/i18n";
 
 // Width of the right-edge band that reveals the (unpinned) right panel on hover.
 // Kept wide because on Windows/WebView2 the window often isn't true-fullscreen
@@ -102,6 +109,7 @@ async function saveWindowGeometry(): Promise<void> {
 }
 
 export function AppShell() {
+  const t = useT();
   const loadSettings = useSettingsStore((s) => s.load);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const pinnedSetting = useSettingsStore((s) => s.settings?.right_panel_pinned ?? false);
@@ -475,12 +483,11 @@ export function AppShell() {
       // it does not block the app from closing.
       const tunnelsDown = await disconnectAllTunnelsOnQuit().catch(() => true);
       if (!tunnelsDown) {
-        await message(
-          "The OpenVPN tunnel is still active and reroutes this whole machine. " +
-            "It will keep running after Eldrun closes — use the VPN control in the " +
-            "header to close it yourself when you're done.",
-          { title: "VPN tunnel still active", kind: "warning" },
-        ).catch(() => {});
+        const lang = useI18nStore.getState().lang;
+        await message(translate(lang, "appShell.vpnStillActiveMessage"), {
+          title: translate(lang, "appShell.vpnStillActiveTitle"),
+          kind: "warning",
+        }).catch(() => {});
       }
       await flushTimer().catch(() => {});
       // Counters accrued since the last interval flush would otherwise be lost on
@@ -541,18 +548,23 @@ export function AppShell() {
   // Reconcile the SSH lamp/Connect-dialog status against the backend's actual
   // pool, which is the only side that ever notices a pooled connection dying on
   // its own (network drop, keepalive eviction, a VPN tunnel getting replaced
-  // out from under it) — and only lazily, the next time some command happens to
-  // touch that project's pool entry. `useRemoteStatusStore` otherwise only ever
-  // moves on an explicit connect/disconnect result, so without this a project
-  // whose pooled session died keeps showing "connected" (green lamp, the
-  // Connect dialog claiming it's already up) indefinitely, while anything that
+  // out from under it, or an HPC job's long queue wait past `ControlPersist`) —
+  // and only lazily, the next time some command happens to touch that
+  // project's pool entry. `useRemoteStatusStore` otherwise only ever moves on
+  // an explicit connect/disconnect result, so without this a project whose
+  // pooled session died keeps showing "connected" (green lamp, the Connect
+  // dialog claiming it's already up) indefinitely, while anything that
   // actually asks the pool — e.g. the network-traffic pane's own poll —
   // correctly reports disconnected. A project the store still marks
-  // "connected" that the backend no longer lists gets corrected to "error" so
-  // the lamp goes red and the Connect dialog offers a real reconnect.
+  // "connected" that the backend no longer lists is handed to
+  // `silentReconnectDeadHost`, which re-authenticates it with no prompt when
+  // that's possible (headless + key/agent auth or a saved password) and only
+  // falls back to a red "error" lamp when it isn't — so a background HPC watch
+  // tab's host reconnects on its own instead of sitting disconnected until the
+  // user notices and clicks reconnect by hand.
   useEffect(() => {
     const id = setInterval(() => {
-      const { byProject, byHost, setSsh } = useRemoteStatusStore.getState();
+      const { byProject, byHost } = useRemoteStatusStore.getState();
       // Every (project, host) the store believes is connected — the primary
       // (byProject) plus every worker host (byHost, multi-host remote).
       const stillConnected: Array<[string, string]> = [];
@@ -566,14 +578,14 @@ export function AppShell() {
       }
       if (stillConnected.length === 0) return;
       // Per-host truth from the pool (`remote_connected_targets`); anything the
-      // store marks connected that the backend no longer lists is corrected to
-      // "error" so its lamp goes red and the Connect dialog offers a reconnect.
+      // store marks connected that the backend no longer lists gets a silent
+      // reconnect attempt rather than an immediate red lamp.
       void invoke<Array<[string, string]>>("remote_connected_targets")
         .then((targets) => {
           const live = new Set(targets.map(([p, h]) => `${p}${h}`));
           for (const [projectId, hostId] of stillConnected) {
             if (!live.has(`${projectId}${hostId}`)) {
-              setSsh(projectId, "error", hostId);
+              void silentReconnectDeadHost(projectId, hostId);
             }
           }
         })
@@ -757,8 +769,8 @@ export function AppShell() {
           <button
             type="button"
             className={`right-panel-reveal-handle${panelSide === "left" ? " left" : ""}`}
-            aria-label="Show files panel"
-            title="Show files panel"
+            aria-label={t("appShell.showFilesPanel")}
+            title={t("appShell.showFilesPanel")}
             onClick={() => reveal(rightCloseTimer, setRightOpen)}
             onMouseEnter={() => reveal(rightCloseTimer, setRightOpen)}
           >
@@ -767,6 +779,15 @@ export function AppShell() {
         )}
       </div>
       <VpnPasswordPrompt />
+      {/* "Is this the right machine?" — shown before a password is sent to a host
+          whose SSH key has never been accepted here. At the shell because it can be
+          raised by any connect surface (the Connect modal, a create/extend dialog,
+          the Machines menu), and each of them must not carry its own copy. */}
+      <HostKeyConfirmDialog />
+      {/* The HPC tag's per-act confirmation (disk scan, login-node run). Mounted
+          here for the same reason the host-key prompt is: the caller is a lib
+          function with no component of its own to render into. */}
+      <HpcGuardDialog />
       <RemoteConnectDialog />
       {/* Multi-host remote: the "Remote machines" manager, opened from a pill's
           Runtime menu or a right-click on its remote lamp. */}

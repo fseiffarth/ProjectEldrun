@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { HOW_TO_START_STEPS } from "../../lib/hints";
+import { useT } from "../../lib/i18n";
 
 /**
  * The first-run "How to start" instruction: a single scannable modal shown once
@@ -9,6 +10,7 @@ import { HOW_TO_START_STEPS } from "../../lib/hints";
  * from `HOW_TO_START_STEPS` so it stays in lockstep with the Feature Guide.
  */
 export function HowToStart({ onClose }: { onClose: () => void }) {
+  const t = useT();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -23,16 +25,14 @@ export function HowToStart({ onClose }: { onClose: () => void }) {
         className="settings-dialog how-to-start-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label="How to start"
+        aria-label={t("howToStart.title")}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="settings-title-row">
-          <h2>Welcome to Eldrun</h2>
+          <h2>{t("howToStart.title")}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
-        <p className="settings-help">
-          Eldrun keeps your AI-assisted development in one window. Here's how to get going:
-        </p>
+        <p className="settings-help">{t("howToStart.intro")}</p>
 
         <ol className="how-to-start-steps">
           {HOW_TO_START_STEPS.map((step, i) => (
@@ -54,7 +54,7 @@ export function HowToStart({ onClose }: { onClose: () => void }) {
               onClose();
             }}
           >
-            Open Feature Guide...
+            {t("howToStart.openFeatureGuide")}
           </button>
           <button
             type="button"
@@ -63,7 +63,7 @@ export function HowToStart({ onClose }: { onClose: () => void }) {
               window.dispatchEvent(new Event("eldrun:start-tour"));
             }}
           >
-            Take a tour
+            {t("howToStart.takeTour")}
           </button>
           <button
             type="button"
@@ -72,10 +72,10 @@ export function HowToStart({ onClose }: { onClose: () => void }) {
               window.dispatchEvent(new Event("eldrun:open-lessons"));
             }}
           >
-            Lessons
+            {t("howToStart.lessons")}
           </button>
           <button type="button" className="how-to-start-got-it" onClick={onClose}>
-            Got it
+            {t("howToStart.gotIt")}
           </button>
         </div>
       </div>

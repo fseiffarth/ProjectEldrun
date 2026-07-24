@@ -68,11 +68,25 @@ pub async fn disk_usage_scan(
     scan_id: String,
     root: String,
     project_id: Option<String>,
+    confirmed: Option<bool>,
     state: State<'_, DuScanState>,
 ) -> Result<DuScan, String> {
     let remote = project_id
         .as_deref()
         .and_then(crate::services::remote::remote_target_for);
+
+    // A scan of a host tagged HPC is refused until the user confirms this run.
+    // `remote_du_tree` stats every file under `root`, and on a cluster that root
+    // is normally on the parallel filesystem — the one recursive walk a site's
+    // filesystem guide names outright. Refusing rather than silently skipping,
+    // and per-run rather than once, because the pane's whole purpose is that walk:
+    // a scan the user asked for by name is theirs to have, a scan a pane opened
+    // for them is not (`services::hpc_mode::HPC_GUARD`).
+    if let Some(target) = remote.as_ref() {
+        if confirmed != Some(true) && crate::services::hpc_mode::is_hpc_spec(&target.spec) {
+            return Err(crate::services::hpc_mode::guard_error("du-scan", &target.spec));
+        }
+    }
 
     let cancel = Arc::new(AtomicBool::new(false));
     if let Ok(mut map) = state.lock() {

@@ -9,6 +9,7 @@
 use tauri::{AppHandle, State};
 
 use crate::services::git_peer::{self, GitPeerRegistry};
+use crate::services::hpc_mode;
 use crate::services::remote::{self, RemotePoolState};
 use crate::services::remote_sync::SyncManifestState;
 use crate::services::sync_auto::{self, AutoSyncState};
@@ -32,6 +33,40 @@ async fn kill_tmux_on_disconnect(pool: &RemotePoolState, project_id: &str, host_
     .await;
 }
 
+/// What this connect proves about **how the host authenticates**, if anything.
+///
+/// `Some(true)` = key/agent auth (no password given, none in the keychain — the only
+/// way a passwordless host can announce itself, since it has nothing saved to look
+/// for). `Some(false)` = a password was used. `None` = **it proves nothing, so don't
+/// write anything down**.
+///
+/// That last case is the whole reason this is a function. A credential-less connect
+/// that rode a ControlMaster somebody else authenticated (`via_login`) looks *exactly*
+/// like key auth from in here, and recording it as such is not a cosmetic error: the
+/// stored `key_auth: true` is what makes the pill offer auto-connect, and auto-connect
+/// then believes it — so a password host silently advertises a promptless connect it
+/// cannot deliver, and fails on every launch. Only the caller knows which it was.
+fn record_key_auth(
+    user: &Option<String>,
+    host: &str,
+    port: Option<u16>,
+    password: Option<&str>,
+    via_login: Option<bool>,
+) -> Option<bool> {
+    if password.is_some() {
+        // A password was used: that is a fact about the host either way, and no
+        // borrowed master can make it wrong.
+        return Some(false);
+    }
+    if via_login == Some(true) {
+        return None;
+    }
+    let saved = crate::services::remote_credentials::has(
+        &crate::services::remote_credentials::ssh_account(user, host, port),
+    );
+    Some(!saved)
+}
+
 /// Open (idempotently) the pooled SSH/SFTP connection for a remote project,
 /// authenticating once. A no-op for a local project or one already connected.
 /// `password` is used only for password-auth hosts (never stored); `None` →
@@ -41,6 +76,14 @@ async fn kill_tmux_on_disconnect(pool: &RemotePoolState, project_id: &str, host_
 /// On a successful connect the per-project auto-sync task is launched (idempotent;
 /// itself a no-op for a local project), so any paths the user marked auto-sync
 /// start reconciling in the background.
+///
+/// `via_login` marks a connect that may be riding a ControlMaster **somebody else
+/// authenticated** — an interactive login terminal (`connections_headless` off), the
+/// session an add-machine/extend dialog left up, a global machine's master. Such a
+/// connect succeeds with no password and nothing in the keychain, which is
+/// indistinguishable from key/agent auth from here — so it must NOT be allowed to
+/// record `key_auth: true` (see [`record_key_auth`]). It is a *caller* fact, not
+/// something this command can observe.
 #[tauri::command]
 pub async fn remote_connect(
     app: AppHandle,
@@ -52,6 +95,7 @@ pub async fn remote_connect(
     project_id: String,
     host_id: Option<String>,
     password: Option<String>,
+    via_login: Option<bool>,
 ) -> Result<(), String> {
     let host_id = host_id.unwrap_or_else(|| remote::PRIMARY_HOST.to_string());
     remote::connect_host(pool.inner(), &project_id, &host_id, password.as_deref()).await?;
@@ -63,7 +107,17 @@ pub async fn remote_connect(
     // multi-host `compute_hosts` worker) that just connected — the frontend's
     // warning dialog groups every connected host's report by `host_id` into one
     // combined view instead of only ever showing the primary's.
-    if let Some(target) = remote::remote_target_for_host(&project_id, &host_id) {
+    // …except on a host the user called shared, or one already known to be a
+    // cluster login node: there the probe is not just unhelpful (a login node is
+    // *always* busy and always has other people on it) but unasked-for, and its
+    // careful variant still costs the node a `ps`/`who` on every connect. The
+    // report stays available on demand from the Machines menu
+    // (`remote_usage_check`). Nothing is skipped on a host with no answer and no
+    // probe behind it — that first probe is what teaches us what the host is, and
+    // it censors itself host-side either way.
+    if let Some(target) = remote::remote_target_for_host(&project_id, &host_id)
+        .filter(|t| !hpc_mode::is_careful_host(&t.spec))
+    {
         let app_for_usage = app.clone();
         let usage_spec = target.spec.clone();
         let usage_project_id = project_id.clone();
@@ -100,20 +154,20 @@ pub async fn remote_connect(
         // worker auto-connect-eligible (it has nothing in the keychain to check),
         // so without it a shared-fs HPC worker's Auto-connect toggle never enables.
         if let Some(w) = worker {
-            let saved = crate::services::remote_credentials::has(
-                &crate::services::remote_credentials::ssh_account(
-                    &w.spec.user,
-                    &w.spec.host,
-                    w.spec.port,
-                ),
-            );
-            let key_auth = password.is_none() && !saved;
-            if let Err(e) = crate::commands::projects::record_worker_key_auth(
-                &project_id,
-                &host_id,
-                key_auth,
+            if let Some(key_auth) = record_key_auth(
+                &w.spec.user,
+                &w.spec.host,
+                w.spec.port,
+                password.as_deref(),
+                via_login,
             ) {
-                eprintln!("record worker auth mode for '{project_id}/{host_id}' failed: {e}");
+                if let Err(e) = crate::commands::projects::record_worker_key_auth(
+                    &project_id,
+                    &host_id,
+                    key_auth,
+                ) {
+                    eprintln!("record worker auth mode for '{project_id}/{host_id}' failed: {e}");
+                }
             }
         }
         if !shared {
@@ -135,12 +189,17 @@ pub async fn remote_connect(
     // since such a host has no keychain entry to look for. Best effort.
     if let Some(target) = remote::remote_target_for(&project_id) {
         let spec = &target.spec;
-        let saved = crate::services::remote_credentials::has(
-            &crate::services::remote_credentials::ssh_account(&spec.user, &spec.host, spec.port),
-        );
-        let key_auth = password.is_none() && !saved;
-        if let Err(e) = crate::commands::projects::record_remote_key_auth(&project_id, key_auth) {
-            eprintln!("record auth mode for '{project_id}' failed: {e}");
+        if let Some(key_auth) = record_key_auth(
+            &spec.user,
+            &spec.host,
+            spec.port,
+            password.as_deref(),
+            via_login,
+        ) {
+            if let Err(e) = crate::commands::projects::record_remote_key_auth(&project_id, key_auth)
+            {
+                eprintln!("record auth mode for '{project_id}' failed: {e}");
+            }
         }
     }
     sync_auto::start(
@@ -406,4 +465,38 @@ pub async fn remote_usage_check(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::record_key_auth;
+
+    /// The bug this guards: with `connections_headless` off, every pooled connect is
+    /// credential-less and succeeds only because an interactive login left a master
+    /// behind. Reading that as key auth wrote `key_auth: true` onto a password host,
+    /// which made the pill offer auto-connect and auto-connect fail on every launch.
+    #[test]
+    fn a_borrowed_master_proves_nothing_about_key_auth() {
+        assert_eq!(
+            record_key_auth(&Some("alice".into()), "host.example", None, None, Some(true)),
+            None,
+        );
+    }
+
+    /// A password is a fact about the host however the session was established, so it
+    /// is still recorded — `via_login` only suppresses the *inference*, never a
+    /// direct observation.
+    #[test]
+    fn a_password_is_recorded_even_on_a_borrowed_master() {
+        assert_eq!(
+            record_key_auth(
+                &Some("alice".into()),
+                "host.example",
+                None,
+                Some("hunter2"),
+                Some(true),
+            ),
+            Some(false),
+        );
+    }
 }

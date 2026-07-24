@@ -96,6 +96,15 @@ pub async fn start(
     let Some(target) = remote_target_for(project_id) else {
         return;
     };
+    // …and a host the user tagged HPC gets no *background* sync at all. Every
+    // pass walks the host tree over SFTP, and on a cluster that tree is normally
+    // on the parallel filesystem, where a recursive walk is a metadata storm
+    // against a shared server — at a 25 s cadence, unasked for, for as long as the
+    // project is open. Manual sync (the file view's push/pull) is untouched: the
+    // objection is to the cadence, not to the transfer.
+    if crate::services::hpc_mode::is_hpc_spec(&target.spec) {
+        return;
+    }
     let mut guard = state.lock().await;
     if guard.contains_key(project_id) {
         return; // already running

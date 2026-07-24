@@ -9,14 +9,16 @@ import {
   type GitHostingInfo,
   type GitProvider,
   type ProjectEntry,
+  type PublishFrom,
   type SandboxSpec,
 } from "../../types";
 import { useTimerStore } from "../../stores/timer";
 import { useActivityStore, type TabStatusCounts } from "../../stores/activity";
 import { useProjectsStore } from "../../stores/projects";
+import { useSettingsStore } from "../../stores/settings";
 import { isResumableAgentTab, useTabsStore } from "../../stores/tabs";
 import { IS_WINDOWS } from "../../lib/platform";
-import { runInstallInTab } from "../../lib/installCommand";
+import { runInstallInTab, PROVIDER_CLI_INSTALL, providerAuthLoginCmd } from "../../lib/installCommand";
 import { PythonInterpreterWindow } from "./PythonInterpreterWindow";
 import { useGitDirtyStore, type GitDirtyState } from "../../stores/gitDirty";
 import { providerName, gitTypeLabel } from "./projectTypeTags";
@@ -30,6 +32,9 @@ import { PasswordInput } from "../common/PasswordInput";
 import { FolderPickerDialog } from "../common/FolderPickerDialog";
 import { RemoteConnMenu } from "../header/RemoteConnMenu";
 import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/categoryColor";
+import { usePillDragStore } from "../../stores/pillDrag";
+import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 interface Props {
   project: ProjectEntry;
@@ -39,13 +44,20 @@ interface Props {
   onReorder: (fromId: string, toId: string) => void;
   /** Alt-drop one pill onto another: box the two projects together. */
   onGroup?: (fromId: string, toId: string) => void;
-  /** Set when this pill is a member of a box (id of that box). */
-  boxId?: string;
-  /** Dragging the pill out of its box and releasing over empty space removes it. */
-  onLeaveBox?: (projectId: string) => void;
+  /** Drop onto a box pill: assign this project to that box instead of reordering. */
+  onAssignToBox?: (boxId: string) => void;
+  /** True while THIS pill is the one being pointer-dragged. ProjectSwitcher owns
+   *  the shared gesture state (`stores/pillDrag`) so every sibling can react to
+   *  one gesture without prop-drilling the raw drag object through each pill. */
+  isDragged?: boolean;
+  /** Live pointer-follow offset (px) while `isDragged`. */
+  dragDx?: number;
+  /** Parting offset (px) while a SIBLING pill is being dragged past this one —
+   *  the "nicely apart" slide that opens its landing slot. */
+  shiftPx?: number;
+  /** An Alt-drag is hovering THIS pill as a group (new-box) target. */
+  groupHintActive?: boolean;
 }
-
-export const PILL_DRAG_TYPE = "application/x-eldrun-project";
 
 /** File endings that mark a project as holding Python — the "Python interpreter…"
  *  menu entry is offered only when one is present. Matched against
@@ -54,11 +66,11 @@ const PYTHON_ENDINGS = new Set([".py", ".pyw", ".pyi"]);
 
 /** Folder-icon title/color per git state — mirrors the file-tree markers'
  *  priority (red ▸ orange ▸ green), plus a neutral "clean" default. */
-const GIT_ICON_TITLE: Record<GitDirtyState, string> = {
-  clean: "No pending changes",
-  dirty: "Uncommitted changes — not yet added",
-  staged: "Staged changes — not yet committed",
-  unpushed: "Committed — not yet pushed",
+const GIT_ICON_TITLE_KEY: Record<GitDirtyState, TranslationKey> = {
+  clean: "pill.gitClean",
+  dirty: "pill.gitDirty",
+  staged: "pill.gitStaged",
+  unpushed: "pill.gitUnpushed",
 };
 
 /** Most status bars the pill will draw. A project with more busy tabs than this
@@ -77,11 +89,11 @@ function statusBarKinds(c: TabStatusCounts): string[] {
 }
 
 /** Tooltip spelling out the tally the bars stand for (never truncated). */
-function statusBarTitle(c: TabStatusCounts): string {
+function statusBarTitle(c: TabStatusCounts, t: (key: TranslationKey, params?: Record<string, string | number>) => string): string {
   const parts: string[] = [];
-  if (c.working) parts.push(`${c.working} working`);
-  if (c.decision) parts.push(`${c.decision} waiting on you`);
-  if (c.done) parts.push(`${c.done} finished`);
+  if (c.working) parts.push(t("pill.statusWorking", { count: c.working }));
+  if (c.decision) parts.push(t("pill.statusWaiting", { count: c.decision }));
+  if (c.done) parts.push(t("pill.statusFinished", { count: c.done }));
   return parts.join(" · ");
 }
 
@@ -94,6 +106,7 @@ function ActivityWindow({
   project: ProjectEntry;
   onClose: () => void;
 }) {
+  const t = useT();
   const [data, setData] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
 
@@ -112,12 +125,12 @@ function ActivityWindow({
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="activity-window-header">
-          <span className="activity-window-title">{project.name} — Activity</span>
+          <span className="activity-window-title">{t("pill.activityTitle", { name: project.name })}</span>
           <button className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <div className="activity-window-body">
           {loading ? (
-            <div className="activity-loading">Loading…</div>
+            <div className="activity-loading">{t("common.loading")}</div>
           ) : (
             <ActivityCalendar data={data} />
           )}
@@ -137,6 +150,7 @@ function EditDescriptionWindow({
   onSave: (description: string) => Promise<void>;
   onClose: () => void;
 }) {
+  const t = useT();
   const [value, setValue] = useState(projectDescription(project));
   const [saving, setSaving] = useState(false);
 
@@ -157,13 +171,13 @@ function EditDescriptionWindow({
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="settings-title-row">
-          <h2>{project.name} — Description</h2>
+          <h2>{t("pill.descTitle", { name: project.name })}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <textarea
           value={value}
           autoFocus
-          placeholder="Short description for this project…"
+          placeholder={t("pill.descPlaceholder")}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void save();
@@ -171,9 +185,9 @@ function EditDescriptionWindow({
           }}
         />
         <div className="project-dialog-actions">
-          <button type="button" onClick={onClose} disabled={saving}>Cancel</button>
+          <button type="button" onClick={onClose} disabled={saving}>{t("common.cancel")}</button>
           <button type="button" onClick={() => void save()} disabled={saving}>
-            {saving ? "Saving…" : "Save"}
+            {saving ? t("common.saving") : t("common.save")}
           </button>
         </div>
       </div>
@@ -191,13 +205,14 @@ function RenameWindow({
   onSave: (name: string) => Promise<void>;
   onClose: () => void;
 }) {
+  const t = useT();
   const [value, setValue] = useState(project.name);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   const save = async () => {
     if (!value.trim()) {
-      setError("Name cannot be empty");
+      setError(t("pill.nameEmpty"));
       return;
     }
     setSaving(true);
@@ -218,14 +233,14 @@ function RenameWindow({
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="settings-title-row">
-          <h2>Rename project</h2>
+          <h2>{t("pill.renameTitle")}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <input
           type="text"
           value={value}
           autoFocus
-          placeholder="Project name…"
+          placeholder={t("pill.namePlaceholder")}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") void save();
@@ -234,9 +249,9 @@ function RenameWindow({
         />
         {error && <div className="project-dialog-error">{error}</div>}
         <div className="project-dialog-actions">
-          <button type="button" onClick={onClose} disabled={saving}>Cancel</button>
+          <button type="button" onClick={onClose} disabled={saving}>{t("common.cancel")}</button>
           <button type="button" onClick={() => void save()} disabled={saving}>
-            {saving ? "Saving…" : "Save"}
+            {saving ? t("common.saving") : t("common.save")}
           </button>
         </div>
       </div>
@@ -255,36 +270,89 @@ function guessProvider(project: ProjectEntry): GitProvider {
   return "github";
 }
 
+/** The provider's own "create a personal access token" page. Reads the host
+ *  off a configured profile URL so a self-hosted GitLab/GitHub Enterprise
+ *  instance gets its own token page rather than the public one. */
+function tokenPageUrl(provider: GitProvider, profileUrl: string): string {
+  let host = provider === "gitlab" ? "gitlab.com" : "github.com";
+  try {
+    const parsed = new URL(profileUrl);
+    if (parsed.host) host = parsed.host;
+  } catch {
+    // No usable profile URL yet — fall back to the public host.
+  }
+  return provider === "gitlab"
+    ? `https://${host}/-/user_settings/personal_access_tokens`
+    : `https://${host}/settings/tokens`;
+}
+
 function PublishWindow({
   project,
   onPublish,
   onClose,
 }: {
   project: ProjectEntry;
-  onPublish: (provider: GitProvider, visibility: "public" | "private") => Promise<string>;
+  onPublish: (
+    provider: GitProvider,
+    visibility: "public" | "private",
+    publishFrom: PublishFrom,
+  ) => Promise<string>;
   onClose: () => void;
 }) {
+  const t = useT();
   const [provider, setProvider] = useState<GitProvider>(() => guessProvider(project));
   const [visibility, setVisibility] = useState<"public" | "private">(
     project.git_type === "remote-public" ? "public" : "private",
   );
+  // Which side runs the CLI. Defaults to this machine (for a remote project, its
+  // lockstep mirror): the provider login lives here, not on the work remote.
+  const [publishFrom, setPublishFrom] = useState<PublishFrom>("local");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState("");
   const isRemoteWork = Boolean(project.remote);
+  // True when the CLI will run on this machine — always for a local project, and
+  // for a remote one unless the host was explicitly chosen.
+  const runsLocally = !isRemoteWork || publishFrom === "local";
   // The CLI the chosen provider drives, surfaced in the command preview/help.
   const cli = provider === "gitlab" ? "glab" : "gh";
   const createPreview =
     provider === "gitlab"
       ? `glab repo create ${project.name} --${visibility} --remoteName origin && git push`
       : `gh repo create ${project.name} --${visibility} --source=. --push`;
+  const cliInstall = PROVIDER_CLI_INSTALL[provider];
+  // Whether `cli` is on PATH here. Meaningful whenever the publish runs on this
+  // machine — which now includes a work-remote project publishing from its
+  // mirror. Only the explicit "work-remote host" choice runs somewhere this
+  // probe (a local `<cli> --version`) can't see. `null` while probing/unknown,
+  // so a pending answer never claims the CLI is missing.
+  const [cliAvailable, setCliAvailable] = useState<boolean | null>(null);
+  // The saved global token (⚙ Settings → Git hosting) — a project-specific
+  // override is possible too (`GitHostingWindow`) but rare enough that this
+  // approximation (skip the sign-in nudge when a token is set at all) is fine.
+  const gitToken = useSettingsStore((s) => s.settings?.git_token ?? "");
+
+  useEffect(() => {
+    if (!runsLocally) {
+      setCliAvailable(null);
+      return;
+    }
+    let cancelled = false;
+    setCliAvailable(null);
+    invoke<boolean>("provider_cli_available", { provider })
+      .then((ok) => !cancelled && setCliAvailable(ok))
+      .catch(() => !cancelled && setCliAvailable(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [runsLocally, provider]);
 
   const publish = async () => {
     setBusy(true);
     setError("");
     try {
-      const output = await onPublish(provider, visibility);
-      setResult(output || "Published.");
+      const output = await onPublish(provider, visibility, publishFrom);
+      setResult(output || t("pill.published"));
     } catch (err) {
       setError(String(err));
     } finally {
@@ -296,15 +364,15 @@ function PublishWindow({
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>{project.name} — Publish to {providerName(provider)}</h2>
+          <h2>{t("pill.publishTitle", { name: project.name, provider: providerName(provider) })}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <div className="project-dialog-path">
-          Current: {gitTypeLabel(project.git_type, project.git_provider)}
-          {isRemoteWork && " · runs on the work-remote host"}
+          {t("pill.currentPrefix")} {gitTypeLabel(project.git_type, project.git_provider)}
+          {isRemoteWork && !runsLocally && ` ${t("pill.runsOnWorkRemote")}`}
         </div>
         <label>
-          Hosting provider
+          {t("pill.hostingProvider")}
           <Dropdown
             className="dropdown-block"
             value={provider}
@@ -316,30 +384,100 @@ function PublishWindow({
             ]}
           />
         </label>
+        {/* A work-remote project has the same history on both sides, so which one
+            creates the repo is a real choice — and only this machine holds the
+            provider login, which is why it is the default. */}
+        {isRemoteWork && (
+          <label>
+            {t("pill.publishFrom")} <UntestedTag />
+            <Dropdown
+              className="dropdown-block"
+              value={publishFrom}
+              disabled={busy || Boolean(result)}
+              onChange={(v) => setPublishFrom(v as PublishFrom)}
+              options={[
+                { value: "local", label: t("pill.publishFromLocal") },
+                { value: "remote", label: t("pill.publishFromRemote") },
+              ]}
+            />
+          </label>
+        )}
         <label>
-          Repository visibility
+          {t("pill.repoVisibility")}
           <Dropdown
             className="dropdown-block"
             value={visibility}
             disabled={busy || Boolean(result)}
             onChange={(v) => setVisibility(v as "public" | "private")}
             options={[
-              { value: "private", label: "private" },
-              { value: "public", label: "public" },
+              { value: "private", label: t("pill.visPrivate") },
+              { value: "public", label: t("pill.visPublic") },
             ]}
           />
         </label>
         <div className="project-dialog-path">
-          Runs <code>{createPreview}</code>. Requires <code>{cli}</code> installed and
-          authenticated (or a token under ⚙ Settings → Git hosting).
+          {t("pill.publishRunsPre")} <code>{createPreview}</code>. {t("pill.publishRunsMid")} <code>{cli}</code>{" "}
+          {t("pill.publishRunsPost")}
         </div>
+
+        {isRemoteWork && (
+          <div className="project-dialog-path">
+            {runsLocally
+              ? t("pill.publishFromLocalHint", { cli })
+              : t("pill.publishRemoteCliHint", { cli })}
+          </div>
+        )}
+
+        {!runsLocally ? null : cliAvailable === false ? (
+          <div className="tex-install-banner" role="status">
+            <span className="tex-install-banner-text">
+              {t("pill.publishCliMissingPre")} <code>{cliInstall.bin}</code>{" "}
+              {t("pill.publishCliMissingMid")} <code>{cliInstall.bin} auth login</code>
+              {t("pill.publishCliMissingPost")}
+            </span>
+            <code className="ollama-install-cmd">{cliInstall.cmd}</code>
+            <button
+              type="button"
+              className="ollama-action-btn primary"
+              title={t("projectDialog.runInTerminalTitle")}
+              onClick={() =>
+                runInstallInTab(
+                  t("projectDialog.installBinLabel", { bin: cliInstall.bin }),
+                  cliInstall.cmd,
+                  IS_WINDOWS ? "default" : "bash",
+                )
+              }
+            >
+              {t("projectDialog.runInTerminalBtn")}
+            </button>
+          </div>
+        ) : cliAvailable === true && !gitToken.trim() ? (
+          <div className="tex-install-banner" role="status">
+            <span className="tex-install-banner-text">{t("pill.publishSignInHint", { cli })}</span>
+            <button
+              type="button"
+              className="ollama-action-btn primary"
+              title={t("pill.publishSignInTitle", { cmd: providerAuthLoginCmd(provider) })}
+              onClick={() =>
+                runInstallInTab(
+                  t("pill.publishSignInBtn", { cli }),
+                  providerAuthLoginCmd(provider),
+                  IS_WINDOWS ? "default" : "bash",
+                )
+              }
+            >
+              {t("pill.publishSignInBtn", { cli })}
+            </button>
+          </div>
+        ) : null}
+
         {error && <div className="project-dialog-error">{error}</div>}
         {result && <div className="scaffold-empty">{result}</div>}
         <div className="project-dialog-actions">
-          <button type="button" onClick={onClose}>{result ? "Close" : "Cancel"}</button>
+          <button type="button" onClick={onClose}>{result ? t("common.close") : t("common.cancel")}</button>
           {!result && (
             <button type="button" disabled={busy} onClick={() => void publish()}>
-              {busy ? "Publishing…" : "Publish"}
+              {busy ? t("pill.publishing") : t("pill.publish")}
             </button>
           )}
         </div>
@@ -356,6 +494,7 @@ function GitHostingWindow({
   project: ProjectEntry;
   onClose: () => void;
 }) {
+  const t = useT();
   const getProjectGitHosting = useProjectsStore((s) => s.getProjectGitHosting);
   const setProjectGitHosting = useProjectsStore((s) => s.setProjectGitHosting);
   const [info, setInfo] = useState<GitHostingInfo | null>(null);
@@ -384,11 +523,11 @@ function GitHostingWindow({
   const effectiveClear = clearToken && !newToken.trim();
 
   const tokenStatus = (() => {
-    if (newToken.trim()) return "Will set a project token (overrides global).";
-    if (effectiveClear) return "Will remove the project token; reverts to the global one.";
-    if (info?.has_token) return "A project token is set (hidden). Leave blank to keep it.";
-    if (info?.has_global_token) return "Inherits the global token.";
-    return "No token set — pushes use your system git credentials.";
+    if (newToken.trim()) return t("pill.tokenStatusWillSet");
+    if (effectiveClear) return t("pill.tokenStatusWillRemove");
+    if (info?.has_token) return t("pill.tokenStatusHasToken");
+    if (info?.has_global_token) return t("pill.tokenStatusInherits");
+    return t("pill.tokenStatusNone");
   })();
 
   const save = async () => {
@@ -408,46 +547,63 @@ function GitHostingWindow({
   };
 
   const globalUrl = info?.global_profile_url ?? "";
+  // Which provider's token page to link to: the URL field being edited (live,
+  // so it updates as the user types) wins, else the field it inherits, else
+  // the project's own best guess.
+  const tokenProvider: GitProvider = (profileUrl || globalUrl).toLowerCase().includes("gitlab")
+    ? "gitlab"
+    : guessProvider(project);
 
   return createPortal(
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>{project.name} — Git hosting</h2>
+          <h2>{t("pill.gitHostingTitle", { name: project.name })}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
-        <div className="project-dialog-path">
-          Overrides the global git hosting for this project only. Leave fields blank
-          to inherit the global settings.
-        </div>
+        <div className="project-dialog-path">{t("pill.gitHostingDesc")}</div>
 
         <label>
-          Profile URL
+          {t("git.profileUrl")}
           <input
             type="text"
             value={profileUrl}
             placeholder={
-              globalUrl ? `Inherits global: ${globalUrl}` : "https://github.com/me or https://gitlab.com/me"
+              globalUrl ? t("pill.inheritsGlobal", { url: globalUrl }) : t("git.profileUrlPlaceholder")
             }
             onChange={(e) => setProfileUrl(e.target.value)}
           />
         </label>
 
         <label>
-          {info?.has_token ? "Replace access token" : "Access token"}
+          {info?.has_token ? t("pill.replaceToken") : t("git.accessToken")}
           <PasswordInput
             value={newToken}
-            placeholder={info?.has_token ? "Enter a new token to replace…" : "ghp_… / glpat-…"}
+            placeholder={info?.has_token ? t("pill.enterNewToken") : t("git.tokenPlaceholder")}
             onChange={(e) => {
               setNewToken(e.target.value);
               if (e.target.value) setClearToken(false);
             }}
           />
         </label>
+        <span className="ssh-optional-hint">
+          {t("pill.getTokenHint")}{" "}
+          <button
+            type="button"
+            className="inline-link-btn"
+            onClick={() =>
+              void invoke("open_external_url", {
+                url: tokenPageUrl(tokenProvider, profileUrl || globalUrl),
+              })
+            }
+          >
+            {t("pill.getTokenCta", { provider: providerName(tokenProvider) })}
+          </button>
+        </span>
         <div className="project-dialog-path">{tokenStatus}</div>
         {info?.has_token && !newToken.trim() && (
           <label className="settings-switch-row">
-            <span>Remove the project token (use global)</span>
+            <span>{t("pill.removeProjectToken")}</span>
             <Toggle
               checked={clearToken}
               onChange={(e) => setClearToken(e.target.checked)}
@@ -457,9 +613,9 @@ function GitHostingWindow({
 
         {error && <div className="project-dialog-error">{error}</div>}
         <div className="project-dialog-actions">
-          <button type="button" onClick={onClose} disabled={saving}>Cancel</button>
+          <button type="button" onClick={onClose} disabled={saving}>{t("common.cancel")}</button>
           <button type="button" onClick={() => void save()} disabled={saving || !info}>
-            {saving ? "Saving…" : "Save"}
+            {saving ? t("common.saving") : t("common.save")}
           </button>
         </div>
       </div>
@@ -477,6 +633,7 @@ function DisableGitWindow({
   onConfirm: () => Promise<void>;
   onClose: () => void;
 }) {
+  const t = useT();
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -500,17 +657,16 @@ function DisableGitWindow({
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>{project.name} — Remove git &amp; history</h2>
+          <h2>{t("pill.disableGitTitle", { name: project.name })}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <div className="project-dialog-error">
-          This permanently deletes this project's <code>.git</code> directory —
-          every commit, branch, stash, and remote. <strong>It cannot be undone.</strong>
-          {" "}The project becomes a “No git (no repo)” project; your working
-          files are left untouched.
+          {t("pill.disableGitWarn1")} <code>.git</code> {t("pill.disableGitWarn2")}{" "}
+          <strong>{t("pill.cannotBeUndone")}</strong>
+          {" "}{t("pill.disableGitWarn3")}
         </div>
         <label>
-          Type the project name <code>{project.name}</code> to confirm
+          {t("pill.typeNameConfirmPre")} <code>{project.name}</code> {t("pill.typeNameConfirmPost")}
           <input
             type="text"
             value={typed}
@@ -525,14 +681,14 @@ function DisableGitWindow({
         </label>
         {error && <div className="project-dialog-error">{error}</div>}
         <div className="project-dialog-actions">
-          <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button
             type="button"
             className="danger"
             onClick={() => void run()}
             disabled={!armed}
           >
-            {busy ? "Removing…" : "Delete git history"}
+            {busy ? t("pill.removing") : t("pill.deleteGitHistory")}
           </button>
         </div>
       </div>
@@ -552,6 +708,7 @@ function ArchiveConfirmWindow({
   onConfirm: () => Promise<void>;
   onClose: () => void;
 }) {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -572,20 +729,19 @@ function ArchiveConfirmWindow({
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>Delete {project.name}</h2>
+          <h2>{t("pill.deleteProjectTitle", { name: project.name })}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <p className="settings-help">
-          This disconnects <strong>{project.name}</strong> and moves it to the
-          Eldrun archive. You can restore it — or permanently delete it — later
-          from <em>Settings → Archived projects</em>.
+          {t("pill.archiveDescPre")} <strong>{project.name}</strong> {t("pill.archiveDescMid")}{" "}
+          <em>{t("pill.archiveSettingsLink")}</em>.
           {project.remote && (
-            <> The files on the remote host are <strong>not</strong> touched.</>
+            <> {t("pill.archiveRemoteNotTouchedPre")} <strong>{t("pill.notWord")}</strong> {t("pill.archiveRemoteNotTouchedPost")}</>
           )}
         </p>
         {error && <div className="project-dialog-error">{error}</div>}
         <div className="project-dialog-actions">
-          <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button
             type="button"
             className="danger"
@@ -593,7 +749,7 @@ function ArchiveConfirmWindow({
             onClick={() => void run()}
             disabled={busy}
           >
-            {busy ? "Deleting…" : "Delete to archive"}
+            {busy ? t("pill.deleting") : t("pill.deleteToArchive")}
           </button>
         </div>
       </div>
@@ -621,6 +777,7 @@ function DetachRemoteWindow({
   onConfirm: () => Promise<void>;
   onClose: () => void;
 }) {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -641,26 +798,21 @@ function DetachRemoteWindow({
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>{project.name} — Detach SSH host</h2>
+          <h2>{t("pill.detachTitle", { name: project.name })}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <p className="settings-help">
-          This turns <strong>{project.name}</strong> back into a plain local
-          project: its local working copy stays exactly where it is and becomes
-          the project directory again. The files on the remote host are
-          {" "}<strong>not</strong> touched, and nothing local is deleted.
+          {t("pill.detachDesc1Pre")} <strong>{project.name}</strong> {t("pill.detachDesc1Mid")}
+          {" "}<strong>{t("pill.notWord")}</strong> {t("pill.detachDesc1Post")}
         </p>
         <p className="settings-help">
-          What it does drop is the <strong>pairing</strong>: git lockstep stops, and the
-          auto-sync scope you chose for this host — which folders cross, and the record of
-          what was already in step — is discarded. Re-attaching the same host later means
-          picking that scope again from scratch.
+          {t("pill.detachDesc2Pre")} <strong>{t("pill.pairingWord")}</strong>{t("pill.detachDesc2Post")}
         </p>
         {error && <div className="project-dialog-error">{error}</div>}
         <div className="project-dialog-actions">
-          <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button type="button" autoFocus onClick={() => void run()} disabled={busy}>
-            {busy ? "Detaching…" : "Detach to local"}
+            {busy ? t("pill.detaching") : t("pill.detachToLocal")}
           </button>
         </div>
       </div>
@@ -687,6 +839,7 @@ function ContainerSettingsWindow({
   project: ProjectEntry;
   onClose: () => void;
 }) {
+  const t = useT();
   const setProjectSandboxSpec = useProjectsStore((s) => s.setProjectSandboxSpec);
   const spec = project.sandbox;
   const [dockerfile, setDockerfile] = useState(spec?.dockerfile ?? "");
@@ -703,7 +856,7 @@ function ContainerSettingsWindow({
     if (busy) return;
     const pidsNum = pids.trim() ? Number(pids.trim()) : undefined;
     if (pidsNum !== undefined && (!Number.isInteger(pidsNum) || pidsNum <= 0)) {
-      setError("Process limit must be a positive whole number.");
+      setError(t("pill.processLimitError"));
       return;
     }
     setBusy(true);
@@ -731,81 +884,77 @@ function ContainerSettingsWindow({
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>{project.name} — Container settings</h2>
+          <h2>{t("pill.containerSettingsTitle", { name: project.name })}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
-        <p className="settings-help">
-          Applied at the next container start (project activation or tab spawn) —
-          a running container whose settings changed is replaced automatically.
-        </p>
+        <p className="settings-help">{t("pill.containerAppliedNote")}</p>
         <label>
-          Build from a Dockerfile in this project
+          {t("pill.buildFromDockerfile")}
           <input
             type="text"
             value={dockerfile}
-            placeholder="e.g. Dockerfile — empty: use the image below"
+            placeholder={t("pill.dockerfilePlaceholder")}
             onChange={(e) => setDockerfile(e.target.value)}
             spellCheck={false}
           />
         </label>
         <label>
-          Image
+          {t("pill.image")}
           <input
             type="text"
             value={image}
-            placeholder="empty: eldrun-agent-sandbox:latest"
+            placeholder={t("pill.imagePlaceholder")}
             onChange={(e) => setImage(e.target.value)}
             spellCheck={false}
             disabled={Boolean(dockerfile.trim())}
           />
         </label>
         <label>
-          Network
+          {t("pill.network")}
           <input
             type="text"
             value={network}
-            placeholder={'empty: docker bridge — "none" blocks all egress (breaks cloud agents)'}
+            placeholder={t("pill.networkPlaceholder")}
             onChange={(e) => setNetwork(e.target.value)}
             spellCheck={false}
           />
         </label>
         <p className="settings-help">
-          Note: the default bridge still reaches services bound on this machine
-          (Ollama, dev servers) via the docker gateway IP. Fully closed means
-          <code> none</code> or a custom allowlist network.
+          {t("pill.networkNotePre")}
+          <code> none</code> {t("pill.networkNotePost")}
         </p>
         <label>
-          Memory cap
+          {t("pill.memoryCap")}
           <input
             type="text"
             value={memory}
-            placeholder="e.g. 4g — empty: unlimited"
+            placeholder={t("pill.memoryPlaceholder")}
             onChange={(e) => setMemory(e.target.value)}
             spellCheck={false}
           />
         </label>
         <label>
-          CPU cap
+          {t("pill.cpuCap")}
           <input
             type="text"
             value={cpus}
-            placeholder="e.g. 2 — empty: unlimited"
+            placeholder={t("pill.cpuPlaceholder")}
             onChange={(e) => setCpus(e.target.value)}
             spellCheck={false}
           />
         </label>
         <label>
-          Process limit
+          {t("pill.processLimit")}
           <input
             type="text"
             value={pids}
-            placeholder="empty: 1024 (fork-bomb guard)"
+            placeholder={t("pill.processLimitPlaceholder")}
             onChange={(e) => setPids(e.target.value)}
             spellCheck={false}
           />
         </label>
         <label className="container-settings-toggle">
-          <span>Read-only root filesystem (keeps a writable /tmp)</span>
+          <span>{t("pill.readonlyRootfs")}</span>
           <Toggle
             checked={readonly}
             onChange={(e) => setReadonly(e.target.checked)}
@@ -814,9 +963,9 @@ function ContainerSettingsWindow({
         </label>
         {error && <div className="project-dialog-error">{error}</div>}
         <div className="project-dialog-actions">
-          <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button type="button" onClick={() => void save()} disabled={busy}>
-            {busy ? "Saving…" : "Save"}
+            {busy ? t("common.saving") : t("common.save")}
           </button>
         </div>
       </div>
@@ -834,6 +983,7 @@ function UnpublishWindow({
   onConfirm: () => Promise<void>;
   onClose: () => void;
 }) {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -854,20 +1004,19 @@ function UnpublishWindow({
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>{project.name} — Unpublish</h2>
+          <h2>{t("pill.unpublishTitle", { name: project.name })}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <p className="settings-help">
-          This removes the <code>origin</code> remote and resets the project to a
-          local git repo. Your commits stay intact and the repository on
-          {" "}{providerName(project.git_provider)} is <strong>not</strong>{" "}
-          deleted — only the local link to it is dropped. You can re-publish later.
+          {t("pill.unpublishDesc1")} <code>origin</code> {t("pill.unpublishDesc2")}
+          {" "}{providerName(project.git_provider)} {t("pill.unpublishDesc3")} <strong>{t("pill.notWord")}</strong>{" "}
+          {t("pill.unpublishDesc4")}
         </p>
         {error && <div className="project-dialog-error">{error}</div>}
         <div className="project-dialog-actions">
-          <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button type="button" autoFocus onClick={() => void run()} disabled={busy}>
-            {busy ? "Unpublishing…" : "Unpublish (keep repo)"}
+            {busy ? t("pill.unpublishing") : t("pill.unpublishKeepRepo")}
           </button>
         </div>
       </div>
@@ -886,6 +1035,7 @@ function VisibilityWindow({
   onApply: (visibility: "public" | "private") => Promise<string>;
   onClose: () => void;
 }) {
+  const t = useT();
   const current: "public" | "private" =
     project.git_type === "remote-public" ? "public" : "private";
   const target: "public" | "private" = current === "public" ? "private" : "public";
@@ -900,7 +1050,7 @@ function VisibilityWindow({
     setError("");
     try {
       const out = await onApply(target);
-      setResult(out || `Now ${target}.`);
+      setResult(out || t("pill.nowVisibility", { target: t(target === "public" ? "pill.visPublic" : "pill.visPrivate") }));
     } catch (err) {
       setError(String(err));
     } finally {
@@ -912,25 +1062,24 @@ function VisibilityWindow({
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>{project.name} — Change visibility</h2>
+          <h2>{t("pill.changeVisibilityTitle", { name: project.name })}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <div className="project-dialog-path">
-          Current: {providerName(project.git_provider)} · {current}
-          {isRemoteWork && " · runs on the work-remote host"}
+          {t("pill.currentPrefix")} {providerName(project.git_provider)} · {t(current === "public" ? "pill.visPublic" : "pill.visPrivate")}
+          {isRemoteWork && ` ${t("pill.runsOnWorkRemote")}`}
         </div>
         <p className="settings-help">
-          Flip this repository from <strong>{current}</strong> to{" "}
-          <strong>{target}</strong> in place via <code>{cli} repo edit</code>. The
-          repo, its URL, and its history are preserved.
+          {t("pill.flipVisibility1")} <strong>{t(current === "public" ? "pill.visPublic" : "pill.visPrivate")}</strong> {t("pill.flipVisibility2")}{" "}
+          <strong>{t(target === "public" ? "pill.visPublic" : "pill.visPrivate")}</strong> {t("pill.flipVisibility3")} <code>{cli} repo edit</code>. {t("pill.flipVisibility4")}
         </p>
         {error && <div className="project-dialog-error">{error}</div>}
         {result && <div className="scaffold-empty">{result}</div>}
         <div className="project-dialog-actions">
-          <button type="button" onClick={onClose}>{result ? "Close" : "Cancel"}</button>
+          <button type="button" onClick={onClose}>{result ? t("common.close") : t("common.cancel")}</button>
           {!result && (
             <button type="button" disabled={busy} onClick={() => void apply()}>
-              {busy ? "Applying…" : `Make ${target}`}
+              {busy ? t("pill.applying") : t("pill.makeVisibility", { target: t(target === "public" ? "pill.visPublic" : "pill.visPrivate") })}
             </button>
           )}
         </div>
@@ -947,9 +1096,14 @@ function MigrateProviderWindow({
   onClose,
 }: {
   project: ProjectEntry;
-  onMigrate: (provider: GitProvider, visibility: "public" | "private") => Promise<string>;
+  onMigrate: (
+    provider: GitProvider,
+    visibility: "public" | "private",
+    publishFrom: PublishFrom,
+  ) => Promise<string>;
   onClose: () => void;
 }) {
+  const t = useT();
   const currentProvider: GitProvider = project.git_provider === "gitlab" ? "gitlab" : "github";
   const [provider, setProvider] = useState<GitProvider>(
     currentProvider === "github" ? "gitlab" : "github",
@@ -957,17 +1111,21 @@ function MigrateProviderWindow({
   const [visibility, setVisibility] = useState<"public" | "private">(
     project.git_type === "remote-public" ? "public" : "private",
   );
+  // A migration ends in a publish, so it takes the same side choice (the old
+  // origin is always moved aside wherever it actually is).
+  const [publishFrom, setPublishFrom] = useState<PublishFrom>("local");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState("");
   const isRemoteWork = Boolean(project.remote);
+  const runsLocally = !isRemoteWork || publishFrom === "local";
 
   const migrate = async () => {
     setBusy(true);
     setError("");
     try {
-      const out = await onMigrate(provider, visibility);
-      setResult(out || "Migrated.");
+      const out = await onMigrate(provider, visibility, publishFrom);
+      setResult(out || t("pill.migrated"));
     } catch (err) {
       setError(String(err));
     } finally {
@@ -979,15 +1137,15 @@ function MigrateProviderWindow({
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>{project.name} — Move to another provider</h2>
+          <h2>{t("pill.moveToProviderTitle", { name: project.name })}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <div className="project-dialog-path">
-          Current: {gitTypeLabel(project.git_type, project.git_provider)}
-          {isRemoteWork && " · runs on the work-remote host"}
+          {t("pill.currentPrefix")} {gitTypeLabel(project.git_type, project.git_provider)}
+          {isRemoteWork && !runsLocally && ` ${t("pill.runsOnWorkRemote")}`}
         </div>
         <label>
-          New provider
+          {t("pill.newProvider")}
           <Dropdown
             className="dropdown-block"
             value={provider}
@@ -999,33 +1157,47 @@ function MigrateProviderWindow({
             ]}
           />
         </label>
+        {isRemoteWork && (
+          <label>
+            {t("pill.publishFrom")} <UntestedTag />
+            <Dropdown
+              className="dropdown-block"
+              value={publishFrom}
+              disabled={busy || Boolean(result)}
+              onChange={(v) => setPublishFrom(v as PublishFrom)}
+              options={[
+                { value: "local", label: t("pill.publishFromLocal") },
+                { value: "remote", label: t("pill.publishFromRemote") },
+              ]}
+            />
+          </label>
+        )}
         <label>
-          Repository visibility
+          {t("pill.repoVisibility")}
           <Dropdown
             className="dropdown-block"
             value={visibility}
             disabled={busy || Boolean(result)}
             onChange={(v) => setVisibility(v as "public" | "private")}
             options={[
-              { value: "private", label: "private" },
-              { value: "public", label: "public" },
+              { value: "private", label: t("pill.visPrivate") },
+              { value: "public", label: t("pill.visPublic") },
             ]}
           />
         </label>
         <p className="settings-help">
-          Creates the repo on {providerName(provider)}, re-points{" "}
-          <code>origin</code>, and pushes. The existing{" "}
-          {providerName(project.git_provider)} repository is{" "}
-          <strong>left intact</strong> (kept as <code>origin-old</code>) — delete
-          it yourself if you no longer want it.
+          {t("pill.migrateDesc1")} {providerName(provider)}{t("pill.migrateDesc2")}{" "}
+          <code>origin</code>{t("pill.migrateDesc3")}{" "}
+          {providerName(project.git_provider)} {t("pill.migrateDesc4")}{" "}
+          <strong>{t("pill.leftIntact")}</strong> {t("pill.migrateDesc5")} <code>origin-old</code>{t("pill.migrateDesc6")}
         </p>
         {error && <div className="project-dialog-error">{error}</div>}
         {result && <div className="scaffold-empty">{result}</div>}
         <div className="project-dialog-actions">
-          <button type="button" onClick={onClose}>{result ? "Close" : "Cancel"}</button>
+          <button type="button" onClick={onClose}>{result ? t("common.close") : t("common.cancel")}</button>
           {!result && (
             <button type="button" disabled={busy} onClick={() => void migrate()}>
-              {busy ? "Migrating…" : `Move to ${providerName(provider)}`}
+              {busy ? t("pill.migrating") : t("pill.moveToProvider", { provider: providerName(provider) })}
             </button>
           )}
         </div>
@@ -1035,7 +1207,20 @@ function MigrateProviderWindow({
   );
 }
 
-export function ProjectPill({ project, active, onClick, onClose, onReorder, onGroup, boxId, onLeaveBox }: Props) {
+export function ProjectPill({
+  project,
+  active,
+  onClick,
+  onClose,
+  onReorder,
+  onGroup,
+  onAssignToBox,
+  isDragged,
+  dragDx,
+  shiftPx,
+  groupHintActive,
+}: Props) {
+  const t = useT();
   // Shared hover card (identical popup in the right file-viewer). Owns the
   // popup position, today's time, CPU% and the scaffold-missing flag.
   const hover = useProjectHoverCard(project);
@@ -1044,6 +1229,10 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   // (besides key auth) an auto-connect can run without asking. Filled when the
   // context menu opens; see handleContextMenu.
   const [sshPasswordSaved, setSshPasswordSaved] = useState(false);
+  // With `connections_headless` off Eldrun handles no passwords at all, so neither
+  // of those two answers can ever be yes — auto-connect there means the login opens
+  // in the root terminal instead (see `autoConnectInteractive` in stores/projects).
+  const connHeadless = useSettingsStore((s) => s.settings?.connections_headless ?? true);
   const [showActivity, setShowActivity] = useState(false);
   const [editDescription, setEditDescription] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -1067,11 +1256,6 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   // When set, the in-app "Move project…" folder browser is open, seeded at this
   // parent directory. `null` = closed.
   const [movePickerInitial, setMovePickerInitial] = useState<string | null>(null);
-  const [dragOver, setDragOver] = useState(false);
-  // True while an Alt-drag hovers this pill: the drop will box the two
-  // projects together rather than reorder. Drives the distinct hover affordance.
-  const [groupHint, setGroupHint] = useState(false);
-  const [dragging, setDragging] = useState(false);
   const pillRef = useRef<HTMLDivElement>(null);
   const dir = resolveProjectDirectory(project);
   const categories = projectCategories(project);
@@ -1164,10 +1348,14 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
 
   const setProjectAutoConnect = useProjectsStore((s) => s.setProjectAutoConnect);
   const setProjectPersistSessions = useProjectsStore((s) => s.setProjectPersistSessions);
-  // Auto-connect is only offered when the connect can complete with no prompt: a
+  // Auto-connect is only offered when the connect can complete with no *modal*: a
   // key/agent-auth host (recorded by the backend on its last successful connect) or
-  // a password in the keychain (looked up when the menu opens).
-  const autoConnectEligible = project.remote?.key_auth === true || sshPasswordSaved;
+  // a password in the keychain (looked up when the menu opens) — or, in non-headless
+  // mode, always: there is no keychain to qualify against there, and the connect is
+  // by definition a login waiting in the root terminal. Same substitution the
+  // header's "Connect on launch" makes for a tunnel (`VpnIndicator`).
+  const autoConnectEligible =
+    !connHeadless || project.remote?.key_auth === true || sshPasswordSaved;
   const setProjectGitDisabled = useProjectsStore((s) => s.setProjectGitDisabled);
   const repairProjectScaffold = useProjectsStore((s) => s.repairProjectScaffold);
   const publishProject = useProjectsStore((s) => s.publishProject);
@@ -1309,6 +1497,159 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
     });
   };
 
+  /**
+   * Pointer-driven drag: reorder / Alt-group / drop-on-box, replacing native
+   * HTML5 DnD (the same move TabBar/YamlTree/MachinesIndicator already made —
+   * a native drag out of a webview gesture can hang or drop mid-drag under
+   * WebKitGTK). The whole pill is the drag catchment, exactly as `draggable`
+   * used to be, EXCEPT the close button and the remote-connection lamps, which
+   * stay their own plain controls.
+   *
+   * Sibling rects are measured ONCE, at the moment the drag threshold is
+   * crossed — the DOM order is frozen for the gesture (only `transform`
+   * changes, via `shiftPx`/`groupHintActive`/BoxPill's forced hover, all read
+   * from `usePillDragStore` by ProjectSwitcher), so the rects stay valid for
+   * its whole duration. `onClick` is never wired natively on `pill-main` for
+   * the mouse path — `e.preventDefault()` below suppresses the compatibility
+   * click a plain press+release would otherwise fire, and a genuine (non-drag)
+   * release calls it here instead; a keyboard Enter/Space still reaches
+   * `pill-main`'s own onClick untouched, since it never goes through a pointer
+   * event at all.
+   */
+  const startPillDrag = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    const pressed = e.target as HTMLElement;
+    if (pressed.closest(".pill-close-btn, .header-conn-lamps")) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const pointerId = e.pointerId;
+    const captureEl = document.documentElement;
+    let dragging = false;
+    let projectRects: { id: string; left: number; width: number }[] = [];
+    let boxRects: { id: string; left: number; top: number; right: number; bottom: number }[] = [];
+    // This pill's index among the OTHER (frozen) rects — i.e. how many of them
+    // sat to its left at drag-start. `onReorder(fromId, toId)` always lands the
+    // dragged pill immediately BEFORE toId when toId was originally to its
+    // left, and immediately AFTER when toId was to its right (see the commit
+    // math below) — so which of those two rules applies, and hence which
+    // neighbor to target, depends on this frozen index.
+    let fromIdx = 0;
+
+    const dropSlot = (clientX: number) =>
+      projectRects.filter((r) => clientX > r.left + r.width / 2).length;
+
+    const onMove = (ev: PointerEvent) => {
+      if (!dragging) {
+        if (Math.abs(ev.clientX - startX) < 5) return;
+        dragging = true;
+        hover.close();
+        const container = pillRef.current?.closest(".project-pills-scroll");
+        const selfRect = pillRef.current?.getBoundingClientRect();
+        const width = selfRect?.width ?? 0;
+        const selfLeft = selfRect?.left ?? 0;
+        projectRects = container
+          ? Array.from(container.querySelectorAll<HTMLElement>("[data-pill-id]"))
+              .filter((el) => el.dataset.pillId !== project.id)
+              .map((el) => {
+                const r = el.getBoundingClientRect();
+                return { id: el.dataset.pillId!, left: r.left, width: r.width };
+              })
+          : [];
+        fromIdx = projectRects.filter((r) => r.left < selfLeft).length;
+        boxRects = container
+          ? Array.from(container.querySelectorAll<HTMLElement>("[data-box-id]")).map((el) => {
+              const r = el.getBoundingClientRect();
+              return {
+                id: el.dataset.boxId!,
+                left: r.left,
+                top: r.top,
+                right: r.right,
+                bottom: r.bottom,
+              };
+            })
+          : [];
+        if (dragPlatform.needsPointerCapture) {
+          try {
+            captureEl.setPointerCapture(pointerId);
+          } catch {
+            /* best-effort */
+          }
+        }
+        usePillDragStore.getState().start(project.id, width, dropSlot(ev.clientX));
+      }
+      const overBoxId =
+        boxRects.find(
+          (r) =>
+            ev.clientX >= r.left &&
+            ev.clientX <= r.right &&
+            ev.clientY >= r.top &&
+            ev.clientY <= r.bottom,
+        )?.id ?? null;
+      // Alt-group targets whichever pill's own rect (not just its midpoint) the
+      // cursor sits over — matches the old alt-drop-onto-a-pill gesture.
+      const groupTargetId =
+        !overBoxId && ev.altKey
+          ? (projectRects.find((r) => ev.clientX >= r.left && ev.clientX <= r.left + r.width)
+              ?.id ?? null)
+          : null;
+      usePillDragStore.getState().move(ev.clientX - startX);
+      usePillDragStore.getState().setTarget({
+        overIndex: dropSlot(ev.clientX),
+        overBoxId,
+        groupTargetId,
+      });
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", onMove);
+      if (dragPlatform.needsPointerCapture) {
+        try {
+          captureEl.releasePointerCapture(pointerId);
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+
+    const finish = (commit: boolean) => {
+      cleanup();
+      const drag = usePillDragStore.getState().drag;
+      usePillDragStore.getState().end();
+      if (!dragging) {
+        // Never dragged → this was a click (pill-main's own onClick already
+        // covers the keyboard path; this covers the mouse one, since its
+        // native click was suppressed above).
+        if (commit) onClick();
+        return;
+      }
+      if (!commit || !drag) return;
+      if (drag.overBoxId) {
+        onAssignToBox?.(drag.overBoxId);
+      } else if (drag.groupTargetId && onGroup) {
+        onGroup(project.id, drag.groupTargetId);
+      } else {
+        // Resolve the landing slot (`overIndex`, an index into the OTHER
+        // pills without this one) back to a `toId` for `onReorder`. This is
+        // NOT simply `projectRects[overIndex]`: `reorderProjects` always
+        // drops the dragged pill immediately BEFORE toId when toId sat to its
+        // left at drag-start, and immediately AFTER it when toId sat to its
+        // right — landing "before OTHERS[k]" therefore means targeting
+        // OTHERS[k] itself when k is on the left (< fromIdx), but targeting
+        // OTHERS[k-1] (and relying on the "after" rule) when k is on the
+        // right (> fromIdx). Using OTHERS[k] unconditionally landed the pill
+        // one slot further right than its shown gap whenever the drop was on
+        // the right side of the original position.
+        const k = Math.max(0, Math.min(drag.overIndex, projectRects.length));
+        if (k === fromIdx) return; // already there — no real move
+        const toId = k < fromIdx ? projectRects[k]?.id : projectRects[k - 1]?.id;
+        if (toId) onReorder(project.id, toId);
+      }
+    };
+
+    window.addEventListener("pointermove", onMove);
+    bindDragRelease({ onCommit: () => finish(true), onAbort: () => finish(false) });
+  };
+
   return (
     <>
       {/* Hover popup — hidden while context menu is open (which calls hover.close). */}
@@ -1323,40 +1664,36 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
         >
           {/* View / inspect */}
           <div className="context-menu-group">
-            <div className="context-menu-group-label">View</div>
+            <div className="context-menu-group-label">{t("pill.viewGroup")}</div>
             <button
               onClick={() => {
                 setContextMenu(null);
                 setShowActivity(true);
               }}
             >
-              Show Activity
+              {t("pill.showActivity")}
             </button>
             <button
               onClick={() => {
                 setContextMenu(null);
                 void revealOnDisk();
               }}
-              title={
-                project.remote
-                  ? "Open the local mirror (the connected working copy) in the file manager"
-                  : "Open the project directory in the file manager"
-              }
+              title={t(project.remote ? "pill.showOnDiskRemoteTitle" : "pill.showOnDiskLocalTitle")}
             >
-              Show on disk
+              {t("pill.showOnDisk")}
             </button>
           </div>
 
           {/* Edit metadata */}
           <div className="context-menu-group">
-            <div className="context-menu-group-label">Edit</div>
+            <div className="context-menu-group-label">{t("pill.editGroup")}</div>
             <button
               onClick={() => {
                 setContextMenu(null);
                 setRenaming(true);
               }}
             >
-              Rename…
+              {t("pill.renameEllipsis")}
             </button>
             {project.remote && (
               <button
@@ -1365,9 +1702,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   setContextMenu(null);
                   void moveMirror();
                 }}
-                title="Move this project's local mirror (the connected working copy) to a new folder"
+                title={t("pill.movePillTitle")}
               >
-                Move project…
+                {t("pill.moveProjectEllipsis")}
                 <UntestedTag />
               </button>
             )}
@@ -1377,7 +1714,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                 setEditDescription(true);
               }}
             >
-              Edit description
+              {t("pill.editDescription")}
             </button>
             <button
               className="untested"
@@ -1385,9 +1722,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                 setContextMenu(null);
                 setEditCategories(true);
               }}
-              title="Tag this project to color and group it in the cloud and the pill bar"
+              title={t("pill.categoriesMenuTitle")}
             >
-              Categories…
+              {t("blob.categoriesEllipsis")}
               <UntestedTag />
             </button>
             <button
@@ -1396,9 +1733,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                 setContextMenu(null);
                 void repairProjectScaffold(project.id);
               }}
-              title="Fill in any missing scaffold file, default .gitignore pattern, or .claude/settings.json — never overwrites existing content"
+              title={t("pill.repairScaffoldTitle")}
             >
-              Repair scaffold files
+              {t("pill.repairScaffold")}
               <UntestedTag />
             </button>
             {!project.remote && (
@@ -1408,16 +1745,16 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   setExtendRemoteMachine(null);
                   setExtendRemote(true);
                 }}
-                title="Attach a remote SSH host to this local project — files stay put; push them up manually"
+                title={t("pill.extendToRemoteMenuTitle")}
               >
-                Extend to remote…
+                {t("pill.extendToRemoteEllipsis")}
               </button>
             )}
           </div>
 
           {/* Git */}
           <div className="context-menu-group">
-            <div className="context-menu-group-label">Git</div>
+            <div className="context-menu-group-label">{t("pill.gitGroup")}</div>
             {project.git_type === "none" ? (
               !project.remote && (
                 <button
@@ -1426,9 +1763,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                     setContextMenu(null);
                     void setProjectGitDisabled(project.id, false);
                   }}
-                  title="Run git init to start version-controlling this project"
+                  title={t("pill.gitInitTitle")}
                 >
-                  Enable git (git init)
+                  {t("pill.enableGit")}
                   <UntestedTag />
                 </button>
               )
@@ -1441,9 +1778,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                     setContextMenu(null);
                     setShowVisibility(true);
                   }}
-                  title="Flip the repository between public and private in place (gh/glab repo edit)"
+                  title={t("pill.makePrivateTitle")}
                 >
-                  {project.git_type === "remote-public" ? "Make private…" : "Make public…"}
+                  {project.git_type === "remote-public" ? t("pill.makePrivate") : t("pill.makePublic")}
                   <UntestedTag />
                 </button>
                 <button
@@ -1452,9 +1789,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                     setContextMenu(null);
                     setShowMigrate(true);
                   }}
-                  title="Publish to the other provider and re-point origin; the old repo is left intact"
+                  title={t("pill.moveProviderMenuTitle")}
                 >
-                  Move to {project.git_provider === "gitlab" ? "GitHub" : "GitLab"}…
+                  {project.git_provider === "gitlab" ? t("pill.moveToGithub") : t("pill.moveToGitlab")}
                   <UntestedTag />
                 </button>
                 <button
@@ -1463,9 +1800,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                     setContextMenu(null);
                     setShowUnpublish(true);
                   }}
-                  title="Remove the origin remote and go back to a local repo; the hosted repo and history are kept"
+                  title={t("pill.unpublishMenuTitle")}
                 >
-                  Unpublish (keep repo)…
+                  {t("pill.unpublishKeepRepoEllipsis")}
                   <UntestedTag />
                 </button>
                 <button
@@ -1474,9 +1811,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                     setContextMenu(null);
                     setShowGitHosting(true);
                   }}
-                  title="Override the global git hosting (profile URL + token) for this project only"
+                  title={t("pill.gitHostingMenuTitle")}
                 >
-                  Git hosting…
+                  {t("pill.gitHostingEllipsis")}
                   <UntestedTag />
                 </button>
               </>
@@ -1489,7 +1826,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   setShowPublish(true);
                 }}
               >
-                Publish to GitHub / GitLab…
+                {t("pill.publishEllipsis")}
                 <UntestedTag />
               </button>
             )}
@@ -1497,7 +1834,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
 
           {/* Runtime */}
           <div className="context-menu-group">
-            <div className="context-menu-group-label">Runtime</div>
+            <div className="context-menu-group-label">{t("pill.runtimeGroup")}</div>
             {/* Project container (#38): local projects only (a remote project's
                 tabs already run on its host), hidden on Windows (the backend
                 refuses — host paths mean nothing inside a Linux container). */}
@@ -1508,18 +1845,18 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                     setContextMenu(null);
                     void toggleContainer();
                   }}
-                  title="Run every terminal and agent tab of this project inside one closed Docker container. The project folder stays on the host at its normal path — the container just can't reach anything else."
+                  title={t("pill.containerRunTitle")}
                 >
-                  {project.sandbox?.enabled ? "✓ " : ""}Run this project in a container
+                  {project.sandbox?.enabled ? "✓ " : ""}{t("pill.runInContainer")}
                 </button>
                 <button
                   onClick={() => {
                     setContextMenu(null);
                     setShowContainerSettings(true);
                   }}
-                  title="Image, network, memory/CPU caps and read-only rootfs for this project's container"
+                  title={t("pill.containerSettingsMenuTitle")}
                 >
-                  Container settings…
+                  {t("pill.containerSettingsEllipsis")}
                 </button>
               </>
             )}
@@ -1529,9 +1866,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   setContextMenu(null);
                   setShowPythonSettings(true);
                 }}
-                title="The Python environment this project's scripts run and debug in. Auto-detected by default (in-tree venv, poetry, conda, pyenv); pin one when your environment lives somewhere Eldrun can't infer."
+                title={t("pill.pythonInterpMenuTitle")}
               >
-                {project.python_interpreter ? "✓ " : ""}Python interpreter…
+                {project.python_interpreter ? "✓ " : ""}{t("pill.pythonInterpreterEllipsis")}
               </button>
             )}
             {project.remote && (
@@ -1541,13 +1878,15 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   setContextMenu(null);
                   void setProjectAutoConnect(project.id, !project.remote?.auto_connect);
                 }}
-                title={
-                  autoConnectEligible
-                    ? "Connect this project by itself on launch and when you switch to it. It never asks for anything: it goes straight in when the host is reachable, and brings the VPN up only when it isn't."
-                    : "Save the SSH password (or use key authentication) first — auto-connect is only offered when connecting needs nothing from you."
-                }
+                title={t(
+                  !connHeadless
+                    ? "pill.autoConnectTitleNonHeadless"
+                    : autoConnectEligible
+                      ? "pill.autoConnectTitleEligible"
+                      : "pill.autoConnectTitleNotEligible"
+                )}
               >
-                {project.remote.auto_connect ? "✓ " : ""}Auto-connect on launch
+                {project.remote.auto_connect ? "✓ " : ""}{t("pill.autoConnectOnLaunch")}
               </button>
             )}
             {/* Persistent remote sessions (TODO #85): shell/script tabs run inside a
@@ -1562,9 +1901,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                     project.remote?.persist_sessions === false,
                   );
                 }}
-                title="Run this project's remote shell and Python/script tabs inside a tmux session on the host, so a long run keeps going through an SSH drop, a laptop sleep, or Eldrun quitting — the tab reattaches when you reconnect. Closing a tab still ends its session (with a confirm). Agent tabs are unaffected."
+                title={t("pill.persistSessionsMenuTitle")}
               >
-                {project.remote.persist_sessions !== false ? "✓ " : ""}Persistent sessions (tmux)
+                {project.remote.persist_sessions !== false ? "✓ " : ""}{t("pill.persistentSessionsTmux")}
               </button>
             )}
             {/* Multi-host remote (docs/multi_host_remote_plan.md): manage the extra
@@ -1576,11 +1915,11 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   setContextMenu(null);
                   openRemoteMachines(project.id);
                 }}
-                title="Add and manage extra machines this project runs on. They run the same code (kept in one-way sync) as read-only experiment workers; their outputs stay on each machine."
+                title={t("pill.remoteMachinesMenuTitle")}
               >
                 {project.compute_hosts?.length
-                  ? `Remote machines… (${project.compute_hosts.length})`
-                  : "Remote machines…"}
+                  ? t("pill.remoteMachinesCount", { count: project.compute_hosts.length })
+                  : t("pill.remoteMachinesEllipsis")}
                 <UntestedTag />
               </button>
             )}
@@ -1613,13 +1952,13 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                 }
               }}
             >
-              Close all tabs and windows
+              {t("pill.closeAllTabs")}
             </button>
           </div>
 
           {/* Danger zone — irreversible / destructive actions, fenced off */}
           <div className="context-menu-danger-zone">
-            <div className="context-menu-group-label">Danger zone</div>
+            <div className="context-menu-group-label">{t("pill.dangerZone")}</div>
             {project.remote && (
               <button
                 className="danger"
@@ -1627,9 +1966,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   setContextMenu(null);
                   setShowDetach(true);
                 }}
-                title="Turn this back into a local project. The local working copy stays put and the remote host's files are untouched — but the pairing is dropped: lockstep stops, and the auto-sync scope you set up for this host is discarded."
+                title={t("pill.detachSshMenuTitle")}
               >
-                Detach SSH host…
+                {t("pill.detachSshEllipsis")}
               </button>
             )}
             {!project.remote && project.git_type !== "none" && (
@@ -1639,9 +1978,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   setContextMenu(null);
                   setShowDisableGit(true);
                 }}
-                title="Delete this project's .git directory and all version-control history (cannot be undone)"
+                title={t("pill.removeGitMenuTitle")}
               >
-                Remove git &amp; history…
+                {t("pill.removeGitHistoryEllipsis")}
               </button>
             )}
             <button
@@ -1650,9 +1989,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                 setContextMenu(null);
                 setShowArchive(true);
               }}
-              title="Disconnect this project and move it to the Eldrun archive. Restore or permanently delete it later from Settings. A remote host's files are never touched."
+              title={t("pill.deleteProjectMenuTitle")}
             >
-              Delete project…
+              {t("pill.deleteProjectEllipsis")}
             </button>
           </div>
         </div>,
@@ -1686,7 +2025,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
       {showPublish && (
         <PublishWindow
           project={project}
-          onPublish={(provider, visibility) => publishProject(project.id, provider, visibility)}
+          onPublish={(provider, visibility, publishFrom) =>
+            publishProject(project.id, provider, visibility, publishFrom)
+          }
           onClose={() => setShowPublish(false)}
         />
       )}
@@ -1762,7 +2103,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
       {showMigrate && (
         <MigrateProviderWindow
           project={project}
-          onMigrate={(provider, visibility) => switchProjectProvider(project.id, provider, visibility)}
+          onMigrate={(provider, visibility, publishFrom) =>
+            switchProjectProvider(project.id, provider, visibility, publishFrom)
+          }
           onClose={() => setShowMigrate(false)}
         />
       )}
@@ -1800,76 +2143,42 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
 
       <div
         ref={pillRef}
-        className={`project-pill${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}${dragOver ? " drag-over" : ""}${groupHint ? " drag-group" : ""}${dragging ? " dragging" : ""}${catColor ? " has-category" : ""}`}
-        style={catColor ? ({ "--cat-color": catColor } as React.CSSProperties) : undefined}
-        draggable
+        data-pill-id={project.id}
+        className={`project-pill${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}${groupHintActive ? " drag-group" : ""}${isDragged ? " dragging" : ""}${!isDragged && shiftPx ? " reorder-parting" : ""}${catColor ? " has-category" : ""}`}
+        style={{
+          ...(catColor ? { "--cat-color": catColor } : {}),
+          ...(isDragged
+            ? { transform: `translateX(${dragDx ?? 0}px) scale(0.94)` }
+            : shiftPx
+              ? { transform: `translateX(${shiftPx}px)` }
+              : {}),
+        } as React.CSSProperties}
         onMouseEnter={handleMouseEnter}
         onMouseLeave={() => hover.close()}
         onContextMenu={handleContextMenu}
-        onDragStart={(e) => {
-          // Hide the hover popup so it doesn't linger as a drag ghost.
-          hover.close();
-          setDragging(true);
-          e.dataTransfer.setData(PILL_DRAG_TYPE, project.id);
-          e.dataTransfer.effectAllowed = "move";
-        }}
-        onDragOver={(e) => {
-          if (!e.dataTransfer.types.includes(PILL_DRAG_TYPE)) return;
-          e.preventDefault();
-          e.dataTransfer.dropEffect = "move";
-          if (!dragOver) setDragOver(true);
-          // Alt toggles the gesture to "box these two together" (see onDrop).
-          const wantGroup = e.altKey && !!onGroup;
-          if (wantGroup !== groupHint) setGroupHint(wantGroup);
-        }}
-        onDragLeave={() => { setDragOver(false); setGroupHint(false); }}
-        onDrop={(e) => {
-          setDragOver(false);
-          setGroupHint(false);
-          const fromId = e.dataTransfer.getData(PILL_DRAG_TYPE);
-          if (!fromId || fromId === project.id) return;
-          e.preventDefault();
-          // Consume the drop so it does NOT also bubble to an enclosing BoxChip
-          // (→ assign-to-box) or the ungrouped pills strip (→ assign-to-null).
-          e.stopPropagation();
-          // Alt-drop boxes the two projects together; a plain drop reorders.
-          if (e.altKey && onGroup) {
-            onGroup(fromId, project.id);
-          } else {
-            onReorder(fromId, project.id);
-          }
-        }}
-        onDragEnd={(e) => {
-          setDragOver(false);
-          setGroupHint(false);
-          setDragging(false);
-          // Released over no drop target (dropEffect "none") while this pill is a
-          // box member → drag-out: remove it from the box. Drops that landed on a
-          // real target (strip, another box, a reorder) set "move" and are handled
-          // there, so they don't also trigger a leave here.
-          if (boxId && onLeaveBox && e.dataTransfer.dropEffect === "none") {
-            onLeaveBox(project.id);
-          }
-        }}
+        onPointerDown={startPillDrag}
       >
         <button className="pill-main" onClick={onClick}>
           <span
-            className={`pill-folder-icon${timerPaused ? "" : ` git-${gitDirty ?? "clean"}`}`}
-            title={timerPaused ? undefined : GIT_ICON_TITLE[gitDirty ?? "clean"]}
+            className={`pill-folder-icon git-${gitDirty ?? "clean"}`}
+            title={t(GIT_ICON_TITLE_KEY[gitDirty ?? "clean"])}
             aria-hidden
           >
-            {timerPaused ? (
-              "⏸"
-            ) : (
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-                <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
-              </svg>
-            )}
+            {/* The folder + its git color are shown ALWAYS — the git dirty state
+                must never be hidden by an unrelated concern. A paused time-tracking
+                timer is signalled non-destructively: a small ⏸ overlay badge (plus
+                the pill's own `.timer-paused` dimming), never by swapping the icon
+                out, which used to erase every pill's git colour the moment you
+                paused the timer. */}
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+              <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
+            </svg>
+            {timerPaused && <span className="pill-folder-pause">⏸</span>}
           </span>
           <span className="project-pill-label">{project.name}</span>
         </button>
         {categories.length > 0 && (
-          <span className="pill-category-dots" title={`Categories: ${categories.join(", ")}`}>
+          <span className="pill-category-dots" title={t("pill.categoriesLabel", { list: categories.join(", ") })}>
             {categories.map((cat) => (
               <span
                 key={cat.toLowerCase()}
@@ -1882,13 +2191,13 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
         {project.remote && <RemoteConnMenu project={project} compact />}
         <button
           className="pill-close-btn"
-          title="Close project"
+          title={t("pill.closeProject")}
           onClick={(e) => { e.stopPropagation(); onClose(); }}
         >
           ×
         </button>
         {statusCounts && (
-          <span className="pill-status-bars" title={statusBarTitle(statusCounts)}>
+          <span className="pill-status-bars" title={statusBarTitle(statusCounts, t)}>
             {statusBarKinds(statusCounts).map((kind, i) => (
               <span key={i} className={`pill-status-bar ${kind}`} />
             ))}

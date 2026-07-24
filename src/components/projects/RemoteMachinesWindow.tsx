@@ -1,10 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { parseSshAddress, type ParsedSshAddress } from "./scaffold";
 import { RemoteFolderBrowser } from "./RemoteFolderBrowser";
 import { useRemoteBrowse } from "./useRemoteBrowse";
+import { TerminalSignInToggle } from "./TerminalSignInToggle";
+import { CredentialPasteBar, sshPasteEntries } from "./CredentialPasteBar";
+import { TerminalView } from "../terminal/TerminalView";
+import { forgetConnection, markConnectionOpened, resolveRemoteStartDir } from "../../lib/remoteConnect";
 import { useConnectDialogStore } from "../../stores/connectDialog";
 import { useRemoteStatusStore, PRIMARY_HOST } from "../../stores/remoteStatus";
 import { useRemoteMachinesStore } from "../../stores/remoteMachines";
@@ -14,8 +18,15 @@ import { Toggle } from "../common/Toggle";
 import { PasswordInput } from "../common/PasswordInput";
 import { UntestedTag } from "../common/UntestedTag";
 import { useProjectsStore } from "../../stores/projects";
+import { useSettingsStore } from "../../stores/settings";
 import { formatRemoteTarget, resolveLocalMirror } from "../../types";
 import type { ComputeHost, ProjectEntry } from "../../types";
+import { useT } from "../../lib/i18n";
+
+/** Distinct PTY id per login terminal opened here — the id is the handle
+ *  `pty_kill` and the output stream use, so it must never be reused. */
+let machineTermSeq = 0;
+const nextMachineTermId = () => `machines-ssh-${++machineTermSeq}`;
 
 /**
  * Mounted once (AppShell). Renders the "Remote machines" manager for whichever
@@ -59,6 +70,7 @@ export function RemoteMachinesWindow({
   project: ProjectEntry;
   onClose: () => void;
 }) {
+  const t = useT();
   const workers = project.compute_hosts ?? [];
   const openConnect = useConnectDialogStore((s) => s.open);
   const byHost = useRemoteStatusStore((s) => s.byHost[project.id]);
@@ -118,7 +130,7 @@ export function RemoteMachinesWindow({
     if (!pendingDrop) return;
     const path = dropPath.trim();
     if (!path.startsWith("/")) {
-      setDropError("Enter an absolute remote path (e.g. /home/me/project)");
+      setDropError(t("remoteMachines.enterAbsolutePath"));
       return;
     }
     setDropBusy(true);
@@ -145,7 +157,14 @@ export function RemoteMachinesWindow({
       // Best-effort: the global machine is already authenticated, so this rides
       // the same saved keychain credential (or key/agent auth) with no prompt.
       // Silent on failure — the new card's own Connect button still works.
-      if (added) void invoke("remote_connect", { projectId: project.id, hostId: added.id }).catch(() => {});
+      // `viaLogin`: riding *that* master is exactly why it needs no credential, so
+      // the success must not be recorded as key auth (`record_key_auth`, backend).
+      if (added)
+        void invoke("remote_connect", {
+          projectId: project.id,
+          hostId: added.id,
+          viaLogin: true,
+        }).catch(() => {});
       setPendingDrop(null);
       setDropPath(project.remote?.remote_path ?? "");
     } catch (e) {
@@ -191,6 +210,19 @@ export function RemoteMachinesWindow({
   // expanded), distinct from `browse.conn` (whether a live session exists).
   const browse = useRemoteBrowse();
   const [browsing, setBrowsing] = useState(false);
+  // ── "Sign in in a terminal" (see `TerminalSignInToggle`) ─────────────────────
+  // This form only ever had the password field, in *both* modes — so a host that
+  // asks anything else (a challenge code, a one-time code, a second prompt) could
+  // not be added at all, and a `connections_headless: false` user was asked for a
+  // password their mode says Eldrun should never handle. The terminal login fixes
+  // both, which is why the switch **defaults to on in non-headless mode**: there it
+  // is the mode, and only here was it missing.
+  const headless = useSettingsStore((s) => s.settings?.connections_headless ?? true);
+  const [viaTerminal, setViaTerminal] = useState(!headless);
+  const [loginTerm, setLoginTerm] = useState<{ id: string; command: string; key: string } | null>(
+    null,
+  );
+  const loginPoll = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [browseConnecting, setBrowseConnecting] = useState(false);
   const [browsePaths, setBrowsePaths] = useState<string[]>([]);
 
@@ -200,6 +232,9 @@ export function RemoteMachinesWindow({
     setAddress(v);
     if (browsing) setBrowsing(false);
     browse.reset();
+    // A login terminal is bound to the target it was opened for; keeping it across
+    // an address edit would leave the next browse riding the wrong host's master.
+    stopLoginTerm();
   };
 
   // The login target: parse the address, then take the username from the
@@ -243,7 +278,7 @@ export function RemoteMachinesWindow({
   const startBrowse = async () => {
     const parsed = parseTarget();
     if (!parsed) {
-      setAddError("Enter a host as [user@]host[:port] before browsing");
+      setAddError(t("remoteMachines.enterHostBeforeBrowsing"));
       return;
     }
     setAddError("");
@@ -277,6 +312,105 @@ export function RemoteMachinesWindow({
     }
   };
 
+  // ── The terminal login, and the poll that turns it into a browsable session ──
+  // Eldrun sees no password here: the user authenticates in the terminal below, and
+  // the only signal is that the login's **ControlMaster** has come up — at which
+  // point a credential-less `ssh_connect` starts succeeding and rides it. That is
+  // exactly what `browse.openSession` is for: freeze the session somebody else
+  // authenticated, no second login. Bounded (~2 min), because a login the user never
+  // completes must stop polling rather than spin for the life of the window.
+  const clearLoginPoll = () => {
+    if (loginPoll.current) {
+      clearTimeout(loginPoll.current);
+      loginPoll.current = null;
+    }
+  };
+  const pollLoginReady = (parsed: ParsedSshAddress, attempt = 0) => {
+    const maxAttempts = 40; // ~2 min at 3s cadence
+    void invoke<void>("ssh_connect", {
+      user: parsed.user,
+      host: parsed.host,
+      port: parsed.port,
+      password: null,
+    })
+      .then(async () => {
+        clearLoginPoll();
+        setBrowseConnecting(false);
+        // Same seed the password path uses: the primary's project path *on this
+        // machine* (usually the same shared folder), else the host's default.
+        const startDir =
+          remotePath.trim() ||
+          (await resolveRemoteStartDir(parsed.user, parsed.host, parsed.port, null));
+        browse.openSession(parsed, "", startDir);
+        setBrowsing(true);
+        invoke<string[]>("remote_list_paths", { host: parsed.host })
+          .then(setBrowsePaths)
+          .catch(() => setBrowsePaths([]));
+      })
+      .catch(() => {
+        if (attempt + 1 >= maxAttempts) {
+          clearLoginPoll();
+          setBrowseConnecting(false);
+          return;
+        }
+        loginPoll.current = setTimeout(() => pollLoginReady(parsed, attempt + 1), 3000);
+      });
+  };
+
+  const startLoginTerm = async () => {
+    if (loginTerm) return;
+    const parsed = parseTarget();
+    if (!parsed) {
+      setAddError(t("remoteMachines.enterHostBeforeLogin"));
+      return;
+    }
+    setAddError("");
+    browse.setError("");
+    try {
+      const command = await invoke<string>("remote_login_command", {
+        user: parsed.user,
+        host: parsed.host,
+        port: parsed.port,
+      });
+      // Pre-mark the activation dedupe key this login satisfies, so the project's
+      // own root-terminal login isn't opened a second time for the same target.
+      const target = `${parsed.user ? `${parsed.user}@` : ""}${parsed.host}`;
+      const key = `ssh:${target}:${parsed.port ?? ""}`;
+      markConnectionOpened(key);
+      setLoginTerm({ id: nextMachineTermId(), command, key });
+      setBrowseConnecting(true);
+      pollLoginReady(parsed);
+    } catch (e) {
+      setAddError(String(e));
+    }
+  };
+
+  /** Re-arm the readiness poll — for a login finished after the bound ran out. */
+  const retryLoginBrowse = () => {
+    const parsed = parseTarget();
+    if (!parsed) return;
+    clearLoginPoll();
+    setBrowseConnecting(true);
+    pollLoginReady(parsed);
+  };
+
+  // Killing the login drops the ControlMaster every browse here rides, so this
+  // returns the form to its logged-out state rather than leaving a listing that
+  // nothing is behind.
+  const stopLoginTerm = () => {
+    clearLoginPoll();
+    setBrowseConnecting(false);
+    if (!loginTerm) return;
+    void invoke("pty_kill", { id: loginTerm.id }).catch(() => {});
+    forgetConnection(loginTerm.key);
+    setLoginTerm(null);
+  };
+
+  // The window can be closed (or re-keyed to another project) mid-poll; the PTY is
+  // deliberately left running — the ControlMaster it holds is the machine's — but a
+  // timer firing into an unmounted component is nobody's.
+  useEffect(() => clearLoginPoll, []);
+
   const useBrowsedFolder = () => {
     setRemotePath(browse.path || "/");
     setBrowsing(false);
@@ -287,6 +421,7 @@ export function RemoteMachinesWindow({
   const logout = () => {
     setBrowsing(false);
     browse.reset();
+    stopLoginTerm();
     setRemotePath(project.remote?.remote_path ?? "");
   };
 
@@ -311,12 +446,12 @@ export function RemoteMachinesWindow({
   const addMachine = async () => {
     const parsed = parseTarget();
     if (!parsed) {
-      setAddError("Enter a host as [user@]host[:port]");
+      setAddError(t("remoteMachines.enterHost"));
       return;
     }
     const path = remotePath.trim();
     if (!path.startsWith("/")) {
-      setAddError("Enter an absolute remote path (e.g. /home/me/project)");
+      setAddError(t("remoteMachines.enterAbsolutePath"));
       return;
     }
     setBusy(true);
@@ -388,24 +523,24 @@ export function RemoteMachinesWindow({
         hostId,
       });
       if (preview.files === 0) {
-        setPullNote((p) => ({ ...p, [hostId]: "No output files to pull." }));
+        setPullNote((p) => ({ ...p, [hostId]: t("remoteMachines.noOutputFiles") }));
         return;
       }
       const ok = window.confirm(
-        `Pull ${preview.files} output file(s) (${formatBytes(preview.bytes)}) from this machine to your computer?`,
+        t("remoteMachines.pullConfirm", { files: preview.files, bytes: formatBytes(preview.bytes) }),
       );
       if (!ok) return;
       const rep = await invoke<{ pulled: number; bytes: number; dest: string; errors: string[] }>(
         "worker_pull_outputs",
         { projectId: project.id, hostId },
       );
-      const errs = rep.errors.length ? ` (${rep.errors.length} failed)` : "";
+      const errs = rep.errors.length ? t("remoteMachines.pullErrorsSuffix", { count: rep.errors.length }) : "";
       setPullNote((p) => ({
         ...p,
-        [hostId]: `Pulled ${rep.pulled} file(s) → ${rep.dest}${errs}`,
+        [hostId]: t("remoteMachines.pulledResult", { pulled: rep.pulled, dest: rep.dest, errs }),
       }));
     } catch (e) {
-      setPullNote((p) => ({ ...p, [hostId]: `Pull failed: ${e}` }));
+      setPullNote((p) => ({ ...p, [hostId]: t("remoteMachines.pullFailed", { error: String(e) }) }));
     } finally {
       setPulling(null);
     }
@@ -433,18 +568,17 @@ export function RemoteMachinesWindow({
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog dialog-framed remote-machines-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>{project.name} — Remote machines</h2>
+          <h2>{t("remoteMachines.title", { name: project.name })}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
 
         <div className="dialog-scroll">
         <p className="settings-help">
-          Every machine this project reaches, in one place — the <strong>primary</strong>{" "}
-          that owns its files and git, plus any extra worker machines that run its{" "}
-          <strong>same code</strong>. Connect or manage any of them here, or add a new
-          worker below. A new worker shares the primary's project folder by default (no
-          copy, no git); tick <strong>Sync a copy</strong> to give it its own
-          one-way-synced copy — for hosts that don't share storage with the primary.
+          {t("remoteMachines.introPre")} <strong>{t("remoteMachines.introStrongPrimary")}</strong>{" "}
+          {t("remoteMachines.introMid1")}{" "}
+          <strong>{t("remoteMachines.introStrongSameCode")}</strong>
+          {t("remoteMachines.introMid2")} <strong>{t("remoteMachines.introStrongSyncCopy")}</strong>{" "}
+          {t("remoteMachines.introPost")}
         </p>
 
         {/* ── Primary host ────────────────────────────────────────────────────
@@ -469,9 +603,9 @@ export function RemoteMachinesWindow({
                 <span className="remote-machine-name">{pLabel}</span>
                 <span
                   className="remote-machine-tag"
-                  title="The primary machine owns this project's files, git and local mirror, with full two-way sync."
+                  title={t("remoteMachines.primaryTagTitle")}
                 >
-                  Primary
+                  {t("remoteMachines.primaryTag")}
                 </span>
                 <UntestedTag />
                 <span className="remote-machine-target">
@@ -479,12 +613,12 @@ export function RemoteMachinesWindow({
                 </span>
               </div>
               <div className="remote-machine-status">
-                {ssh === "connected" ? "Connected." : "Not connected."}
-                {mirror ? ` Local mirror: ${mirror}` : ""}
+                {ssh === "connected" ? t("remoteMachines.connectedDot") : t("remoteMachines.notConnectedDot")}
+                {mirror ? ` ${t("remoteMachines.localMirrorLabel")} ${mirror}` : ""}
               </div>
               <div className="remote-machine-actions">
                 <button onClick={() => openConnect(project.id, "primary")}>
-                  {ssh === "connected" ? "Manage…" : "Connect…"}
+                  {ssh === "connected" ? t("remoteMachines.manage") : t("remoteMachines.connectEllipsis")}
                 </button>
               </div>
             </div>
@@ -501,7 +635,7 @@ export function RemoteMachinesWindow({
               <span className="remote-machine-name">
                 {pendingDrop.label || pendingDrop.host}
               </span>
-              <span className="remote-machine-tag">Shared filesystem</span>
+              <span className="remote-machine-tag">{t("remoteMachines.sharedFsTag")}</span>
               <span className="remote-machine-target">
                 {pendingDrop.user ? `${pendingDrop.user}@` : ""}
                 {pendingDrop.host}
@@ -509,13 +643,12 @@ export function RemoteMachinesWindow({
               </span>
             </div>
             <p className="settings-help">
-              From your global machines. Give the shared path it sees this
-              project's folder at — everything else is already known.
+              {t("remoteMachines.dropIntro")}
             </p>
             <label>
-              <span className="remote-machine-add-label">Path on this machine</span>
+              <span className="remote-machine-add-label">{t("remoteMachines.pathOnMachine")}</span>
               <input
-                placeholder="Absolute path (e.g. /home/me/project)"
+                placeholder={t("remoteMachines.absolutePathPlaceholder")}
                 value={dropPath}
                 onChange={(e) => setDropPath(e.target.value)}
                 onKeyDown={(e) => {
@@ -528,10 +661,10 @@ export function RemoteMachinesWindow({
             {dropError && <div className="project-dialog-error">{dropError}</div>}
             <div className="project-dialog-actions">
               <button type="button" onClick={() => setPendingDrop(null)}>
-                Cancel
+                {t("common.cancel")}
               </button>
               <button type="button" disabled={dropBusy} onClick={() => void addDroppedMachine()}>
-                {dropBusy ? "Adding…" : "Add machine"}
+                {dropBusy ? t("remoteMachines.adding") : t("remoteMachines.addMachineBtn")}
               </button>
             </div>
           </div>
@@ -540,7 +673,7 @@ export function RemoteMachinesWindow({
         {/* Existing workers */}
         <div className="remote-machine-worker-list">
         {workers.length === 0 && (
-          <p className="settings-help">No worker machines yet.</p>
+          <p className="settings-help">{t("remoteMachines.noWorkers")}</p>
         )}
         {workers.map((w) => {
           const ssh = byHost?.[w.id]?.ssh ?? "off";
@@ -549,14 +682,14 @@ export function RemoteMachinesWindow({
           const wBusy = ssh === "connected" ? busyReading({ readings }, w) : null;
           const shared = w.shared_fs === true;
           const statusText = shared
-            ? "Runs in the primary's shared folder — no copy, no sync."
+            ? t("remoteMachines.sharedStatus")
             : rep?.error
-              ? `Sync failed: ${rep.error}`
+              ? `${t("remoteMachines.syncFailedLabel")} ${rep.error}`
               : rep?.head
-                ? `Last synced: ${rep.head}${rep.skipped ? " (already current)" : ""}`
+                ? `${t("remoteMachines.lastSyncedLabel")} ${rep.head}${rep.skipped ? ` ${t("remoteMachines.alreadyCurrent")}` : ""}`
                 : rep && !rep.ok
-                  ? "Syncing…"
-                  : "Not synced yet";
+                  ? t("remoteMachines.syncingEllipsis")
+                  : t("remoteMachines.notSyncedYet");
           return (
             <div key={w.id} className="remote-machine-card">
               <div className="remote-machine-head">
@@ -570,11 +703,11 @@ export function RemoteMachinesWindow({
                   className="remote-machine-tag"
                   title={
                     shared
-                      ? "Shared filesystem: shells run in the primary's project folder on this machine. No code is copied and git is never run here."
-                      : "Synced copy: this machine keeps its own read-only copy of the code, one-way synced from the primary."
+                      ? t("remoteMachines.sharedTagTitle")
+                      : t("remoteMachines.syncedTagTitle")
                   }
                 >
-                  {shared ? "Shared filesystem" : "Synced copy"}
+                  {shared ? t("remoteMachines.sharedFsTag") : t("remoteMachines.syncedCopyTag")}
                 </span>
                 <span className="remote-machine-target">
                   {w.user ? `${w.user}@` : ""}{w.host}{w.port ? `:${w.port}` : ""}:{w.remote_path}
@@ -585,32 +718,32 @@ export function RemoteMachinesWindow({
               </div>
               <div className="remote-machine-actions">
                 <button onClick={() => openConnect(project.id, w.id)}>
-                  {ssh === "connected" ? "Manage…" : "Connect…"}
+                  {ssh === "connected" ? t("remoteMachines.manage") : t("remoteMachines.connectEllipsis")}
                 </button>
                 {!shared && (
                   <>
                     <button disabled={ssh !== "connected"} onClick={() => void syncNow(w.id)}>
-                      Sync code now
+                      {t("remoteMachines.syncCodeNow")}
                     </button>
                     <button
                       disabled={ssh !== "connected" || pulling === w.id}
                       onClick={() => void pullOutputs(w.id)}
-                      title="Fetch this machine's experiment outputs (untracked files) to your computer. Confirms the size first."
+                      title={t("remoteMachines.pullOutputsTitle")}
                     >
-                      {pulling === w.id ? "Pulling…" : "Pull outputs…"}
+                      {pulling === w.id ? t("remoteMachines.pulling") : t("remoteMachines.pullOutputsBtn")}
                     </button>
                   </>
                 )}
                 <button
                   className="danger"
                   onClick={() => void removeMachine(w.id)}
-                  title="Remove this machine from the project (its files on the host are left untouched)."
+                  title={t("remoteMachines.removeTitle")}
                 >
-                  Remove
+                  {t("remoteMachines.remove")}
                 </button>
               </div>
-              <label className="remote-machine-toggle" title="On: this machine keeps its own copy of the code, one-way synced from the primary. Off: it shares the primary's project folder over a shared filesystem (no copy, no git).">
-                <span>Sync a copy of the code to this machine</span>
+              <label className="remote-machine-toggle" title={t("remoteMachines.syncCopyToggleTitle")}>
+                <span>{t("remoteMachines.syncCopyLabel")}</span>
                 <Toggle
                   checked={!shared}
                   onChange={(e) =>
@@ -623,8 +756,8 @@ export function RemoteMachinesWindow({
                 />
               </label>
               {!shared && (
-                <label className="remote-machine-toggle" title="Keep this machine's tracked code synced to the project HEAD on every commit.">
-                  <span>Auto-sync code on every commit</span>
+                <label className="remote-machine-toggle" title={t("remoteMachines.autoSyncTitle")}>
+                  <span>{t("remoteMachines.autoSyncLabel")}</span>
                   <Toggle
                     checked={w.sync_code !== false}
                     onChange={(e) => void patch(w.id, { syncCode: e.target.checked })}
@@ -640,87 +773,170 @@ export function RemoteMachinesWindow({
 
         {/* Add machine — two steps: log in first, then choose the folder. */}
         <div className="remote-machine-add">
-          <div className="remote-machine-add-title">Add a machine</div>
+          <div className="remote-machine-add-title">{t("remoteMachines.addMachineTitle")}</div>
 
           {!browse.conn ? (
             /* ── Step 1: log in ────────────────────────────────────────── */
             <>
               <label>
-                SSH address
+                {t("remoteMachines.sshAddressLabel")}
                 <input
-                  placeholder="host[:port]  (e.g. gpu-2:22)"
+                  placeholder={t("remoteMachines.sshAddressPlaceholder")}
                   value={address}
                   onChange={(e) => onAddressChange(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") void startBrowse();
+                    // Enter means "get me logged in", which is a different call in
+                    // each path — the password connect, or opening the terminal.
+                    if (e.key === "Enter") void (viaTerminal ? startLoginTerm() : startBrowse());
                   }}
                   spellCheck={false}
                 />
               </label>
               <label>
                 <span className="remote-machine-add-label">
-                  Username
+                  {t("remoteConnect.usernameLabel")}
                   <UntestedTag />
                 </span>
                 <input
-                  placeholder="SSH login user (e.g. me) — or include it as user@ above"
+                  placeholder={t("remoteMachines.usernamePlaceholder")}
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") void startBrowse();
+                    // Enter means "get me logged in", which is a different call in
+                    // each path — the password connect, or opening the terminal.
+                    if (e.key === "Enter") void (viaTerminal ? startLoginTerm() : startBrowse());
                   }}
                   autoComplete="off"
                   spellCheck={false}
                 />
               </label>
-              <label>
-                Password
-                <PasswordInput
-                  placeholder={
-                    savedPw
-                      ? "Using saved password — leave blank"
-                      : "SSH password — leave blank for key auth"
-                  }
-                  value={browsePassword}
-                  autoComplete="off"
-                  onChange={(e) => setBrowsePassword(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void startBrowse();
-                  }}
-                />
-              </label>
+              {!viaTerminal && (
+                <label>
+                  {t("remoteConnect.sshPasswordLabel")}
+                  <PasswordInput
+                    placeholder={
+                      savedPw
+                        ? t("remoteMachines.sshPasswordSavedPlaceholder")
+                        : t("remoteMachines.sshPasswordPlaceholder")
+                    }
+                    value={browsePassword}
+                    autoComplete="off"
+                    onChange={(e) => setBrowsePassword(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void startBrowse();
+                    }}
+                  />
+                </label>
+              )}
+              {/* Kept on screen in the terminal path too, and *disabled* rather than
+                  hidden: a saved password belongs to the host, not to how you signed
+                  in this time, and a row that vanishes reads as one that was
+                  discarded. Nothing here can act in that path anyway — the toggle
+                  only takes effect through `ssh_connect`'s `remember`, which a
+                  terminal login never calls, so the keychain is left exactly as it
+                  was found (delete it from the machine's own Connect menu). */}
               <label
                 className="container-settings-toggle"
-                title="Save this machine's SSH password in your OS keychain, keyed by host — the machine's own Connect menu then finds it and won't ask again. Off by default; an untick deletes a previously-saved one."
+                title={
+                  viaTerminal
+                    ? t("remoteMachines.saveTitleTerminal")
+                    : t("remoteMachines.saveTitleHeadless")
+                }
               >
                 <span className="remote-machine-add-label">
-                  Save password
+                  {t("remoteConnect.savePassword")}
                   <UntestedTag />
                 </span>
                 <Toggle
                   checked={savePassword}
+                  disabled={viaTerminal}
                   onChange={(e) => setSavePassword(e.target.checked)}
                   size="sm"
                 />
               </label>
               <div className="settings-help">
-                {savePassword
+                {viaTerminal
                   ? savedPw
-                    ? "Saved in your OS keychain — this machine's Connect won't ask again. Turn off to delete it."
-                    : "Will be saved to your OS keychain so this machine's Connect won't ask again."
-                  : "Used only to log in — not saved. Turn on “Save password” to keep it."}
+                    ? t("remoteMachines.saveHintKeptTerminal")
+                    : t("remoteMachines.saveHintNothingTerminal")
+                  : savePassword
+                    ? savedPw
+                      ? t("remoteMachines.saveHintSavedWillAskAgainOff")
+                      : t("remoteMachines.saveHintWillSave")
+                    : `${t("remoteMachines.saveHintNotSavedPre")} “${t("remoteConnect.savePassword")}” ${t("remoteMachines.saveHintNotSavedPost")}`}
               </div>
+              {viaTerminal && loginTerm && (
+                <div className="dialog-connect-terminal">
+                  <div className="dialog-connect-terminal-bar">
+                    <span className="ssh-optional-hint">
+                      {t("remoteMachines.loginTermHint")}
+                    </span>
+                    <button type="button" className="vpn-disconnect-btn" onClick={stopLoginTerm}>
+                      {t("remoteConnect.disconnect")}
+                    </button>
+                  </div>
+                  {/* The password this form asks for is normally transient — but the
+                      keychain may hold one for this host from the machine's own
+                      Connect modal, or from the project that already uses it, and a
+                      terminal login has no field to reach it. */}
+                  <CredentialPasteBar
+                    ptyId={loginTerm.id}
+                    entries={sshPasteEntries(t, {
+                      user: parseTarget()?.user,
+                      host: parseTarget()?.host,
+                      port: parseTarget()?.port,
+                      saved: savedPw,
+                    })}
+                  />
+                  <div className="dialog-connect-terminal-host">
+                    <TerminalView
+                      id={loginTerm.id}
+                      cmd=""
+                      cwd=""
+                      initialInput={loginTerm.command}
+                      visible
+                      focused
+                      persistOnUnmount
+                    />
+                  </div>
+                </div>
+              )}
+              <TerminalSignInToggle
+                channel="ssh"
+                checked={viaTerminal}
+                busy={!!loginTerm}
+                onChange={setViaTerminal}
+              />
               {browse.error && <div className="project-dialog-error">{browse.error}</div>}
               {addError && <div className="project-dialog-error">{addError}</div>}
               <div className="project-dialog-actions">
-                <button type="button" onClick={onClose}>Close</button>
-                <button
-                  type="button"
-                  disabled={browseConnecting}
-                  onClick={() => void startBrowse()}
-                >
-                  {browseConnecting ? "Logging in…" : "Log in"}
-                </button>
+                <button type="button" onClick={onClose}>{t("common.close")}</button>
+                {/* One action, three meanings — the step the form is actually on:
+                    open the login, re-check a login that outlasted the poll, or the
+                    ordinary password connect. */}
+                {viaTerminal ? (
+                  loginTerm ? (
+                    <button
+                      type="button"
+                      title={t("remoteMachines.retryBrowseTitle")}
+                      onClick={retryLoginBrowse}
+                    >
+                      {browseConnecting ? t("remoteMachines.waitingForLogin") : t("remoteMachines.loggedInBrowse")}
+                    </button>
+                  ) : (
+                    <button type="button" onClick={() => void startLoginTerm()}>
+                      {t("remoteMachines.openLoginTerminal")}
+                    </button>
+                  )
+                ) : (
+                  <button
+                    type="button"
+                    disabled={browseConnecting}
+                    onClick={() => void startBrowse()}
+                  >
+                    {browseConnecting ? t("remoteMachines.loggingIn") : t("remoteMachines.logIn")}
+                  </button>
+                )}
               </div>
             </>
           ) : (
@@ -732,31 +948,31 @@ export function RemoteMachinesWindow({
                   <div className="remote-machine-loggedin">
                     <ConnLamp status="connected" label={loggedInAs} />
                     <span>
-                      Logged in to <strong>{loggedInAs}</strong>
+                      {t("remoteMachines.loggedInToPre")} <strong>{loggedInAs}</strong>
                     </span>
-                    <button type="button" onClick={logout}>Change…</button>
+                    <button type="button" onClick={logout}>{t("remoteConnect.changeConfig")}</button>
                   </div>
                 );
               })()}
 
-              <label className="container-settings-toggle" title="Off (default): this machine shares the primary's project folder over a shared filesystem — no copy, no git. On: give it its own one-way-synced copy of the code (for hosts that don't share storage).">
-                <span>Sync a copy of the code to this machine</span>
+              <label className="container-settings-toggle" title={t("remoteMachines.sharedFsToggleTitleStep2")}>
+                <span>{t("remoteMachines.syncCopyLabel")}</span>
                 <Toggle checked={syncCopy} onChange={(e) => setSyncCopy(e.target.checked)} size="sm" />
               </label>
               <p className="settings-help">
                 {syncCopy
-                  ? "This machine keeps its own copy of the code, one-way synced from the primary. Browse to (or create) the folder for that copy."
-                  : "This machine shares the primary's project folder over a shared filesystem — no copy, no git. Browse to that folder on this machine."}
+                  ? t("remoteMachines.syncCopyDescOn")
+                  : t("remoteMachines.syncCopyDescOff")}
               </p>
 
               <label>
                 <span className="remote-machine-add-label">
-                  {syncCopy ? "Remote path for this machine's copy" : "Path to the project on this machine"}
+                  {syncCopy ? t("remoteMachines.remotePathForCopy") : t("remoteMachines.pathToProject")}
                   <UntestedTag />
                 </span>
                 <div className="folder-picker-row">
                   <input
-                    placeholder="Absolute path (e.g. /home/me/project)"
+                    placeholder={t("remoteMachines.absolutePathPlaceholder")}
                     value={remotePath}
                     onChange={(e) => setRemotePath(e.target.value)}
                     spellCheck={false}
@@ -766,7 +982,7 @@ export function RemoteMachinesWindow({
                     disabled={browseConnecting}
                     onClick={() => void startBrowse()}
                   >
-                    {browseConnecting ? "Connecting…" : browsing ? "Reconnect" : "Browse…"}
+                    {browseConnecting ? t("vpnPrompt.connecting") : browsing ? t("remoteMachines.reconnect") : t("remoteMachines.browseEllipsis")}
                   </button>
                 </div>
               </label>
@@ -783,14 +999,14 @@ export function RemoteMachinesWindow({
                   onEnterFolder={browse.enter}
                   onUseFolder={useBrowsedFolder}
                   onCreateFolder={browse.mkdir}
-                  footer="Browse to a folder, then click “Use this folder”."
+                  footer={t("remoteMachines.browserFooter")}
                 />
               )}
 
               <label>
-                Label (optional)
+                {t("remoteMachines.labelOptional")}
                 <input
-                  placeholder="e.g. gpu-2"
+                  placeholder={t("remoteMachines.labelPlaceholder")}
                   value={label}
                   onChange={(e) => setLabel(e.target.value)}
                   spellCheck={false}
@@ -798,9 +1014,9 @@ export function RemoteMachinesWindow({
               </label>
               {addError && <div className="project-dialog-error">{addError}</div>}
               <div className="project-dialog-actions">
-                <button type="button" onClick={onClose}>Close</button>
+                <button type="button" onClick={onClose}>{t("common.close")}</button>
                 <button type="button" disabled={busy} onClick={() => void addMachine()}>
-                  {busy ? "Adding…" : "Add machine"}
+                  {busy ? t("remoteMachines.adding") : t("remoteMachines.addMachineBtn")}
                 </button>
               </div>
             </>

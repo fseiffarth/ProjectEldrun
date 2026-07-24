@@ -2,7 +2,7 @@
 
 # Eldrun
 
-**A project-centric desktop layer that swaps your entire working context — windows, files, apps, Git state, layout, and AI agent terminals — as a single unit when you switch projects.**
+**A project-centric desktop layer that swaps your entire working context — windows, files, apps, Git state, layout, and AI agent terminals — as a single unit when you switch projects, and runs any of those projects on a remote machine or HPC cluster as if it were sitting on your laptop.**
 
 [![CI](https://github.com/fseiffarth/ProjectEldrun/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/fseiffarth/ProjectEldrun/actions/workflows/ci-cd.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](#license)
@@ -12,24 +12,33 @@
 
 
 > **You don't open applications — you open projects.**
-> Eldrun is a project-centric desktop layer that swaps your whole working
-> context as one unit, with AI agent terminals and in-app file viewers built in
-> — and it runs that work on remote machines and HPC clusters, not just your
-> laptop.
+> **And you don't move to the machine your work runs on — the project takes it
+> with you.**
 
-Eldrun is a **project-centric desktop layer**, not just an app that launches or
-embeds other apps: projects own their windows and desktop context, and selecting
-a project swaps that whole context — windows, files, apps, Git state, and layout
-— as a single unit. The AI agent terminals, file viewers, and app launcher ride
-on top, living *inside* a project once its desktop is restored. Built with
-**Tauri 2 + React + TypeScript**. Linux (X11 / KDE Wayland) and Windows both get
-native workspace, app-launch, default-app, and download integration today; macOS
-runs as a shell with a no-op workspace backend (on the roadmap).
+Eldrun stands on **two pillars**.
 
-Eldrun is also **strong at working across machines**: it manages a fleet of
-remote hosts, runs agents, shells, and jobs on them over SSH, and drives HPC /
-SLURM clusters — all from the same project cockpit. See
-[Remote machines & HPC clusters](#remote-machines--hpc-clusters).
+**One project = one desktop.** Eldrun is a project-centric desktop layer, not
+just an app that launches or embeds other apps: projects own their windows and
+desktop context, and selecting a project swaps that whole context — windows,
+files, apps, Git state, and layout — as a single unit. The AI agent terminals,
+file viewers, and app launcher ride on top, living *inside* a project once its
+desktop is restored.
+
+**One project = any machine.** A project is not tied to the computer in front of
+you. Point it at an SSH host — or extend an existing local project onto one — and
+its agent tabs, shells, Python runs, and jobs execute *there*, while the file
+tree, viewers, and Git views keep working exactly as they do locally. No sshfs or
+FUSE mount is involved, a project can span several machines at once, long runs
+survive an SSH drop or a laptop lid, and SLURM clusters are driven from the same
+cockpit — submit, watch, cancel, and grab an interactive compute node without
+memorizing the commands. The goal is that *running a project on a cluster costs
+about as much ceremony as running it locally*. See
+[Remote machines & HPC clusters](#remote-machines--hpc-clusters-the-second-differentiator).
+
+Built with **Tauri 2 + React + TypeScript**. Linux (X11 / KDE Wayland) and
+Windows both get native workspace, app-launch, default-app, and download
+integration today; macOS runs as a shell with a no-op workspace backend (on the
+roadmap).
 
 ---
 
@@ -52,14 +61,25 @@ a local Ollama model), a tiling tab layout, a hover-revealed file panel with
 built-in viewers, and cross-project app controls that follow you between
 projects.
 
+**And the same friction exists one layer down: your work rarely runs where you
+sit.** The heavy half of a project belongs on a server, a GPU box, or an HPC
+cluster, and the usual answer is a second, worse workflow — a bare `ssh` window,
+`scp`/`rsync` by hand, `vim` instead of your editor, tmux discipline you have to
+remember, and SLURM incantations you look up every time. Eldrun makes the remote
+machine a *property of the project* instead of a separate way of working: you
+open the project, and its terminals, agents, and jobs are already on the right
+host, its files are already in the file tree, and its Git history is already in
+sync — with no mount, and no second toolchain to keep in your head.
+
 ## Vision
 
 > Select a project → Eldrun restores its complete working context.
 
 A project's context already spans terminals, files, apps, windows, Git state,
-and layout; the direction of travel adds notes, AI/task metadata, and workflow
-state, so a project carries everything it needs to be resumed exactly where you
-left it.
+layout — **and the machines it runs on**; the direction of travel adds notes,
+AI/task metadata, and workflow state, so a project carries everything it needs to
+be resumed exactly where you left it, whether that is on this laptop or on a
+login node three networks away.
 
 The implementation runs natively on **Linux (X11 and KDE Wayland)** and
 **Windows** today — both with real per-project window parking — and the design is
@@ -79,7 +99,9 @@ See [VISION.md](docs/VISION.md) for the full strategy and platform rationale.
 layout hosts agent terminals, shells, and native file viewers. **③** the
 project-desktop layer (window parking, downloads, default apps, time tracking)
 follows the active project automatically, with the right panel (Files · Git ·
-Search) and the global app toolbar alongside.
+Search) and the global app toolbar alongside. **④** and the project carries the
+machines it runs on: its tabs, jobs, and files can live on an SSH host, a GPU
+box, or an HPC cluster without changing how any of the above works.
 
 And here's how that looks in the running app:
 
@@ -98,8 +120,15 @@ desktop per project handle windows but have no project model and no restore;
 tmux and scripts like `workon` restore terminal layouts but ignore everything
 outside the terminal.
 
+Nor do any of them cross machines. Remote development tooling (VS Code Remote,
+JupyterHub, a hand-rolled `ssh` + `rsync` + tmux setup) attaches *one editor* to
+*one host*; the cluster half — workspaces on the parallel filesystem, `sbatch`
+and `squeue`, an `srun` shell on a compute node, keeping several machines in
+step — stays a terminal exercise you repeat per project.
+
 Eldrun occupies the gap none of them fill: project ownership of *windows and
-desktop context*, with agent terminals built in. It is complementary to the
+desktop context*, and project ownership of *the machines the work runs on*, with
+agent terminals built in on both. It is complementary to the
 task orchestrators rather than a replacement — you can run one inside an Eldrun
 project terminal for parallel task delegation while Eldrun handles switching the
 desktop between projects.
@@ -127,8 +156,9 @@ below.
 
 - Linux desktop (X11 or KDE Wayland) **or** Windows 10/11
 - Rust toolchain (`rustup`) and Node 18+
-- Remote/SSH projects (optional): `sshfs` + FUSE on Linux, or
-  [SSHFS-Win](https://github.com/winfsp/sshfs-win) (+ WinFsp) on Windows
+- Remote/SSH and HPC projects (optional): nothing to install locally beyond
+  OpenSSH — no `sshfs`, no FUSE. On the host: `tmux` for persistent sessions
+  (optional), plus `openvpn` locally for VPN-gated hosts
 
 ```bash
 # Install Rust (all platforms): https://rustup.rs
@@ -166,7 +196,7 @@ update-desktop-database ~/.local/share/applications/
 
 ## Main Features
 
-### Project desktop (the differentiator)
+### Project desktop (the first differentiator)
 
 - **Workspace management**: X11 two-desktop parking model, KDE Wayland
   per-project virtual desktop model, and a Windows `SW_HIDE`/`SW_SHOW` parking
@@ -183,6 +213,55 @@ update-desktop-database ~/.local/share/applications/
   defaults, system MIME defaults, or a manual "Open With" picker.
 - **Time tracking**: Eldrun records active project sessions and shows today's
   elapsed time on project pills.
+
+### Remote machines & HPC clusters (the second differentiator)
+
+Eldrun treats remote hosts as first-class: it **manages a fleet of machines** and
+**runs your projects on them**, from a single SSH box to a full HPC cluster —
+with the same file tree, viewers, Git panel, and agent tabs you use locally, and
+without an sshfs/FUSE mount anywhere.
+
+- **Machine hub**: register SSH hosts once (independent of any project) in the
+  header's machines indicator — see a live CPU/GPU usage bar per machine,
+  connect/disconnect, arm silent auto-connect on launch, and drag a machine onto
+  a project to attach it as a compute host.
+- **Run on the remote host**: a project can point at a host — at creation, or by
+  *extending* an existing local project onto one in place — and run its agent,
+  shell, and Python tabs *on that host* over `ssh -tt`, with the file tree, Git,
+  and in-app viewers all reading the remote tree over SFTP. Everything rides one
+  pooled ControlMaster connection per machine, and VPN-gated hosts bring up an
+  OpenVPN tunnel first.
+- **A local copy that stays in step, on purpose**: the project keeps a local
+  mirror kept current by two transports that split the tree by Git. **Git
+  lockstep** moves *tracked* files semantically — commits and refs via
+  `git bundle`, never `.git` bytes — while an opt-in, per-folder **byte-sync**
+  moves everything else. So your editor, agents, and Git history see the project
+  locally, while gigabytes of host-side experiment output stay on the host until
+  you ask for them; a setup census offers to exclude the giant folders
+  (`node_modules/`, `.venv/`, `data/`, `checkpoints/`) up front.
+- **Many machines per project**: beyond the primary host, add extra *worker*
+  machines — their code is kept in sync from the project (one-way, tracked files
+  only) and their experiment outputs are pulled back on demand. A worker on a
+  **shared filesystem** (e.g. an HPC compute node on a shared home) is used in
+  place, with nothing copied and no Git run on it.
+- **Persistent sessions**: a long run lives in a tmux session per shell tab, so
+  a job survives an SSH drop, a laptop sleep, a VPN drop, or Eldrun quitting, and
+  the tab reattaches on relaunch. A **Sessions view** lists every running session
+  across all connected machines, with per-row attach/rename/kill.
+- **Remote system monitor**: a host's CPU, memory, and GPUs (AMD + NVIDIA,
+  including per-process GPU memory) are sampled over the same SSH connection and
+  shown alongside the local machine's.
+- **HPC / SLURM** *(built, but untested pending real-cluster QA)*: submit a batch
+  script with `sbatch`, watch its live log, list and cancel your queued jobs, and
+  open an interactive compute-node shell via `srun` — without memorizing the
+  commands. A guided **HPC pipeline wizard** walks a cluster newcomer through
+  login → project → data upload → job → watch.
+- **HPC workspaces** *(same QA caveat)*: on clusters that hand out scratch space
+  on the parallel filesystem via `hpc-workspace`, Eldrun allocates, lists,
+  extends, and releases workspaces from the app, and can put the project's remote
+  root *in* one — so the data lands off the quota'd `$HOME` before the first byte
+  is uploaded. Nothing is site-specific: the host is asked which filesystems and
+  limits it offers.
 
 ### Project cockpit
 
@@ -218,13 +297,14 @@ update-desktop-database ~/.local/share/applications/
   project or imports an existing directory (keep in place, copy, or move).
 - **Remote (SSH) projects**: optionally point a project at a remote host. Enter
   an SSH address (`user@host[:port]`), connect, and browse the remote filesystem
-  in-app to pick the project root. Eldrun `sshfs`-mounts it locally so the file
-  tree, terminal cwd, and git work unchanged. Terminal and agent tabs run **on
-  the remote host** over `ssh -tt` (multiplexed over a ControlMaster socket),
-  with the agent CLI auto-detected/bootstrapped on the remote and authenticated
-  with the remote's own login. VPN-gated hosts bring up an OpenVPN tunnel first.
-  Auth uses your existing SSH setup (keys / agent / `~/.ssh/config`,
-  `BatchMode`); requires `sshfs`/FUSE on Linux or SSHFS-Win/WinFsp on Windows.
+  in-app to pick the project root — no mount involved: the file tree and file I/O
+  go over SFTP, terminal and agent tabs run **on the remote host** over `ssh -tt`
+  (multiplexed over a ControlMaster socket), and git runs on the host, with the
+  agent CLI auto-detected/bootstrapped there and authenticated with the remote's
+  own login. Auth uses your existing SSH setup (keys / agent / `~/.ssh/config`)
+  or a password you can optionally save to the OS keychain. See
+  [Remote machines & HPC clusters](#remote-machines--hpc-clusters-the-second-differentiator)
+  for the fleet, sync, session, and cluster features built on top.
 - **Publish to GitHub / GitLab**: a local (or SSH-remote) git project can be
   published to a new GitHub or GitLab repository from the project pill menu.
   Choose the provider and public/private; Eldrun runs `gh repo create …
@@ -269,37 +349,6 @@ update-desktop-database ~/.local/share/applications/
 - **Hover-revealed panels**: the global app bar and right file panel appear on
   pointer hover and disappear when the pointer leaves, keeping the center
   terminal unobstructed; the right panel can also be pinned permanently open.
-
-### Remote machines & HPC clusters
-
-Eldrun treats remote hosts as first-class: it **manages a fleet of machines** and
-**runs your work on them**, from a single SSH box to a full HPC cluster.
-
-- **Machine hub**: register SSH hosts once (independent of any project) in the
-  header's machines indicator — see a live CPU/GPU usage bar per machine,
-  connect/disconnect, arm silent auto-connect on launch, and drag a machine onto
-  a project to attach it as a compute host.
-- **Run on the remote host**: a project can point at a host and run its agent,
-  shell, and Python tabs *on that host* over SSH, with the file tree, Git, and
-  in-app viewers all reading the remote tree. VPN-gated hosts bring up an OpenVPN
-  tunnel first.
-- **Many machines per project**: beyond the primary host, add extra *worker*
-  machines — their code is kept in sync from the project (one-way, tracked files
-  only) and their experiment outputs are pulled back on demand. A worker on a
-  **shared filesystem** (e.g. an HPC compute node on a shared home) is used in
-  place, with nothing copied and no Git run on it.
-- **Persistent sessions**: a long run lives in a tmux session per shell tab, so
-  a job survives an SSH drop, a laptop sleep, a VPN drop, or Eldrun quitting, and
-  the tab reattaches on relaunch. A **Sessions view** lists every running session
-  across all connected machines, with per-row attach/rename/kill.
-- **Remote system monitor**: a host's CPU, memory, and GPUs (AMD + NVIDIA,
-  including per-process GPU memory) are sampled over the same SSH connection and
-  shown alongside the local machine's.
-- **HPC / SLURM** *(built, but untested pending real-cluster QA)*: submit a batch
-  script with `sbatch`, watch its live log, list and cancel your queued jobs, and
-  open an interactive compute-node shell via `srun` — without memorizing the
-  commands. A guided **HPC pipeline wizard** walks a cluster newcomer through
-  login → project → data upload → job → watch.
 
 ### In-app file viewers
 
@@ -383,7 +432,7 @@ configuration.
 | **Linux — X11**           | Yes                | Two-desktop workspace parking model (EWMH/xcb). Primary development target.                  |
 | **Linux — KDE Wayland**   | Yes                | Per-project virtual desktop model via KWin DBus scripting. KDE 5 and KDE 6 supported.        |
 | **Linux — other Wayland** | Partial            | Null backend (no workspace switching, no sticky windows). Terminal and file management work. |
-| **Windows**               | Yes                | Win32 `SW_HIDE`/`SW_SHOW` parking model (+ best-effort virtual-desktop pinning). Start-Menu app launch with `.lnk`/icon resolution, default-app mapping, downloads routing, external-window tracking, OpenVPN, sshfs via SSHFS-Win, and Claude/Codex agent resume. |
+| **Windows**               | Yes                | Win32 `SW_HIDE`/`SW_SHOW` parking model (+ best-effort virtual-desktop pinning). Start-Menu app launch with `.lnk`/icon resolution, default-app mapping, downloads routing, external-window tracking, OpenVPN, SSH/SFTP remote projects, and Claude/Codex agent resume. |
 | **macOS**                 | Experimental shell | Null workspace backend (no per-project window parking). Browser downloads config and local Ollama detection work; app launching and file defaults fall back to the OS. |
 
 ### Platform and packaging

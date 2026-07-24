@@ -79,6 +79,7 @@ fn supplemental_path_dirs_for(
     home: &Path,
     local_app_data: Option<&OsStr>,
     app_data: Option<&OsStr>,
+    program_files: Option<&OsStr>,
 ) -> Vec<PathBuf> {
     let mut dirs = vec![
         home.join(".local").join("bin"),
@@ -92,10 +93,44 @@ fn supplemental_path_dirs_for(
                 let local = PathBuf::from(local);
                 dirs.push(local.join("Microsoft").join("WindowsApps"));
                 dirs.push(local.join("Programs").join("Ollama"));
+                // Per-user winget install of MiKTeX (`winget install --id
+                // MiKTeX.MiKTeX -e`, the command the "Install MiKTeX" button runs) —
+                // without this, a fresh install stays invisible to Eldrun's own
+                // process until it's relaunched, since a Windows PATH change made by
+                // an installer never reaches an already-running process's env.
+                dirs.push(
+                    local
+                        .join("Programs")
+                        .join("MiKTeX")
+                        .join("miktex")
+                        .join("bin")
+                        .join("x64"),
+                );
+                // Codex's standalone Windows installer (releases.openai.com/codex/
+                // install.ps1) writes here and updates the User PATH registry for
+                // *future* sessions only — the same "invisible until relaunch" gap.
+                dirs.push(
+                    local
+                        .join("Programs")
+                        .join("OpenAI")
+                        .join("Codex")
+                        .join("bin"),
+                );
                 dirs.push(local.join("bin"));
             }
             if let Some(roaming) = app_data {
                 dirs.push(PathBuf::from(roaming).join("npm"));
+            }
+            // Machine-wide MiKTeX install (`winget install --scope machine`, or the
+            // classic non-winget installer, which defaults here).
+            if let Some(pf) = program_files {
+                dirs.push(
+                    PathBuf::from(pf)
+                        .join("MiKTeX")
+                        .join("miktex")
+                        .join("bin")
+                        .join("x64"),
+                );
             }
         }
         OsKind::Unix => {}
@@ -111,6 +146,7 @@ pub fn extra_path_dirs() -> Vec<PathBuf> {
         &home_dir(),
         std::env::var_os("LOCALAPPDATA").as_deref(),
         std::env::var_os("APPDATA").as_deref(),
+        std::env::var_os("ProgramFiles").as_deref(),
     )
 }
 
@@ -443,12 +479,12 @@ mod tests {
     #[test]
     fn supplemental_paths_cover_all_supported_os_families() {
         let home = Path::new("/home/alice");
-        let unix = supplemental_path_dirs_for(OsKind::Unix, home, None, None);
+        let unix = supplemental_path_dirs_for(OsKind::Unix, home, None, None, None);
         assert!(unix.contains(&home.join(".local/bin")));
         assert!(unix.contains(&home.join(".cargo/bin")));
         assert!(unix.contains(&home.join(".opencode/bin")));
 
-        let mac = supplemental_path_dirs_for(OsKind::Macos, home, None, None);
+        let mac = supplemental_path_dirs_for(OsKind::Macos, home, None, None, None);
         assert!(mac.contains(&PathBuf::from("/opt/homebrew/bin")));
         assert!(mac.contains(&PathBuf::from("/Library/TeX/texbin")));
 
@@ -457,6 +493,7 @@ mod tests {
             Path::new(r"C:\Users\alice"),
             Some(OsStr::new(r"C:\Users\alice\AppData\Local")),
             Some(OsStr::new(r"C:\Users\alice\AppData\Roaming")),
+            Some(OsStr::new(r"C:\Program Files")),
         );
         assert!(windows
             .iter()
@@ -465,6 +502,15 @@ mod tests {
         assert!(windows
             .iter()
             .any(|path| path.ends_with(Path::new("Programs/Ollama"))));
+        assert!(windows
+            .iter()
+            .any(|path| path.ends_with(Path::new("Programs/MiKTeX/miktex/bin/x64"))));
+        assert!(windows
+            .iter()
+            .any(|path| path.ends_with(Path::new("Programs/OpenAI/Codex/bin"))));
+        assert!(windows.iter().any(|path| {
+            path.starts_with(r"C:\Program Files") && path.ends_with(Path::new("MiKTeX/miktex/bin/x64"))
+        }));
     }
 
     #[test]

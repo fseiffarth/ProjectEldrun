@@ -6,6 +6,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useTabsStore, orderedTabKeys, isPtyTabKind, type TabEntry } from "../../stores/tabs";
 import { useActivityStore, type AttentionKind } from "../../stores/activity";
 import { resolveProjectDirectory } from "../../types";
+import { useT } from "../../lib/i18n";
 
 interface Props {
   open: boolean;
@@ -84,6 +85,7 @@ export function RightPanel({
   onMouseEnter,
   onMouseLeave,
 }: Props) {
+  const t = useT();
   const { projects, activeId } = useProjectsStore();
   const rightPanelFolderByProject = useProjectsStore((s) => s.rightPanelFolderByProject);
   const setRightPanelFolder = useProjectsStore((s) => s.setRightPanelFolder);
@@ -139,7 +141,7 @@ export function RightPanel({
       onPointerDown={onResizeStart}
       onPointerMove={onResizeMove}
       onPointerUp={onResizeEnd}
-      title="Drag to resize panel"
+      title={t("rightPanel.resizeTitle")}
       aria-hidden
     />
   ) : null;
@@ -154,8 +156,8 @@ export function RightPanel({
           <button
             className="right-panel-pin right-panel-flip"
             onClick={onToggleSide}
-            title={side === "left" ? "Move panel to the right edge" : "Move panel to the left edge"}
-            aria-label={side === "left" ? "Move panel to the right edge" : "Move panel to the left edge"}
+            title={t(side === "left" ? "rightPanel.moveRight" : "rightPanel.moveLeft")}
+            aria-label={t(side === "left" ? "rightPanel.moveRight" : "rightPanel.moveLeft")}
           >
             ⇄
           </button>
@@ -165,7 +167,7 @@ export function RightPanel({
             className={`right-panel-pin${pinned ? " pinned" : ""}`}
             aria-pressed={pinned}
             onClick={onTogglePin}
-            title={pinned ? "Unpin panel (allow auto-hide)" : "Pin panel open"}
+            title={t(pinned ? "rightPanel.unpinTitle" : "rightPanel.pinTitle")}
           >
             📌
           </button>
@@ -180,20 +182,20 @@ export function RightPanel({
           type="button"
           className="hidden-sw-header"
           onClick={() => setHiddenCollapsed((c) => !c)}
-          title={hiddenCollapsed ? "Show hidden subwindows" : "Collapse"}
+          title={t(hiddenCollapsed ? "rightPanel.showHidden" : "rightPanel.collapse")}
         >
           <span className="hidden-sw-caret">{hiddenCollapsed ? "▸" : "▾"}</span>
-          Hidden ({hiddenGroups.length})
+          {t("rightPanel.hiddenCount", { count: hiddenGroups.length })}
           {hiddenStatus.overall && (
             <span
               className={`hidden-sw-status-dot ${hiddenStatus.overall}`}
-              title={
+              title={t(
                 hiddenStatus.overall === "needs-decision"
-                  ? "A hidden subwindow is waiting on you"
+                  ? "rightPanel.hiddenWaiting"
                   : hiddenStatus.overall === "working"
-                    ? "A hidden subwindow is working"
-                    : "A hidden subwindow finished, unseen"
-              }
+                    ? "rightPanel.hiddenWorking"
+                    : "rightPanel.hiddenFinished",
+              )}
             />
           )}
         </button>
@@ -214,7 +216,7 @@ export function RightPanel({
                           key={k}
                           type="button"
                           className={`hidden-sw-chip${status ? ` ${status}` : ""}`}
-                          title={`Restore focused on “${label}”`}
+                          title={t("rightPanel.restoreFocusedOn", { label })}
                           onClick={() => unhideGroup(h.id, { activeKey: k })}
                         >
                           {label}
@@ -225,7 +227,7 @@ export function RightPanel({
                   <button
                     type="button"
                     className="hidden-sw-btn"
-                    title="Restore subwindow"
+                    title={t("rightPanel.restoreSubwindow")}
                     onClick={() => unhideGroup(h.id)}
                   >
                     ↩
@@ -233,7 +235,7 @@ export function RightPanel({
                   <button
                     type="button"
                     className="hidden-sw-btn hidden-sw-close"
-                    title="Close subwindow (discard its tabs)"
+                    title={t("rightPanel.closeSubwindow")}
                     onClick={() => closeHiddenGroup(h.id)}
                   >
                     ×

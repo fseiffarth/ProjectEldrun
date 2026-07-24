@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { joinRemotePath, type ParsedSshAddress } from "./scaffold";
 import { resolveRemoteStartDir } from "../../lib/remoteConnect";
 import type { RemoteEntry } from "../../types";
+import { withHostKeyConfirm } from "../../lib/hostKey";
 
 /**
  * The shared "log in to a host and browse its filesystem over SFTP" state
@@ -86,13 +87,16 @@ export function useRemoteBrowse() {
     startPath?: string | null;
   }) => {
     const pw = opts.password ? opts.password : null;
-    await invoke<void>("ssh_connect", {
-      user: opts.target.user,
-      host: opts.target.host,
-      port: opts.target.port,
-      password: pw,
-      remember: opts.remember ?? null,
-    });
+    // First contact: verify the host key's fingerprint before the password is sent.
+    await withHostKeyConfirm(() =>
+      invoke<void>("ssh_connect", {
+        user: opts.target.user,
+        host: opts.target.host,
+        port: opts.target.port,
+        password: pw,
+        remember: opts.remember ?? null,
+      }),
+    );
     const startDir =
       opts.startPath && opts.startPath.trim()
         ? opts.startPath.trim()

@@ -25,6 +25,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { basename, dirname } from "./paths";
 import { useTabsStore, type TabEntry } from "../stores/tabs";
 import { useRunHostPrefStore } from "../stores/runHostPref";
+import { guardLoginNodeRun } from "./hpcGuard";
 
 /** How a run/debug tab is inserted into the layout. Given the built (keyless)
  *  tab, place it and return the created entry — or null when it streamed the tab
@@ -225,6 +226,15 @@ export function openPythonTab(opts: {
   useTabsStore.getState().setActive(entry.key);
 }
 
+/** The login-node gate for a Python run/debug, resolving the run host the same
+ *  way {@link openPythonTab} does — the project's run-host preference. Returns
+ *  whether to go ahead; `false` means the user backed out or took an interactive
+ *  job instead. */
+async function guardRunHost(scope: string, projectId: string | null): Promise<boolean> {
+  const runHost = useRunHostPrefStore.getState().byProject[scope];
+  return guardLoginNodeRun({ projectId, location: runHost, kind: "login-node-run" });
+}
+
 /** Run `file` in a fresh terminal tab. */
 export async function runPythonFile(opts: {
   file: string;
@@ -237,6 +247,10 @@ export async function runPythonFile(opts: {
   /** Where to insert the run tab (see openPythonTab); defaults to the scope group. */
   place?: PyTabPlacer;
 }): Promise<void> {
+  // A run lands on whichever machine the project's run-host preference names, and
+  // if that machine is a tagged cluster login node, ask before computing there
+  // (`lib/hpcGuard.ts`). Untagged hosts and local runs never see this.
+  if (!(await guardRunHost(opts.scope, opts.projectId))) return;
   const platform = currentPlatform();
   const interp = await resolveInterpreter(opts.projectId, opts.projectDir, platform);
   openPythonTab({
@@ -261,6 +275,7 @@ export async function debugPythonFile(opts: {
   /** Where to insert the debug tab (see openPythonTab); defaults to the scope group. */
   place?: PyTabPlacer;
 }): Promise<void> {
+  if (!(await guardRunHost(opts.scope, opts.projectId))) return;
   const platform = currentPlatform();
   const interp = await resolveInterpreter(opts.projectId, opts.projectDir, platform);
   openPythonTab({

@@ -18,10 +18,11 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useWindowsStore } from "../../stores/windows";
 import { useEditorJumpStore } from "../../stores/editorJump";
+import { useSettingsStore } from "../../stores/settings";
 import { basename, resolvePath } from "../../lib/paths";
-import { fileIcon, folderIcon } from "../../lib/viewers/fileUtils";
+import { disabledViewers, fileIcon, folderIcon, type FileEntry } from "../../lib/viewers/fileUtils";
+import { openFileEntry } from "./openFileEntry";
 
 /** The `.ext` (lowercased, dot-included) of a path's basename, matching the
  *  shape `fileIcon` and `FileEntry.extension` use; "" when there is none. */
@@ -96,7 +97,8 @@ export function FileTreeSearch({
   scopeRel: string;
   onReveal: (rel: string, isDir: boolean) => void;
 }) {
-  const openFile = useWindowsStore((s) => s.openFile);
+  const viewerPrefs = useSettingsStore((s) => s.settings?.viewer_prefs);
+  const disabledViewerSet = useMemo(() => disabledViewers(viewerPrefs), [viewerPrefs]);
 
   // The absolute directory the search is confined to (content search walks it;
   // name results are filtered to it). Rel-path bookkeeping stays project-rooted:
@@ -215,13 +217,33 @@ export function FileTreeSearch({
     return () => clearTimeout(timer);
   }, [mode, scopeDir, trimmed, caseSensitive]);
 
+  // Opens through the same shared policy `FileTree`/`FileBrowser` use (native
+  // viewer in the focused subwindow, reusing an already-open tab for that exact
+  // file instead of stacking a duplicate) rather than always launching the OS
+  // default app — a name-mode result can be any file in the project, and a
+  // content-mode hit needs its tab open before `requestJump` can scroll it.
   function openEntry(rel: string, isDir: boolean, line?: number, col?: number) {
     if (isDir) {
       onReveal(rel, true);
       return;
     }
     const abs = resolvePath(projectDir, rel);
-    openFile(abs, undefined, projectId, "right_file_tree").catch(console.error);
+    const entry: FileEntry = {
+      name: basename(abs),
+      path: abs,
+      is_dir: false,
+      size: 0,
+      extension: extensionOf(abs) || null,
+      mime: null,
+    };
+    openFileEntry({
+      entry,
+      projectDir,
+      projectId,
+      origin: "right_file_tree",
+      external: false,
+      disabled: disabledViewerSet,
+    });
     if (line != null) useEditorJumpStore.getState().requestJump(abs, line, col ?? 0);
   }
 

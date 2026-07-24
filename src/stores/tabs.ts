@@ -232,6 +232,12 @@ export interface ViewerState {
   // anything under the separator that produced them, so a delimiter change drops
   // the overrides rather than re-applying them to whatever the new cut lands on.
   columnWidths?: Record<number, number>;
+  // The deck editor's slide-overview rail width (px), user-resizable via a drag
+  // handle. Like the table's column widths, only ever written on an explicit
+  // resize — the default is computed, not persisted, so a deck opened for the
+  // first time (or by an older build with no field) gets the current default
+  // rather than a stale one baked into the file.
+  deckRailWidth?: number;
 }
 
 // Detached windows render their tabs from a Tauri-event SEED into local React

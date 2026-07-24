@@ -1,5 +1,41 @@
 import { useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
+import { IS_WINDOWS, IS_MAC } from "./platform";
+
+/** A supported git-hosting provider, as chosen in the fork-import dropdown and
+ *  the publish-to-GitHub/GitLab dialog. */
+export type GitHostProvider = "github" | "gitlab";
+
+/** OS-appropriate install command for a hosting provider's own CLI — the tool
+ *  that actually talks to the host's API (`gh repo`/`glab repo`, forking,
+ *  publishing), which plain `git` cannot do. Shared by the fork-import banner
+ *  (`ProjectDialog`) and the publish banner (`ProjectPill`'s `PublishWindow`)
+ *  so the two don't carry separate copies that can drift. */
+export const PROVIDER_CLI_INSTALL: Record<GitHostProvider, { bin: string; cmd: string }> = {
+  github: {
+    bin: "gh",
+    cmd: IS_WINDOWS
+      ? "winget install --id GitHub.cli -e --source winget"
+      : IS_MAC
+        ? "brew install gh"
+        : "sudo apt-get install -y gh",
+  },
+  gitlab: {
+    bin: "glab",
+    cmd: IS_WINDOWS
+      ? "winget install --id GitLab.GLab -e --source winget"
+      : IS_MAC
+        ? "brew install glab"
+        : "sudo apt-get install -y glab",
+  },
+};
+
+/** The CLI's own sign-in command. Run in a visible terminal (via
+ *  `runInstallInTab`) rather than headlessly — both `gh auth login` and `glab
+ *  auth login` are interactive (a browser handoff, or a pasted one-time code). */
+export function providerAuthLoginCmd(provider: GitHostProvider): string {
+  return provider === "gitlab" ? "glab auth login" : "gh auth login";
+}
 
 /**
  * One-click "install in a terminal tab" helper.

@@ -13,6 +13,9 @@ import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { useRemoteUsageStore } from "../../stores/remoteUsage";
 import { useHostBusyStore, busyReading, busyLabel } from "../../stores/hostBusy";
 import { parseSshAddress } from "../projects/scaffold";
+import { TerminalSignInToggle } from "../projects/TerminalSignInToggle";
+import { openConnectionInRoot } from "../../lib/remoteConnect";
+import { isHpcHost, setHpcPatch, targetOfSpec } from "../../lib/hpcHost";
 import type { ConnState } from "../../stores/remoteStatus";
 import type { GlobalMachine, MachineImportEntry, ProjectEntry } from "../../types";
 
@@ -51,8 +54,15 @@ export function MachinesIndicator() {
   // Off by default (Settings' "Remote features") — most projects are local-only,
   // so this fleet-wide SSH list stays out of the header until asked for.
   const enabled = useSettingsStore((s) => s.settings?.machines_enabled ?? false);
+  const headless = useSettingsStore((s) => s.settings?.connections_headless ?? true);
+  // The whole settings object (not one flag) because the HPC tag is a map keyed
+  // by SSH target: the row reads its own machine's entry, and writing one has to
+  // merge into the rest rather than replace them.
+  const settings = useSettingsStore((s) => s.settings);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
   const machines = useGlobalMachinesStore((s) => s.machines);
   const status = useGlobalMachinesStore((s) => s.status);
+  const errors = useGlobalMachinesStore((s) => s.errors);
   const load = useGlobalMachinesStore((s) => s.load);
   const probeAll = useGlobalMachinesStore((s) => s.probeAll);
   const connect = useGlobalMachinesStore((s) => s.connect);
@@ -63,6 +73,10 @@ export function MachinesIndicator() {
   const readings = useHostBusyStore((s) => s.readings);
   const disconnectAll = useGlobalMachinesStore((s) => s.disconnectAll);
   const remove = useGlobalMachinesStore((s) => s.remove);
+  // Persist-without-authenticating: the terminal sign-in has already logged in,
+  // so `add`'s `ssh_connect` would be a second login (and a password prompt this
+  // mode exists to avoid).
+  const register = useGlobalMachinesStore((s) => s.register);
   const add = useGlobalMachinesStore((s) => s.add);
   const update = useGlobalMachinesStore((s) => s.update);
   const setAutoConnect = useGlobalMachinesStore((s) => s.setAutoConnect);
@@ -143,7 +157,18 @@ export function MachinesIndicator() {
   const [retryAllBusy, setRetryAllBusy] = useState(false);
   const [disconnectAllArm, setDisconnectAllArm] = useState(false);
   const [retryId, setRetryId] = useState<string | null>(null);
+  // Prefilled from the machine's stored username in `startRetry` — a retry is a
+  // re-authenticate of the SAME target, so the login it should default to is the
+  // one already on file, not a blank field the user has to remember to refill.
+  // Editing it here and reconnecting persists the correction (`submitEdit`'s
+  // `update` path), since a login that was wrong is wrong for next time too.
+  const [retryUser, setRetryUser] = useState("");
   const [retryPassword, setRetryPassword] = useState("");
+  // Only for a `global_machine_update` validation failure (e.g. the edited
+  // username collides with another row's target) — an auth failure instead
+  // lands in the store's `errors` map and is shown from there, alongside the
+  // aggregate lamp state.
+  const [retryError, setRetryError] = useState("");
   // Rows render compact by default (lamp + label + actions only) — target
   // address, usage meters and the auto-connect toggle are behind a per-row
   // expand so a long machine list stays scannable.
@@ -169,8 +194,35 @@ export function MachinesIndicator() {
   // (matches a fresh machine's `auto_connect`), and safe either way — the sweep
   // probes first, so an armed host that can't connect silently just stays dark.
   const [addAuto, setAddAuto] = useState(false);
+  // "This is a cluster login node", ticked on the login form. Written to
+  // `settings.hpc_hosts` the moment the machine exists (both add paths), so the
+  // very first connect already has every background behaviour gated off.
+  const [addHpc, setAddHpc] = useState(false);
   const [addError, setAddError] = useState("");
   const [addBusy, setAddBusy] = useState(false);
+  // ── "Sign in in a terminal" (see `TerminalSignInToggle`) ─────────────────────
+  // Same escape hatch as the connect dialogs', for the same reason: this form has
+  // one password field, so a host that asks anything else — a challenge code, a
+  // one-time code, an expired-password change — cannot be added from it at all.
+  // Default **on** in non-headless mode, where a password field was never supposed
+  // to be. Unlike the dialogs, the login goes to the **root terminal** rather than
+  // an embedded one: this is a hover menu that closes 250ms after the pointer
+  // leaves it, which is no place to keep a live PTY — and it is exactly what the
+  // VPN indicator beside it already does in that mode.
+  const [addViaTerminal, setAddViaTerminal] = useState(!headless);
+  // A login is open in the root terminal and we are waiting for its ControlMaster.
+  const [addWaiting, setAddWaiting] = useState(false);
+  const addPoll = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Live mirrors of the two fields the poll writes onto the machine (see
+  // `finishTerminalAdd`), which outlives the render that scheduled it.
+  const labelRef = useRef(label);
+  const addAutoRef = useRef(addAuto);
+  const addHpcRef = useRef(addHpc);
+  useEffect(() => {
+    labelRef.current = label;
+    addAutoRef.current = addAuto;
+    addHpcRef.current = addHpc;
+  }, [label, addAuto, addHpc]);
 
   // Per-row inline edit of an existing machine's connection identity. `editId`
   // is the row being edited; the fields are prefilled from it in `startEdit`.
@@ -341,7 +393,7 @@ export function MachinesIndicator() {
     // the guard is live in the same tick the gesture starts.
     if (keepOpenRef.current || reorderDragRef.current) return;
     window.clearTimeout(closeTimer.current);
-    closeTimer.current = window.setTimeout(() => setOpen(false), 180);
+    closeTimer.current = window.setTimeout(() => setOpen(false), 250);
   };
 
   // Group the machines by SSH state so each colour is drawn once, with a count —
@@ -368,13 +420,35 @@ export function MachinesIndicator() {
   })();
 
   const startRetry = (id: string) => {
+    const m = machines.find((mm) => mm.id === id);
     setRetryId(id);
+    setRetryUser(m?.user ?? "");
     setRetryPassword("");
+    setRetryError("");
   };
   const submitRetry = async (id: string) => {
-    await connect(id, retryPassword || undefined);
-    setRetryId(null);
-    setRetryPassword("");
+    const m = machines.find((mm) => mm.id === id);
+    const user = retryUser.trim() || undefined;
+    setRetryError("");
+    try {
+      // A username edited here is a correction to the stored login, not a
+      // one-shot override — route through `update` (which also reconnects) so
+      // it sticks for next time; leave the plain `connect` path alone when it
+      // is unchanged, to avoid an extra `global_machine_update` round trip on
+      // the common case.
+      if (m && user !== (m.user ?? undefined)) {
+        await update(id, { user, host: m.host, port: m.port, label: m.label }, {
+          password: retryPassword || undefined,
+          connect: true,
+        });
+      } else {
+        await connect(id, retryPassword || undefined);
+      }
+      setRetryId(null);
+      setRetryPassword("");
+    } catch (e) {
+      setRetryError(String(e));
+    }
   };
 
   const connectedCount = machines.filter((m) => (status[m.id] ?? "off") === "connected").length;
@@ -386,6 +460,140 @@ export function MachinesIndicator() {
       setRetryAllBusy(false);
     }
   };
+
+  // ── Terminal sign-in: log in in the root terminal, then adopt that session ───
+  // Eldrun sees no password here. The login's **ControlMaster** is the only signal,
+  // so a credential-less `ssh_connect` is polled until it starts succeeding (it can
+  // only succeed by riding that master), and the machine is then `register`ed —
+  // the store action that deliberately does *not* re-authenticate, precisely
+  // because the caller already did. Bounded (~2 min); a login the user never
+  // completes stops polling and says so rather than spinning forever.
+  const clearAddPoll = () => {
+    if (addPoll.current) {
+      clearTimeout(addPoll.current);
+      addPoll.current = null;
+    }
+  };
+
+  const finishTerminalAdd = async (target: {
+    user: string | null;
+    host: string;
+    port: number | null;
+  }) => {
+    const machine = await register({
+      user: target.user ?? undefined,
+      host: target.host,
+      port: target.port ?? undefined,
+      // Through refs: the poll re-schedules itself through the closure of the
+      // render that started it, so reading these directly would freeze them at the
+      // click — and a label typed while the login is still open (which is exactly
+      // when there is time to type one) would be dropped.
+      label: labelRef.current.trim() || undefined,
+    });
+    if (!machine) {
+      setAddError("Logged in, but the machine couldn't be saved.");
+      return;
+    }
+    // Same order as the headless path: tag first, and never arm a silent
+    // launch-time connect for a machine the user just called a cluster.
+    if (addHpcRef.current) {
+      await updateSettings(
+        setHpcPatch(
+          useSettingsStore.getState().settings,
+          { user: machine.user, host: machine.host, port: machine.port },
+          true,
+        ),
+      );
+    }
+    if (addAutoRef.current && !addHpcRef.current) await setAutoConnect(machine.id, true);
+    setAddress("");
+    setUsername("");
+    setPassword("");
+    setLabel("");
+    setSavePassword(false);
+    setAddAuto(false);
+    setAddHpc(false);
+    setAdding(false);
+  };
+
+  const pollAddLogin = (
+    target: { user: string | null; host: string; port: number | null },
+    attempt = 0,
+  ) => {
+    const maxAttempts = 40; // ~2 min at 3s cadence
+    void invoke<void>("ssh_connect", {
+      user: target.user,
+      host: target.host,
+      port: target.port,
+      password: null,
+    })
+      .then(async () => {
+        clearAddPoll();
+        setAddWaiting(false);
+        await finishTerminalAdd(target).catch((e) => setAddError(String(e)));
+      })
+      .catch(() => {
+        if (attempt + 1 >= maxAttempts) {
+          clearAddPoll();
+          setAddWaiting(false);
+          setAddError(
+            "No login detected yet. Finish logging in in the root terminal, then click “I've logged in — add”.",
+          );
+          return;
+        }
+        addPoll.current = setTimeout(() => pollAddLogin(target, attempt + 1), 3000);
+      });
+  };
+
+  const startTerminalAdd = async () => {
+    const parsed = parseSshAddress(address);
+    if (!parsed) {
+      setAddError("Enter a host as [user@]host[:port]");
+      return;
+    }
+    const target = {
+      user: parsed.user ?? (username.trim() || null),
+      host: parsed.host,
+      port: parsed.port ?? null,
+    };
+    setAddError("");
+    try {
+      const command = await invoke<string>("remote_login_command", {
+        user: target.user,
+        host: target.host,
+        port: target.port,
+      });
+      const tabLabel = `ssh · ${target.user ? `${target.user}@` : ""}${target.host}`;
+      openConnectionInRoot({
+        label: tabLabel,
+        command,
+        dedupeKey: `ssh:${target.user ? `${target.user}@` : ""}${target.host}:${target.port ?? ""}`,
+      });
+      setAddWaiting(true);
+      clearAddPoll();
+      pollAddLogin(target);
+    } catch (e) {
+      setAddError(String(e));
+    }
+  };
+
+  /** Re-arm the poll — for a login finished after the bound ran out. */
+  const retryTerminalAdd = () => {
+    const parsed = parseSshAddress(address);
+    if (!parsed) return;
+    setAddError("");
+    setAddWaiting(true);
+    clearAddPoll();
+    pollAddLogin({
+      user: parsed.user ?? (username.trim() || null),
+      host: parsed.host,
+      port: parsed.port ?? null,
+    });
+  };
+
+  // The menu unmounts on close; a timer firing into it afterwards is nobody's.
+  // The root-terminal tab is deliberately left alone — it is the user's login.
+  useEffect(() => clearAddPoll, []);
 
   const submitAdd = async () => {
     const parsed = parseSshAddress(address);
@@ -404,15 +612,25 @@ export function MachinesIndicator() {
         password: password || undefined,
         remember: savePassword,
       });
+      // The tag is written first: everything else keyed off it (the monitor's
+      // reading, the census, auto-connect) should already see it by the time this
+      // machine is anything but a row.
+      if (addHpc) {
+        await updateSettings(
+          setHpcPatch(useSettingsStore.getState().settings, { user: machine.user, host: machine.host, port: machine.port }, true),
+        );
+      }
       // Arm the launch/VPN-up sweep in the same step if the user asked — the add
-      // already connected it now; this only persists the future intent.
-      if (addAuto) await setAutoConnect(machine.id, true);
+      // already connected it now; this only persists the future intent. Never for
+      // a tagged cluster: silent connects are one of the things the tag is for.
+      if (addAuto && !addHpc) await setAutoConnect(machine.id, true);
       setAddress("");
       setUsername("");
       setPassword("");
       setLabel("");
       setSavePassword(false);
       setAddAuto(false);
+      setAddHpc(false);
       setAdding(false);
     } catch (e) {
       setAddError(String(e));
@@ -934,6 +1152,17 @@ export function MachinesIndicator() {
                   <span className="vpn-indicator-config" title={targetLabel(m)}>
                     {m.label || m.host}
                   </span>
+                  {/* The HPC tag, on the row itself — the whole point of a tag
+                      that switches off background work is being able to see, at a
+                      glance over the machine list, which machines it is off for. */}
+                  {isHpcHost(settings, targetOfSpec(m)) && (
+                    <span
+                      className="hpc-badge"
+                      title="Tagged as a shared cluster login node: read lightly, no disk-usage scan or folder census, no background sync or lockstep polling, no silent auto-connect, and a warning before anything runs in a login-node shell."
+                    >
+                      HPC
+                    </span>
+                  )}
                   {!rowFormOpen && (
                     <div className="machines-row-actions">
                       <button
@@ -1022,6 +1251,17 @@ export function MachinesIndicator() {
                     {expandedIds.has(m.id) ? "▾" : "▸"}
                   </button>
                 </div>
+                {/* Why the lamp is red — shown as soon as a connect fails, not only
+                    once the user opens Retry. This is what tells apart a stale
+                    saved password from an unknown host key from the host simply
+                    being off the network, none of which "error" says on its own
+                    (see `stores/globalMachines`' `errors`). Also the only place an
+                    auto-connect failure at launch explains itself: `autoConnect`
+                    never opens a modal, so this row-level line is the one surface
+                    that can. */}
+                {st === "error" && errors[m.id] && !rowFormOpen && (
+                  <div className="vpn-indicator-error machines-row-error">{errors[m.id]}</div>
+                )}
                 {expandedIds.has(m.id) && (
                   <>
                     <div className="vpn-indicator-holders">{targetLabel(m)}</div>
@@ -1041,9 +1281,35 @@ export function MachinesIndicator() {
                         checked={m.auto_connect === true}
                         onChange={(e) => void setAutoConnect(m.id, e.target.checked)}
                         size="sm"
+                        disabled={isHpcHost(settings, targetOfSpec(m))}
                       />
                       <span>
                         Connect on launch &amp; VPN-up
+                        {isHpcHost(settings, targetOfSpec(m)) && (
+                          <span className="machines-auto-blocked"> — off while tagged HPC</span>
+                        )}
+                        <UntestedTag />
+                      </span>
+                    </label>
+                    {/* Where the tag is set for a machine already in the list. The
+                        login form has the same tick, so a cluster can be tagged as
+                        it is added; this is for one that is already here — and it
+                        is per machine, because that is the only scope at which the
+                        question ("is this a shared cluster?") has an answer. */}
+                    <label
+                      className="vpn-indicator-auto"
+                      title="Tag this machine as a shared cluster login node. Eldrun then reads it lightly (no other user's names or commands), never scans or measures its filesystem by itself, never runs background sync or lockstep polling against it, never connects to it silently at launch, and asks before anything runs in its login-node shell."
+                    >
+                      <Toggle
+                        checked={isHpcHost(settings, targetOfSpec(m))}
+                        onChange={(e) => {
+                          const target = targetOfSpec(m);
+                          if (target) void updateSettings(setHpcPatch(settings, target, e.target.checked));
+                        }}
+                        size="sm"
+                      />
+                      <span>
+                        HPC cluster (login node)
                         <UntestedTag />
                       </span>
                     </label>
@@ -1085,7 +1351,18 @@ export function MachinesIndicator() {
                     </button>
                   </div>
                 ) : retryId === m.id ? (
-                  <div className="vpn-indicator-actions menu-form">
+                  <div className="vpn-indicator-row menu-form machines-retry-form">
+                    {errors[m.id] && <div className="vpn-indicator-error">{errors[m.id]}</div>}
+                    <input
+                      placeholder="SSH username"
+                      value={retryUser}
+                      onChange={(e) => setRetryUser(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void submitRetry(m.id);
+                      }}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
                     <PasswordInput
                       placeholder="SSH password"
                       value={retryPassword}
@@ -1095,12 +1372,15 @@ export function MachinesIndicator() {
                         if (e.key === "Enter") void submitRetry(m.id);
                       }}
                     />
-                    <button type="button" className="vpn-indicator-connect" onClick={() => void submitRetry(m.id)}>
-                      Retry
-                    </button>
-                    <button type="button" className="vpn-indicator-remove" onClick={() => setRetryId(null)}>
-                      Cancel
-                    </button>
+                    {retryError && <div className="vpn-indicator-error">{retryError}</div>}
+                    <div className="vpn-indicator-actions">
+                      <button type="button" className="vpn-indicator-connect" onClick={() => void submitRetry(m.id)}>
+                        Retry
+                      </button>
+                      <button type="button" className="vpn-indicator-remove" onClick={() => setRetryId(null)}>
+                        Cancel
+                      </button>
+                    </div>
                   </div>
                 ) : removeArm === m.id ? (
                   <div className="vpn-indicator-actions">
@@ -1241,20 +1521,40 @@ export function MachinesIndicator() {
                   spellCheck={false}
                 />
               </label>
-              <label>
-                Password
-                <PasswordInput
-                  placeholder="SSH password — leave blank for key auth"
-                  value={password}
-                  autoComplete="off"
-                  onChange={(e) => setPassword(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void submitAdd();
-                  }}
+              {!addViaTerminal && (
+                <label>
+                  Password
+                  <PasswordInput
+                    placeholder="SSH password — leave blank for key auth"
+                    value={password}
+                    autoComplete="off"
+                    onChange={(e) => setPassword(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void submitAdd();
+                    }}
+                  />
+                </label>
+              )}
+              {/* Kept on screen in the terminal path, and *disabled* rather than
+                  hidden: a saved password belongs to the host, and a row that
+                  vanishes reads as one that was discarded. It has nothing to act on
+                  there — the flag only reaches the keychain through `ssh_connect`'s
+                  `remember`, which a terminal login never calls — so an existing
+                  credential is left exactly as it was found. */}
+              <label
+                className="vpn-indicator-auto"
+                title={
+                  addViaTerminal
+                    ? "A terminal login is one Eldrun never sees, so it stores nothing new — and deletes nothing either. Any saved password for this host stays as it is."
+                    : "Save this machine's SSH password in your OS keychain, keyed by host."
+                }
+              >
+                <Toggle
+                  checked={savePassword}
+                  disabled={addViaTerminal}
+                  onChange={(e) => setSavePassword(e.target.checked)}
+                  size="sm"
                 />
-              </label>
-              <label className="vpn-indicator-auto">
-                <Toggle checked={savePassword} onChange={(e) => setSavePassword(e.target.checked)} size="sm" />
                 <span>
                   Save password
                   <UntestedTag />
@@ -1264,9 +1564,31 @@ export function MachinesIndicator() {
                 className="vpn-indicator-auto"
                 title="Silently connect this machine on Eldrun launch and whenever a VPN tunnel comes up. Never prompts — it only connects when the host is reachable without a password, so an armed machine that can't connect silently simply stays off."
               >
-                <Toggle checked={addAuto} onChange={(e) => setAddAuto(e.target.checked)} size="sm" />
+                <Toggle
+                  checked={addAuto && !addHpc}
+                  disabled={addHpc}
+                  onChange={(e) => setAddAuto(e.target.checked)}
+                  size="sm"
+                />
                 <span>
                   Connect on launch &amp; VPN-up
+                  {addHpc && <span className="machines-auto-blocked"> — off for an HPC cluster</span>}
+                  <UntestedTag />
+                </span>
+              </label>
+              {/* The tag, at the moment it is actually known: logging in is when
+                  the user knows what they are logging in to. Everything Eldrun
+                  would otherwise do to this machine on its own is gated behind it
+                  (`lib/hpcHost.ts`), so ticking it here means the very first
+                  connect already behaves — nothing scans, nothing polls, and the
+                  monitor reads it lightly from its first sample. */}
+              <label
+                className="vpn-indicator-auto"
+                title="Tag this machine as a shared cluster login node. Eldrun then reads it lightly (never other users' names or command lines), never scans or measures its filesystem by itself, runs no background sync or lockstep polling against it, never connects to it silently at launch, and asks before anything runs in its login-node shell."
+              >
+                <Toggle checked={addHpc} onChange={(e) => setAddHpc(e.target.checked)} size="sm" />
+                <span>
+                  HPC cluster (login node)
                   <UntestedTag />
                 </span>
               </label>
@@ -1279,12 +1601,53 @@ export function MachinesIndicator() {
                   spellCheck={false}
                 />
               </label>
+              <TerminalSignInToggle
+                channel="ssh"
+                checked={addViaTerminal}
+                busy={addWaiting}
+                onChange={setAddViaTerminal}
+              />
+              {/* The login is a root-terminal tab, not something in this menu — which
+                  closes the moment the pointer leaves it — so say where it went. */}
+              {addViaTerminal && addWaiting && (
+                <div className="settings-help" role="status">
+                  Log in in the <strong>root terminal</strong> — this machine is added by
+                  itself once you're through. You can close this menu.
+                </div>
+              )}
               {addError && <div className="vpn-indicator-error">{addError}</div>}
               <div className="vpn-indicator-actions">
-                <button type="button" className="vpn-indicator-connect" disabled={addBusy} onClick={() => void submitAdd()}>
-                  {addBusy ? "Connecting…" : "Connect & add"}
-                </button>
-                <button type="button" className="vpn-indicator-remove" onClick={() => setAdding(false)}>
+                {addViaTerminal ? (
+                  <button
+                    type="button"
+                    className="vpn-indicator-connect"
+                    disabled={addWaiting}
+                    title="Open this host's SSH login in the root terminal. Eldrun never sees the password, and adds the machine once the login is through."
+                    onClick={() => void startTerminalAdd()}
+                  >
+                    {addWaiting ? "Waiting for the login…" : "Log in in terminal"}
+                  </button>
+                ) : (
+                  <button type="button" className="vpn-indicator-connect" disabled={addBusy} onClick={() => void submitAdd()}>
+                    {addBusy ? "Connecting…" : "Connect & add"}
+                  </button>
+                )}
+                {/* Only after the poll has given up: a login finished late is still a
+                    login, and re-arming beats retyping the whole form. */}
+                {addViaTerminal && !addWaiting && addError && (
+                  <button type="button" className="vpn-indicator-connect" onClick={retryTerminalAdd}>
+                    I've logged in — add
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="vpn-indicator-remove"
+                  onClick={() => {
+                    clearAddPoll();
+                    setAddWaiting(false);
+                    setAdding(false);
+                  }}
+                >
                   Cancel
                 </button>
               </div>

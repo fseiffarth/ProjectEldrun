@@ -12,6 +12,7 @@ import {
 import { hostsForProject } from "../../lib/remoteHosts";
 import { sameTarget } from "../../lib/machineSync";
 import { PRIMARY_HOST } from "../../stores/remoteStatus";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 /**
  * Host usage — CPU/load, memory, GPU, logged-in sessions and top processes (see
@@ -113,12 +114,19 @@ function groupSessionsByUser(report: RemoteUsageReport): UserGroup[] {
     .sort((a, b) => b.cpuPct - a.cpuPct);
 }
 
+const TONE_KEY: Record<UsageTone, TranslationKey> = {
+  green: "usage.toneGreen",
+  orange: "usage.toneOrange",
+  red: "usage.toneRed",
+};
+
 function UsageLight({ pct }: { pct: number }) {
+  const t = useT();
   const tone = usageTone(pct);
   return (
     <span
       className={`remote-usage-light is-${tone}`}
-      aria-label={`utilization ${tone}`}
+      aria-label={t("usage.utilizationAria", { tone: t(TONE_KEY[tone]) })}
     />
   );
 }
@@ -128,9 +136,13 @@ function UsageLight({ pct }: { pct: number }) {
  *  dialog (it used to be the dialog's whole body, back when only the primary
  *  was ever probed). */
 function HostUsageSection({ label, report }: { label: string; report: RemoteUsageReport }) {
+  const t = useT();
   return (
     <div className="remote-usage-host">
       <div className="remote-usage-host-title">{label}</div>
+      {/* Said before the numbers, because on a cluster the short session list and
+          own-processes-only table are a deliberate limit, not a quiet machine. */}
+      {report.careful && <div className="remote-usage-careful">{t("usage.carefulNote")}</div>}
       {report.reasons.length > 0 && (
         <ul className="remote-usage-reasons">
           {report.reasons.map((r) => (
@@ -140,23 +152,23 @@ function HostUsageSection({ label, report }: { label: string; report: RemoteUsag
       )}
       <div className="remote-usage-stats">
         <div className="remote-usage-stat">
-          <span className="remote-usage-stat-label">CPU</span>
+          <span className="remote-usage-stat-label">{t("usage.cpu")}</span>
           <span className="remote-usage-stat-value">
             <UsageLight pct={report.cpuPct} />
             {report.cpuPct.toFixed(0)}%{" "}
             <span className="remote-usage-stat-sub">
-              ({report.cpuCount} core{report.cpuCount === 1 ? "" : "s"})
+              {t(report.cpuCount === 1 ? "usage.coresOne" : "usage.coresMany", { count: report.cpuCount })}
             </span>
           </span>
         </div>
         <div className="remote-usage-stat">
-          <span className="remote-usage-stat-label">Load average</span>
+          <span className="remote-usage-stat-label">{t("usage.loadAverage")}</span>
           <span className="remote-usage-stat-value">
             {report.load1.toFixed(2)}, {report.load5.toFixed(2)}, {report.load15.toFixed(2)}
           </span>
         </div>
         <div className="remote-usage-stat">
-          <span className="remote-usage-stat-label">Memory</span>
+          <span className="remote-usage-stat-label">{t("usage.memory")}</span>
           <span className="remote-usage-stat-value">
             {report.memUsedMb} / {report.memTotalMb} MB{" "}
             <span className="remote-usage-stat-sub">
@@ -184,18 +196,18 @@ function HostUsageSection({ label, report }: { label: string; report: RemoteUsag
           "only the primary host reports logins". */}
       <div className="remote-usage-section">
         <div className="remote-usage-section-title">
-          Logged in{" "}
+          {t("usage.loggedIn")}{" "}
           <span className="remote-usage-stat-sub">
-            ({report.users.length} session{report.users.length === 1 ? "" : "s"})
+            {t(report.users.length === 1 ? "usage.sessionsOne" : "usage.sessionsMany", { count: report.users.length })}
           </span>
         </div>
         {report.users.length > 0 ? (
           <ul className="remote-usage-users">
             <li className="remote-usage-users-head" aria-hidden="true">
-              <span>User</span>
-              <span>CPU</span>
-              <span>Sessions</span>
-              <span>Mem</span>
+              <span>{t("usage.userCol")}</span>
+              <span>{t("usage.cpu")}</span>
+              <span>{t("usage.sessionsCol")}</span>
+              <span>{t("usage.memCol")}</span>
             </li>
             {groupSessionsByUser(report).map((g) => (
               <li key={g.user}>
@@ -210,19 +222,19 @@ function HostUsageSection({ label, report }: { label: string; report: RemoteUsag
             ))}
           </ul>
         ) : (
-          <div className="remote-usage-empty">No interactive logins on this host.</div>
+          <div className="remote-usage-empty">{t("usage.noInteractiveLogins")}</div>
         )}
       </div>
       {report.topProcs.length > 0 && (
         <div className="remote-usage-section">
-          <div className="remote-usage-section-title">Top processes</div>
+          <div className="remote-usage-section-title">{t("usage.topProcesses")}</div>
           <ul className="remote-usage-procs">
             {report.topProcs.map((p, i) => (
               <li key={`${p.pid}-${i}`}>
                 <span className="remote-usage-proc-cmd">{p.command}</span>
                 <span className="remote-usage-proc-user">{p.user}</span>
-                <span className="remote-usage-proc-pct">{p.cpuPct.toFixed(1)}% cpu</span>
-                <span className="remote-usage-proc-pct">{p.memPct.toFixed(1)}% mem</span>
+                <span className="remote-usage-proc-pct">{p.cpuPct.toFixed(1)}% {t("usage.cpuSuffix")}</span>
+                <span className="remote-usage-proc-pct">{p.memPct.toFixed(1)}% {t("usage.memSuffix")}</span>
               </li>
             ))}
           </ul>
@@ -233,6 +245,7 @@ function HostUsageSection({ label, report }: { label: string; report: RemoteUsag
 }
 
 export function RemoteUsageWarningDialog() {
+  const t = useT();
   const activeId = useProjectsStore((s) => s.activeId);
   const project = useProjectsStore((s) => s.projects.find((p) => p.id === activeId));
   const machines = useGlobalMachinesStore((s) => s.machines);
@@ -322,35 +335,36 @@ export function RemoteUsageWarningDialog() {
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="settings-title-row">
-          <h2>Current remote host usage</h2>
+          <h2>{t("usage.title")}</h2>
           <button type="button" className="dialog-close-btn" onClick={close}>×</button>
         </div>
         <div className="dialog-scroll">
           <p className="remote-usage-lede">
             {targets.length === 0
-              ? "No machines to check — add one in the Machines menu, or open a remote project."
-              : `Load, memory and logged-in sessions on ${
-                  targets.length === 1 ? "1 host" : `${targets.length} hosts`
-                }, ${rechecking ? "being read now" : "as last read"} — here's what's running right now.`}
+              ? t("usage.noMachines")
+              : t("usage.lede", {
+                  hosts: targets.length === 1 ? t("usage.hostSingular") : t("usage.hostsPlural", { count: targets.length }),
+                  reading: rechecking ? t("usage.beingReadNow") : t("usage.asLastRead"),
+                })}
           </p>
-          {targets.map((t) =>
-            reports[t.key] ? (
-              <HostUsageSection key={t.key} label={t.label} report={reports[t.key]} />
+          {targets.map((target) =>
+            reports[target.key] ? (
+              <HostUsageSection key={target.key} label={target.label} report={reports[target.key]} />
             ) : (
-              <div className="remote-usage-host" key={t.key}>
-                <div className="remote-usage-host-title">{t.label}</div>
+              <div className="remote-usage-host" key={target.key}>
+                <div className="remote-usage-host-title">{target.label}</div>
                 <div className="remote-usage-empty">
-                  {rechecking ? "Checking…" : "No reading — the host may be unreachable."}
+                  {rechecking ? t("usage.checkingEllipsis") : t("usage.noReading")}
                 </div>
               </div>
             ),
           )}
           <div className="project-dialog-actions">
             <button type="button" onClick={runRecheck} disabled={rechecking}>
-              {rechecking ? "Rechecking…" : "Recheck"}
+              {rechecking ? t("usage.rechecking") : t("usage.recheck")}
             </button>
             <button type="button" onClick={close}>
-              Got it
+              {t("howToStart.gotIt")}
             </button>
           </div>
         </div>

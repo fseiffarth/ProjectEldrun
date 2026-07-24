@@ -8,6 +8,7 @@ import {
   normalizeCategory,
   projectCategories,
 } from "../../lib/categoryColor";
+import { useT } from "../../lib/i18n";
 
 /**
  * Modal to manage a project's category tags. Categories color/group a project in
@@ -23,6 +24,7 @@ export function CategoryEditor({
   project: ProjectEntry;
   onClose: () => void;
 }) {
+  const t = useT();
   const projects = useProjectsStore((s) => s.projects);
   const setProjectCategories = useProjectsStore((s) => s.setProjectCategories);
 
@@ -77,14 +79,11 @@ export function CategoryEditor({
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="settings-title-row">
-          <h2>{project.name} — Categories</h2>
+          <h2>{project.name} — {t("categoryEditor.titleSuffix")}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <div className="dialog-scroll">
-        <div className="project-dialog-path">
-          Tag this project to color and group it in the project cloud and the pill
-          bar. A project can carry several categories; the first is its primary color.
-        </div>
+        <div className="project-dialog-path">{t("categoryEditor.desc")}</div>
 
         {known.length > 0 && (
           <div className="category-chip-row">
@@ -97,7 +96,7 @@ export function CategoryEditor({
                   className={`category-chip${on ? " on" : ""}`}
                   style={{ "--cat-color": categoryColor(cat) } as React.CSSProperties}
                   onClick={() => toggle(cat)}
-                  title={on ? "Remove this category" : "Add this category"}
+                  title={t(on ? "categoryEditor.removeCategory" : "categoryEditor.addCategory")}
                 >
                   <span className="category-chip-dot" />
                   {cat}
@@ -109,13 +108,13 @@ export function CategoryEditor({
         )}
 
         <label>
-          Add a category
+          {t("categoryEditor.addLabel")}
           <div className="category-add-row">
             <input
               type="text"
               value={input}
               autoFocus
-              placeholder="e.g. work, research, client-x…"
+              placeholder={t("categoryEditor.placeholder")}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
@@ -125,14 +124,14 @@ export function CategoryEditor({
                 if (e.key === "Escape") onClose();
               }}
             />
-            <button type="button" onClick={addNew} disabled={!input.trim()}>Add</button>
+            <button type="button" onClick={addNew} disabled={!input.trim()}>{t("common.add")}</button>
           </div>
         </label>
 
         <div className="project-dialog-actions">
-          <button type="button" onClick={onClose} disabled={saving}>Cancel</button>
+          <button type="button" onClick={onClose} disabled={saving}>{t("common.cancel")}</button>
           <button type="button" onClick={() => void save()} disabled={saving}>
-            {saving ? "Saving…" : "Save"}
+            {saving ? t("categoryEditor.saving") : t("categoryEditor.save")}
           </button>
         </div>
         </div>

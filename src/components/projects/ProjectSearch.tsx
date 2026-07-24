@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectBox, ProjectEntry } from "../../types";
 import { formatRemoteTarget, resolveLocalMirror } from "../../types";
 import { projectDirectory } from "./scaffold";
+import { useT } from "../../lib/i18n";
 
 type SearchRow =
   | { kind: "project"; project: ProjectEntry }
@@ -39,6 +40,7 @@ export function ProjectSearch({
   onActivateProject: (projectId: string) => void;
   onOpenBox: (boxId: string) => void;
 }) {
+  const t = useT();
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLDivElement>(null);
 
@@ -87,7 +89,7 @@ export function ProjectSearch({
       <input
         className="project-search-entry"
         type="search"
-        placeholder="Search inactive..."
+        placeholder={t("projectSearch.placeholder")}
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onKeyDown={(e) => {
@@ -103,7 +105,7 @@ export function ProjectSearch({
       {query.trim() && (
         <div className="project-search-popover">
           {results.length === 0 ? (
-            <div className="project-search-empty">No projects</div>
+            <div className="project-search-empty">{t("projectSearch.noProjects")}</div>
           ) : (
             results.map((row) =>
               row.kind === "box" ? (
@@ -116,8 +118,9 @@ export function ProjectSearch({
                     <span className="project-box-badge" aria-hidden>▣</span> {row.box.name}
                   </span>
                   <small>
-                    Box · {row.box.member_ids.length} member
-                    {row.box.member_ids.length === 1 ? "" : "s"}
+                    {t(row.box.member_ids.length === 1 ? "projectSearch.boxMemberOne" : "projectSearch.boxMemberMany", {
+                      count: row.box.member_ids.length,
+                    })}
                   </small>
                 </button>
               ) : (

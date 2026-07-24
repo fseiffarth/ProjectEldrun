@@ -39,12 +39,31 @@ export async function resolveRemoteStartDir(
  * project that is re-activated several times doesn't spawn a duplicate tab each
  * time. Keyed by an opaque caller-supplied string (the .ovpn path or the SSH
  * target). Session-only — cleared on reload like other transient state.
+ *
+ * The value is the **root tab** carrying that connection, or `null` for a
+ * connection some other surface owns (`markConnectionOpened` — the Connect dialog's
+ * embedded terminal). That distinction is what makes the dedupe self-healing rather
+ * than sticky: a tab the user closed is not a connection, so the mark expires with
+ * it. Without that, closing the login tab left the key claimed for the rest of the
+ * session and every later request — an activation, an auto-connect — silently opened
+ * nothing and then waited on a master that was never coming.
  */
-const openedConnections = new Set<string>();
+const openedConnections = new Map<string, string | null>();
 
-/** Reset the dedupe set (e.g. when a connection is torn down). */
+/** Reset the dedupe entry (e.g. when a connection is torn down). */
 export function forgetConnection(dedupeKey: string): void {
   openedConnections.delete(dedupeKey);
+}
+
+/** Whether this connection's terminal is still around to authenticate in. A tab
+ *  owned elsewhere (`null`) is that surface's business, not ours. Exported because a
+ *  caller waiting on the user to log in (`pollRootLoginReady`) needs to know when
+ *  they closed the tab instead — that is a "never mind", not a failure. */
+export function connectionStillOpen(dedupeKey: string): boolean {
+  if (!openedConnections.has(dedupeKey)) return false;
+  const tabKey = openedConnections.get(dedupeKey);
+  if (tabKey == null) return true;
+  return (useTabsStore.getState().tabsByScope.root ?? []).some((t) => t.key === tabKey);
 }
 
 /**
@@ -56,7 +75,7 @@ export function forgetConnection(dedupeKey: string): void {
  * as a root-terminal tab.
  */
 export function markConnectionOpened(dedupeKey: string): void {
-  openedConnections.add(dedupeKey);
+  openedConnections.set(dedupeKey, null);
 }
 
 /**
@@ -72,7 +91,8 @@ export function markConnectionOpened(dedupeKey: string): void {
  * master once it is up.
  *
  * `dedupeKey` suppresses a duplicate tab when the same connection is requested
- * again within the session; pass `null` to always open a new tab.
+ * again within the session — but only while that tab is still there to type into
+ * (see `connectionStillOpen`); pass `null` to always open a new tab.
  */
 export function openConnectionInRoot(opts: {
   label: string;
@@ -80,18 +100,16 @@ export function openConnectionInRoot(opts: {
   dedupeKey?: string | null;
 }): void {
   const { label, command, dedupeKey } = opts;
-  if (dedupeKey != null) {
-    if (openedConnections.has(dedupeKey)) return;
-    openedConnections.add(dedupeKey);
-  }
+  if (dedupeKey != null && connectionStillOpen(dedupeKey)) return;
   const rootDir = useProjectsStore.getState().rootDir ?? "";
-  useTabsStore.getState().addTabToScope("root", {
+  const tab = useTabsStore.getState().addTabToScope("root", {
     label,
     cmd: "", // empty → backend default_shell()
     cwd: rootDir, // empty resolves to ~/eldrun/root on the backend
     kind: "shell",
     initialInput: command,
   });
+  if (dedupeKey != null) openedConnections.set(dedupeKey, tab.key);
   // Surface it without stealing the active project: a transient toast (auto-clears
   // in AppShell) tells the user the connection is waiting in the root terminal.
   useProjectsStore.setState({ switchToast: `${label} — authenticate in root terminal` });

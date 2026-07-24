@@ -63,6 +63,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
+import { useT } from "../../lib/i18n";
 
 /** Pixel coordinates of a group's pane region, relative to the center panel. */
 interface Rect {
@@ -73,6 +74,7 @@ interface Rect {
 }
 
 export function CenterPanel() {
+  const t = useT();
   const tabsByScope = useTabsStore((s) => s.tabsByScope);
   const scope = useTabsStore((s) => s.scope);
   const layout = useTabsStore((s) => s.layout);
@@ -943,10 +945,10 @@ export function CenterPanel() {
             style={{ height: "100%" }}
           >
             <div className="center-placeholder-card">
-              <div className="center-placeholder-title">No tabs open</div>
+              <div className="center-placeholder-title">{t("centerPanel.noTabsOpen")}</div>
               <div className="center-placeholder-hint">
-                Use <span className="center-placeholder-key">+</span> on the tab bar above to open a
-                shell or an AI agent.
+                {t("centerPanel.noTabsHintPre")} <span className="center-placeholder-key">+</span>{" "}
+                {t("centerPanel.noTabsHintPost")}
               </div>
             </div>
           </div>

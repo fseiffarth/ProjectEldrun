@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { GitHistory } from "./GitHistory";
@@ -13,7 +13,7 @@ import {
 import { RunHostPicker } from "../tabs/TabLocalityBadges";
 import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFilesSettings";
 import { useImportDrop } from "./importDrop";
-import { logoutRemote } from "../../stores/projects";
+import { logoutRemote, useProjectsStore } from "../../stores/projects";
 import { useSyncStore, amberPaths } from "../../stores/sync";
 import { openLinkedFile } from "../embed/FileViewerPane";
 import { useWindowsStore } from "../../stores/windows";
@@ -37,6 +37,27 @@ import {
   type SlurmJob,
 } from "../../lib/slurm";
 import { useHpcJobsStore } from "../../stores/hpcJobs";
+import {
+  wsAvailable,
+  wsList,
+  wsExtend,
+  wsAnchor,
+  wsTargetForProject,
+  setProjectHpc,
+  pullLogs,
+  moveProjectRoot,
+  projectPathIn,
+  findProjectWorkspace,
+  shouldWarnExpiry,
+  remainingLabel,
+  expiryTone,
+  type HpcWorkspace,
+} from "../../lib/hpcWorkspace";
+
+/** How long the pointer must rest on a session row before its stats card opens
+ *  (TODO #85) — same value and rationale as `FileTree`'s `TOOLTIP_DWELL_MS`:
+ *  long enough that a mouse merely passing over the list never triggers it. */
+const TOOLTIP_DWELL_MS = 400;
 
 /** One host tmux session (TODO #85), mirroring the backend `TmuxSession`. */
 interface TmuxSession {
@@ -45,6 +66,43 @@ interface TmuxSession {
   /** Creation time, seconds since the Unix epoch (host clock). */
   created: number;
   attached: boolean;
+  /** Last activity time, seconds since the Unix epoch (host clock). */
+  activity: number;
+  /** The active pane's current foreground command (e.g. `python`, or a shell
+   *  name when idling at the prompt). */
+  currentCommand: string;
+  /** False when the active pane is sitting at a bare shell prompt. */
+  working: boolean;
+}
+
+/** The row's own name button shows a short, stable label rather than the raw
+ *  `eldrun-<uuid>` — meaningless to read at a glance and mostly there to keep
+ *  the name unique. The full id lives in the session-stats popup instead
+ *  (`SessionStatsMenu` below), alongside the rest of the row's detail. A
+ *  hand-started/foreign session's name is usually short and meaningful
+ *  (`train`), so it's shown as-is. */
+function sessionDisplayName(name: string): string {
+  return name.startsWith("eldrun-") ? "Session" : name;
+}
+
+/** Absolute local-time readout for a host-clock epoch timestamp, for the
+ *  session-stats popup (the row itself only ever shows relative age). */
+function absoluteTime(epochSecs: number): string {
+  return new Date(epochSecs * 1000).toLocaleString();
+}
+
+/** "How long has this session existed" / "how long has it sat idle", as a
+ *  compact duration (not the `relativeAge` "N ago" phrasing, which reads
+ *  wrong as a label next to "Uptime"/"Idle for"). */
+function relativeDuration(epochSecs: number): string {
+  const secs = Math.max(0, Math.floor(Date.now() / 1000) - epochSecs);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ${mins % 60}m`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ${hrs % 24}h`;
 }
 
 /** A session row in the (multi-host) Sessions view: the session plus which host
@@ -55,17 +113,17 @@ interface SessionRow {
   session: TmuxSession;
 }
 
-/** Coarse "created N ago" for a Unix-epoch-seconds timestamp. The host clock may
- *  differ slightly from the local one; a near-now or future value reads "just now"
- *  rather than a negative age. */
-function relativeAge(epochSecs: number): string {
-  const secs = Math.max(0, Math.floor(Date.now() / 1000) - epochSecs);
-  if (secs < 60) return "just now";
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
+/** Anchor for the per-row session-stats hover card (TODO #85) — the same
+ *  dwell-triggered tooltip pattern `FileTree` uses for a file/folder row
+ *  (`handleEntryMouseEnter`/`.file-tooltip`), applied to a session row. Carries
+ *  only the (host, name) identity, not a snapshot of the session — the card
+ *  looks the live row up from `sessionRows` on every render, so its stats keep
+ *  advancing with the Sessions view's own 7s poll while it's open, rather than
+ *  freezing at whatever "working"/uptime the session had when the dwell fired. */
+interface SessionTooltip {
+  rect: DOMRect;
+  hostId: string;
+  name: string;
 }
 
 interface MtimeCue {
@@ -161,11 +219,13 @@ export interface ProjectFilesViewProps {
    *  `ProjectFilesPane`. */
   mountTree: boolean;
 
-  /** Compact mode: strip everything above the tree's find-files search box — the
-   *  project-name header, the view-switcher toolbar (Files/Git/Search/Apps/±),
-   *  and the sync + sort rows (`ProjectFilesPane`) — so the search is topmost.
-   *  Set only by the docked subwindow viewer (`SubwindowFilesSidebar`); the right
-   *  panel and the Files (Project) tab leave it unset and keep the full chrome. */
+  /** Compact mode: strip only the project-name/tags/source-switch/git-bar header
+   *  row — the view-switcher toolbar (Files/Git/Search/Apps/±/sessions/jobs/
+   *  import/etc.) and every view it switches to render identically to the full
+   *  chrome. The sync + sort rows (`ProjectFilesPane`) are still stripped, so the
+   *  tree's find-files search stays topmost there. Set only by the docked
+   *  subwindow viewer (`SubwindowFilesSidebar`); the right panel and the Files
+   *  (Project) tab leave it unset and keep the full chrome. */
   compact?: boolean;
 
   /** Host callback for the tree's "Open in a new tab"; omitted where a tab can't
@@ -403,6 +463,62 @@ export function ProjectFilesView({
     };
   }, [active, projectId, project?.remote, connSig, sessionHosts]);
 
+  // Per-row session-stats hover card (TODO #85): the exact dwell-tooltip
+  // mechanism `FileTree` uses for a file/folder row — open on a genuine pause,
+  // not mere mouse-in (a bare `onMouseEnter` measurement would reflow on every
+  // pass over the list), close immediately on leave.
+  const [sessionTooltip, setSessionTooltip] = useState<SessionTooltip | null>(null);
+  const sessionTooltipRef = useRef<HTMLDivElement | null>(null);
+  const sessionTooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function cancelSessionTooltipTimer() {
+    if (sessionTooltipTimer.current !== null) {
+      clearTimeout(sessionTooltipTimer.current);
+      sessionTooltipTimer.current = null;
+    }
+  }
+  useEffect(() => () => cancelSessionTooltipTimer(), []);
+  function handleSessionRowMouseEnter(e: React.MouseEvent<HTMLDivElement>, hostId: string, name: string) {
+    const row = e.currentTarget;
+    cancelSessionTooltipTimer();
+    sessionTooltipTimer.current = setTimeout(() => {
+      sessionTooltipTimer.current = null;
+      setSessionTooltip({ rect: row.getBoundingClientRect(), hostId, name });
+    }, TOOLTIP_DWELL_MS);
+  }
+  function handleSessionRowMouseLeave() {
+    cancelSessionTooltipTimer();
+    setSessionTooltip(null);
+  }
+  // Vertical-only overflow correction, same as `FileTree`'s `tooltipShift`: a
+  // row near the bottom of a short docked viewer still measures its anchor
+  // against the whole app window, so an unclamped `top` could push the card
+  // past the window's bottom edge. Horizontal side is picked in the render
+  // below (whichever side of the row has more room).
+  const [sessionTooltipShift, setSessionTooltipShift] = useState(0);
+  useLayoutEffect(() => {
+    if (!sessionTooltip) {
+      setSessionTooltipShift(0);
+      return;
+    }
+    const el = sessionTooltipRef.current;
+    if (!el) {
+      setSessionTooltipShift(0);
+      return;
+    }
+    const overflow = sessionTooltip.rect.top + el.offsetHeight - (window.innerHeight - 8);
+    setSessionTooltipShift(overflow > 0 ? overflow : 0);
+  }, [sessionTooltip]);
+  // Closing a session (kill/rename) drops it from `sessionRows`; the card has
+  // no session left to look up, so it self-closes rather than showing
+  // stale/blank stats.
+  useEffect(() => {
+    if (!sessionTooltip) return;
+    const stillThere = sessionRows.some(
+      (r) => r.hostId === sessionTooltip.hostId && r.session.name === sessionTooltip.name,
+    );
+    if (!stillThere) setSessionTooltip(null);
+  }, [sessionRows, sessionTooltip]);
+
   // Keep the Sessions view grouped in the configured machine order. A fallback
   // group preserves a row if a machine was renamed or removed while its list
   // request was still in flight.
@@ -553,7 +669,9 @@ export function ProjectFilesView({
     if (!projectDir) return;
     try {
       const known = sessionJobs?.find((j) => j.jobId === jobId);
-      const outFile = known?.outFile ?? (await slurmJobOut(projectDir, jobId));
+      const outFile =
+        known?.outFile ??
+        (await slurmJobOut(projectDir, jobId, undefined, project?.hpc?.logs_dir));
       openLogTab({
         scope,
         projectDir,
@@ -564,6 +682,146 @@ export function ProjectFilesView({
       });
     } catch (e) {
       window.alert(`Could not resolve the log file for job ${jobId}: ${e}`);
+    }
+  };
+
+  // ── HPC workspaces (Phase C) ──────────────────────────────────────────────
+  // A workspace is the piece of the cluster's parallel filesystem this project's
+  // data lives on — and it is DELETED when it expires. The wizard is where one is
+  // allocated; this is where an already-running project *sees the clock* and
+  // spends an extension before the deadline. Read once when the Jobs view opens
+  // (never polled: `ws_list` is a full SSH round trip and the number moves in
+  // days, not seconds).
+  const [wsRows, setWsRows] = useState<HpcWorkspace[]>([]);
+  const [wsBusy, setWsBusy] = useState(false);
+  // The read runs for the Jobs view AND — when the project records a workspace —
+  // as soon as its host is reachable, because the expiry banner has to appear
+  // without the user first opening a view they have no reason to visit.
+  const wantWorkspaces = view === "jobs" || Boolean(project?.hpc?.workspace_id);
+  useEffect(() => {
+    if (!active || !wantWorkspaces || !projectDir || !primaryReady) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const info = await wsAvailable(wsTargetForProject(projectDir));
+        if (cancelled || !info.available) {
+          if (!cancelled) setWsRows([]);
+          return;
+        }
+        const list = await wsList(wsTargetForProject(projectDir));
+        if (!cancelled) setWsRows(list);
+      } catch {
+        if (!cancelled) setWsRows([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [active, wantWorkspaces, projectDir, primaryReady]);
+
+  // The workspace this project's tree actually lives in — the one whose expiry
+  // deletes the host copy of the project, not merely "some data".
+  const projectWs = useMemo(
+    () => findProjectWorkspace(wsRows, project?.hpc, project?.remote?.remote_path),
+    [wsRows, project?.hpc, project?.remote?.remote_path],
+  );
+  const [expiryDismissed, setExpiryDismissed] = useState("");
+  const warnExpiry =
+    shouldWarnExpiry(projectWs) && expiryDismissed !== `${projectWs?.id}:${projectWs?.remaining_days}`;
+
+  // Spend one of a workspace's extensions. The filesystem it was allocated on has
+  // to be repeated, so the row's own value is passed straight back.
+  const extendWs = async (ws: HpcWorkspace) => {
+    if (!projectDir) return;
+    const answer = window.prompt(`Extend workspace '${ws.id}' by how many days?`, "30");
+    if (!answer) return;
+    const days = Number(answer.trim());
+    if (!Number.isFinite(days) || days < 1) return;
+    try {
+      const next = await wsExtend(wsTargetForProject(projectDir), ws.id, days, ws.filesystem);
+      setWsRows((rs) => rs.map((r) => (r.id === ws.id ? { ...r, ...next } : r)));
+    } catch (e) {
+      window.alert(`Extending '${ws.id}' failed: ${e}`);
+    }
+  };
+
+  // Move the project's host tree into another workspace — the escape hatch an
+  // expiry makes inevitable (a primary's remote_path is otherwise fixed at
+  // creation). Nothing is copied host-side: the new root starts empty and is
+  // re-seeded from the LOCAL MIRROR, which is the durable copy. Whatever the old
+  // workspace still holds stays there until it expires, so this must be said
+  // before it happens, not after.
+  const moveProjectTo = async (ws: HpcWorkspace) => {
+    if (!projectId || !project?.remote) return;
+    const folder = basename(project.remote.remote_path.replace(/\/+$/, "")) || projectId;
+    const dest = projectPathIn(ws, folder);
+    const ok = window.confirm(
+      `Move this project's host tree to:\n${dest}\n\n` +
+        `The new folder starts EMPTY and is re-seeded from your local mirror ` +
+        `(git lockstep). Files that only exist in the old workspace — job outputs, ` +
+        `anything never synced — are NOT moved and stay there until it expires.\n\n` +
+        `Continue?`,
+    );
+    if (!ok) return;
+    setWsBusy(true);
+    try {
+      // The pool caches the spec, so the connection has to be dropped around the
+      // rewrite and re-opened against the new root.
+      await invoke("remote_disconnect", { projectId }).catch(() => {});
+      const updated = await moveProjectRoot(projectId, dest);
+      useProjectsStore.setState((s) => ({
+        projects: s.projects.map((p) => (p.id === projectId ? { ...p, ...updated } : p)),
+      }));
+      // Reconnect BEFORE re-anchoring: the anchor script rides the project's SSH
+      // path, and between the disconnect above and this there is no session for
+      // it to ride (on a password host it would have nothing to authenticate
+      // with, and no prompt could be answered from here).
+      // `viaLogin`: credential-less by necessity (there is no prompt to answer from
+      // here), so it can only ride an existing master — never evidence of key auth.
+      await invoke("remote_connect", { projectId, viaLogin: true }).catch(() => {});
+
+      // Re-anchor: the record file gains a line naming the new workspace, and the
+      // `workspace` symlink re-points. This is exactly the history the record
+      // exists for — a project passes through several workspaces in a year.
+      let logsDir = project.hpc?.logs_dir;
+      const anchorRel = project.hpc?.anchor_rel;
+      if (anchorRel) {
+        try {
+          const made = await wsAnchor(wsTargetForProject(projectDir), {
+            anchorRel,
+            workspacePath: ws.path,
+            workspaceId: ws.id,
+            projectName: project.name,
+            makeLogs: true,
+          });
+          logsDir = made.logs_dir ?? logsDir;
+        } catch {
+          /* the move already succeeded; the anchor is a convenience */
+        }
+      }
+      await setProjectHpc(projectId, {
+        workspace_id: ws.id,
+        workspace_path: ws.path,
+        filesystem: ws.filesystem,
+        anchor_dir: project.hpc?.anchor_dir,
+        anchor_rel: anchorRel,
+        logs_dir: logsDir,
+      }).catch(() => {});
+    } catch (e) {
+      window.alert(`Moving the project failed: ${e}`);
+    } finally {
+      setWsBusy(false);
+    }
+  };
+
+  // Copy the home anchor's logs into the local mirror — the provenance record on
+  // the machine the user actually reads logs on.
+  const pullProjectLogs = async () => {
+    const dir = project?.hpc?.logs_dir;
+    if (!projectId || !dir) return;
+    try {
+      const n = await pullLogs(projectId, dir);
+      window.alert(n > 0 ? `Copied ${n} log file${n === 1 ? "" : "s"} into logs/.` : "No logs yet.");
+    } catch (e) {
+      window.alert(`Could not copy the logs: ${e}`);
     }
   };
 
@@ -725,12 +983,13 @@ export function ProjectFilesView({
     >
       {resizeHandle}
       {importDrop.conflictModal}
-      {/* Compact (docked subwindow) viewer: everything from here down to the git
-          commit block is above the tree's find-files search, so it's stripped —
-          leaving the search box topmost. The right panel / Files (Project) tab
-          render with `compact` unset and keep the full chrome. */}
+      {/* Compact (docked subwindow) viewer: only the project-name/tags/source-
+          switch/git-bar header is stripped — the tree's find-files search stays
+          topmost. The Files/Git/Search/Apps toolbar (± diverged, sessions, jobs,
+          import, open-in-OS, downloads, settings) renders in both modes, so a
+          subwindow file viewer behaves identically to the right panel / Files
+          (Project) tab except for that header row. */}
       {!compact && (
-        <>
       <div className="right-panel-header">
         {pin}
         <span
@@ -987,8 +1246,31 @@ export function ProjectFilesView({
           </>
           )}
       </div>
+      )}
 
       {hidden}
+
+      {/* Compact (docked subwindow) viewer strips the whole header above, which
+          is where the Remote/Local source switch normally lives — but a remote
+          project still needs it here to flip the tree between host and mirror.
+          It gets its own row in the header's place: ABOVE the Files/Git/Search/
+          Apps toolbar, so the compact viewer stacks source-switch → view row →
+          content in the same order the right panel does. Deliberately NOT gated
+          on the files view — the right panel's switch is always up, and a row
+          that appeared only under "Files" would shove the toolbar up and down on
+          every view change. */}
+      {compact && !activeBox && project?.remote && projectId && (
+        <div className="right-panel-source right-panel-source--compact">
+          <FileSourceSwitch source={source} onChange={setSource} />
+          {source === "remote" && (
+            <RunHostPicker
+              projectId={projectId}
+              primaryHost={project.remote.label || project.remote.host}
+              computeHosts={project.compute_hosts}
+            />
+          )}
+        </div>
+      )}
 
       <div className="right-panel-toolbar">
         {(["files", "git", "search", "windows"] as View[]).map((v) => (
@@ -1124,7 +1406,36 @@ export function ProjectFilesView({
         )}
       </div>
 
-      {!activeBox && gitStatus?.is_repo && (
+      {/* The workspace clock. A workspace expiry does not merely delete "some
+          data" — for a project whose root lives in one it deletes the host tree,
+          repo included. So the warning is raised wherever the user is (every
+          view, not just Jobs), states the two actions that answer it, and is
+          dismissible only until the number changes. */}
+      {warnExpiry && projectWs && (
+        <div className={`hpc-expiry-banner tone-${expiryTone(projectWs)}`}>
+          <span>
+            Workspace <strong>{projectWs.id}</strong> — {remainingLabel(projectWs)}. Its
+            files, including this project's host copy, are deleted at expiry.
+          </span>
+          <div className="hpc-expiry-actions">
+            <button type="button" onClick={() => void extendWs(projectWs)}>
+              Extend…
+            </button>
+            <button type="button" onClick={() => setView("jobs")}>
+              Workspaces
+            </button>
+            <button
+              type="button"
+              title="Dismiss until the remaining time changes"
+              onClick={() => setExpiryDismissed(`${projectWs.id}:${projectWs.remaining_days}`)}
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!compact && !activeBox && gitStatus?.is_repo && (
         <>
           {commitMsg !== null && (
             <div style={{ padding: "4px 6px", borderBottom: "1px solid var(--border-color)" }}>
@@ -1153,8 +1464,6 @@ export function ProjectFilesView({
               {gitError}
             </div>
           )}
-        </>
-      )}
         </>
       )}
 
@@ -1336,7 +1645,12 @@ export function ProjectFilesView({
                 {rows.map(({ session: s }) => {
                   const owned = sessionOwners.has(`${hostId} ${s.name}`);
                   return (
-                    <div key={`${hostId} ${s.name}`} className="orange-file-row" title={s.name}>
+                    <div
+                      key={`${hostId} ${s.name}`}
+                      className="orange-file-row"
+                      onMouseEnter={(e) => handleSessionRowMouseEnter(e, hostId, s.name)}
+                      onMouseLeave={handleSessionRowMouseLeave}
+                    >
                       <button
                         type="button"
                         className="orange-file-name"
@@ -1346,11 +1660,11 @@ export function ProjectFilesView({
                         <span className="orange-file-dot" aria-hidden="true">
                           {s.attached ? "●" : "○"}
                         </span>
-                        {s.name}
-                        <span className="tmux-session-meta">
-                          {s.windows} win · {relativeAge(s.created)}
-                          {owned ? " · open" : ""}
-                        </span>
+                        {s.working && (
+                          <span className="tmux-work-dot" aria-hidden="true" title="Working" />
+                        )}
+                        <span className="tmux-session-label">{sessionDisplayName(s.name)}</span>
+                        {owned && <span className="tmux-session-meta">open</span>}
                       </button>
                       <div className="orange-file-actions">
                         <button
@@ -1379,12 +1693,122 @@ export function ProjectFilesView({
           )}
         </div>
       )}
+      {sessionTooltip && (() => {
+        const statsRow = sessionRows.find(
+          (r) => r.hostId === sessionTooltip.hostId && r.session.name === sessionTooltip.name,
+        );
+        if (!statsRow) return null;
+        const s = statsRow.session;
+        const owned = sessionOwners.has(`${statsRow.hostId} ${s.name}`);
+        // Same side-picking + vertical-shift positioning as FileTree's `.file-tooltip`:
+        // opens toward whichever side of the row has more room, and is pulled up if
+        // it would otherwise overflow the window's bottom edge.
+        const style: React.CSSProperties =
+          window.innerWidth - sessionTooltip.rect.right > sessionTooltip.rect.left
+            ? { left: sessionTooltip.rect.right + 8, top: sessionTooltip.rect.top - sessionTooltipShift }
+            : { right: window.innerWidth - sessionTooltip.rect.left + 8, top: sessionTooltip.rect.top - sessionTooltipShift };
+        return createPortal(
+          <div ref={sessionTooltipRef} className="file-tooltip" style={style}>
+            <div className="file-tooltip-name">
+              {s.name}
+              <UntestedTag />
+            </div>
+            <div>
+              <span className="file-tooltip-label">Host</span>
+              {statsRow.hostLabel}
+            </div>
+            <div>
+              <span className="file-tooltip-label">Status</span>
+              {s.working ? `Working — ${s.currentCommand}` : "Idle"}
+            </div>
+            <div>
+              <span className="file-tooltip-label">Uptime</span>
+              {relativeDuration(s.created)} (since {absoluteTime(s.created)})
+            </div>
+            <div>
+              <span className="file-tooltip-label">{s.working ? "Active" : "Idle for"}</span>
+              {s.working ? "now" : relativeDuration(s.activity)}
+            </div>
+            <div>
+              <span className="file-tooltip-label">Windows</span>
+              {s.windows}
+            </div>
+            <div>
+              <span className="file-tooltip-label">Attached</span>
+              {s.attached ? "Yes" : "No"}
+            </div>
+            <div>
+              <span className="file-tooltip-label">Open in a tab</span>
+              {owned ? "Yes" : "No"}
+            </div>
+          </div>,
+          document.body,
+        );
+      })()}
 
       {view === "jobs" && (
         <div className="right-panel-scroll right-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
           <div className="right-panel-jobs-head">
             <UntestedTag />
           </div>
+          {wsRows.length > 0 && (
+            <>
+              <div className="right-panel-orange-note">
+                Workspaces — data here is deleted at expiry
+                {project?.hpc?.logs_dir && (
+                  <button
+                    type="button"
+                    className="orange-file-act"
+                    title={`Copy the job logs from ${project.hpc.logs_dir} into the mirror's logs/`}
+                    onClick={() => void pullProjectLogs()}
+                  >
+                    Pull logs
+                  </button>
+                )}
+              </div>
+              {wsRows.map((ws) => {
+                const here = projectWs?.id === ws.id && projectWs?.path === ws.path;
+                return (
+                  <div key={`${ws.filesystem ?? ""}/${ws.id}`} className="orange-file-row" title={ws.path}>
+                    <span className="orange-file-name" style={{ cursor: "default" }}>
+                      <span className="orange-file-dot" aria-hidden="true">{here ? "●" : "○"}</span>
+                      {ws.id}
+                      <span className={`tmux-session-meta hpc-ws-remaining tone-${expiryTone(ws)}`}>
+                        {[
+                          here ? "this project" : "",
+                          ws.filesystem ?? "",
+                          remainingLabel(ws),
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </span>
+                    </span>
+                    <div className="orange-file-actions">
+                      <button
+                        type="button"
+                        className="orange-file-act"
+                        title="Extend this workspace (spends one of its extensions)"
+                        onClick={() => void extendWs(ws)}
+                      >
+                        Extend
+                      </button>
+                      {!here && project?.remote && (
+                        <button
+                          type="button"
+                          className="orange-file-act"
+                          disabled={wsBusy}
+                          title="Move this project's host tree into this workspace (re-seeded from your local mirror)"
+                          onClick={() => void moveProjectTo(ws)}
+                        >
+                          Move here
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          )}
           {jobRows.length === 0 ? (
             <div className="right-panel-orange-empty">
               {remoteBlocked
@@ -1436,23 +1860,6 @@ export function ProjectFilesView({
         </div>
       )}
 
-      {/* Compact (docked subwindow) viewer strips the whole header above, which
-          is where the Remote/Local source switch normally lives — but a remote
-          project still needs it here to flip the tree between host and mirror.
-          Give it its own row directly above the tree's find-files search box,
-          so it's the topmost element the compact viewer shows. */}
-      {compact && view === "files" && !activeBox && project?.remote && projectId && (
-        <div className="right-panel-source right-panel-source--compact">
-          <FileSourceSwitch source={source} onChange={setSource} />
-          {source === "remote" && (
-            <RunHostPicker
-              projectId={projectId}
-              primaryHost={project.remote.label || project.remote.host}
-              computeHosts={project.compute_hosts}
-            />
-          )}
-        </div>
-      )}
       {view === "files" && (
         <ProjectFilesPane
           scope={scope}

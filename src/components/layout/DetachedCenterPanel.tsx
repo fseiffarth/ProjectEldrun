@@ -71,6 +71,7 @@ import {
   tabLocation,
   type LocalityMenuState,
 } from "../tabs/TabLocalityBadges";
+import { useT } from "../../lib/i18n";
 
 /** Pixel coordinates of a group body, relative to the detached center panel. */
 interface Rect {
@@ -99,6 +100,7 @@ function DetachedTabStrip({
    *  scrollWidth without resizing its own box, which the ResizeObserver misses. */
   revision: string;
 }) {
+  const t = useT();
   const stripRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
@@ -187,7 +189,7 @@ function DetachedTabStrip({
       {canScrollLeft && (
         <button
           className="tab-scroll-btn left"
-          title="Scroll tabs left"
+          title={t("detachedTabs.scrollLeft")}
           // Keep the chevron out of the bar's window-move/dock drag flow.
           onPointerDown={(e) => e.stopPropagation()}
           onMouseEnter={() => startHoverScroll(-1)}
@@ -203,7 +205,7 @@ function DetachedTabStrip({
       {canScrollRight && (
         <button
           className="tab-scroll-btn right"
-          title="Scroll tabs right"
+          title={t("detachedTabs.scrollRight")}
           onPointerDown={(e) => e.stopPropagation()}
           onMouseEnter={() => startHoverScroll(1)}
           onMouseLeave={stopHoverScroll}
@@ -290,6 +292,7 @@ export function DetachedCenterPanel({
   onFiles,
 }: Props) {
   // The popout's "+" add-tab menu: which group opened it + where to anchor it.
+  const t = useT();
   const [addMenu, setAddMenu] = useState<{ groupId: string; x: number; y: number } | null>(null);
   const [agentDialogOpen, setAgentDialogOpen] = useState(false);
   // Tab hover card anchor (the hovered tab's bottom-centre), mirroring the main
@@ -1249,7 +1252,7 @@ export function DetachedCenterPanel({
               target. */}
           <div
             className="tab-drag-grip"
-            title="Drag to move this window"
+            title={t("detachedTabs.dragToMove")}
             aria-hidden="true"
           >
             ⠿
@@ -1326,7 +1329,7 @@ export function DetachedCenterPanel({
                       e.stopPropagation();
                       onClose(tab.key);
                     }}
-                    title="Close tab"
+                    title={t("detachedTabs.closeTab")}
                   >
                     ×
                   </button>
@@ -1344,7 +1347,7 @@ export function DetachedCenterPanel({
           <div className="tab-new-wrap">
             <button
               className="tab-new-btn"
-              title="New tab"
+              title={t("detachedTabs.newTab")}
               // The bar's pointerdown starts a window-move/dock drag; keep the
               // button's press out of it (it also excludes buttons, but be explicit).
               onPointerDown={(e) => e.stopPropagation()}
@@ -1398,7 +1401,7 @@ export function DetachedCenterPanel({
             {onHideWindow && (
               <button
                 className="subwindow-hide"
-                title="Hide this window into the right panel (bring it back from there)"
+                title={t("detachedTabs.hideWindow")}
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();

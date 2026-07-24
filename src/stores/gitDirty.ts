@@ -29,6 +29,19 @@ export function gitDirtyState(status: GitStatus, unpushed: number): GitDirtyStat
   return "clean";
 }
 
+/** Consecutive probes that found NO `.git` for a project, keyed by id. A single
+ *  `is_repo:false` must never disable git: `setProjectGitDisabled(id, true)` is a
+ *  DESTRUCTIVE, persisted action (deletes `.git`, writes `git_type:"none"`), and a
+ *  transient absence — lockstep/sync rebuilding `.git`, a resolver blip, a dir
+ *  momentarily unreadable — would otherwise persist "none" and could race a
+ *  re-created `.git` into deletion. We require several *consecutive* confirmed
+ *  misses (one poll cycle each) before acting, so only a genuine, sustained `.git`
+ *  removal (e.g. `rm -rf .git` in a terminal) trips it. Module-level, not store
+ *  state, so accumulating a streak never re-renders a pill. */
+const GIT_GONE_STREAK = new Map<string, number>();
+/** ~3 poll cycles (~36s at the 12s switcher poll) of confirmed absence. */
+const GIT_GONE_THRESHOLD = 3;
+
 interface GitDirtyStore {
   /** Per-project dot level. Absent until first probed (rendered as no dot). */
   byId: Record<string, GitDirtyState>;
@@ -55,18 +68,34 @@ export const useGitDirtyStore = create<GitDirtyStore>((set) => ({
         ),
       ]);
       next = gitDirtyState(status, unpushed.length);
-      // `.git` can be deleted outside the app (e.g. `rm -rf .git` in a
-      // terminal tab). Catch that here, on the same poll that already probes
-      // the directory, and flip the project back to "none" so the pill menu
-      // (Enable git / danger-zone Remove git) reflects reality.
+      // `.git` can be deleted outside the app (e.g. `rm -rf .git` in a terminal
+      // tab). Reflect that by flipping the project back to "none" — but only
+      // after several *consecutive* confirmed misses (see GIT_GONE_STREAK): a
+      // single is_repo:false during lockstep/sync `.git` churn must not persist
+      // "none" or race a re-created `.git` into deletion.
       if (!status.is_repo) {
+        const streak = (GIT_GONE_STREAK.get(projectId) ?? 0) + 1;
+        GIT_GONE_STREAK.set(projectId, streak);
         const project = useProjectsStore.getState().projects.find((p) => p.id === projectId);
-        if (project && typeof project.git_type === "string" && project.git_type !== "none") {
+        if (
+          streak >= GIT_GONE_THRESHOLD &&
+          project &&
+          typeof project.git_type === "string" &&
+          project.git_type !== "none"
+        ) {
+          GIT_GONE_STREAK.delete(projectId);
           void useProjectsStore.getState().setProjectGitDisabled(projectId, true);
         }
+      } else {
+        // A repo is present again — clear the streak so a past blip can never
+        // combine with a later one to cross the threshold.
+        GIT_GONE_STREAK.delete(projectId);
       }
     } catch {
       next = "clean";
+      // An errored probe (host down, git spawn failure) proves nothing about the
+      // repo's existence, so it must not count toward disabling git.
+      GIT_GONE_STREAK.delete(projectId);
     }
     set((s) =>
       s.byId[projectId] === next ? s : { byId: { ...s.byId, [projectId]: next } },

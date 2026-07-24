@@ -55,11 +55,17 @@ vi.mock("../stores/projects", () => {
     listenProjectRuntimeSwitched: vi.fn().mockResolvedValue(() => {}),
   };
 });
-vi.mock("../stores/settings", () => ({
-  useSettingsStore: vi.fn((sel: (s: object) => unknown) =>
-    sel({ load: vi.fn() }),
-  ),
-}));
+vi.mock("../stores/settings", () => {
+  // The auto-reconnect sweep reads settings imperatively (getState) to skip
+  // HPC-tagged machines, so the mock must carry getState alongside the hook.
+  const state = { load: vi.fn(), settings: null };
+  return {
+    useSettingsStore: Object.assign(
+      vi.fn((sel: (s: object) => unknown) => sel(state)),
+      { getState: () => state },
+    ),
+  };
+});
 // AppShell loads boxes once projects are loaded; provide a no-op so the effect
 // doesn't reach into the (mocked) projects store's setState.
 vi.mock("../stores/boxes", () => ({

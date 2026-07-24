@@ -1,5 +1,6 @@
 import { createPortal } from "react-dom";
 import type { TourPlacement } from "../../lib/tour";
+import { useT } from "../../lib/i18n";
 
 const BUBBLE_W = 300;
 /** Padding around the spotlight cutout so the highlighted control isn't flush
@@ -62,6 +63,7 @@ export function TourCoachmark({
   onNext: () => void;
   onSkip: () => void;
 }) {
+  const t = useT();
   const banner = !rect;
   const bubble = rect ? bubbleStyle(rect, placement) : {};
 
@@ -99,7 +101,7 @@ export function TourCoachmark({
             {stepNumber} / {stepTotal}
           </span>
           <button type="button" className="tour-bubble-skip" onClick={onSkip}>
-            Skip tour
+            {t("tour.skip")}
           </button>
           <button
             type="button"
@@ -107,10 +109,10 @@ export function TourCoachmark({
             onClick={onBack}
             disabled={isFirst}
           >
-            Back
+            {t("tour.back")}
           </button>
           <button type="button" className="tour-bubble-next" onClick={onNext}>
-            {isLast ? "Done" : "Next"}
+            {isLast ? t("tour.done") : t("tour.next")}
           </button>
         </div>
       </div>

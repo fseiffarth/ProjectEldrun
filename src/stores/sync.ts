@@ -166,8 +166,13 @@ interface SyncStore {
    *  the caller confirms a large answer before committing to `setAuto`. */
   autoPreview: (projectId: string, relPath: string) => Promise<AutoSyncPreview>;
   /** Census the folders too big to sync silently, on BOTH sides (mirror + host).
-   *  Read-only; the host half is skipped when the project isn't connected. */
-  bigFolders: (projectId: string) => Promise<BigFolderScan>;
+   *  Read-only; the host half is skipped when the project isn't connected.
+   *
+   *  `scanHost` (default true) is what a **careful** host turns off: the host half
+   *  is a recursive `du -ak -x`, which on a cluster runs against a parallel
+   *  filesystem's metadata server. Passing false keeps the local walk and skips
+   *  the host entirely, leaving `hostScanned` false. See `lib/carefulHost.ts`. */
+  bigFolders: (projectId: string, scanHost?: boolean) => Promise<BigFolderScan>;
   /** Record (or lift) an explicit byte-sync exclusion for folders. Stronger than
    *  `setAuto(false)`: the whole-project pull and push skip an excluded tree too.
    *  Never deletes — mirror bytes already present stay put. */
@@ -322,8 +327,8 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
   autoPreview: async (projectId, relPath) =>
     invoke<AutoSyncPreview>("sync_auto_preview", { projectId, relPath }),
 
-  bigFolders: async (projectId) =>
-    invoke<BigFolderScan>("sync_big_folders", { projectId }),
+  bigFolders: async (projectId, scanHost = true) =>
+    invoke<BigFolderScan>("sync_big_folders", { projectId, scanHost }),
 
   setExcluded: async (projectId, relPaths, excluded) => {
     await invoke("sync_set_excluded", { projectId, relPaths, excluded });

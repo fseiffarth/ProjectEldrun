@@ -11,23 +11,26 @@ import { useTimerStore } from "../../stores/timer";
 import { useTabsStore } from "../../stores/tabs";
 import { projectTypeTags } from "./projectTypeTags";
 import { OrbitSpinner } from "../common/OrbitSpinner";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
-export function statusLabel(status: string): string {
-  if (status === "current") return "Current";
-  if (status === "active") return "Active";
-  return "Inactive";
+type Translator = (key: TranslationKey, params?: Record<string, string | number>) => string;
+
+export function statusLabel(t: Translator, status: string): string {
+  if (status === "current") return t("projectHoverCard.statusCurrent");
+  if (status === "active") return t("projectHoverCard.statusActive");
+  return t("projectHoverCard.statusInactive");
 }
 
-export function formatTime(secs: number): string {
-  if (secs < 60) return "< 1m";
+export function formatTime(t: Translator, secs: number): string {
+  if (secs < 60) return t("projectHoverCard.timeUnderMinute");
   const h = Math.floor(secs / 3600);
   const m = Math.floor((secs % 3600) / 60);
   if (h > 0) return `${h}h ${m}m`;
   return `${m}m`;
 }
 
-export function formatCpu(pct: number): string {
-  return pct < 0.1 ? "idle" : `${pct.toFixed(1)}%`;
+export function formatCpu(t: Translator, pct: number): string {
+  return pct < 0.1 ? t("projectHoverCard.cpuIdle") : `${pct.toFixed(1)}%`;
 }
 
 export function projectDescription(project: ProjectEntry): string {
@@ -157,6 +160,7 @@ export function ProjectHoverCard({
   state: ProjectHoverState;
   showTags?: boolean;
 }) {
+  const t = useT();
   const { popupPos, timeToday, cpu, scaffoldMissing, isLiveProject, timerPaused } = state;
   if (!popupPos) return null;
 
@@ -186,12 +190,12 @@ export function ProjectHoverCard({
       {project.remote ? (
         <>
           <span className="pill-popup-path-row">
-            <span className="pill-popup-path-label">remote</span>
+            <span className="pill-popup-path-label">{t("projectHoverCard.remoteLabel")}</span>
             <span className="pill-popup-path">{formatRemoteTarget(project.remote)}</span>
           </span>
           {localMirror && (
             <span className="pill-popup-path-row">
-              <span className="pill-popup-path-label">local</span>
+              <span className="pill-popup-path-label">{t("projectHoverCard.localLabel")}</span>
               <span className="pill-popup-path">{localMirror}</span>
             </span>
           )}
@@ -201,21 +205,21 @@ export function ProjectHoverCard({
       )}
       {gitRemote && (
         <span className="pill-popup-path-row">
-          <span className="pill-popup-path-label">origin</span>
+          <span className="pill-popup-path-label">{t("projectHoverCard.originLabel")}</span>
           <span className="pill-popup-path">{gitRemote}</span>
         </span>
       )}
       <span className={`pill-popup-status ${project.status === "inactive" ? "inactive" : "active"}`}>
-        {statusLabel(project.status)}
+        {statusLabel(t, project.status)}
       </span>
       {timeToday !== null && (
         <span className="pill-popup-time">
-          Today: {formatTime(timeToday)}
-          {isLiveProject && timerPaused && " (paused)"}
+          {t("projectHoverCard.todayPrefix")} {formatTime(t, timeToday)}
+          {isLiveProject && timerPaused && ` ${t("projectHoverCard.pausedSuffix")}`}
           {isLiveProject && !timerPaused && <OrbitSpinner />}
         </span>
       )}
-      {cpu !== null && <span className="pill-popup-cpu">CPU: {formatCpu(cpu)}</span>}
+      {cpu !== null && <span className="pill-popup-cpu">{t("projectHoverCard.cpuPrefix")} {formatCpu(t, cpu)}</span>}
     </div>,
     document.body,
   );

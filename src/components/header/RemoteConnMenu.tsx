@@ -4,6 +4,7 @@ import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { useHostBusyStore, isBusy } from "../../stores/hostBusy";
 import type { ConnState } from "../../stores/remoteStatus";
 import type { ProjectEntry } from "../../types";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 /**
  * A remote project's live SSH status, rendered on the project's pill.
@@ -36,14 +37,21 @@ import type { ProjectEntry } from "../../types";
  *  host surfaces that colour ahead of the steady-state green/grey. */
 const STATUS_ORDER: ConnState[] = ["error", "connecting", "connected", "off"];
 
-const STATUS_WORD: Record<ConnState, string> = {
-  error: "error",
-  connecting: "connecting",
-  connected: "connected",
-  off: "off",
+const STATUS_WORD_KEY: Record<ConnState, TranslationKey> = {
+  error: "remoteConnMenu.statusError",
+  connecting: "remoteConnMenu.statusConnecting",
+  connected: "remoteConnMenu.statusConnected",
+  off: "remoteConnMenu.statusOff",
 };
 
 export function RemoteConnMenu({ project, compact }: { project: ProjectEntry; compact?: boolean }) {
+  const t = useT();
+  const STATUS_WORD: Record<ConnState, string> = {
+    error: t(STATUS_WORD_KEY.error),
+    connecting: t(STATUS_WORD_KEY.connecting),
+    connected: t(STATUS_WORD_KEY.connected),
+    off: t(STATUS_WORD_KEY.off),
+  };
   const status = useRemoteStatusStore((s) => s.byProject[project.id]);
   const byHost = useRemoteStatusStore((s) => s.byHost[project.id]);
   const openHub = useRemoteMachinesStore((s) => s.open);
@@ -94,7 +102,7 @@ export function RemoteConnMenu({ project, compact }: { project: ProjectEntry; co
       (g) =>
         `${g.hosts.length} ${STATUS_WORD[g.st]}: ${g.hosts.map((h) => h.label).join(", ")}` +
         (g.working.length > 0
-          ? `\n${g.working.length} working: ${g.working.map((h) => h.label).join(", ")}`
+          ? `\n${g.working.length} ${t("remoteConnMenu.workingWord")}: ${g.working.map((h) => h.label).join(", ")}`
           : ""),
     )
     .join("\n");
@@ -107,7 +115,7 @@ export function RemoteConnMenu({ project, compact }: { project: ProjectEntry; co
       <button
         type="button"
         className="header-conn-lamps no-drag"
-        aria-label="Remote machines — click to connect / manage this project's hosts"
+        aria-label={t("remoteConnMenu.ariaLabel")}
         title={title}
         onClick={(e) => {
           e.stopPropagation();
@@ -121,7 +129,7 @@ export function RemoteConnMenu({ project, compact }: { project: ProjectEntry; co
               busy={g.working.length > 0}
               label={
                 `${g.hosts.length} ${STATUS_WORD[g.st]} — ${g.hosts.map((h) => h.label).join(", ")}` +
-                (g.working.length > 0 ? ` (${g.working.length} working)` : "")
+                (g.working.length > 0 ? ` (${g.working.length} ${t("remoteConnMenu.workingWord")})` : "")
               }
             />
             {g.hosts.length > 1 && (

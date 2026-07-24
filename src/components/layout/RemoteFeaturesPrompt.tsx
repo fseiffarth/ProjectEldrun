@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Toggle } from "../common/Toggle";
 import { useSettingsStore } from "../../stores/settings";
+import { useT } from "../../lib/i18n";
 
 /**
  * First-run ask for the two machine-wide remote surfaces that live in the
@@ -13,6 +14,7 @@ import { useSettingsStore } from "../../stores/settings";
  * chrome, like `HowToStart`.
  */
 export function RemoteFeaturesPrompt({ onClose }: { onClose: () => void }) {
+  const t = useT();
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const [vpn, setVpn] = useState(false);
   const [machines, setMachines] = useState(false);
@@ -37,34 +39,29 @@ export function RemoteFeaturesPrompt({ onClose }: { onClose: () => void }) {
         className="settings-dialog remote-features-prompt-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label="Remote features"
+        aria-label={t("settings.remoteFeatures")}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="settings-title-row">
-          <h2>Using VPN or remote machines?</h2>
+          <h2>{t("remoteFeatures.title")}</h2>
           <button type="button" className="dialog-close-btn" onClick={finish}>×</button>
         </div>
-        <p className="settings-help">
-          Eldrun can control an OpenVPN tunnel and connect to SSH machines you
-          don't have a project on, both from the header. Both are off by default
-          — turn on whichever you'll use. Either can be flipped any time from
-          Settings.
-        </p>
+        <p className="settings-help">{t("remoteFeatures.help")}</p>
 
         <div className="settings-toggle-card">
           <label className="settings-toggle-card-row">
-            <span>OpenVPN tunnel control</span>
+            <span>{t("settings.vpnEnabled")}</span>
             <Toggle checked={vpn} onChange={(e) => setVpn(e.target.checked)} />
           </label>
           <label className="settings-toggle-card-row">
-            <span>Global remote machines</span>
+            <span>{t("settings.machinesEnabled")}</span>
             <Toggle checked={machines} onChange={(e) => setMachines(e.target.checked)} />
           </label>
         </div>
 
         <div className="settings-link-row">
           <button type="button" className="how-to-start-got-it" onClick={finish}>
-            Continue
+            {t("remoteFeatures.continue")}
           </button>
         </div>
       </div>

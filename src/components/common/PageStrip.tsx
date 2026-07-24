@@ -52,6 +52,7 @@ import {
   type PhysPoint,
   type WindowFrame,
 } from "../../lib/coords";
+import { useT } from "../../lib/i18n";
 
 /** Below this many px of pointer travel a press is a click, not a drag. */
 const DRAG_THRESHOLD_PX = 5;
@@ -150,6 +151,7 @@ export function PageStrip({
   onImport,
   onMovedOut,
 }: PageStripProps) {
+  const t = useT();
   const stripRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const anchorRef = useRef<string | null>(null);
@@ -468,7 +470,7 @@ export function PageStrip({
         ref={stripRef}
         className={`page-strip page-strip-${orientation}${className ? ` ${className}` : ""}`}
         role="list"
-        aria-label="Pages"
+        aria-label={t("pageStrip.ariaLabel")}
       >
         {pages.map((ref, index) => {
           const excluded = isExcluded?.(ref, index) ?? false;
@@ -505,8 +507,8 @@ export function PageStrip({
               <button
                 className="page-strip-rotate"
                 type="button"
-                title="Turn this page 90° clockwise"
-                aria-label="Turn page clockwise"
+                title={t("pageStrip.turnClockwiseTitle")}
+                aria-label={t("pageStrip.turnClockwiseAria")}
                 onPointerDown={(e) => e.stopPropagation()} // not a drag
                 onClick={() => act(rotatePages(pages, targetIds(ref.id)))}
               >
@@ -515,8 +517,8 @@ export function PageStrip({
               <button
                 className="page-strip-del"
                 type="button"
-                title="Remove this page"
-                aria-label="Remove page"
+                title={t("pageStrip.removePageTitle")}
+                aria-label={t("pageStrip.removePageAria")}
                 onPointerDown={(e) => e.stopPropagation()} // not a drag
                 onClick={() => act(deletePages(pages, targetIds(ref.id)))}
               >
@@ -538,17 +540,17 @@ export function PageStrip({
             onPointerDown={(e) => e.stopPropagation()}
           >
             <button onClick={() => act(rotatePages(pages, menu.ids, 90))}>
-              Turn right
+              {t("pageStrip.turnRight")}
             </button>
             <button onClick={() => act(rotatePages(pages, menu.ids, -90))}>
-              Turn left
+              {t("pageStrip.turnLeft")}
             </button>
             <button onClick={() => act(duplicatePages(pages, menu.ids))}>
-              Duplicate
+              {t("pageStrip.duplicate")}
             </button>
             <hr />
             <button onClick={() => act(deletePages(pages, menu.ids))}>
-              {menu.ids.length > 1 ? `Delete ${menu.ids.length} pages` : "Delete page"}
+              {menu.ids.length > 1 ? t("pageStrip.deleteMany", { count: menu.ids.length }) : t("pageStrip.deleteOne")}
             </button>
           </div>,
           document.body,

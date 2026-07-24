@@ -23,7 +23,11 @@ import { useSettingsStore } from "../stores/settings";
 import type { Settings } from "../types";
 
 /** Every experimental flag. Keys of `Settings`, all `boolean | undefined`. */
-export const EXPERIMENTAL_FLAGS = ["agent_mode_toggle", "python_run_debug"] as const;
+export const EXPERIMENTAL_FLAGS = [
+  "agent_mode_toggle",
+  "python_run_debug",
+  "deck_presenter",
+] as const;
 
 export type ExperimentalFlag = (typeof EXPERIMENTAL_FLAGS)[number];
 

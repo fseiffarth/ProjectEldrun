@@ -16,7 +16,17 @@ import type { PDFDocumentProxy } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { usePdfSyncStore } from "../../../stores/pdfSync";
 import { useScrollSync } from "../../../stores/scrollSync";
-import { useFileScope, readFileBytes, writeFileBytes, fileMtime } from "../fileAccess";
+import {
+  useFileScope,
+  readFileBytes,
+  readFileText,
+  writeFileBytes,
+  fileMtime,
+  describeFileError,
+} from "../fileAccess";
+import { useExperimental } from "../../../lib/experimental";
+import { emptyDeck } from "../../../lib/viewers/deck/model";
+import { deckPathForPdf, serializeDeck } from "../../../lib/viewers/deck/sidecar";
 import { jumpToSource, useViewerState } from "../FileViewerPane";
 import {
   renderPdfPagesToImages,
@@ -46,7 +56,7 @@ import type { PageTransfer } from "../../../stores/pdfDrag";
 import { ContextFilePicker } from "../ContextFilePicker";
 import { useProjectsStore } from "../../../stores/projects";
 import { resolveProjectDirectory } from "../../../types";
-import { basename, isPathWithin } from "../../../lib/paths";
+import { basename, dirname, isPathWithin } from "../../../lib/paths";
 import {
   pdfPageMatches,
   pdfPointToBigPoints,
@@ -671,6 +681,48 @@ function PdfCanvas({
   groupId?: string | null;
 }) {
   const scope = useFileScope();
+
+  // "Present": turn this PDF into a deck — a sidecar of editable layers beside
+  // it, plus the fullscreen presenter. Experimental, so the button is absent
+  // unless the flag is on. Creating the sidecar is deliberately non-destructive:
+  // the PDF is untouched, and an existing deck is opened rather than replaced.
+  const deckEnabled = useExperimental("deck_presenter");
+  const [makingDeck, setMakingDeck] = useState(false);
+  const openAsDeck = useCallback(async () => {
+    setMakingDeck(true);
+    try {
+      const deckPath = deckPathForPdf(path);
+      let exists = true;
+      try {
+        await readFileText(deckPath, scope);
+      } catch {
+        exists = false;
+      }
+      if (!exists) {
+        const deck = emptyDeck(basename(path));
+        await writeFileBytes(
+          deckPath,
+          new TextEncoder().encode(serializeDeck(deck)),
+          scope,
+        );
+      }
+      // Imported lazily: `FileViewerPane` already imports this module, so a
+      // static import would close a cycle. The call happens in a callback, long
+      // after both modules have initialised, so deferring it costs nothing and
+      // keeps the dependency one-way on paper — the same reason
+      // `openProjectFilesTab` lives beside its tab rather than in the view.
+      const { openLinkedFile } = await import("../FileViewerPane");
+      openLinkedFile(tabKey, dirname(path) || "/", {
+        path: deckPath,
+        viewer: "eldeck",
+        label: basename(deckPath),
+      });
+    } catch (e) {
+      setError(describeFileError(e));
+    } finally {
+      setMakingDeck(false);
+    }
+  }, [path, scope, tabKey]);
   const viewPos = useViewerState(tabKey);
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1792,6 +1844,16 @@ function PdfCanvas({
         >
           {printing ? <span className="file-viewer-save-spinner" aria-hidden="true" /> : "🖨"}
         </button>
+        {deckEnabled && (
+          <button
+            className="file-viewer-zoom-text"
+            onClick={() => void openAsDeck()}
+            disabled={!doc || makingDeck}
+            title="Open this PDF as a presentation: editable layers on top, and a fullscreen presenter"
+          >
+            {makingDeck ? "…" : "Present"}
+          </button>
+        )}
         {onOpenExternally && (
           <button
             className="file-viewer-open-external file-viewer-pdf-external"

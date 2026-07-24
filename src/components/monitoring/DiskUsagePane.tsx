@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { withHpcConfirm } from "../../lib/hpcGuard";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -139,11 +140,19 @@ export function DiskUsagePane({ projectId, projectCwd, tabKey, visible }: Props)
       setError(null);
       setScan(null);
       try {
-        const result = await invoke<DuScan>("disk_usage_scan", {
-          scanId,
-          root,
-          projectId: onHost ? projectId : null,
-        });
+        // On a host tagged HPC the backend refuses this until the user confirms
+        // *this* scan: it stats every file under the root, and on a cluster that
+        // root is normally on the parallel filesystem, where that is a metadata
+        // storm against a shared server (`lib/hpcGuard.ts`). Untagged hosts and
+        // local roots never see the dialog — the refusal never happens for them.
+        const result = await withHpcConfirm((confirmed) =>
+          invoke<DuScan>("disk_usage_scan", {
+            scanId,
+            root,
+            projectId: onHost ? projectId : null,
+            confirmed,
+          }),
+        );
         // A scan the user cancelled and replaced must not overwrite the new one.
         if (scanIdRef.current !== scanId) return;
         setScan(result);

@@ -14,6 +14,14 @@ import {
   type GpuSample,
 } from "../../lib/gpu";
 import { useProjectsStore } from "../../stores/projects";
+import { useSettingsStore } from "../../stores/settings";
+import {
+  carefulIsExplicit,
+  isCarefulHost,
+  setCarefulPatch,
+  targetOfSpec,
+} from "../../lib/carefulHost";
+import { isHpcHost } from "../../lib/hpcHost";
 import { ConnLamp } from "../common/ConnLamp";
 import { UntestedTag } from "../common/UntestedTag";
 import { hostsForProject } from "../../lib/remoteHosts";
@@ -49,6 +57,11 @@ export interface LoginSession {
   tty: string;
   /** The rest of the `who` line verbatim — login time and `(origin)`. */
   detail: string;
+  /** This session belongs to the account Eldrun is connected as. The backend also
+   *  *synthesizes* such a row when `who` has none: utmp only records a session that
+   *  got a pty, and the monitor's own probe rides the pooled (non-pty) master — so
+   *  without it the panel listed every logged-in user except the one reading it. */
+  is_self?: boolean;
 }
 
 export interface SystemSnapshot {
@@ -79,6 +92,14 @@ export interface SystemSnapshot {
    *  panel — the same per-user session view the connect-time remote-usage dialog
    *  shows. Populated only on the remote path; empty locally. */
   sessions?: LoginSession[];
+  /** Whether the **host** reported itself an HPC node (SLURM on its `PATH`) and
+   *  therefore sampled itself carefully: no other user's account name, command
+   *  line, GPU process or login session is in this snapshot — everyone else's
+   *  processes arrive bucketed under one `other users` label. A cluster login
+   *  node's usage rules don't allow collecting more, and its operators don't want
+   *  a 3-second poll either, so the pane also slows down when this is set
+   *  (`docs/context/hpc_careful_mode.md`). Never set for a local sample. */
+  careful?: boolean;
 }
 
 interface Props {
@@ -105,6 +126,15 @@ const POLL_MS = 1500;
 /** The host sample is one SSH round-trip reading its whole `/proc`, so it polls
  *  more gently than the local `/proc` read to keep host load and traffic down. */
 const REMOTE_POLL_MS = 3000;
+/** …and more gently still on an **HPC host** (one that reported `careful`): a
+ *  shared login node is explicitly not to carry a sustained background load, and
+ *  a pane left open all afternoon at 3 s is exactly the "process causing load
+ *  over a longer period" its rules reserve the right to kill. 12 s still tracks a
+ *  job starting; nothing here needs sub-second news. Paired with the unfocused
+ *  pause below — an HPC sample the user isn't looking at costs the cluster for
+ *  nothing. Both apply ONLY to a careful host; an ordinary remote box keeps the
+ *  responsive cadence it always had. */
+const CAREFUL_POLL_MS = 12_000;
 
 // ── Pure delta helpers (unit-tested in SystemMonitorSampling.test.ts) ─────────
 
@@ -266,6 +296,8 @@ interface SessionRow {
   sessions: number;
   cpu: number;
   mem: number;
+  /** The row is the connected account's own — marked "you" and pinned to the top. */
+  isSelf: boolean;
 }
 
 /** Collapse `who`'s login sessions into one row per user — a session count plus
@@ -273,23 +305,35 @@ interface SessionRow {
  *  compute figures are exact rather than a `ps` sample (which is what the connect
  *  dialog has to settle for). Sorted by CPU%, busiest first. Unlike "By user"
  *  (every process owner, including system daemons), this lists only users with an
- *  actual interactive login — the "who else is on this shared machine?" view. */
+ *  actual interactive login — the "who else is on this shared machine?" view. The
+ *  connected account is always among them (the backend synthesizes its row when
+ *  utmp has no record of it, see `LoginSession.is_self`) and is pinned to the top:
+ *  sorting purely by CPU buried the one row the reader is looking for, and on an
+ *  idle-but-shared host it landed at the bottom under everyone else. */
 function groupLoginSessions(
   sessions: LoginSession[],
   byUser: Map<string, UserRow>,
 ): SessionRow[] {
   const counts = new Map<string, number>();
   const order: string[] = [];
+  const selves = new Set<string>();
   for (const s of sessions) {
     if (!counts.has(s.user)) order.push(s.user);
     counts.set(s.user, (counts.get(s.user) ?? 0) + 1);
+    if (s.is_self) selves.add(s.user);
   }
   return order
     .map((user) => {
       const u = byUser.get(user);
-      return { user, sessions: counts.get(user) ?? 0, cpu: u?.cpu ?? 0, mem: u?.mem ?? 0 };
+      return {
+        user,
+        sessions: counts.get(user) ?? 0,
+        cpu: u?.cpu ?? 0,
+        mem: u?.mem ?? 0,
+        isSelf: selves.has(user),
+      };
     })
-    .sort((a, b) => b.cpu - a.cpu);
+    .sort((a, b) => Number(b.isSelf) - Number(a.isSelf) || b.cpu - a.cpu);
 }
 
 // ── Small presentational bits ─────────────────────────────────────────────────
@@ -419,12 +463,21 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
   // The logged-in-sessions panel (remote hosts only), likewise collapsible.
   const [sessionsOpen, setSessionsOpen] = useState(true);
   const prevRef = useRef<SystemSnapshot | null>(null);
+  // Whether this sample is being taken carefully. Seeded from the machine's
+  // stored mode (below) and only ever raised by a snapshot that came back
+  // careful anyway — a host is free to insist, nothing may talk it down. Kept in
+  // a ref *and* state: the poll loop reads the ref (it must not restart to learn
+  // the new cadence), the notice below renders off the state.
+  const carefulRef = useRef(false);
+  const [careful, setCareful] = useState(false);
 
   // A remote (SSH) project can sample its primary host, and — multi-host
   // (`docs/multi_host_remote_plan.md`) — any connected `compute_hosts` worker
   // too. Same store reads the Disk Usage pane uses to reach a host over the
   // shared pool.
   const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+  const settings = useSettingsStore((s) => s.settings);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
   const byProject = useRemoteStatusStore((s) => s.byProject);
   const byHostAll = useRemoteStatusStore((s) => s.byHost);
   const isRemoteProject = !!project?.remote;
@@ -459,13 +512,37 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
   const hostConnected = globalMachine
     ? true
     : onHost && selectedHostId != null && connState(selectedHostId) === "connected";
+  const selectedHost = hosts.find((h) => h.id === selectedHostId) ?? null;
   const remoteHost = onHost
-    ? (globalMachine
-        ? "this machine"
-        : (hosts.find((h) => h.id === selectedHostId)?.label ?? "the host"))
+    ? (globalMachine ? "this machine" : (selectedHost?.label ?? "the host"))
     : "the host";
   // Whether the pane is actually sampling (and so the table/meters below apply).
   const sampling = visible && !(onHost && !hostConnected);
+
+  // ── Careful vs. normal, per machine ────────────────────────────────────────
+  // The SSH target of whatever this pane is pointed at — a global machine, the
+  // project's primary, or a worker. That target (not the host id) is what the
+  // careful flag is keyed by, so one physical login node reads the same here, in
+  // the Machines menu and in the remote hub (`lib/carefulHost.ts`).
+  const carefulTarget = globalMachine ? targetOfSpec(globalMachine) : (selectedHost?.target ?? null);
+  // The mode asked for: careful for every remote machine until the user says
+  // this one is theirs. A local sample is never careful — Eldrun is not a guest
+  // on the machine it runs on.
+  // The HPC tag (`lib/hpcHost.ts`) outranks that answer in one direction: a
+  // machine the user called a cluster login node is read lightly even if its
+  // careful answer says "this one is mine". The two say different things — how
+  // much may Eldrun look at, and is this a shared cluster — and there is no
+  // reading of the second that permits the first's full collection. The backend
+  // enforces the same precedence, so this is the UI agreeing with it, not the
+  // place it is decided.
+  const hpcTagged = isHpcHost(settings, carefulTarget);
+  const carefulMode = onHost && (hpcTagged || isCarefulHost(settings, carefulTarget));
+  const carefulExplicit = carefulIsExplicit(settings, carefulTarget);
+  // Named, not "this machine": the switch is per *machine*, and its answer is
+  // shared with every other project and surface pointing at the same host.
+  const carefulMachineName = globalMachine
+    ? globalMachine.host
+    : (selectedHost?.label ?? carefulTarget?.host ?? "");
 
   // Poll only while visible and (for the host) while it is connected; the pane
   // stays mounted across scope switches, so pausing here stops a hidden monitor
@@ -478,21 +555,52 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
     setPair(null);
     setError(null);
     setGpuProcs([]);
+    carefulRef.current = carefulMode;
+    setCareful(carefulMode);
     if (!sampling) return;
     let cancelled = false;
+    let timer: number | undefined;
+    // Self-rescheduling rather than a fixed `setInterval`: the cadence depends on
+    // what the FIRST sample says the host is (careful ⇒ HPC ⇒ gentle), and
+    // re-running this effect to change an interval would throw away `prevRef` —
+    // the previous sample every CPU% is a delta against.
+    function schedule() {
+      if (cancelled) return;
+      const delay = carefulRef.current ? CAREFUL_POLL_MS : onHost ? REMOTE_POLL_MS : POLL_MS;
+      timer = window.setTimeout(poll, delay);
+    }
     async function poll() {
+      // An HPC host is not polled while the user is looking at something else:
+      // the sample costs a shared login node real work, and a pane nobody is
+      // reading has nothing to show for it. Only careful hosts — a local read or
+      // an ordinary remote box keeps sampling in the background as before.
+      if (carefulRef.current && !document.hasFocus()) {
+        schedule();
+        return;
+      }
       try {
+        // `careful` is the machine's stored mode, and it is authoritative in
+        // BOTH directions — careful by default, normal only where the user said
+        // this machine is theirs. Passing it on every poll (rather than letting
+        // the host decide) is what makes the switch below take effect on the
+        // very first sample instead of after a probe has classified the host.
         const next = globalMachine
           ? await invoke<SystemSnapshot>("global_machine_monitor_snapshot", {
               user: globalMachine.user,
               host: globalMachine.host,
               port: globalMachine.port,
+              careful: carefulMode,
             })
           : await invoke<SystemSnapshot>("system_monitor_snapshot", {
               projectId: onHost ? projectId : null,
               hostId: onHost ? selectedHostId : null,
+              careful: onHost ? carefulMode : null,
             });
         if (cancelled) return;
+        if (next.careful && !carefulRef.current) {
+          carefulRef.current = true;
+          setCareful(true);
+        }
         const prev = prevRef.current;
         prevRef.current = next;
         setPair({ snap: next, prev });
@@ -513,17 +621,22 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
         }
       } catch (e) {
         if (!cancelled) setError(String(e));
+      } finally {
+        schedule();
       }
     }
     void poll();
-    const id = window.setInterval(poll, onHost ? REMOTE_POLL_MS : POLL_MS);
     return () => {
       cancelled = true;
-      window.clearInterval(id);
+      if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [
     sampling,
     onHost,
+    // Flipping the machine's mode restarts the loop on purpose: the two modes
+    // collect different things, so a delta across the switch would be a delta
+    // between two different readings of the machine.
+    carefulMode,
     projectId,
     selectedHostId,
     globalMachine?.user,
@@ -594,38 +707,117 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
     <div className="sysmon-root">
       <style>{SYSMON_CSS}</style>
 
-      {isRemoteProject && (
-        <div className="sysmon-source" role="tablist" aria-label="Monitor source">
-          <button
-            className={source === "local" ? "sysmon-source-btn active" : "sysmon-source-btn"}
-            onClick={() => pickSource("local")}
-            role="tab"
-            aria-selected={source === "local"}
-          >
-            This machine
-          </button>
-          {/* One button per connected machine — the primary and every multi-host
-              `compute_hosts` worker — each carrying its own live SSH traffic light
-              (the same `ConnLamp` the Remote machines window shows per row), so a
-              worker's status is visible right where its usage would be sampled. */}
-          {hosts.map((h) => {
-            const state = connState(h.id);
-            const connected = state === "connected";
-            const active = onHost && selectedHostId === h.id;
-            return (
+      {/* One row: which machine on the left, how it is read on the right. The
+          row survives on its own for a global machine (no source tabs — there is
+          only the one machine), so the mode switch is in the same place in the
+          tab and in the Machines-menu dialog. */}
+      {(isRemoteProject || (onHost && carefulTarget)) && (
+        <div className="sysmon-source">
+          {isRemoteProject && (
+            <div className="sysmon-source-tabs" role="tablist" aria-label="Monitor source">
               <button
-                key={h.id}
-                className={active ? "sysmon-source-btn active" : "sysmon-source-btn"}
-                onClick={() => pickSource({ hostId: h.id })}
+                className={source === "local" ? "sysmon-source-btn active" : "sysmon-source-btn"}
+                onClick={() => pickSource("local")}
                 role="tab"
-                aria-selected={active}
-                title={connected ? `System monitor on ${h.label}` : `${h.label}: ${state}`}
+                aria-selected={source === "local"}
               >
-                <ConnLamp status={state} label={h.label} />
-                {h.label}
+                This machine
               </button>
-            );
-          })}
+              {/* One button per connected machine — the primary and every multi-host
+                  `compute_hosts` worker — each carrying its own live SSH traffic light
+                  (the same `ConnLamp` the Remote machines window shows per row), so a
+                  worker's status is visible right where its usage would be sampled. */}
+              {hosts.map((h) => {
+                const state = connState(h.id);
+                const connected = state === "connected";
+                const active = onHost && selectedHostId === h.id;
+                return (
+                  <button
+                    key={h.id}
+                    className={active ? "sysmon-source-btn active" : "sysmon-source-btn"}
+                    onClick={() => pickSource({ hostId: h.id })}
+                    role="tab"
+                    aria-selected={active}
+                    title={connected ? `System monitor on ${h.label}` : `${h.label}: ${state}`}
+                  >
+                    <ConnLamp status={state} label={h.label} />
+                    {h.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* How the selected machine is read. Light is the default for every
+              remote machine — Eldrun has no way to tell whose machine it is, and
+              the wrong guess in the other direction is a policy violation on
+              someone else's cluster rather than a thinner table. Switching to
+              Detailed is a statement about that machine ("this one is mine"),
+              so it is stored per SSH target and holds for every surface that
+              reads the flag, not just this pane. Local sampling has no switch:
+              it is always the full reading.
+
+              Compact by design: it sits beside the machine tabs, and the question
+              it answers ("how much of this host am I reading?") is one you ask
+              rarely — an always-visible pair of word buttons would compete with
+              the machine you are actually picking. So the *selected* mode is
+              named and lit, and the alternative is a greyed icon that gives up
+              its label on hover. */}
+          {onHost && carefulTarget && (
+            <>
+              <span className="sysmon-mode-tag">
+                <UntestedTag />
+              </span>
+              <div
+                className="sysmon-mode"
+                role="radiogroup"
+                aria-label={`Reading${carefulMachineName ? ` for ${carefulMachineName}` : ""}`}
+              >
+                <button
+                  className={carefulMode ? "sysmon-mode-btn active" : "sysmon-mode-btn"}
+                  onClick={() => void updateSettings(setCarefulPatch(settings, carefulTarget, true))}
+                  role="radio"
+                  aria-checked={carefulMode}
+                  title={`Light reading of ${carefulMachineName || "this machine"}${
+                    carefulMode && !carefulExplicit ? " (the default for a remote machine)" : ""
+                  }: only your own processes in full, everyone else counted anonymously, and a slow poll that pauses while Eldrun is in the background. For a login node or any machine you share.`}
+                >
+                  <span className="sysmon-mode-icon" aria-hidden="true">
+                    🪶
+                  </span>
+                  <span className="sysmon-mode-txt">Light</span>
+                </button>
+                <button
+                  className={
+                    !carefulMode
+                      ? "sysmon-mode-btn active"
+                      : hpcTagged
+                        ? "sysmon-mode-btn sysmon-mode-btn-locked"
+                        : "sysmon-mode-btn"
+                  }
+                  onClick={() =>
+                    void updateSettings(setCarefulPatch(settings, carefulTarget, false))
+                  }
+                  // Not merely styled as unavailable — actually unavailable. A tag
+                  // the user could click past on the machine it protects would
+                  // only ever be clicked past on the machine that needed it.
+                  disabled={hpcTagged}
+                  role="radio"
+                  aria-checked={!carefulMode}
+                  title={
+                    hpcTagged
+                      ? `${carefulMachineName || "This machine"} is tagged HPC, so it is always read lightly. Untag it in the Machines menu if it is not a shared cluster login node.`
+                      : `Detailed reading of ${carefulMachineName || "this machine"}: every process with its owner and command line, at the ordinary remote cadence — the same reading this machine gets. Remembered for this host. For a machine that is yours.`
+                  }
+                >
+                  <span className="sysmon-mode-icon" aria-hidden="true">
+                    🔬
+                  </span>
+                  <span className="sysmon-mode-txt">Detailed</span>
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -644,6 +836,21 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
         // the process table scroll together, the table's sticky thead pinning to this
         // scroller.
         <div className="sysmon-scroll">
+          {/* Why this host's table looks thinner than a normal one. Said plainly,
+              because a silently reduced reading is worse than no reading: a login
+              node full of unnamed rows would otherwise read as a bug. */}
+          {careful && (
+            <div className="sysmon-careful-note">
+              <b>Light reading.</b> Only your own processes are shown in full — everyone
+              else&rsquo;s are counted as <i>other users</i> without names or commands, and
+              this host is sampled every {Math.round(CAREFUL_POLL_MS / 1000)}s (and not at
+              all while Eldrun is in the background). It is how every remote machine is
+              sampled until you say otherwise: a shared cluster&rsquo;s usage rules don&rsquo;t
+              allow collecting other people&rsquo;s account names or command lines, and a
+              login node shouldn&rsquo;t carry a constant poll. Switch this machine to{" "}
+              <b>Detailed</b> above if it is yours.
+            </div>
+          )}
           {/* Hardware vitals as two columns: CPU over Memory on the left, the GPU
               cards on the right (when the machine has one) — separated by a divider —
               so the GPU's VRAM + Util meters and sensor strip sit beside the CPU. */}
@@ -761,12 +968,16 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
               same "Logged in" panel the connect-time remote-usage dialog shows,
               rendered in its exact look. Remote-host only (a local snapshot carries
               no sessions), and distinct from "By user" below: this lists only users
-              with an interactive login, that one every process owner. Shown for
-              **every** connected host, even when empty — a compute node reached only
-              over the pooled (non-PTY) master has no utmp entry of its own, so `who`
-              is legitimately empty there; the empty note makes that explicit rather
-              than silently dropping the section (which read as "only the primary
-              has this panel"). */}
+              with an interactive login, that one every process owner. **You are
+              always in it** — `who` reads utmp, which records a session only when
+              sshd allocated a pty, and the monitor's own probe rides the pooled
+              (non-PTY) master, so a host with no terminal tab open on it used to
+              list every logged-in person *except* the reader; the backend now
+              synthesizes that row (`LoginSession.is_self`) and it is pinned to the
+              top with a "you" chip. The section is still shown when the list is
+              empty — a host that couldn't even name the account has nothing to
+              synthesize from — rather than silently dropped (which read as "only
+              the primary has this panel"). */}
           {onHost && (
             <>
               <div className="sysmon-proc-head">
@@ -797,7 +1008,17 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                       </li>
                       {sessionRows.map((s) => (
                         <li key={s.user}>
-                          <span className="remote-usage-user">{s.user}</span>
+                          <span className="remote-usage-user">
+                            {s.user}
+                            {s.isSelf && (
+                              <span
+                                className="remote-usage-user-you"
+                                title="The account Eldrun is connected as"
+                              >
+                                you
+                              </span>
+                            )}
+                          </span>
                           <span className="remote-usage-user-cpu">
                             <UsageLight pct={s.cpu} />
                             {s.cpu.toFixed(0)}%
@@ -983,11 +1204,19 @@ const SYSMON_CSS = `
 }
 .sysmon-source {
   display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
   padding: 6px 12px;
   border-bottom: 1px solid var(--border-color);
   flex: 0 0 auto;
+}
+/* The machine tabs wrap among themselves; the mode switch stays pinned to the
+   right edge of the row rather than wrapping into the middle of them. */
+.sysmon-source-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 .sysmon-source-btn {
   display: inline-flex;
@@ -1013,12 +1242,116 @@ const SYSMON_CSS = `
   border-color: var(--accent);
   color: var(--accent-contrast, #fff);
 }
+/* The light/detailed switch, at the right end of the machine row.
+   Deliberately NOT the machine buttons' style: those are square, accent-filled
+   tabs answering "which machine am I looking at", and a second set of the same
+   thing beside them would read as three more machines. This is one recessed pill
+   track with the live half raised out of it — a switch, not a tab strip — and it
+   carries no accent fill at all, so the accent in this row always means "the
+   machine you are looking at". */
+/* The "untested" pill rides just outside the switch — inside the pill track it
+   would read as a third segment. The auto margin lives here so the tag and the
+   switch are pushed to the row's right edge together. */
+.sysmon-mode-tag {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+}
+.sysmon-mode {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--bg-subtle, rgba(127, 127, 127, 0.1));
+  border: 1px solid var(--control-border);
+}
+.sysmon-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  color: var(--text-muted);
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sysmon-mode-btn:hover {
+  color: var(--text-primary);
+}
+/* The selected half, marked three ways at once because the icons are small and
+   the labels are hidden until hover: it is raised out of the track, ringed in
+   the accent, and its icon is the only one in colour. */
+.sysmon-mode-btn.active {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 1px 2px rgba(0, 0, 0, 0.25);
+}
+/* An unselected icon is greyed and dimmed, so at a glance exactly one of the two
+   is lit — the "which of these am I in?" question answered without reading. */
+.sysmon-mode-icon {
+  filter: grayscale(1);
+  opacity: 0.45;
+  transition:
+    filter 0.14s ease,
+    opacity 0.14s ease;
+}
+.sysmon-mode-btn:hover .sysmon-mode-icon {
+  opacity: 0.8;
+}
+.sysmon-mode-btn.active .sysmon-mode-icon {
+  filter: none;
+  opacity: 1;
+}
+/* The selected half keeps its label; the other reveals one on hover (or while it
+   holds focus, so the keyboard path can read what it is about to choose).
+   Width, not display: the row must not jump between two layouts as the pointer
+   crosses it — the hidden label grows in place. */
+.sysmon-mode-txt {
+  display: inline-block;
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transition:
+    max-width 0.14s ease,
+    opacity 0.14s ease,
+    margin-left 0.14s ease;
+}
+.sysmon-mode-btn.active .sysmon-mode-txt,
+.sysmon-mode:hover .sysmon-mode-txt,
+.sysmon-mode:focus-within .sysmon-mode-txt {
+  max-width: 80px;
+  opacity: 1;
+  margin-left: 5px;
+}
 /* The single scroll region: the vitals and the process table scroll together under
    ONE scrollbar. The table's sticky thead pins to this scroller. */
 .sysmon-scroll {
   flex: 1;
   min-height: 0;
   overflow: auto;
+}
+/* The HPC-host notice, above the vitals: an explanation, not a warning — the
+   pane is working exactly as it should, it is simply collecting less. Toned like
+   the app's other informational strips (accent-tinted left edge, muted text). */
+.sysmon-careful-note {
+  margin: 10px 12px 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background: var(--bg-subtle, rgba(127, 127, 127, 0.08));
+  color: var(--text-secondary, inherit);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.sysmon-careful-note b {
+  color: var(--text-primary, inherit);
 }
 /* The vitals region: a left column (CPU over Memory) and a right column (GPU),
    sitting above the process table. */

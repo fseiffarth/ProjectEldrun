@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { sanitizeName } from "../projects/scaffold";
+import { useT } from "../../lib/i18n";
 
 /** One subdirectory row, mirroring the Rust `DirEntry` (commands::fs). */
 interface DirEntry {
@@ -46,6 +47,7 @@ interface Props {
  * `.modal-backdrop` + a settings-style dialog).
  */
 export function FolderPickerDialog({ initialPath, title, confirmLabel, nameLabel, nameInitial, onConfirm, onClose }: Props) {
+  const t = useT();
   const [listing, setListing] = useState<DirListing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -95,9 +97,9 @@ export function FolderPickerDialog({ initialPath, title, confirmLabel, nameLabel
             type="button"
             disabled={!listing?.parent}
             onClick={() => listing?.parent && load(listing.parent)}
-            title="Up one folder"
+            title={t("folderPicker.upOneFolder")}
           >
-            ⬆ Up
+            ⬆ {t("folderPicker.up")}
           </button>
           <span className="folder-picker-cur" title={cur}>{cur || "…"}</span>
         </div>
@@ -106,9 +108,9 @@ export function FolderPickerDialog({ initialPath, title, confirmLabel, nameLabel
           {error ? (
             <p className="settings-help folder-picker-error">{error}</p>
           ) : loading && !listing ? (
-            <p className="settings-help">Loading…</p>
+            <p className="settings-help">{t("common.loading")}</p>
           ) : listing && listing.entries.length === 0 ? (
-            <p className="settings-help">No sub-folders here.</p>
+            <p className="settings-help">{t("folderPicker.noSubfolders")}</p>
           ) : (
             listing?.entries.map((entry) => (
               <button
@@ -137,13 +139,13 @@ export function FolderPickerDialog({ initialPath, title, confirmLabel, nameLabel
               />
             </label>
             <span className="settings-help folder-picker-name-preview">
-              Folder: {sanitizeName(name) || "…"}
+              {t("folderPicker.folderPrefix")} {sanitizeName(name) || "…"}
             </span>
           </div>
         )}
 
         <div className="settings-actions folder-picker-actions">
-          <button type="button" onClick={onClose}>Cancel</button>
+          <button type="button" onClick={onClose}>{t("common.cancel")}</button>
           <button
             type="button"
             className="primary"

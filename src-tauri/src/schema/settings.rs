@@ -109,6 +109,14 @@ pub struct Settings {
     /// ordinary terminal tab, which reaches `pty_spawn` like any other.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub python_run_debug: Option<bool>,
+    /// EXPERIMENTAL, default OFF. The native presenter ("deck",
+    /// `docs/deck_presenter_plan.md`): editable object layers over a base PDF, kept in
+    /// a `*.eldeck.json` sidecar, plus the animate mode and the fullscreen presenter.
+    /// Purely a frontend gate — a deck is an ordinary text file the existing fs
+    /// commands read and write, and its PDF export is built in the webview by pdf-lib,
+    /// so nothing in the backend reads this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deck_presenter: Option<bool>,
     /// Persistent LOCAL (tmux) sessions (TODO #85): when true (the default on Unix),
     /// a local project's shell/script tabs run inside a tmux session on the machine,
     /// so a long run survives an Eldrun crash and the tab reattaches on restart.
@@ -124,6 +132,58 @@ pub struct Settings {
     /// (headless) so existing behaviour is preserved.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connections_headless: Option<bool>,
+    /// Hosts marked **careful**: "this machine is shared and policed, so keep
+    /// Eldrun's background load off it." An HPC login node is the case it exists
+    /// for — CPU there is watched, its `$HOME` usually sits on a parallel
+    /// filesystem whose metadata server a recursive `du` hammers, and its account
+    /// database is a shared directory service.
+    ///
+    /// Keyed by canonical SSH target ([`crate::services::ssh_common::target_key`],
+    /// i.e. `user@host:port`) rather than by any host id, because **one physical
+    /// login node is simultaneously several records**: a project's primary
+    /// `remote`, a `compute_hosts` worker on another project, and a project-free
+    /// global machine — three tables, three ids, one machine. A per-record `bool`
+    /// would be three values free to disagree about the same host; the SSH target
+    /// is the identity `lib/machineSync`'s `sameTarget` already treats as the
+    /// bridge between them, so it is the identity used here too.
+    ///
+    /// The stored value is the user's **explicit** answer. A target *absent* from
+    /// the map has not been answered and is treated as **careful** — the default
+    /// for every remote machine, since Eldrun cannot tell whose machine a host is
+    /// and the two wrong guesses do not cost the same. Which is why this is a map
+    /// to `bool` and not a set of careful hosts: an explicit `false` ("this one is
+    /// mine") has to be distinguishable from an unanswered host, or the careful
+    /// default would keep turning itself back on.
+    ///
+    /// Deliberately **not** named for HPC. A departmental shared box wants the
+    /// same treatment, and a compute node held through SLURM — HPC by any
+    /// definition — does not: you own it outright for the length of the job, and
+    /// there monitoring is useful rather than rude.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub careful_hosts: Option<HashMap<String, bool>>,
+    /// The machines the user has tagged **HPC** — a shared cluster login node,
+    /// ticked on the login form and shown on the machine's row in the Machines
+    /// menu (`src/lib/hpcHost.ts`). Same SSH-target key as [`Self::careful_hosts`],
+    /// for the same reason.
+    ///
+    /// Where `careful_hosts` says how much Eldrun may *look at*, this says what
+    /// Eldrun may *do*, and it is a strictly stronger statement: a tagged host is
+    /// careful whatever `careful_hosts` says (the monitor's Detailed switch cannot
+    /// override it), and four further behaviours turn off — the disk-usage scan
+    /// and giant-folder census (a recursive `du` over a parallel filesystem's
+    /// metadata server), the auto byte-sync and git-lockstep poll loops, silent
+    /// auto-connect at launch, and unannounced compute in a login-node shell.
+    /// Each of those is something a site's usage rules name, and none of them can
+    /// be inferred from the host — `sbatch` on `PATH` says a machine *has* a
+    /// scheduler, not that its operators mind. Only the user knows that, so only
+    /// the user sets this.
+    ///
+    /// A set, not a map: unlike careful mode there is no default to distinguish an
+    /// answer from, so an absent target simply isn't tagged. Stored as a map to
+    /// `bool` anyway so an untagging writes `false` rather than having to delete a
+    /// key from a settings blob the frontend saves whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hpc_hosts: Option<HashMap<String, bool>>,
     /// Path of the stored `.ovpn` config Eldrun brings up **on launch**, with no
     /// project behind it. Unset (the default) = no tunnel is started by itself.
     ///
@@ -133,6 +193,19 @@ pub struct Settings {
     /// it can't (see `lib/vpnAutoConnect.ts`); the backend only round-trips this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vpn_auto_connect: Option<String>,
+    /// The `.ovpn` configs the user asked Eldrun to **remember the credentials of**
+    /// (the VPN menu's "Save login credentials"). No secret lives here — the secrets
+    /// are in the OS keychain; this is only the *intent*, and it exists because the
+    /// keychain cannot always be asked.
+    ///
+    /// A locked Secret Service collection answers every read like an empty one, so
+    /// "is a credential saved for this config?" is unanswerable exactly when it
+    /// matters most: at launch, before anything has unlocked the keyring. Without
+    /// this list the toggle would show *off* over a saved credential and a connect
+    /// would drop to the password prompt rather than offering to unlock. Reconciled
+    /// against the keychain whenever it *is* readable, so it cannot drift for long.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vpn_saved_configs: Option<Vec<String>>,
     /// Energy-saver mode: "off" | "battery" (default) | "always". When active
     /// (mode "always", or "battery" while discharging) Eldrun pauses the blob
     /// auto-spin, collapses idle animations, and widens always-on UI timers.
@@ -311,6 +384,13 @@ impl Settings {
         self.experimental(self.python_run_debug)
     }
 
+    /// Whether the experimental native presenter ("deck") is offered — the
+    /// `*.eldeck.json` viewer and its fullscreen presenter. Off outside debug mode
+    /// while the surface is still moving.
+    pub fn deck_presenter(&self) -> bool {
+        self.experimental(self.deck_presenter)
+    }
+
     /// Whether LOCAL shell/script tabs are wrapped in a persistent tmux session
     /// (TODO #85). Default ON when unset; only an explicit `Some(false)` opts out.
     /// The caller still gates on `tmux_local::tmux_available()` (no tmux / Windows →
@@ -339,6 +419,7 @@ mod tests {
         let off = Settings::default();
         assert!(!off.python_run_debug());
         assert!(!off.agent_mode_toggle());
+        assert!(!off.deck_presenter());
 
         let debug = Settings {
             debug: Some(true),
@@ -346,6 +427,7 @@ mod tests {
         };
         assert!(debug.python_run_debug());
         assert!(debug.agent_mode_toggle());
+        assert!(debug.deck_presenter());
 
         let debug_but_off = Settings {
             debug: Some(true),

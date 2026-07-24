@@ -279,16 +279,27 @@ pub fn tmux_rename_session_script(old: &str, new: &str) -> String {
 }
 
 /// The `tmux ls` one-shot that backs the Sessions view (TODO #85): one tab-
-/// separated row per session — name, window count, created epoch, attached flag.
-/// `2>/dev/null || true` makes an absent tmux or a not-running server (`tmux ls`
-/// exits non-zero with "no server running") a clean **empty** list rather than an
-/// error (see [`parse_tmux_ls`]).
+/// separated row per session — name, window count, created epoch, attached flag,
+/// last-activity epoch, and the active pane's current foreground command (used to
+/// tell a busy session from one idling at its shell prompt). `2>/dev/null || true`
+/// makes an absent tmux or a not-running server (`tmux ls` exits non-zero with "no
+/// server running") a clean **empty** list rather than an error (see
+/// [`parse_tmux_ls`]).
 pub fn tmux_ls_script() -> &'static str {
-    "tmux ls -F '#{session_name}\t#{session_windows}\t#{session_created}\t#{session_attached}' 2>/dev/null || true"
+    "tmux ls -F '#{session_name}\t#{session_windows}\t#{session_created}\t#{session_attached}\t#{session_activity}\t#{pane_current_command}' 2>/dev/null || true"
 }
+
+/// Shell/login-interpreter names `pane_current_command` reports when a session is
+/// sitting idle at its prompt (tmux prefixes a login shell with `-`, e.g. `-bash`).
+/// Anything else running in the active pane counts as the session "working".
+const IDLE_SHELL_COMMANDS: &[&str] = &[
+    "bash", "-bash", "zsh", "-zsh", "sh", "-sh", "dash", "-dash", "fish", "-fish",
+    "tcsh", "-tcsh", "csh", "-csh", "ksh", "-ksh", "pwsh", "-pwsh",
+];
 
 /// One host tmux session, as surfaced by the Sessions view (TODO #85).
 #[derive(Debug, Clone, serde::Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct TmuxSession {
     /// Session name (`eldrun-<uid>` for one Eldrun started, else a foreign name).
     pub name: String,
@@ -298,12 +309,23 @@ pub struct TmuxSession {
     pub created: u64,
     /// Whether another client is currently attached to it.
     pub attached: bool,
+    /// Last activity time, seconds since the Unix epoch (host clock) — bumped by
+    /// output in any of the session's panes, so it doubles as "how long idle".
+    pub activity: u64,
+    /// The active pane's current foreground command (e.g. `python`, `vim`, or a
+    /// shell name when idling at the prompt).
+    pub current_command: String,
+    /// Derived from `current_command`: false when the active pane is sitting at a
+    /// bare shell prompt, true when something else is running in it.
+    pub working: bool,
 }
 
 /// Parse the tab-separated output of [`tmux_ls_script`] into [`TmuxSession`]s.
 /// Empty/`no server running` output → an empty list (never an error). A row that
-/// does not have the four expected fields is skipped rather than failing the whole
-/// parse (forward-compatible with an unexpected `tmux ls` build).
+/// does not have the four required fields is skipped rather than failing the whole
+/// parse (forward-compatible with an unexpected `tmux ls` build); the two trailing
+/// fields (added later) default to `0`/idle when a row is missing them, rather than
+/// dropping the whole row, so an older-format row still surfaces.
 pub fn parse_tmux_ls(output: &str) -> Vec<TmuxSession> {
     output
         .lines()
@@ -322,11 +344,18 @@ pub fn parse_tmux_ls(output: &str) -> Vec<TmuxSession> {
             // tmux prints `session_attached` as a count of attached clients; any
             // positive count means at least one client is on it.
             let attached = f.next()?.trim().parse::<u32>().ok()? > 0;
+            let activity = f.next().and_then(|v| v.trim().parse().ok()).unwrap_or(created);
+            let current_command = f.next().map(|v| v.trim().to_string()).unwrap_or_default();
+            let working = !current_command.is_empty()
+                && !IDLE_SHELL_COMMANDS.contains(&current_command.as_str());
             Some(TmuxSession {
                 name,
                 windows,
                 created,
                 attached,
+                activity,
+                current_command,
+                working,
             })
         })
         .collect()
@@ -897,16 +926,28 @@ mod tests {
 
     #[test]
     fn parse_tmux_ls_reads_rows_and_tolerates_empty() {
-        let out = "eldrun-p1_shell-1\t2\t1700000000\t1\ntrain\t1\t1700000500\t0\n";
+        let out = "eldrun-p1_shell-1\t2\t1700000000\t1\t1700003600\t-bash\ntrain\t1\t1700000500\t0\t1700009000\tpython\n";
         let v = parse_tmux_ls(out);
         assert_eq!(v.len(), 2);
-        assert_eq!(v[0], TmuxSession { name: "eldrun-p1_shell-1".into(), windows: 2, created: 1_700_000_000, attached: true });
-        assert_eq!(v[1], TmuxSession { name: "train".into(), windows: 1, created: 1_700_000_500, attached: false });
+        assert_eq!(v[0], TmuxSession { name: "eldrun-p1_shell-1".into(), windows: 2, created: 1_700_000_000, attached: true, activity: 1_700_003_600, current_command: "-bash".into(), working: false });
+        assert_eq!(v[1], TmuxSession { name: "train".into(), windows: 1, created: 1_700_000_500, attached: false, activity: 1_700_009_000, current_command: "python".into(), working: true });
         // "no server running" / absent tmux → empty output → zero sessions.
         assert!(parse_tmux_ls("").is_empty());
         assert!(parse_tmux_ls("\n").is_empty());
         // A malformed row is skipped, not fatal.
         assert!(parse_tmux_ls("onlyname\n").is_empty());
+    }
+
+    #[test]
+    fn parse_tmux_ls_defaults_missing_trailing_fields() {
+        // A row from an older-format `tmux ls` (missing activity/current_command)
+        // still surfaces, rather than being dropped, with activity falling back to
+        // `created` and the session read as idle.
+        let v = parse_tmux_ls("legacy\t1\t1700000000\t0\n");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].activity, 1_700_000_000);
+        assert_eq!(v[0].current_command, "");
+        assert!(!v[0].working);
     }
 
     #[test]

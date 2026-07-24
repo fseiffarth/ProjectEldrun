@@ -275,8 +275,26 @@ pub async fn connect_host(
         let _ = std::fs::create_dir_all(crate::services::remote_sync::mirror_dir(project_id));
     }
     let key = conn_key(project_id, host_id);
-    if pool.lock().await.conns.contains_key(&key) {
-        return Ok(()); // already connected
+    {
+        // Liveness-checked, not mere presence: a pooled ssh child can have exited
+        // long after connect (keepalive kill on a dropped VPN/network, laptop
+        // sleep, an HPC job's long queue wait past `ControlPersist`) while the
+        // pool entry lingers. Every other reader here (`is_connected_host`,
+        // `pooled_sftp_host`, etc.) reaps a corpse before answering; this one
+        // must too, or a dead entry blocks reconnection forever and every later
+        // tab on that host falls through to its own unauthenticated raw `ssh`.
+        let mut guard = pool.lock().await;
+        let dead = guard
+            .conns
+            .get_mut(&key)
+            .map(|conn| matches!(conn.child.try_wait(), Ok(Some(_))));
+        match dead {
+            Some(true) => {
+                guard.conns.remove(&key);
+            }
+            Some(false) => return Ok(()), // already connected and alive
+            None => {}
+        }
     }
 
     let spec = &target.spec;

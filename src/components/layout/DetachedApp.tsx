@@ -10,7 +10,7 @@ import {
   THEME_CHANGED_EVENT,
   LANGUAGE_CHANGED_EVENT,
 } from "../../stores/settings";
-import { applyLanguage } from "../../lib/i18n";
+import { applyLanguage, useT } from "../../lib/i18n";
 import {
   DETACHED_BOUNDS,
   DETACHED_CLOSE,
@@ -63,6 +63,7 @@ const SEED_TIMEOUT_MS = 8000;
  * between desktops on project switch; its renderer stays still.
  */
 export function DetachedApp({ param }: Props) {
+  const t = useT();
   const loadSettings = useSettingsStore((s) => s.load);
   const label = getCurrentWindow().label;
 
@@ -410,7 +411,7 @@ export function DetachedApp({ param }: Props) {
   }, [param.scope, param.groupId]);
 
   if (!group || allGroups(group).length === 0) {
-    return <div className="detached-loading">Loading subwindow…</div>;
+    return <div className="detached-loading">{t("detached.loadingSubwindow")}</div>;
   }
 
   return (

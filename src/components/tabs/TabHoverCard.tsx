@@ -52,6 +52,7 @@ const VIEWER_LABEL: Record<InternalViewer, string> = {
   html: "HTML viewer",
   sqlite: "SQLite browser",
   yaml: "YAML/JSON editor",
+  eldeck: "Presentation",
 };
 
 /** Gap between the tab and the card, and the keep-inside-the-window margin. */

@@ -35,6 +35,15 @@
 //! own open terminal to that host will also read as "in use". There's no
 //! reliable way to tell the two apart from `who`'s output alone, so this is
 //! accepted rather than chased.
+//!
+//! **Careful mode (HPC hosts).** When the host reports SLURM on its `PATH` the
+//! probe collects only this account's own sessions and processes — a cluster's
+//! usage rules do not permit gathering other users' names or commands
+//! (`docs/context/hpc_careful_mode.md`) — and the verdict is remembered in
+//! [`crate::services::hpc_mode`] so `remote_connect` stops firing this probe
+//! automatically at that host from the next connect on. The aggregate figures
+//! (CPU, memory, GPU) are unchanged, which is what the `busy` gate actually
+//! reads; only the personal detail is dropped.
 
 use std::collections::HashMap;
 
@@ -99,6 +108,14 @@ pub struct RemoteUsageReport {
     pub busy: bool,
     /// Human-readable reasons `busy` was set, for the warning dialog to list.
     pub reasons: Vec<String>,
+    /// Whether the host reported itself an **HPC host** (SLURM on `PATH`), in
+    /// which case this report was taken in careful mode: `users` holds only the
+    /// connecting account's own sessions and `top_procs` only its own processes,
+    /// because a cluster's usage rules don't allow collecting other people's
+    /// (`docs/context/hpc_careful_mode.md`). The dialog says so rather than
+    /// letting a short list read as a quiet machine.
+    #[serde(default)]
+    pub careful: bool,
 }
 
 /// CPU is "busy" once usage exceeds this percentage.
@@ -113,6 +130,7 @@ const GPU_BUSY_PCT: f64 = 50.0;
 /// it comfortably.
 const CPU_SAMPLE_GAP: &str = "0.3";
 
+const MARK_CAREFUL: &str = "CAREFUL";
 const MARK_WHO: &str = "WHO";
 const MARK_UPTIME: &str = "UPTIME";
 const MARK_NPROC: &str = "NPROC";
@@ -132,8 +150,16 @@ const MARK_GPU: &str = "GPU";
 /// [`parse_report`] below.
 pub(crate) fn probe_script() -> String {
     format!(
-        "echo '##{MARK_WHO}##'\n\
-         who 2>/dev/null\n\
+        "_careful=0\n\
+         if command -v sbatch >/dev/null 2>&1 || command -v sinfo >/dev/null 2>&1 \
+         || command -v squeue >/dev/null 2>&1; then _careful=1; fi\n\
+         _myname=$(id -un 2>/dev/null || echo '')\n\
+         echo '##{MARK_CAREFUL}##'\n\
+         echo \"$_careful\"\n\
+         echo '##{MARK_WHO}##'\n\
+         if [ \"$_careful\" = 1 ]; then \
+         who 2>/dev/null | awk -v me=\"$_myname\" '$1 == me'; \
+         else who 2>/dev/null; fi\n\
          echo '##{MARK_UPTIME}##'\n\
          uptime 2>/dev/null\n\
          echo '##{MARK_NPROC}##'\n\
@@ -146,7 +172,9 @@ pub(crate) fn probe_script() -> String {
          echo '##{MARK_CPU2}##'\n\
          head -n1 /proc/stat 2>/dev/null\n\
          echo '##{MARK_PROCS}##'\n\
-         ps -eo user,pid,pcpu,pmem,comm --sort=-pcpu 2>/dev/null | head -n 9\n\
+         if [ \"$_careful\" = 1 ]; then \
+         ps -u \"$_myname\" -o user,pid,pcpu,pmem,comm --sort=-pcpu 2>/dev/null | head -n 9; \
+         else ps -eo user,pid,pcpu,pmem,comm --sort=-pcpu 2>/dev/null | head -n 9; fi\n\
          echo '##{MARK_GPU}##'\n\
          command -v nvidia-smi >/dev/null 2>&1 && \
          nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total \
@@ -167,7 +195,13 @@ pub fn check_usage(spec: &RemoteSpec) -> Result<RemoteUsageReport, String> {
             String::from_utf8_lossy(&out.stderr)
         ));
     }
-    Ok(parse_report(&stdout))
+    let report = parse_report(&stdout);
+    // Remember an HPC verdict so the *automatic* connect-time probe can stop
+    // firing at this host altogether (`commands::remote::remote_connect`) — the
+    // probe is cheap, but on a cluster it is also unasked-for, and once we know
+    // what the host is there is no reason to keep asking it who is logged in.
+    crate::services::hpc_mode::remember(&crate::services::hpc_mode::key_for(spec), report.careful);
+    Ok(report)
 }
 
 /// Emit `report` as a `remote-usage-report` event (`{ projectId, hostId, report }`,
@@ -371,6 +405,10 @@ fn parse_procs(lines: &[&str]) -> Vec<ProcInfo> {
 pub(crate) fn parse_report(output: &str) -> RemoteUsageReport {
     let sections = split_sections(output);
     let empty: Vec<&str> = Vec::new();
+    let careful = sections
+        .get(MARK_CAREFUL)
+        .and_then(|lines| lines.iter().find(|l| !l.trim().is_empty()))
+        .is_some_and(|l| l.trim() == "1");
     let users = parse_who(sections.get(MARK_WHO).unwrap_or(&empty));
     let (load1, load5, load15) = parse_load_average(sections.get(MARK_UPTIME).unwrap_or(&empty));
     let cpu_count = parse_cpu_count(sections.get(MARK_NPROC).unwrap_or(&empty));
@@ -403,11 +441,22 @@ pub(crate) fn parse_report(output: &str) -> RemoteUsageReport {
         }
     }
     if !users.is_empty() {
-        reasons.push(format!(
-            "{} other session{} logged in",
-            users.len(),
-            if users.len() == 1 { "" } else { "s" }
-        ));
+        // On a careful (HPC) host the session list is only ever this account's
+        // own, so the old wording would claim something the probe cannot see. A
+        // login node always has other people on it; that is not the warning.
+        reasons.push(if careful {
+            format!(
+                "{} session{} of your own already logged in",
+                users.len(),
+                if users.len() == 1 { "" } else { "s" }
+            )
+        } else {
+            format!(
+                "{} other session{} logged in",
+                users.len(),
+                if users.len() == 1 { "" } else { "s" }
+            )
+        });
     }
     let busy = !reasons.is_empty();
 
@@ -424,6 +473,7 @@ pub(crate) fn parse_report(output: &str) -> RemoteUsageReport {
         top_procs,
         busy,
         reasons,
+        careful,
     }
 }
 
@@ -572,6 +622,55 @@ root         1   0.0  0.1 systemd
         assert!(!report.busy);
         assert!(report.reasons.is_empty());
         assert!(report.users.is_empty());
+        // No `##CAREFUL##` section at all is an ordinary host (an older probe
+        // script, or a plain dev box): full collection, as before.
+        assert!(!report.careful);
+    }
+
+    #[test]
+    fn a_careful_host_reports_itself_and_rewords_the_session_reason() {
+        // On an HPC host the script ships only this account's own sessions and
+        // processes, so "N other sessions logged in" would be a claim the probe
+        // can no longer make — a login node always has other people on it, and
+        // that is not what the warning is for.
+        let careful = "\
+##CAREFUL##
+1
+##WHO##
+alice    pts/0        2026-07-18 09:12
+##UPTIME##
+ 14:32:01 up 10 days,  3:22,  9 users,  load average: 0.10, 0.10, 0.10
+##NPROC##
+64
+##FREE##
+              total        used        free      shared  buff/cache   available
+Mem:         256000       20000      200000         100       36000      230000
+##PROCS##
+USER       PID  %CPU %MEM COMMAND
+alice     6789   1.5  0.2 python3
+";
+        let report = parse_report(careful);
+        assert!(report.careful);
+        assert_eq!(report.users.len(), 1);
+        assert!(report
+            .reasons
+            .iter()
+            .any(|r| r.contains("of your own already logged in")));
+        assert!(!report.reasons.iter().any(|r| r.contains("other session")));
+        // The aggregate figures — what `busy` actually gates on — are untouched.
+        assert_eq!(report.cpu_count, 64);
+        assert_eq!(report.mem_total_mb, 256_000);
+    }
+
+    #[test]
+    fn the_probe_script_detects_and_censors_on_an_hpc_host() {
+        let s = probe_script();
+        assert!(s.contains("command -v sbatch"));
+        assert!(s.contains("##CAREFUL##"));
+        // Both branches present: own-sessions/own-processes when careful, the
+        // whole-host reads otherwise.
+        assert!(s.contains("ps -u \"$_myname\""));
+        assert!(s.contains("ps -eo user,pid,pcpu,pmem,comm"));
     }
 
     #[test]

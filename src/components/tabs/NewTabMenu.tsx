@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -58,11 +58,22 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   const customAgents = useSettingsStore(
     (s) => s.settings?.custom_agents ?? EMPTY_CUSTOM_AGENTS,
   );
+  // Built-in agents the user turned off in "Manage Agents" (Settings) despite
+  // being installed — hidden from this menu without uninstalling the CLI.
+  const disabledAgents = useSettingsStore((s) => s.settings?.disabled_agents);
 
   // Installed agent CLIs (id == cmd); only offer ones actually present. `null`
   // until the probe resolves, so the Agents list renders nothing (not a flash of
   // all agents) until we know.
   const [installedAgents, setInstalledAgents] = useState<Set<string> | null>(null);
+  // installedAgents minus disabledAgents — the set every tab-choice consumer
+  // below (Agents group, Mistral/vibe local-model driver) should use.
+  const enabledAgents = useMemo(() => {
+    if (!installedAgents) return null;
+    if (!disabledAgents?.length) return installedAgents;
+    const skip = new Set(disabledAgents);
+    return new Set([...installedAgents].filter((id) => !skip.has(id)));
+  }, [installedAgents, disabledAgents]);
   // Installed *custom*-agent commands, probed separately (they aren't in the
   // built-in registry). `null` until resolved — custom agents render enabled
   // until a probe proves one missing.
@@ -193,7 +204,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
           {
             label: "Agents",
             entries: agentMenuEntries({
-              installedBuiltins: installedAgents,
+              installedBuiltins: enabledAgents,
               installedCmds: installedCustom,
               customAgents,
               pick: pickStatic,
@@ -207,7 +218,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
             label: localModel ? `Local Model · ${localModel}` : "Local Model",
             entries: localModel
               ? [
-                  ...(installedAgents?.has("vibe")
+                  ...(enabledAgents?.has("vibe")
                     ? [{
                         key: "vibe",
                         label: "Mistral",
