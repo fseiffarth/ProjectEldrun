@@ -18,8 +18,8 @@ rules that shaped it.
 
 A university cluster is not a dev box someone lent you; it runs under usage
 regulations the account holder has agreed to. The ones Eldrun's host probes can
-walk into (wording from the Bonn regulations, but every German site's are close
-to identical, and the reasoning is not site-specific):
+walk into (wording quoted from one university's usage regulations, but such
+rules are near-identical across sites, and the reasoning is not site-specific):
 
 - **Other people's account names are not yours to enumerate.** *"fremde Uni-IDs
   und Passwörter weder zu ermitteln noch zu nutzen"* — a plain `getent passwd`
