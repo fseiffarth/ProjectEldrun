@@ -58,7 +58,7 @@ fn write_terminal_session(
     // `sessionId` is the only handle on its conversation.
     //
     // That is fine when the user really did close every tab, and catastrophic
-    // otherwise — and "otherwise" is reachable, which is how DemoProj lost four
+    // otherwise — and "otherwise" is reachable, which is how a live project lost four
     // tabs on detach: the frontend's debounced autosave persists the tab store's
     // CURRENT scope into the ACTIVE project's `local_file`, two values it tracks
     // independently. Detach swaps `local_file` (state dir → promoted mirror) under

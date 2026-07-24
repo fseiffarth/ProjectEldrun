@@ -3519,7 +3519,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     //                         all get filtered out below (non-restorable, or belonging to
     //                         another scope) yields an empty list that looks identical to
     //                         a close-all and is nothing of the sort — that is how
-    //                         DemoProj's four tabs were erased on detach.
+    //                         a live project's four tabs were erased on detach.
     //
     // Anything else: the backend keeps what it has. Worst case we persist a layout one
     // save late; the alternative loses conversations.
@@ -3607,7 +3607,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
    * tracked values: whenever they drift, this writes one project's tabs into another
    * project's file — or, once the per-scope filter has dropped every foreign tab, an
    * empty layout, which used to erase the target's tabs outright. That is exactly how
-   * DemoProj lost four of them on detach (which swaps `local_file` under the store).
+   * a live project lost four of them on detach (which swaps `local_file` under the store).
    * The backend now refuses an unvouched empty save, so this can no longer destroy
    * anything, but the mismatch is still wrong at the source. No production caller
    * remains — CenterPanel passes its scope explicitly, and `detached.ts` derives

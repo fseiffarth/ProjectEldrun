@@ -643,6 +643,11 @@ mod tests {
     /// `sleep` behind once the PTY is killed.
     #[test]
     fn kill_reaps_the_child_subtree() {
+        // This test invalidates and repopulates the process-tree cache in its
+        // poll loop below, which is exactly the global state sysstat's
+        // cache-mechanics tests seed synthetic entries into. Share their lock so
+        // the two never interleave.
+        let _cache_guard = crate::sysstat::lock_cache_for_test();
         let pty_system = NativePtySystem::default();
         let pair = pty_system
             .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })

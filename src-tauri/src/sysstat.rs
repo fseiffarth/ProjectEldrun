@@ -2093,14 +2093,28 @@ mod platform {
     }
 }
 
+/// Serializes every test that touches the process-tree cache globals. They all
+/// mutate `DESCENDANT_CACHE` or bump `PROC_TREE_GEN`, so running them
+/// concurrently races on that shared state: a seeded synthetic entry is either
+/// overwritten or invalidated out from under the test that seeded it. Lives at
+/// module level rather than inside `mod tests` because the racing callers are in
+/// *other* modules' test code (`terminal::tests` spawns a PTY and invalidates the
+/// cache in a poll loop), and they must take the same lock.
+#[cfg(test)]
+pub(crate) static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Take [`CACHE_TEST_LOCK`] for the duration of a test, tolerating poisoning.
+/// A test that trips an assertion while holding the lock poisons it; without
+/// this, every later cache test fails on the poison rather than on its own
+/// behaviour, turning one real failure into a cascade of phantom ones.
+#[cfg(test)]
+pub(crate) fn lock_cache_for_test() -> std::sync::MutexGuard<'static, ()> {
+    CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Serializes the cache-mechanics tests: they all mutate the process-global
-    /// `DESCENDANT_CACHE`, so running them concurrently (or alongside other tests
-    /// that call `descendant_pids`) would race on that shared entry.
-    static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn clk_tck_is_positive() {
@@ -2191,7 +2205,7 @@ M\t44000
 
     #[test]
     fn descendant_pids_includes_its_own_root() {
-        let _guard = CACHE_TEST_LOCK.lock().unwrap();
+        let _guard = lock_cache_for_test();
         let me = std::process::id();
         let pids = descendant_pids(&[me]);
         assert!(pids.contains(&me), "descendant set must contain the root pid itself");
@@ -2204,7 +2218,7 @@ M\t44000
 
     #[test]
     fn descendant_pids_serves_cache_hit_for_unchanged_generation() {
-        let _guard = CACHE_TEST_LOCK.lock().unwrap();
+        let _guard = lock_cache_for_test();
         // Directly exercise the cache mechanics independent of the live process
         // tree (other parallel tests fork children, so the *real* tree is not a
         // stable fixture). Seed the cache with a synthetic entry, then confirm a
@@ -2234,7 +2248,7 @@ M\t44000
 
     #[test]
     fn descendant_pids_cache_keys_on_root_set() {
-        let _guard = CACHE_TEST_LOCK.lock().unwrap();
+        let _guard = lock_cache_for_test();
         // A seeded entry for one root set must not satisfy a query for another.
         let gen = PROC_TREE_GEN.load(Ordering::Relaxed);
         {
