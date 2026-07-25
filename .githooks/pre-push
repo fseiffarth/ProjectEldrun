@@ -5,7 +5,7 @@
 # which this hook deliberately skips).
 #
 # git can't add a commit to a push that is already in flight, so this hook:
-#   1. bumps package.json / Cargo.toml / tauri.conf.json,
+#   1. bumps package.json / Cargo.toml / tauri.conf.json / Cargo.lock,
 #   2. commits the bump onto the current branch,
 #   3. re-runs the push (which carries the bump), and
 #   4. aborts the original push, now superseded by the re-push.
@@ -47,8 +47,12 @@ done
 
 new="$("$repo_root/scripts/bump-version.sh" patch)"
 
-git -C "$repo_root" add \
-  package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json
+# Cargo.lock carries the workspace's own version too, so it is part of the bump
+# — staged with the rest or the bump commit leaves the tree dirty behind it.
+# `--` and the explicit list keep this to the version files: a push must never
+# sweep up whatever else happens to be in the working tree.
+git -C "$repo_root" add -- \
+  package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json Cargo.lock
 git -C "$repo_root" commit -m "chore: bump version to v${new}" >/dev/null
 
 echo "pre-push: bumped version to v${new}; pushing with the bump included…" >&2
