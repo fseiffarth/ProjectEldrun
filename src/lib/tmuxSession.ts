@@ -12,15 +12,32 @@
 import type { RemoteSpec } from "../types";
 
 /**
+ * A project id can appear verbatim in a tmux session name (it's practice a uuid),
+ * but is not schema-guaranteed to be — mirrors the backend's `sandbox::sanitize_key`
+ * so an oddly-shaped id can never produce an invalid session name.
+ */
+function sanitizeForTmuxName(id: string): string {
+  const safe = id.replace(/[^A-Za-z0-9_-]/g, "_");
+  return safe || "x";
+}
+
+/**
  * Mint a fresh, stable tmux session name for a shell tab. Minted **once** at tab
  * creation and **persisted** on the tab (`TabEntry.tmuxSession`), because the tab's
  * PTY id (`<scope>:<tab-key>`) is NOT stable — `loadFromLayout` regenerates the key
  * on every restart — so deriving the name from the id would create a *second*
  * session on relaunch instead of reattaching. A uuid is inherently tmux-safe
  * (`[0-9a-f-]`, no `:`/`.`), so it needs no sanitising.
+ *
+ * `scope` (the owning project id, or `"root"`/a box id) is embedded right after
+ * the `eldrun-` prefix, separated from the uuid by a `--` that can never occur
+ * inside either half (uuids and project ids are single-hyphenated) — so the
+ * Sessions view (`remote_tmux_list`) can tell one project's sessions apart from
+ * another's on a host multiple projects share, instead of listing every session
+ * on the host for every project.
  */
-export function newTmuxSessionName(): string {
-  return `eldrun-${crypto.randomUUID()}`;
+export function newTmuxSessionName(scope: string): string {
+  return `eldrun-${sanitizeForTmuxName(scope)}--${crypto.randomUUID()}`;
 }
 
 /**

@@ -21,11 +21,17 @@ Referenced from `CLAUDE.md`.
 Scoped to **shell tabs** (Python runs open one; a command runs inside the
 session's login shell, which outlives it → the run reattaches, not re-runs) and
 never the root scope — **agent tabs are excluded** (they resume via their own
-session). The session name is a **uuid the frontend mints once per shell tab and
-persists** (`TabEntry.tmuxSession`) — *not* derived from the PTY id, which
-`loadFromLayout` regenerates on restore (a derived name would fork a second
-session on relaunch instead of reattaching); `tmux_attach` overrides it for a
-Sessions-view attach. **Kill vs. detach**: closing a tab **always detaches** —
+session). The session name is a **`eldrun-<scope>--<uuid>` the frontend mints
+once per shell tab and persists** (`TabEntry.tmuxSession`, `lib/tmuxSession.ts`'s
+`newTmuxSessionName`) — *not* derived from the PTY id, which `loadFromLayout`
+regenerates on restore (a derived name would fork a second session on relaunch
+instead of reattaching); `tmux_attach` overrides it for a Sessions-view attach.
+The embedded `<scope>` (owning project id) is what lets `remote_tmux_list`
+(`ssh_exec::filter_sessions_for_project`) scope the Sessions view to one
+project's own sessions on a host multiple projects share — a hand-started
+foreign session, or a legacy pre-scoping `eldrun-<uuid>` one, stays visible
+everywhere (belongs to no project in particular); a `eldrun-<other-project>--`
+one is filtered out. **Kill vs. detach**: closing a tab **always detaches** —
 `lib/closeRemoteTab.ts`'s `closeTabWithConfirm` just `removeTab`s, killing only the
 ssh/PTY client, so the session lives on under its tmux daemon; an app-exit,
 crash, or respawn likewise **leave the session alive**. Disconnecting a remote

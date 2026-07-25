@@ -371,7 +371,10 @@ pub async fn remote_upload_file(
 /// List the tmux sessions running on a remote project host (TODO #85), for the
 /// Sessions view. Runs `tmux ls` over the pooled ControlMaster; an absent tmux or
 /// a not-running server yields an **empty** list, never an error (see
-/// `ssh_exec::parse_tmux_ls`). `host_id` defaults to the primary.
+/// `ssh_exec::parse_tmux_ls`). `host_id` defaults to the primary. The raw host
+/// listing is filtered to THIS project (`ssh_exec::filter_sessions_for_project`)
+/// so a host multiple remote projects share never leaks one project's sessions
+/// into another's view.
 #[tauri::command]
 pub async fn remote_tmux_list(
     project_id: String,
@@ -380,13 +383,18 @@ pub async fn remote_tmux_list(
     let host_id = host_id.unwrap_or_else(|| remote::PRIMARY_HOST.to_string());
     let target = remote::remote_target_for_host(&project_id, &host_id)
         .ok_or_else(|| "not a remote project host".to_string())?;
+    let filter_project_id = project_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let out = crate::services::ssh_exec::run_remote_script(
             &target.spec,
             crate::services::ssh_exec::tmux_ls_script(),
         )?;
-        Ok(crate::services::ssh_exec::parse_tmux_ls(
+        let sessions = crate::services::ssh_exec::parse_tmux_ls(
             &String::from_utf8_lossy(&out.stdout),
+        );
+        Ok(crate::services::ssh_exec::filter_sessions_for_project(
+            sessions,
+            &filter_project_id,
         ))
     })
     .await

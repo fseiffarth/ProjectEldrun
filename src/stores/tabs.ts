@@ -15,9 +15,12 @@ import { useRunHostPrefStore } from "./runHostPref";
  *  so a persistent remote run reattaches after a relaunch instead of forking a
  *  second session. Non-shell tabs, and shell tabs that already carry one (or an
  *  explicit attach), are left untouched. */
-function withTmuxSession(tab: Omit<TabEntry, "key">): Omit<TabEntry, "key"> {
+function withTmuxSession(
+  tab: Omit<TabEntry, "key">,
+  scope: string,
+): Omit<TabEntry, "key"> {
   if (tab.kind === "shell" && !tab.tmuxSession && !tab.tmuxAttach) {
-    return { ...tab, tmuxSession: newTmuxSessionName() };
+    return { ...tab, tmuxSession: newTmuxSessionName(scope) };
   }
   return tab;
 }
@@ -1715,7 +1718,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     const key = nextKey(tab.kind);
     // Spread first so a stray `key` on the payload can't shadow the minted one.
     const entry: TabEntry = {
-      ...withTmuxSession(withRunHostDefault(get().scope, tab)),
+      ...withTmuxSession(withRunHostDefault(get().scope, tab), get().scope),
       key,
     };
     if (!opts?.seeded) countTabOpen(get().scope, entry);
@@ -1751,7 +1754,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   addTabToScope: (scope, tab) => {
     const key = nextKey(tab.kind);
     const entry: TabEntry = {
-      ...withTmuxSession(withRunHostDefault(scope, tab)),
+      ...withTmuxSession(withRunHostDefault(scope, tab), scope),
       key,
       scope,
     };
@@ -2201,7 +2204,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // tab created by a split-drag (or a Python run placed via one) is persistence-
     // eligible — otherwise it silently skips the tmux wrap (idempotent: no-op for a
     // tab that already carries a session or is a non-shell kind).
-    const entry: TabEntry = { ...withTmuxSession(tab), key };
+    const entry: TabEntry = { ...withTmuxSession(tab, get().scope), key };
     let created = false;
     set((s) => {
       const { tabs, layout } = currentScopeState(s);
@@ -2411,7 +2414,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // stamp the owning scope (writeScope isn't on this path since the layout is
     // untouched, so do its scope-stamp here). Mint the tmux session name too, so a
     // shell tab detached straight into its own popout stays persistence-eligible.
-    const entry: TabEntry = { ...withTmuxSession(tab), key, scope };
+    const entry: TabEntry = { ...withTmuxSession(tab, scope), key, scope };
     const subtree: GroupNode = {
       type: "group",
       id: groupId,
@@ -3063,7 +3066,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // in-window adds, so a Python/shell run STREAMED into a detached popout (its
     // Run button places the tab here, not via addTabToScope) is persistence-
     // eligible instead of silently skipping the tmux wrap.
-    const entry: TabEntry = { ...withTmuxSession(tab), key, scope };
+    const entry: TabEntry = { ...withTmuxSession(tab, scope), key, scope };
     let created: string | null = null;
     set((s) => {
       const entries = s.detachedGroupsByScope[scope] ?? [];
@@ -3105,7 +3108,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // (this path never touches the in-window layout, so no writeScope to do it).
     // Mint the tmux session name too (see addDetachedTab) so a shell tab streamed
     // into a popout via a split-drop is persistence-eligible.
-    const entry: TabEntry = { ...withTmuxSession(tab), key, scope };
+    const entry: TabEntry = { ...withTmuxSession(tab, scope), key, scope };
     let created: string | null = null;
     set((s) => {
       const entries = s.detachedGroupsByScope[scope] ?? [];
@@ -3409,7 +3412,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // every subsequent restart).
         tmuxSession:
           t.tmuxSession ??
-          (kind === "shell" && !t.tmuxAttach ? newTmuxSessionName() : undefined),
+          (kind === "shell" && !t.tmuxAttach
+            ? newTmuxSessionName(targetScope ?? get().scope)
+            : undefined),
         // A Sessions-view attach tab reattaches to its tmux session on restart.
         tmuxAttach: t.tmuxAttach,
       };

@@ -28,11 +28,17 @@ const remote = (over: Partial<RemoteSpec> = {}): RemoteSpec => ({
 
 describe("newTmuxSessionName", () => {
   it("mints a tmux-safe (uuid-based) name — no `:`/`.` that tmux treats specially", () => {
-    const name = newTmuxSessionName();
+    const name = newTmuxSessionName("p1");
     expect(name.startsWith("eldrun-")).toBe(true);
     expect(name).not.toMatch(/[:.\s]/);
     // Distinct per call, so each shell tab owns its own host session.
-    expect(newTmuxSessionName()).not.toBe(name);
+    expect(newTmuxSessionName("p1")).not.toBe(name);
+  });
+
+  it("embeds the owning scope so the Sessions view can filter by project", () => {
+    expect(newTmuxSessionName("proj-1")).toMatch(/^eldrun-proj-1--/);
+    // A scope with tmux-unsafe characters is sanitized, never dropped or thrown.
+    expect(newTmuxSessionName("weird:scope.id")).toMatch(/^eldrun-weird_scope_id--/);
   });
 });
 

@@ -361,6 +361,61 @@ pub fn parse_tmux_ls(output: &str) -> Vec<TmuxSession> {
         .collect()
 }
 
+/// A project id can appear verbatim in a tmux session name (it's a uuid in
+/// practice), but is not schema-guaranteed to be — mirrors the frontend's
+/// `tmuxSession.ts` sanitizer (and `services::sandbox::sanitize_key`'s pattern)
+/// so an oddly-shaped id can never produce an invalid prefix to match against.
+fn sanitize_tmux_key(id: &str) -> String {
+    let safe: String = id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    if safe.is_empty() {
+        "x".to_string()
+    } else {
+        safe
+    }
+}
+
+/// The `eldrun-<project>--` prefix a session minted for `project_id` carries
+/// (`lib/tmuxSession.ts`'s `newTmuxSessionName`). The `--` cannot occur inside
+/// either half (a project id and a uuid are each single-hyphenated), so it
+/// unambiguously separates the project id from the trailing uuid.
+fn tmux_session_prefix_for(project_id: &str) -> String {
+    format!("eldrun-{}--", sanitize_tmux_key(project_id))
+}
+
+/// Whether `name` is a session minted by (and thus owned by) a DIFFERENT
+/// Eldrun project than `own_project_id` — used to keep the Sessions view
+/// (TODO #85) scoped to one project on a host multiple projects share, instead
+/// of surfacing every session on the host. A hand-started/foreign session
+/// (no `eldrun-` prefix at all) is never "another project's" — it belongs to
+/// nobody, so it stays visible everywhere, same as before this scoping
+/// existed. A **legacy** `eldrun-<uuid>` session (minted before session names
+/// carried a project id — no `--` marker) is ambiguous rather than
+/// attributable to another project, so it is also left visible; it ages out
+/// as old sessions are killed/renamed.
+pub fn session_belongs_to_other_project(name: &str, own_project_id: &str) -> bool {
+    if !name.starts_with("eldrun-") {
+        return false;
+    }
+    if name.starts_with(&tmux_session_prefix_for(own_project_id)) {
+        return false;
+    }
+    name.contains("--")
+}
+
+/// Filter a host's tmux sessions down to the ones this project should see
+/// (TODO #85): its own sessions, plus foreign/legacy ones no project can be
+/// blamed for owning — never another project's. See
+/// [`session_belongs_to_other_project`].
+pub fn filter_sessions_for_project(sessions: Vec<TmuxSession>, project_id: &str) -> Vec<TmuxSession> {
+    sessions
+        .into_iter()
+        .filter(|s| !session_belongs_to_other_project(&s.name, project_id))
+        .collect()
+}
+
 /// Build the full `ssh` argv for an interactive remote PTY session running
 /// `remote_command`. Returned as `Vec<String>` so it is unit-testable without
 /// actually connecting.
@@ -948,6 +1003,34 @@ mod tests {
         assert_eq!(v[0].activity, 1_700_000_000);
         assert_eq!(v[0].current_command, "");
         assert!(!v[0].working);
+    }
+
+    #[test]
+    fn session_belongs_to_other_project_scopes_by_prefix() {
+        // Own project's own session → not "other".
+        assert!(!session_belongs_to_other_project("eldrun-p1--abcd", "p1"));
+        // A DIFFERENT project's scoped session → other, filtered out.
+        assert!(session_belongs_to_other_project("eldrun-p2--abcd", "p1"));
+        // A hand-started/foreign session belongs to nobody, never "other".
+        assert!(!session_belongs_to_other_project("train", "p1"));
+        // A legacy pre-scoping session (`eldrun-<uuid>`, no `--` marker) is
+        // ambiguous, not attributable to another project.
+        assert!(!session_belongs_to_other_project("eldrun-abcd1234", "p1"));
+        // An id needing sanitizing is matched consistently on both sides.
+        assert!(!session_belongs_to_other_project("eldrun-we_rd--abcd", "we:rd"));
+    }
+
+    #[test]
+    fn filter_sessions_for_project_keeps_own_foreign_and_legacy_drops_other_projects() {
+        let sessions = vec![
+            TmuxSession { name: "eldrun-p1--a".into(), windows: 1, created: 0, attached: false, activity: 0, current_command: "".into(), working: false },
+            TmuxSession { name: "eldrun-p2--b".into(), windows: 1, created: 0, attached: false, activity: 0, current_command: "".into(), working: false },
+            TmuxSession { name: "train".into(), windows: 1, created: 0, attached: false, activity: 0, current_command: "".into(), working: false },
+            TmuxSession { name: "eldrun-legacyuuid".into(), windows: 1, created: 0, attached: false, activity: 0, current_command: "".into(), working: false },
+        ];
+        let kept = filter_sessions_for_project(sessions, "p1");
+        let names: Vec<&str> = kept.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["eldrun-p1--a", "train", "eldrun-legacyuuid"]);
     }
 
     #[test]
