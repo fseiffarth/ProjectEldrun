@@ -31,8 +31,17 @@ use keyring::credential::CredentialApi as _;
 /// `user` defaults to empty and `port` to 22 so the key is stable whether the
 /// caller passes `None`/`Some(22)` or an omitted user — the same live target
 /// always maps to the same entry.
+///
+/// The **host is lower-cased** for the same reason `ssh_common::target_key`
+/// does it: DNS is case-insensitive, so a host typed `Login.Example` in one
+/// dialog and `login.example` in another is one machine — but two keychain
+/// entries, which reads as "no password saved" on whichever spelling the user
+/// did not save under. The login name is *not* folded: a different login is a
+/// different account with its own password. Trimming matches: a trailing space
+/// pasted into the address field must not mint a second entry.
 pub fn ssh_account(user: &Option<String>, host: &str, port: Option<u16>) -> String {
     let user = user.as_deref().unwrap_or("").trim();
+    let host = host.trim().to_lowercase();
     let port = port.unwrap_or(22);
     format!("ssh:{user}@{host}:{port}")
 }
@@ -208,6 +217,26 @@ pub fn has(account: &str) -> bool {
     get(account).is_some()
 }
 
+/// Whether the credential store can be read **right now**, as [`get`]'s own gate
+/// sees it (cached on Linux, always true elsewhere — see [`keyring_state`]).
+///
+/// This is the question every `has(..) == false` silently depends on, and the one
+/// no caller used to ask. A locked collection answers every lookup with "nothing
+/// saved", so anything that reads absence as a *fact* — "this host authenticates
+/// by key", "there is no password to delete" — draws a conclusion from a store it
+/// could not read. Callers that would act destructively, or write something down,
+/// ask this first and do nothing when it says no.
+pub fn store_readable() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        cached_keyring_state() == KeyringState::Unlocked
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
 /// Whether the OS credential store can be read **right now** — the question every
 /// "is this credential saved?" answer silently depends on.
 ///
@@ -274,7 +303,10 @@ fn cached_keyring_state() -> KeyringState {
 
 /// Record a freshly-observed lock state. A no-op off Linux, where there is no lock to
 /// observe and [`get`] never consults the cache.
-fn remember_keyring_state(_state: KeyringState) {
+/// `pub(crate)` only so a test elsewhere can put the gate into a known state
+/// without a live probe (see `commands::remote`'s locked-keychain test) — nothing
+/// in production code outside this module should be *asserting* a lock state.
+pub(crate) fn remember_keyring_state(_state: KeyringState) {
     #[cfg(target_os = "linux")]
     {
         if let Ok(mut cache) = STATE_CACHE.lock() {
@@ -397,19 +429,76 @@ pub fn remember_action(remember: Option<bool>) -> Remember {
     }
 }
 
+/// What the post-auth keychain write actually did, so the connect that triggered
+/// it can say so instead of swallowing it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RememberOutcome {
+    /// A secret is stored for this account as a result of this call — either the
+    /// save landed, or a clear was **declined** because the store could not be
+    /// read (so whatever was there is still there).
+    pub saved: bool,
+    /// Why the keychain did not do what the checkbox asked. Never a reason to
+    /// fail the connect: authentication already succeeded.
+    pub error: Option<String>,
+}
+
 /// Apply the post-auth keychain write for `account`: save `secret`, clear the
 /// entry, or leave it alone, per [`remember_action`]. Call only *after*
-/// authentication succeeded, so a rejected credential is never stored. Best effort
-/// — a keychain write failure must not fail an already-successful connect.
-pub fn remember_secret(account: &str, remember: Option<bool>, secret: Option<&str>) {
+/// authentication succeeded, so a rejected credential is never stored.
+///
+/// Two things this deliberately does **not** do any more. It does not discard
+/// [`set`]'s result: a write refused by a locked keyring produced a connect that
+/// looked as if it had saved the password, and a next launch with a blank prompt
+/// as the only evidence. And it does not clear an entry it could not first read:
+/// an unreadable store is not licence to delete — [`get`]/[`has`] answer "nothing
+/// saved" while locked, so an untick evaluated against that answer would destroy a
+/// password the user still wants (and, keyed by host, possibly another project's).
+/// The destructive branch is the one branch that needs the store to be *known*
+/// open, so it asks [`store_readable`] first.
+pub fn remember_secret(
+    account: &str,
+    remember: Option<bool>,
+    secret: Option<&str>,
+) -> RememberOutcome {
     match remember_action(remember) {
-        Remember::Save => {
-            let _ = set(account, secret);
-        }
+        Remember::Save => match set(account, secret) {
+            Ok(()) => RememberOutcome {
+                saved: secret.is_some_and(|s| !s.is_empty()),
+                error: None,
+            },
+            Err(e) => RememberOutcome {
+                saved: false,
+                error: Some(e),
+            },
+        },
         Remember::Clear => {
-            let _ = set(account, None);
+            if !store_readable() {
+                return RememberOutcome {
+                    saved: true,
+                    error: Some(
+                        "the OS keyring is locked, so the saved password was left alone — \
+                         unlock it and untick again to remove it"
+                            .to_string(),
+                    ),
+                };
+            }
+            match set(account, None) {
+                Ok(()) => RememberOutcome {
+                    saved: false,
+                    error: None,
+                },
+                Err(e) => RememberOutcome {
+                    saved: true,
+                    error: Some(e),
+                },
+            }
         }
-        Remember::Leave => {}
+        // No checkbox behind this call, so nothing was asked and nothing done —
+        // `saved` reports this call's doing, not the state of the keychain.
+        Remember::Leave => RememberOutcome {
+            saved: false,
+            error: None,
+        },
     }
 }
 
@@ -445,6 +534,64 @@ mod tests {
         assert_eq!(ssh_account(&None, "host.example", Some(2222)), "ssh:@host.example:2222");
         // A blank/whitespace user normalizes to the same empty-user key.
         assert_eq!(ssh_account(&Some("  ".into()), "host.example", Some(2222)), "ssh:@host.example:2222");
+    }
+
+    /// One machine, one entry. DNS is case-insensitive, so the same host typed
+    /// `MLAI21…` in one dialog and `mlai21…` in another used to mint two keychain
+    /// accounts — and the spelling the user did not save under read back as "no
+    /// password saved", i.e. a prompt where a silent reconnect was promised.
+    #[test]
+    fn ssh_account_folds_host_case_and_trims() {
+        assert_eq!(
+            ssh_account(&Some("alice".into()), " Login.Example ", None),
+            ssh_account(&Some("alice".into()), "login.example", Some(22)),
+        );
+        // The login name is deliberately NOT folded: a different login is a
+        // different account on that host, with its own password.
+        assert_ne!(
+            ssh_account(&Some("Alice".into()), "login.example", None),
+            ssh_account(&Some("alice".into()), "login.example", None),
+        );
+    }
+
+    /// An unreadable store is not licence to delete. While the collection is
+    /// locked every lookup answers "nothing saved", so an untick evaluated against
+    /// that answer destroys a password the user still wants — and the entry is
+    /// keyed by host, so possibly another project's. Proven by the outcome alone:
+    /// reaching `set` would mean the guard let the delete through.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_locked_keyring_never_clears_a_saved_password() {
+        remember_keyring_state(KeyringState::Locked);
+        let out = remember_secret("test:clear-guard", Some(false), None);
+        assert!(out.saved, "the entry must be reported as still present");
+        assert!(out.error.unwrap_or_default().contains("locked"));
+    }
+
+    /// The other half: a save the keychain refused must reach the caller as a
+    /// reason, not vanish. Swallowing it produced a connect that looked as though
+    /// it had saved the password, with the next launch's blank prompt as the only
+    /// evidence it had not.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_refused_save_is_reported_rather_than_swallowed() {
+        remember_keyring_state(KeyringState::Locked);
+        let out = remember_secret("test:save-report", Some(true), Some("secret"));
+        assert!(!out.saved);
+        assert!(out.error.is_some(), "the reason must reach the caller");
+    }
+
+    /// `Leave` touches nothing, so it reports nothing — `saved` is what *this
+    /// call* did, not a reading of the keychain (which it deliberately never takes).
+    #[test]
+    fn nothing_asked_means_nothing_done() {
+        assert_eq!(
+            remember_secret("test:leave", None, Some("secret")),
+            RememberOutcome {
+                saved: false,
+                error: None
+            }
+        );
     }
 
     #[test]

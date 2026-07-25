@@ -12,7 +12,11 @@ import {
 import { IS_WINDOWS } from "../../lib/platform";
 import { forgetConnection, markConnectionOpened } from "../../lib/remoteConnect";
 import { useProjectsStore } from "../../stores/projects";
+import { useSettingsStore } from "../../stores/settings";
 import { useRemoteStatusStore, type ConnState } from "../../stores/remoteStatus";
+import { isHpcHost, targetOfSpec } from "../../lib/hpcHost";
+import { autoConnectEligibility } from "./autoConnectEligibility";
+import { useSavedCredential, type SshConnectOutcome } from "./useSavedCredential";
 import {
   markVpnConnected,
   markVpnConnecting,
@@ -208,31 +212,29 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
   const [vpnLog, setVpnLog] = useState<LogLine[]>([]);
   const vpnLogSeq = useRef(0);
 
-  // Whether a password is already saved in the OS keychain for this project's
-  // SSH host / VPN config, so the Connect modal can pre-check the "Save password"
-  // box and show "saved". Queried once on mount (the secret itself never leaves
-  // the backend).
-  const [sshSaved, setSshSaved] = useState(false);
+  // Whether a password is already saved in the OS keychain for this project's SSH
+  // host, so the Connect modal can pre-check the "Save password" box. The shared
+  // hook, not a local boolean: its answer is a **tri-state**, because a locked
+  // keychain answers a lookup exactly like an empty one and reading that as
+  // "nothing saved" is what unticked the box and let the next connect delete the
+  // credential it had just authenticated with (`useSavedCredential`).
+  const sshCredential = useSavedCredential(
+    remote ? { user: remote.user ?? null, host: remote.host, port: remote.port ?? null } : null,
+  );
+  const sshSaved = sshCredential.saved;
+  // The VPN half has no equivalent state command yet, so it stays a plain
+  // boolean — its untick path is an explicit forget either way.
   const [vpnSaved, setVpnSaved] = useState(false);
   useEffect(() => {
-    if (!remote) return;
+    if (!vpnConfig) return;
     let cancelled = false;
-    void invoke<boolean>("remote_has_saved_password", {
-      user: remote.user ?? null,
-      host: remote.host,
-      port: remote.port ?? null,
-    })
-      .then((v) => !cancelled && setSshSaved(v))
+    void invoke<boolean>("vpn_has_saved_password", { config: vpnConfig })
+      .then((v) => !cancelled && setVpnSaved(v))
       .catch(() => {});
-    if (vpnConfig) {
-      void invoke<boolean>("vpn_has_saved_password", { config: vpnConfig })
-        .then((v) => !cancelled && setVpnSaved(v))
-        .catch(() => {});
-    }
     return () => {
       cancelled = true;
     };
-  }, [projectId, remote, vpnConfig]);
+  }, [vpnConfig]);
 
   // Auto-connect opt-in: connect this project silently on launch/activation. Only
   // offerable once the connect needs no input — a saved SSH password, or a host the
@@ -259,7 +261,22 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
   // opening in the root terminal, not a connect Eldrun completes by itself.
   const [keyAuth, setKeyAuth] = useState(remote?.key_auth === true);
   useEffect(() => setKeyAuth(remote?.key_auth === true), [remote?.key_auth]);
-  const autoConnectEligible = sshSaved || keyAuth;
+  // One formula for all four surfaces (`autoConnectEligibility`), which is also
+  // what finally brings the **HPC tag** into this dialog: `stores/projects`
+  // refuses to dial a tagged host unattended, so a switch armed here was
+  // guaranteed to do nothing and said nothing about why. `savedPassword` is the
+  // *known*-saved half deliberately — an unreadable keychain can't feed a silent
+  // connect, so it must not qualify one.
+  const settings = useSettingsStore((s) => s.settings);
+  const headless = settings?.connections_headless ?? true;
+  const autoConnectHpc = isHpcHost(settings, targetOfSpec(remote));
+  const autoConnectState = autoConnectEligibility({
+    headless,
+    keyAuth,
+    savedPassword: sshSaved,
+    hpc: autoConnectHpc,
+  });
+  const autoConnectEligible = autoConnectState.eligible;
   // A worker's toggles/label live on its `compute_hosts` entry (not the project's
   // primary remote). `patch_compute_host` returns the full updated list — apply it
   // back to the store so anything derived from `host` (the auto-connect toggle, the
@@ -518,6 +535,11 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
       host: remote.host,
       port: remote.port ?? null,
       password: null,
+      // A credential-less probe is ambiguous to the dial policy — it looks exactly
+      // like a background sweep — but this one is waiting on a master the user
+      // just authenticated in the terminal above. Say so, or a host tagged HPC
+      // refuses every attempt and the poll times out behind a visibly-good login.
+      background: false,
     })
       .then(async () => {
         if (gen !== sshGen.current) return; // stopped while the probe ran
@@ -532,7 +554,16 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
           // promptless auto-connect that failed on every launch. In this mode the
           // toggle needs no such evidence: it is offered unconditionally, because
           // "auto-connect" here *means* this same login opening by itself.
-          await invoke("remote_connect", { projectId, hostId, password: null, viaLogin: true });
+          // `background: false` — a person opened this login and is waiting on it;
+          // `remote_connect` now defaults to background, which a tagged HPC host
+          // refuses outright.
+          await invoke("remote_connect", {
+            projectId,
+            hostId,
+            password: null,
+            viaLogin: true,
+            background: false,
+          });
           if (gen !== sshGen.current) return;
           setSsh(projectId, "connected", hostId);
         } catch {
@@ -621,10 +652,16 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
   // `password` already is the key passphrase and this is empty. Blocks until the
   // backend reports the tunnel ready (or fails). Mirrors `useRemoteSession`'s
   // headless `connectVpn`.
+  //
+  // `remember` follows the same `true | null`, never-`false` rule the SSH connect
+  // does, and for the identical reason: `openvpn_connect` also resolves
+  // `typed || saved` before calling `remember_secret`, so a `false` on a
+  // *successful* connect clears the passphrase (and username, and key passphrase)
+  // it just authenticated with. Unticking deletes via `forgetVpnPassword`.
   const connectVpnHeadless = async (
     password: string,
     keyPassphrase = "",
-    remember = false,
+    remember: true | null = null,
   ) => {
     if (!vpnConfig) return;
     const gen = ++vpnGen.current;
@@ -653,7 +690,7 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
       // Persist the (non-secret) username so a later silent activation can reuse
       // it from the keychained password with no prompt.
       if (vpnNeeds.username && vpnUsername) persistVpnConfig(vpnConfig);
-      setVpnSaved(remember);
+      setVpnSaved(remember === true);
       markVpnConnected(projectId, vpnConfig);
     } catch (e) {
       if (gen !== vpnGen.current) return; // stopped — ignore the stale failure
@@ -666,7 +703,13 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
   // the pool is up and the SSH lamp goes green — which lets the CenterPanel's
   // held remote panes mount and spawn. Mirrors `pollSshReady`'s success branch
   // but with a user-typed password rather than riding an existing ControlMaster.
-  const connectSshHeadless = async (password: string, remember?: boolean) => {
+  //
+  // `remember` is `true` ("save it") or `null`/`undefined` ("leave the keychain
+  // alone") and **never** `false`: `false` is `Remember::Clear`, and since
+  // `ssh_connect` resolves `typed || saved` before it writes, a successful connect
+  // carrying it deletes the very password it authenticated with. Callers build the
+  // value with `rememberArg`; deleting is the explicit forget's job alone.
+  const connectSshHeadless = async (password: string, remember?: true | null) => {
     if (!remote) return;
     const gen = ++sshGen.current;
     setSsh(projectId, "connecting", hostId);
@@ -683,8 +726,8 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
       const user = await commitSshUser();
       // First contact: if this host's key has never been accepted here, show its
       // fingerprint before the password goes anywhere, and retry once if accepted.
-      await withHostKeyConfirm(() =>
-        invoke("ssh_connect", {
+      const outcome = await withHostKeyConfirm(() =>
+        invoke<SshConnectOutcome>("ssh_connect", {
         user,
         host: remote.host,
         port: remote.port ?? null,
@@ -693,6 +736,10 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
         // Connect button): `false` means "the user unticked it" and clears the
         // saved password — never say that on the user's behalf.
         remember: remember ?? null,
+        // A typed password already reads as a gesture backend-side, but a blank
+        // field riding a saved credential does not — and this is a Connect click
+        // either way.
+        background: false,
         }),
       );
       if (gen !== sshGen.current) return; // stopped mid-connect
@@ -704,11 +751,14 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
       // key/agent auth — which a password-auth host rejects. It falls back to a
       // *saved* password, so this only ever worked with "Save password" ticked.
       await withHostKeyConfirm(() =>
-        invoke("remote_connect", { projectId, hostId, password: secret }),
+        invoke("remote_connect", { projectId, hostId, password: secret, background: false }),
       );
       if (gen !== sshGen.current) return;
-      // Only a checkbox-driven connect changed what's in the keychain.
-      if (remember !== undefined) setSshSaved(remember);
+      // What is saved is what the backend **did**, not what the request asked for:
+      // a locked keyring refuses the write and reports why, and a ticked box over
+      // an empty keychain is exactly the state that resurfaces at the next launch
+      // as an unexplained password prompt.
+      sshCredential.applyOutcome(outcome);
       // No password given, none saved, and the connect still succeeded → the host
       // authenticated via key/agent auth (the backend records the same). Flip the
       // eligibility flag so the Auto-connect toggle comes alive here, no reload.
@@ -730,12 +780,7 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
   const forgetSshPassword = async () => {
     if (!remote) return;
     try {
-      await invoke("remote_forget_password", {
-        user: remote.user ?? null,
-        host: remote.host,
-        port: remote.port ?? null,
-      });
-      setSshSaved(false);
+      await sshCredential.forget();
       // Auto-connect leaned on that password: with it gone (and no key auth to fall
       // back on) the opt-in can no longer fire, so clear it rather than leave a
       // ticked toggle that silently does nothing. `autoConnectRemote` re-checks
@@ -813,9 +858,14 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
     vpnError,
     vpnLog,
     sshSaved,
+    // The tri-state behind `sshSaved`, for the shared "Save password" row: it is
+    // what lets a locked keychain say so instead of proposing a delete.
+    sshCredential,
     vpnSaved,
     autoConnect,
     autoConnectEligible,
+    // Which wall an ineligible switch hit — the two have different remedies.
+    autoConnectBlock: autoConnectState.reason,
     setAutoConnect,
     setWorkerLabel,
     connectVpnHeadless,

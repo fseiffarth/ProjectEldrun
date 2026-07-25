@@ -31,6 +31,8 @@ vi.mock("../lib/machineSync", () => ({
 }));
 
 import { useGlobalMachinesStore } from "../stores/globalMachines";
+import { useSettingsStore } from "../stores/settings";
+import type { Settings } from "../types";
 
 const MACHINES = [
   { id: "m1", host: "a.example", user: "u" },
@@ -43,8 +45,12 @@ describe("globalMachines — a no-op status write must not notify", () => {
     useGlobalMachinesStore.setState({
       machines: MACHINES as never,
       status: { m1: "connected", m2: "connected" },
+      reachable: { m1: true, m2: true },
       loaded: true,
     });
+    // `probeAll` skips HPC-tagged machines via `mayAutoTouch`, which fails closed on
+    // an unloaded settings store — without this it would sweep nothing at all.
+    useSettingsStore.setState({ settings: {} as Settings, loaded: true });
   });
 
   it("setStatus does not notify when the lamp already holds that value", () => {
@@ -64,7 +70,7 @@ describe("globalMachines — a no-op status write must not notify", () => {
   });
 
   it("probeAll does not notify when every machine is already in the probed state", async () => {
-    // Both already "connected", and both probe ok → nothing changed.
+    // Both already reachable, and both probe ok → nothing changed.
     mockInvoke.mockResolvedValue({ ok: true });
     const seen = vi.fn();
     const unsub = useGlobalMachinesStore.subscribe(seen);
@@ -77,7 +83,14 @@ describe("globalMachines — a no-op status write must not notify", () => {
     unsub();
   });
 
-  it("probeAll still notifies, once, when a machine actually changed", async () => {
+  // The expectation moved from `status` to `reachable` on purpose. A probe answers
+  // "did the host answer", which is NOT "does this app hold a session on it" — and
+  // `status` means the second, because `lib/machineSync` propagates it onto any
+  // project holding the same host and opens that project's pool. Letting a hover-time
+  // sweep write `status` is what lit a machine green with no session behind it while
+  // the project stayed unconnected. The idempotence guarantee this file exists for is
+  // unchanged; only the field it guards moved.
+  it("probeAll still notifies, once, when a machine actually changed — on `reachable`", async () => {
     mockInvoke.mockImplementation((_cmd: string, args: { host?: string }) =>
       Promise.resolve({ ok: args?.host !== "b.example" }),
     );
@@ -87,9 +100,12 @@ describe("globalMachines — a no-op status write must not notify", () => {
     await useGlobalMachinesStore.getState().probeAll();
 
     expect(seen).toHaveBeenCalledTimes(1);
+    expect(useGlobalMachinesStore.getState().reachable).toEqual({ m1: true, m2: false });
+    // …and the session lamps are left exactly as they were: nothing about a probe
+    // opens or ends a session.
     expect(useGlobalMachinesStore.getState().status).toEqual({
       m1: "connected",
-      m2: "error",
+      m2: "connected",
     });
 
     unsub();

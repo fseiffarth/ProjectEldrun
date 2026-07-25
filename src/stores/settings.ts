@@ -97,6 +97,37 @@ interface SettingsStore {
   setPythonRunArgs: (path: string, args: string) => Promise<void>;
 }
 
+/**
+ * Resolve once settings have loaded — or after `timeoutMs`, whichever comes first.
+ *
+ * Every gate that decides whether Eldrun may reach a host **without a gesture**
+ * reads settings (`lib/hpcHost`'s `mayAutoTouch`, `machines_enabled`) and every one
+ * of them fails closed on an unloaded store. That is the right default, and its
+ * consequence is that the launch sweeps must *wait* rather than fire into the gap:
+ * `AppShell` starts this load in parallel with the projects load, so the answer is
+ * milliseconds away, and firing first would either skip a project that is perfectly
+ * eligible or — before the gates existed — dial a tagged cluster.
+ *
+ * It waits; it never loads. A second `get_settings` from a background caller would
+ * re-apply the theme and this window's zoom as a side effect. On timeout the caller
+ * proceeds against an unloaded store, i.e. every gate answers "no" — the failure
+ * mode is "nothing connected", never "something connected blind".
+ */
+export function whenSettingsLoaded(timeoutMs = 5000): Promise<void> {
+  if (useSettingsStore.getState().loaded) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      unsubscribe();
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    const unsubscribe = useSettingsStore.subscribe((s) => {
+      if (s.loaded) finish();
+    });
+  });
+}
+
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   settings: null,
   loaded: false,

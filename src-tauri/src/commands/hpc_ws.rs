@@ -142,6 +142,11 @@ fn run_ws_script(target: &HpcWsTarget, script: &str) -> Result<String, String> {
         .map(|u| u.trim().to_string())
         .filter(|u| !u.is_empty());
     use crate::services::remote_credentials as creds;
+    // The bare-host branch runs *before any project exists* — the Workspace step
+    // of the create flow, where the user has just typed this machine's address —
+    // so, like the project branch above (`run_slurm_script`), it is user-initiated
+    // and clears the dial policy for the argv `run_ssh_auth` builds.
+    let _dial = crate::services::ssh_common::user_dial(&user, host, target.port);
     let account = creds::ssh_account(&user, host, target.port);
     let password = target
         .password

@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { targetKey, type Target } from "../lib/machineSync";
+import { mayAutoTouch } from "../lib/hpcHost";
+import { useSettingsStore } from "./settings";
 import { PRIMARY_HOST } from "./remoteStatus";
 
 /**
@@ -58,7 +60,8 @@ interface HostBusyStore {
   /** Targets with a probe in flight, so a re-open can't stack round trips. */
   inFlight: Record<string, true>;
 
-  /** Probe one **global machine** (no project → ad-hoc auth). */
+  /** Probe one **global machine** (no project → ad-hoc auth). Skipped entirely on
+   *  an HPC-tagged host — see the implementation. */
   probeGlobal: (target: Target) => Promise<void>;
   /** Probe one **project host**, riding that project's pooled ControlMaster. */
   probeProjectHost: (projectId: string, hostId: string, target: Target) => Promise<void>;
@@ -99,6 +102,13 @@ export const useHostBusyStore = create<HostBusyStore>((set, get) => ({
   inFlight: {},
 
   probeGlobal: async (target) => {
+    // Not on a tagged cluster. Unlike `probeProjectHost`, which rides a pool the
+    // user opened, this authenticates ad-hoc — and its caller is a sweep over the
+    // whole machine list run from a menu that opens on *hover*. A `tmux ls` is
+    // cheap; an unasked-for login on a shared login node, every time the pointer
+    // crosses the header, is not. The cost is that a tagged machine never pulses;
+    // the Sessions view is where its running work is read instead.
+    if (!mayAutoTouch(useSettingsStore.getState().settings, target)) return;
     const key = targetKey(target);
     if (get().inFlight[key]) return;
     set((s) => ({ inFlight: { ...s.inFlight, [key]: true } }));

@@ -230,6 +230,13 @@ async fn ensure_watcher(
 /// The per-project loop: reconcile on a fixed interval (host changes) and shortly
 /// after any mirror write (local changes), until cancelled. A single task ⇒ passes
 /// are serialized and never overlap.
+/// Whether this loop's host is tagged HPC **right now** — the same gate `start()`
+/// applies, asked again on every tick so tagging a machine mid-session actually
+/// stops the traffic rather than only preventing the next start.
+fn hpc_now(target: &RemoteTarget) -> bool {
+    crate::services::hpc_mode::is_hpc_spec(&target.spec)
+}
+
 async fn run_loop(
     app: AppHandle,
     pool: RemotePoolState,
@@ -252,6 +259,13 @@ async fn run_loop(
         tokio::select! {
             _ = cancel.notified() => break,
             _ = interval.tick() => {
+                // Re-read the tag, don't trust the one `start()` saw: tagging a
+                // machine is normally something the user does *because* they
+                // noticed the traffic, and a gate evaluated once at connect would
+                // leave the loop they are trying to stop running until the next
+                // disconnect. Breaking ends the task; `stop()` then finds it
+                // already finished, which is the same state as a cancel.
+                if hpc_now(&target) { break; }
                 if paused.load(Ordering::SeqCst) { continue; }
                 // Cheap once attached; this is what picks up a `sync_set_auto` that
                 // marked the first path after the task was already running.
@@ -268,6 +282,9 @@ async fn run_loop(
                         res = rx.recv() => { if res.is_none() { return; } }
                     }
                 }
+                // The watcher fires on local edits, which are exactly as much
+                // host traffic as a tick — same re-check as the interval arm.
+                if hpc_now(&target) { break; }
                 // Skip the pass while a checkout is rewriting the mirror; the writes
                 // that queued these watcher events are re-based by git_peer before
                 // resume, so dropping this pass loses nothing.

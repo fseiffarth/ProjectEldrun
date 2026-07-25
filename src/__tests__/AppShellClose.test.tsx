@@ -58,12 +58,20 @@ vi.mock("../stores/projects", () => {
 vi.mock("../stores/settings", () => {
   // The auto-reconnect sweep reads settings imperatively (getState) to skip
   // HPC-tagged machines, so the mock must carry getState alongside the hook.
-  const state = { load: vi.fn(), settings: null };
+  // It also awaits whenSettingsLoaded before the machine sweep; the mock store
+  // never loads, so resolve that immediately and let the `machines_enabled`
+  // gate stop the sweep — an unmocked export throws out of an unawaited
+  // promise, i.e. an unhandled error this test can neither see nor catch.
+  // `loaded` stays false on purpose: the other launch-time hosts (the stats
+  // recap) gate on it, and flipping it would run them against this same
+  // deliberately-minimal mock.
+  const state = { load: vi.fn(), settings: null, loaded: false };
   return {
     useSettingsStore: Object.assign(
       vi.fn((sel: (s: object) => unknown) => sel(state)),
       { getState: () => state },
     ),
+    whenSettingsLoaded: () => Promise.resolve(),
   };
 });
 // AppShell loads boxes once projects are loaded; provide a no-op so the effect

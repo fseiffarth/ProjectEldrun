@@ -58,7 +58,15 @@ beforeEach(() => {
   sshPasswordSaved = false;
   invokeMock.mockReset();
   invokeMock.mockImplementation((cmd: string) => {
-    if (cmd === "remote_has_saved_password") return Promise.resolve(sshPasswordSaved);
+    // Asked through the state command now: it reports whether the store was
+    // *readable* as well, because a locked keyring answers a plain lookup exactly
+    // like an empty one (see `useSavedCredential`).
+    if (cmd === "remote_saved_password_state") {
+      return Promise.resolve({ saved: sshPasswordSaved, keyring: "unlocked" });
+    }
+    if (cmd === "ssh_connect") {
+      return Promise.resolve({ saved: sshPasswordSaved, save_error: null });
+    }
     if (cmd === "vpn_has_saved_password") return Promise.resolve(false);
     if (cmd === "openvpn_list_configs") return Promise.resolve([]);
     if (cmd === "ssh_list_addresses" || cmd === "remote_list_paths") return Promise.resolve([]);
@@ -100,13 +108,23 @@ describe("the create/extend dialog can save the SSH password", () => {
     );
   });
 
-  it("leaves it unticked by default — nothing is stored unless asked for", async () => {
+  it("leaves it unticked by default — and an unticked box NEVER clears the keychain", async () => {
+    // This expectation used to be `remember: false`, i.e. it asserted the
+    // data-loss bug. `false` is not "don't save": it is `Remember::Clear`, and
+    // since `ssh_connect` resolves `typed || saved` *before* it writes, a
+    // *successful* connect carrying it deletes the password it just
+    // authenticated with. That is how a real host's saved password was
+    // destroyed by ordinary use.
+    //
+    // An unticked box now means "leave the keychain alone" — `null`. Deleting is
+    // the explicit forget's job alone (the untick handler calls it directly, and
+    // the test below locks that).
     render(<ExtendToRemoteDialog project={PROJECT} onClose={() => {}} />);
     await fillSsh("hunter2");
 
     await userEvent.click(screen.getByRole("button", { name: /^connect$/i }));
 
-    await waitFor(() => expect(lastArgs("ssh_connect")).toMatchObject({ remember: false }));
+    await waitFor(() => expect(lastArgs("ssh_connect")).toMatchObject({ remember: null }));
   });
 
   it("pre-ticks for a host that already has a saved password, and unticking deletes it", async () => {
@@ -138,9 +156,11 @@ describe("the create/extend dialog can save the VPN passphrase", () => {
       if (cmd === "openvpn_list_configs") {
         return Promise.resolve([{ path: VPN_CONFIG, name: "office.ovpn" }]);
       }
-      if (cmd === "remote_has_saved_password" || cmd === "vpn_has_saved_password") {
-        return Promise.resolve(false);
+      if (cmd === "remote_saved_password_state") {
+        return Promise.resolve({ saved: false, keyring: "unlocked" });
       }
+      if (cmd === "ssh_connect") return Promise.resolve({ saved: false, save_error: null });
+      if (cmd === "vpn_has_saved_password") return Promise.resolve(false);
       if (cmd === "ssh_list_addresses" || cmd === "remote_list_paths") return Promise.resolve([]);
       if (cmd === "ssh_tooling_status") {
         return Promise.resolve({ password_auth: true, openvpn: true });
@@ -191,6 +211,9 @@ describe("the credential the dialog used is the one the project connects with", 
         // A password was handed over, so the connect proves how the host
         // authenticates on its own — nothing is being ridden.
         viaLogin: false,
+        // The user clicked "Extend to remote"; `remote_connect` defaults to
+        // *background*, which a host tagged HPC refuses outright.
+        background: false,
       }),
     );
     // A password-less connect here would have been recorded as key auth (it rides the
@@ -215,6 +238,7 @@ describe("the credential the dialog used is the one the project connects with", 
         // (the backend's `record_key_auth` skips it). A genuinely key-auth host still
         // records itself on its next ordinary activation connect.
         viaLogin: true,
+        background: false,
       }),
     );
   });

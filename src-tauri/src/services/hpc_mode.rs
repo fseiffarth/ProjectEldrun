@@ -29,22 +29,16 @@ use crate::schema::project::RemoteSpec;
 
 static CAREFUL_HOSTS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
-/// Identity of an SSH target for this registry: `user@host:port`, matching how
-/// `services::ssh_common` addresses a host. Two projects pointing at the same
-/// login node share one entry, which is correct — carefulness is a property of
-/// the machine, not of the project that happened to probe it.
-pub fn key(user: &Option<String>, host: &str, port: Option<u16>) -> String {
-    format!(
-        "{}@{}:{}",
-        user.as_deref().unwrap_or(""),
-        host.to_ascii_lowercase(),
-        port.unwrap_or(22)
-    )
-}
-
-/// [`key`] for a project host's spec.
+/// Identity of an SSH target for this registry: `user@host:port`, from
+/// `ssh_common::target_key` — the single implementation, shared with the
+/// frontend's `targetKey`.
+///
+/// This module used to spell the same format out a second time. Two copies of a
+/// key that must stay byte-identical do not fail loudly when they drift: the
+/// lookup simply finds nothing, and "nothing" reads as *not careful, not
+/// tagged* — failing open, in exactly the case both flags exist to close.
 pub fn key_for(spec: &RemoteSpec) -> String {
-    key(&spec.user, &spec.host, spec.port)
+    crate::services::ssh_common::target_key(spec.user.as_deref(), &spec.host, spec.port)
 }
 
 /// Record what a probe found. Only `true` is remembered (see the module note on
@@ -71,19 +65,61 @@ pub fn is_known_careful(key: &str) -> bool {
 /// The user's **explicit** per-machine answer from `settings.careful_hosts`
 /// (the system monitor's Light/Detailed switch, and the connect dialog's "Go
 /// easy on this machine"), or `None` where they have not answered for this
-/// target. Keyed by [`key`], which is byte-identical to the frontend's
+/// target. Keyed by [`key_for`], which is byte-identical to the frontend's
 /// `targetKey` — a divergence would silently look up a host nobody wrote.
-///
-/// Read from disk rather than cached: settings are written whole by the
-/// frontend, so there is no invalidation to get wrong, and every caller is
-/// already one SSH round trip deep.
 pub fn stored_answer(key: &str) -> Option<bool> {
     load_settings()?.careful_hosts?.get(key).copied()
 }
 
+/// How long a `settings.json` reading is reused.
+///
+/// This used to be a fresh read and parse per call, which was fine while the
+/// only callers were one SSH round trip deep. [`is_tagged_hpc`] now also backs
+/// `ssh_common::authorize_dial`, i.e. it runs on **every** ssh argv built, so an
+/// uncached read would put a file open + parse in front of every remote command.
+/// Two seconds is short enough that flipping the tag takes effect while the user
+/// is still looking at the switch — the auto-sync and lockstep loops re-check it
+/// on their own ticks and must see the change — and long enough that a burst of
+/// argv builds costs one read.
+const SETTINGS_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// `(read at, what it said)`. The value is `Option` because "no settings file"
+/// is itself an answer worth caching, not a reason to retry every call.
+static SETTINGS_CACHE: Mutex<Option<(std::time::Instant, Option<crate::schema::Settings>)>> =
+    Mutex::new(None);
+
 fn load_settings() -> Option<crate::schema::Settings> {
+    if let Ok(cache) = SETTINGS_CACHE.lock() {
+        if let Some((at, settings)) = cache.as_ref() {
+            if at.elapsed() < SETTINGS_TTL {
+                return settings.clone();
+            }
+        }
+    }
     let path = crate::storage::state_dir().join("settings.json");
-    crate::storage::read_json(&path).ok()
+    match crate::storage::read_json::<crate::schema::Settings>(&path) {
+        Ok(fresh) => {
+            if let Ok(mut cache) = SETTINGS_CACHE.lock() {
+                *cache = Some((std::time::Instant::now(), Some(fresh.clone())));
+            }
+            Some(fresh)
+        }
+        // A failed read must NOT be cached. This gate's whole job is to refuse, so
+        // "I could not find out" has to fall back on the last thing we did know —
+        // caching the failure would answer "not tagged" for the whole TTL, which is
+        // the one direction that costs the promise (a mid-write settings.json, an
+        // EMFILE, a momentary permission blip would each open a 2 s window in which
+        // a cluster login node is dialled as if untagged). The stale value is kept
+        // and the next call retries.
+        Err(_) => {
+            if let Ok(cache) = SETTINGS_CACHE.lock() {
+                if let Some((_, prev)) = cache.as_ref() {
+                    return prev.clone();
+                }
+            }
+            None
+        }
+    }
 }
 
 /// Whether the user has tagged this target **HPC** (`settings.hpc_hosts`, the
@@ -120,9 +156,17 @@ pub const HPC_GUARD: &str = "ELDRUN_HPC_GUARD";
 
 /// Build the refusal a gated command returns: `ELDRUN_HPC_GUARD <what> <target>`.
 /// `what` is a stable slug the dialog switches its wording on (`du-scan`,
-/// `census`, `login-node-run`), `target` the `user@host:port` being protected.
+/// `census`, `login-node-run`, `connect`), `target` the `user@host:port` being
+/// protected.
 pub fn guard_error(what: &str, spec: &RemoteSpec) -> String {
-    format!("{HPC_GUARD} {what} {}", key_for(spec))
+    guard_error_for(what, &key_for(spec))
+}
+
+/// [`guard_error`] for a caller holding only the target key — the dial policy
+/// (`ssh_common::authorize_dial`), which gates argv builders that never see a
+/// `RemoteSpec`.
+pub fn guard_error_for(what: &str, key: &str) -> String {
+    format!("{HPC_GUARD} {what} {key}")
 }
 
 /// [`is_tagged_hpc`] for a project's host (primary or a `compute_hosts` worker),
@@ -156,20 +200,14 @@ pub fn is_careful_host(spec: &RemoteSpec) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn key_normalizes_host_case_and_default_port() {
-        assert_eq!(
-            key(&Some("alice".into()), "Login.Example", None),
-            key(&Some("alice".into()), "login.example", Some(22)),
-        );
-    }
+    use crate::services::ssh_common::target_key;
 
-    #[test]
-    fn a_different_login_is_a_different_target() {
-        assert_ne!(
-            key(&Some("alice".into()), "login.example", None),
-            key(&Some("bob".into()), "login.example", None),
-        );
+    /// The shape of the key itself is pinned once, in
+    /// `ssh_common::target_key_matches_frontend`; what belongs here is only that
+    /// this registry indexes by *that* key. Spelling the format out again is the
+    /// duplication the second implementation was deleted for.
+    fn key(user: &Option<String>, host: &str, port: Option<u16>) -> String {
+        target_key(user.as_deref(), host, port)
     }
 
     /// The asymmetry that keeps a flaky probe from *downgrading* a cluster: once

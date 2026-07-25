@@ -945,9 +945,18 @@ pub fn set_project_remote_label(
 /// that *the previous login* authenticated with no password at all, and it is what
 /// makes the pill offer a promptless auto-connect. Carried over to a different
 /// account it would advertise a silent connect nothing has ever proved — exactly
-/// the failure `record_key_auth`'s `via_login` case exists to prevent. The saved
-/// password needs no such handling: the keychain is keyed by `user@host:port`, so
-/// a new login name simply addresses a different (empty) account.
+/// the failure `record_key_auth`'s `via_login` case exists to prevent.
+///
+/// The saved password moves **with** the login. The keychain is keyed
+/// `ssh:{user}@{host}:{port}`, so a new login name addresses a different (empty)
+/// account — which used to be described here as needing no handling, and is in
+/// fact the bug: the old entry is orphaned, still on the ring, unreachable from
+/// any surface, and the connect that was silent starts prompting with no
+/// explanation. [`move_saved_password`] re-keys it, and only when the store is
+/// actually readable (a locked ring is not evidence there was nothing to move,
+/// and certainly not licence to delete). If nothing came across, the target now
+/// has neither a saved password nor a proven key login, so `auto_connect` is
+/// cleared too — an armed auto-connect it cannot deliver is worse than none.
 #[tauri::command]
 pub fn set_project_remote_user(
     project_id: String,
@@ -958,16 +967,57 @@ pub fn set_project_remote_user(
         .map(str::trim)
         .filter(|t| !t.is_empty())
         .map(str::to_string);
-    let current =
-        crate::services::remote::remote_target_for(&project_id).and_then(|t| t.spec.user.clone());
+    let target = crate::services::remote::remote_target_for(&project_id);
+    let current = target.as_ref().and_then(|t| t.spec.user.clone());
     if current == normalized {
         return Ok(normalized);
     }
+    let has_password = target
+        .as_ref()
+        .map(|t| move_saved_password(&current, &normalized, &t.spec.host, t.spec.port))
+        .unwrap_or(false);
     patch_remote_spec(&project_id, |remote| {
         remote.user = normalized.clone();
         remote.key_auth = None;
+        if !has_password {
+            remote.auto_connect = None;
+        }
     })?;
     Ok(normalized)
+}
+
+/// Re-key a host's saved SSH password from one login name to another, returning
+/// whether the new login has one afterwards.
+///
+/// Read under the old account, written under the new, then the old deleted — in
+/// that order, so a failed write never costs the secret. Refuses outright while
+/// the credential store is unreadable: there, `get` answers `None` for every
+/// account, so "there was nothing saved" and "we could not look" are the same
+/// answer, and acting on it would silently drop the password (and, since the entry
+/// is keyed by host, possibly another project's).
+fn move_saved_password(
+    old_user: &Option<String>,
+    new_user: &Option<String>,
+    host: &str,
+    port: Option<u16>,
+) -> bool {
+    use crate::services::remote_credentials as creds;
+    if !creds::store_readable() {
+        return false;
+    }
+    let old = creds::ssh_account(old_user, host, port);
+    let new = creds::ssh_account(new_user, host, port);
+    if old == new {
+        return creds::has(&new);
+    }
+    let Some(secret) = creds::get(&old) else {
+        return creds::has(&new);
+    };
+    if creds::set(&new, Some(&secret)).is_err() {
+        return false;
+    }
+    let _ = creds::set(&old, None);
+    true
 }
 
 /// Record how a remote project's host authenticated on its last successful connect

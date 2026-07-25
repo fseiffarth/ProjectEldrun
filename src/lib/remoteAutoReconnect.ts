@@ -1,5 +1,6 @@
 import { useVpnStatusStore } from "../stores/vpnStatus";
 import { useGlobalMachinesStore } from "../stores/globalMachines";
+import { useSettingsStore, whenSettingsLoaded } from "../stores/settings";
 import { retryAutoConnectAfterVpn } from "../stores/projects";
 
 /**
@@ -17,7 +18,8 @@ import { retryAutoConnectAfterVpn } from "../stores/projects";
  *     whoever brought the tunnel up — the armed launch tunnel, a header connect, or
  *     another project — because a tunnel is machine-wide.
  *  2. **At launch**, sweep the global machines armed for auto-connect (the project
- *     side already self-starts from its store).
+ *     side already self-starts from its store) — but only when the Machines feature
+ *     is actually on, and only once settings have loaded to say so (`machineSweep`).
  *
  * We subscribe to the machine-level VPN store rather than poll, so the retry is
  * immediate on the exact `→ connected` transition (an earlier poll-based reaction
@@ -45,11 +47,33 @@ export function initRemoteAutoReconnect(): void {
 
   // Launch-time global-machine sweep, decoupled from the header component so it runs
   // even before the Machines menu is ever opened.
+  void machineSweep();
+}
+
+/**
+ * The armed-machine sweep, behind the **feature switch**.
+ *
+ * `machines_enabled` is off by default and hides the header indicator — which was
+ * the whole surface for seeing a machine connect, disconnecting one, or disarming
+ * its toggle. Sweeping anyway meant a user who turned the feature off (or never
+ * turned it on, and imported a machine list once) still had every armed host
+ * dialled at launch and again on every tunnel-up, with nowhere to watch it happen
+ * and nothing to stop it with. A feature that is off connects nothing.
+ *
+ * Gated on settings being **loaded**, not merely present: an unloaded store reads
+ * as "off" for every field, so firing before it arrives would race the switch on
+ * exactly the launch path this is. Waiting costs a few hundred ms; the sweep is
+ * silent by construction and nothing is watching for it.
+ */
+async function machineSweep(): Promise<void> {
+  await whenSettingsLoaded();
+  if (!useSettingsStore.getState().settings?.machines_enabled) return;
   const gm = useGlobalMachinesStore.getState();
-  void (gm.loaded ? gm.autoConnect() : gm.load().then(() => useGlobalMachinesStore.getState().autoConnect()));
+  if (!gm.loaded) await gm.load();
+  await useGlobalMachinesStore.getState().autoConnect();
 }
 
 function onVpnTunnelUp(): void {
   retryAutoConnectAfterVpn();
-  void useGlobalMachinesStore.getState().autoConnect();
+  void machineSweep();
 }

@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useProjectsStore } from "../stores/projects";
 import { useGlobalMachinesStore } from "../stores/globalMachines";
+import { useSettingsStore } from "../stores/settings";
+import { mayAutoTouch } from "./hpcHost";
 import {
   useRemoteStatusStore,
   hostStateOf,
@@ -21,12 +23,17 @@ import {
  * target), so "sync" is mostly reconciling the two separate status stores rather
  * than opening a second socket. Two rules keep it from looping or lying:
  *
- *  - **Global → project** is driven *imperatively* from the global store's
- *    explicit connect/disconnect actions (`syncGlobalConnected`/`syncGlobalDisconnected`)
- *    — never from `probeAll`, whose "connected" only means *reachable*, not that a
- *    pooled session is open. For the **active** project it opens/tears the real
- *    pool; for a loaded-but-inactive project it only mirrors the lamp (the pool
- *    opens on activation as always). This is the "drive loaded projects" contract.
+ *  - **Global → project** is driven from **one** place: a subscription on the
+ *    global store's `status`, which by contract only ever moves on a *real
+ *    session* (`add`/`register`/`connect`/`disconnect` — `probeAll` writes
+ *    `reachable`, never `status`). It used to hang off two hand-placed calls in
+ *    `add` and `connect`, which is why `register` and the probe sweep propagated
+ *    nothing and a machine could sit green in the header while the project holding
+ *    the very same host stayed unconnected. One subscription cannot forget a path.
+ *    Only the **active** project's pool is opened; an inactive one is left alone
+ *    entirely (see `syncGlobalConnected` for why a mirrored lamp is worse than no
+ *    lamp). Disconnect stays imperative — it is a teardown with an ordering
+ *    (mirror first, kill jobs after), not a state a subscriber can reconstruct.
  *  - **Project → global** is a *subscription* (`initMachineSync`) that only ever
  *    *upgrades* a matching machine's lamp to `connected` — a project deactivating
  *    (which clears its lamps) must never knock an independently-connected machine
@@ -101,27 +108,40 @@ function remoteConnectArgs(ref: ProjectHostRef): Record<string, unknown> {
     : { projectId: ref.projectId, hostId: ref.hostId, password: null, viaLogin: true };
 }
 
-/** A global machine connected — reflect it onto every project that also holds
- *  this host. The active project's pool is actually opened; inactive projects
- *  only get their lamp mirrored (their pool opens on activation regardless). */
+/**
+ * A global machine gained a **real session** — open the matching pool on the
+ * ACTIVE project, if it holds the same host and is allowed to be reached.
+ *
+ * Two things it deliberately does *not* do.
+ *
+ * **It never mirrors a lamp onto an inactive project.** That used to write
+ * `"connected"` with no pool behind it, and a green lamp with no session is worse
+ * than no lamp twice over: the whole app reads it as "a pooled session is open"
+ * (`useRemoteBlocked`, `holdRemoteTerminal`, the tmux/slurm/workspace probes all
+ * un-gate on it and then dispatch at a session that isn't there), and it *blocks*
+ * the connect that would have made it true — `autoConnectPrimary` only proceeds
+ * from `"off"`, and this function skips anything already `"connected"`. An
+ * inactive project is left at `off` and opens its pool on activation, exactly as
+ * it always did.
+ *
+ * **It never opens a pool on a host tagged HPC.** `remote_connect` raises a
+ * `ControlPersist=600` master — a standing presence on a shared login node — and
+ * "because another surface authenticated the same host" is not a gesture against
+ * *this* project. Connecting it by hand is one click away and untouched.
+ */
 export function syncGlobalConnected(target: Target): void {
   const { activeId } = useProjectsStore.getState();
+  const settings = useSettingsStore.getState().settings;
   for (const ref of projectHostsMatching(target)) {
+    if (ref.projectId !== activeId) continue;
+    if (!mayAutoTouch(settings, ref.target)) continue;
     const status = useRemoteStatusStore.getState();
     const cur = hostStateOf(status, ref.projectId, ref.hostId).ssh;
     if (cur === "connected" || cur === "connecting") continue;
-    if (ref.projectId === activeId) {
-      status.setSsh(ref.projectId, "connecting", ref.hostId);
-      void invoke("remote_connect", remoteConnectArgs(ref))
-        .then(() =>
-          useRemoteStatusStore.getState().setSsh(ref.projectId, "connected", ref.hostId),
-        )
-        .catch(() =>
-          useRemoteStatusStore.getState().setSsh(ref.projectId, "error", ref.hostId),
-        );
-    } else {
-      status.setSsh(ref.projectId, "connected", ref.hostId);
-    }
+    status.setSsh(ref.projectId, "connecting", ref.hostId);
+    void invoke("remote_connect", remoteConnectArgs(ref))
+      .then(() => useRemoteStatusStore.getState().setSsh(ref.projectId, "connected", ref.hostId))
+      .catch(() => useRemoteStatusStore.getState().setSsh(ref.projectId, "error", ref.hostId));
   }
 }
 
@@ -162,11 +182,31 @@ function reconcileGlobalsFromProjects(): void {
 
 let inited = false;
 
-/** Install the project → global-machine lamp mirror. Idempotent; call once at
- *  startup (`App`). The global → project direction is driven imperatively from
- *  the global store's connect/disconnect actions, so it needs no subscription. */
+/**
+ * Install both lamp mirrors. Idempotent; call once at startup (`AppShell`).
+ *
+ * The global → project direction is a subscription rather than a call in each
+ * action because "which action connected it" is not the question — *that a real
+ * session now exists* is, and `status` in the global store means exactly that
+ * (the probe sweep writes `reachable`). Every future path that opens a session
+ * gets the propagation for free; the two hand-placed calls this replaces had
+ * already missed `register` and the sweep.
+ *
+ * Still no loop. The chain global-status → `syncGlobalConnected` → `remoteStatus`
+ * → `reconcileGlobalsFromProjects` → `setStatus("connected")` dead-ends twice
+ * over: `setStatus` collapses a write of the value already there, and a second
+ * pass of `syncGlobalConnected` finds the project lamp `connected` and returns
+ * without touching anything.
+ */
 export function initMachineSync(): void {
   if (inited) return;
   inited = true;
   useRemoteStatusStore.subscribe(() => reconcileGlobalsFromProjects());
+  useGlobalMachinesStore.subscribe((state, prev) => {
+    for (const m of state.machines) {
+      const now = state.status[m.id] ?? "off";
+      if (now !== "connected" || (prev.status[m.id] ?? "off") === "connected") continue;
+      syncGlobalConnected(m);
+    }
+  });
 }

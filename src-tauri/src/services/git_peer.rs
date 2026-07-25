@@ -3119,6 +3119,12 @@ async fn poll_loop(
         tokio::select! {
             _ = cancel.notified() => break,
             _ = interval.tick() => {
+                // Re-read the HPC tag rather than trusting the one `start()` saw.
+                // Tagging a login node is normally a reaction to noticing this very
+                // poll; a gate evaluated only at start would leave it running until
+                // the project is closed. Breaking ends the task — `stop()` then
+                // finds it already finished, which is what a cancel leaves too.
+                if crate::services::hpc_mode::is_hpc_spec(&spec) { break; }
                 let s = detect_and_sync(
                     &pool, &manifest, &auto, &project_id, &spec, ReconcileOpts::default(),
                 )
@@ -3127,6 +3133,9 @@ async fn poll_loop(
             }
             res = rx.recv() => {
                 if res.is_none() { break; }
+                // A `.git` change reconciles against the host exactly as a tick
+                // does, so it takes the same re-check.
+                if crate::services::hpc_mode::is_hpc_spec(&spec) { break; }
                 loop {
                     tokio::select! {
                         _ = cancel.notified() => return,

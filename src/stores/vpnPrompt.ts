@@ -9,7 +9,7 @@ import { openVpnLoginInTerminal } from "../lib/vpnAutoConnect";
  * is not persisted, so each time a VPN-gated project is activated we ask for it
  * via a modal — unless the user ticked "Save passphrase", in which case the
  * backend reconnects silently from the OS keychain and this prompt is skipped
- * (see `ensureVpnIfNeeded` and services::remote_credentials).
+ * (see `autoConnectPrimary`'s VPN escalation and services::remote_credentials).
  *
  * The store owns the whole connect lifecycle — not just collecting the password
  * — so a failed tunnel surfaces *in the modal* (status + error, with a retry)
@@ -65,8 +65,7 @@ type ConnectStatus = "idle" | "connecting" | "connected" | "error";
  * root-terminal tab, the lamp is already "connecting", and `pollVpnUp` owns the
  * outcome from here. A caller that reads every rejection as "no tunnel" would flip
  * that lamp red over a login the user is in the middle of typing — so every caller
- * of `request` checks for this first (see `VpnIndicator.connect` and
- * `stores/projects`' `ensureVpnIfNeeded`).
+ * of `request` checks for this first (see `VpnIndicator.connect`).
  */
 export const VPN_TERMINAL_HANDOFF = "vpn-terminal-handoff";
 
@@ -188,7 +187,16 @@ export const useVpnPromptStore = create<VpnPromptState>((set, get) => ({
         username: username?.trim() || null,
         password,
         keyPassphrase: keyPassphrase || null,
-        remember,
+        // `true` or `null`, NEVER the raw flag — the SSH rule
+        // (`components/projects/useSavedCredential`'s `rememberArg`) applies here
+        // for the same reason. `false` is `Remember::Clear`, and `openvpn_connect`
+        // applies it *after* authenticating with the passphrase/username it
+        // resolved from the keychain — so an unticked box deletes all three
+        // secrets it just used. And this box is seeded by an unbounded async read
+        // (`vpn_has_saved_password`), so submitting before that lands sends
+        // `false` for a config that does have saved credentials. Forgetting stays
+        // the explicit action's job.
+        remember: remember ? true : null,
       });
       // Aborted while this attempt was in flight (Stop/Escape during connect): the
       // backend attempt runs to its own timeout regardless and may even have brought

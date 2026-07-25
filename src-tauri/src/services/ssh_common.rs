@@ -31,6 +31,219 @@ pub fn validate_arg(label: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ── Dial policy: who asked for this connection ──────────────────────────────
+//
+// `settings.hpc_hosts` promises that Eldrun never reaches a tagged machine *by
+// itself* (`docs/context/hpc_careful_mode.md`). That promise used to be kept
+// only in TypeScript, so every backend path that opens an `ssh` child — a
+// reachability probe, a tab respawned at relaunch, a readiness poll, an
+// auto-connect — went on dialling a cluster login node unattended, and each one
+// succeeded, because the host has a saved password.
+//
+// The rule is therefore enforced where an ssh command is **built**, not at the
+// call sites: every remote path in this tree funnels through one of the argv
+// builders below, so a caller cannot reach a tagged host by forgetting a check
+// it never knew existed. `ssh_pty_args` (`services::ssh_exec`) is the seventh
+// builder and carries the same call.
+//
+// The intent cannot ride the builders' signatures — they are reached from a
+// dozen layers with no idea *why* they are running — so it is ambient and keyed
+// by target: a user-initiated command holds a [`UserDial`] for the machine it is
+// about, and a pooled connection the user opened holds one for as long as it is
+// connected (which is what keeps a tagged project usable once connected: work on
+// a connection a person made is not Eldrun connecting by itself). Everything
+// else is [`DialIntent::Background`], the safe default — a wrong "background"
+// costs one confirmation dialog, a wrong "user-initiated" costs the promise.
+
+/// Why an ssh connection is about to be opened, as far as the *policy* cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialIntent {
+    /// A person asked for this, at this machine, now.
+    UserInitiated,
+    /// Anything else: a loop, a probe, a relaunch, an armed auto-connect.
+    Background,
+}
+
+// How a command declares its intent, and why there are exactly two shapes:
+//
+//   1. **Always a gesture** — the command has no caller but a dialog, so it takes
+//      an unconditional [`user_dial`] and needs no parameter. The remote folder
+//      browser (`ssh_default_dir`/`ssh_list_dir`/`ssh_mkdir`), every `slurm_*`
+//      and `hpc_ws_*` (through `run_slurm_script`), `remote_kill_all_jobs`,
+//      `remote_tmux_kill`, `worker_sync_now`, `worker_pull_outputs`, a
+//      *confirmed* `disk_usage_scan`, and an `ssh_connect` carrying a typed
+//      password. Adding a background caller to one of these is what would make it
+//      wrong, so the rule is stated at the call site rather than in a parameter
+//      the new caller could quietly inherit.
+//
+//   2. **Both** — the same command backs a click *and* a poller/sweep, so it
+//      takes `background: Option<bool>` and only `Some(false)` counts as a
+//      gesture ([`declared_dial`]). `ssh_probe`, `remote_connect`,
+//      `remote_usage_check`, `global_machine_usage_check`,
+//      `global_machine_monitor_snapshot`, `global_machine_tmux_list`, and a
+//      **credential-less** `ssh_connect` (the readiness poll that waits for a
+//      terminal login's master is a gesture; the silent reconnect behind
+//      auto-connect is not — the two are indistinguishable from in there).
+//
+// The default is Background in **both** shapes, and deliberately so: a caller
+// that says nothing is a caller nobody has thought about, and the two mistakes
+// do not cost the same. A wrong "background" costs one confirmation dialog at a
+// machine the user tagged for exactly that purpose; a wrong "user-initiated"
+// costs the promise the tag is, silently, forever. Hence the polarity too —
+// `background: true` and `background: absent` mean the same thing, so forgetting
+// the parameter can only ever fail closed.
+
+/// Targets with at least one live authorization, [`target_key`] → refcount.
+///
+/// Refcounted rather than a flag because one machine legitimately carries
+/// several: a login node is at once a project's primary, another project's
+/// worker and a global machine, and one of them closing must not silently
+/// revoke the others.
+///
+/// **Known limit: this is process-global, not task-local.** A guard held across
+/// an `.await` — a folder browse, a `disk_usage_scan` running for minutes, a
+/// `remote_connect` inside a 10 s handshake — authorizes *any other task* dialing
+/// the same target for that window. The exposure is small and deliberate: the two
+/// background loops (`sync_auto`, `git_peer`) check the tag themselves per tick,
+/// so what remains is a `pty_spawn` restore or a readiness poll landing inside a
+/// user's own connect to the same machine — which is close to the case the
+/// standing pool authorization grants on purpose anyway. It is recorded here
+/// rather than glossed, because the guarantee this module reads as offering
+/// ("only a gesture authorizes a dial") is narrower than that in the general
+/// case. A task-local (tokio task-local / explicit-parameter) intent would close
+/// it, at the cost of threading the intent through every argv builder's call
+/// chain — the thing the ambient design exists to avoid.
+static AUTHORIZED_DIALS: std::sync::Mutex<Option<std::collections::HashMap<String, usize>>> =
+    std::sync::Mutex::new(None);
+
+/// Add (`true`) or drop (`false`) one authorization for `key`.
+fn shift_authorization(key: &str, add: bool) {
+    let Ok(mut guard) = AUTHORIZED_DIALS.lock() else {
+        return;
+    };
+    let map = guard.get_or_insert_with(std::collections::HashMap::new);
+    if add {
+        *map.entry(key.to_string()).or_insert(0) += 1;
+        return;
+    }
+    if let Some(n) = map.get_mut(key) {
+        *n = n.saturating_sub(1);
+        if *n == 0 {
+            map.remove(key);
+        }
+    }
+}
+
+/// Whether anything currently authorizes reaching `key`.
+fn dial_authorized(key: &str) -> bool {
+    AUTHORIZED_DIALS
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|m| m.contains_key(key)))
+        .unwrap_or(false)
+}
+
+/// The intent a builder must attribute to the dial it is about to make: what the
+/// ambient registry says about *this* target, defaulting to background.
+pub fn ambient_intent(user: &Option<String>, host: &str, port: Option<u16>) -> DialIntent {
+    match dial_authorized(&target_key(user.as_deref(), host, port)) {
+        true => DialIntent::UserInitiated,
+        false => DialIntent::Background,
+    }
+}
+
+/// One live "the user asked for this machine" authorization, dropped with the
+/// command that took it out. Held across `.await`s by design — the whole point is
+/// to cover an ssh argv built several layers below the click.
+pub struct UserDial {
+    key: String,
+}
+
+impl Drop for UserDial {
+    fn drop(&mut self) {
+        shift_authorization(&self.key, false);
+    }
+}
+
+/// Mark `[user@]host[:port]` user-initiated for as long as the returned guard
+/// lives. Take one at the top of any command a person triggers directly against a
+/// named machine (connect, a SLURM submit, a workspace allocation, an explicit
+/// kill), so the argv it eventually builds is not read as a background dial.
+#[must_use = "the authorization lasts only as long as the guard"]
+pub fn user_dial(user: &Option<String>, host: &str, port: Option<u16>) -> UserDial {
+    user_dial_key(&target_key(user.as_deref(), host, port))
+}
+
+/// [`user_dial`] for a caller that already holds the [`target_key`].
+#[must_use = "the authorization lasts only as long as the guard"]
+pub fn user_dial_key(key: &str) -> UserDial {
+    shift_authorization(key, true);
+    UserDial {
+        key: key.to_string(),
+    }
+}
+
+/// [`user_dial`] for a command that serves *both* a click and a poller, taking
+/// its `background: Option<bool>` parameter — the second shape described above.
+///
+/// Only an explicit `Some(false)` is a gesture. `None` reads as background on
+/// purpose: it is what an un-updated caller, a new caller, and a caller that
+/// simply forgot all send, and none of those is evidence that a person is
+/// waiting. So the parameter can only be got wrong in the direction that raises
+/// a dialog, never in the direction that dials a cluster unasked.
+#[must_use = "the authorization lasts only as long as the guard"]
+pub fn declared_dial(
+    background: Option<bool>,
+    user: &Option<String>,
+    host: &str,
+    port: Option<u16>,
+) -> Option<UserDial> {
+    (background == Some(false)).then(|| user_dial(user, host, port))
+}
+
+/// Record that the user opened a lasting connection to this target. Unlike
+/// [`user_dial`] this is not scoped to one call: it lives until
+/// [`forget_user_connect`], because everything riding a pooled ControlMaster the
+/// user authenticated — a shell tab, a `git status`, a Sessions listing — is work
+/// on *their* connection, not Eldrun reaching out on its own. Paired one-for-one
+/// with the pool in `services::remote`.
+pub fn remember_user_connect(user: &Option<String>, host: &str, port: Option<u16>) {
+    shift_authorization(&target_key(user.as_deref(), host, port), true);
+}
+
+/// Drop the standing authorization [`remember_user_connect`] took out, when the
+/// pooled connection it stood for is torn down.
+pub fn forget_user_connect(user: &Option<String>, host: &str, port: Option<u16>) {
+    shift_authorization(&target_key(user.as_deref(), host, port), false);
+}
+
+/// The dial policy itself: refuse a **background** connection to a machine the
+/// user tagged HPC, and permit everything else.
+///
+/// The refusal carries `services::hpc_mode`'s existing `HPC_GUARD` sentinel, so
+/// `src/lib/hpcGuard.ts` already knows how to read it — the frontend can name the
+/// machine and offer to connect anyway, and confirmation stays per act. The slug
+/// is `connect`, since what was refused is the connection itself.
+pub fn authorize_dial(
+    user: &Option<String>,
+    host: &str,
+    port: Option<u16>,
+    intent: DialIntent,
+) -> Result<(), String> {
+    let key = target_key(user.as_deref(), host, port);
+    match dial_refusal(crate::services::hpc_mode::is_tagged_hpc(&key), intent, &key) {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
+
+/// The decision behind [`authorize_dial`], split out so it is testable without a
+/// `settings.json` on disk: only the tagged-**and**-background pair refuses.
+fn dial_refusal(tagged: bool, intent: DialIntent, key: &str) -> Option<String> {
+    (tagged && intent == DialIntent::Background)
+        .then(|| crate::services::hpc_mode::guard_error_for("connect", key))
+}
+
 /// Build the base `ssh` argv (everything up to but not including the remote
 /// command), validating `host`/`user` and rendering the `[user@]host` target as
 /// a single argv item.
@@ -44,6 +257,10 @@ pub fn ssh_base_args(
         return Err("host must not be empty".to_string());
     }
     validate_arg("host", host)?;
+    // The dial policy, at the choke point rather than the call site — see the
+    // section above `DialIntent`. Repeated verbatim in every builder because
+    // "every builder" is the invariant.
+    authorize_dial(user, host, port, ambient_intent(user, host, port))?;
 
     let mut args: Vec<String> = vec![
         "-o".to_string(),
@@ -159,6 +376,7 @@ pub fn ssh_password_base_args(
     host: &str,
     port: Option<u16>,
 ) -> Result<Vec<String>, String> {
+    authorize_dial(user, host, port, ambient_intent(user, host, port))?;
     let mut args: Vec<String> = vec![
         "-o".to_string(),
         "BatchMode=no".to_string(),
@@ -229,6 +447,7 @@ pub fn ssh_master_base_args(
         return Err("host must not be empty".to_string());
     }
     validate_arg("host", host)?;
+    authorize_dial(user, host, port, ambient_intent(user, host, port))?;
 
     let mut args: Vec<String> = vec![
         "-o".to_string(),
@@ -267,6 +486,7 @@ pub fn ssh_password_master_base_args(
     host: &str,
     port: Option<u16>,
 ) -> Result<Vec<String>, String> {
+    authorize_dial(user, host, port, ambient_intent(user, host, port))?;
     let mut args: Vec<String> = vec![
         "-o".to_string(),
         "BatchMode=no".to_string(),
@@ -319,6 +539,7 @@ pub fn ssh_passphrase_base_args(
     host: &str,
     port: Option<u16>,
 ) -> Result<Vec<String>, String> {
+    authorize_dial(user, host, port, ambient_intent(user, host, port))?;
     let mut args = passphrase_common_opts();
 
     #[cfg(not(target_os = "windows"))]
@@ -344,6 +565,7 @@ pub fn ssh_passphrase_master_base_args(
     host: &str,
     port: Option<u16>,
 ) -> Result<Vec<String>, String> {
+    authorize_dial(user, host, port, ambient_intent(user, host, port))?;
     let mut args = passphrase_common_opts();
     args.push("-o".to_string());
     args.push("ServerAliveInterval=15".to_string());
@@ -1529,6 +1751,87 @@ mod tests {
         assert_ne!(k(Some("a"), "h", None), k(Some("b"), "h", None));
         // A different port likewise (a tunnel/jump endpoint is not the host).
         assert_ne!(k(Some("a"), "h", Some(22)), k(Some("a"), "h", Some(2222)));
+    }
+
+    // ── Dial policy ────────────────────────────────────────────────────────
+
+    /// The whole policy as a table. Split out of [`authorize_dial`] precisely so
+    /// it can be stated without a `settings.json` on disk: exactly one of the
+    /// four combinations refuses, and the refusal is the sentinel
+    /// `src/lib/hpcGuard.ts` already parses (three whitespace-separated fields).
+    #[test]
+    fn only_a_background_dial_at_a_tagged_host_is_refused() {
+        let key = "alice@login.example:22";
+        assert!(dial_refusal(false, DialIntent::Background, key).is_none());
+        assert!(dial_refusal(false, DialIntent::UserInitiated, key).is_none());
+        assert!(dial_refusal(true, DialIntent::UserInitiated, key).is_none());
+        let err = dial_refusal(true, DialIntent::Background, key).unwrap();
+        assert_eq!(err, "ELDRUN_HPC_GUARD connect alice@login.example:22");
+        assert_eq!(err.split_whitespace().count(), 3);
+    }
+
+    /// Background is the default, and it comes back on its own. The guard is what
+    /// scopes an authorization to one command — leaking one would silently license
+    /// every later background dial at that machine for the rest of the session.
+    #[test]
+    fn a_dial_is_background_until_something_authorizes_that_target() {
+        let (user, host) = (Some("alice".to_string()), "scope.example");
+        assert_eq!(ambient_intent(&user, host, None), DialIntent::Background);
+        {
+            let _guard = user_dial(&user, host, None);
+            assert_eq!(ambient_intent(&user, host, None), DialIntent::UserInitiated);
+            // Keyed by target: authorizing one machine authorizes only that one.
+            assert_eq!(
+                ambient_intent(&user, "elsewhere.example", None),
+                DialIntent::Background
+            );
+        }
+        assert_eq!(ambient_intent(&user, host, None), DialIntent::Background);
+    }
+
+    /// One machine legitimately carries several authorizations at once — a login
+    /// node is at once a project's primary, another project's worker and a global
+    /// machine — so releasing one must not revoke the others.
+    #[test]
+    fn authorizations_are_refcounted_rather_than_a_flag() {
+        let (user, host) = (Some("bob".to_string()), "refcount.example");
+        remember_user_connect(&user, host, None);
+        {
+            let _guard = user_dial(&user, host, None);
+            assert_eq!(ambient_intent(&user, host, None), DialIntent::UserInitiated);
+        }
+        // The scoped guard dropped; the standing pooled-connection one did not.
+        assert_eq!(ambient_intent(&user, host, None), DialIntent::UserInitiated);
+        forget_user_connect(&user, host, None);
+        assert_eq!(ambient_intent(&user, host, None), DialIntent::Background);
+    }
+
+    /// The `background` parameter's polarity, which is the whole safety property
+    /// of the second shape: `None` — an un-updated caller, a new caller, a caller
+    /// that forgot — must read the same as `Some(true)`. Only an explicit "a
+    /// person is waiting" is one.
+    #[test]
+    fn only_an_explicit_not_background_is_a_gesture() {
+        let (user, host) = (Some("alice".to_string()), "declared.example");
+        assert!(declared_dial(None, &user, host, None).is_none());
+        assert!(declared_dial(Some(true), &user, host, None).is_none());
+        let guard = declared_dial(Some(false), &user, host, None);
+        assert!(guard.is_some());
+        assert_eq!(ambient_intent(&user, host, None), DialIntent::UserInitiated);
+        drop(guard);
+        assert_eq!(ambient_intent(&user, host, None), DialIntent::Background);
+    }
+
+    /// The registry is indexed by [`target_key`], so an authorization taken with
+    /// the host spelled one way covers the same machine spelled another — the same
+    /// normalization the HPC tag itself is looked up under.
+    #[test]
+    fn an_authorization_follows_target_key_normalization() {
+        let _guard = user_dial(&Some("alice".into()), "Case.Example", None);
+        assert_eq!(
+            ambient_intent(&Some(" alice ".into()), "case.example", Some(22)),
+            DialIntent::UserInitiated
+        );
     }
 
     /// An ssh argv a password may legitimately be attached to — i.e. one that

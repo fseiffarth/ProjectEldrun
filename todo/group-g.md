@@ -1138,3 +1138,52 @@ container) — as opposed to the git **push** axis (#21/#22).*
       completes on the SFTP floor.
 
 ---
+
+### G.24 — Remote-connect hardening: deferred follow-ups
+
+The 2026-07-25 audit + fix pass (5 analysis agents, 5 implementation agents, one
+adversarial review) closed three reported bugs — an HPC-tagged login node dialled
+unattended, a saved SSH password destroyed by an ordinary connect, and a global
+machine reading green while the project holding it stayed disconnected. What it
+deliberately did **not** do, in priority order:
+
+- [ ] **Task-local dial intent.** `ssh_common`'s authorization registry is
+  process-global, so a guard held across an `.await` authorizes any concurrent
+  task dialing the same target for that window (documented in place on
+  `AUTHORIZED_DIALS`). Closing it means a tokio task-local, or threading the
+  intent through every argv builder's call chain.
+    - [ ] 🤖 Automated test — a background dial to a tagged target is refused
+      *while* a user dial to the same target is in flight.
+- [ ] **Fold the four ControlMaster readiness polls into one hook.**
+  `useRemoteReconnect` (the only one with generation-counter cancellation),
+  `useRemoteSession`, `RemoteMachinesWindow`, `MachinesIndicator`. Same for the
+  four login-terminal lifecycles — only `useRemoteReconnect` re-adopts its PTY —
+  and the four hand-built `ssh:<target>` dedupe keys.
+- [ ] **`connectSshUnified`**: one entry (`commitUser` → host-key confirm →
+  `ssh_connect` → `remote_connect` → lamp write) for the eight `remote_connect`
+  call sites, so host-key confirmation cannot be present on some and absent on
+  others.
+- [ ] **`vpn_saved_password_state`** — the SSH side now distinguishes "not saved"
+  from "keyring unreadable"; the VPN side still reads a plain boolean, so a locked
+  keyring there still masquerades as "nothing saved". Needs the backend twin of
+  `remote_saved_password_state`.
+- [ ] **`sync_big_folders` takes no `confirmed`/`background` flag**, so the host
+  census on a tagged machine can only ever be refused — the frontend now says so
+  rather than silently doing nothing, but the explicit "measure it anyway" cannot
+  be honoured until the command accepts one.
+- [ ] **`pty_spawn`'s `HPC_GUARD` refusal has no frontend handler**: opening a tab
+  on a tagged, not-yet-connected project surfaces the raw sentinel instead of the
+  "connect and open" affordance the backend refusal was designed for.
+- [ ] **A tagged machine connected by hand does not propagate to its project**
+  (`lib/machineSync` skips HPC refs before opening a pool). Correct as a default —
+  a pool is a `ControlPersist` master — but the user is not told the project needs
+  a second click. Product call.
+- [ ] **`useSavedCredential` fires per keystroke** in the address fields, and each
+  call is now two keychain ops. Needs a debounce.
+- [ ] **`store_readable()` is Linux-only**: a locked macOS keychain can still let a
+  `Remember::Clear` through and still let `record_key_auth` stamp `key_auth: true`.
+- [ ] 🖐️ **Manual test (the whole pass)** — see the QA list in the session summary:
+  tagged-host add/browse/first-tab, credential survival across reconnects, the
+  Machines row states, and the `cm-*` socket sweep against a live master.
+
+---

@@ -155,6 +155,28 @@ pub async fn pty_spawn(
                 .remote_host_id
                 .clone()
                 .unwrap_or_else(|| crate::services::remote::PRIMARY_HOST.to_string());
+            // …but that convenience is also an unattended dial. This same call
+            // runs for a tab *restored at relaunch*, where nobody has asked for
+            // anything: it would open a ControlMaster on the host and, for a
+            // tmux-wrapped tab, a tmux server with it. On a machine tagged HPC
+            // that is precisely what the tag forbids, so refuse with the
+            // `HPC_GUARD` sentinel and let the frontend offer "connect and open".
+            // Once the user *has* connected the project the pool holds a standing
+            // authorization (`services::remote::connect_host`), so a tab opened
+            // by hand after that is allowed — which is the only distinction this
+            // seam can make: `pty_spawn` receives identical options for a restore
+            // and for a click.
+            if let Some(target) =
+                crate::services::remote::remote_target_for_host(&project_id, &host_id)
+            {
+                let spec = &target.spec;
+                crate::services::ssh_common::authorize_dial(
+                    &spec.user,
+                    &spec.host,
+                    spec.port,
+                    crate::services::ssh_common::ambient_intent(&spec.user, &spec.host, spec.port),
+                )?;
+            }
             let _ = crate::services::remote::connect_host(&pool, &project_id, &host_id, None).await;
         }
         crate::services::ssh_exec::wrap_pty_options(&mut opts)?;

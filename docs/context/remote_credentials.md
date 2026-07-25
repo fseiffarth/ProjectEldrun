@@ -165,11 +165,43 @@ Referenced from `CLAUDE.md`.
   second "confirmed" state to keep in step. Interactive connects opt in; **background
   and launch paths deliberately do not** (they promise never to prompt), so an unknown
   host simply leaves auto-connect's lamp red until the user connects by hand — and
-  goes red *at once* rather than after `ensureRemotePool`'s six retries, since the
-  refusal is a decision that will repeat identically, not a race worth waiting out.
+  goes red *at once* rather than after a retry loop, since the refusal is a decision
+  that will repeat identically, not a race worth waiting out. (The one retry loop
+  left that can meet an unknown host, extend-to-remote's, asks **once** and holds the
+  answer for the rest of the loop — `lib/hostKeyOnce.ts`.)
   The bulk machine **import** loop is exempt for the same reason in reverse: one modal
   per imported host would be a wall of prompts, so each lands as a red row whose
   Connect asks once. The gate itself runs two short *local* subprocesses (`ssh -G` to
   resolve `~/.ssh/config` aliases — checking the alias would call a long-trusted host
   unknown — and `ssh-keygen -F`), so the async SFTP openers reach it through
   `guard_first_contact_async` rather than blocking a tokio worker on it.
+
+## A connect must never be able to forget
+
+`ssh_connect` resolves the credential it will use as `typed || saved`,
+authenticates, and *then* applies the `remember` flag. So `remember: false`
+— `Remember::Clear` — deleted the password it had just successfully authenticated
+with. Not a rare path: the flag was seeded by an **async** read of the keychain, so
+pressing Connect before that read landed sent `false`; an unreadable keyring
+answered "nothing saved", which unticked the toggle, which then deleted what was
+actually there; and two surfaces (the Machines add form, the bulk import) never
+queried at all, so adding a host that already had a saved password wiped it. The
+observed symptom was one host's credential missing while fifteen others survived —
+the one host reconnected by hand through the Connect dialog.
+
+Two rules close it, and both are structural rather than careful:
+
+- **`false` is unrepresentable.** `rememberArg(checked)` returns `true | null`, and
+  the connect helpers' parameter types forbid the third value. Clearing a
+  credential is now *only* what the explicit untick / "Forget saved password" does,
+  through `remote_forget_password`. Every surface reaches the keychain through one
+  hook (`useSavedCredential`), so there is no second place to get this wrong.
+- **An unreadable store is never licence to delete.** `remember_secret` skips
+  `Clear` entirely unless the keyring is readable — a locked collection reads
+  identically to an empty one, and treating "I can't tell" as "there's nothing
+  there" is exactly how a password gets thrown away.
+
+Symmetrically, a *failed* write no longer reports success: `set`'s error used to be
+discarded (`let _ = set(...)`) while the UI set its "saved" state from the
+**request**. `ssh_connect` now returns `{ saved, save_error }` and the toggle
+renders what the keychain actually did, with the reason inline when it refused.

@@ -50,7 +50,7 @@ export function persistentSessionOf(
       : rawHostId;
   // A Sessions-view attach tab owns exactly the (possibly foreign) name it attached to.
   if (tab.tmuxAttach) return { session: tab.tmuxAttach, hostId };
-  if (!shouldPersistTab(tab.kind, hostId, project.remote) || !tab.tmuxSession) return null;
+  if (!shouldPersistTab(tab.kind, hostId, project.remote, tab.ephemeral) || !tab.tmuxSession) return null;
   return { session: tab.tmuxSession, hostId };
 }
 

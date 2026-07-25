@@ -73,6 +73,10 @@ interface TmuxSession {
   currentCommand: string;
   /** False when the active pane is sitting at a bare shell prompt. */
   working: boolean;
+  /** The active pane's working directory on the host (empty when the host's
+   *  `tmux ls` did not report it). What attributes a session whose *name* has no
+   *  project id — every pre-scoping and hand-started one — to a project. */
+  currentPath: string;
 }
 
 /** The row's own name button shows a short, stable label rather than the raw
@@ -433,6 +437,13 @@ export function ProjectFilesView({
     sessionHosts.map((h) => `${h.id}:${sshOf(s, projectId ?? "", h.id)}`).join("|"),
   );
   const [sessionRows, setSessionRows] = useState<SessionRow[]>([]);
+  // The Sessions list is scoped to THIS project by default (the backend filters
+  // by session name, falling back to the session's working directory for the
+  // pre-scoping and hand-started ones a name cannot attribute). This is the
+  // escape hatch: a host's full listing, so a session running outside any
+  // project tree — an orphaned run whose tab is long gone — is still reachable
+  // to attach to or kill.
+  const [showAllSessions, setShowAllSessions] = useState(false);
   useEffect(() => {
     if (!active || !projectId || !project?.remote) {
       setSessionRows([]);
@@ -448,7 +459,11 @@ export function ProjectFilesView({
       }
       const lists = await Promise.all(
         connected.map((h) =>
-          invoke<TmuxSession[]>("remote_tmux_list", { projectId, hostId: h.id })
+          invoke<TmuxSession[]>("remote_tmux_list", {
+            projectId,
+            hostId: h.id,
+            includeAll: showAllSessions,
+          })
             .then((ss) => ss.map((session) => ({ hostId: h.id, hostLabel: h.label, session })))
             .catch(() => [] as SessionRow[]),
         ),
@@ -461,7 +476,7 @@ export function ProjectFilesView({
       cancelled = true;
       clearInterval(iv);
     };
-  }, [active, projectId, project?.remote, connSig, sessionHosts]);
+  }, [active, projectId, project?.remote, connSig, sessionHosts, showAllSessions]);
 
   // Per-row session-stats hover card (TODO #85): the exact dwell-tooltip
   // mechanism `FileTree` uses for a file/folder row — open on a genuine pause,
@@ -776,7 +791,12 @@ export function ProjectFilesView({
       // with, and no prompt could be answered from here).
       // `viaLogin`: credential-less by necessity (there is no prompt to answer from
       // here), so it can only ride an existing master — never evidence of key auth.
-      await invoke("remote_connect", { projectId, viaLogin: true }).catch(() => {});
+      // `background: false`: this is the middle of a move the user clicked, and the
+      // host it runs against is a cluster by construction — the dial policy's default
+      // would refuse it on exactly the machines this flow exists for.
+      await invoke("remote_connect", { projectId, viaLogin: true, background: false }).catch(
+        () => {},
+      );
 
       // Re-anchor: the record file gains a line naming the new workspace, and the
       // `workspace` symlink re-points. This is exactly the history the record
@@ -1634,9 +1654,32 @@ export function ProjectFilesView({
 
       {view === "sessions" && (
         <div className="right-panel-scroll right-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
+          {!remoteBlocked && (
+            <label
+              className="tmux-scope-toggle"
+              title={
+                "Off: only this project's sessions — matched by name, or (for a session " +
+                "started before names carried a project, or by hand) by whether it is " +
+                "running inside this project's folder.\n" +
+                "On: every session on the host, including other projects' and ones " +
+                "running outside any project."
+              }
+            >
+              <input
+                type="checkbox"
+                checked={showAllSessions}
+                onChange={(e) => setShowAllSessions(e.target.checked)}
+              />
+              All host sessions
+            </label>
+          )}
           {sessionRows.length === 0 ? (
             <div className="right-panel-orange-empty">
-              {remoteBlocked ? "Connect to list host sessions" : "No persistent sessions on the host(s)"}
+              {remoteBlocked
+                ? "Connect to list host sessions"
+                : showAllSessions
+                  ? "No persistent sessions on the host(s)"
+                  : "No sessions for this project on the host(s)"}
             </div>
           ) : (
             sessionGroups.map(({ hostId, hostLabel, rows }) => (

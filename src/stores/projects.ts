@@ -26,25 +26,15 @@ import {
 import { useRunHostPrefStore } from "./runHostPref";
 import { type AgentMode } from "../components/tabs/agentModes";
 import { useTimerStore } from "./timer";
-import { isVpnTerminalHandoff, useVpnPromptStore } from "./vpnPrompt";
-import { useSettingsStore } from "./settings";
-import { isHpcHost, targetOfSpec } from "../lib/hpcHost";
+import { useSettingsStore, whenSettingsLoaded } from "./settings";
+import { mayAutoTouch, targetOfSpec } from "../lib/hpcHost";
 import { PRIMARY_HOST, useRemoteStatusStore } from "./remoteStatus";
 import { markVpnConnected, markVpnConnecting, markVpnError, releaseVpn } from "./vpnStatus";
 import { useConnectDialogStore } from "./connectDialog";
 import { connectionStillOpen, openConnectionInRoot } from "../lib/remoteConnect";
-import { canConnectVpnSilently, connectVpnSilently } from "../lib/vpnConnect";
-import { openVpnLoginInTerminal } from "../lib/vpnAutoConnect";
-import { unknownHostKeyTarget } from "../lib/hostKey";
 import { describeScaffoldRepair, type ProjectScaffoldRepair } from "../components/projects/scaffold";
+import type { SavedPasswordState } from "../components/projects/useSavedCredential";
 
-/**
- * If `project` is VPN-gated, ensure its OpenVPN tunnel is up before any sshfs
- * mount / ssh runs. The password is prompted each time (never persisted). Best
- * effort: a cancelled prompt or a failed connect is logged and we proceed, so a
- * VPN hiccup degrades to the same "host unreachable" path as an offline host
- * rather than blocking activation.
- */
 function connectionsHeadless(): boolean {
   return useSettingsStore.getState().settings?.connections_headless ?? true;
 }
@@ -58,105 +48,6 @@ function connectionsHeadless(): boolean {
  */
 function vpnToast(name: string): string {
   return `VPN up · ${name} — this computer's traffic now routes through the tunnel`;
-}
-
-async function ensureVpnIfNeeded(project: ProjectEntry | undefined): Promise<void> {
-  const config = project?.remote?.openvpn?.config;
-  if (!config) return;
-  const projectId = project!.id;
-  // Non-headless: surface the tunnel as an interactive root-terminal tab instead
-  // of prompting Eldrun for the passphrase. The passphrase is typed directly into
-  // that terminal; Eldrun never handles it. Best-effort and non-blocking.
-  if (!connectionsHeadless()) {
-    try {
-      const up = await invoke<boolean>("openvpn_status", { config }).catch(() => false);
-      if (up) {
-        markVpnConnected(projectId, config);
-        return;
-      }
-      // Eldrun never sees the passphrase (it is typed into the root terminal), so the
-      // helper's bounded `openvpn_status` poll is the only signal the tunnel came up.
-      await openVpnLoginInTerminal(config, { label: project!.name, projectId });
-    } catch (error) {
-      markVpnError(projectId, config);
-      console.warn("OpenVPN root-terminal connect skipped/failed", error);
-    }
-    return;
-  }
-  try {
-    const up = await invoke<boolean>("openvpn_status", { config }).catch(() => false);
-    if (up) {
-      markVpnConnected(projectId, config);
-      return;
-    }
-    markVpnConnecting(projectId, config);
-    // `auth-user-pass` configs need a username too; it's stored on the spec (not a
-    // secret) and passed to both the silent connect and the prompt.
-    const vpnUser = project!.remote?.openvpn?.username;
-    // Silent auto-connect: if the user opted to save this VPN's credentials, the
-    // backend brings the tunnel up from the OS keychain with no prompt.
-    //
-    // Ask *first* whether that can actually succeed, rather than trying and falling
-    // back. A failed attempt is not free: `pkexec` authenticates the user before
-    // OpenVPN even reads the config, so an attempt missing a credential still costs a
-    // polkit dialog — and the modal below then costs a second one for the same tunnel.
-    // `remember: null` = "no checkbox behind this call, leave the keychain alone";
-    // passing `false` would delete the passphrase we just used.
-    if (await canConnectVpnSilently(config, vpnUser)) {
-      try {
-        await connectVpnSilently(config, vpnUser);
-        markVpnConnected(projectId, config);
-        useProjectsStore.setState({ connToast: vpnToast(project!.name) });
-        return;
-      } catch {
-        // Saved credentials the server no longer accepts — prompt for them.
-      }
-    }
-    // The prompt store now owns the connect, so a failed tunnel is shown in the
-    // modal (with a retry) rather than failing silently here. `request` resolves
-    // only once the tunnel is up; a cancel rejects and we fall through.
-    await useVpnPromptStore.getState().request(config, project!.name, projectId, vpnUser);
-    markVpnConnected(projectId, config);
-    useProjectsStore.setState({ connToast: vpnToast(project!.name) });
-  } catch (error) {
-    // The user switched this connect to the terminal (the modal's "Log in in
-    // terminal", for a config Eldrun's own login cannot answer). Nothing has failed:
-    // the tunnel is coming up in a root tab, the lamp is amber, and the handoff's own
-    // poll owns the outcome — so leave both alone rather than painting it red under a
-    // login the user is still typing.
-    if (isVpnTerminalHandoff(error)) return;
-    // A cancelled prompt or a failed tunnel both leave us not-connected (red).
-    markVpnError(projectId, config);
-    console.warn("OpenVPN connect skipped/cancelled", error);
-  }
-}
-
-/**
- * Non-headless SSH: open an interactive ssh login for `project`'s host as a
- * root-terminal tab so the user authenticates there (the password is never seen
- * by Eldrun). The login shares the multiplexing master socket with the sshfs
- * mount, so once it is authenticated the mount rides it with no second prompt.
- * No-op in headless mode (the backend mount handles auth via key/agent) and for
- * local projects. Best-effort.
- */
-async function ensureRootSshLoginIfNeeded(project: ProjectEntry | undefined): Promise<void> {
-  const remote = project?.remote;
-  if (!remote || connectionsHeadless()) return;
-  try {
-    const command = await invoke<string>("remote_login_command", {
-      user: remote.user ?? null,
-      host: remote.host,
-      port: remote.port ?? null,
-    });
-    const target = `${remote.user ? `${remote.user}@` : ""}${remote.host}`;
-    openConnectionInRoot({
-      label: `ssh · ${target}`,
-      command,
-      dedupeKey: `ssh:${target}:${remote.port ?? ""}`,
-    });
-  } catch (error) {
-    console.warn("SSH root-terminal login skipped/failed", error);
-  }
 }
 
 /**
@@ -173,6 +64,13 @@ async function ensureRootSshLoginIfNeeded(project: ProjectEntry | undefined): Pr
  * recorded `key_auth: true` on a host that in fact needs a password, so the project
  * then advertised itself as auto-connect-eligible and the auto-connect failed on the
  * next launch.
+ *
+ * **Currently write-only.** The reader was `ensureRemotePool`, reachable only from
+ * `reconnectRemote`, which nothing has called for some time; both were deleted with
+ * the auto-connect audit rather than left as an ungated retry loop waiting to be
+ * re-wired. The dialogs still stash, so the hand-over is one call away — but until a
+ * caller exists, a just-created project's first pooled connect gets its credential
+ * from the keychain or the dialog's own master, exactly as it did before.
  */
 const pendingRemotePassword = new Map<string, string>();
 
@@ -201,83 +99,47 @@ export function stashRemoteViaLogin(projectId: string): void {
   pendingViaLogin.add(projectId);
 }
 
-/**
- * Phase 0 (mount-free remote): open the pooled SSH/SFTP connection for a remote
- * project so authentication happens once on activation and every later channel
- * (file browse / I-O, agent tabs, git) rides the shared ControlMaster. Best-
- * effort and fire-and-forget: a failure (offline host, or password-only auth
- * with no live master) is logged and never blocks activation — later access
- * falls back to a one-shot session exactly as before. No-op for local projects
- * (the backend resolves remoteness and returns early).
- *
- * The password, in order: the one the create/extend dialog just authenticated with
- * (`stashRemotePassword`, single-use), else none — in which case the backend falls
- * back to a saved credential for the host, then to key/agent auth, and finally to
- * the master an interactive root-terminal login left behind.
- */
-function ensureRemotePool(projectId: string): void {
-  const status = useRemoteStatusStore.getState();
-  status.setSsh(projectId, "connecting");
-  // In non-headless mode the pooled connection can only ride the master once the
-  // user has authenticated the root-terminal login, which takes a moment; retry a
-  // few times before going red so the lamp turns green when the login completes
-  // rather than flashing an error the login then resolves. Idempotent: a second
-  // remote_connect on an already-open pool is a no-op.
-  let attempts = 0;
-  const maxAttempts = 6;
-  const tryConnect = () => {
-    if (useProjectsStore.getState().activeId !== projectId) return;
-    // Kept across retries (an early attempt can lose to a still-starting host) and
-    // dropped once the attempt is settled either way.
-    const password = pendingRemotePassword.get(projectId) ?? null;
-    // Non-headless: a credential-less success here means the root-terminal login's
-    // master answered, not that the host takes key auth — say so, or the backend
-    // records `key_auth: true` on a password host (see `record_key_auth`).
-    void invoke("remote_connect", {
-      projectId,
-      password,
-      // Either mode can be riding a login terminal's master: non-headless always is,
-      // and a headless connect is whenever the dialog's per-connect "Sign in in a
-      // terminal" was used (`stashRemoteViaLogin`).
-      viaLogin: !connectionsHeadless() || pendingViaLogin.has(projectId),
-    })
-      .then(() => {
-        pendingRemotePassword.delete(projectId);
-        pendingViaLogin.delete(projectId);
-        useRemoteStatusStore.getState().setSsh(projectId, "connected");
-      })
-      .catch((error) => {
-        // An unvetted host key is a *decision*, not a race: the backend will refuse
-        // identically every time until the user has seen the fingerprint and
-        // accepted it (`lib/hostKey.ts`). Retrying burns 24s to arrive at the same
-        // refusal, so go red at once — the lamp opens the Connect dialog, whose
-        // Connect raises the confirmation this path is forbidden to raise itself.
-        if (unknownHostKeyTarget(error)) {
-          pendingRemotePassword.delete(projectId);
-          pendingViaLogin.delete(projectId);
-          console.warn("remote_connect refused: unknown host key", error);
-          useRemoteStatusStore.getState().setSsh(projectId, "error");
-          return;
-        }
-        if (++attempts >= maxAttempts) {
-          pendingRemotePassword.delete(projectId);
-          pendingViaLogin.delete(projectId);
-          console.warn("remote_connect failed", error);
-          useRemoteStatusStore.getState().setSsh(projectId, "error");
-          return;
-        }
-        setTimeout(tryConnect, 4000);
-      });
-  };
-  tryConnect();
-}
-
 /** Projects with an auto-connect attempt in flight, so a switch away and back
  *  (or a launch racing an activation) can't start a second one. */
 const autoConnecting = new Set<string>();
 
 /** The SSH coordinates of one host, as every auto-connect command wants them. */
 type SshArgs = { user: string | null; host: string; port: number | null };
+
+/**
+ * Say why an armed auto-connect did nothing.
+ *
+ * The opt-in is re-checked against the backend on every attempt — a saved password
+ * can be forgotten, a keyring can be locked — and until now that check failing was
+ * completely silent: no lamp (the project simply never leaves "off"), no toast, not
+ * even a `console.warn`. From the outside that is indistinguishable from "the
+ * toggle is broken", which is precisely how it got reported. The one path that
+ * deliberately does nothing now says so, naming the project, the login, and the
+ * thing that would fix it.
+ */
+function autoConnectIneligible(scope: string, sshArgs: SshArgs, state: SavedPasswordState): void {
+  const target = `${sshArgs.user ? `${sshArgs.user}@` : ""}${sshArgs.host}`;
+  // The two fixes are opposites, so the two cases must not share a sentence. A
+  // **locked** (or unreachable) store answers every lookup exactly like an empty one
+  // (`lib/keyring.ts`), so `saved: false` alone would tell a user whose password is
+  // sitting on the ring to go save it again — the one instruction that cannot help.
+  // Same split, and deliberately the same wording, as the machine-wide VPN twin in
+  // `lib/vpnAutoConnect`: one feature, one explanation.
+  const reason =
+    state.keyring === "unlocked"
+      ? `no saved SSH password for ${target} — connect once with "Save password" ticked`
+      : `your OS keyring is locked, so the password saved for ${target} can't be read. Unlock it from the VPN menu.`;
+  console.warn(`auto-connect skipped · ${scope}: ${reason}`);
+  useProjectsStore.setState({ connToast: `Auto-connect skipped · ${scope} — ${reason}` });
+}
+
+/** The saved-password answer every eligibility check asks for, with the one failure
+ *  that keeps the decision safe: an unanswered read is never a confident "saved". */
+async function savedPasswordState(sshArgs: SshArgs): Promise<SavedPasswordState> {
+  return invoke<SavedPasswordState>("remote_saved_password_state", sshArgs).catch(
+    () => ({ saved: false, keyring: "unavailable" }) as SavedPasswordState,
+  );
+}
 
 /**
  * Auto-connect **without headless credentials** (`connections_headless` off), for one
@@ -434,7 +296,10 @@ async function autoConnectPrimary(projectId: string): Promise<void> {
   // the app happened to start" is precisely the shape of unattended presence a
   // shared login node's rules ask you not to leave lying around. Connecting by
   // hand still works and is one click away; only the automatic path is off.
-  if (isHpcHost(useSettingsStore.getState().settings, targetOfSpec(remote))) return;
+  // `mayAutoTouch` is the shared authority, and it also fails closed while settings
+  // are unloaded — `load()` waits for them before firing this, so a launch can no
+  // longer sail past the gate simply by being early.
+  if (!mayAutoTouch(useSettingsStore.getState().settings, targetOfSpec(remote))) return;
   // Skip unless the lamp is disconnected: never fight an in-flight attempt, never
   // re-attack a host that already failed this session (switching back and forth
   // would otherwise re-probe an unreachable host every time), and never re-connect
@@ -523,10 +388,13 @@ async function autoConnectPrimary(projectId: string): Promise<void> {
     // Re-check eligibility against the backend rather than trusting the toggle: the
     // saved password may have been forgotten since it was ticked, and a stale opt-in
     // must degrade to "stay disconnected", never to a prompt.
-    const eligible =
-      remote.key_auth === true ||
-      (await invoke<boolean>("remote_has_saved_password", sshArgs).catch(() => false));
-    if (!eligible || !stillActive()) return;
+    // A key host needs no credential at all, so it never pays the keychain read.
+    const saved = remote.key_auth === true ? null : await savedPasswordState(sshArgs);
+    if (saved && !saved.saved) {
+      autoConnectIneligible(project!.name, sshArgs, saved);
+      return;
+    }
+    if (!stillActive()) return;
 
     status().setSsh(projectId, "connecting");
     let probe = await invoke<SshProbe>("ssh_probe", sshArgs);
@@ -607,7 +475,7 @@ async function autoConnectRemote(projectId: string): Promise<void> {
 async function autoConnectWorker(projectId: string, host: ComputeHost): Promise<void> {
   const hostId = host.id;
   // Same rule as the primary's: a tagged cluster is never dialled by itself.
-  if (isHpcHost(useSettingsStore.getState().settings, targetOfSpec(host))) return;
+  if (!mayAutoTouch(useSettingsStore.getState().settings, targetOfSpec(host))) return;
   const claim = `${projectId}:${hostId}`;
   const state = useRemoteStatusStore.getState().byHost[projectId]?.[hostId];
   if ((state?.ssh ?? "off") !== "off" || autoConnecting.has(claim)) return;
@@ -636,10 +504,19 @@ async function autoConnectWorker(projectId: string, host: ComputeHost): Promise<
       return;
     }
 
-    const eligible =
-      host.key_auth === true ||
-      (await invoke<boolean>("remote_has_saved_password", sshArgs).catch(() => false));
-    if (!eligible || !stillActive()) return;
+    const saved = host.key_auth === true ? null : await savedPasswordState(sshArgs);
+    if (saved && !saved.saved) {
+      // Named down to the machine: a project can arm four workers, and "auto-connect
+      // did nothing" is useless if it doesn't say which one.
+      const project = useProjectsStore.getState().projects.find((p) => p.id === projectId);
+      autoConnectIneligible(
+        `${project?.name ?? projectId} · ${host.label || host.host}`,
+        sshArgs,
+        saved,
+      );
+      return;
+    }
+    if (!stillActive()) return;
 
     status().setSsh(projectId, "connecting", hostId);
     const probe = await invoke<SshProbe>("ssh_probe", sshArgs);
@@ -677,10 +554,19 @@ async function autoConnectWorker(projectId: string, host: ComputeHost): Promise<
  * have already switched away from, but a dead background connection can belong
  * to a project that isn't active at all (e.g. an HPC project a long `squeue`
  * watch tab keeps running in) and must keep working regardless of which
- * project is on screen. Only attempted when it can be fully silent — headless
- * mode plus key/agent auth or a saved password — exactly the same eligibility
- * bar `autoConnectPrimary`/`autoConnectWorker` apply; anything else is left at
- * `error` for the user to reconnect by hand, same as before this existed.
+ * project is on screen.
+ *
+ * **Everything else about the eligibility bar it now genuinely shares** with
+ * `autoConnectPrimary`/`autoConnectWorker` — which its own comment used to claim
+ * while applying neither of the two gates that matter. It ran on any host the
+ * reconciler found dead, so a project whose `auto_connect` the user had never
+ * ticked, on a machine tagged HPC, was re-dialled unattended every time the master
+ * expired — and each success re-armed the lamp for the next `ControlPersist`
+ * timeout, a loop with no end and no surface. A connection the user never asked to
+ * be automatic ends at a red lamp they click, which is what it did before this
+ * function existed. The three gates are therefore: headless mode, the host's own
+ * `auto_connect`, and `mayAutoTouch`; then, as before, key/agent auth or a saved
+ * password.
  */
 export async function silentReconnectDeadHost(projectId: string, hostId: string): Promise<void> {
   const status = () => useRemoteStatusStore.getState();
@@ -699,14 +585,36 @@ export async function silentReconnectDeadHost(projectId: string, hostId: string)
           host: project.remote.host,
           port: project.remote.port ?? null,
           keyAuth: project.remote.key_auth === true,
+          autoConnect: project.remote.auto_connect === true,
         }
       : (() => {
           const host = project.compute_hosts?.find((h) => h.id === hostId);
           return host
-            ? { user: host.user ?? null, host: host.host, port: host.port ?? null, keyAuth: host.key_auth === true }
+            ? {
+                user: host.user ?? null,
+                host: host.host,
+                port: host.port ?? null,
+                keyAuth: host.key_auth === true,
+                autoConnect: host.auto_connect === true,
+              }
             : null;
         })();
   if (!target) return markError();
+  // The opt-in is per host and it means "reconnect me without asking" — a host that
+  // never opted in has no automatic reconnect to inherit just because it once got
+  // connected by hand and then dropped.
+  if (!target.autoConnect) return markError();
+  // And never a tagged cluster, on the same terms as the two auto-connect paths: a
+  // background re-dial of a login node is the definition of unattended presence, and
+  // this one isn't even tied to the project being on screen.
+  if (
+    !mayAutoTouch(useSettingsStore.getState().settings, {
+      user: target.user ?? undefined,
+      host: target.host,
+      port: target.port ?? undefined,
+    })
+  )
+    return markError();
 
   const claim = hostId === PRIMARY_HOST ? projectId : `${projectId}:${hostId}`;
   if (autoConnecting.has(claim)) return; // an activation-time auto-connect already owns this host — let it finish
@@ -767,25 +675,6 @@ export function retryAutoConnectAfterVpn(): void {
 function dropRemotePool(projectId: string): void {
   useRemoteStatusStore.getState().clear(projectId);
   void invoke("remote_disconnect_all_hosts", { projectId }).catch(() => {});
-}
-
-/**
- * Programmatic one-shot (re)connect for a remote project: bring its OpenVPN
- * tunnel up (if any), open the interactive SSH login (non-headless), then open
- * the pooled SSH/SFTP connection. The interactive Connect UI is now the
- * `RemoteConnectDialog` modal (opened from the pill's connection lamp), which
- * drives the same building blocks with visible progress; this remains as a
- * headless programmatic entry point. No-op for local projects or if the user
- * switched away mid-connect.
- */
-export async function reconnectRemote(projectId: string): Promise<void> {
-  const project = useProjectsStore.getState().projects.find((p) => p.id === projectId);
-  if (!project?.remote) return;
-  await ensureVpnIfNeeded(project);
-  if (useProjectsStore.getState().activeId !== projectId) return;
-  await ensureRootSshLoginIfNeeded(project);
-  if (useProjectsStore.getState().activeId !== projectId) return;
-  ensureRemotePool(projectId);
 }
 
 /** Tear a remote project's connection down on demand (header lamp menu): drop the
@@ -1023,7 +912,14 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // mirror offline), but any REMOTE pane is held until the pool is up — without the
     // opt-in it starts DISCONNECTED (no status entry → "off" lamp) and the user brings
     // it up from the pill's connection lamp (the `RemoteConnectDialog` modal).
-    if (activeId) void autoConnectRemote(activeId);
+    //
+    // Waits for settings first. The HPC gate reads them and `mayAutoTouch` fails
+    // closed on an unloaded store — which is the safe direction, but it means firing
+    // here against a half-booted store would skip a perfectly eligible project purely
+    // because `AppShell` starts both loads in parallel and this one won the race. (It
+    // is also the window in which the gate could once fail *open*.) Fire-and-forget
+    // still: nothing about the project list waits on a connect.
+    if (activeId) void whenSettingsLoaded().then(() => autoConnectRemote(activeId));
   },
 
   setActive: async (id) => {

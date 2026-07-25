@@ -2,10 +2,10 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type { ConnState } from "./remoteStatus";
 import type { GlobalMachine, MachineImportEntry } from "../types";
-import { syncGlobalConnected, syncGlobalDisconnected } from "../lib/machineSync";
+import { syncGlobalDisconnected } from "../lib/machineSync";
 import { useHostBusyStore } from "./hostBusy";
 import { withHostKeyConfirm } from "../lib/hostKey";
-import { isHpcHost } from "../lib/hpcHost";
+import { mayAutoTouch } from "../lib/hpcHost";
 import { useSettingsStore } from "./settings";
 
 /** Per-machine outcome of a bulk import (`importMachines`): whether the shared
@@ -30,13 +30,25 @@ export interface ImportResult {
  * OpenSSH ControlMaster opportunistically but does not create/persist one —
  * see `ssh_common::ssh_base_args`'s `ControlMaster=no`), it doesn't leave a
  * pooled session running the way a project's `remote_connect` does. So
- * `status` here is set only by explicit actions (add, Connect, or the
- * on-menu-open `probeAll` reachability sweep), never polled.
+ * `status` here is set only by the explicit actions that open or end a session —
+ * `add`/`register`/`connect`/`disconnect` — never polled, and pointedly **not**
+ * by the `probeAll` sweep (see `reachable`).
  */
 interface GlobalMachinesStore {
   machines: GlobalMachine[];
-  /** Per-machine id; absent = "off". */
+  /** Per-machine id; absent = "off". **"A session this app opened"**, never "the
+   *  host answered" — that is `reachable`. The distinction is load-bearing:
+   *  `lib/machineSync` propagates a machine's `connected` onto the project that
+   *  holds the same host and opens its pool, so a lamp lit by a mere probe would
+   *  claim a session nothing ever opened. Written only by `add`/`register`/
+   *  `connect`/`disconnect`. */
   status: Record<string, ConnState>;
+  /** Per-machine id: the last `probeAll` answer — "this host was reachable and
+   *  authenticated our credential", which is *not* a session and must never be
+   *  mistaken for one. Absent = never probed. Kept beside `status` rather than
+   *  folded into it so the row can say "up, but not connected" instead of lying
+   *  in either direction. */
+  reachable: Record<string, boolean>;
   /** Per-machine id: the message from the last failed `connect`/`update`, so a
    *  red lamp is never just "error" with no way to tell why — an unknown host
    *  key, a rejected password, a network timeout, and a keychain that couldn't
@@ -90,7 +102,10 @@ interface GlobalMachinesStore {
    *  added to is deliberately NOT part of this: a project host is a copy by
    *  value, with its own path and its own lifetime. */
   remove: (id: string) => Promise<void>;
-  connect: (id: string, password?: string) => Promise<void>;
+  /** Connect one machine. `background` marks the call as *unattended* (the launch /
+   *  VPN-up sweep) rather than a row the user clicked — the backend's dial policy
+   *  refuses an unattended dial to a host tagged HPC. Omitted = a gesture. */
+  connect: (id: string, password?: string, opts?: { background?: boolean }) => Promise<void>;
   /** Actively disconnect a machine: **end every running tmux job** on it and
    *  close any live SSH master, then reset the lamp to "off". This is an
    *  explicit user action ONLY — persistent tmux sessions are meant to outlive a
@@ -107,7 +122,10 @@ interface GlobalMachinesStore {
    *  order. */
   reorder: (orderedIds: string[]) => Promise<void>;
   /** Read-only reachability sweep (`ssh_probe`, no keychain writes) — call when
-   *  the header menu opens, mirroring `VpnIndicator`'s per-config silent check. */
+   *  the header menu opens, mirroring `VpnIndicator`'s per-config silent check.
+   *  Writes `reachable` (and `errors`) ONLY, never `status`: a probe is not a
+   *  session. Skips HPC-tagged machines — this menu opens on hover and `ssh_probe`
+   *  is a real authenticated login, not a ping. */
   probeAll: () => Promise<void>;
   /** Fleet-wide (re)connect: attempt `connect` on every machine not already
    *  connected/connecting, concurrently, each with any saved credential. A host
@@ -161,6 +179,7 @@ interface GlobalMachinesStore {
 export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => ({
   machines: [],
   status: {},
+  reachable: {},
   errors: {},
   loaded: false,
 
@@ -174,15 +193,32 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
   add: async ({ user, host, port, label, password, remember }) => {
     // First contact: show the host key's fingerprint before the password is sent.
     await withHostKeyConfirm(() =>
-      invoke("ssh_connect", { user, host, port, password, remember }),
+      invoke("ssh_connect", {
+        user,
+        host,
+        port,
+        password,
+        // Adding a machine is a form the user filled in and submitted. Without
+        // this the dial policy's background default refuses it outright on a host
+        // they tagged HPC — i.e. a tagged cluster could not be added at all.
+        background: false,
+        // Only `true` (save) or `null` (leave alone) — the same rule `update` states
+        // at length. A raw `false` is `Remember::Clear`, which DELETES the keychain
+        // entry, and this call has just authenticated with it: an unticked box on an
+        // ordinary add would destroy a password saved by an earlier one. Only an
+        // explicit forget may clear a credential.
+        remember: remember ? true : null,
+      }),
     );
     const machine = await invoke<GlobalMachine>("global_machine_add", { user, host, port, label });
+    // The lamp is the propagation trigger: `lib/machineSync`'s subscription reflects
+    // this onto any project that already holds the host. Nothing is called by hand
+    // here — that is exactly how `register` and the probe sweep ended up propagating
+    // nothing at all.
     set((s) => ({
       machines: [...s.machines, machine],
       status: { ...s.status, [machine.id]: "connected" },
     }));
-    // Reflect onto any project that already holds this host (primary or worker).
-    syncGlobalConnected(machine);
     return machine;
   },
 
@@ -224,6 +260,8 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
           // Only `true` (save) or `null` (leave) — never `false`, which would clear
           // a credential the edit didn't intend to drop.
           remember: opts.remember ? true : null,
+          // An edit-and-reconnect is a gesture, same as `add` above.
+          background: false,
         }),
       );
       set((s) => {
@@ -251,13 +289,15 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
     set((s) => {
       const status = { ...s.status };
       delete status[id];
+      const reachable = { ...s.reachable };
+      delete reachable[id];
       const errors = { ...s.errors };
       delete errors[id];
-      return { machines: list, status, errors };
+      return { machines: list, status, reachable, errors };
     });
   },
 
-  connect: async (id, password) => {
+  connect: async (id, password, opts) => {
     const m = get().machines.find((x) => x.id === id);
     if (!m) return;
     set((s) => ({ status: { ...s.status, [id]: "connecting" } }));
@@ -269,14 +309,21 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
           port: m.port,
           password,
           remember: null,
+          // A credential-less `ssh_connect` is ambiguous to the backend's dial policy
+          // — it is either a row the user clicked or the launch sweep — so this path
+          // has to say which. It defaults to the gesture, because that is the only
+          // caller a tagged HPC machine has left: the sweep passes `background` and
+          // is refused, by design, on both sides.
+          background: opts?.background === true,
         }),
       );
       set((s) => {
         const errors = { ...s.errors };
         delete errors[id];
+        // Propagation onto a project holding this host rides the lamp itself
+        // (`lib/machineSync`'s subscription), not a call from here.
         return { status: { ...s.status, [id]: "connected" }, errors };
       });
-      syncGlobalConnected(m);
     } catch (e) {
       set((s) => ({ status: { ...s.status, [id]: "error" }, errors: { ...s.errors, [id]: String(e) } }));
     }
@@ -316,29 +363,42 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
   },
 
   probeAll: async () => {
-    const machines = get().machines;
+    // Never sweep a tagged cluster. This menu opens on *hover*, and `ssh_probe` is
+    // a real authenticated login rather than a ping — a fleet sweep that includes a
+    // login node dials it every time the pointer crosses the header, which is the
+    // unattended presence the tag exists to stop. Fail-closed while settings load.
+    const settings = useSettingsStore.getState().settings;
+    const machines = get().machines.filter((m) =>
+      mayAutoTouch(settings, { user: m.user, host: m.host, port: m.port }),
+    );
     const results = await Promise.all(
       machines.map((m) =>
         invoke<{ ok: boolean; error: string }>("ssh_probe", { user: m.user, host: m.host, port: m.port })
-          .then((r) => [m.id, r.ok ? "connected" : "error", r.error] as const)
-          .catch((e) => [m.id, "error", String(e)] as const),
+          .then((r) => [m.id, r.ok, r.error] as const)
+          .catch((e) => [m.id, false, String(e)] as const),
       ),
     );
-    // Same idempotence rule as `setStatus`: a sweep that finds every machine in
-    // the state it was already in is a no-op and must not notify. This one is
-    // the more valuable of the two — it writes EVERY machine at once, so on a
-    // fleet of N an unchanged sweep used to invalidate the whole list.
+    // The sweep writes `reachable`, NEVER `status`. A probe says the host answered;
+    // `status` says this app holds a session on it, and `lib/machineSync` acts on
+    // the second — opening the pool of a project that holds the same host. Folding
+    // the first into the second is what lit a machine green off a hover while every
+    // project holding it stayed unconnected, with nothing to propagate.
+    //
+    // Same idempotence rule as `setStatus`: a sweep that finds everything as it
+    // already was is a no-op and must not notify. This one is the more valuable of
+    // the two — it writes EVERY machine at once, so on a fleet of N an unchanged
+    // sweep used to invalidate the whole list.
     set((s) => {
-      const nextStatus = Object.fromEntries(results.map(([id, st]) => [id, st]));
-      const changedStatus = Object.entries(nextStatus).some(([id, st]) => s.status[id] !== st);
+      const nextReachable = Object.fromEntries(results.map(([id, ok]) => [id, ok]));
+      const changed = Object.entries(nextReachable).some(([id, ok]) => s.reachable[id] !== ok);
       // `ssh_probe` already carries the reason a re-auth failed (bad password,
       // unreachable network, refused prompt…) — capture it the same way `connect`
       // does, so a menu-open sweep explains a red lamp exactly as well as a manual
       // retry would, instead of throwing that text away.
       const errors = { ...s.errors };
       let changedErrors = false;
-      for (const [id, st, err] of results) {
-        if (st === "connected") {
+      for (const [id, ok, err] of results) {
+        if (ok) {
           if (errors[id] !== undefined) {
             delete errors[id];
             changedErrors = true;
@@ -348,15 +408,21 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
           changedErrors = true;
         }
       }
-      if (!changedStatus && !changedErrors) return s;
-      return { status: changedStatus ? { ...s.status, ...nextStatus } : s.status, errors };
+      if (!changed && !changedErrors) return s;
+      return { reachable: changed ? { ...s.reachable, ...nextReachable } : s.reachable, errors };
     });
   },
 
   retryAll: async () => {
     const { machines, status, connect } = get();
+    // "Retry everything" is a gesture at the fleet, not at any one login node: a
+    // tagged cluster is left out and stays connectable from its own row's button,
+    // which IS a gesture at it.
+    const settings = useSettingsStore.getState().settings;
     await Promise.all(
       machines.map((m) => {
+        if (!mayAutoTouch(settings, { user: m.user, host: m.host, port: m.port }))
+          return Promise.resolve();
         const st = status[m.id] ?? "off";
         if (st === "connected" || st === "connecting") return Promise.resolve();
         return connect(m.id);
@@ -374,11 +440,19 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
   },
 
   setAutoConnect: async (id, enabled) => {
-    const list = await invoke<GlobalMachine[]>("global_machine_set_auto_connect", {
-      id,
-      enabled,
-    }).catch(() => null);
-    if (list) set({ machines: list });
+    try {
+      const list = await invoke<GlobalMachine[]>("global_machine_set_auto_connect", {
+        id,
+        enabled,
+      });
+      set({ machines: list });
+    } catch (e) {
+      // A swallowed persist failure is worse here than elsewhere: the toggle springs
+      // back on the next render with nothing said, so the user believes a machine is
+      // armed for launch when it isn't. Same `errors` map a failed connect writes, so
+      // the row already has somewhere to show it.
+      set((s) => ({ errors: { ...s.errors, [id]: `auto-connect not saved: ${String(e)}` } }));
+    }
   },
 
   autoConnect: async () => {
@@ -386,11 +460,13 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
     // auto-connect toggle says (the toggle is disabled for one, but an older
     // settings file can carry both). An SSH master opened on a shared login node
     // because an app started is exactly the unattended presence the tag exists to
-    // stop; connecting by hand is untouched.
+    // stop; connecting by hand is untouched. `mayAutoTouch` is the shared authority
+    // for that question, and it also fails closed while settings are still loading —
+    // the exact window this launch sweep runs in.
     const settings = useSettingsStore.getState().settings;
     const machines = get()
       .machines.filter((m) => m.auto_connect)
-      .filter((m) => !isHpcHost(settings, { user: m.user, host: m.host, port: m.port }));
+      .filter((m) => mayAutoTouch(settings, { user: m.user, host: m.host, port: m.port }));
     await Promise.all(
       machines.map(async (m) => {
         const st = get().status[m.id] ?? "off";
@@ -402,11 +478,12 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
           user: m.user,
           host: m.host,
           port: m.port,
+          background: true,
         })
           .then((r) => r.ok)
           .catch(() => false);
         if (!reachable) return;
-        await get().connect(m.id);
+        await get().connect(m.id, undefined, { background: true });
       }),
     );
   },
@@ -432,7 +509,14 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
           host: entry.host,
           port: entry.port,
           password: password || null,
-          remember: remember ?? null,
+          // The user picked a file and pressed Import — a gesture, even though it is
+          // a bulk one, so a tagged host in the file is still importable by hand.
+          background: false,
+          // `true` or `null`, never the raw flag: an unticked "Save password" on an
+          // import used to arrive as `false` = `Remember::Clear` and DELETE whatever
+          // was already saved for each host it walked — with the credential it had
+          // just authenticated with. Only an explicit forget clears one.
+          remember: remember ? true : null,
         });
       } catch {
         ok = false;
@@ -456,8 +540,18 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
         });
         // Arm the launch/VPN-up sweep in the same pass. Only ever *enables* —
         // a re-import of a host already in the list must not silently disarm a
-        // toggle the user set by hand.
-        if (autoConnect) await get().setAutoConnect(machine.id, true);
+        // toggle the user set by hand. Never on a tagged cluster: both by-hand add
+        // paths already refuse to arm one, and a bulk import must not be the hole
+        // that writes the flag the sweep then has to filter back out.
+        if (
+          autoConnect &&
+          mayAutoTouch(useSettingsStore.getState().settings, {
+            user: effUser,
+            host: entry.host,
+            port: entry.port,
+          })
+        )
+          await get().setAutoConnect(machine.id, true);
       }
       results.push({ host: entry.host, label: entry.label, ok });
     }

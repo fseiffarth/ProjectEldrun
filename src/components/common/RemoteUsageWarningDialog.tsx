@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useProjectsStore } from "../../stores/projects";
 import { useGlobalMachinesStore } from "../../stores/globalMachines";
@@ -11,7 +12,9 @@ import {
 } from "../../stores/remoteUsage";
 import { hostsForProject } from "../../lib/remoteHosts";
 import { sameTarget } from "../../lib/machineSync";
-import { PRIMARY_HOST } from "../../stores/remoteStatus";
+import { PRIMARY_HOST, sshOf, useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useSettingsStore } from "../../stores/settings";
+import { isHpcHost } from "../../lib/hpcHost";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 /**
@@ -25,9 +28,18 @@ import { useT, type TranslationKey } from "../../lib/i18n";
  * **On demand only.** It used to pop up by itself after every connect, which
  * put a modal in front of a user who had just asked for something else. Now the
  * *only* thing that opens it is the header Machines menu's "Remote host usage…"
- * button (`useRemoteUsageStore.open`), and opening it rechecks every host so
- * what's on screen is current rather than however stale the last connect's
+ * button (`useRemoteUsageStore.open`), and opening it rechecks every host it may
+ * so what's on screen is current rather than however stale the last connect's
  * report had become.
+ *
+ * **"Every host it may" is the whole of the second gate.** Each probe is real
+ * work on the machine — a global machine's is a fresh SSH login, a project
+ * host's opens the pool — so a dialog that swept the entire list dialled every
+ * machine anyone had ever added, every time it was opened. The sweep now covers
+ * only hosts with a session actually open, and **never** a host tagged HPC
+ * whatever its lamp says. Everything else renders from cache and carries its own
+ * read button: that press is a gesture, which is the one thing a tagged cluster
+ * login node answers to (and the only caller that may say `background: false`).
  *
  * **Its subject is the machine list, not a project.** It opens from the Machines
  * menu, so it shows a section for **every global machine, in that menu's exact
@@ -135,11 +147,24 @@ function UsageLight({ pct }: { pct: number }) {
  *  in" table, and top processes — repeated per connected host in the combined
  *  dialog (it used to be the dialog's whole body, back when only the primary
  *  was ever probed). */
-function HostUsageSection({ label, report }: { label: string; report: RemoteUsageReport }) {
+function HostUsageSection({
+  label,
+  report,
+  action,
+}: {
+  label: string;
+  report: RemoteUsageReport;
+  /** The row's own "read it now" control, for a host the automatic sweep skips
+   *  (see [`RemoteUsageWarningDialog`]). Absent for a host the sweep covers. */
+  action?: ReactNode;
+}) {
   const t = useT();
   return (
     <div className="remote-usage-host">
-      <div className="remote-usage-host-title">{label}</div>
+      <div className="remote-usage-host-title">
+        {label}
+        {action}
+      </div>
       {/* Said before the numbers, because on a cluster the short session list and
           own-processes-only table are a deliberate limit, not a quiet machine. */}
       {report.careful && <div className="remote-usage-careful">{t("usage.carefulNote")}</div>}
@@ -244,17 +269,35 @@ function HostUsageSection({ label, report }: { label: string; report: RemoteUsag
   );
 }
 
+/** One section of the dialog: the host it reads, plus the two facts that decide
+ *  whether it may be read *unasked* — is a session open on it, and is it tagged. */
+interface UsageRow {
+  target: UsageTarget;
+  /** A session this app opened (a machine's lamp / the project host's pool). */
+  connected: boolean;
+  /** Tagged as a shared cluster login node (`lib/hpcHost.ts`). */
+  hpc: boolean;
+  /** Whether the open-the-dialog sweep may read it. */
+  autoRead: boolean;
+}
+
 export function RemoteUsageWarningDialog() {
   const t = useT();
   const activeId = useProjectsStore((s) => s.activeId);
   const project = useProjectsStore((s) => s.projects.find((p) => p.id === activeId));
   const machines = useGlobalMachinesStore((s) => s.machines);
+  const machineStatus = useGlobalMachinesStore((s) => s.status);
+  const byProject = useRemoteStatusStore((s) => s.byProject);
+  const byHost = useRemoteStatusStore((s) => s.byHost);
+  const settings = useSettingsStore((s) => s.settings);
   const setReport = useRemoteUsageStore((s) => s.setReport);
   const close = useRemoteUsageStore((s) => s.close);
   const recheck = useRemoteUsageStore((s) => s.recheck);
   const reports = useRemoteUsageStore((s) => s.reports);
   const isOpen = useRemoteUsageStore((s) => s.isOpen);
   const [rechecking, setRechecking] = useState(false);
+  /** Per-row in-flight state for the explicit reads (the sweep has `rechecking`). */
+  const [reading, setReading] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -278,15 +321,40 @@ export function RemoteUsageWarningDialog() {
   // target is already a machine above: the two lists are related by
   // `user@host:port` and nothing else, since attaching a machine to a project
   // copies it by value rather than linking ids.
-  const targets = useMemo<UsageTarget[]>(() => {
-    const list: UsageTarget[] = machines.map((m) => ({
-      kind: "machine",
-      key: machineKey(m.id),
-      label: m.label || m.host,
-      user: m.user,
-      host: m.host,
-      port: m.port,
-    }));
+  //
+  // Each row also carries what licenses an *unasked* read of it. Both probes
+  // behind `recheck` are real work on the host — `global_machine_usage_check` is
+  // a fresh `run_ssh_auth`, `remote_usage_check` opens the pool — so opening this
+  // dialog used to dial every machine anyone had ever added, connected or not,
+  // tagged or not. Two facts narrow that:
+  //
+  //  * **the lamp** — a machine with no session is not read by the sweep. Its
+  //    section renders from cache with a button, so nothing is lost but the
+  //    login nobody asked for.
+  //  * **the tag** — a shared login node is never in an automatic sweep at all,
+  //    whatever its lamp says. `isHpcHost` on the target, the same key the rest
+  //    of the tag uses, so tagging a machine once covers it here too.
+  const rows = useMemo<UsageRow[]>(() => {
+    const build = (target: UsageTarget, connected: boolean, hpc: boolean): UsageRow => ({
+      target,
+      connected,
+      hpc,
+      autoRead: connected && !hpc,
+    });
+    const list: UsageRow[] = machines.map((m) =>
+      build(
+        {
+          kind: "machine",
+          key: machineKey(m.id),
+          label: m.label || m.host,
+          user: m.user,
+          host: m.host,
+          port: m.port,
+        },
+        machineStatus[m.id] === "connected",
+        isHpcHost(settings, { user: m.user, host: m.host, port: m.port }),
+      ),
+    );
     if (project?.remote) {
       const hostLabels = hostsForProject(project);
       const specs = [
@@ -296,35 +364,112 @@ export function RemoteUsageWarningDialog() {
       for (const { id, spec } of specs) {
         if (machines.some((m) => sameTarget(m, spec))) continue;
         const label = hostLabels.find((h) => h.id === id)?.label ?? spec.host;
-        list.push({
-          kind: "projectHost",
-          key: projectHostKey(project.id, id),
-          label: `${label} — ${project.name}`,
-          projectId: project.id,
-          hostId: id,
-        });
+        list.push(
+          build(
+            {
+              kind: "projectHost",
+              key: projectHostKey(project.id, id),
+              label: `${label} — ${project.name}`,
+              projectId: project.id,
+              hostId: id,
+            },
+            sshOf({ byProject, byHost }, project.id, id) === "connected",
+            isHpcHost(settings, {
+              user: spec.user || undefined,
+              host: spec.host,
+              port: spec.port ?? undefined,
+            }),
+          ),
+        );
       }
     }
     return list;
-  }, [machines, project]);
+  }, [machines, machineStatus, project, byProject, byHost, settings]);
 
   // Opening is itself the request for a reading: whatever the last connect left
-  // cached is however old the session is, so every host is rechecked as the
-  // dialog appears (its sections fill in as the probes land).
-  const targetKey = targets.map((t) => t.key).join("|");
+  // cached is however old the session is, so every host the sweep may touch is
+  // rechecked as the dialog appears (its sections fill in as the probes land).
+  // The rest keep their cached reading and a button.
+  const sweep = useMemo(() => rows.filter((r) => r.autoRead).map((r) => r.target), [rows]);
+  const sweepKey = sweep.map((r) => r.key).join("|");
   const runRecheck = useMemo(
     () => () => {
-      if (targets.length === 0) return;
+      if (sweep.length === 0) return;
       setRechecking(true);
-      void Promise.all(targets.map((t) => recheck(t))).finally(() => setRechecking(false));
+      // No `background` flag: this IS the background path, and a command that
+      // gates on one must see it omitted rather than talked out of.
+      void Promise.all(sweep.map((r) => recheck(r))).finally(() => setRechecking(false));
     },
-    // `targetKey` stands in for `targets` (a fresh array each render).
+    // `sweepKey` stands in for `sweep` (a fresh array each render).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [targetKey, recheck],
+    [sweepKey, recheck],
   );
   useEffect(() => {
     if (isOpen) runRecheck();
   }, [isOpen, runRecheck]);
+
+  /**
+   * Read ONE host because the user pressed its button. Deliberately not
+   * `recheck`: that is the sweep's call and omits `background`, which is what
+   * makes a tagged host refuse it. A press is a gesture, so this one says
+   * `background: false` — the only spelling that reaches a tagged machine, and
+   * one no timer can produce.
+   */
+  const readNow = async (row: UsageRow) => {
+    const key = row.target.key;
+    setReading((m) => ({ ...m, [key]: true }));
+    try {
+      const report =
+        row.target.kind === "machine"
+          ? await invoke<RemoteUsageReport>("global_machine_usage_check", {
+              user: row.target.user,
+              host: row.target.host,
+              port: row.target.port,
+              background: false,
+            })
+          : await invoke<RemoteUsageReport>("remote_usage_check", {
+              projectId: row.target.projectId,
+              hostId: row.target.hostId,
+              background: false,
+            });
+      setReport(key, report);
+    } catch {
+      // Best-effort, exactly as the sweep is: a host that can't be reached keeps
+      // whatever was cached instead of tearing the dialog down.
+    } finally {
+      setReading((m) => ({ ...m, [key]: false }));
+    }
+  };
+
+  /** Why a section has no fresh reading — stated, because "no reading" alone
+   *  reads as a broken probe when it is in fact a machine waiting to be asked. */
+  const rowNote = (row: UsageRow): string => {
+    if (reading[row.target.key] || (rechecking && row.autoRead)) return t("usage.checkingEllipsis");
+    if (row.hpc) return "Not read — tagged HPC, so nothing reads it unasked.";
+    if (!row.connected) return "Not read — no session open on this machine.";
+    return t("usage.noReading");
+  };
+
+  /** The per-row read control, for the hosts the sweep skips. */
+  const rowAction = (row: UsageRow): ReactNode =>
+    row.autoRead ? null : (
+      <>
+        {" "}
+        <button
+          type="button"
+          className="inline-link-btn"
+          onClick={() => void readNow(row)}
+          disabled={!!reading[row.target.key]}
+          title={
+            row.hpc
+              ? "Read this machine once, now. It is tagged HPC, so nothing reads it on its own."
+              : "Read this machine once, now."
+          }
+        >
+          {reading[row.target.key] ? t("usage.checkingEllipsis") : t("usage.recheck")}
+        </button>
+      </>
+    );
 
   if (!isOpen) return null;
 
@@ -340,27 +485,35 @@ export function RemoteUsageWarningDialog() {
         </div>
         <div className="dialog-scroll">
           <p className="remote-usage-lede">
-            {targets.length === 0
+            {rows.length === 0
               ? t("usage.noMachines")
               : t("usage.lede", {
-                  hosts: targets.length === 1 ? t("usage.hostSingular") : t("usage.hostsPlural", { count: targets.length }),
+                  hosts: rows.length === 1 ? t("usage.hostSingular") : t("usage.hostsPlural", { count: rows.length }),
                   reading: rechecking ? t("usage.beingReadNow") : t("usage.asLastRead"),
                 })}
           </p>
-          {targets.map((target) =>
-            reports[target.key] ? (
-              <HostUsageSection key={target.key} label={target.label} report={reports[target.key]} />
+          {rows.map((row) =>
+            reports[row.target.key] ? (
+              <HostUsageSection
+                key={row.target.key}
+                label={row.target.label}
+                report={reports[row.target.key]}
+                action={rowAction(row)}
+              />
             ) : (
-              <div className="remote-usage-host" key={target.key}>
-                <div className="remote-usage-host-title">{target.label}</div>
-                <div className="remote-usage-empty">
-                  {rechecking ? t("usage.checkingEllipsis") : t("usage.noReading")}
+              <div className="remote-usage-host" key={row.target.key}>
+                <div className="remote-usage-host-title">
+                  {row.target.label}
+                  {rowAction(row)}
                 </div>
+                <div className="remote-usage-empty">{rowNote(row)}</div>
               </div>
             ),
           )}
           <div className="project-dialog-actions">
-            <button type="button" onClick={runRecheck} disabled={rechecking}>
+            {/* Rechecks only what the sweep may touch; a skipped host keeps its
+                own button, which is the only thing that reads it. */}
+            <button type="button" onClick={runRecheck} disabled={rechecking || sweep.length === 0}>
               {rechecking ? t("usage.rechecking") : t("usage.recheck")}
             </button>
             <button type="button" onClick={close}>

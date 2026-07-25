@@ -44,6 +44,32 @@ export function isHpcHost(
   return settings?.hpc_hosts?.[targetKey(target)] === true;
 }
 
+/**
+ * **May Eldrun reach `target` without a gesture?** — the single authority behind
+ * every unattended path: the launch/VPN-up sweeps, the reachability probe, the
+ * dead-host silent reconnect, and the pool `lib/machineSync` opens to mirror one
+ * lamp onto another. Nothing re-derives the rule; they all ask here.
+ *
+ * **Fails closed while settings are unloaded.** `isHpcHost(null, …)` answering
+ * `false` is right for what it does — it decides whether to *draw a badge*, and a
+ * badge that can't be computed is simply not drawn — but the identical answer
+ * here would *authorise a connect*. Launch is precisely the window where settings
+ * are still in flight AND every sweep fires, so "we don't know yet" has to read as
+ * "not yet"; a moment's delay costs nothing, an SSH master left on a shared login
+ * node because the app started before its own settings arrived is the exact thing
+ * the tag exists to prevent.
+ *
+ * A target with no host is likewise `false` — there is nothing to reach, and a
+ * caller that lost its host must not fall through to "sure, go ahead".
+ */
+export function mayAutoTouch(
+  settings: Settings | null | undefined,
+  target: Target | null | undefined,
+): boolean {
+  if (!settings || !target?.host) return false;
+  return !isHpcHost(settings, target);
+}
+
 /** The patch that tags (or untags) `target`, for `useSettingsStore.updateSettings`.
  *  Merges into the existing map — settings are saved whole, so a replace would
  *  drop every other machine's tag. Untagging writes `false` rather than deleting,

@@ -10,6 +10,7 @@ import {
 } from "../../types";
 import { joinRemotePath, parseSshAddress, type ParsedSshAddress } from "./scaffold";
 import { useRemoteBrowse } from "./useRemoteBrowse";
+import { rememberArg, useSavedCredential } from "./useSavedCredential";
 import { useVpnStatusStore } from "../../stores/vpnStatus";
 import { IS_WINDOWS } from "../../lib/platform";
 import {
@@ -26,6 +27,14 @@ type ConnStatus = "idle" | "connecting" | "connected" | "error";
 // READY_MARKER in services/openvpn.rs). The embedded VPN login terminal is
 // watched for it to flip the lamp green (see the readiness watcher below).
 const VPN_READY_MARKER = "Initialization Sequence Completed";
+
+// What the bounded ControlMaster poll says when it runs out. A give-up has to be
+// *stated*: the lamp is the only thing the user can see, and an amber one that
+// never resolves is indistinguishable from one still trying. (Raw English, as the
+// rest of this hook's error strings are — the i18n boundary here is
+// `RemoteProjectSection`, which renders them.)
+const POLL_GAVE_UP =
+  "No login detected after two minutes. Finish signing in in the terminal, then press “I've logged in — browse”.";
 
 // Shape of the `terminal-output` event payload (PTY id + a raw output chunk),
 // matching the backend emit and TerminalView's own listener.
@@ -81,10 +90,6 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   // its later reconnects (and auto-connect) authenticate with, instead of being
   // thrown away the moment this dialog closes.
   const [sshRemember, setSshRemember] = useState(false);
-  // Whether this host target already has a saved password. Queried, never received
-  // as a secret. Pre-checks the toggle, so connecting can't silently *clear* a
-  // credential the user saved elsewhere (`remember: false` is an explicit untick).
-  const [sshSaved, setSshSaved] = useState(false);
   // The connect-and-browse mechanism (frozen (host, password) session + live SFTP
   // listing + navigation) is the SHARED one every remote-login dialog uses — see
   // `useRemoteBrowse`. This flow keeps its own fields/steps/VPN around it; the
@@ -284,24 +289,19 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
 
   // Does this host target already have a saved password? Re-asked as the typed
   // address changes, so the toggle always reflects the target being connected.
-  useEffect(() => {
-    const parsed = isRemoteProject ? parseSshAddress(sshAddress) : null;
-    if (!parsed) {
-      setSshSaved(false);
-      return;
-    }
-    let cancelled = false;
-    invoke<boolean>("remote_has_saved_password", {
-      user: parsed.user ?? null,
-      host: parsed.host,
-      port: parsed.port ?? null,
-    })
-      .then((saved) => !cancelled && setSshSaved(saved))
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [isRemoteProject, sshAddress]);
+  // The shared tri-state hook, not a boolean: a locked keychain answers a lookup
+  // exactly like an empty one, and taking that as "nothing saved" is what unticked
+  // the box — which, before `remember` stopped being able to carry `false`, made
+  // the next successful connect *delete* the credential it had authenticated with.
+  const sshTarget = isRemoteProject ? parseSshAddress(sshAddress) : null;
+  const sshCredential = useSavedCredential(
+    sshTarget
+      ? { user: sshTarget.user ?? null, host: sshTarget.host, port: sshTarget.port ?? null }
+      : null,
+  );
+  const sshSaved = sshCredential.saved;
+  // Pre-tick only on a *known*-saved credential; "checking"/"unreadable" leave the
+  // box off, and an off box now means "leave the keychain alone", not "clear it".
   useEffect(() => setSshRemember(sshSaved), [sshSaved]);
 
   // Same question for the selected `.ovpn` (all of its secrets, so a config that
@@ -325,14 +325,7 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   // next connect, which may never come (the user may be about to abandon this
   // dialog). Same semantics as the Connect modal's toggles.
   const forgetSshPassword = async () => {
-    const parsed = parseSshAddress(sshAddress);
-    if (!parsed) return;
-    await invoke("remote_forget_password", {
-      user: parsed.user ?? null,
-      host: parsed.host,
-      port: parsed.port ?? null,
-    }).catch(() => {});
-    setSshSaved(false);
+    await sshCredential.forget();
     setSshRemember(false);
   };
 
@@ -466,6 +459,15 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   // and still rerouting everything, so it is registered machine-level regardless:
   // the header indicator shows it (and can bring it down) even if the user abandons
   // the dialog without ever creating the project.
+  //
+  // **Why not the `markVpn*` helpers.** They do two things: light the *project's*
+  // lamp and keep the machine-level entry (plus the holder refcount `releaseVpn`
+  // depends on) in step. Here the first half has no subject — the project id
+  // genuinely does not exist yet — and inventing one would be worse than skipping
+  // it: a holder nothing can ever call `releaseVpn` for is a tunnel nothing can
+  // ever bring down. So the holder is a **deliberate no-op**, said out loud here so
+  // the next reader doesn't "fix" the asymmetry by minting an id. The machine-level
+  // half below is exactly what the helpers would have written.
   const connectVpn = async () => {
     if (!vpnConfig) return;
     setVpnStatus("connecting");
@@ -480,7 +482,11 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
         // to the keychain), the same contract the Connect modal's blank field has.
         password: vpnPassword,
         keyPassphrase: vpnKeyPassphrase || null,
-        remember: vpnRemember,
+        // `true` or `null`, never `false`: `openvpn_connect` resolves
+        // `typed || saved` before it writes, so a `false` on a *successful*
+        // connect clears the passphrase it just authenticated with — the same
+        // shape as the SSH bug. Unticking deletes via `forgetVpnPassword`.
+        remember: rememberArg(vpnRemember),
       });
       setVpnStatus("connected");
       setVpnSaved(vpnRemember);
@@ -488,7 +494,13 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     } catch (e) {
       setVpnStatus("error");
       setVpnError(String(e));
-      useVpnStatusStore.getState().setState(vpnConfig, "off");
+      // `error`, not `off`. `markVpnError` may forget the machine-level entry
+      // because the project's own red lamp carries the failure — and here there is
+      // no project lamp, so a bare "off" is indistinguishable from never having
+      // tried. The header is the only surface that can report it. `refresh` (every
+      // 10 s, off the backend's live tunnel set) clears it again by itself, and
+      // `anyVpnLive` ignores `error`, so nothing treats it as a live tunnel.
+      useVpnStatusStore.getState().setState(vpnConfig, "error");
     }
   };
 
@@ -509,9 +521,16 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       // orange until the readiness watcher (below) sees the ready marker.
       setVpnStatus("connecting");
       setVpnError("");
+      // And tell the MACHINE, not just this dialog. An interactive tunnel reroutes
+      // the whole computer exactly as a headless one does, so the header indicator
+      // has to show it coming up — the headless path above already says so, and
+      // `useRemoteReconnect`'s terminal path does too. Without this the one place
+      // a tunnel could be brought back down stayed dark while it came up.
+      useVpnStatusStore.getState().setState(vpnConfig, "connecting");
     } catch (e) {
       setVpnStatus("error");
       setVpnError(String(e));
+      useVpnStatusStore.getState().setState(vpnConfig, "error");
     }
   };
 
@@ -530,7 +549,12 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     void listen<TerminalOutput>("terminal-output", (ev) => {
       if (ev.payload.id !== termId) return;
       buf = (buf + ev.payload.data).slice(-512);
-      if (buf.includes(VPN_READY_MARKER)) setVpnStatus("connected");
+      if (buf.includes(VPN_READY_MARKER)) {
+        setVpnStatus("connected");
+        // Same reason as `startVpnTerm`'s "connecting": the tunnel is up and the
+        // machine is rerouted, so the header must say so.
+        useVpnStatusStore.getState().setState(vpnConfig, "connected");
+      }
     }).then((u) => {
       if (cancelled) u();
       else un = u;
@@ -539,7 +563,7 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       cancelled = true;
       un?.();
     };
-  }, [vpnTerm]);
+  }, [vpnTerm, vpnConfig]);
 
   // Tear the embedded VPN terminal down (explicit disconnect / config change /
   // leaving remote mode). Kills the PTY and drops the dedupe mark so a later
@@ -550,6 +574,11 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     forgetConnection(vpnTerm.key);
     setVpnTerm(null);
     setVpnStatus("idle");
+    // Symmetric with the machine-level state `startVpnTerm` now sets. If the root
+    // daemon actually outlived the PTY, `refresh` re-seats it from the backend's
+    // live tunnel set within 10 s — so this can understate a tunnel briefly, never
+    // claim one that isn't there.
+    if (vpnConfig) useVpnStatusStore.getState().setState(vpnConfig, "off");
   };
 
   // Non-headless: open the interactive SSH login in a dialog-embedded terminal.
@@ -563,6 +592,13 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   // never-authenticated login eventually stops; the user can re-arm it with the
   // "I've logged in — browse" button (tryBrowseNow). Never hard-errors while the
   // terminal is up — the login may just not be authenticated yet.
+  //
+  // NOTE: there are **four** copies of this loop (`useRemoteReconnect`,
+  // `RemoteMachinesWindow`, `MachinesIndicator`, and here) — same 40 × 3 s bound,
+  // same credential-less probe, same `openSession`-on-success. Consolidating them
+  // is deliberately out of scope for this pass; what has been fixed is the part
+  // that differed: all of them now *state* their give-up instead of two of them
+  // going quiet and leaving an amber lamp with no way out.
   const pollSshReady = (parsed: ParsedSshAddress, attempt = 0) => {
     const maxAttempts = 40; // ~2 min at 3s cadence
     void invoke<void>("ssh_connect", {
@@ -570,6 +606,11 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       host: parsed.host,
       port: parsed.port,
       password: null,
+      // Credential-less, so the dial policy can't tell this from a background
+      // sweep — but it is waiting on a master the user just authenticated in the
+      // terminal below. Unsaid, a host tagged HPC refuses every attempt and the
+      // poll times out behind a login that visibly worked.
+      background: false,
     })
       .then(async () => {
         clearSshPoll();
@@ -582,6 +623,11 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       .catch(() => {
         if (attempt + 1 >= maxAttempts) {
           clearSshPoll();
+          // Say so. Giving up silently left the lamp amber forever with nothing on
+          // screen to act on — the user is watching a terminal that looks fine and
+          // a dialog that will never advance. `tryBrowseNow` re-arms it.
+          setSshStatus("error");
+          setSshError(POLL_GAVE_UP);
           return;
         }
         sshPollTimer.current = setTimeout(() => pollSshReady(parsed, attempt + 1), 3000);
@@ -684,9 +730,16 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       // The shared connect: ssh_connect (remembering the working password only on
       // success, so a rejected credential is never stored) → freeze the session →
       // open its start dir. The listing then refreshes itself.
-      await browse.connect({ target: parsed, password, remember: sshRemember });
+      const outcome = await browse.connect({
+        target: parsed,
+        password,
+        remember: rememberArg(sshRemember),
+      });
       setSshStatus("connected");
-      setSshSaved(sshRemember);
+      // From what the backend DID, not from the checkbox: a locked keyring refuses
+      // the write and returns `save_error`, and a ticked box over an empty keychain
+      // is exactly what resurfaces at the next launch as an unexplained prompt.
+      sshCredential.applyOutcome(outcome);
       // Connection succeeded — remember the address for the recents dropdown.
       rememberSshAddress(sshAddress);
     } catch (err) {
@@ -779,6 +832,8 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     sshRemember,
     setSshRemember,
     sshSaved,
+    // The tri-state behind `sshSaved`, for the shared "Save password" row.
+    sshCredential,
     forgetSshPassword,
     // The credential the live session actually authenticated with, so the caller can
     // hand it to the project's first *pooled* connect (`remote_connect`) instead of

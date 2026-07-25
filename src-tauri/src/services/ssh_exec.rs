@@ -68,6 +68,99 @@ pub(crate) fn control_dir() -> PathBuf {
     storage::state_dir().join("ssh-control")
 }
 
+/// The socket path `cm-%C` actually expands to for this target.
+///
+/// `%C` is a hash of (local host, remote host, port, user) that OpenSSH computes
+/// and we cannot, so it is *asked*: `ssh -G` prints the effective config with the
+/// token already expanded, and connects to nothing while doing it. Needed by
+/// anything that must touch the socket as a file — [`sweep_stale_control_sockets`]
+/// and `services::remote`'s teardown, which unlinks it.
+///
+/// `None` on Windows (no control socket at all) and whenever `ssh -G` cannot be
+/// run or says nothing — callers treat that as "no socket to manage", never as a
+/// path to guess at.
+pub fn resolve_control_path(spec: &RemoteSpec) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = spec;
+        None
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let target = ssh_target(&spec.user, &spec.host).ok()?;
+        let template = control_dir().join("cm-%C");
+        let mut cmd = crate::paths::command_no_window("ssh");
+        cmd.arg("-G")
+            .arg("-o")
+            .arg(format!("ControlPath={}", template.to_string_lossy()));
+        if let Some(port) = spec.port {
+            cmd.arg("-p").arg(port.to_string());
+        }
+        cmd.arg(target);
+        let out = cmd.output().ok()?;
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find_map(|line| line.strip_prefix("controlpath "))
+            .map(|p| PathBuf::from(p.trim()))
+            .filter(|p| p.parent() == Some(control_dir().as_path()))
+    }
+}
+
+/// Remove `cm-*` sockets in [`control_dir`] whose master is gone — a startup
+/// sweep beside `sandbox::sweep_orphans` / `openvpn::adopt_orphans`.
+///
+/// Masters are killed by signal (`services::remote::teardown_pooled`, and rather
+/// more abruptly by a crash or an OOM), which leaves the socket file behind. A
+/// leftover socket is not inert: the next `ssh` to that target logs "ControlSocket
+/// … already exists, disabling multiplexing" and then **opens its own login** —
+/// so a single stale file silently converts every later channel on that host from
+/// one shared authenticated master into one connection each, for the rest of the
+/// run. `ssh -O check` against the explicit socket answers in microseconds and
+/// touches no network; a non-zero exit means nothing is listening, so unlink.
+///
+/// Best effort throughout: a socket we cannot classify is left alone (a live
+/// master from a *concurrent* Eldrun would answer the check and be kept).
+#[cfg(not(target_os = "windows"))]
+pub fn sweep_stale_control_sockets() {
+    let dir = control_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("cm-"))
+        {
+            continue;
+        }
+        // The host argument is required by the CLI but unused here: the socket is
+        // named outright with `-o ControlPath`, so `-O check` asks *that* file.
+        let alive = crate::paths::command_no_window("ssh")
+            .arg("-o")
+            .arg(format!("ControlPath={}", path.to_string_lossy()))
+            .arg("-O")
+            .arg("check")
+            .arg("eldrun-control-probe")
+            .output()
+            .map(|o| o.status.success())
+            // Only an `ssh` that actually RAN and said "not alive" licenses the
+            // unlink. A spawn failure (no `ssh` on PATH, fork failure, EMFILE) is
+            // not evidence about the socket, and reading it as one would delete
+            // every master in the directory — including a live one belonging to a
+            // concurrently-running Eldrun, whose channels would then each need a
+            // password nobody stored.
+            .unwrap_or(true);
+        if !alive {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn sweep_stale_control_sockets() {}
+
 /// Single-quote `s` for a POSIX shell, escaping embedded single quotes as
 /// `'\''`. The result parses back to exactly `s` regardless of spaces, `$`,
 /// quotes, or other metacharacters. `pub(crate)` so command modules that build
@@ -280,13 +373,15 @@ pub fn tmux_rename_session_script(old: &str, new: &str) -> String {
 
 /// The `tmux ls` one-shot that backs the Sessions view (TODO #85): one tab-
 /// separated row per session — name, window count, created epoch, attached flag,
-/// last-activity epoch, and the active pane's current foreground command (used to
-/// tell a busy session from one idling at its shell prompt). `2>/dev/null || true`
-/// makes an absent tmux or a not-running server (`tmux ls` exits non-zero with "no
-/// server running") a clean **empty** list rather than an error (see
-/// [`parse_tmux_ls`]).
+/// last-activity epoch, the active pane's current foreground command (used to
+/// tell a busy session from one idling at its shell prompt), and the active
+/// pane's current **directory** (which is what attributes a session to a project
+/// when its *name* cannot — see [`session_visible_for_project`]).
+/// `2>/dev/null || true` makes an absent tmux or a not-running server (`tmux ls`
+/// exits non-zero with "no server running") a clean **empty** list rather than an
+/// error (see [`parse_tmux_ls`]).
 pub fn tmux_ls_script() -> &'static str {
-    "tmux ls -F '#{session_name}\t#{session_windows}\t#{session_created}\t#{session_attached}\t#{session_activity}\t#{pane_current_command}' 2>/dev/null || true"
+    "tmux ls -F '#{session_name}\t#{session_windows}\t#{session_created}\t#{session_attached}\t#{session_activity}\t#{pane_current_command}\t#{pane_current_path}' 2>/dev/null || true"
 }
 
 /// Shell/login-interpreter names `pane_current_command` reports when a session is
@@ -318,6 +413,12 @@ pub struct TmuxSession {
     /// Derived from `current_command`: false when the active pane is sitting at a
     /// bare shell prompt, true when something else is running in it.
     pub working: bool,
+    /// The active pane's current working directory on the host. Empty when the
+    /// host's `tmux ls` did not report it (an older format row). This is what
+    /// attributes a session whose *name* carries no project id — every session
+    /// minted before the name was scoped, and every hand-started one — to the
+    /// project whose tree it is running in (see [`session_visible_for_project`]).
+    pub current_path: String,
 }
 
 /// Parse the tab-separated output of [`tmux_ls_script`] into [`TmuxSession`]s.
@@ -346,6 +447,7 @@ pub fn parse_tmux_ls(output: &str) -> Vec<TmuxSession> {
             let attached = f.next()?.trim().parse::<u32>().ok()? > 0;
             let activity = f.next().and_then(|v| v.trim().parse().ok()).unwrap_or(created);
             let current_command = f.next().map(|v| v.trim().to_string()).unwrap_or_default();
+            let current_path = f.next().map(|v| v.trim().to_string()).unwrap_or_default();
             let working = !current_command.is_empty()
                 && !IDLE_SHELL_COMMANDS.contains(&current_command.as_str());
             Some(TmuxSession {
@@ -356,6 +458,7 @@ pub fn parse_tmux_ls(output: &str) -> Vec<TmuxSession> {
                 activity,
                 current_command,
                 working,
+                current_path,
             })
         })
         .collect()
@@ -385,34 +488,72 @@ fn tmux_session_prefix_for(project_id: &str) -> String {
     format!("eldrun-{}--", sanitize_tmux_key(project_id))
 }
 
-/// Whether `name` is a session minted by (and thus owned by) a DIFFERENT
-/// Eldrun project than `own_project_id` — used to keep the Sessions view
-/// (TODO #85) scoped to one project on a host multiple projects share, instead
-/// of surfacing every session on the host. A hand-started/foreign session
-/// (no `eldrun-` prefix at all) is never "another project's" — it belongs to
-/// nobody, so it stays visible everywhere, same as before this scoping
-/// existed. A **legacy** `eldrun-<uuid>` session (minted before session names
-/// carried a project id — no `--` marker) is ambiguous rather than
-/// attributable to another project, so it is also left visible; it ages out
-/// as old sessions are killed/renamed.
-pub fn session_belongs_to_other_project(name: &str, own_project_id: &str) -> bool {
-    if !name.starts_with("eldrun-") {
+/// Whether host path `path` is inside (or is) `root`. Both are normalized by
+/// dropping trailing slashes, and the boundary is a real path segment — so
+/// `/code/simplegnn2` is NOT inside `/code/simplegnn`. An empty `root` matches
+/// nothing (a project with no known root can attribute nothing).
+fn path_within(path: &str, root: &str) -> bool {
+    let path = path.trim_end_matches('/');
+    let root = root.trim_end_matches('/');
+    if root.is_empty() || path.is_empty() {
         return false;
     }
+    path == root || path.starts_with(&format!("{root}/"))
+}
+
+/// Whether a host tmux session should appear in **this** project's Sessions view
+/// (TODO #85), on a host that several projects (and other people) share.
+///
+/// Two signals, in order:
+///
+/// 1. **The name.** A session minted after session names carried a project id is
+///    `eldrun-<project>--<uuid>`, which attributes it outright: this project's
+///    prefix ⇒ shown, another project's ⇒ hidden. Nothing else can override this.
+/// 2. **The working directory**, for every session the name cannot attribute —
+///    the `eldrun-<uuid>` ones minted before scoping existed (which on a
+///    long-running cluster host outlive the fix by weeks) and every
+///    hand-started/foreign session. A session whose active pane sits inside the
+///    project's own tree belongs to it; one running elsewhere does not.
+///
+/// A row whose host `tmux ls` reported no path at all (an older format) is
+/// **shown**: an unattributable session must not silently vanish. Nothing is
+/// truly hidden either way — the Sessions view's "all host sessions" toggle
+/// passes `include_all`, so an orphaned run always stays reachable to kill.
+pub fn session_visible_for_project(
+    name: &str,
+    current_path: &str,
+    own_project_id: &str,
+    project_root: &str,
+) -> bool {
     if name.starts_with(&tmux_session_prefix_for(own_project_id)) {
+        return true;
+    }
+    // Another project's scoped name — the one case the name alone settles.
+    if name.starts_with("eldrun-") && name.contains("--") {
         return false;
     }
-    name.contains("--")
+    if current_path.is_empty() {
+        return true;
+    }
+    path_within(current_path, project_root)
 }
 
 /// Filter a host's tmux sessions down to the ones this project should see
-/// (TODO #85): its own sessions, plus foreign/legacy ones no project can be
-/// blamed for owning — never another project's. See
-/// [`session_belongs_to_other_project`].
-pub fn filter_sessions_for_project(sessions: Vec<TmuxSession>, project_id: &str) -> Vec<TmuxSession> {
+/// (TODO #85). `include_all` is the Sessions view's "all host sessions" escape
+/// hatch, which returns the listing untouched. See
+/// [`session_visible_for_project`].
+pub fn filter_sessions_for_project(
+    sessions: Vec<TmuxSession>,
+    project_id: &str,
+    project_root: &str,
+    include_all: bool,
+) -> Vec<TmuxSession> {
+    if include_all {
+        return sessions;
+    }
     sessions
         .into_iter()
-        .filter(|s| !session_belongs_to_other_project(&s.name, project_id))
+        .filter(|s| session_visible_for_project(&s.name, &s.current_path, project_id, project_root))
         .collect()
 }
 
@@ -425,6 +566,16 @@ pub fn filter_sessions_for_project(sessions: Vec<TmuxSession>, project_id: &str)
 ///         [-p <port>] <[user@]host> <remote_command>`.
 pub fn ssh_pty_args(remote: &RemoteSpec, remote_command: &str) -> Result<Vec<String>, String> {
     let target = ssh_target(&remote.user, &remote.host)?;
+    // The seventh argv builder, and the one that opens a *master* for a tab —
+    // so it carries the same dial policy as the six in `ssh_common`. A tab
+    // restored at relaunch against a tagged HPC host would otherwise reach a
+    // login node (and, tmux-wrapped, start a server there) with nobody asking.
+    crate::services::ssh_common::authorize_dial(
+        &remote.user,
+        &remote.host,
+        remote.port,
+        crate::services::ssh_common::ambient_intent(&remote.user, &remote.host, remote.port),
+    )?;
 
     let mut args: Vec<String> = vec!["-tt".to_string()];
 
@@ -981,11 +1132,11 @@ mod tests {
 
     #[test]
     fn parse_tmux_ls_reads_rows_and_tolerates_empty() {
-        let out = "eldrun-p1_shell-1\t2\t1700000000\t1\t1700003600\t-bash\ntrain\t1\t1700000500\t0\t1700009000\tpython\n";
+        let out = "eldrun-p1_shell-1\t2\t1700000000\t1\t1700003600\t-bash\t/code/p1\ntrain\t1\t1700000500\t0\t1700009000\tpython\t/code/p1/run\n";
         let v = parse_tmux_ls(out);
         assert_eq!(v.len(), 2);
-        assert_eq!(v[0], TmuxSession { name: "eldrun-p1_shell-1".into(), windows: 2, created: 1_700_000_000, attached: true, activity: 1_700_003_600, current_command: "-bash".into(), working: false });
-        assert_eq!(v[1], TmuxSession { name: "train".into(), windows: 1, created: 1_700_000_500, attached: false, activity: 1_700_009_000, current_command: "python".into(), working: true });
+        assert_eq!(v[0], TmuxSession { name: "eldrun-p1_shell-1".into(), windows: 2, created: 1_700_000_000, attached: true, activity: 1_700_003_600, current_command: "-bash".into(), working: false, current_path: "/code/p1".into() });
+        assert_eq!(v[1], TmuxSession { name: "train".into(), windows: 1, created: 1_700_000_500, attached: false, activity: 1_700_009_000, current_command: "python".into(), working: true, current_path: "/code/p1/run".into() });
         // "no server running" / absent tmux → empty output → zero sessions.
         assert!(parse_tmux_ls("").is_empty());
         assert!(parse_tmux_ls("\n").is_empty());
@@ -1002,35 +1153,63 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].activity, 1_700_000_000);
         assert_eq!(v[0].current_command, "");
+        assert_eq!(v[0].current_path, "");
         assert!(!v[0].working);
     }
 
     #[test]
-    fn session_belongs_to_other_project_scopes_by_prefix() {
-        // Own project's own session → not "other".
-        assert!(!session_belongs_to_other_project("eldrun-p1--abcd", "p1"));
-        // A DIFFERENT project's scoped session → other, filtered out.
-        assert!(session_belongs_to_other_project("eldrun-p2--abcd", "p1"));
-        // A hand-started/foreign session belongs to nobody, never "other".
-        assert!(!session_belongs_to_other_project("train", "p1"));
-        // A legacy pre-scoping session (`eldrun-<uuid>`, no `--` marker) is
-        // ambiguous, not attributable to another project.
-        assert!(!session_belongs_to_other_project("eldrun-abcd1234", "p1"));
-        // An id needing sanitizing is matched consistently on both sides.
-        assert!(!session_belongs_to_other_project("eldrun-we_rd--abcd", "we:rd"));
+    fn path_within_respects_segment_boundaries() {
+        assert!(path_within("/code/proj", "/code/proj"));
+        assert!(path_within("/code/proj/sub/dir", "/code/proj"));
+        assert!(path_within("/code/proj/", "/code/proj"));
+        // A sibling that merely shares a prefix is NOT inside it.
+        assert!(!path_within("/code/proj2", "/code/proj"));
+        assert!(!path_within("/code", "/code/proj"));
+        // Nothing is inside an unknown root.
+        assert!(!path_within("/code/proj", ""));
     }
 
     #[test]
-    fn filter_sessions_for_project_keeps_own_foreign_and_legacy_drops_other_projects() {
+    fn session_visible_scopes_by_name_then_by_working_directory() {
+        let root = "/code/p1";
+        // 1. The name settles it when it carries a project id, whatever the path.
+        assert!(session_visible_for_project("eldrun-p1--abcd", "/somewhere/else", "p1", root));
+        assert!(!session_visible_for_project("eldrun-p2--abcd", "/code/p1", "p1", root));
+        // 2. Otherwise the working directory does. A legacy (pre-scoping) session
+        //    running in this project's tree is this project's.
+        assert!(session_visible_for_project("eldrun-legacyuuid", "/code/p1/src", "p1", root));
+        // …and one running in ANOTHER project's tree is not.
+        assert!(!session_visible_for_project("eldrun-legacyuuid", "/code/p2", "p1", root));
+        // A hand-started session is attributed the same way.
+        assert!(session_visible_for_project("train", "/code/p1", "p1", root));
+        assert!(!session_visible_for_project("train", "/home/me", "p1", root));
+        // A row whose host reported no path at all is unattributable → shown,
+        // never silently dropped.
+        assert!(session_visible_for_project("train", "", "p1", root));
+        // An id needing sanitizing is matched consistently on both sides.
+        assert!(session_visible_for_project("eldrun-we_rd--abcd", "/elsewhere", "we:rd", root));
+    }
+
+    #[test]
+    fn filter_sessions_for_project_scopes_and_honours_include_all() {
+        let s = |name: &str, path: &str| TmuxSession {
+            name: name.into(), windows: 1, created: 0, attached: false, activity: 0,
+            current_command: "".into(), working: false, current_path: path.into(),
+        };
         let sessions = vec![
-            TmuxSession { name: "eldrun-p1--a".into(), windows: 1, created: 0, attached: false, activity: 0, current_command: "".into(), working: false },
-            TmuxSession { name: "eldrun-p2--b".into(), windows: 1, created: 0, attached: false, activity: 0, current_command: "".into(), working: false },
-            TmuxSession { name: "train".into(), windows: 1, created: 0, attached: false, activity: 0, current_command: "".into(), working: false },
-            TmuxSession { name: "eldrun-legacyuuid".into(), windows: 1, created: 0, attached: false, activity: 0, current_command: "".into(), working: false },
+            s("eldrun-p1--a", "/code/p1"),
+            s("eldrun-p2--b", "/code/p2"),
+            s("train", "/code/p1"),          // hand-started inside this project
+            s("other", "/home/me"),          // hand-started elsewhere
+            s("eldrun-legacyuuid", "/code/p1/run"), // pre-scoping, this project's tree
+            s("eldrun-legacyother", "/code/p2/run"), // pre-scoping, another's tree
         ];
-        let kept = filter_sessions_for_project(sessions, "p1");
-        let names: Vec<&str> = kept.iter().map(|s| s.name.as_str()).collect();
+        let kept = filter_sessions_for_project(sessions.clone(), "p1", "/code/p1", false);
+        let names: Vec<&str> = kept.iter().map(|x| x.name.as_str()).collect();
         assert_eq!(names, vec!["eldrun-p1--a", "train", "eldrun-legacyuuid"]);
+        // The escape hatch returns the host listing untouched, so an orphaned run
+        // is always reachable to kill.
+        assert_eq!(filter_sessions_for_project(sessions, "p1", "/code/p1", true).len(), 6);
     }
 
     #[test]

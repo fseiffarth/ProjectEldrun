@@ -6555,6 +6555,15 @@ select option {
   border-bottom: 1px solid var(--border-subtle);
 }
 
+/* Selected-state for the generic small toolbar button (view-switcher rows like
+   Files/Git/Search/Apps, and every other `.tab-add-btn` toggle) — previously
+   unstyled, so `aria-pressed`/`.active` carried no visible marker at all. */
+.tab-add-btn.active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
 /* Auto-pinned "Hidden subwindows" section: shown above the view toolbar only
    when the current scope has ≥1 hidden subwindow, so a hidden pane is always one
    click from coming back regardless of the active view. */
@@ -10344,6 +10353,24 @@ select option {
   letter-spacing: 0.02em;
 }
 
+/* The Sessions view's project-scope escape hatch (TODO #85): off (the default)
+   lists only this project's sessions, on lists the whole host. */
+.tmux-scope-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px 6px;
+  color: var(--text-secondary, var(--text-primary));
+  font-size: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tmux-scope-toggle input {
+  margin: 0;
+  cursor: pointer;
+}
+
 .tmux-machine-group .orange-file-row {
   border-bottom: 1px solid var(--border-color);
 }
@@ -13091,6 +13118,62 @@ select option {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+/* "Your machines" — the global-machine shortcut at the top of the add form.
+   Deliberately lighter than a worker card: these are offers, not entries. */
+.remote-machine-global {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.remote-machine-global-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.remote-machine-global-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /* A large fleet must not push the form itself off the dialog. */
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+.remote-machine-global-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.remote-machine-global-row .remote-machine-name {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.remote-machine-global-row button {
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.remote-machine-global-row button:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
 }
 
 .remote-machine-loggedin {

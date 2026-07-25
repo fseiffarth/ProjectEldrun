@@ -2,6 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Dropdown } from "../common/Dropdown";
 import { isoWeekKeys, summarizeBuckets } from "../../lib/usageRollup";
+import { useProjectsStore } from "../../stores/projects";
+import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useSettingsStore } from "../../stores/settings";
+import { isCarefulHost, primaryTargetOf } from "../../lib/carefulHost";
+import { isHpcHost } from "../../lib/hpcHost";
 
 export interface NetworkInterfaceSnapshot {
   name: string;
@@ -66,6 +71,16 @@ interface CounterSample {
 
 const HISTORY_POINTS = 300;
 const CONNECTION_POLL_EVERY = 5;
+/** The live cadence, for a local read and for an ordinary remote box. */
+const LIVE_POLL_MS = 1000;
+/** …and the cadence on a **careful** or HPC-tagged host, matching
+ *  `SystemMonitorPane`'s `CAREFUL_POLL_MS` exactly — the same machine must not be
+ *  read gently by one pane and hammered by another. On a remote project the host
+ *  snapshot is a *shell exec on the host* (`commands::network`), so the old fixed
+ *  1 s tick was one command per second against a login node for as long as the
+ *  tab stayed open: precisely the "process causing load over a longer period" a
+ *  cluster's rules reserve the right to kill. */
+const CAREFUL_POLL_MS = 12_000;
 
 export function rateFromSamples(
   previous: CounterSample | null,
@@ -212,9 +227,13 @@ function endpoint(address: string, port: string): string {
   return `${host}:${port}`;
 }
 
-function TrafficGraph({ points }: { points: TrafficPoint[] }) {
+function TrafficGraph({ points, pollMs }: { points: TrafficPoint[]; pollMs: number }) {
   const width = 600;
   const height = 150;
+  // How far back the graph actually reaches: a fixed point count at a cadence
+  // that is no longer fixed. Stating "5 min" while a gently-polled host shows an
+  // hour would be the kind of quiet mislabel a slower poll is easy to introduce.
+  const spanMin = Math.max(1, Math.round((HISTORY_POINTS * pollMs) / 60000));
   const max = Math.max(1, ...points.flatMap((point) => [point.rxRate, point.txRate]));
   const path = (field: "rxRate" | "txRate") =>
     points
@@ -233,7 +252,7 @@ function TrafficGraph({ points }: { points: TrafficPoint[] }) {
         viewBox={`0 0 ${width} ${height}`}
         preserveAspectRatio="none"
         role="img"
-        aria-label="Five-minute receive and transmit rate history"
+        aria-label={`${spanMin}-minute receive and transmit rate history`}
       >
         <line x1="0" y1={height - 1} x2={width} y2={height - 1} className="network-grid-line" />
         {points.length > 1 && (
@@ -246,7 +265,7 @@ function TrafficGraph({ points }: { points: TrafficPoint[] }) {
       <div className="network-graph-legend">
         <span className="receive">● Download</span>
         <span className="transmit">● Upload</span>
-        <span className="network-history-label">rolling 5 min</span>
+        <span className="network-history-label">rolling {spanMin} min</span>
       </div>
     </div>
   );
@@ -294,6 +313,37 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
   });
   const previous = useRef<CounterSample | null>(null);
 
+  // Whose network this is, and whether it may be read unasked. Two gates, both
+  // about the same fact: on a remote project `network_host_snapshot` runs a
+  // shell command *on the host*.
+  //
+  //  * **The lamp, read here.** The only connectivity check used to be
+  //    `result.connected` — the answer to a request already made, so a project
+  //    whose pool was down still dialled once a second to be told "not
+  //    connected". The SSH state is known before the call; ask it first.
+  //  * **The careful/HPC cadence.** Same constant, same reasoning as the system
+  //    monitor: a shared login node is not to carry a sustained background load,
+  //    and a network tab left open all afternoon at 1 s is exactly that.
+  //
+  // A local project keeps both as they were — there is no host to be careful of,
+  // and the snapshot is a `/proc` read of this machine.
+  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+  const settings = useSettingsStore((s) => s.settings);
+  const sshState = useRemoteStatusStore((s) => s.byProject[projectId]?.ssh);
+  const isRemoteProject = !!project?.remote;
+  const sshDown = isRemoteProject && sshState !== "connected";
+  // The HPC tag outranks the Light/Detailed answer, exactly as `SystemMonitorPane`
+  // has it: a machine the user called a cluster login node is read gently whatever
+  // else is stored for it.
+  const carefulHost =
+    isRemoteProject &&
+    (isHpcHost(settings, primaryTargetOf(project)) ||
+      isCarefulHost(settings, primaryTargetOf(project)));
+  // Only the **host** view costs the host anything. The SSH-link view is a local
+  // `ss` read of this machine's own socket (`commands::network`'s
+  // `linux_ssh_link`), so it keeps the live cadence on any machine.
+  const pollMs = carefulHost && view === "host" ? CAREFUL_POLL_MS : LIVE_POLL_MS;
+
   useEffect(() => {
     previous.current = null;
     setHistory([]);
@@ -302,7 +352,8 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
   }, [view, selectedInterface, projectId]);
 
   useEffect(() => {
-    if (!visible || !projectId) return;
+    // A disconnected remote project samples nothing at all — see `sshDown`.
+    if (!visible || !projectId || sshDown) return;
     // A hidden tab does not sample. Start with a fresh baseline when it becomes
     // visible again so bytes transferred while hidden are not folded into the
     // first visible rate/session-total point.
@@ -374,12 +425,12 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
     };
 
     void poll();
-    const timer = window.setInterval(() => void poll(), 1000);
+    const timer = window.setInterval(() => void poll(), pollMs);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [projectId, selectedInterface, view, visible]);
+  }, [projectId, selectedInterface, view, visible, sshDown, pollMs]);
 
   // Persisted per-project SSH-link usage (accrued in the background by
   // `services::net_usage`), refreshed slowly since it changes at most every
@@ -411,12 +462,18 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
   }, [projectId, visible]);
 
   const current = history[history.length - 1] ?? { rxRate: 0, txRate: 0 };
-  const remote = host?.remote ?? false;
+  // The project's own record, not the last snapshot's: with the poll gated on the
+  // lamp a disconnected remote project has no snapshot to read remoteness from,
+  // and it must still offer its Remote-host / SSH-link tabs.
+  const remote = isRemoteProject || (host?.remote ?? false);
   const usageTotals = useMemo(() => summarizeNetUsage(usage, Date.now()), [usage]);
   const fileTotals = useMemo(() => summarizeNetFileUsage(usage, Date.now()), [usage]);
   const warning = view === "link" ? link?.warning : host?.warning;
-  const available =
-    view === "link"
+  // "Disconnected" is now something the pane knows rather than something it is
+  // told: nothing was polled, so neither snapshot can report it.
+  const available = sshDown
+    ? false
+    : view === "link"
       ? link?.supported !== false && link?.connected !== false
       : host?.supported !== false && host?.connected !== false;
 
@@ -443,7 +500,7 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
   }
 
   if (!available) {
-    const connected = view === "link" ? link?.connected : host?.connected;
+    const connected = sshDown ? false : view === "link" ? link?.connected : host?.connected;
     return (
       <div className="network-pane">
         {remote && (
@@ -557,7 +614,7 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
         </div>
       )}
 
-      <TrafficGraph points={history} />
+      <TrafficGraph points={history} pollMs={pollMs} />
 
       {warning && <div className="network-warning">{warning}</div>}
       {error && <div className="network-warning">{error}</div>}

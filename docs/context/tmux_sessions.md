@@ -26,12 +26,24 @@ once per shell tab and persists** (`TabEntry.tmuxSession`, `lib/tmuxSession.ts`'
 `newTmuxSessionName`) — *not* derived from the PTY id, which `loadFromLayout`
 regenerates on restore (a derived name would fork a second session on relaunch
 instead of reattaching); `tmux_attach` overrides it for a Sessions-view attach.
-The embedded `<scope>` (owning project id) is what lets `remote_tmux_list`
-(`ssh_exec::filter_sessions_for_project`) scope the Sessions view to one
-project's own sessions on a host multiple projects share — a hand-started
-foreign session, or a legacy pre-scoping `eldrun-<uuid>` one, stays visible
-everywhere (belongs to no project in particular); a `eldrun-<other-project>--`
-one is filtered out. **Kill vs. detach**: closing a tab **always detaches** —
+**Scoping the Sessions view to one project** (`remote_tmux_list` →
+`ssh_exec::filter_sessions_for_project`) matters because the host is usually
+shared — a cluster login node carries several Eldrun projects' runs and other
+people's. It reads **two** signals, and the second is the load-bearing one:
+the **name** settles a session outright when it carries a project id (this
+project's prefix ⇒ shown, `eldrun-<other-project>--` ⇒ hidden), but that only
+ever covers sessions minted *after* the name was scoped. Every session already
+running on a host — the `eldrun-<uuid>` ones — and every hand-started session
+carry no id at all, and on a cluster those outlive the change by weeks, so a
+name-only rule leaves the view looking exactly as unscoped as before. Those are
+attributed by **working directory** instead (`#{pane_current_path}` in
+`tmux_ls_script`, `TmuxSession.current_path`): a session whose active pane sits
+inside this host's `remote_path` is this project's, one running elsewhere is
+not. A row whose host reported no path (older format) is shown rather than
+silently dropped. Nothing is unreachable: the view's **"All host sessions"**
+checkbox passes `include_all`, returning the host listing untouched, so an
+orphaned run outside every project tree can still be attached to or killed.
+**Kill vs. detach**: closing a tab **always detaches** —
 `lib/closeRemoteTab.ts`'s `closeTabWithConfirm` just `removeTab`s, killing only the
 ssh/PTY client, so the session lives on under its tmux daemon; an app-exit,
 crash, or respawn likewise **leave the session alive**. Disconnecting a remote

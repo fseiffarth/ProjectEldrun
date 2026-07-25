@@ -217,6 +217,21 @@ pub fn remote_target_for_host(project_id: &str, host_id: &str) -> Option<RemoteT
 struct PooledRemote {
     sftp: Arc<Sftp>,
     child: Child,
+    /// The `cm-<hash>` socket this connection's ControlMaster owns, resolved at
+    /// connect time (`ssh -G` expands `%C`, which nothing here can compute) so
+    /// teardown can unlink it. See [`teardown_pooled`].
+    control_path: Option<std::path::PathBuf>,
+    /// The standing dial authorization this connection holds, as an RAII guard
+    /// rather than a matching `forget_…` call at teardown. That distinction is
+    /// load-bearing: `teardown_pooled` is **not** the only way a pool entry goes
+    /// away — five sites (`connect_host`'s own dead-entry eviction,
+    /// `pooled_sftp_host`, `connected_ids`, `is_connected_host`,
+    /// `connected_targets`) reap a dead connection by simply removing it from the
+    /// map. Each of those used to leak a refcount, and one leak permanently
+    /// authorizes *every background* dial to that target for the rest of the
+    /// process — disarming the HPC gate on precisely the hosts whose master dies
+    /// most often. Held as a field, `Drop` covers every one of those paths.
+    _dial: crate::services::ssh_common::UserDial,
 }
 
 /// Tauri-managed pool of live remote connections, keyed by [`conn_key`]
@@ -321,6 +336,16 @@ pub async fn connect_host(
         crate::services::sftp::open_pooled_session(&spec.user, &spec.host, spec.port, password)
             .await?;
 
+    // Resolve the master's socket path now, while nothing is held: it spawns a
+    // local `ssh -G` (see `ssh_exec::resolve_control_path`), which must not run
+    // on a tokio worker under the pool lock. Recorded so teardown can unlink it.
+    let control_path = {
+        let spec = spec.clone();
+        tokio::task::spawn_blocking(move || crate::services::ssh_exec::resolve_control_path(&spec))
+            .await
+            .unwrap_or(None)
+    };
+
     let mut guard = pool.lock().await;
     // A concurrent connect may have won the race while we were handshaking. If so
     // keep theirs and tear ours down rather than leaking a second ssh child.
@@ -329,11 +354,19 @@ pub async fn connect_host(
         teardown_session(sftp, child).await;
         return Ok(());
     }
+    // The connection is live and the user's: hold a standing dial authorization
+    // for as long as it is pooled. Work that rides a master a person opened — a
+    // shell tab, a `git status`, a Sessions listing — is not Eldrun reaching out
+    // by itself, so it must not be refused on a host tagged HPC. The guard lives
+    // *in* the pool entry, so it is released however that entry dies.
+    let dial = crate::services::ssh_common::user_dial(&spec.user, &spec.host, spec.port);
     guard.conns.insert(
         key,
         PooledRemote {
             sftp: Arc::new(sftp),
             child,
+            control_path,
+            _dial: dial,
         },
     );
     Ok(())
@@ -498,8 +531,26 @@ pub async fn connected_targets(pool: &RemotePoolState) -> Vec<(String, String)> 
 /// ControlMaster it owned. If a file op is still borrowing the `Arc<Sftp>`, we
 /// can't take ownership to `close()` it, so we drop our reference and let its own
 /// `Drop` close the local side once that borrow finishes.
+/// Also unlinks the control socket, and releases the standing dial authorization
+/// [`connect_host`] took out — both paired one-for-one with the pool entry, so
+/// they cannot outlive the connection they describe.
+///
+/// The socket matters because `child.kill()` is not `ssh -O exit`: the master dies
+/// but leaves its `cm-<hash>` behind, and OpenSSH answers the *next* connection to
+/// a stale socket with "ControlSocket … already exists, disabling multiplexing" —
+/// after which every command that was supposed to ride one authenticated master
+/// opens its own login instead. On a host with a saved password that is silent; on
+/// a cluster login node it is a login per file read.
 async fn teardown_pooled(conn: PooledRemote) {
-    let PooledRemote { sftp, mut child } = conn;
+    // `_dial` is dropped with the rest of the struct at the end of this function,
+    // releasing the standing authorization — the same thing that happens when a
+    // dead entry is reaped without ever reaching here.
+    let PooledRemote {
+        sftp,
+        mut child,
+        control_path,
+        _dial,
+    } = conn;
     match Arc::try_unwrap(sftp) {
         Ok(sftp) => {
             let _ = sftp.close().await;
@@ -507,6 +558,9 @@ async fn teardown_pooled(conn: PooledRemote) {
         Err(arc) => drop(arc),
     }
     let _ = child.kill().await;
+    if let Some(path) = control_path {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Gracefully close a freshly-opened, not-yet-pooled session (the lost-race path

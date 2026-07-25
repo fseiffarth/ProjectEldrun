@@ -81,6 +81,11 @@ const backend = (opts: {
         return Promise.resolve(probes.length > 1 ? probes.shift()! : (probes[0] ?? REACHABLE));
       case "remote_has_saved_password":
         return Promise.resolve(opts.sshSaved ?? true);
+      // The eligibility gate reads the tri-state now, so that "not saved" and
+      // "keyring unreadable" can be told apart in what the user is told. An
+      // unmocked resolve here would answer `undefined`, which reads as neither.
+      case "remote_saved_password_state":
+        return Promise.resolve({ saved: opts.sshSaved ?? true, keyring: "unlocked" });
       case "vpn_has_saved_password":
         return Promise.resolve(opts.vpnSaved ?? false);
       case "openvpn_connect":
@@ -113,6 +118,12 @@ beforeEach(() => {
   useConnectDialogStore.setState({ projectId: null });
   useRemoteStatusStore.setState({ byProject: {} });
   useProjectsStore.setState({ projects: [], activeId: null });
+  // Settings must be **loaded** for auto-connect to run at all: the HPC gate
+  // (`lib/hpcHost`'s `mayAutoTouch`) fails closed on an unloaded store, because
+  // "we haven't read the tag yet" must not authorise a connect. The app has them
+  // by the time any project is activated — `load()` now waits for them — so the
+  // tests give them too. The tag map is empty, so no host here is HPC-tagged.
+  useSettingsStore.setState({ settings: {} as Settings, loaded: true });
 });
 
 describe("auto-connect opt-in", () => {
@@ -308,6 +319,7 @@ describe("auto-connect with connections_headless off", () => {
   beforeEach(() => {
     useSettingsStore.setState({
       settings: { connections_headless: false } as unknown as Settings,
+      loaded: true,
     });
     useTabsStore.setState({ tabsByScope: {}, layoutByScope: {} });
     // The machine-wide VPN store is the thing a phantom would strand — start clean so
@@ -326,7 +338,7 @@ describe("auto-connect with connections_headless off", () => {
     // released when it resolves, and that claim is module-level too.
     await vi.advanceTimersByTimeAsync(3000 * 41);
     vi.useRealTimers();
-    useSettingsStore.setState({ settings: null });
+    useSettingsStore.setState({ settings: null, loaded: false });
   });
 
   it("opens the SSH login in the root terminal, then connects once it is authenticated", async () => {

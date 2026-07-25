@@ -9,6 +9,8 @@ import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { UntestedTag } from "../common/UntestedTag";
 import { TerminalSignInToggle } from "./TerminalSignInToggle";
+import { SavePasswordRow } from "./SavePasswordRow";
+import { rememberArg } from "./useSavedCredential";
 import { CarefulHostToggle } from "./CarefulHostToggle";
 import { HpcHostToggle } from "./HpcHostToggle";
 import { primaryTargetOf, targetOfSpec } from "../../lib/carefulHost";
@@ -96,9 +98,11 @@ function RemoteConnectDialogInner({
     vpnError,
     vpnLog,
     sshSaved,
+    sshCredential,
     vpnSaved,
     autoConnect,
     autoConnectEligible,
+    autoConnectBlock,
     setAutoConnect,
     setWorkerLabel,
     connectVpnHeadless,
@@ -179,7 +183,10 @@ function RemoteConnectDialogInner({
     if (vpnStatus === "connecting" || vpnStatus === "connected") setVpnEnabled(true);
   }, [vpnStatus]);
   // "Save password" opt-in (default off). Pre-checked when a credential is
-  // already saved for this target, so it reflects the true keychain state.
+  // *known* to be saved for this target — the tri-state's point: an unresolved or
+  // unreadable keychain leaves the box unticked, and an unticked box now sends
+  // `remember: null` ("leave it alone"), never the `false` that used to delete
+  // the credential the connect had just authenticated with.
   const [sshRemember, setSshRemember] = useState(false);
   const [vpnRemember, setVpnRemember] = useState(false);
   useEffect(() => setSshRemember(sshSaved), [sshSaved]);
@@ -229,30 +236,24 @@ function RemoteConnectDialogInner({
   // by the user's own click). A terminal login is one Eldrun never sees, so nothing
   // *new* is stored from it; the saved credential is simply kept for the connects that
   // can use it, which the hint says out loud rather than leaving to be guessed.
+  // The shared row (`SavePasswordRow`), which also carries the locked-keyring
+  // banner: a keychain that can't be read used to render here as a confident
+  // "nothing saved", which is the state that invited an untick — and, before the
+  // `remember: false` fix, a delete.
   const sshSaveRow = (
-    <label className="remote-connect-remember">
-      <Toggle
-        size="sm"
-        checked={sshRemember}
-        disabled={connecting || connected}
-        onChange={(e) => {
-          setSshRemember(e.target.checked);
-          // Untick = delete it now. Waiting for the next connect to clear it
-          // leaves the password in the keychain the user just asked to drop.
-          if (!e.target.checked && sshSaved) void forgetSshPassword();
-        }}
-      />
-      {t("remoteConnect.savePassword")}
-      <span className="ssh-optional-hint">
-        {sshSaved
-          ? sshViaTerminal
-            ? t("remoteConnect.saveHintKeptTerminal")
-            : t("remoteConnect.saveHintSaved")
-          : sshViaTerminal
-            ? t("remoteConnect.saveHintNothingTerminal")
-            : t("vpnPrompt.storedSecurely")}
-      </span>
-    </label>
+    <SavePasswordRow
+      credential={sshCredential}
+      checked={sshRemember}
+      disabled={connecting || connected}
+      viaTerminal={sshViaTerminal}
+      onChange={(on) => {
+        setSshRemember(on);
+        // Untick = delete it now. Waiting for the next connect to clear it
+        // leaves the password in the keychain the user just asked to drop —
+        // and the connect no longer clears anything, by design.
+        if (!on && sshSaved) void forgetSshPassword();
+      }}
+    />
   );
   const vpnSaveRow = (
     <label className="remote-connect-remember">
@@ -281,7 +282,7 @@ function RemoteConnectDialogInner({
   );
   // One submit for the whole VPN form: the fields are separate prompts OpenVPN
   // raises, but they're answered in a single connect.
-  const submitVpn = () => void connectVpnHeadless(vpnPassword, vpnKeyPassphrase, vpnRemember);
+  const submitVpn = () => void connectVpnHeadless(vpnPassword, vpnKeyPassphrase, rememberArg(vpnRemember));
 
   // What the "Paste …" row above each login terminal offers (see `CredentialPasteBar`).
   // A terminal login is one Eldrun never sees — but a credential the user saved from a
@@ -715,14 +716,14 @@ function RemoteConnectDialogInner({
                   disabled={connecting || connected}
                   onChange={(e) => setSshPassword(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") void connectSshHeadless(sshPassword, sshRemember);
+                    if (e.key === "Enter") void connectSshHeadless(sshPassword, rememberArg(sshRemember));
                   }}
                 />
                 <button
                   type="button"
                   className="dialog-connect-btn"
                   disabled={connecting || connected}
-                  onClick={() => void connectSshHeadless(sshPassword, sshRemember)}
+                  onClick={() => void connectSshHeadless(sshPassword, rememberArg(sshRemember))}
                 >
                   {connected ? t("remoteConnect.connectedState") : connecting ? t("vpnPrompt.connecting") : t("common.connect")}
                 </button>
@@ -738,25 +739,37 @@ function RemoteConnectDialogInner({
                 )}
               </label>
               {sshSaveRow}
+              {/* Eligibility is the ONE shared formula (`autoConnectEligibility`),
+                  which is what finally brings the **HPC tag** here: a tagged host is
+                  one `stores/projects` refuses to dial unattended, so this switch
+                  was armable and guaranteed to do nothing. It now reads like the
+                  Machines menu's — disabled, and saying which wall it hit. */}
               <label
                 className="remote-connect-remember"
                 title={
-                  autoConnectEligible
-                    ? t("remoteConnect.autoConnectTitleEligible")
-                    : t("remoteConnect.autoConnectTitleNotEligible")
+                  autoConnectBlock === "hpc"
+                    ? t("autoConnect.hpcTitle")
+                    : autoConnectEligible
+                      ? t("remoteConnect.autoConnectTitleEligible")
+                      : t("remoteConnect.autoConnectTitleNotEligible")
                 }
               >
                 <Toggle
                   size="sm"
-                  checked={autoConnect}
+                  checked={autoConnect && autoConnectEligible}
                   disabled={!autoConnectEligible}
                   onChange={(e) => setAutoConnect(e.target.checked)}
                 />
                 {t("remoteConnect.autoConnectLabel")}
+                {autoConnectBlock === "hpc" && (
+                  <span className="machines-auto-blocked"> {t("autoConnect.offWhileHpc")}</span>
+                )}
                 <span className="ssh-optional-hint">
                   {autoConnectEligible
                     ? t("remoteConnect.autoConnectHintEligible")
-                    : t("remoteConnect.autoConnectHintNotEligible")}
+                    : autoConnectBlock === "hpc"
+                      ? t("autoConnect.hpcTitle")
+                      : t("remoteConnect.autoConnectHintNotEligible")}
                 </span>
               </label>
               {/* Auto-connect never prompts — so if it can reach for the VPN, this
@@ -853,19 +866,33 @@ function RemoteConnectDialogInner({
                   the substitution `autoConnectInteractive` (stores/projects) makes,
                   and the one the header's "Connect on launch" already makes for a
                   tunnel. */}
+              {/* Ungated *except* for the HPC tag, which is not a credential
+                  question: a tagged host is never dialled unattended at all, so
+                  even the "the login opens in the root terminal for you" flavour
+                  of auto-connect has nothing to open. */}
               <label
                 className="remote-connect-remember"
-                title={t("remoteConnect.autoConnectInteractiveTitle")}
+                title={
+                  autoConnectBlock === "hpc"
+                    ? t("autoConnect.hpcTitle")
+                    : t("remoteConnect.autoConnectInteractiveTitle")
+                }
               >
                 <Toggle
                   size="sm"
-                  checked={autoConnect}
+                  checked={autoConnect && autoConnectEligible}
+                  disabled={!autoConnectEligible}
                   onChange={(e) => setAutoConnect(e.target.checked)}
                 />
                 {t("remoteConnect.autoConnectLabel")}
+                {autoConnectBlock === "hpc" && (
+                  <span className="machines-auto-blocked"> {t("autoConnect.offWhileHpc")}</span>
+                )}
                 <UntestedTag />
                 <span className="ssh-optional-hint">
-                  {t("remoteConnect.autoConnectInteractiveHint")}
+                  {autoConnectBlock === "hpc"
+                    ? t("autoConnect.hpcTitle")
+                    : t("remoteConnect.autoConnectInteractiveHint")}
                 </span>
               </label>
             </div>

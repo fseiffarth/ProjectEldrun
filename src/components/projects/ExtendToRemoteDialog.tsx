@@ -8,6 +8,7 @@ import { joinRemotePath, sanitizeName } from "./scaffold";
 import { useRemoteSession, type RemoteStep } from "./useRemoteSession";
 import { RemoteProjectSection } from "./RemoteProjectSection";
 import { targetLabel } from "../header/MachinesIndicator";
+import { hostKeyConfirmOnce } from "../../lib/hostKeyOnce";
 import type { DroppedGlobalMachine } from "../../stores/remoteMachines";
 import { useT } from "../../lib/i18n";
 
@@ -133,15 +134,26 @@ export function ExtendToRemoteDialog({
       const connectPassword = remotePassword || null;
       let connectAttempts = 0;
       const maxConnectAttempts = 6;
+      // First contact: this loop dialled a host whose key may never have been
+      // accepted here, six times, four seconds apart — silently. Wrapped now, but
+      // with the **ask-once** variant (`hostKeyConfirmOnce`): the plain wrapper
+      // would raise six identical fingerprint dialogs, and re-ask five more times
+      // after a decline, which is not a decline at all.
+      const confirmHostKey = hostKeyConfirmOnce();
       const tryConnect = () => {
-        void invoke("remote_connect", {
-          projectId: project.id,
-          password: connectPassword,
-          // With no password to hand over (non-headless, or a key host), this can only
-          // be riding the master the dialog's login left up — say so, so the backend
-          // doesn't record the very `key_auth: true` lie the comment above describes.
-          viaLogin: !connectPassword,
-        })
+        void confirmHostKey(() =>
+          invoke("remote_connect", {
+            projectId: project.id,
+            password: connectPassword,
+            // With no password to hand over (non-headless, or a key host), this can only
+            // be riding the master the dialog's login left up — say so, so the backend
+            // doesn't record the very `key_auth: true` lie the comment above describes.
+            viaLogin: !connectPassword,
+            // The user clicked "Extend to remote" and is watching this lamp;
+            // `remote_connect` defaults to background, which a tagged HPC host refuses.
+            background: false,
+          }),
+        )
           .then(() => useRemoteStatusStore.getState().setSsh(project.id, "connected"))
           .catch((err) => {
             if (++connectAttempts >= maxConnectAttempts) {

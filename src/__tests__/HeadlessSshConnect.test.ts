@@ -14,6 +14,10 @@
  * These lock the password reaching BOTH calls, and lock the two paths that
  * legitimately pass `null` so they aren't "fixed" into leaking a password they
  * don't have.
+ *
+ * The `remember` argument is `null` here, not `false`, and the type now forbids
+ * `false` outright: `false` is `Remember::Clear`, so a *successful* connect
+ * carrying it deletes the saved password it just authenticated with.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
@@ -46,9 +50,11 @@ beforeEach(() => {
   invokeMock.mockReset();
   invokeMock.mockImplementation((cmd: string) => {
     // Queried on mount; both must resolve or the hook's effects reject.
-    if (cmd === "remote_has_saved_password" || cmd === "vpn_has_saved_password") {
-      return Promise.resolve(false);
+    if (cmd === "remote_saved_password_state") {
+      return Promise.resolve({ saved: false, keyring: "unlocked" });
     }
+    if (cmd === "vpn_has_saved_password") return Promise.resolve(false);
+    if (cmd === "ssh_connect") return Promise.resolve({ saved: false, save_error: null });
     if (cmd === "openvpn_list_configs") return Promise.resolve([]);
     if (cmd === "openvpn_auth_needs") {
       return Promise.resolve({ username: false, keyPassphrase: false });
@@ -62,7 +68,7 @@ describe("headless SSH connect", () => {
     const { result } = renderHook(() => useRemoteReconnect(PROJECT));
 
     await act(async () => {
-      await result.current.connectSshHeadless("s3cret", false);
+      await result.current.connectSshHeadless("s3cret", null);
     });
 
     // The probe authenticates against the host target…
@@ -76,7 +82,14 @@ describe("headless SSH connect", () => {
     // …but the pooled session is what actually opens the master, so it needs the
     // password too. Passing `null` here is the bug: it silently downgrades to
     // key/agent auth and only worked when a password happened to be saved.
-    expect(argsOf("remote_connect")).toEqual({ projectId: "p1", hostId: "primary", password: "s3cret" });
+    expect(argsOf("remote_connect")).toEqual({
+      projectId: "p1",
+      hostId: "primary",
+      password: "s3cret",
+      // A Connect click, not a sweep: `remote_connect` defaults to *background*,
+      // which a host tagged HPC refuses outright.
+      background: false,
+    });
 
     await waitFor(() => expect(result.current.sshStatus).toBe("connected"));
   });
@@ -94,20 +107,27 @@ describe("headless SSH connect", () => {
     const { result } = renderHook(() => useRemoteReconnect(PROJECT));
 
     await act(async () => {
-      await result.current.connectSshHeadless("", false);
+      await result.current.connectSshHeadless("", null);
     });
 
     expect(argsOf("ssh_connect")).toMatchObject({ password: null });
-    expect(argsOf("remote_connect")).toEqual({ projectId: "p1", hostId: "primary", password: null });
+    expect(argsOf("remote_connect")).toEqual({
+      projectId: "p1",
+      hostId: "primary",
+      password: null,
+      background: false,
+    });
   });
 
   it("surfaces a failed pooled connect as an error, not a green lamp", async () => {
     // A probe can succeed while the pool fails (exactly the shape of the bug).
     // The lamp must follow `remote_connect`, not `ssh_connect`.
     invokeMock.mockImplementation((cmd: string) => {
-      if (cmd === "remote_has_saved_password" || cmd === "vpn_has_saved_password") {
-        return Promise.resolve(false);
+      if (cmd === "remote_saved_password_state") {
+        return Promise.resolve({ saved: false, keyring: "unlocked" });
       }
+      if (cmd === "vpn_has_saved_password") return Promise.resolve(false);
+      if (cmd === "ssh_connect") return Promise.resolve({ saved: false, save_error: null });
       if (cmd === "openvpn_list_configs") return Promise.resolve([]);
       if (cmd === "openvpn_auth_needs") {
         return Promise.resolve({ username: false, keyPassphrase: false });
@@ -119,7 +139,7 @@ describe("headless SSH connect", () => {
     const { result } = renderHook(() => useRemoteReconnect(PROJECT));
 
     await act(async () => {
-      await result.current.connectSshHeadless("s3cret", false);
+      await result.current.connectSshHeadless("s3cret", null);
     });
 
     await waitFor(() => expect(result.current.sshStatus).toBe("error"));

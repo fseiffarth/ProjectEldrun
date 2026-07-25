@@ -121,7 +121,7 @@ pub fn local_tmux_ls_args() -> Vec<String> {
     vec![
         "ls".into(),
         "-F".into(),
-        "#{session_name}\t#{session_windows}\t#{session_created}\t#{session_attached}\t#{session_activity}\t#{pane_current_command}".into(),
+        "#{session_name}\t#{session_windows}\t#{session_created}\t#{session_attached}\t#{session_activity}\t#{pane_current_command}\t#{pane_current_path}".into(),
     ]
 }
 

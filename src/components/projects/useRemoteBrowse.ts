@@ -4,6 +4,7 @@ import { joinRemotePath, type ParsedSshAddress } from "./scaffold";
 import { resolveRemoteStartDir } from "../../lib/remoteConnect";
 import type { RemoteEntry } from "../../types";
 import { withHostKeyConfirm } from "../../lib/hostKey";
+import type { SshConnectOutcome } from "./useSavedCredential";
 
 /**
  * The shared "log in to a host and browse its filesystem over SFTP" state
@@ -80,21 +81,33 @@ export function useRemoteBrowse() {
   // machine*, not that host's home); blank/omitted falls back to the configured
   // default / SSH home. Throws on auth failure — the caller owns the
   // connecting/error UI. On success the listing opens automatically.
+  //
+  // `remember` is deliberately typed `true | null` and never `false`: `false` is
+  // `Remember::Clear`, and since the backend resolves `typed || saved` before it
+  // writes, a *successful* connect carrying it deletes the password it just
+  // authenticated with. Callers build the value with `rememberArg`.
+  //
+  // Returns what the keychain half actually did (`SshConnectOutcome`), so the
+  // caller sets its "saved" state from the backend rather than from its own
+  // request — a locked keyring refuses the write and says so.
   const connect = async (opts: {
     target: ParsedSshAddress;
     password: string | null;
-    remember?: boolean | null;
+    remember?: true | null;
     startPath?: string | null;
-  }) => {
+  }): Promise<SshConnectOutcome> => {
     const pw = opts.password ? opts.password : null;
     // First contact: verify the host key's fingerprint before the password is sent.
-    await withHostKeyConfirm(() =>
-      invoke<void>("ssh_connect", {
+    const outcome = await withHostKeyConfirm(() =>
+      invoke<SshConnectOutcome>("ssh_connect", {
         user: opts.target.user,
         host: opts.target.host,
         port: opts.target.port,
         password: pw,
         remember: opts.remember ?? null,
+        // A person is at the login form — a tagged HPC host may be dialled by a
+        // gesture, only never by a sweep (`ssh_common`'s dial policy).
+        background: false,
       }),
     );
     const startDir =
@@ -107,6 +120,7 @@ export function useRemoteBrowse() {
             pw,
           );
     openSession(opts.target, opts.password ?? "", startDir);
+    return outcome;
   };
 
   const enter = (entry: RemoteEntry) => {

@@ -54,13 +54,21 @@ export function persistSessionsEnabled(remote: RemoteSpec | undefined | null): b
  * Python/script runs, which open a shell tab) running on a **remote host**
  * (`hostId` non-null) of a persist-enabled remote project. Agent tabs are excluded
  * — they resume via their own session — as are files/embed/monitor panes (no PTY).
+ *
+ * `ephemeral` is the per-tab opt-out (`TabEntry.ephemeral`): a tab whose work is
+ * re-openable and not worth a daemon on the host. It exists because the project
+ * toggle is too blunt for a cluster — switching `persist_sessions` off to stop a
+ * `tail -F` outliving the app would also drop the `srun --pty` session that is the
+ * whole point of persisting, so the exemption has to be the tab's, not the
+ * project's.
  */
 export function shouldPersistTab(
   kind: string,
   hostId: string | null,
   remote: RemoteSpec | undefined | null,
+  ephemeral?: boolean,
 ): boolean {
-  return kind === "shell" && hostId !== null && persistSessionsEnabled(remote);
+  return kind === "shell" && hostId !== null && !ephemeral && persistSessionsEnabled(remote);
 }
 
 /**

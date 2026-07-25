@@ -1124,6 +1124,18 @@ const en = {
   "remoteMachines.autoSyncTitle": "Keep this machine's tracked code synced to the project HEAD on every commit.",
   "remoteMachines.autoSyncLabel": "Auto-sync code on every commit",
   "remoteMachines.addMachineTitle": "Add a machine",
+  "remoteMachines.globalListTitle": "Your machines",
+  "remoteMachines.globalListHelp":
+    "Machines from the header's Machines list. They are already set up, so adding one here only needs its folder on that machine.",
+  "remoteMachines.globalQuickAdd": "Add",
+  "remoteMachines.globalQuickAddTitle":
+    "Add this machine as a shared-filesystem worker — confirm its folder above, then it is added and connected.",
+  "remoteMachines.globalFill": "Use in the form",
+  "remoteMachines.globalFillTitle":
+    "Put this machine's address into the form below, to browse its folders or sync a copy to it.",
+  "remoteMachines.globalAlreadyAdded": "Already added",
+  "remoteMachines.globalAlreadyAddedTitle":
+    "This machine is already this project's primary host or one of its workers.",
   "remoteMachines.sshAddressLabel": "SSH address",
   "remoteMachines.sshAddressPlaceholder": "host[:port]  (e.g. gpu-2:22)",
   "remoteMachines.usernamePlaceholder": "SSH login user (e.g. me) — or include it as user@ above",
@@ -1481,6 +1493,199 @@ const en = {
   "vpnIndicator.addFirstConfigTitle": "Pick a .ovpn file and store it in Eldrun. Adding it does not connect — you connect it explicitly afterwards, where it asks for your password.",
   "vpnIndicator.addAnotherConfigTitle": "Pick another .ovpn file and store it in Eldrun. Adding it does not connect — you connect it explicitly from its row afterwards.",
   "vpnIndicator.addConfigBtn": "Add config…",
+
+  // ── "Save password" (SavePasswordRow) ────────────────────────────────────
+  // The tri-state a keychain read can land in, said out loud. "We can't tell" is
+  // a distinct answer from "nothing is saved", and conflating the two is what
+  // deleted a real credential (see `useSavedCredential`).
+  "savePassword.hintChecking": "checking your OS keychain…",
+  "savePassword.hintUnreadable":
+    "can't tell whether one is already saved — your OS credential store can't be read right now.",
+  "savePassword.titleHeadless": "Save this host's SSH password in your OS keychain, keyed by host.",
+  "savePassword.titleTerminal":
+    "A terminal login is one Eldrun never sees, so it stores nothing new — and deletes nothing either. Any saved password for this host stays as it is.",
+  "savePassword.saveFailedLabel": "Not saved:",
+  "savePassword.lockedBannerPost":
+    ", so a saved SSH password can't be read — this connect will ask for it again, and Eldrun can't tell you whether one is already stored.",
+  "savePassword.unavailableBanner":
+    "No OS credential store is available on this machine, so SSH passwords can't be saved or read here.",
+
+  // ── Auto-connect eligibility (autoConnectEligibility) ─────────────────────
+  "autoConnect.offWhileHpc": "— off while tagged HPC",
+  "autoConnect.hpcTitle":
+    "This machine is tagged as an HPC cluster login node, so Eldrun never connects to it on its own. Untag it to arm this.",
+
+  // ── Bounded login polls ───────────────────────────────────────────────────
+  "remoteLogin.pollGaveUp":
+    "No login detected after two minutes. Finish signing in in the terminal, then press the button again.",
+  "remoteMachines.dropConnectFailed":
+    "The machine was added, but connecting it failed: {error} — use its Connect button below to retry.",
+  // ── Machines (header "Global machines" menu) ───────────────────────────────
+  // The only remote-login surface that had no translation at all, while the
+  // `TerminalSignInToggle` inside its own add-form did — one row of a form
+  // switching language and the rest not.
+  "machines.label": "Machines",
+  "machines.ariaLabel": "Global machines — click to open the list",
+  "machines.triggerTitle": "Global worker machines — connect one, then add it to any project from its row. Opening this list checks each machine, which is a real SSH login, so it opens on a click and never on hover.",
+  "machines.groupLabel": "Global machines",
+  "machines.empty": "No global machines yet.",
+  "machines.note.strong": "Use a row's ⇥ button",
+  "machines.note.rest": "to add that machine to a project — as a shared-folder worker on a remote project, or as the primary host of a local one. Drag a row's grip (⠿) to reorder.",
+
+  // What a row is: a session we opened, and whether the host still answers, are
+  // two different questions and the words keep them apart.
+  "machines.state.connected": "connected",
+  "machines.state.stale": "connected, but not answering",
+  "machines.state.connecting": "connecting",
+  "machines.state.error": "error",
+  "machines.state.reachable": "up, not connected",
+  "machines.state.unreachable": "no answer",
+  "machines.state.unknown": "not checked",
+  "machines.badge.stale": "stale",
+  "machines.badge.reachable": "up",
+  "machines.badge.unreachable": "no answer",
+  "machines.badge.unknown": "not checked",
+  "machines.tip.connected": "Eldrun holds an SSH session on this machine.",
+  "machines.tip.stale": "Eldrun still holds a session here, but the machine did not answer the last check — the connection is most likely dead. Reconnect, or disconnect to clear it.",
+  "machines.tip.connecting": "Connecting…",
+  "machines.tip.error": "The last connect attempt failed — the reason is on the row.",
+  "machines.tip.reachable": "It answered the last check, so it can be connected — but no session is open on it yet.",
+  "machines.tip.unreachable": "It did not answer the last check, and no session is open on it.",
+  "machines.tip.unknown": "Nobody has checked this machine yet.",
+  "machines.tip.unknownHpc": "Not checked — this machine is tagged as a cluster login node, so Eldrun never logs in to it by itself. Use ◎ to check it now.",
+  "machines.lampGroup": "{count} {word} — {names}",
+  "machines.lampWorking": "{count} working: {names}",
+
+  // Fleet-wide actions.
+  "machines.retryAllAria": "Retry all",
+  "machines.retryAllTitle": "Retry all — connect every machine that isn't already connected. Machines tagged as cluster login nodes are left out; connect those from their own row. A host that needs a password we don't have stays red to retry on its row.",
+  "machines.disconnectAllAria": "Disconnect all",
+  "machines.disconnectAllTitle": "Disconnect all — actively disconnect every connected machine: end all their tmux jobs and close each SSH connection. Jobs are killed only on this click — never on an Eldrun restart.",
+  "machines.usageAria": "Remote host usage",
+  "machines.usageTitle": "Remote host usage — check who's logged in and what's running on every machine here: CPU, memory, GPU and top processes, read right now.",
+  "machines.tmuxJobs": "all tmux jobs",
+  "machines.disconnectAllHint.pre": "Ends",
+  "machines.disconnectAllHint.post": "on every connected machine and disconnects them. Can't be undone.",
+  "machines.disconnectAllConfirm": "Disconnect all & end jobs",
+  "machines.keep": "Keep",
+
+  // Row actions.
+  "machines.gripAria": "Reorder machine",
+  "machines.gripTitle": "Drag to reorder this machine — or focus it and use ↑/↓.",
+  "machines.connectAria": "Connect",
+  "machines.connectTitle": "Connect — log in to this machine now.",
+  "machines.reconnectAria": "Reconnect",
+  "machines.reconnectTitle": "Reconnect",
+  "machines.reconnectStaleTitle": "Reconnect — Eldrun still counts a session here, but the machine did not answer the last check.",
+  "machines.retryAria": "Retry",
+  "machines.retryTitle": "Retry — re-enter the SSH password",
+  "machines.hpcLoginAria": "Log in to this cluster now",
+  "machines.hpcLoginTitle": "Log in now. This machine is tagged as a cluster login node, so Eldrun never connects to it on its own — this button is the only thing that does.",
+  "machines.checkAria": "Check this machine",
+  "machines.checkTitle": "Check whether this machine answers, right now. It is a real SSH login, so it happens only when you ask; otherwise the list checks each machine at most once a minute.",
+  "machines.checkTitleHpc": "Check whether this machine answers, right now. It is tagged as a cluster login node, so no automatic check ever touches it — this button is its only reachability.",
+  "machines.disconnectAria": "Disconnect",
+  "machines.disconnectTitle": "Actively disconnect: end every running tmux job on this host and close the SSH connection. Jobs are killed only on this click — never on an Eldrun restart.",
+  "machines.attachAria": "Add this machine to a project",
+  "machines.attachTitle": "Add this machine to one of the open projects — as a compute host on a remote project, or as the primary host of a local one.",
+  "machines.editAria": "Edit machine",
+  "machines.editTitle": "Edit this machine's host, username, password or label.",
+  "machines.removeAria": "Remove machine",
+  "machines.removeTitle": "Remove this machine from the list — actively disconnecting it (and ending its tmux jobs) first if it is connected.",
+  "machines.showDetailsAria": "Show details",
+  "machines.hideDetailsAria": "Hide details",
+  "machines.showDetailsTitle": "Show address, usage & auto-connect",
+  "machines.hideDetailsTitle": "Hide address, usage & auto-connect",
+  "machines.systemMonitor": "System monitor…",
+  "machines.systemMonitorTitle": "Open the full system monitor (CPU, memory, GPU, processes) for this machine.",
+
+  // Per-machine toggles.
+  "machines.autoConnectLabel": "Connect on launch & VPN-up",
+  "machines.autoConnectTitle": "Silently connect this machine on Eldrun launch and whenever a VPN tunnel comes up. Never prompts — it only connects when the host is reachable without a password.",
+  "machines.autoConnectAddTitle": "Silently connect this machine on Eldrun launch and whenever a VPN tunnel comes up. Never prompts — it only connects when the host is reachable without a password, so an armed machine that can't connect silently simply stays off.",
+  "machines.autoBlockedHpc": "— off while tagged HPC",
+  "machines.autoBlockedHpcAdd": "— off for an HPC cluster",
+  "machines.hpcToggleLabel": "HPC cluster (login node)",
+  "machines.hpcToggleTitle": "Tag this machine as a shared cluster login node. Eldrun then reads it lightly (no other user's names or commands), never scans or measures its filesystem by itself, never runs background sync or lockstep polling against it, never checks or connects to it unless you ask, and asks before anything runs in its login-node shell. Tagging it also clears its connect-on-launch.",
+  "machines.hpcAddTitle": "Tag this machine as a shared cluster login node. Eldrun then reads it lightly (never other users' names or command lines), never scans or measures its filesystem by itself, runs no background sync or lockstep polling against it, never checks or connects to it unless you ask, and asks before anything runs in its login-node shell.",
+  "machines.hpcBadgeTitle": "Tagged as a shared cluster login node: read lightly, no disk-usage scan or folder census, no background sync or lockstep polling, no automatic reachability check, no silent auto-connect, and a warning before anything runs in a login-node shell.",
+
+  // Attach-to-a-project picker.
+  "machines.attachQuestionPre": "Add",
+  "machines.attachQuestionPost": "to which project?",
+  "machines.noActiveProject": "No active project.",
+  "machines.attachRemoteTitle": "Add it as a compute host on this remote project.",
+  "machines.attachLocalTitle": "Make it this local project's primary remote host (extend to remote).",
+  "machines.attachKindCompute": "compute host",
+  "machines.attachKindExtend": "extend to remote",
+
+  // Remove / disconnect confirms.
+  "machines.removeHintLive.pre": "Disconnects it first — ending",
+  "machines.removeHintLive.post": "here — then removes it from the list. Projects it was added to keep their own copy.",
+  "machines.removeHintIdle": "Removes this machine from the list. Projects it was added to keep their own copy.",
+  "machines.disconnectHint.pre": "Ends",
+  "machines.disconnectHint.post": "here and disconnects. Can't be undone.",
+  "machines.disconnectConfirm": "Disconnect & end jobs",
+
+  // Add / edit / retry forms.
+  "machines.addGroupLabel": "Add a machine",
+  "machines.addMachine": "Add machine…",
+  "machines.sshAddress": "SSH address",
+  "machines.addressPlaceholder": "[user@]host[:port]",
+  "machines.username": "Username",
+  "machines.usernamePlaceholder": "SSH login user — or include as user@ above",
+  "machines.password": "Password",
+  "machines.addPasswordPlaceholder": "SSH password — leave blank for key auth",
+  "machines.editPasswordPlaceholder": "Leave blank to keep the saved password",
+  "machines.sshUsernamePlaceholder": "SSH username",
+  "machines.sshPasswordPlaceholder": "SSH password",
+  "machines.savePassword": "Save password",
+  "machines.savePasswordTitle": "Save this machine's SSH password in your OS keychain, keyed by host.",
+  "machines.savePasswordTerminalTitle": "A terminal login is one Eldrun never sees, so it stores nothing new — and deletes nothing either. Any saved password for this host stays as it is.",
+  "machines.labelOptional": "Label (optional)",
+  "machines.labelPlaceholder": "e.g. gpu-2",
+  "machines.connecting": "Connecting…",
+  "machines.connectAndAdd": "Connect & add",
+  "machines.saving": "Saving…",
+  "machines.saveChanges": "Save changes",
+  "machines.retry": "Retry",
+  "machines.rootTerminal": "root terminal",
+  "machines.terminalLoginHint.pre": "Log in in the",
+  "machines.terminalLoginHint.post": "— this machine is added by itself once you're through. You can close this menu.",
+  "machines.loginInTerminal": "Log in in terminal",
+  "machines.loginInTerminalTitle": "Open this host's SSH login in the root terminal. Eldrun never sees the password, and adds the machine once the login is through.",
+  "machines.waitingForLogin": "Waiting for the login…",
+  "machines.loggedInAdd": "I've logged in — add",
+  "machines.err.address": "Enter a host as [user@]host[:port]",
+  "machines.err.saveFailed": "Logged in, but the machine couldn't be saved.",
+  "machines.err.noLoginYet": "No login detected yet. Finish logging in in the root terminal, then click “I've logged in — add”.",
+
+  // Import / export.
+  "machines.import": "Import…",
+  "machines.importTitle": "Import machines from a JSON file — connect them all with one shared username & password, then add them to this list.",
+  "machines.export": "Export…",
+  "machines.exportTitle": "Write selected machines to a shareable JSON file (host, port & label only — no credentials).",
+  "machines.exportDialogTitle": "Export machines",
+  "machines.importDialogTitle": "Import machines",
+  "machines.jsonFilter": "Machines JSON",
+  "machines.exportNote": "Choose which machines to write to a shareable JSON file. Only the host, port and label are saved — never a username or password.",
+  "machines.nothingToExport": "No machines to export.",
+  "machines.selectAll": "Select all",
+  "machines.deselectAll": "Deselect all",
+  "machines.selectAllTitle": "Select every machine",
+  "machines.deselectAllTitle": "Deselect every machine",
+  "machines.exportN": "Export {count}…",
+  "machines.readingFile": "Reading file…",
+  "machines.importCountOne": "{count} machine from the file. It will be connected with the username & password below, then added to your list.",
+  "machines.importCountMany": "{count} machines from the file. They'll all be connected with the one username & password below, then added to your list.",
+  "machines.importUserPlaceholder": "Shared SSH user for all imported machines",
+  "machines.importPasswordPlaceholder": "Shared SSH password — leave blank for key auth",
+  "machines.importAutoTitle": "Silently connect every imported machine on Eldrun launch and whenever a VPN tunnel comes up. Never prompts — each host is checked first, so one that needs a password you didn't save simply stays off.",
+  "machines.connectAndImport": "Connect & import",
+  "machines.importedOne": "Added {count} machine.",
+  "machines.importedMany": "Added {count} machines.",
+  "machines.importedOutcome": "{ok} connected, {bad} need attention.",
+  "machines.done": "Done",
 } as const;
 
 /** The key set every component is allowed to translate. */
@@ -2551,6 +2756,18 @@ const de: Dict = {
   "remoteMachines.autoSyncTitle": "Hält den getrackten Code dieser Maschine bei jedem Commit mit dem Projekt-HEAD synchron.",
   "remoteMachines.autoSyncLabel": "Code bei jedem Commit automatisch synchronisieren",
   "remoteMachines.addMachineTitle": "Eine Maschine hinzufügen",
+  "remoteMachines.globalListTitle": "Deine Maschinen",
+  "remoteMachines.globalListHelp":
+    "Maschinen aus der Maschinen-Liste in der Kopfzeile. Sie sind bereits eingerichtet – hier fehlt nur noch ihr Ordner auf der Maschine.",
+  "remoteMachines.globalQuickAdd": "Hinzufügen",
+  "remoteMachines.globalQuickAddTitle":
+    "Diese Maschine als Worker mit gemeinsamem Dateisystem hinzufügen – oben den Ordner bestätigen, dann wird sie hinzugefügt und verbunden.",
+  "remoteMachines.globalFill": "Ins Formular übernehmen",
+  "remoteMachines.globalFillTitle":
+    "Die Adresse dieser Maschine ins Formular unten eintragen – um ihre Ordner zu durchsuchen oder eine Kopie dorthin zu synchronisieren.",
+  "remoteMachines.globalAlreadyAdded": "Bereits hinzugefügt",
+  "remoteMachines.globalAlreadyAddedTitle":
+    "Diese Maschine ist bereits der primäre Host dieses Projekts oder einer seiner Worker.",
   "remoteMachines.sshAddressLabel": "SSH-Adresse",
   "remoteMachines.sshAddressPlaceholder": "Host[:Port]  (z. B. gpu-2:22)",
   "remoteMachines.usernamePlaceholder": "SSH-Anmeldebenutzer (z. B. ich) — oder oben als user@ angeben",
@@ -3968,6 +4185,18 @@ const es: Dict = {
   "remoteMachines.autoSyncTitle": "Mantiene el código rastreado de esta máquina sincronizado con el HEAD del proyecto en cada commit.",
   "remoteMachines.autoSyncLabel": "Sincronizar código automáticamente en cada commit",
   "remoteMachines.addMachineTitle": "Añadir una máquina",
+  "remoteMachines.globalListTitle": "Tus máquinas",
+  "remoteMachines.globalListHelp":
+    "Máquinas de la lista Máquinas de la cabecera. Ya están configuradas, así que añadir una aquí solo requiere su carpeta en esa máquina.",
+  "remoteMachines.globalQuickAdd": "Añadir",
+  "remoteMachines.globalQuickAddTitle":
+    "Añadir esta máquina como worker de sistema de archivos compartido: confirma su carpeta arriba y se añade y se conecta.",
+  "remoteMachines.globalFill": "Usar en el formulario",
+  "remoteMachines.globalFillTitle":
+    "Poner la dirección de esta máquina en el formulario de abajo, para explorar sus carpetas o sincronizar una copia en ella.",
+  "remoteMachines.globalAlreadyAdded": "Ya añadida",
+  "remoteMachines.globalAlreadyAddedTitle":
+    "Esta máquina ya es el host principal de este proyecto o uno de sus workers.",
   "remoteMachines.sshAddressLabel": "Dirección SSH",
   "remoteMachines.sshAddressPlaceholder": "host[:puerto]  (p. ej. gpu-2:22)",
   "remoteMachines.usernamePlaceholder": "Usuario de inicio de sesión SSH (p. ej. yo) — o inclúyelo como user@ arriba",
@@ -5385,6 +5614,18 @@ const fr: Dict = {
   "remoteMachines.autoSyncTitle": "Maintient le code suivi de cette machine synchronisé avec le HEAD du projet à chaque commit.",
   "remoteMachines.autoSyncLabel": "Synchroniser automatiquement le code à chaque commit",
   "remoteMachines.addMachineTitle": "Ajouter une machine",
+  "remoteMachines.globalListTitle": "Vos machines",
+  "remoteMachines.globalListHelp":
+    "Machines de la liste Machines de l'en-tête. Elles sont déjà configurées : en ajouter une ici ne demande que son dossier sur cette machine.",
+  "remoteMachines.globalQuickAdd": "Ajouter",
+  "remoteMachines.globalQuickAddTitle":
+    "Ajouter cette machine comme worker à système de fichiers partagé — confirmez son dossier ci-dessus, puis elle est ajoutée et connectée.",
+  "remoteMachines.globalFill": "Utiliser dans le formulaire",
+  "remoteMachines.globalFillTitle":
+    "Placer l'adresse de cette machine dans le formulaire ci-dessous, pour parcourir ses dossiers ou y synchroniser une copie.",
+  "remoteMachines.globalAlreadyAdded": "Déjà ajoutée",
+  "remoteMachines.globalAlreadyAddedTitle":
+    "Cette machine est déjà l'hôte principal de ce projet ou l'un de ses workers.",
   "remoteMachines.sshAddressLabel": "Adresse SSH",
   "remoteMachines.sshAddressPlaceholder": "hôte[:port]  (p. ex. gpu-2:22)",
   "remoteMachines.usernamePlaceholder": "Identifiant de connexion SSH (p. ex. moi) — ou incluez-le en tant que user@ ci-dessus",
@@ -6802,6 +7043,18 @@ const it: Dict = {
   "remoteMachines.autoSyncTitle": "Mantiene il codice tracciato di questa macchina sincronizzato con l'HEAD del progetto a ogni commit.",
   "remoteMachines.autoSyncLabel": "Sincronizza automaticamente il codice a ogni commit",
   "remoteMachines.addMachineTitle": "Aggiungi una macchina",
+  "remoteMachines.globalListTitle": "Le tue macchine",
+  "remoteMachines.globalListHelp":
+    "Macchine dall'elenco Macchine nell'intestazione. Sono già configurate: aggiungerne una qui richiede solo la sua cartella su quella macchina.",
+  "remoteMachines.globalQuickAdd": "Aggiungi",
+  "remoteMachines.globalQuickAddTitle":
+    "Aggiungi questa macchina come worker con filesystem condiviso: conferma la sua cartella sopra, poi viene aggiunta e connessa.",
+  "remoteMachines.globalFill": "Usa nel modulo",
+  "remoteMachines.globalFillTitle":
+    "Inserisci l'indirizzo di questa macchina nel modulo sotto, per sfogliare le sue cartelle o sincronizzarci una copia.",
+  "remoteMachines.globalAlreadyAdded": "Già aggiunta",
+  "remoteMachines.globalAlreadyAddedTitle":
+    "Questa macchina è già l'host primario di questo progetto o uno dei suoi worker.",
   "remoteMachines.sshAddressLabel": "Indirizzo SSH",
   "remoteMachines.sshAddressPlaceholder": "host[:porta]  (es. gpu-2:22)",
   "remoteMachines.usernamePlaceholder": "Utente di accesso SSH (es. io) — oppure includilo come user@ sopra",

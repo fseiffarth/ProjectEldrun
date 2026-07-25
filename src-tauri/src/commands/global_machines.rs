@@ -324,9 +324,13 @@ pub async fn global_machine_monitor_snapshot(
     host: String,
     port: Option<u16>,
     careful: Option<bool>,
+    background: Option<bool>,
 ) -> Result<crate::sysstat::SystemSnapshot, String> {
     tokio::task::spawn_blocking(move || {
         use crate::services::remote_credentials as creds;
+        // `background` per `ssh_common`'s second shape: opening the monitor is a
+        // gesture, its repeat poll is not, and both land here.
+        let _dial = crate::services::ssh_common::declared_dial(background, &user, &host, port);
         let account = creds::ssh_account(&user, &host, port);
         let password = creds::get(&account);
         // `careful` is the machine's stored mode (careful by default for every
@@ -335,7 +339,7 @@ pub async fn global_machine_monitor_snapshot(
         // `commands::monitor::system_monitor_snapshot`. With no answer to pass,
         // fall back to what earlier probes of this target found; the host's own
         // SLURM check covers a first sample either way.
-        let key = crate::services::hpc_mode::key(&user, &host, port);
+        let key = crate::services::ssh_common::target_key(user.as_deref(), &host, port);
         let mode = careful.or_else(|| crate::services::hpc_mode::is_known_careful(&key).then_some(true));
         let script = crate::sysstat::remote_snapshot_script(mode);
         let stdout =
@@ -375,9 +379,15 @@ pub async fn global_machine_tmux_list(
     user: Option<String>,
     host: String,
     port: Option<u16>,
+    background: Option<bool>,
 ) -> Result<Vec<crate::services::ssh_exec::TmuxSession>, String> {
     tokio::task::spawn_blocking(move || {
         use crate::services::remote_credentials as creds;
+        // `background` per `ssh_common`'s second shape. The doc above already
+        // says this fires "only while the menu is open" — but a menu that opens
+        // on hover is not a decision, so the sweep behind it is background and
+        // only a row the user acted on passes `Some(false)`.
+        let _dial = crate::services::ssh_common::declared_dial(background, &user, &host, port);
         let account = creds::ssh_account(&user, &host, port);
         let password = creds::get(&account);
         let stdout = crate::commands::ssh::run_ssh_auth(
@@ -413,9 +423,14 @@ pub async fn global_machine_usage_check(
     user: Option<String>,
     host: String,
     port: Option<u16>,
+    background: Option<bool>,
 ) -> Result<crate::services::remote_usage::RemoteUsageReport, String> {
     tokio::task::spawn_blocking(move || {
         use crate::services::remote_credentials as creds;
+        // `background` per `ssh_common`'s second shape — the project-scoped twin
+        // `remote::remote_usage_check` takes the same parameter with the same
+        // polarity, since the one dialog drives both.
+        let _dial = crate::services::ssh_common::declared_dial(background, &user, &host, port);
         let account = creds::ssh_account(&user, &host, port);
         let password = creds::get(&account);
         let script = crate::services::remote_usage::probe_script();

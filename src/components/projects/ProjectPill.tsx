@@ -26,6 +26,9 @@ import { ProjectHoverCard, projectDescription, useProjectHoverCard } from "./Pro
 import { ActivityCalendar } from "./ActivityCalendar";
 import { CategoryEditor } from "./CategoryEditor";
 import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
+import { autoConnectEligibility } from "./autoConnectEligibility";
+import { useSavedCredential } from "./useSavedCredential";
+import { isHpcHost, targetOfSpec } from "../../lib/hpcHost";
 import { useRemoteMachinesStore, type DroppedGlobalMachine } from "../../stores/remoteMachines";
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
@@ -1225,13 +1228,11 @@ export function ProjectPill({
   // popup position, today's time, CPU% and the scaffold-missing flag.
   const hover = useProjectHoverCard(project);
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
-  // Whether a remote project's SSH password sits in the OS keychain — the other way
-  // (besides key auth) an auto-connect can run without asking. Filled when the
-  // context menu opens; see handleContextMenu.
-  const [sshPasswordSaved, setSshPasswordSaved] = useState(false);
   // With `connections_headless` off Eldrun handles no passwords at all, so neither
-  // of those two answers can ever be yes — auto-connect there means the login opens
-  // in the root terminal instead (see `autoConnectInteractive` in stores/projects).
+  // key auth nor a saved password can ever be the answer — auto-connect there means
+  // the login opens in the root terminal instead (see `autoConnectInteractive` in
+  // stores/projects). One of the inputs to `autoConnectEligibility` below; the
+  // saved-password half is `useSavedCredential`, read only while this menu is open.
   const connHeadless = useSettingsStore((s) => s.settings?.connections_headless ?? true);
   const [showActivity, setShowActivity] = useState(false);
   const [editDescription, setEditDescription] = useState(false);
@@ -1354,8 +1355,23 @@ export function ProjectPill({
   // mode, always: there is no keychain to qualify against there, and the connect is
   // by definition a login waiting in the root terminal. Same substitution the
   // header's "Connect on launch" makes for a tunnel (`VpnIndicator`).
-  const autoConnectEligible =
-    !connHeadless || project.remote?.key_auth === true || sshPasswordSaved;
+  //
+  // One shared formula now (`autoConnectEligibility`), which also brings the **HPC
+  // tag** here: `stores/projects` refuses to dial a tagged host unattended, so this
+  // item was tickable and guaranteed to do nothing — the Machines menu has said so
+  // all along, this one didn't.
+  const remoteTarget = targetOfSpec(project.remote);
+  const remoteIsHpc = useSettingsStore((s) => isHpcHost(s.settings, remoteTarget));
+  const sshCredential = useSavedCredential(remoteTarget, {
+    enabled: contextMenu !== null && project.remote?.key_auth !== true,
+  });
+  const autoConnectState = autoConnectEligibility({
+    headless: connHeadless,
+    keyAuth: project.remote?.key_auth === true,
+    savedPassword: sshCredential.saved,
+    hpc: remoteIsHpc,
+  });
+  const autoConnectEligible = autoConnectState.eligible;
   const setProjectGitDisabled = useProjectsStore((s) => s.setProjectGitDisabled);
   const repairProjectScaffold = useProjectsStore((s) => s.repairProjectScaffold);
   const publishProject = useProjectsStore((s) => s.publishProject);
@@ -1458,18 +1474,9 @@ export function ProjectPill({
     e.preventDefault();
     e.stopPropagation();
     hover.close();
-    // Auto-connect is only offerable when connecting needs nothing from the user.
-    // `key_auth` is on the spec already; a saved password has to be asked for (a
-    // local keychain lookup — no network, and the secret never leaves the backend).
-    if (project.remote && project.remote.key_auth !== true) {
-      void invoke<boolean>("remote_has_saved_password", {
-        user: project.remote.user ?? null,
-        host: project.remote.host,
-        port: project.remote.port ?? null,
-      })
-        .then(setSshPasswordSaved)
-        .catch(() => setSshPasswordSaved(false));
-    }
+    // The saved-password lookup that used to sit here is now `useSavedCredential`
+    // above, gated on this very menu being open — same "only when asked" cost, but
+    // it can report an *unreadable* keychain instead of an empty one.
     // Does this project hold any Python files? Gates the "Python interpreter…"
     // entry below. A cheap local ending scan (already the file tree's "hide these
     // endings" source), skipped for remote projects whose files live on the host
@@ -1879,14 +1886,23 @@ export function ProjectPill({
                   void setProjectAutoConnect(project.id, !project.remote?.auto_connect);
                 }}
                 title={t(
-                  !connHeadless
-                    ? "pill.autoConnectTitleNonHeadless"
-                    : autoConnectEligible
-                      ? "pill.autoConnectTitleEligible"
-                      : "pill.autoConnectTitleNotEligible"
+                  autoConnectState.reason === "hpc"
+                    ? "autoConnect.hpcTitle"
+                    : !connHeadless
+                      ? "pill.autoConnectTitleNonHeadless"
+                      : autoConnectEligible
+                        ? "pill.autoConnectTitleEligible"
+                        : "pill.autoConnectTitleNotEligible"
                 )}
               >
-                {project.remote.auto_connect ? "✓ " : ""}{t("pill.autoConnectOnLaunch")}
+                {project.remote.auto_connect && autoConnectEligible ? "✓ " : ""}
+                {t("pill.autoConnectOnLaunch")}
+                {/* Named, not just greyed: a tagged host is never dialled by Eldrun
+                    itself, and the remedy (untag the machine) is nothing like the
+                    other one (save a password). Matches the Machines menu. */}
+                {autoConnectState.reason === "hpc" && (
+                  <span className="machines-auto-blocked"> {t("autoConnect.offWhileHpc")}</span>
+                )}
               </button>
             )}
             {/* Persistent remote sessions (TODO #85): shell/script tabs run inside a

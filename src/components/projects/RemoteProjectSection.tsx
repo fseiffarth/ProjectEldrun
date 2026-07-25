@@ -1,6 +1,7 @@
 import { joinRemotePath, parseSshAddress } from "./scaffold";
 import { RemoteFolderBrowser } from "./RemoteFolderBrowser";
 import { TerminalSignInToggle } from "./TerminalSignInToggle";
+import { SavePasswordRow } from "./SavePasswordRow";
 import { CredentialPasteBar, sshPasteEntries, vpnPasteEntries } from "./CredentialPasteBar";
 import { TerminalView } from "../terminal/TerminalView";
 import { ConnectionLog } from "../common/ConnectionLog";
@@ -91,6 +92,7 @@ export function RemoteProjectSection({
     sshRemember,
     setSshRemember,
     sshSaved,
+    sshCredential,
     forgetSshPassword,
     remoteBrowsePath,
     remoteEntries,
@@ -240,28 +242,25 @@ export function RemoteProjectSection({
       }}
     />
   ) : null;
+  // The shared row (`SavePasswordRow`) — same component the Connect modal and the
+  // add-a-machine form render, so the toggle is *disabled* during a terminal
+  // sign-in here too. It was live before, which meant the user could tick "Save
+  // password" on a login that never calls `ssh_connect` and therefore never
+  // carries `remember`: nothing was ever saved, and nothing said so. The row also
+  // brings the locked-keyring banner, so "we can't read your keychain" stops
+  // rendering as a confident "nothing saved".
   const sshSaveRow = (
-    <label className="remote-connect-remember">
-      <Toggle
-        size="sm"
-        checked={sshRemember}
-        onChange={(e) => {
-          setSshRemember(e.target.checked);
-          // Untick = delete it now, not at a next connect that may never come.
-          if (!e.target.checked && sshSaved) void forgetSshPassword();
-        }}
-      />
-      {t("remoteConnect.savePassword")}
-      <span className="ssh-optional-hint">
-        {sshSaved
-          ? sshViaTerminal
-            ? t("remoteConnect.saveHintKeptTerminal")
-            : t("remoteConnect.saveHintSaved")
-          : sshViaTerminal
-            ? t("remoteConnect.saveHintNothingTerminal")
-            : t("vpnPrompt.storedSecurely")}
-      </span>
-    </label>
+    <SavePasswordRow
+      credential={sshCredential}
+      checked={sshRemember}
+      viaTerminal={sshViaTerminal}
+      onChange={(on) => {
+        setSshRemember(on);
+        // Untick = delete it now, not at a next connect that may never come — and
+        // the connect itself no longer deletes anything, by design.
+        if (!on && sshSaved) void forgetSshPassword();
+      }}
+    />
   );
 
   // The non-headless login authenticates in a terminal, so its lamp tracks the

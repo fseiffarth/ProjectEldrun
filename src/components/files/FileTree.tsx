@@ -39,6 +39,7 @@ import {
   type ScriptShell,
 } from "../../lib/shellScriptRun";
 import { guardLoginNodeRun } from "../../lib/hpcGuard";
+import { projectIsOnHpc } from "../../lib/hpcHost";
 import { useRunHostPrefStore } from "../../stores/runHostPref";
 import { readFileText } from "../embed/fileAccess";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
@@ -559,6 +560,11 @@ export function FileTree({
     projectId ? s.byProject[projectId]?.ssh : undefined,
   );
   const remoteBlocked = remoteListing && remoteSshState !== "connected";
+  // Whether this project's PRIMARY host is a tagged cluster login node — the host
+  // that owns the files, and so the one every stat loop below walks. Gates the
+  // periodic re-stat, not the explicit one: see the sync-status effect.
+  const settingsForHpc = useSettingsStore((s) => s.settings);
+  const primaryIsHpc = projectIsOnHpc(settingsForHpc, project);
   // Local-mirror view of a remote project: the NAMES of the browsed folder's
   // immediate children that exist on the host, from one SFTP readdir per
   // navigation (only while the pool is live — a host readdir is a main-thread
@@ -983,17 +989,26 @@ export function FileTree({
     if (!isRemote || !projectId || remoteSshState !== "connected") return;
     const refresh = () => { void refreshSyncStatus(projectId); };
     window.addEventListener("focus", refresh);
-    // Only tick while Eldrun is focused: a backgrounded window doesn't need to
-    // keep re-stat'ing the host every 15 s (the `focus` listener re-stats on
-    // return anyway), which keeps an idle remote project off the wire.
-    const id = window.setInterval(() => {
-      if (document.hasFocus()) refresh();
-    }, 15000);
+    // The 15 s tick is the third periodic walk of a host tree, after the 25 s
+    // byte-sync pass and the 12 s lockstep poll — both of which the HPC tag
+    // already stops for exactly the reason `lib/hpcHost.ts` gives ("the same walk,
+    // unasked for, forever"). A tagged login node gets no timer here either: an
+    // open file tree is not a standing request to stat a cluster every quarter
+    // minute. What survives is the focus listener and every explicit re-list —
+    // both are gestures, and the amber marker still refreshes on each of them.
+    const id = primaryIsHpc
+      ? undefined
+      : window.setInterval(() => {
+          // Only tick while Eldrun is focused: a backgrounded window doesn't need
+          // to keep re-stat'ing the host every 15 s (the `focus` listener re-stats
+          // on return anyway), which keeps an idle remote project off the wire.
+          if (document.hasFocus()) refresh();
+        }, 15000);
     return () => {
       window.removeEventListener("focus", refresh);
-      window.clearInterval(id);
+      if (id !== undefined) window.clearInterval(id);
     };
-  }, [isRemote, projectId, remoteSshState, refreshSyncStatus]);
+  }, [isRemote, projectId, remoteSshState, refreshSyncStatus, primaryIsHpc]);
 
   // Local-mirror view: readdir the HOST for the browsed folder so folders that
   // live only in the local mirror can be flagged (see `hostChildNames`). One

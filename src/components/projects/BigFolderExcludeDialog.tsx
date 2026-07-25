@@ -7,6 +7,8 @@ import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSettingsStore } from "../../stores/settings";
 import { useSyncStore, type BigFolderRow } from "../../stores/sync";
 import { isCarefulHost, primaryTargetOf } from "../../lib/carefulHost";
+import { isHpcHost } from "../../lib/hpcHost";
+import { confirmOnHpcHost } from "../../lib/hpcGuard";
 import { fmtSize } from "../../lib/viewers/fileUtils";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
@@ -41,14 +43,25 @@ export function BigFolderExcludeDialog({ projectId }: { projectId: string }) {
   // The host half of the census needs a live pool; re-run when one appears so a
   // project that was still connecting when this opened fills in its host column.
   const ssh = useRemoteStatusStore((s) => s.byProject[projectId]?.ssh ?? "off");
+  const sshConnected = ssh === "connected";
 
   // A **careful** host does not get the host half by itself: it is a recursive
   // `du -ak -x`, and on a cluster the project root usually sits on the parallel
   // filesystem, where stat-ing a whole tree is a metadata storm against a shared
   // server. The local walk still runs — it is this machine's own disk — so the
   // prompt is still useful, just half-filled until the user asks for the rest.
+  //
+  // **Tagged is stronger than careful, and the gate has to name both.** The
+  // backend refuses the host half for a tagged host unconditionally
+  // (`commands::sync`), so a frontend that only knew about `careful_hosts` offered
+  // a Measure-host button on the one machine where pressing it could never do
+  // anything — the census came back `hostScanned: false` and the row simply stayed
+  // a dash, which reads as a bug rather than as a policy.
   const settings = useSettingsStore((s) => s.settings);
-  const careful = isCarefulHost(settings, primaryTargetOf(project));
+  const target = primaryTargetOf(project);
+  const hpcTagged = isHpcHost(settings, target);
+  const careful = hpcTagged || isCarefulHost(settings, target);
+  const targetLabel = target ? `${target.user ? `${target.user}@` : ""}${target.host}` : "";
 
   const [rows, setRows] = useState<BigFolderRow[] | null>(null);
   const [hostScanned, setHostScanned] = useState(false);
@@ -56,6 +69,10 @@ export function BigFolderExcludeDialog({ projectId }: { projectId: string }) {
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [scanningHost, setScanningHost] = useState(false);
+  // Whether the user has explicitly asked for the host half at least once. Only
+  // used to tell "not measured yet" apart from "asked for, and still not
+  // measured" — see the tagged-host note below.
+  const [hostAsked, setHostAsked] = useState(false);
 
   const scan = useCallback(
     async (scanHost: boolean) => {
@@ -80,9 +97,17 @@ export function BigFolderExcludeDialog({ projectId }: { projectId: string }) {
   // local-only however often it re-runs; only the explicit button below crosses.
   useEffect(() => {
     void scan(!careful);
-  }, [scan, careful, ssh === "connected"]);
+    // A named boolean, not the expression: a dep array holding `ssh === "connected"`
+    // says nothing about what changed when it fires.
+  }, [scan, careful, sshConnected]);
 
   const measureHost = async () => {
+    // On a tagged host the walk is asked about first, per act and never
+    // remembered (`lib/hpcGuard.ts`) — this is one of the two things the tag
+    // refuses rather than switches off, because people do legitimately want it.
+    // Backing out here leaves the host column exactly as it was.
+    if (hpcTagged && !(await confirmOnHpcHost("census", targetLabel))) return;
+    setHostAsked(true);
     setScanningHost(true);
     try {
       await scan(true);
@@ -184,10 +209,23 @@ export function BigFolderExcludeDialog({ projectId }: { projectId: string }) {
               type="button"
               className="link-button"
               onClick={() => void measureHost()}
-              disabled={scanningHost || ssh !== "connected"}
+              disabled={scanningHost || !sshConnected}
             >
               {scanningHost ? t("bigFolder.measuringHost") : t("bigFolder.measureHost")}
             </button>
+          </p>
+        )}
+
+        {/* Said only after the walk was actually asked for and still didn't
+            happen. `commands::sync` refuses a tagged machine's `du` with no way
+            for the caller to confirm *this* one yet, so the honest thing is to
+            state that the answer was no — a silently unchanged dash is the exact
+            failure this dialog's host column already had. */}
+        {hpcTagged && hostAsked && !hostScanned && !scanningHost && (
+          <p className="big-folder-note">
+            The host measurement was refused: {targetLabel || "this machine"} is tagged
+            HPC, and a recursive <code>du</code> over a cluster filesystem is not run
+            there. Untag it in the Machines menu if it is not a shared login node.
           </p>
         )}
 

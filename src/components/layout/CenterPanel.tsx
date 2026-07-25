@@ -1074,7 +1074,7 @@ export function CenterPanel() {
           const localRunning =
             !paneProject?.remote || effectiveTabLocation(tab) === "local";
           const tmuxSession =
-            shouldPersistTab(tab.kind, paneHostId, paneProject?.remote) ||
+            shouldPersistTab(tab.kind, paneHostId, paneProject?.remote, tab.ephemeral) ||
             shouldPersistLocalTab(tab.kind, scopeKey, localRunning, localPersistEnabled)
               ? tab.tmuxSession
               : undefined;

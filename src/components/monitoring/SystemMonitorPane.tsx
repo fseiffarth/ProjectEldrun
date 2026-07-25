@@ -22,6 +22,9 @@ import {
   targetOfSpec,
 } from "../../lib/carefulHost";
 import { isHpcHost } from "../../lib/hpcHost";
+import { hpcGuardRefusal } from "../../lib/hpcGuard";
+import { useGlobalMachinesStore } from "../../stores/globalMachines";
+import { sameTarget } from "../../lib/machineSync";
 import { ConnLamp } from "../common/ConnLamp";
 import { UntestedTag } from "../common/UntestedTag";
 import { hostsForProject } from "../../lib/remoteHosts";
@@ -135,6 +138,11 @@ const REMOTE_POLL_MS = 3000;
  *  nothing. Both apply ONLY to a careful host; an ordinary remote box keeps the
  *  responsive cadence it always had. */
 const CAREFUL_POLL_MS = 12_000;
+/** What the pane says when a **tagged** host refuses an unattended read. Not an
+ *  error: the backend and this pane agree about it (`lib/hpcGuard.ts`), and a
+ *  machine that is merely waiting to be asked must not read as a broken pane. */
+const HPC_NOT_READ =
+  "Not read — this machine is tagged HPC. Press Refresh above to read it once.";
 
 // ── Pure delta helpers (unit-tested in SystemMonitorSampling.test.ts) ─────────
 
@@ -470,6 +478,11 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
   // the new cadence), the notice below renders off the state.
   const carefulRef = useRef(false);
   const [careful, setCareful] = useState(false);
+  // The live loop's own `poll`, published for the Refresh button below. A tagged
+  // host is sampled once on open and then only when asked, so the button needs to
+  // reach INTO the running effect: re-running the effect to trigger a sample would
+  // drop `prevRef`, the previous sample every CPU% is a delta against.
+  const pollNowRef = useRef<(() => void) | null>(null);
 
   // A remote (SSH) project can sample its primary host, and — multi-host
   // (`docs/multi_host_remote_plan.md`) — any connected `compute_hosts` worker
@@ -509,8 +522,23 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
   // authenticates ad-hoc on every poll, same as the dialog's old small usage bar.
   const onHost = !!globalMachine || source !== "local";
   const selectedHostId = !globalMachine && onHost ? (source as { hostId: string }).hostId : null;
+  // A global machine's lamp, from the machines store — not `true`. Every poll of
+  // `global_machine_monitor_snapshot` is a FRESH SSH login (a global machine pools
+  // nothing), so assuming "connected" kept a whole login sequence running per tick
+  // against a machine whose lamp was off, red, or never lit.
+  //
+  // `status`, deliberately, and never `reachable`: the first means "a session this
+  // app opened", the second only "a probe once got an answer"
+  // (`stores/globalMachines`). Sampling is a session's worth of work, so it is the
+  // first that licenses it. The machine is matched by SSH target rather than by id
+  // because this pane is handed a `{user, host, port}` and nothing else.
+  const machines = useGlobalMachinesStore((s) => s.machines);
+  const machineStatus = useGlobalMachinesStore((s) => s.status);
+  const globalMachineConnected =
+    !!globalMachine &&
+    machineStatus[machines.find((m) => sameTarget(m, globalMachine))?.id ?? ""] === "connected";
   const hostConnected = globalMachine
-    ? true
+    ? globalMachineConnected
     : onHost && selectedHostId != null && connState(selectedHostId) === "connected";
   const selectedHost = hosts.find((h) => h.id === selectedHostId) ?? null;
   const remoteHost = onHost
@@ -559,6 +587,7 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
     setCareful(carefulMode);
     if (!sampling) return;
     let cancelled = false;
+    let inFlight = false;
     let timer: number | undefined;
     // Self-rescheduling rather than a fixed `setInterval`: the cadence depends on
     // what the FIRST sample says the host is (careful ⇒ HPC ⇒ gentle), and
@@ -566,18 +595,30 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
     // the previous sample every CPU% is a delta against.
     function schedule() {
       if (cancelled) return;
+      // A **tagged** host gets no timer at all. 12 s is gentler than 3 s, not
+      // absent, and what the tag promises is that nothing reaches a shared login
+      // node without a gesture — so it is sampled once when the pane opens (that
+      // opening IS the gesture) and thereafter only when Refresh is pressed. The
+      // backend enforces the same rule from its side via `background`.
+      if (hpcTagged) return;
       const delay = carefulRef.current ? CAREFUL_POLL_MS : onHost ? REMOTE_POLL_MS : POLL_MS;
-      timer = window.setTimeout(poll, delay);
+      timer = window.setTimeout(() => void poll(false), delay);
     }
-    async function poll() {
+    /** `gesture` = the user asked for this one (the pane opening, or Refresh).
+     *  It is what the backend's `background: false` means, and it also excuses the
+     *  unfocused pause below — a click is not a background poll. */
+    async function poll(gesture: boolean) {
       // An HPC host is not polled while the user is looking at something else:
       // the sample costs a shared login node real work, and a pane nobody is
       // reading has nothing to show for it. Only careful hosts — a local read or
       // an ordinary remote box keeps sampling in the background as before.
-      if (carefulRef.current && !document.hasFocus()) {
+      if (carefulRef.current && !gesture && !document.hasFocus()) {
         schedule();
         return;
       }
+      // Two Refresh clicks must not become two logins in flight.
+      if (inFlight) return;
+      inFlight = true;
       try {
         // `careful` is the machine's stored mode, and it is authoritative in
         // BOTH directions — careful by default, normal only where the user said
@@ -590,6 +631,11 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
               host: globalMachine.host,
               port: globalMachine.port,
               careful: carefulMode,
+              // Omitted ⇒ background ⇒ refused on a tagged host. Only a sample the
+              // user asked for says otherwise, so a timer can never spell itself
+              // as a gesture: the flag is the *caller's* claim, and a claim that
+              // defaults to "unattended" can only fail closed.
+              background: !gesture,
             })
           : await invoke<SystemSnapshot>("system_monitor_snapshot", {
               projectId: onHost ? projectId : null,
@@ -620,19 +666,30 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
           }
         }
       } catch (e) {
-        if (!cancelled) setError(String(e));
+        // A tagged host refusing an unattended read is the tag working, not a
+        // failure — say so, rather than printing the raw sentinel.
+        if (!cancelled) setError(hpcGuardRefusal(e) ? HPC_NOT_READ : String(e));
       } finally {
+        inFlight = false;
         schedule();
       }
     }
-    void poll();
+    // The pane opening is itself a request for one reading — the only sample a
+    // tagged host takes until Refresh is pressed.
+    pollNowRef.current = () => void poll(true);
+    void poll(true);
     return () => {
       cancelled = true;
+      pollNowRef.current = null;
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [
     sampling,
     onHost,
+    // A tag flip changes the whole loop shape (timer vs. on-demand), and it can
+    // move without `carefulMode` doing so — untagging a machine the user had also
+    // marked careful leaves it careful.
+    hpcTagged,
     // Flipping the machine's mode restarts the loop on purpose: the two modes
     // collect different things, so a delta across the switch would be a delta
     // between two different readings of the machine.
@@ -816,6 +873,22 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                   <span className="sysmon-mode-txt">Detailed</span>
                 </button>
               </div>
+              {/* The only thing that reads a tagged machine after the pane's first
+                  sample. It is a plain button rather than a cadence control on
+                  purpose: the choice the tag takes away is "how often", and what
+                  is left is "now". Borrows the machine tabs' style — it belongs to
+                  the same row and needs no look of its own. */}
+              {hpcTagged && (
+                <button
+                  type="button"
+                  className="sysmon-source-btn"
+                  onClick={() => pollNowRef.current?.()}
+                  disabled={!sampling}
+                  title={`Read ${carefulMachineName || "this machine"} once. It is tagged HPC, so nothing samples it on a timer — a shared login node is not to carry a background load nobody asked for.`}
+                >
+                  ↻ Refresh
+                </button>
+              )}
             </>
           )}
         </div>
@@ -823,7 +896,12 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
 
       {onHost && !hostConnected ? (
         <div className="sysmon-placeholder">
-          Connect this project to view {remoteHost}&rsquo;s system monitor.
+          {/* A global machine has no project to connect — it is connected from the
+              Machines menu the pane was opened out of, so the placeholder points
+              there rather than at a project that doesn't exist. */}
+          {globalMachine
+            ? `Connect ${carefulMachineName || "this machine"} in the Machines menu to view its system monitor.`
+            : `Connect this project to view ${remoteHost}’s system monitor.`}
         </div>
       ) : snap && !snap.supported ? (
         <div className="sysmon-placeholder">
@@ -843,8 +921,20 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
             <div className="sysmon-careful-note">
               <b>Light reading.</b> Only your own processes are shown in full — everyone
               else&rsquo;s are counted as <i>other users</i> without names or commands, and
-              this host is sampled every {Math.round(CAREFUL_POLL_MS / 1000)}s (and not at
-              all while Eldrun is in the background). It is how every remote machine is
+              this host is{" "}
+              {hpcTagged ? (
+                <>
+                  sampled <b>once</b>, then only when you press <b>Refresh</b> above — it
+                  is tagged HPC, and a timer against a shared login node is the
+                  unattended load the tag exists to stop
+                </>
+              ) : (
+                <>
+                  sampled every {Math.round(CAREFUL_POLL_MS / 1000)}s (and not at all
+                  while Eldrun is in the background)
+                </>
+              )}
+              . It is how every remote machine is
               sampled until you say otherwise: a shared cluster&rsquo;s usage rules don&rsquo;t
               allow collecting other people&rsquo;s account names or command lines, and a
               login node shouldn&rsquo;t carry a constant poll. Switch this machine to{" "}

@@ -56,9 +56,15 @@ beforeEach(() => {
   invokeMock.mockReset();
   invokeMock.mockImplementation((cmd: string) => {
     // Both secrets are already in the keychain — the state the toggles reflect.
-    if (cmd === "remote_has_saved_password" || cmd === "vpn_has_saved_password") {
-      return Promise.resolve(true);
+    // The SSH half is asked through `remote_saved_password_state` now, which
+    // answers *whether the store was readable* as well: a locked keyring reads
+    // exactly like an empty one, and conflating the two is what let a connect
+    // delete a saved password (see `useSavedCredential`).
+    if (cmd === "remote_saved_password_state") {
+      return Promise.resolve({ saved: true, keyring: "unlocked" });
     }
+    if (cmd === "vpn_has_saved_password") return Promise.resolve(true);
+    if (cmd === "ssh_connect") return Promise.resolve({ saved: true, save_error: null });
     if (cmd === "openvpn_list_configs") return Promise.resolve([]);
     if (cmd === "openvpn_auth_needs") {
       return Promise.resolve({ username: false, keyPassphrase: false });

@@ -84,6 +84,15 @@ pub(crate) fn run_slurm_script(
             remote_target_for_host(&primary.project_id, host_id)
                 .ok_or_else(|| format!("unknown remote host '{host_id}'"))?
         };
+        // Every caller of this dispatch — `slurm_*` and `hpc_ws_*` — is a button:
+        // submit, cancel, refresh the queue, allocate a workspace. Reaching the
+        // cluster is the whole point of the click, so the dial policy is told so
+        // here, once, rather than at each of the dozen commands above it.
+        let _dial = crate::services::ssh_common::user_dial(
+            &target.spec.user,
+            &target.spec.host,
+            target.spec.port,
+        );
         let out = run_remote_script(&target.spec, script)?;
         if !out.status.success() && out.stdout.is_empty() {
             return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());

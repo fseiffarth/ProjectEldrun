@@ -140,12 +140,19 @@ Tagged, a machine gets:
 | connect-time usage probe | fires on every connect | not fired automatically (`commands::remote`) |
 | giant-folder census (`du -ak`) | runs on connect | never runs against the host (`commands::sync`) |
 | disk-usage scan | runs | **refused until confirmed for that scan** (`commands::disk_usage` → `HPC_GUARD` → `lib/hpcGuard.ts`) |
-| auto byte-sync loop (25 s) | starts on connect | never starts (`services::sync_auto`) — manual push/pull still works |
-| git lockstep poll (12 s) | starts when lockstep is on | never starts (`services::git_peer`) — manual reconcile still works |
+| auto byte-sync loop (25 s) | starts on connect | never starts (`services::sync_auto`) — manual push/pull still works, and the tag is re-read **per tick**, so tagging a connected host stops the loop mid-session |
+| git lockstep poll (12 s) | starts when lockstep is on | never starts (`services::git_peer`), same per-tick re-read |
 | auto-connect at launch/VPN-up | as armed | never, project or global machine (`stores/projects`, `stores/globalMachines`) |
+| silent reconnect of a dead pool (15 s) | re-dials | never (`stores/projects`' `silentReconnectDeadHost`) — a dropped session ends at a red lamp the user clicks |
+| Machines-menu reachability sweep | probes every machine on open | never swept; the row reads *not checked* until its **◎ Check** is pressed |
+| system-monitor poll | 3 s (12 s careful) | sampled once when the pane opens, then only on **↻ Refresh** |
+| network-traffic host poll (1 s) | polls | 12 s, and only while a session is open |
+| file-tree sync re-stat (15 s) | polls | never on a timer; window focus and an explicit re-list still refresh it |
+| "Remote host usage…" | reads every machine on open | not read automatically; the row offers **Read now** |
+| tmux persistence of a SLURM log tab | persists | not wrapped (`TabEntry.ephemeral`) — a `tail -F` must not outlive Eldrun on a login node. A real run (`srun --pty`) still persists |
 | Python run / debug, script run | runs | **asks first** when it would land on the tagged host |
 
-Two design notes worth keeping:
+Three design notes worth keeping:
 
 - **Refuse-and-confirm, not refuse.** A scan of the cluster tree and a run on the
   login node are things people legitimately want; what the tag buys is that
@@ -157,3 +164,38 @@ Two design notes worth keeping:
   shells constantly, to submit and to look around; a prompt on each is the
   warning everyone learns to click through. The gate sits on the two actions that
   actually compute.
+- **The gate is the backend's, not the UI's.** Every row above was once enforced
+  only in TypeScript, and the tag's central promise — *Eldrun never logs in here
+  by itself* — was therefore only as good as the last surface anyone remembered
+  to check. It wasn't: a hover over the header, a 15 s reconnect reconciler and a
+  restored terminal tab each dialled a tagged login node. See below.
+
+## The dial policy
+
+The tag's load-bearing promise is enforced in **one** place now:
+`ssh_common::authorize_dial(user, host, port, intent)`, called *inside* the seven
+functions that build an ssh argv (`ssh_base_args`, its password/master/passphrase
+variants, and `ssh_exec::ssh_pty_args`). There is no other way to construct an ssh
+command line in this codebase, so a surface cannot forget the gate — the argv it
+needs simply doesn't come back. `DialIntent::Background` against a tagged target
+returns the same `HPC_GUARD` sentinel the confirm dialog already parses.
+
+`Background` is the **default**, and that asymmetry is the whole design: a
+forgotten intent can only fail closed, into a refusal the user can see and
+override, never into a silent login. The two shapes are:
+
+- **always a gesture** — a command with no poller behind it (`ssh_default_dir`,
+  `ssh_list_dir`, `ssh_mkdir`: the folder browser) takes the authorization
+  unconditionally, so a tagged host stays *addable* and *browsable*;
+- **dual-caller** — a command reachable from both a click and a sweep
+  (`ssh_probe`, `ssh_connect`, `remote_connect`, the usage/monitor/tmux reads)
+  takes `background: Option<bool>`, where absent ≡ `true` ≡ background. A typed,
+  non-empty password is always read as a gesture regardless of the flag.
+
+A **pooled** connection holds a standing authorization from `connect_host` to
+`teardown_pooled`: once the user has connected a tagged project, work riding that
+master — tabs, git, file reads — is not Eldrun connecting by itself, and this is
+also the only signal the backend has for telling a restored tab from a clicked
+one. The frontend gates stay in place on top of it; the redundancy is deliberate,
+because the two answer different questions ("should I offer this?" and "may this
+dial happen?").

@@ -14,24 +14,13 @@ use crate::services::remote::{self, RemotePoolState};
 use crate::services::remote_sync::SyncManifestState;
 use crate::services::sync_auto::{self, AutoSyncState};
 
-/// End tmux work only on a currently pooled host. Checking the pool first keeps
-/// a project deactivation from dialing disconnected workers merely to kill jobs.
-async fn kill_tmux_on_disconnect(pool: &RemotePoolState, project_id: &str, host_id: &str) {
-    if !remote::is_connected_host(pool, project_id, host_id).await {
-        return;
-    }
-    let Some(target) = remote::remote_target_for_host(project_id, host_id) else {
-        return;
-    };
-    let spec = target.spec;
-    let _ = tauri::async_runtime::spawn_blocking(move || {
-        crate::services::ssh_exec::run_remote_script(
-            &spec,
-            crate::services::ssh_exec::tmux_kill_server_script(),
-        )
-    })
-    .await;
-}
+// NOTE: `kill_tmux_on_disconnect` used to run here, from both disconnect
+// commands. It ran `tmux kill-server` on the host for a **plain project
+// deactivation** (`stores/projects` calls `remote_disconnect_all_hosts` on every
+// switch away), which destroyed exactly the sessions TODO #85 exists to
+// preserve — a training run left in a tmux session died because the user clicked
+// another project. `commands::ssh::remote_kill_all_jobs` remains the one
+// deliberate path that ends remote work, and it says so in its own doc comment.
 
 /// What this connect proves about **how the host authenticates**, if anything.
 ///
@@ -59,6 +48,15 @@ fn record_key_auth(
         return Some(false);
     }
     if via_login == Some(true) {
+        return None;
+    }
+    // The inference below is "nothing in the keychain, so the host wanted nothing"
+    // — which is only sound if the keychain could be *read*. A locked collection
+    // answers every lookup "nothing saved" (`docs/context/remote_credentials.md`),
+    // so on a password host with a locked ring this used to stamp `key_auth: true`
+    // and the pill then advertised a promptless auto-connect it cannot deliver, on
+    // every launch. An unreadable store proves nothing, so write nothing.
+    if !crate::services::remote_credentials::store_readable() {
         return None;
     }
     let saved = crate::services::remote_credentials::has(
@@ -96,8 +94,28 @@ pub async fn remote_connect(
     host_id: Option<String>,
     password: Option<String>,
     via_login: Option<bool>,
+    background: Option<bool>,
 ) -> Result<(), String> {
     let host_id = host_id.unwrap_or_else(|| remote::PRIMARY_HOST.to_string());
+    // `background` per `ssh_common`'s second shape, same polarity and same
+    // default as every other dual-caller command: a Connect click passes
+    // `Some(false)` and may reach a machine tagged HPC; the armed auto-connect at
+    // launch/VPN-up passes nothing (or `true`) and may not. The dial policy sees
+    // this guard several layers down, where the argv is actually built.
+    //
+    // The default is background even though it makes an un-updated caller's
+    // Connect *fail* on a tagged host, because the alternative is the bug this
+    // whole change exists to close: a launch path that inherits "user-initiated"
+    // by saying nothing is exactly how the cluster kept being dialled. Failing
+    // closed here costs one `ELDRUN_HPC_GUARD connect …` naming the machine.
+    let _dial = remote::remote_target_for_host(&project_id, &host_id).and_then(|t| {
+        crate::services::ssh_common::declared_dial(
+            background,
+            &t.spec.user,
+            &t.spec.host,
+            t.spec.port,
+        )
+    });
     remote::connect_host(pool.inner(), &project_id, &host_id, password.as_deref()).await?;
 
     // Best-effort "is this host already busy?" check, off the connect critical
@@ -241,11 +259,15 @@ pub async fn remote_connected_ids(pool: State<'_, RemotePoolState>) -> Result<Ve
     Ok(remote::connected_ids(pool.inner()).await)
 }
 
-/// End every tmux session and close the pooled connection for a remote project
-/// host (on deactivation, or a per-host lamp toggle). `host_id` defaults to the primary.
+/// Close the pooled connection for a remote project host (on deactivation, or a
+/// per-host lamp toggle). `host_id` defaults to the primary.
 /// For the **primary**, stops the auto-sync + git-lockstep tasks first (cancel +
 /// unwatch), then tears down the pool; a **worker** disconnect only drops its pool
 /// entry (it owns no lockstep/sync). No-op if nothing is pooled for it.
+///
+/// Deliberately leaves the host's tmux sessions running: closing a connection is
+/// not ending the work it was carrying (TODO #85). See the note at the top of
+/// this module.
 #[tauri::command]
 pub async fn remote_disconnect(
     pool: State<'_, RemotePoolState>,
@@ -255,7 +277,6 @@ pub async fn remote_disconnect(
     host_id: Option<String>,
 ) -> Result<(), String> {
     let host_id = host_id.unwrap_or_else(|| remote::PRIMARY_HOST.to_string());
-    kill_tmux_on_disconnect(pool.inner(), &project_id, &host_id).await;
     if host_id == remote::PRIMARY_HOST {
         git_peer::stop(git_peer_reg.inner(), &project_id).await;
         sync_auto::stop(auto.inner(), &project_id).await;
@@ -264,9 +285,10 @@ pub async fn remote_disconnect(
     Ok(())
 }
 
-/// End tmux work and disconnect **every connected** host of a remote project —
-/// primary and workers — on project deactivation. Stops the primary's
-/// lockstep/auto-sync, then tears down all pooled entries for the project.
+/// Disconnect **every connected** host of a remote project — primary and workers
+/// — on project deactivation. Stops the primary's lockstep/auto-sync, then tears
+/// down all pooled entries for the project. Like [`remote_disconnect`], it leaves
+/// the hosts' tmux sessions alone: this fires on an ordinary project switch.
 #[tauri::command]
 pub async fn remote_disconnect_all_hosts(
     pool: State<'_, RemotePoolState>,
@@ -274,14 +296,6 @@ pub async fn remote_disconnect_all_hosts(
     git_peer_reg: State<'_, GitPeerRegistry>,
     project_id: String,
 ) -> Result<(), String> {
-    let hosts: Vec<String> = remote::connected_targets(pool.inner())
-        .await
-        .into_iter()
-        .filter_map(|(id, host)| (id == project_id).then_some(host))
-        .collect();
-    for host_id in hosts {
-        kill_tmux_on_disconnect(pool.inner(), &project_id, &host_id).await;
-    }
     git_peer::stop(git_peer_reg.inner(), &project_id).await;
     sync_auto::stop(auto.inner(), &project_id).await;
     remote::disconnect_project(pool.inner(), &project_id).await;
@@ -307,9 +321,27 @@ pub async fn worker_sync_now(
     project_id: String,
     host_id: String,
 ) -> Result<crate::services::worker_sync::WorkerSyncReport, String> {
+    let _dial = user_dial_for_host(&project_id, &host_id);
     let report =
         crate::services::worker_sync::sync_worker(pool.inner(), &project_id, &host_id, true).await;
     Ok(report)
+}
+
+/// Hold this target user-initiated for the rest of the enclosing command — the
+/// project-host spelling of `ssh_common::user_dial`, for the handful of commands
+/// that only ever run off a click ("Sync code now", "Pull outputs", a Sessions
+/// row's Kill). `None` for a local project or an unknown host, where there is
+/// nothing to authorize.
+fn user_dial_for_host(
+    project_id: &str,
+    host_id: &str,
+) -> Option<crate::services::ssh_common::UserDial> {
+    let target = remote::remote_target_for_host(project_id, host_id)?;
+    Some(crate::services::ssh_common::user_dial(
+        &target.spec.user,
+        &target.spec.host,
+        target.spec.port,
+    ))
 }
 
 /// Preview the size of a worker's pullable experiment outputs (its untracked
@@ -330,6 +362,7 @@ pub async fn worker_pull_outputs(
     project_id: String,
     host_id: String,
 ) -> Result<crate::services::worker_sync::WorkerPullReport, String> {
+    let _dial = user_dial_for_host(&project_id, &host_id);
     crate::services::worker_sync::pull_outputs(pool.inner(), &project_id, &host_id).await
 }
 
@@ -371,19 +404,28 @@ pub async fn remote_upload_file(
 /// List the tmux sessions running on a remote project host (TODO #85), for the
 /// Sessions view. Runs `tmux ls` over the pooled ControlMaster; an absent tmux or
 /// a not-running server yields an **empty** list, never an error (see
-/// `ssh_exec::parse_tmux_ls`). `host_id` defaults to the primary. The raw host
-/// listing is filtered to THIS project (`ssh_exec::filter_sessions_for_project`)
-/// so a host multiple remote projects share never leaks one project's sessions
-/// into another's view.
+/// `ssh_exec::parse_tmux_ls`). `host_id` defaults to the primary.
+///
+/// The raw host listing is scoped to THIS project
+/// (`ssh_exec::filter_sessions_for_project`) — by session name where it carries a
+/// project id, otherwise by the session's working directory — so a host that
+/// several projects share (a cluster login node) never shows one project's runs
+/// in another's view. `include_all` is the view's escape hatch: it returns the
+/// host listing unfiltered, which is how an orphaned or unattributable session
+/// stays reachable to kill. The **path** used is this host's own
+/// `remote_path`, so a synced worker with its own copy scopes to its own tree.
 #[tauri::command]
 pub async fn remote_tmux_list(
     project_id: String,
     host_id: Option<String>,
+    include_all: Option<bool>,
 ) -> Result<Vec<crate::services::ssh_exec::TmuxSession>, String> {
     let host_id = host_id.unwrap_or_else(|| remote::PRIMARY_HOST.to_string());
     let target = remote::remote_target_for_host(&project_id, &host_id)
         .ok_or_else(|| "not a remote project host".to_string())?;
     let filter_project_id = project_id.clone();
+    let project_root = target.spec.remote_path.clone();
+    let include_all = include_all.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
         let out = crate::services::ssh_exec::run_remote_script(
             &target.spec,
@@ -395,6 +437,8 @@ pub async fn remote_tmux_list(
         Ok(crate::services::ssh_exec::filter_sessions_for_project(
             sessions,
             &filter_project_id,
+            &project_root,
+            include_all,
         ))
     })
     .await
@@ -414,6 +458,7 @@ pub async fn remote_tmux_kill(
     let host_id = host_id.unwrap_or_else(|| remote::PRIMARY_HOST.to_string());
     let target = remote::remote_target_for_host(&project_id, &host_id)
         .ok_or_else(|| "not a remote project host".to_string())?;
+    let _dial = user_dial_for_host(&project_id, &host_id);
     tauri::async_runtime::spawn_blocking(move || {
         crate::services::ssh_exec::run_remote_script(
             &target.spec,
@@ -460,14 +505,25 @@ pub async fn remote_tmux_rename(
 /// `remote_connect` runs on connect, this one is awaited and its result
 /// returned directly rather than pushed as an event. `host_id` defaults to the
 /// primary; the combined usage dialog rechecks each host it currently shows.
+///
+/// Takes `background` (`ssh_common`'s second shape): a per-row "Read now" is a
+/// gesture, while the dialog's open-the-menu sweep across every host is not, and
+/// the two reach this same command. Only `Some(false)` counts as the former.
 #[tauri::command]
 pub async fn remote_usage_check(
     project_id: String,
     host_id: Option<String>,
+    background: Option<bool>,
 ) -> Result<crate::services::remote_usage::RemoteUsageReport, String> {
     let host_id = host_id.unwrap_or_else(|| remote::PRIMARY_HOST.to_string());
     let target = remote::remote_target_for_host(&project_id, &host_id)
         .ok_or_else(|| "not a remote project host".to_string())?;
+    let _dial = crate::services::ssh_common::declared_dial(
+        background,
+        &target.spec.user,
+        &target.spec.host,
+        target.spec.port,
+    );
     tauri::async_runtime::spawn_blocking(move || {
         crate::services::remote_usage::check_usage(&target.spec)
     })
@@ -505,6 +561,22 @@ mod tests {
                 Some(true),
             ),
             Some(false),
+        );
+    }
+
+    /// A locked keychain reads exactly like an empty one, so the "nothing saved,
+    /// therefore key auth" inference is only sound when the store could be read.
+    /// Against a locked one it used to stamp `key_auth: true` on a password host,
+    /// and the pill then offered a promptless auto-connect that fails every launch.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_unreadable_keychain_proves_nothing() {
+        crate::services::remote_credentials::remember_keyring_state(
+            crate::services::remote_credentials::KeyringState::Locked,
+        );
+        assert_eq!(
+            record_key_auth(&Some("alice".into()), "locked.example", None, None, None),
+            None,
         );
     }
 }

@@ -537,6 +537,12 @@ pub fn run() {
             // skips the exit teardown) and the staged config copies. Off-thread:
             // docker may be slow or absent, and neither may block startup.
             std::thread::spawn(services::sandbox::sweep_orphans);
+            // Unlink ssh ControlMaster sockets a previous run left behind. The
+            // master is killed by signal rather than `ssh -O exit`, so the socket
+            // outlives it — and a stale one makes OpenSSH disable multiplexing for
+            // that target, quietly turning every later channel into its own login.
+            // Off-thread: one cheap local `ssh -O check` per file.
+            std::thread::spawn(services::ssh_exec::sweep_stale_control_sockets);
             // Re-adopt OpenVPN tunnels a previous run left running (a crash, an OOM
             // kill, a refused quit-time prompt): the daemon runs as root and outlives
             // the app, still rerouting the machine, but the live-tunnel registries are
@@ -667,6 +673,7 @@ pub fn run() {
             commands::ssh::ssh_connect,
             commands::ssh::ssh_probe,
             commands::ssh::remote_has_saved_password,
+            commands::ssh::remote_saved_password_state,
             commands::ssh::remote_forget_password,
             commands::ssh::remote_kill_all_jobs,
             commands::ssh::ssh_close_master,

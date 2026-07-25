@@ -23,6 +23,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { useTabsStore, type TabEntry, type TabLocation } from "../stores/tabs";
 import { useHpcJobsStore, type HpcJob } from "../stores/hpcJobs";
 import { shellQuote } from "./pythonRun";
+import { useProjectsStore } from "../stores/projects";
+import { useSettingsStore } from "../stores/settings";
+import { isHpcHost, targetOfSpec } from "./hpcHost";
 import { basename } from "./paths";
 
 // ── Backend types (mirror `commands::slurm`) ─────────────────────────────────
@@ -224,6 +227,8 @@ function openHostShellTab(opts: {
   cwd: string;
   location: TabLocation | undefined;
   initialInput: string;
+  /** Never tmux-wrap this tab — see `TabEntry.ephemeral`. */
+  ephemeral?: boolean;
   place?: SlurmTabPlacer;
 }): void {
   const tab: Omit<TabEntry, "key"> = {
@@ -233,6 +238,7 @@ function openHostShellTab(opts: {
     kind: "shell",
     initialInput: opts.initialInput,
     ...(opts.location ? { location: opts.location } : {}),
+    ...(opts.ephemeral ? { ephemeral: true } : {}),
   };
   if (opts.place) {
     const entry = opts.place(tab);
@@ -267,8 +273,28 @@ export function openLogTab(opts: {
     cwd: opts.projectDir,
     location: locationForHost(opts.hostId, opts.isRemote),
     initialInput: buildTailCommand(opts.outFile),
+    // A `tail -F` is re-openable from the Jobs view at any time, so persisting it
+    // buys nothing — and on a cluster login node it costs the one thing the HPC
+    // tag exists to prevent: a tmux daemon still running there after Eldrun quits,
+    // which nothing in the UI would then be pointing at. The job itself is
+    // untouched; it is SLURM's, not this tab's.
+    ephemeral: logTabIsEphemeral(opts.scope, opts.hostId),
     place: opts.place,
   });
+}
+
+/** Whether a log tab on this host must not outlive itself: true iff the host is
+ *  tagged HPC. Resolved here rather than at the call sites because both of them
+ *  (Submit and the Jobs view's Watch) already hand us the scope and host id. */
+function logTabIsEphemeral(scope: string, hostId: string): boolean {
+  const settings = useSettingsStore.getState().settings;
+  const project = useProjectsStore.getState().projects.find((p) => p.id === scope);
+  if (!project) return false;
+  const spec =
+    hostId === "primary"
+      ? project.remote
+      : (project.compute_hosts ?? []).find((h) => h.id === hostId);
+  return isHpcHost(settings, targetOfSpec(spec));
 }
 
 /**

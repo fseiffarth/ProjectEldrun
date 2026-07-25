@@ -6,11 +6,16 @@ import { parseSshAddress, type ParsedSshAddress } from "./scaffold";
 import { RemoteFolderBrowser } from "./RemoteFolderBrowser";
 import { useRemoteBrowse } from "./useRemoteBrowse";
 import { TerminalSignInToggle } from "./TerminalSignInToggle";
+import { SavePasswordRow } from "./SavePasswordRow";
+import { rememberArg, useSavedCredential } from "./useSavedCredential";
 import { CredentialPasteBar, sshPasteEntries } from "./CredentialPasteBar";
 import { TerminalView } from "../terminal/TerminalView";
 import { forgetConnection, markConnectionOpened, resolveRemoteStartDir } from "../../lib/remoteConnect";
+import { withHostKeyConfirm } from "../../lib/hostKey";
+import { sameTarget } from "../../lib/machineSync";
 import { useConnectDialogStore } from "../../stores/connectDialog";
-import { useRemoteStatusStore, PRIMARY_HOST } from "../../stores/remoteStatus";
+import { useGlobalMachinesStore } from "../../stores/globalMachines";
+import { useRemoteStatusStore, PRIMARY_HOST, type ConnState } from "../../stores/remoteStatus";
 import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { useHostBusyStore, busyReading, busyLabel } from "../../stores/hostBusy";
 import { ConnLamp } from "../common/ConnLamp";
@@ -20,7 +25,7 @@ import { UntestedTag } from "../common/UntestedTag";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { formatRemoteTarget, resolveLocalMirror } from "../../types";
-import type { ComputeHost, ProjectEntry } from "../../types";
+import type { ComputeHost, GlobalMachine, ProjectEntry } from "../../types";
 import { useT } from "../../lib/i18n";
 
 /** Distinct PTY id per login terminal opened here — the id is the handle
@@ -125,6 +130,35 @@ export function RemoteMachinesWindow({
   const [dropPath, setDropPath] = useState(project.remote?.remote_path ?? "");
   const [dropBusy, setDropBusy] = useState(false);
   const [dropError, setDropError] = useState("");
+  // The dropped machine's lamp used to be hardcoded `connected` — it is a global
+  // machine, so it *usually* is, but "usually" is not a status. Before the add it
+  // reads the machine's real state from the global list; during/after the add it
+  // reads this dialog's own attempt, which is the thing the user is watching.
+  const dropMachineId = pendingDrop?.id;
+  const globalStatus = useGlobalMachinesStore((s) =>
+    dropMachineId ? s.status[dropMachineId] : undefined,
+  );
+  const [dropConn, setDropConn] = useState<ConnState | null>(null);
+  // The panel is rendered above the worker list, so a machine picked from the
+  // list *inside* the add-form below would otherwise land off screen.
+  const dropPanelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (dropMachineId) dropPanelRef.current?.scrollIntoView({ block: "nearest" });
+  }, [dropMachineId]);
+
+  // ── The global machines list, as a fast path into "Add a machine" ────────────
+  // The header's Machines menu could already hand one of these to a project, but
+  // only from the *other* end — standing in this dialog, a machine that is already
+  // set up and authenticated still had to be retyped and logged into by hand. So
+  // the same list is offered here: pick a machine, confirm its path, done.
+  const globalMachines = useGlobalMachinesStore((s) => s.machines);
+  const globalStatuses = useGlobalMachinesStore((s) => s.status);
+  const globalsLoaded = useGlobalMachinesStore((s) => s.loaded);
+  useEffect(() => {
+    // This window can be the first thing that needs the list (the header menu may
+    // never have been opened this session), and `load` only reads the JSON file.
+    if (!globalsLoaded) void useGlobalMachinesStore.getState().load();
+  }, [globalsLoaded]);
 
   const addDroppedMachine = async () => {
     if (!pendingDrop) return;
@@ -154,18 +188,41 @@ export function RemoteMachinesWindow({
       });
       applyHosts(hosts);
       const added = hosts.find((h) => !beforeIds.has(h.id));
-      // Best-effort: the global machine is already authenticated, so this rides
-      // the same saved keychain credential (or key/agent auth) with no prompt.
-      // Silent on failure — the new card's own Connect button still works.
+      // The global machine is already authenticated, so this rides the same saved
+      // keychain credential (or key/agent auth) with no prompt.
       // `viaLogin`: riding *that* master is exactly why it needs no credential, so
       // the success must not be recorded as key auth (`record_key_auth`, backend).
-      if (added)
-        void invoke("remote_connect", {
-          projectId: project.id,
-          hostId: added.id,
-          viaLogin: true,
-        }).catch(() => {});
-      setPendingDrop(null);
+      // `background: false`: the user clicked Add, and `remote_connect` now defaults
+      // to background — which a host tagged HPC refuses outright.
+      //
+      // No longer `.catch(() => {})`. Swallowing this left a card whose lamp said
+      // connected while nothing was pooled behind it, and the "the card's own
+      // Connect still works" excuse only holds if the user is told to use it.
+      if (added) {
+        setDropConn("connecting");
+        void withHostKeyConfirm(() =>
+          invoke("remote_connect", {
+            projectId: project.id,
+            hostId: added.id,
+            viaLogin: true,
+            background: false,
+          }),
+        )
+          .then(() => {
+            setDropConn(null);
+            useRemoteStatusStore.getState().setSsh(project.id, "connected", added.id);
+            // Only now is the panel done: the machine is added *and* live, and its
+            // own worker card below takes over the lamp.
+            setPendingDrop(null);
+          })
+          .catch((e) => {
+            setDropConn("error");
+            useRemoteStatusStore.getState().setSsh(project.id, "error", added.id);
+            setDropError(t("remoteMachines.dropConnectFailed", { error: String(e) }));
+          });
+      } else {
+        setPendingDrop(null);
+      }
       setDropPath(project.remote?.remote_path ?? "");
     } catch (e) {
       setDropError(String(e));
@@ -203,7 +260,6 @@ export function RemoteMachinesWindow({
   // `savedPw` reflects the keychain and pre-ticks the box so an untick is a
   // deliberate delete, never an accidental clear of another menu's credential.
   const [savePassword, setSavePassword] = useState(false);
-  const [savedPw, setSavedPw] = useState(false);
   // The connect + browse mechanism is the SHARED one (`useRemoteBrowse`), the same
   // the primary machine's new/extend flow uses — this dialog only wraps its own
   // fields around it. `browsing` is a view flag on top (whether the folder panel is
@@ -250,30 +306,18 @@ export function RemoteMachinesWindow({
   // say so and pre-tick "Save password" (so the box mirrors reality and an
   // untick reads as a deliberate delete). The credential is keyed by host
   // target and shared across every remote menu.
-  useEffect(() => {
-    const parsed = parseTarget();
-    if (!parsed) {
-      setSavedPw(false);
-      setSavePassword(false);
-      return;
-    }
-    let cancelled = false;
-    invoke<boolean>("remote_has_saved_password", {
-      user: parsed.user,
-      host: parsed.host,
-      port: parsed.port,
-    })
-      .then((has) => {
-        if (cancelled) return;
-        setSavedPw(has);
-        setSavePassword(has);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [address, username]);
+  //
+  // The shared tri-state hook, not a boolean — a locked keychain answers a lookup
+  // exactly like an empty one, so `.catch(() => false)` here reported "nothing
+  // saved" for a credential that was sitting right there (`useSavedCredential`).
+  const parsedTarget = parseTarget();
+  const credential = useSavedCredential(
+    parsedTarget
+      ? { user: parsedTarget.user, host: parsedTarget.host, port: parsedTarget.port }
+      : null,
+  );
+  const savedPw = credential.saved;
+  useEffect(() => setSavePassword(savedPw), [savedPw]);
 
   const startBrowse = async () => {
     const parsed = parseTarget();
@@ -294,13 +338,16 @@ export function RemoteMachinesWindow({
       // there *on the new machine* (usually the same shared folder) rather than at
       // this host's home; a synced-copy worker whose folder doesn't exist yet can
       // navigate up from it. The listing refreshes itself.
-      await browse.connect({
+      const outcome = await browse.connect({
         target: parsed,
         password,
-        remember: savePassword,
+        // `true` or `null` — never `false`, which would *clear* the credential this
+        // very connect may have authenticated with (`rememberArg`).
+        remember: rememberArg(savePassword),
         startPath: remotePath.trim() || null,
       });
-      setSavedPw(savePassword);
+      // What the backend actually did, not what the box asked for.
+      credential.applyOutcome(outcome);
       setBrowsing(true);
       invoke<string[]>("remote_list_paths", { host: parsed.host })
         .then(setBrowsePaths)
@@ -332,6 +379,10 @@ export function RemoteMachinesWindow({
       host: parsed.host,
       port: parsed.port,
       password: null,
+      // Credential-less, so the dial policy can't distinguish this from a sweep —
+      // but it is waiting on a master the user just authenticated in the terminal
+      // below. Unsaid, a host tagged HPC refuses every attempt.
+      background: false,
     })
       .then(async () => {
         clearLoginPoll();
@@ -351,6 +402,10 @@ export function RemoteMachinesWindow({
         if (attempt + 1 >= maxAttempts) {
           clearLoginPoll();
           setBrowseConnecting(false);
+          // Say so. Running out silently left the button back on "I've logged in —
+          // browse" with nothing explaining why the first two minutes produced
+          // nothing, which reads as the app having simply stopped.
+          setAddError(t("remoteLogin.pollGaveUp"));
           return;
         }
         loginPoll.current = setTimeout(() => pollLoginReady(parsed, attempt + 1), 3000);
@@ -415,6 +470,44 @@ export function RemoteMachinesWindow({
     setRemotePath(browse.path || "/");
     setBrowsing(false);
   };
+
+  // ── The two ways a global machine enters this project ────────────────────────
+  // Both start from the same row in the list below the "Add a machine" title.
+  //
+  // `quickAddGlobal` is the fast one: a global machine is already a working login
+  // (it was authenticated when it was added, and the credential is keyed by SSH
+  // target), so the only thing this project still needs from it is *where* the
+  // shared folder is — which is exactly the panel the header menu's handoff
+  // seeds. Reusing `pendingDrop` means the add + connect is the one already-proven
+  // path, not a second copy of it.
+  //
+  // `fillFromGlobal` is the full one: the machine's address goes into the form, so
+  // the folder can be browsed and "Sync a copy" chosen — everything the fast path
+  // deliberately fixes at "shared filesystem, path you confirm".
+  const quickAddGlobal = (m: GlobalMachine) => {
+    setDropError("");
+    // A lamp left red by a previous attempt is not this machine's status.
+    setDropConn(null);
+    setDropPath(project.remote?.remote_path ?? "");
+    setPendingDrop({ id: m.id, host: m.host, user: m.user, port: m.port, label: m.label });
+  };
+
+  const fillFromGlobal = (m: GlobalMachine) => {
+    // Via `onAddressChange`, so a browse/login already open for another host is
+    // dropped rather than left listing the wrong machine.
+    onAddressChange(m.port ? `${m.host}:${m.port}` : m.host);
+    setUsername(m.user ?? "");
+    setLabel(m.label ?? "");
+    setAddError("");
+  };
+
+  /** Already this project's primary or one of its workers — matched by SSH
+   *  target, never by id (a project host is a copy by value; `lib/machineSync`).
+   *  Such a row offers no action: adding the same machine twice would give it two
+   *  cards, two lamps and two sync paths for one host. */
+  const alreadyAHost = (m: GlobalMachine) =>
+    (project.remote ? sameTarget(project.remote, m) : false) ||
+    workers.some((w) => sameTarget(w, m));
 
   // "Change…" after a successful login — drop the frozen connection so the
   // address/password step comes back and a fresh login can be made.
@@ -625,13 +718,21 @@ export function RemoteMachinesWindow({
           );
         })()}
 
-        {/* A global machine picked for this project in the header's Machines
-            menu — confirm just the shared path, then add + connect it like any
-            other worker. */}
+        {/* A global machine picked for this project — either in the header's
+            Machines menu, or from this dialog's own list under "Add a machine" —
+            confirm just the shared path, then add + connect it like any other
+            worker. */}
         {pendingDrop && (
-          <div className="remote-machine-card remote-machine-drop-panel">
+          <div className="remote-machine-card remote-machine-drop-panel" ref={dropPanelRef}>
             <div className="remote-machine-head">
-              <ConnLamp status="connected" label={pendingDrop.label || pendingDrop.host} />
+              {/* Was hardcoded `connected`. A dropped machine is *usually* live —
+                  that is why it is droppable — but "usually" is not a status, and
+                  once this panel's own connect is in flight (or has failed) the
+                  attempt the user is watching is the only honest thing to show. */}
+              <ConnLamp
+                status={dropConn ?? globalStatus ?? "off"}
+                label={pendingDrop.label || pendingDrop.host}
+              />
               <span className="remote-machine-name">
                 {pendingDrop.label || pendingDrop.host}
               </span>
@@ -778,6 +879,64 @@ export function RemoteMachinesWindow({
           {!browse.conn ? (
             /* ── Step 1: log in ────────────────────────────────────────── */
             <>
+              {/* ── The machines you already have ───────────────────────────
+                  A global machine is a host that is already set up and already
+                  authenticated, so typing its address and logging into it again
+                  here is work the app can do itself. One click seeds the
+                  confirm-path panel above (add + connect); "Use in the form"
+                  falls through to the ordinary flow when the folder needs
+                  browsing or a synced copy is wanted. */}
+              {globalMachines.length > 0 && (
+                <div className="remote-machine-global">
+                  <div className="remote-machine-add-label">
+                    <span className="remote-machine-global-title">
+                      {t("remoteMachines.globalListTitle")}
+                    </span>
+                    <UntestedTag />
+                  </div>
+                  <p className="settings-help">{t("remoteMachines.globalListHelp")}</p>
+                  <div className="remote-machine-global-list">
+                    {globalMachines.map((m) => {
+                      const target = `${m.user ? `${m.user}@` : ""}${m.host}${m.port ? `:${m.port}` : ""}`;
+                      const taken = alreadyAHost(m);
+                      return (
+                        <div key={m.id} className="remote-machine-global-row">
+                          {/* The machine's own status — a session this app opened,
+                              never a probe (`stores/globalMachines`). */}
+                          <ConnLamp status={globalStatuses[m.id] ?? "off"} label={target} />
+                          <span className="remote-machine-name">{m.label || m.host}</span>
+                          <span className="remote-machine-target">{target}</span>
+                          {taken ? (
+                            <span
+                              className="remote-machine-tag"
+                              title={t("remoteMachines.globalAlreadyAddedTitle")}
+                            >
+                              {t("remoteMachines.globalAlreadyAdded")}
+                            </span>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                title={t("remoteMachines.globalFillTitle")}
+                                onClick={() => fillFromGlobal(m)}
+                              >
+                                {t("remoteMachines.globalFill")}
+                              </button>
+                              <button
+                                type="button"
+                                title={t("remoteMachines.globalQuickAddTitle")}
+                                onClick={() => quickAddGlobal(m)}
+                              >
+                                {t("remoteMachines.globalQuickAdd")}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               <label>
                 {t("remoteMachines.sshAddressLabel")}
                 <input
@@ -828,43 +987,18 @@ export function RemoteMachinesWindow({
                   />
                 </label>
               )}
-              {/* Kept on screen in the terminal path too, and *disabled* rather than
-                  hidden: a saved password belongs to the host, not to how you signed
-                  in this time, and a row that vanishes reads as one that was
-                  discarded. Nothing here can act in that path anyway — the toggle
-                  only takes effect through `ssh_connect`'s `remember`, which a
-                  terminal login never calls, so the keychain is left exactly as it
-                  was found (delete it from the machine's own Connect menu). */}
-              <label
+              {/* The shared row (`SavePasswordRow`). This form's disabled-in-terminal
+                  policy is the one all four surfaces now follow — it was right here
+                  and wrong in the two project dialogs, where a live toggle promised
+                  a save that `ssh_connect`'s `remember` was never called to make. */}
+              <SavePasswordRow
+                credential={credential}
+                checked={savePassword}
+                viaTerminal={viaTerminal}
                 className="container-settings-toggle"
-                title={
-                  viaTerminal
-                    ? t("remoteMachines.saveTitleTerminal")
-                    : t("remoteMachines.saveTitleHeadless")
-                }
-              >
-                <span className="remote-machine-add-label">
-                  {t("remoteConnect.savePassword")}
-                  <UntestedTag />
-                </span>
-                <Toggle
-                  checked={savePassword}
-                  disabled={viaTerminal}
-                  onChange={(e) => setSavePassword(e.target.checked)}
-                  size="sm"
-                />
-              </label>
-              <div className="settings-help">
-                {viaTerminal
-                  ? savedPw
-                    ? t("remoteMachines.saveHintKeptTerminal")
-                    : t("remoteMachines.saveHintNothingTerminal")
-                  : savePassword
-                    ? savedPw
-                      ? t("remoteMachines.saveHintSavedWillAskAgainOff")
-                      : t("remoteMachines.saveHintWillSave")
-                    : `${t("remoteMachines.saveHintNotSavedPre")} “${t("remoteConnect.savePassword")}” ${t("remoteMachines.saveHintNotSavedPost")}`}
-              </div>
+                trailingToggle
+                onChange={setSavePassword}
+              />
               {viaTerminal && loginTerm && (
                 <div className="dialog-connect-terminal">
                   <div className="dialog-connect-terminal-bar">
@@ -946,7 +1080,15 @@ export function RemoteMachinesWindow({
                 const loggedInAs = `${browse.conn!.user ? `${browse.conn!.user}@` : ""}${browse.conn!.host}${browse.conn!.port ? `:${browse.conn!.port}` : ""}`;
                 return (
                   <div className="remote-machine-loggedin">
-                    <ConnLamp status="connected" label={loggedInAs} />
+                    {/* Was hardcoded `connected`. A frozen session says a login once
+                        succeeded, not that it still works — the listing is the live
+                        evidence, so a failing `ssh_list_dir` (the master died, the
+                        tunnel dropped) must redden this rather than leave a green
+                        lamp over an error message. */}
+                    <ConnLamp
+                      status={browse.error ? "error" : browse.busy ? "connecting" : "connected"}
+                      label={loggedInAs}
+                    />
                     <span>
                       {t("remoteMachines.loggedInToPre")} <strong>{loggedInAs}</strong>
                     </span>

@@ -292,6 +292,15 @@ export interface TabEntry {
   // `--session-id <uuid>`), the UUID Eldrun minted and launched the agent with.
   // Surfaced on tab hover and intended to later drive session resume.
   sessionId?: string;
+  // This tab's work is **not** worth outliving it: never tmux-wrapped, however
+  // persist-enabled its project is (`lib/tmuxSession`'s `shouldPersistTab`). Set
+  // by the SLURM log tab on an HPC-tagged host — a `tail -F` left running under a
+  // tmux daemon on a shared login node after Eldrun quits is exactly the standing
+  // presence the tag forbids, and the tail is one click away in the Jobs view.
+  // A real run (`srun --pty`, a training job) is untouched: it is the case tmux
+  // persistence exists for. Persisted with the tab, so a restored log tab does
+  // not quietly regain a session on the next launch.
+  ephemeral?: boolean;
   // For a custom agent (see CustomAgent) whose spec carries a "continue last
   // session" flag: the resume args this tab respawns with after a restart. Its
   // presence is what makes such a tab restart-resumable without the cmd being in
@@ -505,6 +514,8 @@ export interface SavedTabEntry {
   tmuxSession?: string;
   // Persisted tmux session this shell tab attaches to (see TabEntry.tmuxAttach).
   tmuxAttach?: string;
+  // Persisted "never tmux-wrap this tab" marker (see TabEntry.ephemeral).
+  ephemeral?: boolean;
 }
 
 /** Serialized layout tree as persisted in project.json's `tab_groups`. */
@@ -3417,6 +3428,10 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
             : undefined),
         // A Sessions-view attach tab reattaches to its tmux session on restart.
         tmuxAttach: t.tmuxAttach,
+        // Restore the no-tmux marker BEFORE anything reads it: the minted name
+        // above is harmless on such a tab precisely because `shouldPersistTab`
+        // refuses to use it.
+        ephemeral: t.ephemeral,
       };
     });
 
@@ -3584,6 +3599,11 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // remote shell tab REATTACHES to the same host session after a relaunch.
         tmuxSession: t.tmuxSession,
         tmuxAttach: t.tmuxAttach,
+        // Persist the no-tmux marker. Without it a restored SLURM log tab is an
+        // ordinary shell tab again, gets a freshly minted session name, and leaves
+        // the `tail -F` daemon on the login node the flag exists to prevent — and
+        // a relaunch after a crash is exactly when that would happen.
+        ephemeral: t.ephemeral,
       }));
       // #42: re-dock detached groups into the persisted tree so disk reflects a
       // restart-as-docked layout (their tabs are already in the flat list above

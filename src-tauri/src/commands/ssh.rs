@@ -502,6 +502,11 @@ pub fn remote_login_command(
 ///
 /// A `None`/empty `password` first falls back to any saved credential (silent
 /// reconnect) before dropping to key/agent auth.
+///
+/// The outcome is [`SshConnectOutcome`], not `()`, because the keychain half can
+/// fail on its own: a locked keyring refuses the write, and reporting only "the
+/// connect worked" left the user with a ticked Save box, no saved password, and a
+/// blank prompt at the next launch as the sole evidence.
 #[tauri::command]
 pub async fn ssh_connect(
     user: Option<String>,
@@ -509,9 +514,23 @@ pub async fn ssh_connect(
     port: Option<u16>,
     password: Option<String>,
     remember: Option<bool>,
-) -> Result<(), String> {
+    background: Option<bool>,
+) -> Result<SshConnectOutcome, String> {
     tokio::task::spawn_blocking(move || {
         use crate::services::remote_credentials as creds;
+        // Both shapes at once, because this command is both. A **typed password**
+        // is a person at a login form, so it is unconditionally their connect to
+        // make. Credential-less, it is ambiguous: the same call is the readiness
+        // poll that waits for a terminal login's ControlMaster (a gesture, so the
+        // add-a-machine and reconnect flows pass `background: false`) and the
+        // silent reconnect behind auto-connect (which passes nothing). The guard
+        // must outlive `run_ssh_auth`, which is where the argv is built.
+        let typed = password.as_deref().is_some_and(|p| !p.is_empty());
+        let _dial = typed
+            .then(|| crate::services::ssh_common::user_dial(&user, &host, port))
+            .or_else(|| {
+                crate::services::ssh_common::declared_dial(background, &user, &host, port)
+            });
         let account = creds::ssh_account(&user, &host, port);
         // A typed password wins; otherwise fall back to a saved one so an
         // activation-time reconnect authenticates without a prompt.
@@ -519,11 +538,71 @@ pub async fn ssh_connect(
             .filter(|p| !p.is_empty())
             .or_else(|| creds::get(&account));
         run_ssh_auth(&user, &host, port, effective.as_deref(), &["true"])?;
-        creds::remember_secret(&account, remember, effective.as_deref());
-        Ok(())
+        let outcome = creds::remember_secret(&account, remember, effective.as_deref());
+        Ok(SshConnectOutcome {
+            saved: outcome.saved,
+            save_error: outcome.error,
+        })
     })
     .await
     .map_err(|e| format!("ssh probe task failed: {e}"))?
+}
+
+/// What [`ssh_connect`] did *besides* connecting: whether the "Save password"
+/// checkbox was honoured, and — when it was not — the reason, verbatim from the
+/// keychain layer ("the OS keyring is locked, so nothing was saved…").
+///
+/// A failed keychain write never fails the connect: authentication already
+/// succeeded, and refusing the session over a storage problem helps nobody. But
+/// it must not be silent either, which is what discarding it amounted to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SshConnectOutcome {
+    /// A password is now saved for this target as a result of this connect.
+    pub saved: bool,
+    /// Why it is not, when the user asked for it (or asked to remove one and the
+    /// keyring could not be read). `None` on success and when nothing was asked.
+    pub save_error: Option<String>,
+}
+
+/// Both halves of "is a password saved for this host?" in one answer: whether one
+/// reads back, and whether the store could be read at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SavedPasswordState {
+    pub saved: bool,
+    pub keyring: crate::services::remote_credentials::KeyringState,
+}
+
+/// The saved-password state of a host target — [`remote_has_saved_password`] plus
+/// the fact that makes its answer readable.
+///
+/// A locked collection answers every lookup with "nothing saved", so `saved:
+/// false` alone is ambiguous in exactly the case the user cares about: they *did*
+/// tick Save, the password *is* on the ring, and the UI reports it gone. Both
+/// facts come from **one** `spawn_blocking` hop because they are one question —
+/// asking them separately costs two unbounded keychain trips per host, on a path
+/// auto-connect already takes once per host per launch.
+#[tauri::command]
+pub async fn remote_saved_password_state(
+    user: Option<String>,
+    host: String,
+    port: Option<u16>,
+) -> SavedPasswordState {
+    tokio::task::spawn_blocking(move || {
+        use crate::services::remote_credentials as creds;
+        // Lock state first: it refreshes the cache `has()`'s gate then reads, so
+        // the two facts describe the same moment rather than straddling a probe.
+        let keyring = creds::keyring_state();
+        let saved = creds::has(&creds::ssh_account(&user, &host, port));
+        SavedPasswordState { saved, keyring }
+    })
+    .await
+    .unwrap_or(SavedPasswordState {
+        saved: false,
+        // A panicked lookup told us nothing about the store, and "unavailable" is
+        // the state with no action behind it — the honest answer to "we don't
+        // know", and the one that routes the caller to a prompt.
+        keyring: crate::services::remote_credentials::KeyringState::Unavailable,
+    })
 }
 
 /// Whether a saved SSH password exists for this host target, so the UI can
@@ -541,21 +620,18 @@ pub async fn ssh_connect(
 /// primary and every opted-in worker, on every launch and every activation — so a
 /// multi-host remote project serialised several unbounded main-thread D-Bus calls
 /// into startup. Off the main thread it is just a slow promise.
+///
+/// Now a thin wrapper over [`remote_saved_password_state`], which answers the same
+/// question *and* says whether the store was readable. Kept because callers still
+/// ask it this way; a `false` here remains the safe direction (the caller prompts,
+/// never a silent connect on a credential we cannot read).
 #[tauri::command]
 pub async fn remote_has_saved_password(
     user: Option<String>,
     host: String,
     port: Option<u16>,
 ) -> bool {
-    tokio::task::spawn_blocking(move || {
-        let account = crate::services::remote_credentials::ssh_account(&user, &host, port);
-        crate::services::remote_credentials::has(&account)
-    })
-    .await
-    // A panicked keychain lookup answers the question the same way a missing
-    // entry does: nothing usable is saved. The caller then prompts, which is the
-    // safe direction — never a silent connect on a credential we can't read.
-    .unwrap_or(false)
+    remote_saved_password_state(user, host, port).await.saved
 }
 
 /// Outcome of a silent reachability probe (`ssh_probe`).
@@ -598,10 +674,23 @@ fn ssh_unreachable(err: &str) -> bool {
 /// every success (clearing it whenever `remember` is falsy), so probing through it
 /// would delete the very saved password auto-connect depends on. This one is
 /// read-only — it reuses the saved credential but never writes one.
+///
+/// Read-only of the *keychain*, that is: it is a full authenticated login at the
+/// host, which is precisely how a tagged cluster kept being dialled unattended.
+/// So it takes `background` (`ssh_common`'s second shape) — the armed
+/// auto-connect and the machines-menu reachability sweep are its background
+/// callers, a Connect dialog's pre-flight its gesture one — and only an explicit
+/// `Some(false)` counts as a person waiting.
 #[tauri::command]
-pub async fn ssh_probe(user: Option<String>, host: String, port: Option<u16>) -> SshProbe {
+pub async fn ssh_probe(
+    user: Option<String>,
+    host: String,
+    port: Option<u16>,
+    background: Option<bool>,
+) -> SshProbe {
     tokio::task::spawn_blocking(move || {
         use crate::services::remote_credentials as creds;
+        let _dial = crate::services::ssh_common::declared_dial(background, &user, &host, port);
         let saved = creds::get(&creds::ssh_account(&user, &host, port));
         match run_ssh_auth(&user, &host, port, saved.as_deref(), &["true"]) {
             Ok(_) => SshProbe {
@@ -659,6 +748,9 @@ pub async fn remote_kill_all_jobs(
 ) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         use crate::services::remote_credentials as creds;
+        // Explicit-action-only, so it is user-initiated by definition — this is
+        // the one path allowed to reach a tagged HPC host to end work on it.
+        let _dial = crate::services::ssh_common::user_dial(&user, &host, port);
         let password = creds::get(&creds::ssh_account(&user, &host, port));
         run_ssh_auth(
             &user,
@@ -717,6 +809,13 @@ fn close_control_master(_user: &Option<String>, _host: &str, _port: Option<u16>)
 
 /// Return the remote default (home) directory as the browser's start location.
 /// Resolved over SFTP (REALPATH of `.`), so no remote shell runs.
+///
+/// Unconditionally user-initiated (`ssh_common`'s first shape): the remote folder
+/// browser has no caller but a dialog somebody is typing into — the new/import
+/// project flow, extend-to-remote, the add-worker form, the HPC pipeline wizard.
+/// Leaving it background made a tagged machine impossible to *add*, which turns
+/// the tag from a protection into a trap: the point is that Eldrun never reaches
+/// a cluster on its own, not that the user cannot.
 #[tauri::command]
 pub async fn ssh_default_dir(
     user: Option<String>,
@@ -724,6 +823,7 @@ pub async fn ssh_default_dir(
     port: Option<u16>,
     password: Option<String>,
 ) -> Result<String, String> {
+    let _dial = crate::services::ssh_common::user_dial(&user, &host, port);
     sftp::default_dir(&user, &host, port, password.as_deref()).await
 }
 
@@ -731,6 +831,8 @@ pub async fn ssh_default_dir(
 /// directory. Because SFTP is a binary protocol, a directory name containing
 /// `;`/`$()`/spaces is just a listing entry — it is never re-interpreted by a
 /// remote shell (the injection surface the old `ssh ls` path had to guard).
+/// User-initiated for the same reason as [`ssh_default_dir`] — one browser, one
+/// rule.
 #[tauri::command]
 pub async fn ssh_list_dir(
     user: Option<String>,
@@ -739,6 +841,7 @@ pub async fn ssh_list_dir(
     password: Option<String>,
     path: String,
 ) -> Result<Vec<RemoteEntry>, String> {
+    let _dial = crate::services::ssh_common::user_dial(&user, &host, port);
     let entries = sftp::list_dir(&user, &host, port, password.as_deref(), &path).await?;
     Ok(entries
         .into_iter()
@@ -753,6 +856,8 @@ pub async fn ssh_list_dir(
 /// is a binary SFTP field, never re-interpreted by a remote shell — so a folder
 /// name with shell metacharacters is created verbatim, not executed. Used by the
 /// new/import dialog's remote browser to add a target folder while browsing.
+/// User-initiated for the same reason as [`ssh_default_dir`]; creating a folder
+/// is a gesture by construction — nothing polls a mkdir.
 #[tauri::command]
 pub async fn ssh_mkdir(
     user: Option<String>,
@@ -761,6 +866,7 @@ pub async fn ssh_mkdir(
     password: Option<String>,
     path: String,
 ) -> Result<(), String> {
+    let _dial = crate::services::ssh_common::user_dial(&user, &host, port);
     sftp::mkdir(&user, &host, port, password.as_deref(), &path).await
 }
 

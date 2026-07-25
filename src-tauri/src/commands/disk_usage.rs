@@ -88,6 +88,17 @@ pub async fn disk_usage_scan(
         }
     }
 
+    // A confirmed scan is the user asking for this machine by name, so it also
+    // clears the dial policy (`ssh_common::authorize_dial`) that would otherwise
+    // refuse the walk's own ssh — one confirmation covers the whole act, not the
+    // scan only to be stopped again one layer down.
+    let _dial = remote
+        .as_ref()
+        .filter(|_| confirmed == Some(true))
+        .map(|t| {
+            crate::services::ssh_common::user_dial(&t.spec.user, &t.spec.host, t.spec.port)
+        });
+
     let cancel = Arc::new(AtomicBool::new(false));
     if let Ok(mut map) = state.lock() {
         map.insert(scan_id.clone(), cancel.clone());
