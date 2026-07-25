@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 #
-# Bump the Eldrun version across the three files that must stay in lockstep:
+# Bump the Eldrun version across the four files that must stay in lockstep:
 #   - package.json
 #   - src-tauri/Cargo.toml   (the [package] version)
 #   - src-tauri/tauri.conf.json
+#   - Cargo.lock             (the workspace's own [[package]] entry)
+#
+# The lockfile is in the list because cargo rewrites that entry from Cargo.toml
+# the next time it runs. Left out, every auto-bumped push committed a lockfile
+# one version behind and handed the tree straight back dirty.
 #
 # Usage:
 #   scripts/bump-version.sh [patch|minor|major]   # bump a semver component (default: patch)
@@ -16,6 +21,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 pkg="$repo_root/package.json"
 cargo="$repo_root/src-tauri/Cargo.toml"
 tauri="$repo_root/src-tauri/tauri.conf.json"
+lock="$repo_root/Cargo.lock"
 
 for f in "$pkg" "$cargo" "$tauri"; do
   [ -f "$f" ] || { echo "bump-version: missing $f" >&2; exit 1; }
@@ -53,5 +59,21 @@ awk -v v="$new" '
   }
   { print }
 ' "$cargo" >"$tmp" && mv "$tmp" "$cargo"
+
+# Cargo.lock — only the `eldrun` [[package]] block's version line. Matched on the
+# block's own `name`, never on the version string: a dependency that happens to
+# sit at the same version must not be rewritten along with us. Absent lockfile is
+# not an error (it is generated), so a fresh clone can still bump.
+if [ -f "$lock" ]; then
+  tmp="$(mktemp)"
+  awk -v v="$new" '
+    /^\[\[package\]\]/ { ours = 0 }
+    /^name[[:space:]]*=[[:space:]]*"eldrun"$/ { ours = 1 }
+    ours && /^version[[:space:]]*=/ && !done {
+      sub(/"[^"]*"/, "\"" v "\""); done = 1
+    }
+    { print }
+  ' "$lock" >"$tmp" && mv "$tmp" "$lock"
+fi
 
 echo "$new"
