@@ -21160,3 +21160,457 @@ select option {
 .mail-staged-remove:hover {
   color: var(--danger, #d9534f);
 }
+
+/* ── In-app browser (#61) ───────────────────────────────────────────────────
+   The browser tab renders READER mode — pre-sanitized, script-less HTML in an
+   iframe — so everything here is ordinary DOM chrome around it. There is no
+   native view to keep in step, and therefore nothing here fights z-index.
+
+   Built from the theme tokens (--text-primary / --bg-panel / --accent), so the
+   pane inherits every theme rather than carrying its own palette. The two
+   portaled surfaces (.browser-security-popover, .browser-download-dialog) set
+   an explicit `color`: <body> carries none, so without it they render black.
+
+   Note the loading bar: a width/opacity transition on a FLAT element, never an
+   animated blurred box-shadow — that is software-rendered under WebKitGTK with
+   DMABUF off and costs whole frames (project_webkit_paint_perf). */
+
+.browser-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.browser-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.browser-icon-btn {
+  border: 1px solid var(--border-color);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border-radius: var(--radius);
+  min-width: 26px;
+  height: 26px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+.browser-icon-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.browser-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.browser-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-color);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.browser-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.browser-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.browser-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-panel);
+  font-weight: 600;
+}
+.browser-btn-live {
+  border-color: var(--accent-secondary);
+}
+
+/* The address field. The host is never shortened; long paths elide from the
+   right, and the field scrolls rather than truncating the part that decides
+   where the page came from. */
+.browser-address {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+}
+
+.browser-address-display {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: 12px/1.6 var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+  text-align: left;
+  cursor: text;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+.browser-address-display::-webkit-scrollbar {
+  height: 0;
+}
+
+.browser-address-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: 12px/1.6 var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+  outline: none;
+}
+
+.browser-address-dim,
+.browser-address-rest {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+.browser-address-rest {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+}
+/* Full weight, full length: the host is the only part that says where a page
+   actually came from. */
+.browser-address-host {
+  color: var(--text-primary);
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.browser-address-userinfo {
+  color: var(--danger, #d9534f);
+  text-decoration: line-through;
+  flex: 0 0 auto;
+}
+.browser-address-flag,
+.browser-address-punycode,
+.browser-address-hint {
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+}
+.browser-address-flag {
+  color: var(--danger, #d9534f);
+  border-color: var(--danger, #d9534f);
+}
+.browser-address-punycode {
+  color: var(--warning, #e3b341);
+  font-family: var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+}
+.browser-address-hint {
+  color: var(--warning, #e3b341);
+}
+
+/* The security chip. The WORD carries the meaning; the glyph is ornament beside
+   it, because an icon alone is a solved failure. */
+.browser-security-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 10px;
+}
+.browser-security-chip.tone-secure {
+  color: var(--success, #3fb950);
+}
+.browser-security-chip.tone-insecure {
+  color: var(--danger, #d9534f);
+}
+.browser-security-chip:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.browser-security-word {
+  font-weight: 600;
+}
+.browser-vpn-chip {
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  padding: 0 5px;
+  font-size: 10px;
+  color: var(--warning, #e3b341);
+}
+
+.browser-security-popover {
+  /* Portaled to <body>, which has no color of its own. */
+  color: var(--text-primary);
+  min-width: 260px;
+  max-width: 380px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.browser-security-row {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+}
+.browser-security-label {
+  flex: 0 0 78px;
+  color: var(--text-muted);
+}
+.browser-security-value {
+  flex: 1;
+  /* Wraps. Never ellipsised — a shortened host is the attack. */
+  word-break: break-all;
+  font-family: var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+}
+.browser-security-note {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* A flat 2px bar: width/opacity only, no blur. */
+.browser-progress {
+  height: 2px;
+  background: var(--accent);
+  opacity: 0.85;
+  animation: browser-progress 1.1s ease-in-out infinite;
+}
+@keyframes browser-progress {
+  0% {
+    width: 8%;
+  }
+  50% {
+    width: 82%;
+  }
+  100% {
+    width: 8%;
+  }
+}
+
+.browser-error-strip,
+.browser-note-strip,
+.browser-warning-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.browser-error-strip {
+  background: color-mix(in srgb, var(--danger, #d9534f) 14%, transparent);
+}
+.browser-note-strip {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.browser-warning-strip {
+  background: color-mix(in srgb, var(--warning, #e3b341) 16%, transparent);
+}
+.browser-error-strip span,
+.browser-note-strip span {
+  flex: 1;
+  word-break: break-word;
+}
+/* The why, beside the what, in a live window's refusal strip. */
+.browser-live-reason {
+  flex: 0 1 auto !important;
+  color: var(--text-muted);
+}
+
+.browser-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+.browser-empty {
+  padding: 24px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.browser-reader {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.browser-reader-banner {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 10px;
+  font-size: 11px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.browser-reader-mode {
+  font-weight: 650;
+  color: var(--accent);
+}
+.browser-reader-hint {
+  color: var(--text-muted);
+}
+.browser-reader-frame {
+  flex: 1;
+  min-height: 320px;
+  width: 100%;
+  border: 0;
+  background: #ffffff;
+}
+
+.browser-unsafe-card {
+  margin: 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--danger, #d9534f);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--danger, #d9534f) 10%, transparent);
+}
+
+.browser-start {
+  padding: 32px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+.browser-start-title {
+  font-weight: 650;
+  color: var(--accent);
+  font-size: 14px;
+}
+.browser-start-hint {
+  margin: 0;
+  color: var(--text-muted);
+  max-width: 46rem;
+}
+.browser-resume-url {
+  font: 12px/1.7 var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+  word-break: break-all;
+  max-width: 100%;
+}
+
+.browser-blocked {
+  padding: 26px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+.browser-blocked-title {
+  font-weight: 650;
+  color: var(--danger, #d9534f);
+  font-size: 14px;
+}
+/* The gate's THIRD outcome — reachable, but worth telling you about first (a
+   loopback or private address). Toned as a question, not as a refusal: it is not
+   an error, and painting it red would train the user to click past the red one
+   too. */
+.browser-blocked-confirm .browser-blocked-title {
+  color: var(--warning, #e3b341);
+}
+.browser-blocked-reason {
+  max-width: 46rem;
+}
+.browser-blocked-label {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+/* The FULL address, monospace, wrapping. Never ellipsis-truncated: a shortened
+   URL is how `https://example.com.evil.tld/…` reads as `https://example.com…`. */
+.browser-blocked-url {
+  font: 12px/1.7 var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+  word-break: break-all;
+  max-width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+}
+.browser-blocked-note {
+  margin: 0;
+  color: var(--text-muted);
+  max-width: 46rem;
+}
+.browser-blocked-actions,
+.browser-dialog-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+.browser-dialog-actions {
+  justify-content: flex-end;
+}
+
+.browser-live-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.browser-live-title {
+  color: var(--text-muted);
+}
+
+.browser-menu {
+  color: var(--text-primary);
+  min-width: 190px;
+}
+
+.browser-download-dialog {
+  /* Portaled to <body>, which has no color of its own. */
+  color: var(--text-primary);
+  width: min(440px, 92vw);
+}
+.browser-download-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 10px;
+}
+.browser-download-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-top: 6px;
+}
+.browser-download-name {
+  font: 12px/1.6 var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+  word-break: break-all;
+}
+.browser-download-value {
+  font-size: 12px;
+}
+.browser-download-note {
+  color: var(--text-muted);
+  font-size: 11px;
+}

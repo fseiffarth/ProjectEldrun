@@ -14,6 +14,9 @@ import { invoke } from "@tauri-apps/api/core";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
 import {
+  BROWSER_TAB_CMD,
+  cmdToKind,
+  isPtyTabKind,
   isRestorableKind,
   isResumableAgentTab,
   isRestorableTab,
@@ -39,6 +42,51 @@ describe("isRestorableKind", () => {
     // restart; note that restoring it must never *sync* — a restored tab renders
     // from the local index and shows a "Check mail" button (MAIL_TAB_CMD).
     expect(isRestorableKind("mail")).toBe(true);
+  });
+
+  it("keeps browser — the tab comes back, on its resume card", () => {
+    // A browser tab has no live process and one persisted field (its URL). What
+    // it must NOT do is navigate on restore: it comes back holding the address
+    // behind a Load button, because reopening a window is not consent to dial
+    // out (BROWSER_TAB_CMD). This is the only automated proof the tab survives.
+    expect(isRestorableKind("browser")).toBe(true);
+  });
+});
+
+describe("a browser tab round-trips its URL and nothing else", () => {
+  it("carries `url` through save → load, and never gains a PTY", () => {
+    // The whole of a browser tab's persistence: no history, no scroll, no form
+    // state, no cookies. A URL string is inert and reviewable in a diff; a
+    // serialized session blob written into project.json would be neither.
+    useTabsStore.setState({
+      scope: "p",
+      tabsByScope: {},
+      layoutByScope: {},
+      focusedGroupByScope: {},
+      detachedGroupsByScope: {},
+      hiddenGroupsByScope: {},
+    });
+    const store = useTabsStore.getState();
+    const tab = store.addTab({
+      label: "Browser",
+      cmd: BROWSER_TAB_CMD,
+      cwd: "/tmp",
+      kind: "browser",
+      url: "https://example.com/docs",
+    });
+    expect(tab.kind).toBe("browser");
+    expect(isPtyTabKind(tab.kind)).toBe(false);
+
+    const saved = useTabsStore.getState().snapshotScopeForSwitch("p");
+    const savedTab = saved.tabs.find((t) => t.key === tab.key);
+    expect(savedTab?.url).toBe("https://example.com/docs");
+
+    useTabsStore.getState().loadFromLayout(saved.tabs, "/tmp", "p", saved.tabGroups ?? undefined);
+    const restored = useTabsStore.getState().tabs.find((t) => t.kind === "browser");
+    expect(restored?.url).toBe("https://example.com/docs");
+    // Recovered from a bare persisted cmd, too — a layout written before the
+    // `kind` field existed still comes back as a browser tab.
+    expect(cmdToKind(BROWSER_TAB_CMD)).toBe("browser");
   });
 });
 
@@ -167,6 +215,31 @@ describe("saveLayout — persists restorable tabs (incl. resumable agents)", () 
     const arg = call![1] as { tabs: { kind: string }[]; groups: SavedLayoutTree | null };
     expect(arg.tabs.map((t) => t.kind)).toEqual(["shell"]);
     expect(JSON.stringify(arg.groups)).not.toContain("agent");
+  });
+
+  it("writes a browser tab's committed URL to disk", async () => {
+    // The bug this locks: `loadFromLayout` read `url`, and the in-memory
+    // project-switch snapshot carried live TabEntries through unchanged — so a
+    // scope switch looked right — but `saveLayout` is the ONLY path to
+    // `project.json`, and it did not include the field. A real relaunch brought
+    // the tab back with no address, i.e. an empty start page instead of the
+    // resume card that is the whole of this tab's restore behaviour.
+    const store = useTabsStore.getState();
+    store.setScope("p");
+    store.addTab({
+      label: "Browser",
+      cmd: BROWSER_TAB_CMD,
+      cwd: "/p",
+      kind: "browser",
+      url: "https://example.com/docs",
+    });
+
+    await useTabsStore.getState().saveLayout("/p/project.json");
+
+    const call = invokeMock.mock.calls.find((c) => c[0] === "save_tab_layout");
+    const arg = call![1] as { tabs: { kind: string; url?: string }[] };
+    const browser = arg.tabs.find((t) => t.kind === "browser");
+    expect(browser?.url).toBe("https://example.com/docs");
   });
 
   it("keeps a Codex agent tab with a sessionId", async () => {

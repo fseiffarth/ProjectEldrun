@@ -131,6 +131,40 @@ idna = "1"
 # filename never reaches a syscall).
 sha2 = "0.10"
 
+# ── In-app browser (see docs/browser_plan_b.md, docs/browser_plan_c.md) ──────
+# The URL parser the navigation gate runs on. Named directly rather than reached
+# through `tauri::Url` so `services::web_safety` stays AppHandle-free and unit
+# testable, and so there is exactly ONE parser — a second, string-searching
+# implementation of "what host is this" is how `https://example.com@evil.example/`
+# gets read as `example.com`. Already resolved in the tree via `tauri`.
+url = "2"
+# RFC 1918 / ULA / CGNAT / link-local classification for the loopback-and-intranet
+# navigation gate. `IpAddr::is_global()` is still unstable, so this is the stable
+# replacement rather than a convenience. Already in the tree transitively.
+ipnet = "2"
+# Reader mode fetches pages in the BACKEND, so the unsanitized bytes never exist
+# in a webview process (the mail client's structural argument, applied to the web).
+# `default-features = false` drops native-tls (no OpenSSL anywhere in the bundle,
+# same as mail). `rustls-no-provider` is the load-bearing spelling: it takes the
+# crypto provider from the process default that
+# `mail_engine::install_crypto_provider()` already installs, so this crate never
+# compiles a second `CryptoProvider` in — rustls 0.23 PANICS at first use when two
+# are present and none is installed. Roots come from `rustls-native-certs`, i.e.
+# the OS trust store, so a private CA is added by the system administrator rather
+# than by an "ignore certificate" checkbox this browser does not have.
+# Decode a fetched page with the charset the SERVER declared (then the
+# document's own `<meta charset>`), never the renderer's sniffing — the layer
+# whose disagreement with ours would be the bug. Already compiled in via
+# reqwest's `charset` feature, so naming it directly costs no new dependency.
+encoding_rs = "0.8"
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls-no-provider",
+    "http2",
+    "charset",
+    "gzip",
+    "brotli",
+] }
+
 # Linux/Unix: workspace backends + crash signal handling
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "4"

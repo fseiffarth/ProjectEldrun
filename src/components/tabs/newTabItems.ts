@@ -95,6 +95,7 @@ export const TAB_ACCENT: Record<TabKind, string> = {
   diskusage: "var(--warning, #e3b341)",
   calendar: "var(--accent)",
   mail: "var(--info, #4aa3df)",
+  browser: "var(--accent-secondary)",
 };
 
 /**

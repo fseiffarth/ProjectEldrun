@@ -33,6 +33,7 @@ export const EXPERIMENTAL_FLAGS = [
   "python_run_debug",
   "deck_presenter",
   "mail_client",
+  "web_browser",
 ] as const;
 
 export type ExperimentalFlag = (typeof EXPERIMENTAL_FLAGS)[number];

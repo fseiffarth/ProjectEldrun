@@ -24,6 +24,7 @@ import { RemoteMachinesDialogHost } from "../projects/RemoteMachinesWindow";
 import { GlobalMachineMonitorDialogHost } from "../monitoring/GlobalMachineMonitorDialog";
 import { HpcPipelineWizardHost } from "../projects/HpcPipelineWizard";
 import { BigFolderDialogHost } from "../projects/BigFolderExcludeDialog";
+import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 import { LocalLossDialog } from "../common/LocalLossDialog";
 import { HostKeyConfirmDialog } from "../common/HostKeyConfirmDialog";
 import { HpcGuardDialog } from "../common/HpcGuardDialog";
@@ -806,6 +807,12 @@ export function AppShell() {
           mirror during a background pass, and the user must hear about it wherever they
           are — including when the file panel it happened in is closed (#28q). */}
       <LocalLossDialog />
+      {/* The in-app browser's download consent (#61). Mounted once per window,
+          not per pane: the dialog is portaled to <body> and CenterPanel keeps
+          every tab mounted, so a pane-rendered one would appear once per browser
+          tab. It also owns the browser event listeners, so a download raised by a
+          live-page window is answerable even when no browser tab is open. */}
+      <BrowserDownloadHost />
       {/* Fires once per connect (manual or silent auto-connect): warns that the
           host's load/memory/logged-in sessions suggest it's already in use. */}
       <RemoteUsageWarningDialog />

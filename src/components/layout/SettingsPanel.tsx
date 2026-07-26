@@ -22,6 +22,7 @@ import type {
   UnsyncedReport,
 } from "../../types";
 import { THEMES } from "../../types";
+import type { LinkOpenTarget } from "../../types/browser";
 import { summarizeScaffoldRepair, type ProjectScaffoldRepair } from "../projects/scaffold";
 import { Toggle } from "../common/Toggle";
 import { OPEN_STATS_EVENT } from "../stats/StatsRecapHost";
@@ -823,6 +824,18 @@ export function SettingsDialog({
             />
 
             <ToggleCard
+              label={t("settings.webBrowser")}
+              checked={experimentalEnabled(settings, "web_browser")}
+              onChange={(e) => void updateSettings({ web_browser: e.target.checked })}
+              help={
+                <>
+                  {t("settings.webBrowserHelp1")} <b>{t("browser.readerMode")}</b>{" "}
+                  {t("settings.webBrowserHelp2")}
+                </>
+              }
+            />
+
+            <ToggleCard
               label={t("settings.pythonRunDebug")}
               checked={experimentalEnabled(settings, "python_run_debug")}
               onChange={(e) => void updateSettings({ python_run_debug: e.target.checked })}
@@ -934,6 +947,66 @@ export function SettingsDialog({
               />
             </div>
             <p className="settings-help">{t("settings.reminderHelp")}</p>
+
+            {/* The in-app browser (#61). Everything here is a *preference*; the
+                navigation policy, the permission defaults and the download rule
+                are the backend's and are not configurable — a "trusted sites"
+                list or an "ignore certificate errors" switch is exactly the kind
+                of relaxation that outlives the reason for it, so none exists. */}
+            <div className="settings-section-title">
+              {t("settings.browser")} <UntestedTag />
+            </div>
+            <div className="settings-row">
+              <label>{t("settings.browserHome")}</label>
+              <input
+                type="text"
+                value={settings?.browser_home_url ?? ""}
+                placeholder={t("settings.browserHomePlaceholder")}
+                onChange={(e) => void updateSettings({ browser_home_url: e.target.value })}
+              />
+            </div>
+            <p className="settings-help">{t("settings.browserHomeHelp")}</p>
+            <div className="settings-row">
+              <label>{t("settings.browserSearch")}</label>
+              <input
+                type="text"
+                value={settings?.browser_search_template ?? ""}
+                placeholder="https://duckduckgo.com/?q=%s"
+                onChange={(e) => void updateSettings({ browser_search_template: e.target.value })}
+              />
+            </div>
+            <p className="settings-help">{t("settings.browserSearchHelp")}</p>
+            <div className="settings-row">
+              <label>{t("settings.browserLinkTarget")}</label>
+              <Dropdown
+                value={settings?.browser_link_target ?? "external"}
+                onChange={(v) =>
+                  void updateSettings({ browser_link_target: v as LinkOpenTarget })
+                }
+                options={[
+                  { value: "external", label: t("settings.browserLinkTargetExternal") },
+                  { value: "in_app", label: t("settings.browserLinkTargetInApp") },
+                  { value: "ask", label: t("settings.browserLinkTargetAsk") },
+                ]}
+              />
+            </div>
+            <p className="settings-help">{t("settings.browserLinkTargetHelp")}</p>
+            <ToggleCard
+              label={t("settings.browserRestoreNavigate")}
+              checked={settings?.browser_restore_navigate ?? false}
+              onChange={(e) =>
+                void updateSettings({ browser_restore_navigate: e.target.checked })
+              }
+              help={t("settings.browserRestoreNavigateHelp")}
+            />
+            {/* Deliberately `?? false` and NOT `useExperimental` — this is the one
+                browser switch that must stay off in a debug build too. */}
+            <ToggleCard
+              label={t("settings.browserLivePages")}
+              checked={settings?.browser_live_pages ?? false}
+              onChange={(e) => void updateSettings({ browser_live_pages: e.target.checked })}
+              help={t("settings.browserLivePagesHelp")}
+            />
 
             <div className="settings-section-title">{t("settings.hintsOnboarding")}</div>
             <ToggleCard

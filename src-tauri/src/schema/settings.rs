@@ -137,6 +137,72 @@ pub struct Settings {
     /// so nothing in the backend reads this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deck_presenter: Option<bool>,
+    /// EXPERIMENTAL, default OFF. The in-app browser (TODO J #61,
+    /// `docs/browser_plan_{a,b,c}.md`): a JS-free reader tab plus a separate
+    /// hardened live-page window. Read via `web_browser()`, which applies the
+    /// same unset-means-debug rule every other experimental flag follows.
+    ///
+    /// It is declared here rather than left to ride in `extra` for the reason
+    /// every other flag is: a field that only exists in the catch-all cannot be
+    /// read by `Settings::experimental()`, so the backend could never gate on it
+    /// even if it wanted to, and a typo in the key would round-trip silently
+    /// instead of failing to compile.
+    ///
+    /// **What the gate does and does not do.** Like `mail_client` and
+    /// `deck_presenter`, it hides the *entry points* — the two add-tab menu
+    /// entries — and never a pane already on screen: an open or restored browser
+    /// tab keeps rendering, because a flag flip must not blank a surface the
+    /// user is looking at. The commands are therefore deliberately NOT refused
+    /// when it is off (that would break exactly that restored tab), which is the
+    /// same posture the mail commands take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_browser: Option<bool>,
+    /// Browser: where a fresh browser tab opens. Empty/unset is the built-in
+    /// start page, **not** a remote request — a home page that fires on every
+    /// new tab is an outbound request nobody asked for. Frontend logic only; the
+    /// backend round-trips it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_home_url: Option<String>,
+    /// Browser: what the address bar does with text that is not a web address —
+    /// `%s` is replaced by the percent-encoded input. Clearable, in which case
+    /// such text is refused rather than sent to a third party.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_search_template: Option<String>,
+    /// Browser: where a clicked link opens (`external` / `in_app` / `ask`,
+    /// TODO J #33). Default `external` — the user's real browser holds their
+    /// sign-ins, their extensions and their password manager.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_link_target: Option<String>,
+    /// Browser: a restored tab loads its page at launch instead of showing the
+    /// resume card. **Default false** — restoring N tabs would otherwise be N
+    /// automatic outbound requests before the user has looked at the screen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_restore_navigate: Option<bool>,
+    /// Browser: whether the hardened **live-page window** may be opened at all.
+    ///
+    /// **Default false, and deliberately not an `experimental()` flag** — unlike
+    /// every other opt-in here, unset must mean *off in a debug build too*. That
+    /// is the whole point: a debug build is what the author runs all day, and
+    /// this is the one browser surface whose central security claim does not
+    /// hold.
+    ///
+    /// Reader mode carries no such switch because it needs none: it runs no
+    /// JavaScript, owns no webview, and its bytes are sanitized in Rust before
+    /// the frontend sees them. A live page is the opposite on every count, and
+    /// two of its holes cannot be closed from app code at all — a page can reach
+    /// a loopback service by way of any hostname that resolves there (wildcard
+    /// DNS resolvers make this free), and `ws://` reaches one regardless because
+    /// a WebSocket is not a navigation and has no CORS. Both are disclosed in
+    /// `services::browser_engine`'s module header. On a developer's machine the
+    /// things listening on loopback are model servers, notebooks, dev servers
+    /// and dashboards, which is why this is a separate, explicit switch rather
+    /// than a line item inside `web_browser`.
+    ///
+    /// Read via `browser_live_pages()`; `commands::browser::browser_open_live`
+    /// refuses without it, and `browser_capabilities` reports it so the frontend
+    /// hides the control rather than offering one that errors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_live_pages: Option<bool>,
     /// Persistent LOCAL (tmux) sessions (TODO #85): when true (the default on Unix),
     /// a local project's shell/script tabs run inside a tmux session on the machine,
     /// so a long run survives an Eldrun crash and the tab reattaches on restart.
@@ -411,6 +477,23 @@ impl Settings {
         self.experimental(self.deck_presenter)
     }
 
+    /// Whether the experimental in-app browser is offered (TODO J #61). Off
+    /// outside debug mode while the surface is still moving. It gates the add-tab
+    /// entry points only — see the field's doc for why the commands themselves
+    /// stay reachable.
+    pub fn web_browser(&self) -> bool {
+        self.experimental(self.web_browser)
+    }
+
+    /// Whether the browser's hardened live-page window may be opened.
+    ///
+    /// `unwrap_or(false)`, **not** `experimental()`: unset means off everywhere,
+    /// including a debug build. See the field's doc for why this one surface is
+    /// held to a stricter default than the flag that enables the browser itself.
+    pub fn browser_live_pages(&self) -> bool {
+        self.browser_live_pages.unwrap_or(false)
+    }
+
     /// Whether LOCAL shell/script tabs are wrapped in a persistent tmux session
     /// (TODO #85). Default ON when unset; only an explicit `Some(false)` opts out.
     /// The caller still gates on `tmux_local::tmux_available()` (no tmux / Windows →
@@ -440,6 +523,7 @@ mod tests {
         assert!(!off.python_run_debug());
         assert!(!off.agent_mode_toggle());
         assert!(!off.deck_presenter());
+        assert!(!off.web_browser());
 
         let debug = Settings {
             debug: Some(true),
@@ -448,6 +532,7 @@ mod tests {
         assert!(debug.python_run_debug());
         assert!(debug.agent_mode_toggle());
         assert!(debug.deck_presenter());
+        assert!(debug.web_browser());
 
         let debug_but_off = Settings {
             debug: Some(true),
@@ -461,5 +546,42 @@ mod tests {
             ..Default::default()
         };
         assert!(opted_in.python_run_debug());
+    }
+
+    /// The browser's settings must be **named fields**, not `extra` passengers.
+    /// A key that only exists in the `#[serde(flatten)]` catch-all round-trips
+    /// perfectly and is invisible to `Settings::experimental()` and to every
+    /// typed reader — so the backend could never gate on it, and a misspelling
+    /// would be a silent no-op rather than a compile error. This test fails if
+    /// one is ever removed from the struct and left to ride in `extra`.
+    #[test]
+    fn the_browser_settings_are_real_fields_and_not_extra_passengers() {
+        let json = r#"{
+            "web_browser": true,
+            "browser_home_url": "https://example.com/",
+            "browser_search_template": "https://example.invalid/?q=%s",
+            "browser_link_target": "in_app",
+            "browser_restore_navigate": true
+        }"#;
+        let s: Settings = serde_json::from_str(json).expect("settings parse");
+        assert_eq!(s.web_browser, Some(true));
+        assert_eq!(s.browser_home_url.as_deref(), Some("https://example.com/"));
+        assert_eq!(
+            s.browser_search_template.as_deref(),
+            Some("https://example.invalid/?q=%s")
+        );
+        assert_eq!(s.browser_link_target.as_deref(), Some("in_app"));
+        assert_eq!(s.browser_restore_navigate, Some(true));
+        assert!(
+            s.extra.is_empty(),
+            "a browser setting fell through to `extra`: {:?}",
+            s.extra.keys().collect::<Vec<_>>()
+        );
+        assert!(s.web_browser());
+
+        // And it survives a round trip, so an older file's keys are not dropped.
+        let back: Settings =
+            serde_json::from_str(&serde_json::to_string(&s).unwrap()).expect("round trip");
+        assert_eq!(back.browser_link_target.as_deref(), Some("in_app"));
     }
 }

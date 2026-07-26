@@ -243,33 +243,55 @@ pub fn format_crash_line(code: u32, addr: usize, buf: &mut [u8]) -> usize {
 #[cfg(target_os = "linux")]
 fn install_webview_crash_reporter(app: &tauri::App) {
     use tauri::Manager;
+
+    // This loop runs ONCE, at setup, so it only ever sees the windows declared
+    // in `tauri.conf.json`. Any window created later — a detached popout, the
+    // presenter, an in-app browser's live page — has to be hooked at its own
+    // creation via `hook_webview_crash_reporter`, or the crash it suffers is a
+    // blank window with no `crash.log` line. That matters most for the browser:
+    // a hostile page is precisely the thing that induces a renderer crash.
+    for window in app.webview_windows().values() {
+        hook_webview_crash_reporter(window);
+    }
+}
+
+/// Hook one window's renderer-crash signal. Safe to call on any window, at any
+/// point after it is built.
+#[cfg(target_os = "linux")]
+pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
     use webkit2gtk::{WebProcessTerminationReason, WebViewExt};
 
     static RELOADS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     const MAX_RELOADS: u32 = 5;
 
-    for window in app.webview_windows().values() {
-        let label = window.label().to_string();
-        let _ = window.with_webview(move |webview| {
-            let label = label.clone();
-            webview
-                .inner()
-                .connect_web_process_terminated(move |view, reason| {
-                    let msg = format!(
-                        "=== WEBVIEW '{label}' TERMINATED {} reason={reason:?} ===",
-                        iso_now()
-                    );
-                    crash_log_append(&msg);
-                    eprintln!("{msg}");
-                    if reason == WebProcessTerminationReason::TerminatedByApi {
-                        return;
-                    }
-                    if RELOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < MAX_RELOADS {
-                        view.reload();
-                    }
-                });
-        });
-    }
+    let label = window.label().to_string();
+    let _ = window.with_webview(move |webview| {
+        let label = label.clone();
+        webview
+            .inner()
+            .connect_web_process_terminated(move |view, reason| {
+                let msg = format!(
+                    "=== WEBVIEW '{label}' TERMINATED {} reason={reason:?} ===",
+                    iso_now()
+                );
+                crash_log_append(&msg);
+                eprintln!("{msg}");
+                if reason == WebProcessTerminationReason::TerminatedByApi {
+                    return;
+                }
+                if RELOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < MAX_RELOADS {
+                    view.reload();
+                }
+            });
+    });
+}
+
+/// Every other platform reports renderer crashes through its own channel (the
+/// SEH filter on Windows, the signal handlers elsewhere), so this is a no-op
+/// with the same signature rather than a `cfg` at every call site.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
+    let _ = window;
 }
 
 /// WebKitGTK draws the scrollbars INSIDE the web content with the native GTK
@@ -427,6 +449,13 @@ pub fn run() {
     // at runtime, mid-connect, on a user's machine. Install ours explicitly
     // before anything can reach TLS, and ignore an already-installed one.
     services::mail_engine::install_crypto_provider();
+
+    // Anything left in the browser's download quarantine is by definition
+    // abandoned: the user either saved it (so a copy exists where they chose)
+    // or declined it. Same posture `services::sandbox::sweep_orphans` takes
+    // with stale containers — a crash must not leave un-consented bytes on
+    // disk indefinitely.
+    services::browser_engine::sweep_quarantine();
 
     let pty_registry: RegistryState = Arc::new(Mutex::new(PtyRegistry::default()));
     let win_registry: WindowRegistryState = Arc::new(Mutex::new(WindowRegistry::default()));
@@ -705,6 +734,22 @@ pub fn run() {
             commands::mail::mail_attach_remove,
             commands::mail::mail_attachment_save,
             commands::mail::mail_attachment_preview,
+            // In-app browser (docs/browser_plan_{a,b,c}.md, TODO J #61). Two
+            // surfaces, neither an embedded pane: a JS-free reader tab that is
+            // fetched and sanitized in Rust, and a separate hardened
+            // `browser-*` window with an ephemeral profile that no capability
+            // grants anything to. Every one is `async` (a sync command would
+            // freeze the window for the fetch timeout or the window build), and
+            // none takes a path — `url` is the one deliberate exception and it
+            // goes through the navigation gate before anything else touches it.
+            commands::browser::browser_capabilities,
+            commands::browser::browser_check_url,
+            commands::browser::browser_reader_fetch,
+            commands::browser::browser_open_live,
+            commands::browser::browser_close_live,
+            commands::browser::browser_list_live,
+            commands::browser::browser_download_decide,
+            commands::browser::browser_clear_data,
             // SSH / remote projects
             commands::ssh::ssh_connect,
             commands::ssh::ssh_probe,

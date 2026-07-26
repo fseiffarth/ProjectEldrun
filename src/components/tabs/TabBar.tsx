@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
   BLOB_TAB_CMD,
+  BROWSER_TAB_CMD,
   CALENDAR_TAB_CMD,
   MAIL_TAB_CMD,
   DISKUSAGE_TAB_CMD,
@@ -126,6 +127,12 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // rendering, because hiding a tab someone is reading is not what a flag flip
   // means.
   const mailClient = useExperimental("mail_client");
+  // Same gate, same asymmetry: the in-app browser (#61). Hides the menu entry,
+  // never a pane already on screen.
+  const webBrowser = useExperimental("web_browser");
+  // Where a fresh browser tab opens. Empty/unset = the built-in start page, not
+  // a remote request.
+  const browserHome = useSettingsStore((s) => s.settings?.browser_home_url);
   // Timestamp of the last mode flip, for the respawn debounce in handleAgentMode.
   const lastModeToggle = useRef(0);
   const closeGroup = useTabsStore((s) => s.closeGroup);
@@ -533,6 +540,23 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       { label: t("newTabMenu.mail"), cmd: MAIL_TAB_CMD, cwd: projectCwd, kind: "mail" },
       (tab) => tab.kind === "mail",
     );
+    setMenuPos(null);
+  }
+
+  // Open an in-app browser tab. Unlike mail/calendar this is NOT a singleton:
+  // each tab holds its own page, and two browser tabs never show the same thing —
+  // so it stacks (addTab), the way diskusage does. The tab starts on the
+  // configured home address, or on its start page when there is none: an empty
+  // setting means the built-in start page, never a remote request.
+  function handleAddBrowser() {
+    focusGroup(groupId);
+    addTab({
+      label: t("newTabMenu.browser"),
+      cmd: BROWSER_TAB_CMD,
+      cwd: projectCwd,
+      kind: "browser",
+      url: browserHome || undefined,
+    });
     setMenuPos(null);
   }
 
@@ -1425,6 +1449,19 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                       color: TAB_ACCENT.mail,
                       untested: true,
                       onPick: handleAddMail,
+                    }],
+                  }]
+                : []),
+              ...(webBrowser
+                ? [{
+                    label: t("newTabMenu.browser"),
+                    entries: [{
+                      key: "browser",
+                      label: t("newTabMenu.browser"),
+                      dot: "🌐",
+                      color: TAB_ACCENT.browser,
+                      untested: true,
+                      onPick: handleAddBrowser,
                     }],
                   }]
                 : []),

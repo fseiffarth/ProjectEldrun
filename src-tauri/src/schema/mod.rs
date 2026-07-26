@@ -1,5 +1,6 @@
 pub mod active_session;
 pub mod boxes;
+pub mod browser;
 pub mod calendar;
 pub mod default_apps;
 pub mod global_machine;
@@ -14,6 +15,10 @@ pub mod usage_stats;
 
 pub use active_session::ActiveSession;
 pub use boxes::{BoxRelation, BoxesList, ProjectBox};
+pub use browser::{
+    BlockedNavigation, BrowserCapabilities, DownloadOutcome, DownloadRequest, LiveWindowClosed,
+    LiveWindowRef, LiveWindowState, ReaderPage, SecurityState, TlsState, UrlVerdict,
+};
 pub use calendar::{Calendar, CalendarData, CalendarEvent, CalendarFile, CalendarTask};
 pub use default_apps::DefaultApps;
 pub use global_machine::GlobalMachine;

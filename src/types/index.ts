@@ -1,3 +1,5 @@
+import type { LinkOpenTarget } from "./browser";
+
 export interface GlobalAppEntry {
   exec: string;
   visible: boolean;
@@ -143,6 +145,38 @@ export interface Settings {
   mail_show_remote_images?: boolean;
   /** Mail: raise an OS notification for new inbox mail. Default true. */
   mail_notify_new?: boolean;
+  /** Browser: the experimental gate for the in-app browser (#61). Read through
+   *  `lib/experimental` — unset means "on in debug mode", NOT false. */
+  web_browser?: boolean;
+  /** Browser: where a fresh browser tab opens. **Empty/unset is the built-in
+   *  start page, not a remote request** — a home page that fires on every new
+   *  tab is an outbound request nobody asked for. */
+  browser_home_url?: string;
+  /** Browser: non-URL address-bar text becomes this, with `%s` replaced by the
+   *  percent-encoded text. Clearable — with no template, text that is not a URL
+   *  is refused rather than sent to a third party. */
+  browser_search_template?: string;
+  /** Browser: where clicked links open (#33). Default `"external"`, chosen
+   *  deliberately — the user's real browser has their logins, their extensions
+   *  and their password manager, and an experimental in-app engine should not
+   *  silently start receiving their links. See `lib/linkTarget`. */
+  browser_link_target?: LinkOpenTarget;
+  /** Browser: a restored tab loads its page at launch instead of showing the
+   *  resume card. **Default false** — restoring N tabs would otherwise be N
+   *  automatic outbound requests before the user has looked at the screen. */
+  browser_restore_navigate?: boolean;
+  /** Browser: whether the hardened **live-page window** may be opened at all.
+   *
+   *  **Default false, and off in debug mode too** — deliberately not read through
+   *  `useExperimental`, which would turn it on for anyone running a debug build.
+   *  Reader mode needs no such switch: it runs no JavaScript and its bytes are
+   *  sanitized in Rust. A live page runs the real web page, and two of its holes
+   *  cannot be closed from app code — it can reach a service on this machine via
+   *  any hostname that resolves to loopback, and `ws://` reaches one regardless
+   *  because a WebSocket is not a navigation and has no CORS. The backend refuses
+   *  `browser_open_live` without this, so the hidden control is the courtesy and
+   *  not the boundary. */
+  browser_live_pages?: boolean;
   default_agent_cmd?: string;
   /** User-defined custom agents offered in the add-tab menu's Agents group,
    *  added/removed from the "＋ Add agent…" dialog. Round-trips through the

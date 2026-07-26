@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
+  BROWSER_TAB_CMD,
   CALENDAR_TAB_CMD,
   MAIL_TAB_CMD,
   DISKUSAGE_TAB_CMD,
@@ -61,6 +62,8 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   // window's, and it is a separate React root: an entry added only to `TabBar`
   // exists in the main window and is silently missing from every popout.
   const mailClient = useExperimental("mail_client");
+  const webBrowser = useExperimental("web_browser");
+  const browserHome = useSettingsStore((s) => s.settings?.browser_home_url);
 
   const localModel = useSettingsStore(
     (s) => s.settings?.ollama_roles?.tabs ?? s.settings?.ollama_model,
@@ -335,6 +338,26 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                       cmd: MAIL_TAB_CMD,
                       cwd: projectCwd,
                       kind: "mail",
+                    }),
+                }],
+              }]
+            : []),
+          ...(webBrowser
+            ? [{
+                label: t("newTabMenu.browser"),
+                entries: [{
+                  key: "browser",
+                  label: t("newTabMenu.browser"),
+                  dot: "🌐",
+                  color: TAB_ACCENT.browser,
+                  untested: true,
+                  onPick: () =>
+                    pickFixed({
+                      label: t("newTabMenu.browser"),
+                      cmd: BROWSER_TAB_CMD,
+                      cwd: projectCwd,
+                      kind: "browser",
+                      url: browserHome || undefined,
                     }),
                 }],
               }]

@@ -10,6 +10,7 @@ import { SystemMonitorPane } from "../monitoring/SystemMonitorPane";
 import { DiskUsagePane } from "../monitoring/DiskUsagePane";
 import { CalendarPane } from "../calendar/CalendarPane";
 import { MailPane } from "../mail/MailPane";
+import { BrowserPane } from "../browser/BrowserPane";
 import { RemotePaneHold } from "../projects/RemotePaneHold";
 import { effectiveTabLocation, remoteHostIdOf, type TabEntry } from "../../stores/tabs";
 
@@ -96,6 +97,14 @@ function TabPaneImpl({
       // that reports newly-arrived mail (a popout runs its own store instance
       // against the same backend, so both would otherwise announce it twice).
       return <MailPane visible={visible} ownsTabs={ownsTabs} />;
+    case "browser":
+      // Reader mode is ordinary DOM (a sanitized page in a script-less iframe),
+      // so this pane needs none of the native-view plumbing Plan A anticipated —
+      // no bounds, no visibility sync, no suppression. `ownsTabs` marks the main
+      // window, which is the only one that may let a page retitle its tab.
+      return (
+        <BrowserPane tab={tab} scope={scope} visible={visible} ownsTabs={ownsTabs} />
+      );
     case "network":
       return <NetworkTrafficPane projectId={scope} visible={visible} onConnect={onConnect} />;
     case "monitor":

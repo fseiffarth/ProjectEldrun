@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
-import { type AgentMode, withAgentMode } from "../components/tabs/agentModes";
+import { type AgentMode, supportsAgentMode, withAgentMode } from "../components/tabs/agentModes";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
 import type { AutocompleteMode } from "../types";
 import { forgetPty } from "../lib/promptCount";
@@ -10,6 +10,8 @@ import { useLinkRoutingStore } from "./linkRouting";
 import { bumpUsage } from "./usage";
 import { newTmuxSessionName } from "../lib/tmuxSession";
 import { useRunHostPrefStore } from "./runHostPref";
+import { experimentalEnabled } from "../lib/experimental";
+import { useSettingsStore } from "./settings";
 
 /** A shell tab gets a stable persisted tmux session name at creation (TODO #85),
  *  so a persistent remote run reattaches after a relaunch instead of forking a
@@ -55,7 +57,8 @@ export type TabKind =
   | "monitor"
   | "diskusage"
   | "calendar"
-  | "mail";
+  | "mail"
+  | "browser";
 
 /**
  * SSH-sync Phase 0 — a PTY tab's locality on a REMOTE (SSH) project: does it run
@@ -180,6 +183,36 @@ export const CALENDAR_TAB_CMD = "__eldrun_calendar__";
  * out (see `docs/mail_client_plan_a.md` §2, rule 5).
  */
 export const MAIL_TAB_CMD = "__eldrun_mail__";
+
+/**
+ * Sentinel `cmd` for an in-app browser tab (TODO group J #61).
+ *
+ * Four properties, each of which is why this constant exists rather than a
+ * `kind` check scattered around:
+ *
+ *  - **It carries no PTY.** Like the calendar and mail panes it owns no process
+ *    at all, which is exactly why it is identified by this command (so
+ *    `cmdToKind` recovers its kind from a bare persisted `cmd`) and why
+ *    `isPtyTabKind` deliberately does NOT list it.
+ *  - **It is not a singleton.** Each tab holds its own page, so it *stacks*
+ *    (`addTab`) the way `diskusage` does rather than focusing an existing one
+ *    (`ensureTab`, which mail and the calendar use because their store is
+ *    global and a second tab would show the same thing). Two browser tabs never
+ *    show the same thing.
+ *  - **It is never locatable.** `browser` is absent from `isLocatableKind`, so
+ *    the locality badge, the run-host preference and the tmux persistence
+ *    helpers can never claim it. The browser is always local: it does not run
+ *    on a project's SSH host and does not tunnel through it — which is also why
+ *    a *disconnected* remote project's browser tab still works, unlike every
+ *    file/git surface in that project.
+ *  - **A restored one does not navigate.** It comes back on its resume card,
+ *    holding the persisted URL behind a Load button. Restoring six browser tabs
+ *    would otherwise be six automatic outbound requests to whatever the user
+ *    last had open, before they have looked at the screen — the same rule mail
+ *    states ("nothing about a window being reopened is consent to dial out")
+ *    and the same bargain diskusage already makes about not replaying its scan.
+ */
+export const BROWSER_TAB_CMD = "__eldrun_browser__";
 
 /**
  * Synthetic group id for the empty-state placeholder subwindow (rendered by
@@ -365,6 +398,14 @@ export interface TabEntry {
   // into. Persisted, so "Open in new tab" on a folder (and the tab's own
   // navigation) survive a restart instead of coming back at the project root.
   folder?: string;
+  // For "browser" tabs (#61): the tab's COMMITTED address — the last top-level
+  // URL that actually loaded, the analogue of `folder?` on a projectfiles tab.
+  // Never the in-flight address-bar text. It is the ONLY thing a browser tab
+  // persists: no history, no scroll, no form state, no zoom, no cookies. A URL
+  // string is inert, human-readable and reviewable in a diff; a serialized
+  // session blob written into `project.json` (a control file that lives inside
+  // the project tree) is none of those.
+  url?: string;
   // Persistent remote sessions (TODO #85): the STABLE tmux session name this shell
   // tab spawns-or-attaches on the host. Minted once at creation and persisted,
   // because the tab's PTY id (scope:key) is regenerated on restore — so the name
@@ -525,6 +566,10 @@ export interface SavedTabEntry {
   agentMode?: AgentMode;
   // Persisted browsed folder of a "projectfiles" tab (see TabEntry.folder).
   folder?: string;
+  // Persisted committed address of a "browser" tab (see TabEntry.url). This one
+  // field is the WHOLE of a browser tab's persistence, and a restored tab does
+  // not navigate to it by itself — it comes back on its resume card.
+  url?: string;
   // Persisted resume args of a restart-resumable custom agent (see
   // TabEntry.resumeArgs). Re-applied as the launch args on restore.
   resumeArgs?: string[];
@@ -709,6 +754,10 @@ interface TabsStore {
   // Record the folder a "projectfiles" tab is browsed into, so it reopens there
   // (see TabEntry.folder). No-op when unchanged.
   setTabFolder: (key: string, folder: string) => void;
+  // Record the address a "browser" tab COMMITTED to — the page that actually
+  // loaded, never the in-flight address-bar text (see TabEntry.url). No-op when
+  // unchanged, so re-loading the same page doesn't churn the layout save.
+  setTabUrl: (key: string, url: string) => void;
 
   // arrangement
   reorderInGroup: (groupId: string, from: number, to: number) => void;
@@ -2088,6 +2137,18 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
+  setTabUrl: (key, url) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const tab = tabs.find((t) => t.key === key);
+      // Same no-op rule setTabFolder follows: reloading the same page must not
+      // churn the tabs array and wake the saveLayout debounce for nothing.
+      if (!tab || (tab.url ?? "") === url) return {};
+      const nextTabs = tabs.map((t) => (t.key === key ? { ...t, url } : t));
+      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+    });
+  },
+
   reorderInGroup: (groupId, from, to) => {
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
@@ -3410,7 +3471,27 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // to be re-applied onto them or the tab would silently come back in the
       // agent's default mode — half the point of the toggle is that the split
       // survives a restart.
-      const args = t.agentMode ? withAgentMode(t.cmd, base, t.agentMode) : base;
+      //
+      // A mode-capable agent tab with NO persisted `agentMode` fails **closed**:
+      // it comes back in Plan. Absence used to mean "no mode flag", i.e. the
+      // agent's own default permissions, and the layout this field is read from
+      // lives inside the project tree — so deleting `"agentMode":"plan"` from a
+      // tab entry silently promoted a planner into a doer on the next restart.
+      // Plan is the safe direction, and the only tabs it changes are ones that
+      // predate the field (one toggle to correct).
+      //
+      // Gated on the mode feature actually being available, for the reason the
+      // gate exists at all: with `agent_mode_toggle` off there is no UI to leave
+      // Plan mode — and no tab was ever *in* Plan mode either, so there is nothing
+      // for the default to protect. Failing closed into a mode the user cannot
+      // exit would be a worse bargain than the hole it closes.
+      const modeFeatureLive = experimentalEnabled(
+        useSettingsStore.getState().settings,
+        "agent_mode_toggle",
+      );
+      const restoredMode =
+        t.agentMode ?? (modeFeatureLive && supportsAgentMode(t.cmd) ? "plan" : undefined);
+      const args = restoredMode ? withAgentMode(t.cmd, base, restoredMode) : base;
       return {
         key: freshKey,
         label: t.label,
@@ -3432,9 +3513,12 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // SSH-sync Phase 0: restore the persisted per-tab locality.
         location: t.location,
         // Restore the planner/doer mode (already folded into `args` above).
-        agentMode: t.agentMode,
+        agentMode: restoredMode,
         // A "projectfiles" tab reopens on the folder it was browsed into.
         folder: t.folder,
+        // A "browser" tab reopens holding the address it was last on — on its
+        // resume card, NOT navigated (see BROWSER_TAB_CMD / isRestorableKind).
+        url: t.url,
         // Persistent sessions (TODO #85): keep the stable session name so the
         // reattach targets the SAME host session after a relaunch. Mint one for a
         // shell tab persisted before this feature existed (it then reattaches on
@@ -3610,6 +3694,14 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         agentMode: t.agentMode,
         // Persist a "projectfiles" tab's browsed folder.
         folder: t.folder,
+        // Persist a "browser" tab's COMMITTED address (#61). This is the whole
+        // of a browser tab's persistence, and without this line it never reached
+        // disk at all: `loadFromLayout` reads `t.url`, `snapshotScopeForSwitch`
+        // carries live TabEntries through a project switch unchanged (so the
+        // in-memory round trip looked fine), but THIS is the only path to
+        // `project.json` — so a real relaunch brought the tab back with no
+        // address and an empty start page instead of its resume card.
+        url: t.url,
         // Persist a restart-resumable custom agent's resume flag (the args that
         // carry it are rebuilt in loadFromLayout, like agentMode).
         resumeArgs: t.resumeArgs,
@@ -3701,6 +3793,7 @@ export function cmdToKind(cmd: string): TabKind {
   if (cmd === DISKUSAGE_TAB_CMD) return "diskusage";
   if (cmd === CALENDAR_TAB_CMD) return "calendar";
   if (cmd === MAIL_TAB_CMD) return "mail";
+  if (cmd === BROWSER_TAB_CMD) return "browser";
   if (AGENT_CMDS.has(cmd)) return "agent";
   return "shell";
 }
@@ -3733,7 +3826,13 @@ export function isRestorableKind(kind: TabKind): boolean {
     // own global store — so it belongs in the always-restore set. What it must
     // NOT do is sync on restore: the restored tab shows a "Check mail" button
     // and reaches the network only when clicked (MAIL_TAB_CMD's note).
-    kind === "mail"
+    kind === "mail" ||
+    // The browser tab comes back, on its resume card — it NEVER re-navigates by
+    // itself. Same shape as diskusage above (the tab returns, the expensive work
+    // does not replay) and the same rule mail states about dialling out: the
+    // persisted URL is rendered as text behind a Load button, and only a click
+    // makes a request. See BROWSER_TAB_CMD.
+    kind === "browser"
   );
 }
 

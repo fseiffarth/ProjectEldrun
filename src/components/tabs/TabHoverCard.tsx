@@ -33,6 +33,7 @@ const KIND_LABEL_KEY: Record<TabKind, TranslationKey> = {
   diskusage: "tabKind.diskusage",
   calendar: "newTabMenu.calendar",
   mail: "newTabMenu.mail",
+  browser: "newTabMenu.browser",
 };
 
 /** Which built-in viewer a file tab renders in — "Embedded app" says nothing

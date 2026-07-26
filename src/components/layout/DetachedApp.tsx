@@ -38,6 +38,7 @@ import { useTabLandStore } from "../../stores/tabLand";
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenEditorJump } from "../../stores/editorJump";
 import { DetachedCenterPanel } from "./DetachedCenterPanel";
+import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 
 interface Props {
   param: DetachedParam;
@@ -415,7 +416,12 @@ export function DetachedApp({ param }: Props) {
   }
 
   return (
-    <DetachedCenterPanel
+    <>
+      {/* A popout is its own JS heap with its own browser store, and the backend
+          emits browser events to every window — so it needs its own single
+          download-consent host for the same reason AppShell does. */}
+      <BrowserDownloadHost />
+      <DetachedCenterPanel
       scope={param.scope}
       popoutId={param.groupId}
       tree={group}
@@ -439,6 +445,7 @@ export function DetachedApp({ param }: Props) {
         pushEdit({ kind: "add", tab, targetGroupId, edge })
       }
       onFiles={(groupId, patch) => pushEdit({ kind: "files", groupId, ...patch })}
-    />
+      />
+    </>
   );
 }
