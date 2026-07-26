@@ -1,0 +1,8 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/schema/capability.json",
+  "identifier": "browser",
+  "description": "The in-app browser's live-page windows (`browser-*`). It grants NOTHING and that is its entire content — it exists so the label is named in one place and so widening it is a visible diff rather than an accidental match of some other capability's glob. `local` is false as the belt to the braces of `remote` being absent: even if a navigation-policy bug ever let a browsed page reach an origin Tauri calls local, this capability still resolves to no command. Every defence around it is described in docs/browser_plan_b.md §2; the regression guard is src-tauri/tests/capability_scope.rs.",
+  "webviews": ["browser-*"],
+  "local": false,
+  "permissions": []
+}
