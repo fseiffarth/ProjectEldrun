@@ -6,14 +6,14 @@ import {
   formatTime,
   spanCoversDate,
   todayStr,
+  weekdayLabel,
 } from "../../lib/calendarTime";
 import { eventColor } from "../../lib/calendarCategories";
 import { calendarColor } from "../../stores/calendar";
+import { useI18nStore, useT } from "../../lib/i18n";
 
 /** Rows of chips a cell shows before collapsing the rest into "+N more". */
 const MAX_ROWS = 4;
-
-const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 interface Props {
   /** The weeks to draw, as rows of 7 dates (`monthGrid`). */
@@ -149,12 +149,14 @@ export function MonthView({
   onOpen,
   weekStart,
 }: Props) {
+  const t = useT();
+  const lang = useI18nStore((s) => s.lang);
   const today = todayStr();
 
-  const labels = useMemo(
-    () => [...WEEKDAY_LABELS.slice(weekStart), ...WEEKDAY_LABELS.slice(0, weekStart)],
-    [weekStart],
-  );
+  const labels = useMemo(() => {
+    const days = Array.from({ length: 7 }, (_, i) => weekdayLabel(lang, i, "short"));
+    return [...days.slice(weekStart), ...days.slice(0, weekStart)];
+  }, [weekStart, lang]);
 
   const laidOut = useMemo(
     () => weeks.map((week) => layoutWeek(week, occurrences)),
@@ -207,7 +209,7 @@ export function MonthView({
                           onSelect(date);
                         }}
                       >
-                        +{overflow.get(ci)} more
+                        {t("monthView.moreCount", { n: overflow.get(ci) ?? 0 })}
                       </span>
                     ) : null}
                   </div>
@@ -256,7 +258,7 @@ export function MonthView({
                           {formatTime(occ.start.split("T")[1] ?? "", use24h)}
                         </span>
                       ) : null}
-                      <span className="cal-month-bar-title">{occ.title || "(untitled)"}</span>
+                      <span className="cal-month-bar-title">{occ.title || t("calendar.untitled")}</span>
                     </div>
                   );
                 })}

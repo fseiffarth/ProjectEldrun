@@ -9,27 +9,27 @@ import type {
   Occurrence,
   Rrule,
 } from "../../types";
-import { CATEGORIES } from "../../lib/calendarCategories";
+import { CATEGORIES, categoryLabel } from "../../lib/calendarCategories";
 import {
   allDayEndToLastDay,
   datePart,
   lastDayToAllDayEnd,
   minutesBetween,
   timePart,
+  weekdayLabel,
 } from "../../lib/calendarTime";
 import { describeRrule } from "../../lib/recurrence";
+import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 
 /** The reminder offsets the dropdown offers, in minutes before the start. */
-const REMINDER_CHOICES: { label: string; minutes: number }[] = [
-  { label: "At the time of the event", minutes: 0 },
-  { label: "5 minutes before", minutes: 5 },
-  { label: "15 minutes before", minutes: 15 },
-  { label: "30 minutes before", minutes: 30 },
-  { label: "1 hour before", minutes: 60 },
-  { label: "1 day before", minutes: 1440 },
+const REMINDER_CHOICE_KEYS: { labelKey: TranslationKey; minutes: number }[] = [
+  { labelKey: "eventDialog.reminderAtTime", minutes: 0 },
+  { labelKey: "eventDialog.reminder5", minutes: 5 },
+  { labelKey: "eventDialog.reminder15", minutes: 15 },
+  { labelKey: "eventDialog.reminder30", minutes: 30 },
+  { labelKey: "eventDialog.reminder1h", minutes: 60 },
+  { labelKey: "eventDialog.reminder1day", minutes: 1440 },
 ];
-
-const WEEKDAY_INITIALS = ["S", "M", "T", "W", "T", "F", "S"];
 
 /** What the dialog was opened on. */
 export interface EventDialogTarget {
@@ -146,6 +146,8 @@ export function EventDialog({
   onSave,
   onDelete,
 }: Props) {
+  const t = useT();
+  const lang = useI18nStore((s) => s.lang);
   const [form, setForm] = useState<Form>(() =>
     initialForm(target, defaultCalendarId, defaultReminderMinutes),
   );
@@ -165,19 +167,19 @@ export function EventDialog({
   const patch = (p: Partial<Form>) => setForm((f) => ({ ...f, ...p }));
 
   const ruleSummary = useMemo(
-    () => (form.repeats ? describeRrule(buildRrule(form)) : "Does not repeat"),
-    [form],
+    () => (form.repeats ? describeRrule(buildRrule(form), t, lang) : t("recurrence.doesNotRepeat")),
+    [form, t, lang],
   );
 
   /** The form, back as a stored event. */
   function toEvent(): CalendarEvent | null {
     const title = form.title.trim();
     if (!title) {
-      setError("A title is required.");
+      setError(t("eventDialog.errTitleRequired"));
       return null;
     }
     if (!form.startDate) {
-      setError("A start date is required.");
+      setError(t("eventDialog.errStartRequired"));
       return null;
     }
 
@@ -188,11 +190,11 @@ export function EventDialog({
       : `${endDay}T${form.endTime}`;
 
     if (!form.allDay && minutesBetween(start, end) <= 0) {
-      setError("The event must end after it starts.");
+      setError(t("eventDialog.errEndAfterStart"));
       return null;
     }
     if (form.allDay && lastDayToAllDayEnd(endDay) <= form.startDate) {
-      setError("The event must end on or after the day it starts.");
+      setError(t("eventDialog.errEndOnOrAfterStart"));
       return null;
     }
 
@@ -262,7 +264,7 @@ export function EventDialog({
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="settings-title-row">
-          <h2>{creating ? "New event" : "Edit event"}</h2>
+          <h2>{creating ? t("eventDialog.newEventTitle") : t("eventDialog.editEventTitle")}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <div className="dialog-scroll">
@@ -271,27 +273,27 @@ export function EventDialog({
              stacking a second modal on top of it — one decision, in place. */
           <div className="cal-scope-ask">
             <p className="settings-help">
-              <strong>{form.title || "This event"}</strong> repeats.{" "}
+              <strong>{form.title || t("eventDialog.thisEventFallback")}</strong> {t("eventDialog.repeatsSuffix")}{" "}
               {scopeAsk === "delete"
-                ? "Delete only the occurrence you clicked, or the whole series?"
-                : "Apply your changes to only the occurrence you clicked, or to the whole series?"}
+                ? t("eventDialog.deleteScopeQuestion")
+                : t("eventDialog.saveScopeQuestion")}
             </p>
             <div className="cal-form-actions">
               <button className="cal-btn cal-btn-primary" onClick={() => resolveScope("this")}>
-                {scopeAsk === "delete" ? "Delete this occurrence" : "This occurrence only"}
+                {scopeAsk === "delete" ? t("eventDialog.deleteThisOccurrence") : t("eventDialog.thisOccurrenceOnly")}
               </button>
               <button className="cal-btn" onClick={() => resolveScope("all")}>
-                {scopeAsk === "delete" ? "Delete the whole series" : "All occurrences"}
+                {scopeAsk === "delete" ? t("eventDialog.deleteWholeSeries") : t("eventDialog.allOccurrences")}
               </button>
               <button className="cal-link-btn" onClick={() => setScopeAsk(null)}>
-                Cancel
+                {t("common.cancel")}
               </button>
             </div>
           </div>
         ) : (
           <div className="cal-event-form">
             <label className="cal-field">
-              <span className="cal-field-label">Title</span>
+              <span className="cal-field-label">{t("eventDialog.titleField")}</span>
               <input
                 className="cal-input"
                 type="text"
@@ -305,7 +307,7 @@ export function EventDialog({
             </label>
 
             <label className="cal-field">
-              <span className="cal-field-label">Location</span>
+              <span className="cal-field-label">{t("eventDialog.locationField")}</span>
               <input
                 className="cal-input"
                 type="text"
@@ -320,12 +322,12 @@ export function EventDialog({
                 checked={form.allDay}
                 onChange={(e) => patch({ allDay: e.target.checked })}
               />
-              <span>All day</span>
+              <span>{t("calendar.allDay")}</span>
             </label>
 
             <div className="cal-field-row">
               <label className="cal-field">
-                <span className="cal-field-label">Starts</span>
+                <span className="cal-field-label">{t("eventDialog.startsField")}</span>
                 <div className="cal-datetime">
                   <input
                     className="cal-input"
@@ -345,7 +347,7 @@ export function EventDialog({
               </label>
 
               <label className="cal-field">
-                <span className="cal-field-label">Ends</span>
+                <span className="cal-field-label">{t("eventDialog.endsField")}</span>
                 <div className="cal-datetime">
                   <input
                     className="cal-input"
@@ -367,7 +369,7 @@ export function EventDialog({
 
             <div className="cal-field-row">
               <label className="cal-field">
-                <span className="cal-field-label">Calendar</span>
+                <span className="cal-field-label">{t("eventDialog.calendarField")}</span>
                 <select
                   className="cal-input"
                   value={form.calendarId}
@@ -380,29 +382,29 @@ export function EventDialog({
               </label>
 
               <label className="cal-field">
-                <span className="cal-field-label">Category</span>
+                <span className="cal-field-label">{t("eventDialog.categoryField")}</span>
                 <select
                   className="cal-input"
                   value={form.category}
                   onChange={(e) => patch({ category: e.target.value })}
                 >
-                  <option value="">None</option>
+                  <option value="">{t("eventDialog.noCategoryOption")}</option>
                   {CATEGORIES.map((c) => (
-                    <option key={c.key} value={c.key}>{c.label}</option>
+                    <option key={c.key} value={c.key}>{categoryLabel(c, t)}</option>
                   ))}
                 </select>
               </label>
 
               <label className="cal-field">
-                <span className="cal-field-label">Status</span>
+                <span className="cal-field-label">{t("eventDialog.statusField")}</span>
                 <select
                   className="cal-input"
                   value={form.status}
                   onChange={(e) => patch({ status: e.target.value as EventStatus })}
                 >
-                  <option value="confirmed">Confirmed</option>
-                  <option value="tentative">Tentative</option>
-                  <option value="cancelled">Cancelled</option>
+                  <option value="confirmed">{t("eventDialog.statusConfirmed")}</option>
+                  <option value="tentative">{t("eventDialog.statusTentative")}</option>
+                  <option value="cancelled">{t("eventDialog.statusCancelled")}</option>
                 </select>
               </label>
             </div>
@@ -415,7 +417,7 @@ export function EventDialog({
                   checked={form.repeats}
                   onChange={(e) => patch({ repeats: e.target.checked })}
                 />
-                <span>Repeat</span>
+                <span>{t("eventDialog.repeatCheckbox")}</span>
                 <span className="cal-rule-summary">{ruleSummary}</span>
               </label>
 
@@ -423,7 +425,7 @@ export function EventDialog({
                 <div className="cal-repeat">
                   <div className="cal-field-row">
                     <label className="cal-field">
-                      <span className="cal-field-label">Every</span>
+                      <span className="cal-field-label">{t("eventDialog.everyField")}</span>
                       <input
                         className="cal-input cal-input-num"
                         type="number"
@@ -441,27 +443,25 @@ export function EventDialog({
                         value={form.freq}
                         onChange={(e) => patch({ freq: e.target.value as Freq })}
                       >
-                        <option value="daily">day(s)</option>
-                        <option value="weekly">week(s)</option>
-                        <option value="monthly">month(s)</option>
-                        <option value="yearly">year(s)</option>
+                        <option value="daily">{t("eventDialog.freqDays")}</option>
+                        <option value="weekly">{t("eventDialog.freqWeeks")}</option>
+                        <option value="monthly">{t("eventDialog.freqMonths")}</option>
+                        <option value="yearly">{t("eventDialog.freqYears")}</option>
                       </select>
                     </label>
                   </div>
 
                   {form.freq === "weekly" ? (
                     <div className="cal-weekdays">
-                      {WEEKDAY_INITIALS.map((w, d) => (
+                      {Array.from({ length: 7 }, (_, d) => (
                         <button
                           key={d}
                           type="button"
                           className={`cal-weekday-btn${form.byweekday.includes(d) ? " cal-weekday-on" : ""}`}
                           onClick={() => toggleWeekday(d)}
-                          title={
-                            ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][d]
-                          }
+                          title={weekdayLabel(lang, d, "long")}
                         >
-                          {w}
+                          {weekdayLabel(lang, d, "narrow")}
                         </button>
                       ))}
                     </div>
@@ -469,7 +469,7 @@ export function EventDialog({
 
                   <div className="cal-field-row">
                     <label className="cal-field">
-                      <span className="cal-field-label">Ends</span>
+                      <span className="cal-field-label">{t("eventDialog.endsField")}</span>
                       <select
                         className="cal-input"
                         value={form.endMode}
@@ -477,15 +477,15 @@ export function EventDialog({
                           patch({ endMode: e.target.value as Form["endMode"] })
                         }
                       >
-                        <option value="">Never</option>
-                        <option value="count">After N times</option>
-                        <option value="until">On a date</option>
+                        <option value="">{t("eventDialog.endNever")}</option>
+                        <option value="count">{t("eventDialog.endAfterCount")}</option>
+                        <option value="until">{t("eventDialog.endOnDate")}</option>
                       </select>
                     </label>
 
                     {form.endMode === "count" ? (
                       <label className="cal-field">
-                        <span className="cal-field-label">Times</span>
+                        <span className="cal-field-label">{t("eventDialog.timesField")}</span>
                         <input
                           className="cal-input cal-input-num"
                           type="number"
@@ -500,7 +500,7 @@ export function EventDialog({
 
                     {form.endMode === "until" ? (
                       <label className="cal-field">
-                        <span className="cal-field-label">Until</span>
+                        <span className="cal-field-label">{t("eventDialog.untilField")}</span>
                         <input
                           className="cal-input"
                           type="date"
@@ -517,18 +517,18 @@ export function EventDialog({
             {/* ── Reminders ──────────────────────────────────────────────── */}
             <div className="cal-section">
               <div className="cal-section-head">
-                <span className="cal-field-label">Reminders</span>
+                <span className="cal-field-label">{t("eventDialog.remindersLabel")}</span>
                 <button
                   type="button"
                   className="cal-link-btn"
                   onClick={() => patch({ alarms: [...form.alarms, { minutes_before: 15 }] })}
                 >
-                  + Add reminder
+                  {t("eventDialog.addReminderButton")}
                 </button>
               </div>
 
               {form.alarms.length === 0 ? (
-                <div className="cal-hint">No reminders.</div>
+                <div className="cal-hint">{t("eventDialog.noRemindersHint")}</div>
               ) : (
                 form.alarms.map((alarm, i) => (
                   <div key={i} className="cal-alarm-row">
@@ -541,8 +541,8 @@ export function EventDialog({
                         patch({ alarms });
                       }}
                     >
-                      {REMINDER_CHOICES.map((c) => (
-                        <option key={c.minutes} value={c.minutes}>{c.label}</option>
+                      {REMINDER_CHOICE_KEYS.map((c) => (
+                        <option key={c.minutes} value={c.minutes}>{t(c.labelKey)}</option>
                       ))}
                     </select>
                     <button
@@ -550,7 +550,7 @@ export function EventDialog({
                       className="cal-link-btn cal-link-danger"
                       onClick={() => patch({ alarms: form.alarms.filter((_, j) => j !== i) })}
                     >
-                      Remove
+                      {t("common.remove")}
                     </button>
                   </div>
                 ))
@@ -558,7 +558,7 @@ export function EventDialog({
             </div>
 
             <label className="cal-field">
-              <span className="cal-field-label">Notes</span>
+              <span className="cal-field-label">{t("eventDialog.notesField")}</span>
               <textarea
                 className="cal-input cal-textarea"
                 value={form.notes}
@@ -570,14 +570,14 @@ export function EventDialog({
 
             <div className="cal-form-actions">
               <button className="cal-btn cal-btn-primary" onClick={attemptSave}>
-                Save
+                {t("common.save")}
               </button>
               {!creating ? (
                 <button className="cal-btn cal-btn-danger" onClick={attemptDelete}>
-                  Delete
+                  {t("common.delete")}
                 </button>
               ) : null}
-              <button className="cal-link-btn" onClick={onClose}>Cancel</button>
+              <button className="cal-link-btn" onClick={onClose}>{t("common.cancel")}</button>
             </div>
           </div>
         )}

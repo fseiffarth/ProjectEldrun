@@ -7,7 +7,11 @@ import {
   occurrencesOn,
   overrideOccurrence,
 } from "../lib/recurrence";
+import { translate, type TranslationKey } from "../lib/i18n";
 import type { CalendarEvent, Rrule } from "../types";
+
+const t = (key: TranslationKey, params?: Record<string, string | number>) =>
+  translate("en", key, params);
 
 function event(over: Partial<CalendarEvent> = {}): CalendarEvent {
   return {
@@ -331,17 +335,17 @@ describe("expandEvents", () => {
 
 describe("describeRrule", () => {
   it("describes the common rules", () => {
-    expect(describeRrule(null)).toBe("Does not repeat");
-    expect(describeRrule(rule())).toBe("Daily");
-    expect(describeRrule(rule({ interval: 3 }))).toBe("Every 3 days");
-    expect(describeRrule(rule({ freq: "weekly", byweekday: [1, 5] })))
+    expect(describeRrule(null, t, "en")).toBe("Does not repeat");
+    expect(describeRrule(rule(), t, "en")).toBe("Daily");
+    expect(describeRrule(rule({ interval: 3 }), t, "en")).toBe("Every 3 days");
+    expect(describeRrule(rule({ freq: "weekly", byweekday: [1, 5] }), t, "en"))
       .toBe("Weekly on Monday, Friday");
-    expect(describeRrule(rule({ freq: "monthly", bymonthday: 15 }))).toBe("Monthly on day 15");
-    expect(describeRrule(rule({ freq: "yearly" }))).toBe("Yearly");
+    expect(describeRrule(rule({ freq: "monthly", bymonthday: 15 }), t, "en")).toBe("Monthly on day 15");
+    expect(describeRrule(rule({ freq: "yearly" }), t, "en")).toBe("Yearly");
   });
 
   it("appends the rule's end", () => {
-    expect(describeRrule(rule({ count: 5 }))).toBe("Daily, 5 times");
-    expect(describeRrule(rule({ until: "2026-12-31" }))).toBe("Daily, until 2026-12-31");
+    expect(describeRrule(rule({ count: 5 }), t, "en")).toBe("Daily, 5 times");
+    expect(describeRrule(rule({ until: "2026-12-31" }), t, "en")).toBe("Daily, until 2026-12-31");
   });
 });

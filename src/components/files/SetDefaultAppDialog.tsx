@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { useT } from "../../lib/i18n";
 
 interface InstalledApp {
   name: string;
@@ -55,6 +56,7 @@ function readDefaultApps(project: ProjectJson | null): Record<string, string> {
  * file picker cover apps not on the list.
  */
 export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props) {
+  const t = useT();
   const [scope, setScope] = useState<Scope>(localFile ? "project" : "global");
   const [apps, setApps] = useState<InstalledApp[]>([]);
   const [iconDataUrls, setIconDataUrls] = useState<Record<string, string | null>>({});
@@ -185,15 +187,19 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="settings-title-row">
-          <h2>Default app for {ext} files</h2>
+          <h2>{t("setDefaultApp.title", { ext })}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <p className="settings-help">
-          Opening <strong>{fileName}</strong> (and other <code>{ext}</code> files) will use this app.
+          {t("setDefaultApp.bodyPre")} <strong>{fileName}</strong> {t("setDefaultApp.bodyMid")}{" "}
+          <code>{ext}</code> {t("setDefaultApp.bodyPost")}
         </p>
 
         <div className="set-default-app-scope">
-          <label className={localFile ? "" : "disabled"} title={localFile ? "" : "No project selected"}>
+          <label
+            className={localFile ? "" : "disabled"}
+            title={localFile ? "" : t("common.noProjectSelected")}
+          >
             <input
               type="radio"
               name="default-app-scope"
@@ -204,7 +210,7 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
                 setScope("project");
               }}
             />
-            This project only
+            {t("setDefaultApp.thisProjectOnly")}
           </label>
           <label>
             <input
@@ -216,25 +222,27 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
                 setScope("global");
               }}
             />
-            Global (all projects)
+            {t("setDefaultApp.globalAllProjects")}
           </label>
         </div>
         {scope === "project" && otherScopeValue && (
           <p className="settings-help">
-            Overrides the global default (<code>{otherScopeValue}</code>) for this project.
+            {t("setDefaultApp.overridesPre")}
+            <code>{otherScopeValue}</code>
+            {t("setDefaultApp.overridesPost")}
           </p>
         )}
 
         <input
           className="set-default-app-search"
-          placeholder="Search installed apps…"
+          placeholder={t("setDefaultApp.searchPlaceholder")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           autoFocus
         />
         <div className="set-default-app-list">
           {filtered.length === 0 ? (
-            <div className="settings-empty">No matching apps.</div>
+            <div className="settings-empty">{t("setDefaultApp.noMatchingApps")}</div>
           ) : (
             filtered.map((a) => (
               <button
@@ -261,10 +269,10 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
         <div className="set-default-app-manual">
           <input
             value={exec}
-            placeholder="executable or path"
+            placeholder={t("setDefaultApp.execPlaceholder")}
             onChange={(e) => setExec(e.target.value)}
           />
-          <button type="button" onClick={() => void chooseExecutable()} title="Browse for executable">
+          <button type="button" onClick={() => void chooseExecutable()} title={t("setDefaultApp.browseTitle")}>
             …
           </button>
         </div>
@@ -272,22 +280,22 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
         {error && <div className="settings-error">{error}</div>}
 
         <div className="set-default-app-actions">
-          <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button
             type="button"
             className="danger"
             disabled={busy || !(scope === "project" ? projectApps[ext] : globalApps[ext])}
             onClick={() => void save(null)}
-            title="Remove this mapping"
+            title={t("setDefaultApp.removeMappingTitle")}
           >
-            Clear
+            {t("setDefaultApp.clear")}
           </button>
           <button
             type="button"
             disabled={busy || !exec.trim()}
             onClick={() => void save(exec.trim())}
           >
-            Save
+            {t("common.save")}
           </button>
         </div>
       </div>

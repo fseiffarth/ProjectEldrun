@@ -42,8 +42,8 @@ import {
   snapResize,
   thresholdFor,
 } from "../../../lib/viewers/deck/snap";
-import type { TextMetrics } from "../../../lib/viewers/deck/fonts";
-import { DeckObjectView } from "./DeckObjectView";
+import { type TextMetrics, cssFontFor } from "../../../lib/viewers/deck/fonts";
+import { DeckObjectView, FONT_STACKS } from "./DeckObjectView";
 import { renderPage } from "./deckBase";
 
 /** Snap radius in CSS pixels. Generous enough to catch, tight enough that a
@@ -81,6 +81,17 @@ export interface DeckStageProps {
   /** Double-click on an object — the "enter/edit" gesture, distinct from the
    *  single click that selects it. Used for a TeX-figure image's source. */
   onEditObject?: (obj: DeckObject) => void;
+  /**
+   * A text object's text was edited **on the slide**. Absent = no in-place
+   * editing (the audience/presenter renderers pass nothing).
+   *
+   * Fires per keystroke, so the caller is expected to coalesce it into one undo
+   * entry — `DeckView` keys on the object id for exactly that.
+   */
+  onTextChange?: (id: string, text: string) => void;
+  /** The deck-wide footer, drawn under the objects so it reads as part of the
+   *  plate rather than as something on the slide. Not selectable. */
+  footer?: DeckObject | null;
 }
 
 type Gesture =
@@ -111,6 +122,8 @@ export function DeckStage({
   metrics,
   showBuildBadges,
   onEditObject,
+  onTextChange,
+  footer = null,
 }: DeckStageProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const pageRef = useRef<HTMLDivElement | null>(null);
@@ -137,6 +150,9 @@ export function DeckStage({
   const gestureRef = useRef<Gesture | null>(null);
 
   const objects = pending ?? slide.objects;
+  /** Page aspect, for rotating geometry in an isotropic frame — see
+   *  `model.rotatedCorners`. */
+  const aspect = pageHeight > 0 ? pageWidth / pageHeight : 1;
 
   // --- layout ------------------------------------------------------------
   // Fit the page into the host, preserving aspect. Re-measured on resize so the
@@ -212,7 +228,7 @@ export function DeckStage({
       if (rotateEl) {
         const sel = objects.filter((o) => selection.has(o.id));
         if (sel.length !== 1) return;
-        const b = boundingBox(sel);
+        const b = boundingBox(sel, aspect);
         gestureRef.current = {
           mode: "rotate",
           cx: b.x + b.w / 2,
@@ -289,11 +305,16 @@ export function DeckStage({
           h: Math.abs(p.y - g.startY),
         };
         setMarquee(box);
+        // Hit-test the object's ROTATED extent, not its stored box — a turned
+        // object was previously caught (or missed) by a rectangle it does not
+        // occupy.
         const hits = objects
-          .filter(
-            (o) =>
-              o.x < box.x + box.w && o.x + o.w > box.x && o.y < box.y + box.h && o.y + o.h > box.y,
-          )
+          .filter((o) => {
+            const b = boundingBox([o], aspect);
+            return (
+              b.x < box.x + box.w && b.x + b.w > box.x && b.y < box.y + box.h && b.y + b.h > box.y
+            );
+          })
           .map((o) => o.id);
         onSelectionChange(new Set(g.additive ? [...selection, ...hits] : hits));
         return;
@@ -327,19 +348,39 @@ export function DeckStage({
       }
 
       if (g.mode === "resize") {
-        const dx = p.x - g.startX;
-        const dy = p.y - g.startY;
+        let dx = p.x - g.startX;
+        let dy = p.y - g.startY;
         if (!g.moved && Math.abs(dx) < slopX && Math.abs(dy) < slopY) return;
         g.moved = true;
         const src = g.base.find((o) => o.id === g.id);
         if (!src) return;
+        // Rotate the pointer delta INTO the object's own frame before applying
+        // it. `applyHandle` works on an axis-aligned box, so feeding it a delta
+        // measured in page space made dragging a handle on a rotated object move
+        // the wrong edges — the handle you grabbed and the edge that moved were
+        // simply different things (TODO V #111). The aspect correction matches
+        // `rotatedCorners`: the page is not square, so the turn has to happen in
+        // an isotropic frame or a 45° object shears.
+        if (src.rot) {
+          const rad = (-src.rot * Math.PI) / 180;
+          const cos = Math.cos(rad);
+          const sin = Math.sin(rad);
+          const ax = pageWidth / pageHeight;
+          const px = dx * ax;
+          [dx, dy] = [(px * cos - dy * sin) / ax, px * sin + dy * cos];
+        }
         const raw = applyHandle({ x: src.x, y: src.y, w: src.w, h: src.h }, g.handle, dx, dy);
-        const r = snapResize(raw, g.handle, {
-          others: othersFor(g.base, new Set([g.id])),
-          margin,
-          threshold,
-          enabled: !e.altKey,
-        });
+        // A rotated object's snap targets are meaningless: it snaps its
+        // *unrotated* box to guides that describe rotated neighbours. Better to
+        // resize freely than to jump to a line that is not where it looks.
+        const r = src.rot
+          ? { box: raw, guides: [] as Guide[] }
+          : snapResize(raw, g.handle, {
+              others: othersFor(g.base, new Set([g.id])),
+              margin,
+              threshold,
+              enabled: !e.altKey,
+            });
         setPending(
           updateObjects(g.base, [g.id], (o) => ({ ...o, ...r.box })),
         );
@@ -379,26 +420,57 @@ export function DeckStage({
   // half-finished drag.
   const onPointerUp = useCallback(() => endGesture(), [endGesture]);
 
+  // --- in-place text editing ------------------------------------------------
+  //
+  // Until now every character of every slide was typed into a 3-row textarea in
+  // the side panel while the object rendered somewhere else — for a
+  // direct-manipulation design tool, the largest usability gap it had (TODO V
+  // #118). Double-click mounts a real `<textarea>` on the object's own box,
+  // sharing `TextBody`'s computed style, so what you type is where it lands.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const editRef = useRef<HTMLTextAreaElement | null>(null);
+  const editing = editingId ? objects.find((o) => o.id === editingId) : undefined;
+
+  useEffect(() => {
+    if (!editingId) return;
+    const el = editRef.current;
+    if (!el) return;
+    el.focus();
+    el.select();
+  }, [editingId]);
+
+  // A slide change (or the object going away) must not leave an editor floating
+  // over the wrong content.
+  useEffect(() => {
+    setEditingId(null);
+  }, [slide.id]);
+
   // Double-click is a separate native event from the pointer gestures above, so
   // it needs no coordination with the drag/resize/rotate state machine — a
   // double-click that lands mid-drag never happens because a drag's second
   // pointerdown is on a different frame than its first.
   const onDoubleClick = useCallback(
     (e: React.MouseEvent) => {
-      if (!onEditObject) return;
       const objEl = (e.target as HTMLElement).closest<HTMLElement>("[data-object-id]");
       if (!objEl) return;
       const obj = objects.find((o) => o.id === objEl.dataset.objectId);
-      if (obj) onEditObject(obj);
+      if (!obj) return;
+      if (obj.kind === "text" && onTextChange && !obj.locked) {
+        setEditingId(obj.id);
+        return;
+      }
+      onEditObject?.(obj);
     },
-    [objects, onEditObject],
+    [objects, onEditObject, onTextChange],
   );
 
   // --- render ------------------------------------------------------------
 
   const pointScale = size.w > 0 && pageWidth > 0 ? size.w / pageWidth : 1;
   const selected = objects.filter((o) => selection.has(o.id));
-  const selBox = selected.length > 0 ? boundingBox(selected) : null;
+  // The selection rectangle is drawn over the ROTATED extent, so it actually
+  // encloses what is on screen (TODO V #111).
+  const selBox = selected.length > 0 ? boundingBox(selected, aspect) : null;
   const singleSelection = selected.length === 1 && !selected[0].locked;
 
   return (
@@ -424,6 +496,17 @@ export function DeckStage({
           />
         )}
 
+        {footer && (
+          <DeckObjectView
+            obj={footer}
+            pageW={size.w}
+            pageH={size.h}
+            pointScale={pointScale}
+            metrics={metrics}
+            selected={false}
+          />
+        )}
+
         {objects.map((o) => (
           <DeckObjectView
             key={o.id}
@@ -436,6 +519,48 @@ export function DeckStage({
             selected={selection.has(o.id)}
           />
         ))}
+
+        {/* The in-place editor. Positioned and styled from the object itself, so
+            the caret sits on the same glyphs the render does. `pointerDown` is
+            stopped: the stage's own handler would read this as a drag on the
+            object underneath and start moving it mid-sentence. */}
+        {editing && editing.kind === "text" && (
+          <textarea
+            ref={editRef}
+            className="deck-text-edit"
+            value={editing.text}
+            style={{
+              left: editing.x * size.w,
+              top: editing.y * size.h,
+              width: editing.w * size.w,
+              height: editing.h * size.h,
+              transform: editing.rot ? `rotate(${editing.rot}deg)` : undefined,
+              transformOrigin: "50% 50%",
+              padding: editing.padding * pointScale,
+              fontFamily: cssFontFor(editing.style.family, FONT_STACKS),
+              fontSize: editing.style.size * pointScale,
+              fontWeight: editing.style.bold ? 700 : 400,
+              fontStyle: editing.style.italic ? "italic" : "normal",
+              lineHeight: editing.style.lineHeight,
+              color: editing.style.color,
+              textAlign: editing.style.align,
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onChange={(e) => onTextChange?.(editing.id, e.target.value)}
+            onBlur={() => setEditingId(null)}
+            onKeyDown={(e) => {
+              // Escape leaves the editor without leaving the selection — the
+              // stage's own Escape (clear selection) would otherwise fire too.
+              if (e.key === "Escape") {
+                e.stopPropagation();
+                setEditingId(null);
+              }
+              // Every other key is the textarea's: newline, arrows, Backspace.
+              // The stage's shortcuts already exempt form controls.
+              e.stopPropagation();
+            }}
+          />
+        )}
 
         {showBuildBadges &&
           objects

@@ -23,10 +23,11 @@
  */
 
 import { PDFDocument, StandardFonts, type PDFFont } from "pdf-lib";
-import type { FontFamily, ListStyle, TextStyle } from "./model";
+import fontkit from "@pdf-lib/fontkit";
+import { type FontFamily, type ListStyle, type TextStyle, customFontPath, fontKey } from "./model";
 
-/** The 12 faces a deck can use: three families × regular/bold/italic/bold-italic. */
-const FACES: Record<FontFamily, Record<string, StandardFonts>> = {
+/** The 12 built-in faces: three families × regular/bold/italic/bold-italic. */
+const FACES: Record<"sans" | "serif" | "mono", Record<string, StandardFonts>> = {
   sans: {
     r: StandardFonts.Helvetica,
     b: StandardFonts.HelveticaBold,
@@ -52,13 +53,21 @@ export function faceKey(bold: boolean, italic: boolean): string {
   return bold && italic ? "bi" : bold ? "b" : italic ? "i" : "r";
 }
 
-/** The pdf-lib standard font a style maps to — used by the exporter to embed. */
+/**
+ * The pdf-lib standard font a style maps to — used by the exporter to embed.
+ *
+ * A *custom* family has no standard equivalent, so it falls back to `sans`: the
+ * exporter asks this only after failing to find an embedded face, i.e. when the
+ * font file could not be read. Substituting a face the reader can see beats
+ * dropping the text.
+ */
 export function standardFontFor(style: {
   family: FontFamily;
   bold: boolean;
   italic: boolean;
 }): StandardFonts {
-  return FACES[style.family][faceKey(style.bold, style.italic)];
+  const family = typeof style.family === "string" ? style.family : "sans";
+  return FACES[family][faceKey(style.bold, style.italic)];
 }
 
 export interface TextMetrics {
@@ -74,6 +83,19 @@ export interface TextMetrics {
    * exported line sits one ascender too high.
    */
   ascent(style: MeasureStyle, size?: number): number;
+  /**
+   * Make an embedded face available for measurement, keyed by its file path.
+   *
+   * **This is the single-source-of-truth rule made explicit.** A custom face can
+   * only be measured here if these exact bytes are also what the export embeds,
+   * so both sides key on the path and read the same map. Registering the same
+   * path twice is a no-op; a file fontkit cannot parse resolves `false` and the
+   * caller substitutes a standard face rather than laying out against one font
+   * and drawing with another.
+   */
+  register(path: string, bytes: Uint8Array): Promise<boolean>;
+  /** Whether a custom face is available under this path. */
+  has(path: string): boolean;
 }
 
 export type MeasureStyle = Pick<TextStyle, "family" | "bold" | "italic" | "size">;
@@ -85,19 +107,35 @@ let cached: Promise<TextMetrics> | null = null;
  *
  * Memoized at module scope: the document exists only to own the font objects, is
  * never written, and building a second one per deck tab would be pure waste.
+ * `fontkit` is registered on it so embedded faces measured through `register`
+ * come from the same document as the built-ins.
  */
 export function loadMetrics(): Promise<TextMetrics> {
   if (cached) return cached;
   cached = (async () => {
     const doc = await PDFDocument.create();
+    doc.registerFontkit(fontkit);
     const fonts = new Map<string, PDFFont>();
-    for (const family of Object.keys(FACES) as FontFamily[]) {
+    for (const family of Object.keys(FACES) as Array<"sans" | "serif" | "mono">) {
       for (const variant of Object.keys(FACES[family])) {
         fonts.set(`${family}-${variant}`, await doc.embedFont(FACES[family][variant]));
       }
     }
-    const pick = (s: MeasureStyle): PDFFont =>
-      fonts.get(`${s.family}-${faceKey(s.bold, s.italic)}`) ?? fonts.get("sans-r")!;
+    const custom = new Map<string, PDFFont>();
+    const failed = new Set<string>();
+
+    const pick = (s: MeasureStyle): PDFFont => {
+      const path = customFontPath(s.family);
+      if (path) {
+        const hit = custom.get(path);
+        if (hit) return hit;
+        // Not (yet) registered, or unreadable: fall through to the standard face
+        // the exporter substitutes, so measurement and drawing still agree.
+      }
+      const family = typeof s.family === "string" ? s.family : "sans";
+      return fonts.get(`${family}-${faceKey(s.bold, s.italic)}`) ?? fonts.get("sans-r")!;
+    };
+
     return {
       width(text, style, size) {
         if (!text) return 0;
@@ -119,14 +157,118 @@ export function loadMetrics(): Promise<TextMetrics> {
         // from a line box's top to its baseline.
         return pick(style).heightAtSize(size ?? style.size, { descender: false });
       },
+      async register(path, bytes) {
+        if (custom.has(path)) return true;
+        if (failed.has(path)) return false;
+        try {
+          // `subset: false` — the metrics document is never written, and a subset
+          // built from the text seen so far would measure a glyph it had not been
+          // asked about yet as missing.
+          custom.set(path, await doc.embedFont(bytes, { subset: false }));
+          return true;
+        } catch {
+          failed.add(path);
+          return false;
+        }
+      },
+      has(path) {
+        return custom.has(path);
+      },
     };
   })();
   return cached;
 }
 
+/** A CSS `font-family` stack for a family, for the DOM renderer. A custom face
+ *  is named by the `@font-face` the viewer installs (see `deckFonts.ts`). */
+export function cssFontFor(family: FontFamily, stacks: Record<string, string>): string {
+  const path = customFontPath(family);
+  if (path) return `"${cssFontName(path)}", ${stacks.sans}`;
+  return stacks[family as string] ?? stacks.sans;
+}
+
+/** The `@font-face` family name a custom font file is installed under. Derived
+ *  from the path so the renderer and the installer cannot disagree. */
+export function cssFontName(path: string): string {
+  return `eldeck-${fontKey({ custom: path }).replace(/[^A-Za-z0-9]+/g, "-")}`;
+}
+
 /** Drop the memo. Tests only. */
 export function resetMetrics(): void {
   cached = null;
+}
+
+// ---------------------------------------------------------------------------
+// Encodability
+// ---------------------------------------------------------------------------
+
+/**
+ * The characters a standard-14 face **cannot** write, in order, deduplicated.
+ *
+ * The standard-14 fonts are WinAnsi-encoded, so a Greek letter (`σ`, `μ`, `α`),
+ * a CJK glyph or a maths symbol has no code point in them at all — and pdf-lib
+ * *throws* rather than substituting. On screen none of this shows, because the
+ * renderer uses CSS font stacks that will happily find a glyph somewhere; the
+ * failure only appears at export, which for a talk means the night before.
+ *
+ * So both the exporter (as a per-object fallback) and the editor (as a
+ * pre-export scan) ask this the same question, and the author learns at edit
+ * time rather than at 23:00. The check is against the *encoding*, not the file:
+ * whether a face happens to be installed is irrelevant to what a PDF can carry.
+ *
+ * See TODO V #120 for the real fix — embedding a real face via fontkit — which
+ * this is deliberately not a substitute for, only a safety net under it.
+ */
+export function unencodableIn(text: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const ch of text) {
+    if (isWinAnsi(ch) || seen.has(ch)) continue;
+    seen.add(ch);
+    out.push(ch);
+  }
+  return out;
+}
+
+/** True when every character of `text` can be written by a standard-14 face. */
+export function encodableIn(text: string): boolean {
+  for (const ch of text) if (!isWinAnsi(ch)) return false;
+  return true;
+}
+
+/**
+ * Drop every character a standard-14 face cannot write.
+ *
+ * Deliberately *drops* rather than substituting a `?`: the export already
+ * carries a warning naming the object and the offending characters, and a line
+ * of question marks reads as corruption rather than as the omission it is.
+ */
+export function toEncodable(text: string): string {
+  let out = "";
+  for (const ch of text) if (isWinAnsi(ch)) out += ch;
+  return out;
+}
+
+/**
+ * The 32 code points WinAnsi (CP1252) maps into the 0x80–0x9F range, which is
+ * where it differs from Latin-1 and where the euro sign, the curly quotes and
+ * the dashes people actually paste into slides live.
+ */
+const WIN_ANSI_HIGH = new Set([
+  0x20ac, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160,
+  0x2039, 0x0152, 0x017d, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014,
+  0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0x017e, 0x0178,
+]);
+
+function isWinAnsi(ch: string): boolean {
+  const c = ch.codePointAt(0);
+  if (c == null) return true;
+  // Tab and newline never reach `drawText` (the wrapper splits on them) and a
+  // control character is not a glyph, so neither is worth reporting.
+  if (c === 9 || c === 10 || c === 13) return true;
+  if (c >= 0x20 && c <= 0x7e) return true;
+  if (c >= 0xa0 && c <= 0xff) return true;
+  return WIN_ANSI_HIGH.has(c);
 }
 
 // ---------------------------------------------------------------------------

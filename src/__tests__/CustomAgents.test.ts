@@ -13,12 +13,15 @@ import {
   customAgentToItem,
 } from "../components/tabs/newTabItems";
 import { isResumableAgentTab } from "../stores/tabs";
+import { translate, type TranslationKey } from "../lib/i18n";
 import type { CustomAgent } from "../types";
+
+const t = (key: TranslationKey) => translate("en", key);
 
 describe("buildStaticTabSpec — custom agents", () => {
   it("launches a bare custom agent as a launch-only agent tab", () => {
     const ca: CustomAgent = { id: "1", label: "Mine", cmd: "my-agent" };
-    const spec = buildStaticTabSpec(customAgentToItem(ca), "/proj", "Proj");
+    const spec = buildStaticTabSpec(customAgentToItem(ca), "/proj", "Proj", t);
     expect(spec.kind).toBe("agent");
     expect(spec.cmd).toBe("my-agent");
     expect(spec.args).toEqual([]);
@@ -36,7 +39,7 @@ describe("buildStaticTabSpec — custom agents", () => {
       cmd: "my-agent",
       args: ["--model", "x"],
     };
-    const spec = buildStaticTabSpec(customAgentToItem(ca), "/proj", "Proj");
+    const spec = buildStaticTabSpec(customAgentToItem(ca), "/proj", "Proj", t);
     expect(spec.args).toEqual(["--model", "x"]);
   });
 
@@ -47,7 +50,7 @@ describe("buildStaticTabSpec — custom agents", () => {
       cmd: "my-agent",
       resumeArgs: ["--continue"],
     };
-    const spec = buildStaticTabSpec(customAgentToItem(ca), "/proj", "Proj");
+    const spec = buildStaticTabSpec(customAgentToItem(ca), "/proj", "Proj", t);
     expect(spec.resumeArgs).toEqual(["--continue"]);
     // A session id is minted so the tab satisfies the persistence gate, and the
     // tab is tagged with the ELDRUN_TAB_UID env var like the built-in resumables.
@@ -70,6 +73,7 @@ describe("agentMenuEntries", () => {
       customAgents: custom,
       pick: () => {},
       onAddCustom: () => {},
+      t,
     });
     const labels = entries.map((e) => e.label);
     expect(labels).toEqual(["Claude", "Present", "Absent (not found)", "Add agent…"]);
@@ -87,6 +91,7 @@ describe("agentMenuEntries", () => {
       customAgents: [],
       pick: () => {},
       onAddCustom: () => {},
+      t,
     });
     expect(entries.map((e) => e.key)).toEqual(["__add_custom_agent__"]);
   });

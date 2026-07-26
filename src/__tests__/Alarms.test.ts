@@ -8,7 +8,11 @@ import {
   snooze,
   wokenSnoozes,
 } from "../lib/alarms";
+import { translate, type TranslationKey } from "../lib/i18n";
 import type { Occurrence } from "../types";
+
+const t = (key: TranslationKey, params?: Record<string, string | number>) =>
+  translate("en", key, params);
 
 function occ(over: Partial<Occurrence> = {}): Occurrence {
   return {
@@ -184,15 +188,15 @@ describe("snooze", () => {
 
 describe("describeLead", () => {
   it("describes the common offsets", () => {
-    expect(describeLead(0)).toBe("now");
-    expect(describeLead(1)).toBe("in 1 minute");
-    expect(describeLead(15)).toBe("in 15 minutes");
-    expect(describeLead(60)).toBe("in 1 hour");
-    expect(describeLead(120)).toBe("in 2 hours");
-    expect(describeLead(1440)).toBe("in 1 day");
+    expect(describeLead(0, t)).toBe("now");
+    expect(describeLead(1, t)).toBe("in 1 minute");
+    expect(describeLead(15, t)).toBe("in 15 minutes");
+    expect(describeLead(60, t)).toBe("in 1 hour");
+    expect(describeLead(120, t)).toBe("in 2 hours");
+    expect(describeLead(1440, t)).toBe("in 1 day");
   });
 
   it("describes an offset AFTER the start", () => {
-    expect(describeLead(-15)).toBe("15 minutes ago");
+    expect(describeLead(-15, t)).toBe("15 minutes ago");
   });
 });

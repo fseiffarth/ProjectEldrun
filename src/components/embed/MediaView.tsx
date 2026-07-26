@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ViewerHeader } from "./FileViewerPane";
 import { useFileScope, readFileBytes } from "./fileAccess";
 import { basename } from "../../lib/paths";
+import { useT } from "../../lib/i18n";
 
 /**
  * Audio/video player viewer (Dev D). Plays `.mp3`/`.mp4`/`.webm`/… in-tab via
@@ -105,6 +106,7 @@ export function MediaView({
   onOpenExternally: () => void;
   tabKey?: string;
 }) {
+  const t = useT();
   const ext = useMemo(() => extOf(path), [path]);
   const mime = MIME_BY_EXT[ext] ?? "";
   const isVideo = VIDEO_EXTS.has(ext);
@@ -135,16 +137,14 @@ export function MediaView({
         ) : playbackError != null ? (
           <div className="file-viewer-error">{playbackError}</div>
         ) : url == null ? (
-          <div className="file-viewer-loading">Loading…</div>
+          <div className="file-viewer-loading">{t("common.loading")}</div>
         ) : isVideo ? (
           <video
             key={url}
             src={url}
             controls
             preload="metadata"
-            onError={() =>
-              setPlaybackError("This media couldn't be played in-app. Try opening it externally.")
-            }
+            onError={() => setPlaybackError(t("mediaView.playbackFailed"))}
             style={{
               maxWidth: "100%",
               maxHeight: "100%",
@@ -157,9 +157,7 @@ export function MediaView({
             src={url}
             controls
             preload="metadata"
-            onError={() =>
-              setPlaybackError("This media couldn't be played in-app. Try opening it externally.")
-            }
+            onError={() => setPlaybackError(t("mediaView.playbackFailed"))}
             style={{ width: "100%", maxWidth: 640 }}
           />
         )}

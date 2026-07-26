@@ -266,7 +266,7 @@ export function RightPanel({
       mountTree={open}
       // Right-click → "Open in a new tab": the same file view, on that folder,
       // as a Files (Project) tab in this project's scope.
-      onOpenFolderTab={(rel) => openProjectFilesTab(projectDir, rel)}
+      onOpenFolderTab={(rel) => openProjectFilesTab(t, projectDir, rel)}
       containerClassName={`right-panel${side === "left" ? " left" : ""} ${open ? "open" : ""}${resizing ? " resizing" : ""}`}
       containerStyle={width ? { width } : undefined}
       containerProps={{ onMouseEnter, onMouseLeave }}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ProjectFilesTab } from "./ProjectFilesTab";
+import { useT } from "../../lib/i18n";
 
 /** Default/clamp bounds for the per-subwindow file-viewer column (px). */
 export const DEFAULT_GROUP_FILES_WIDTH = 300;
@@ -52,6 +53,7 @@ export function SubwindowFilesSidebar({
   canOpenTabs,
   onHide,
 }: Props) {
+  const t = useT();
   const committed = clampFilesWidth(width ?? DEFAULT_GROUP_FILES_WIDTH);
   // Live width during a resize drag; null when idle (render the committed one).
   const [liveWidth, setLiveWidth] = useState<number | null>(null);
@@ -87,7 +89,7 @@ export function SubwindowFilesSidebar({
     <div className="subwindow-files" style={{ width: liveWidth ?? committed }}>
       <div
         className="subwindow-files-resize"
-        title="Drag to resize · double-click to hide"
+        title={t("subwindowFiles.resizeHint")}
         onPointerDown={startResize}
         onDoubleClick={onHide}
       />

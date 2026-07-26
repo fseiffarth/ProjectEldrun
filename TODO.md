@@ -170,6 +170,7 @@ toward broad, cloud, team-scale agent automation — and the defensibility
 | S | [`todo/group-s.md`](todo/group-s.md) | Local Agents via Ollama — generalize the local `vibe` model tab into a family of local Ollama-backed agent tabs. |
 | T | [`todo/group-t.md`](todo/group-t.md) | Smart / Native Shell Terminal — research done, not yet built; shell-completion via a new Ollama command. |
 | P | [`todo/group-p.md`](todo/group-p.md) | Git Hosting: Multi-Host Publishing — generalize the GitHub-only publish flow to GitLab + generic remote URLs. |
+| V | [`todo/group-v.md`](todo/group-v.md) | Native Presenter ("Deck") — post-Phase-7 hardening. **V.1 + V.2 (#93–#122) ✅ done:** both data-loss defects, the first-real-use failures, the anchoring rework (SyncTeX line anchors now exist at runtime), and real font embedding. V.3 (#123–#141 — performance and the differentiated bet) open. Follows Group M #90. |
 
 Completed groups (code-complete, automated tests green, manual QA pending
 across the board) live in [`todo/done.md`](todo/done.md).
@@ -193,6 +194,11 @@ share files and context:
 - **In-app viewers (incremental):** M (#43–#54) — small, mostly-independent
   enhancements on the done D.14 viewer; the link pair #49/#50 and the autosave
   pair #43/#47 are best done together.
+- **Native presenter hardening:** V (#93–#141) — follows Group M #90, which is
+  code-complete but has never been run live. **#93/#94 jump the queue**: both
+  lose authored work with no prompt, and the 148 deck tests cover only the pure
+  modules, not the effects where they live. Then #95–#100 (the first-real-use
+  failures, all small) before any live QA of #90.
 - **Project policy:** O (#58–#60) — per-project security/permission model;
   touches the create/import dialog and the agent-spawn + git-push paths.
 - **Right-panel polish:** R (#63 needle contrast, #64 app-window tracking bug).

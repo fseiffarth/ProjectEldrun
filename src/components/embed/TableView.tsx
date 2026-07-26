@@ -23,6 +23,7 @@ import {
   DELIMITER_CANDIDATES,
   type ParsedTable,
 } from "../../lib/viewers/table";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 /** Backend `read_spreadsheet` result (Dev G). Mirrors the Rust `SheetData`. */
 interface SheetData {
@@ -85,18 +86,19 @@ const SORTED_EDGE = "inset 2px 0 0 var(--accent), inset -2px 0 0 var(--accent)";
 const GUTTER_SORT_COL = -1;
 
 /** The separator names offered in the header, keyed by the character itself. */
-const DELIMITER_LABELS: Record<string, string> = {
-  ",": "Comma",
-  ";": "Semicolon",
-  "\t": "Tab",
-  "|": "Pipe",
+const DELIMITER_KEYS: Record<string, TranslationKey> = {
+  ",": "tableView.delimiterComma",
+  ";": "tableView.delimiterSemicolon",
+  "\t": "tableView.delimiterTab",
+  "|": "tableView.delimiterPipe",
 };
 
 const KNOWN_DELIMITERS = new Set<string>(DELIMITER_CANDIDATES);
 
 /** How a separator reads in a menu — a tab has no glyph, so it needs a name. */
-function delimiterLabel(ch: string): string {
-  return DELIMITER_LABELS[ch] ?? `"${ch}"`;
+function delimiterLabel(t: ReturnType<typeof useT>, ch: string): string {
+  const key = DELIMITER_KEYS[ch];
+  return key ? t(key) : `"${ch}"`;
 }
 
 interface SortSpec {
@@ -146,6 +148,7 @@ export function TableView({
   onOpenExternally: () => void;
   tabKey?: string;
 }) {
+  const t = useT();
   const isSheet = useMemo(() => SHEET_RE.test(path), [path]);
 
   // The text draft behind a CSV/TSV. For a spreadsheet we don't edit the file at
@@ -417,7 +420,7 @@ export function TableView({
     flashTimers.current.push(timer);
   }, [content, isSheet]);
 
-  useEffect(() => () => flashTimers.current.forEach((t) => clearTimeout(t)), []);
+  useEffect(() => () => flashTimers.current.forEach((timer) => clearTimeout(timer)), []);
 
   const body = useMemo(() => bodyRefs(rows), [rows]);
   // Filtering follows the eye: a row matched on a hidden column would show up with
@@ -636,15 +639,17 @@ export function TableView({
     () =>
       Array.from({ length: width }, (_, c) => {
         const name = header[c] ?? "";
-        return name.trim() === "" ? `Column ${c + 1}` : name;
+        return name.trim() === "" ? t("tableView.columnFallbackName", { n: c + 1 }) : name;
       }),
-    [width, header],
+    [width, header, t],
   );
 
   const countLabel =
     query.trim() !== ""
-      ? `${visible.length} of ${body.length} rows`
-      : `${body.length} ${body.length === 1 ? "row" : "rows"}`;
+      ? t("tableView.rowsFilteredCount", { shown: visible.length, total: body.length })
+      : body.length === 1
+        ? t("tableView.rowCountOne", { count: body.length })
+        : t("tableView.rowCountMany", { count: body.length });
 
   return (
     <div
@@ -657,7 +662,7 @@ export function TableView({
           <Dropdown
             value={selectedSheet ?? sheetData.active_sheet}
             onChange={setSelectedSheet}
-            title="Select sheet"
+            title={t("tableView.selectSheetTitle")}
             options={sheetData.sheet_names.map((name) => ({ value: name, label: name }))}
           />
         )}
@@ -666,11 +671,11 @@ export function TableView({
             <Dropdown
               value={customMode ? "custom" : (override ?? "auto")}
               onChange={onPickDelimiter}
-              title="Column separator"
+              title={t("tableView.columnSeparatorTitle")}
               options={[
-                { value: "auto", label: `Auto (${delimiterLabel(sniffed)})` },
-                ...DELIMITER_CANDIDATES.map((d) => ({ value: d, label: delimiterLabel(d) })),
-                { value: "custom", label: "Custom…" },
+                { value: "auto", label: t("tableView.autoDelimiter", { label: delimiterLabel(t, sniffed) }) },
+                ...DELIMITER_CANDIDATES.map((d) => ({ value: d, label: delimiterLabel(t, d) })),
+                { value: "custom", label: t("tableView.customEllipsis") },
               ]}
             />
             {customMode && (
@@ -682,8 +687,8 @@ export function TableView({
                   const ch = e.target.value.slice(-1);
                   if (ch) setOverride(ch);
                 }}
-                title="Separator character"
-                aria-label="Separator character"
+                title={t("tableView.separatorCharTitle")}
+                aria-label={t("tableView.separatorCharTitle")}
                 style={{
                   width: 28,
                   textAlign: "center",
@@ -711,8 +716,8 @@ export function TableView({
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Filter rows…"
-            aria-label="Filter rows"
+            placeholder={t("tableView.filterPlaceholder")}
+            aria-label={t("tableView.filterAriaLabel")}
             style={{
               width: 140,
               padding: "2px 6px",
@@ -739,7 +744,7 @@ export function TableView({
         {editable && (
           <button
             onClick={addRow}
-            title="Append a row"
+            title={t("tableView.appendRowTitle")}
             style={{
               all: "unset",
               cursor: "pointer",
@@ -750,7 +755,7 @@ export function TableView({
               border: "1px solid var(--border-color)",
             }}
           >
-            + Row
+            {t("tableView.addRowButton")}
           </button>
         )}
         {editable && (
@@ -765,9 +770,9 @@ export function TableView({
       {error != null ? (
         <div className="file-viewer-error">{error}</div>
       ) : !loaded ? (
-        <div className="file-viewer-loading">Loading…</div>
+        <div className="file-viewer-loading">{t("common.loading")}</div>
       ) : header.length === 0 ? (
-        <div className="file-viewer-loading">Empty file</div>
+        <div className="file-viewer-loading">{t("tableView.emptyFile")}</div>
       ) : (
         <div
           ref={onScrollRef}
@@ -820,10 +825,10 @@ export function TableView({
                     onClick={onGutterClick}
                     title={
                       gutterSorted
-                        ? "Row order — click to reverse, again to clear"
-                        : "Sort by row order (restore the file's order)"
+                        ? t("tableView.gutterSortedTitle")
+                        : t("tableView.gutterUnsortedTitle")
                     }
-                    aria-label="Sort by row order"
+                    aria-label={t("tableView.sortByRowOrderLabel")}
                     style={{
                       all: "unset",
                       display: "flex",
@@ -880,8 +885,8 @@ export function TableView({
                           onDoubleClick={() => onHeaderDoubleClick(c)}
                           title={
                             editable
-                              ? "Sort by this column — double-click to rename"
-                              : "Sort by this column"
+                              ? t("tableView.sortColumnRenameTitle")
+                              : t("tableView.sortColumnTitle")
                           }
                           style={{
                             all: "unset",
@@ -926,7 +931,7 @@ export function TableView({
                           e.stopPropagation();
                           resetWidth(c);
                         }}
-                        title="Drag to resize · double-click to auto-fit"
+                        title={t("tableView.resizeGripTitle")}
                         aria-hidden="true"
                         style={{
                           position: "absolute",
@@ -989,8 +994,8 @@ export function TableView({
                         <span>{row.index}</span>
                         <button
                           onClick={() => removeRow(row.index)}
-                          title={`Delete row ${row.index}`}
-                          aria-label={`Delete row ${row.index}`}
+                          title={t("tableView.deleteRowTitle", { n: row.index })}
+                          aria-label={t("tableView.deleteRowTitle", { n: row.index })}
                           style={{
                             all: "unset",
                             cursor: "pointer",
@@ -1065,7 +1070,7 @@ export function TableView({
           </table>
           {total === 0 && body.length > 0 && (
             <div style={{ padding: "8px 10px", fontSize: 12, opacity: 0.7 }}>
-              No rows match “{query}”.
+              {t("tableView.noRowsMatch", { query })}
             </div>
           )}
         </div>
@@ -1096,6 +1101,7 @@ function ColumnsMenu({
   onShowAll: () => void;
   onHideAll: () => void;
 }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -1123,11 +1129,11 @@ function ColumnsMenu({
         type="button"
         className="dropdown-trigger"
         onClick={() => setOpen((v) => !v)}
-        title="Show or hide columns"
+        title={t("columnsMenu.showHideTitle")}
         aria-haspopup="listbox"
         aria-expanded={open}
       >
-        {hidden.size > 0 ? `Columns ${shown}/${names.length}` : "Columns"}
+        {hidden.size > 0 ? t("columnsMenu.triggerCount", { shown, total: names.length }) : t("columnsMenu.triggerLabel")}
         <span className="dropdown-caret">▾</span>
       </button>
       {open && (
@@ -1143,7 +1149,7 @@ function ColumnsMenu({
             <span aria-hidden="true" style={{ display: "inline-block", width: 16, opacity: 0.9 }}>
               {hidden.size > 0 ? "✓" : "–"}
             </span>
-            {hidden.size > 0 ? "Select all" : "Deselect all"}
+            {hidden.size > 0 ? t("columnsMenu.selectAll") : t("columnsMenu.deselectAll")}
           </button>
           {names.map((name, c) => {
             const isHidden = hidden.has(c);
@@ -1154,7 +1160,7 @@ function ColumnsMenu({
                 role="option"
                 aria-selected={!isHidden}
                 onClick={() => onToggle(c)}
-                title={isHidden ? "Click to show this column" : "Click to hide this column"}
+                title={isHidden ? t("columnsMenu.showColumnTitle") : t("columnsMenu.hideColumnTitle")}
               >
                 <span
                   aria-hidden="true"

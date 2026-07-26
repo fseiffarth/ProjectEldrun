@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useT } from "../../lib/i18n";
 
 export interface FileChange {
   path: string;
@@ -140,6 +141,7 @@ interface Props {
  * collapse/expand on click; the parent owns open/close (Escape, outside-click).
  */
 export function GitChangeTree({ projectDir, scope }: Props) {
+  const t = useT();
   const [changes, setChanges] = useState<FileChange[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -203,8 +205,10 @@ export function GitChangeTree({ projectDir, scope }: Props) {
       onClick={(e) => e.stopPropagation()}
     >
       {error && <div className="git-change-empty">{error}</div>}
-      {!error && !tree && <div className="git-change-empty">Loading…</div>}
-      {tree && tree.children.length === 0 && <div className="git-change-empty">No changes</div>}
+      {!error && !tree && <div className="git-change-empty">{t("gitChangeTree.loading")}</div>}
+      {tree && tree.children.length === 0 && (
+        <div className="git-change-empty">{t("gitChangeTree.noChanges")}</div>
+      )}
       {tree && tree.children.length > 0 && (
         <div className="git-change-rows">
           {tree.children.map((c) => (

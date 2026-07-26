@@ -23,6 +23,7 @@ import {
   type YamlNode,
 } from "../../lib/viewers/yaml";
 import { cellKind, isContainer } from "../../lib/viewers/yamlGrid";
+import { useT } from "../../lib/i18n";
 
 /**
  * The YAML/JSON **card grid** (#yaml-grid) — the third view on the file, beside the
@@ -65,6 +66,7 @@ export function YamlGrid({
   /** JSON dialect (a `.json` file): keys/strings added here are quoted. */
   strict?: boolean;
 }) {
+  const t = useT();
   const doc = useMemo(() => parseYaml(text, { strict }), [text, strict]);
 
   // The focused ("main") card rides with the tab, like the tree's collapse — the
@@ -93,10 +95,10 @@ export function YamlGrid({
     return (
       <div className="yaml-tree-notice">
         <p>
-          The cards can't read this file: {doc.error.message} (line {doc.error.line})
+          {t("yamlGrid.cantRead", { msg: doc.error.message, line: doc.error.line })}
         </p>
         <p className="yaml-tree-notice-hint">
-          Switch to <strong>Source</strong> to edit it as text — nothing here has been changed.
+          {t("yamlGrid.switchToSourcePre")}<strong>{t("yamlGrid.sourceWord")}</strong>{t("yamlGrid.switchToSourcePost")}
         </p>
       </div>
     );
@@ -111,7 +113,7 @@ export function YamlGrid({
           <UntestedTag />
         </div>
         <div className="yaml-tree-notice">
-          <p>This file has no entries yet.</p>
+          <p>{t("yamlGrid.noEntriesYet")}</p>
         </div>
       </div>
     );
@@ -127,13 +129,13 @@ export function YamlGrid({
   return (
     <div className="yaml-cards" style={fontSize ? { fontSize: `${fontSize}px` } : undefined}>
       <div className="yaml-cards-bar">
-        <nav className="yaml-grid-breadcrumb" aria-label="Card path">
+        <nav className="yaml-grid-breadcrumb" aria-label={t("yamlGrid.cardPathLabel")}>
           <button
             className={`yaml-crumb${crumbs.length === 0 ? " on" : ""}`}
             onClick={() => setFocus(null)}
-            title="Back to the top overview"
+            title={t("yamlGrid.overviewTitle")}
           >
-            ⌂ overview
+            {t("yamlGrid.overviewButton")}
           </button>
           {crumbs.map((node, i) => (
             <span key={node.id} className="yaml-crumb-wrap">
@@ -143,9 +145,9 @@ export function YamlGrid({
               <button
                 className={`yaml-crumb${i === crumbs.length - 1 ? " on" : ""}`}
                 onClick={() => setFocus(node.id)}
-                title={crumbTitle(node, index)}
+                title={crumbTitle(t, node, index)}
               >
-                {crumbTitle(node, index)}
+                {crumbTitle(t, node, index)}
               </button>
             </span>
           ))}
@@ -189,7 +191,7 @@ const TITLE_KEYS = ["name", "id", "title", "label", "key", "host", "type", "kind
 
 /** A friendly title for a list member. A mapping is named by its first name-ish
  *  field's value; anything else falls back to a 1-based `Item N`. Never `#0`. */
-function itemTitle(node: YamlNode, index: number): string {
+function itemTitle(t: ReturnType<typeof useT>, node: YamlNode, index: number): string {
   if (node.kind === "map") {
     for (const k of TITLE_KEYS) {
       const field = node.children.find(
@@ -198,7 +200,7 @@ function itemTitle(node: YamlNode, index: number): string {
       if (field) return field.value;
     }
   }
-  return `Item ${index + 1}`;
+  return t("yamlGrid.itemFallback", { n: index + 1 });
 }
 
 /** The document's top-level cards: a root map is one `document` card; a root list
@@ -272,23 +274,25 @@ function buildLevels(
 /** A card's display title, given its parent (a mapping keeps its key; a list member
  *  gets its name-ish field, else `Item N`; a lone root map is `document`). */
 function titleFor(
+  t: ReturnType<typeof useT>,
   node: YamlNode,
   parent: YamlNode | null,
   indexInParent: number,
 ): string {
-  if (!parent) return node.path.length === 0 && node.kind === "map" ? "document" : itemTitle(node, indexInParent);
-  if (parent.kind === "map") return node.key ?? itemTitle(node, indexInParent);
-  return itemTitle(node, indexInParent);
+  if (!parent) return node.path.length === 0 && node.kind === "map" ? t("yamlGrid.documentTitle") : itemTitle(t, node, indexInParent);
+  if (parent.kind === "map") return node.key ?? itemTitle(t, node, indexInParent);
+  return itemTitle(t, node, indexInParent);
 }
 
 /** A breadcrumb crumb's short label — the same title the card wears in its level. */
 function crumbTitle(
+  t: ReturnType<typeof useT>,
   node: YamlNode,
   index: Map<string, { node: YamlNode; parent: YamlNode | null }>,
 ): string {
   const parent = index.get(node.id)?.parent ?? null;
   const i = parent ? parent.children.indexOf(node) : 0;
-  return titleFor(node, parent, i);
+  return titleFor(t, node, parent, i);
 }
 
 /** How tall a level's cards may grow before their fields scroll inside them. */
@@ -312,6 +316,7 @@ function LevelGrid({
   ctx: Ctx;
   onFocus: (id: string | null) => void;
 }) {
+  const t = useT();
   const { cards, parent, selectedId } = level;
   const siblings = parent?.children ?? cards;
 
@@ -412,7 +417,7 @@ function LevelGrid({
             <LevelCard
               key={node.id}
               node={node}
-              title={titleFor(node, parent, siblings.indexOf(node))}
+              title={titleFor(t, node, parent, siblings.indexOf(node))}
               selected={node.id === selectedId}
               height={height}
               onFocus={onFocus}
@@ -455,12 +460,13 @@ function cardDragClass(drag: CardDrag | null): string {
 }
 
 function CardGrip({ drag, title }: { drag: CardDrag | null; title: string }) {
+  const t = useT();
   if (!drag?.grip) return null;
   return (
     <button
       className="yaml-grip yaml-card-grip"
-      title="Drag to reorder"
-      aria-label={`Reorder ${title}`}
+      title={t("yamlGrid.dragToReorder")}
+      aria-label={t("yamlGrid.reorderLabel", { title })}
       {...drag.grip}
     >
       ⠿
@@ -491,6 +497,7 @@ function LevelCard({
   ctx: Ctx;
   drag: CardDrag | null;
 }) {
+  const t = useT();
   const scalar = !isContainer(node);
   const entries = node.children.map((child, i) => ({ child, i }));
   const scalars = entries.filter((e) => e.child.kind === "scalar");
@@ -499,8 +506,8 @@ function LevelCard({
   const badge = scalar
     ? ""
     : node.kind === "seq"
-      ? `${n} item${n === 1 ? "" : "s"}`
-      : `${n} key${n === 1 ? "" : "s"}`;
+      ? t(n === 1 ? "yamlGrid.itemsBadgeOne" : "yamlGrid.itemsBadgeMany", { n })
+      : t(n === 1 ? "yamlGrid.keysBadgeOne" : "yamlGrid.keysBadgeMany", { n });
   const canDrill = subs.length > 0;
   const style: CSSProperties | undefined = height != null ? { height: `${height}px` } : undefined;
 
@@ -516,8 +523,8 @@ function LevelCard({
           <button
             className="yaml-card-toggle"
             onClick={() => onFocus(node.id)}
-            title={`Open ${title}`}
-            aria-label={`Open ${title}`}
+            title={t("yamlGrid.openTitle", { title })}
+            aria-label={t("yamlGrid.openTitle", { title })}
           >
             <span className="yaml-card-title">{title}</span>
           </button>
@@ -525,7 +532,7 @@ function LevelCard({
           <span className="yaml-card-title yaml-card-title-static">{title}</span>
         )}
         {!scalar && isFlow(node) && (
-          <span className="yaml-flow-tag" title="Written in flow (JSON) style">
+          <span className="yaml-flow-tag" title={t("yamlGrid.flowStyleTitle")}>
             {node.kind === "seq" ? "[ ]" : "{ }"}
           </span>
         )}
@@ -533,8 +540,8 @@ function LevelCard({
         {node.deletable && (
           <button
             className="yaml-act yaml-act-del yaml-card-del"
-            title="Delete this card"
-            aria-label={`Delete ${title}`}
+            title={t("yamlGrid.deleteCardTitle")}
+            aria-label={t("yamlGrid.deleteLabel", { title })}
             onClick={() => {
               // Deleting the main card (or an ancestor of it) drops the focus back
               // to safety — the level rebuilds and a stale focus would vanish.
@@ -554,7 +561,7 @@ function LevelCard({
               <CommitInput
                 className={`yaml-value-input yaml-val-${scalarType(node)}`}
                 initial={node.value}
-                ariaLabel={`Value of ${title}`}
+                ariaLabel={t("yamlGrid.valueOfLabel", { label: title })}
                 onCommit={(next) => ctx.onChange(setValue(ctx.text, ctx.doc, node, next))}
               />
             ) : (
@@ -570,7 +577,7 @@ function LevelCard({
             ))}
           </div>
         ) : (
-          <div className="yaml-card-empty">no fields</div>
+          <div className="yaml-card-empty">{t("yamlGrid.noFields")}</div>
         )}
       </div>
 
@@ -579,9 +586,9 @@ function LevelCard({
         <button
           className="yaml-card-drill"
           onClick={() => onFocus(node.id)}
-          title={`Open ${subs.length} nested group${subs.length === 1 ? "" : "s"}`}
+          title={t(subs.length === 1 ? "yamlGrid.openGroupsTitleOne" : "yamlGrid.openGroupsTitleMany", { n: subs.length })}
         >
-          {subs.length} group{subs.length === 1 ? "" : "s"} <span aria-hidden="true">▸</span>
+          {t(subs.length === 1 ? "yamlGrid.groupsBadgeOne" : "yamlGrid.groupsBadgeMany", { n: subs.length })} <span aria-hidden="true">▸</span>
         </button>
       )}
     </div>
@@ -601,6 +608,7 @@ function FieldRow({
   index: number;
   ctx: Ctx;
 }) {
+  const t = useT();
   const inSeq = parentKind === "seq";
   const label = inSeq ? "–" : entry.key ?? "";
   const kind = cellKind(entry, null);
@@ -609,7 +617,7 @@ function FieldRow({
     <div className="yaml-card-field">
       <span
         className={`yaml-card-key${inSeq ? " yaml-card-bullet" : ""}`}
-        title={inSeq ? `item ${index + 1}` : label}
+        title={inSeq ? t("yamlGrid.itemIndexTitle", { n: index + 1 }) : label}
       >
         {label}
       </span>
@@ -617,14 +625,14 @@ function FieldRow({
         <CommitInput
           className={`yaml-value-input yaml-val-${scalarType(entry)}`}
           initial={entry.value}
-          ariaLabel={`Value of ${label}`}
-          placeholder={entry.style === "empty" ? "null" : undefined}
+          ariaLabel={t("yamlGrid.valueOfLabel", { label })}
+          placeholder={entry.style === "empty" ? t("yamlGrid.nullPlaceholder") : undefined}
           onCommit={(next) => ctx.onChange(setValue(ctx.text, ctx.doc, entry, next))}
         />
       ) : (
         <span
           className="yaml-value-locked"
-          title={entry.raw || "The tree can't rewrite this — edit it in Source."}
+          title={entry.raw || t("yamlGrid.sourceOnlyTitle")}
         >
           {entry.raw || entry.value}
         </span>
@@ -632,8 +640,8 @@ function FieldRow({
       {entry.deletable && (
         <button
           className="yaml-act yaml-act-del yaml-card-field-del"
-          title="Delete this field"
-          aria-label={`Delete ${label}`}
+          title={t("yamlGrid.deleteFieldTitle")}
+          aria-label={t("yamlGrid.deleteLabel", { title: label })}
           onClick={() => ctx.onChange(deleteNode(ctx.text, entry))}
         >
           ×
@@ -646,6 +654,7 @@ function FieldRow({
 /** The add affordances at the foot of a card: a mapping grows a field, a sequence a
  *  card or a value (and can copy its last item — fastest for like-shaped records). */
 function AddBar({ node, ctx }: { node: YamlNode; ctx: Ctx }) {
+  const t = useT();
   const [adding, setAdding] = useState(false);
   if (node.kind !== "map" && node.kind !== "seq") return null;
   const lastChild = node.children[node.children.length - 1];
@@ -658,8 +667,8 @@ function AddBar({ node, ctx }: { node: YamlNode; ctx: Ctx }) {
           <CommitInput
             className="yaml-key-input"
             initial=""
-            placeholder="new field"
-            ariaLabel="New field key"
+            placeholder={t("yamlGrid.newFieldPlaceholder")}
+            ariaLabel={t("yamlGrid.newFieldKeyLabel")}
             autoFocus
             onCommit={(next) => {
               setAdding(false);
@@ -674,7 +683,7 @@ function AddBar({ node, ctx }: { node: YamlNode; ctx: Ctx }) {
           />
         ) : (
           <button className="yaml-add" onClick={() => setAdding(true)}>
-            + field
+            {t("yamlGrid.addFieldButton")}
           </button>
         )}
       </div>
@@ -685,29 +694,29 @@ function AddBar({ node, ctx }: { node: YamlNode; ctx: Ctx }) {
     <div className="yaml-card-add">
       <button
         className="yaml-add"
-        title="Add a card (an empty mapping item)"
+        title={t("yamlGrid.addCardTitle")}
         onClick={() => ctx.onChange(addChild(ctx.text, ctx.doc, node, "item", "", "{}"))}
       >
-        + card
+        {t("yamlGrid.addCardButton")}
       </button>
       <button
         className="yaml-add"
-        title="Add a plain value item"
+        title={t("yamlGrid.addValueTitle")}
         onClick={() =>
           ctx.onChange(
             addChild(ctx.text, ctx.doc, node, "item", "", literalFor("text", "", ctx.strict)),
           )
         }
       >
-        + value
+        {t("yamlGrid.addValueButton")}
       </button>
       {canCopy && (
         <button
           className="yaml-add"
-          title="Add a copy of the last item, to edit in place"
+          title={t("yamlGrid.copyLastTitle")}
           onClick={() => ctx.onChange(duplicateNode(ctx.text, lastChild))}
         >
-          Copy last
+          {t("yamlGrid.copyLastButton")}
         </button>
       )}
     </div>

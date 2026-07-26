@@ -3,6 +3,7 @@ import { unzipSync } from "fflate";
 import { ViewerHeader, useViewerState } from "./FileViewerPane";
 import { useFileScope, readFileBytes, fileMtime } from "./fileAccess";
 import { extractOdt, renderOdtDocument } from "../../lib/viewers/odt";
+import { useT } from "../../lib/i18n";
 
 // Re-read the file this long after an external change is detected (mirrors the
 // other viewers' diff-aware reload cadence).
@@ -28,6 +29,7 @@ export function OdtView({
   onOpenExternally: () => void;
   tabKey?: string;
 }) {
+  const t = useT();
   // tabKey accepted for call-site parity; no persisted reader position yet.
   useViewerState(tabKey);
   const scope = useFileScope();
@@ -81,11 +83,11 @@ export function OdtView({
       <ViewerHeader onOpenExternally={onOpenExternally} />
       <div className="odt-viewer-body">
         {error != null ? (
-          <div className="file-viewer-error">Failed to render document: {error}</div>
+          <div className="file-viewer-error">{t("odtView.failedToRender", { error })}</div>
         ) : !loaded ? (
-          <div className="file-viewer-loading">Loading…</div>
+          <div className="file-viewer-loading">{t("common.loading")}</div>
         ) : html.trim().length === 0 ? (
-          <div className="file-viewer-loading">This document is empty.</div>
+          <div className="file-viewer-loading">{t("odtView.empty")}</div>
         ) : (
           <div className="odt-document" dangerouslySetInnerHTML={{ __html: html }} />
         )}

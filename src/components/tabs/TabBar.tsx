@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   BLOB_TAB_CMD,
   CALENDAR_TAB_CMD,
+  MAIL_TAB_CMD,
   DISKUSAGE_TAB_CMD,
   NETWORK_TAB_CMD,
   MONITOR_TAB_CMD,
@@ -25,6 +26,7 @@ import {
   agentMenuEntries,
   buildStaticTabSpec,
   isFileTabKind,
+  itemLabel,
   type StaticMenuItem,
 } from "./newTabItems";
 import { AddTabMenuList } from "./AddTabMenuList";
@@ -47,6 +49,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { closeTabWithConfirm } from "../../lib/closeRemoteTab";
 import { useActivityStore } from "../../stores/activity";
+import { useT } from "../../lib/i18n";
 
 /** Default fly-out card size when no live pane thumbnail is available (group
  *  detach via the bar drag carries no preview). */
@@ -92,6 +95,7 @@ interface Props {
 }
 
 export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth }: Props) {
+  const t = useT();
   // Fine-grained subscriptions (Eff #3/#4): this bar tracks ONLY its own group
   // node + that group's resolved tab payloads, so a tab change in another
   // subwindow no longer re-renders every bar, and the per-render Map-of-all-tabs
@@ -117,6 +121,11 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   const setAgentMode = useTabsStore((s) => s.setAgentMode);
   // Experimental — off by default, on in debug mode: the Plan/Auto badge.
   const agentModeToggle = useExperimental("agent_mode_toggle");
+  // Experimental — off for users, on in debug: the embedded mail client. The
+  // flag gates the MENU entry only; an already-open (or restored) mail tab keeps
+  // rendering, because hiding a tab someone is reading is not what a flag flip
+  // means.
+  const mailClient = useExperimental("mail_client");
   // Timestamp of the last mode flip, for the respawn debounce in handleAgentMode.
   const lastModeToggle = useRef(0);
   const closeGroup = useTabsStore((s) => s.closeGroup);
@@ -400,7 +409,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
 
   // Drop inline-rename mode if the edited tab disappears (closed / moved away).
   useEffect(() => {
-    if (editingKey && !tabs.some((t) => t.key === editingKey)) {
+    if (editingKey && !tabs.some((tb) => tb.key === editingKey)) {
       setEditingKey(null);
     }
   }, [editingKey, tabs]);
@@ -430,7 +439,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     // click, which would otherwise leave no way to get the project root back.
     if (isFileTabKind(item.kind)) {
       ensureTab(
-        { label: item.label, cmd: item.cmd, cwd: projectCwd, kind: item.kind },
+        { label: itemLabel(item, t), cmd: item.cmd, cwd: projectCwd, kind: item.kind },
         (tab) => tab.kind === item.kind && tab.cwd === projectCwd && !tab.folder,
       );
       setMenuPos(null);
@@ -439,7 +448,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     // Build the full launch spec (session-id minting, ELDRUN_TAB_UID, args,
     // session-rename input) via the shared helper so the main and detached add
     // menus can never drift.
-    addTab(buildStaticTabSpec(item, projectCwd, projectName));
+    addTab(buildStaticTabSpec(item, projectCwd, projectName, t));
     setMenuPos(null);
   }
 
@@ -451,13 +460,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   function handleAgentMode(key: string, ptyId: string, current?: AgentMode) {
     const now = Date.now();
     if (now - lastModeToggle.current < 1000) return;
-    if (
-      busyByTab[ptyId] &&
-      !window.confirm(
-        "This agent is working. Switching mode restarts it — the conversation is " +
-          "resumed, but the current turn is lost. Switch anyway?",
-      )
-    ) {
+    if (busyByTab[ptyId] && !window.confirm(t("tabBar.confirmModeSwitch"))) {
       return;
     }
     lastModeToggle.current = now;
@@ -469,7 +472,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   function handleAddNetwork() {
     focusGroup(groupId);
     addTab({
-      label: "Network Traffic",
+      label: t("newTabMenu.itemNetworkTraffic"),
       cmd: NETWORK_TAB_CMD,
       cwd: projectCwd,
       kind: "network",
@@ -481,7 +484,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   function handleAddBlob() {
     focusGroup(groupId);
     ensureTab(
-      { label: "Projects", cmd: BLOB_TAB_CMD, cwd: projectCwd, kind: "projects3d" },
+      { label: t("newTabMenu.tabLabelProjects"), cmd: BLOB_TAB_CMD, cwd: projectCwd, kind: "projects3d" },
       (tab) => tab.kind === "projects3d",
     );
     setMenuPos(null);
@@ -493,7 +496,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   function handleAddMonitor() {
     focusGroup(groupId);
     ensureTab(
-      { label: "System Monitor", cmd: MONITOR_TAB_CMD, cwd: projectCwd, kind: "monitor" },
+      { label: t("newTabMenu.itemSystemMonitor"), cmd: MONITOR_TAB_CMD, cwd: projectCwd, kind: "monitor" },
       (tab) => tab.kind === "monitor",
     );
     setMenuPos(null);
@@ -505,7 +508,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // than focusing an existing one (ensureTab, which matches across the whole scope).
   function handleAddDiskUsage() {
     focusGroup(groupId);
-    addTab({ label: "Disk Usage", cmd: DISKUSAGE_TAB_CMD, cwd: projectCwd, kind: "diskusage" });
+    addTab({ label: t("newTabMenu.itemDiskUsage"), cmd: DISKUSAGE_TAB_CMD, cwd: projectCwd, kind: "diskusage" });
     setMenuPos(null);
   }
 
@@ -515,8 +518,20 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   function handleAddCalendar() {
     focusGroup(groupId);
     ensureTab(
-      { label: "Calendar", cmd: CALENDAR_TAB_CMD, cwd: projectCwd, kind: "calendar" },
+      { label: t("newTabMenu.calendar"), cmd: CALENDAR_TAB_CMD, cwd: projectCwd, kind: "calendar" },
       (tab) => tab.kind === "calendar",
+    );
+    setMenuPos(null);
+  }
+
+  // Open (or focus, if already open) the embedded mail tab. The mailbox store is
+  // global, so one per scope is enough — hence ensureTab rather than addTab, and
+  // hence a second mail tab would only ever show the same thing.
+  function handleAddMail() {
+    focusGroup(groupId);
+    ensureTab(
+      { label: t("newTabMenu.mail"), cmd: MAIL_TAB_CMD, cwd: projectCwd, kind: "mail" },
+      (tab) => tab.kind === "mail",
     );
     setMenuPos(null);
   }
@@ -610,13 +625,13 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // ordered `tabs`. Each removeTab reads fresh store state and repicks the active
   // tab / collapses empty groups, so looping over a render-time snapshot is safe.
   function closeToLeft(index: number) {
-    tabs.slice(0, index).forEach((t) => removeTab(t.key));
+    tabs.slice(0, index).forEach((tb) => removeTab(tb.key));
   }
   function closeToRight(index: number) {
-    tabs.slice(index + 1).forEach((t) => removeTab(t.key));
+    tabs.slice(index + 1).forEach((tb) => removeTab(tb.key));
   }
   function closeOthers(key: string) {
-    tabs.filter((t) => t.key !== key).forEach((t) => removeTab(t.key));
+    tabs.filter((tb) => tb.key !== key).forEach((tb) => removeTab(tb.key));
   }
 
   // Start a pointer-based tab drag once the pointer crosses a 5px threshold.
@@ -912,7 +927,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     const startX = e.clientX;
     const startY = e.clientY;
     const pointerId = e.pointerId;
-    const activeLabel = tabs.find((t) => t.key === activeKey)?.label ?? "Subwindow";
+    const activeLabel = tabs.find((tb) => tb.key === activeKey)?.label ?? t("tabBar.subwindowFallback");
     // Capture on the document root (not this bar): detaching removes the group's
     // node from the layout, so a capture anchored here would drop mid-gesture.
     const captureEl = document.documentElement;
@@ -1019,7 +1034,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
           fires only when the grip is the target. */}
       <div
         className="tab-drag-grip"
-        title="Drag to pop this subwindow into its own window"
+        title={t("tabBar.dragGripTitle")}
         aria-hidden="true"
       >
         ⠿
@@ -1027,7 +1042,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       {canScrollLeft && (
         <button
           className="tab-scroll-btn left"
-          title="Scroll tabs left"
+          title={t("tabBar.scrollLeftTitle")}
           // Keep the chevron out of the bar's detach-drag and tab pointer flow.
           onPointerDown={(e) => e.stopPropagation()}
           onMouseEnter={() => startHoverScroll(-1)}
@@ -1119,7 +1134,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                 className="tab-label-edit"
                 defaultValue={tab.label}
                 autoFocus
-                aria-label="Rename tab"
+                aria-label={t("tabBar.renameAriaLabel")}
                 // Mount focused with the whole label selected for a fast retype.
                 ref={(el) => {
                   if (el) el.select();
@@ -1152,14 +1167,14 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               const mode = tab.agentMode;
               const title =
                 mode === "plan"
-                  ? "Plan: reads and proposes, never edits — click to switch to Auto"
+                  ? t("tabBar.modePlanTitle")
                   : mode === "auto"
-                    ? "Auto: auto-accepts edits (shell/network still ask) — click to switch to Plan"
-                    : "Agent default: asks before each action — click to switch to Plan";
+                    ? t("tabBar.modeAutoTitle")
+                    : t("tabBar.modeDefaultTitle");
               return (
                 <button
                   className={`tab-agent-mode ${mode ?? "unset"}`}
-                  title={`${title}. Switching restarts the agent; the conversation is resumed.`}
+                  title={`${title}. ${t("tabBar.modeRestartSuffix")}`}
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -1192,7 +1207,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             <button
               className="tab-close"
               onClick={(e) => { e.stopPropagation(); closeTabWithConfirm(tab.key); }}
-              title="Close tab"
+              title={t("tabBar.closeTabTitle")}
             >
               ×
             </button>
@@ -1211,7 +1226,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
           // pulse it to draw the eye to it.
           className={`tab-new-btn${tabs.length === 0 ? " empty-hint" : ""}`}
           data-hint-anchor="tab-add"
-          title="New tab"
+          title={t("tabBar.newTabTitle")}
           onClick={openAddMenu}
         >
           +
@@ -1221,7 +1236,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       {canScrollRight && (
         <button
           className="tab-scroll-btn right"
-          title="Scroll tabs right"
+          title={t("tabBar.scrollRightTitle")}
           onPointerDown={(e) => e.stopPropagation()}
           onMouseEnter={() => startHoverScroll(1)}
           onMouseLeave={stopHoverScroll}
@@ -1241,7 +1256,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         {groupId !== EMPTY_GROUP_ID && (
           <button
             className={`subwindow-files-toggle${filesOpen ? " open" : ""}`}
-            title={filesOpen ? "Close this subwindow's file viewer" : "Open a file viewer in this subwindow"}
+            title={filesOpen ? t("tabBar.filesToggleOpenTitle") : t("tabBar.filesToggleClosedTitle")}
             // Same self-contained interaction discipline as the hide/close buttons:
             // stop the bar's focusGroup mousedown and don't let the click bubble.
             onMouseDown={(e) => e.stopPropagation()}
@@ -1253,7 +1268,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         {groupId !== EMPTY_GROUP_ID && (
           <button
             className="subwindow-hide"
-            title="Hide subwindow (bring it back from the right panel)"
+            title={t("tabBar.hideSubwindowTitle")}
             // Same self-contained interaction discipline as the close button below:
             // stop the bar's focusGroup mousedown and don't let the click bubble.
             onMouseDown={(e) => e.stopPropagation()}
@@ -1265,7 +1280,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         {showGroupClose && (
           <button
             className="subwindow-close"
-            title="Close subwindow"
+            title={t("tabBar.closeSubwindowTitle")}
             // Stop the bar's onMouseDown focusGroup from running first (it isn't
             // harmful, but keeping the close interaction self-contained avoids any
             // focus/state churn racing the click) and ensure the click itself
@@ -1286,7 +1301,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
           <AddTabMenuList
             groups={[
               {
-                label: "Agents",
+                label: t("newTabMenu.groupAgents"),
                 entries: agentMenuEntries({
                   installedBuiltins: enabledAgents,
                   installedCmds: installedCustom,
@@ -1296,13 +1311,16 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     setMenuPos(null);
                     setAgentDialogOpen(true);
                   },
+                  t,
                 }),
               },
               // Only offer agents whose binary is actually installed: Mistral/vibe
               // (checked against `installedAgents`) and the drivers the backend
               // already marks `available` (which now includes an installed check).
               {
-                label: localModel ? `Local Model · ${localModel}` : "Local Model",
+                label: localModel
+                  ? t("newTabMenu.groupLocalModelWithName", { model: localModel })
+                  : t("newTabMenu.groupLocalModel"),
                 entries: localModel
                   ? [
                       // Mistral/vibe keeps its bespoke per-model VIBE_HOME path.
@@ -1324,23 +1342,23 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     ]
                   : [],
                 hint: localModel
-                  ? "No local agent installed — install one in the 🧠 menu"
-                  : "No local model set — pick one in the app bar",
+                  ? t("newTabMenu.noLocalAgentHint")
+                  : t("newTabMenu.noLocalModelHint"),
               },
               {
-                label: "Shell",
+                label: t("newTabMenu.groupShell"),
                 entries: SHELL_ITEMS.filter((i) => i.kind === "shell").map((item) => ({
                   key: item.cmd || "shell",
-                  label: item.label,
+                  label: itemLabel(item, t),
                   color: TAB_ACCENT[item.kind],
                   onPick: () => handleAdd(item),
                 })),
               },
               {
-                label: "Files",
+                label: t("newTabMenu.groupFiles"),
                 entries: SHELL_ITEMS.filter((i) => isFileTabKind(i.kind)).map((item) => ({
                   key: item.cmd,
-                  label: item.label,
+                  label: itemLabel(item, t),
                   color: TAB_ACCENT[item.kind],
                   disabled: !projectCwd,
                   onPick: () => handleAdd(item),
@@ -1350,17 +1368,17 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               // root, so both are offered in every scope; Network Traffic is
               // per-project (host/SSH link), so root has none.
               {
-                label: "Monitoring",
+                label: t("newTabMenu.groupMonitoring"),
                 entries: [
                   {
                     key: "monitor",
-                    label: "System Monitor",
+                    label: t("newTabMenu.itemSystemMonitor"),
                     color: TAB_ACCENT.monitor,
                     onPick: handleAddMonitor,
                   },
                   {
                     key: "diskusage",
-                    label: "Disk Usage",
+                    label: t("newTabMenu.itemDiskUsage"),
                     dot: "◕",
                     color: TAB_ACCENT.diskusage,
                     onPick: handleAddDiskUsage,
@@ -1368,7 +1386,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   ...(scope !== "root"
                     ? [{
                         key: "network",
-                        label: "Network Traffic",
+                        label: t("newTabMenu.itemNetworkTraffic"),
                         color: TAB_ACCENT.network,
                         onPick: handleAddNetwork,
                       }]
@@ -1377,10 +1395,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               },
               ...(showBlobItem
                 ? [{
-                    label: "Workspace",
+                    label: t("newTabMenu.groupWorkspace"),
                     entries: [{
                       key: "blob",
-                      label: "Projects (3D)",
+                      label: t("newTabMenu.itemProjects3d"),
                       dot: "◍",
                       color: TAB_ACCENT["projects3d"],
                       onPick: handleAddBlob,
@@ -1388,20 +1406,33 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   }]
                 : []),
               {
-                label: "Calendar",
+                label: t("newTabMenu.calendar"),
                 entries: [{
                   key: "calendar",
-                  label: "Calendar",
+                  label: t("newTabMenu.calendar"),
                   dot: "◆",
                   color: TAB_ACCENT.calendar,
                   onPick: handleAddCalendar,
                 }],
               },
+              ...(mailClient
+                ? [{
+                    label: t("newTabMenu.mail"),
+                    entries: [{
+                      key: "mail",
+                      label: t("newTabMenu.mail"),
+                      dot: "✉",
+                      color: TAB_ACCENT.mail,
+                      untested: true,
+                      onPick: handleAddMail,
+                    }],
+                  }]
+                : []),
               {
-                label: "Project",
+                label: t("newTabMenu.groupProject"),
                 entries: [{
                   key: "close-all",
-                  label: "Close all tabs",
+                  label: t("newTabMenu.itemCloseAllTabs"),
                   dot: "×",
                   color: "var(--danger, #d9534f)",
                   disabled: !hasAnyTabs,
@@ -1422,7 +1453,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       {localityMenu && (
         <LocalityMenu
           menu={localityMenu}
-          current={tabLocation(tabs.find((t) => t.key === localityMenu.key))}
+          current={tabLocation(tabs.find((tb) => tb.key === localityMenu.key))}
           primaryHost={primaryHost}
           computeHosts={computeHosts}
           onClose={() => setLocalityMenu(null)}
@@ -1444,7 +1475,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             }}
           >
             <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>✎</span>
-            Rename
+            {t("common.rename")}
           </button>
           <button
             className="tab-new-menu-item"
@@ -1454,7 +1485,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             }}
           >
             <span className="tab-new-menu-dot" style={{ color: "var(--danger, #d9534f)" }}>×</span>
-            Close
+            {t("common.close")}
           </button>
           <button
             className="tab-new-menu-item"
@@ -1465,7 +1496,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             }}
           >
             <span className="tab-new-menu-dot" style={{ color: "var(--danger, #d9534f)" }}>×</span>
-            Close others
+            {t("tabBar.closeOthers")}
           </button>
           <button
             className="tab-new-menu-item"
@@ -1476,7 +1507,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             }}
           >
             <span className="tab-new-menu-dot" style={{ color: "var(--danger, #d9534f)" }}>×</span>
-            Close to the left
+            {t("tabBar.closeToLeft")}
           </button>
           <button
             className="tab-new-menu-item"
@@ -1487,7 +1518,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             }}
           >
             <span className="tab-new-menu-dot" style={{ color: "var(--danger, #d9534f)" }}>×</span>
-            Close to the right
+            {t("tabBar.closeToRight")}
           </button>
         </div>,
         document.body,
@@ -1496,7 +1527,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
           mid-drag and while a menu is open so it never overlaps them. The card
           derives its own content from the tab + this window's stores. */}
       {hoverTab && dragKey === null && !menuOpen && !tabMenu && (() => {
-        const tab = tabs.find((t) => t.key === hoverTab.key);
+        const tab = tabs.find((tb) => tb.key === hoverTab.key);
         if (!tab) return null;
         return (
           <TabHoverCard

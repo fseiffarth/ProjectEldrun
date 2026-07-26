@@ -1,3 +1,5 @@
+import { useT } from "../../lib/i18n";
+
 /**
  * The dashed accent slot previewing where a dragged tab will land, rendered in a
  * tab bar at the resolved insertion index. Shared by the main-window `TabBar` and
@@ -7,9 +9,10 @@
  * make exactly the room the dragged tab will occupy.
  */
 export function TabDropPlaceholder({ label }: { label: string }) {
+  const t = useT();
   return (
     <div className="tab tab-drop-placeholder" aria-hidden="true">
-      <span className="tab-drop-placeholder-label">{label || "New tab"}</span>
+      <span className="tab-drop-placeholder-label">{label || t("detachedTabs.newTab")}</span>
     </div>
   );
 }

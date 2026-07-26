@@ -53,6 +53,7 @@ import {
   expiryTone,
   type HpcWorkspace,
 } from "../../lib/hpcWorkspace";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 /** How long the pointer must rest on a session row before its stats card opens
  *  (TODO #85) — same value and rationale as `FileTree`'s `TOOLTIP_DWELL_MS`:
@@ -85,8 +86,11 @@ interface TmuxSession {
  *  (`SessionStatsMenu` below), alongside the rest of the row's detail. A
  *  hand-started/foreign session's name is usually short and meaningful
  *  (`train`), so it's shown as-is. */
-function sessionDisplayName(name: string): string {
-  return name.startsWith("eldrun-") ? "Session" : name;
+function sessionDisplayName(
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+  name: string,
+): string {
+  return name.startsWith("eldrun-") ? t("projectFilesView.sessionLabel") : name;
 }
 
 /** Absolute local-time readout for a host-clock epoch timestamp, for the
@@ -150,18 +154,25 @@ interface MtimeCue {
  *  has since been deleted." The tooltip says so explicitly, since the badge
  *  text alone ("Remote only") reads ambiguously otherwise. */
 function mtimeDivergenceCue(
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
   hostMtime: number | null | undefined,
   localMtime: number | null | undefined,
 ): MtimeCue | null {
   if (hostMtime == null && localMtime == null) return null;
-  const hostLabel = hostMtime != null ? `Remote modified ${fmtModified(hostMtime)}` : "Remote: deleted since the last sync";
-  const localLabel = localMtime != null ? `Local modified ${fmtModified(localMtime)}` : "Local: deleted since the last sync";
+  const hostLabel =
+    hostMtime != null
+      ? t("projectFilesView.remoteModified", { when: fmtModified(hostMtime) })
+      : t("projectFilesView.remoteDeletedSinceSync");
+  const localLabel =
+    localMtime != null
+      ? t("projectFilesView.localModified", { when: fmtModified(localMtime) })
+      : t("projectFilesView.localDeletedSinceSync");
   const title = `${hostLabel}\n${localLabel}`;
-  if (hostMtime == null) return { text: "Local only", tone: "local", title };
-  if (localMtime == null) return { text: "Remote only", tone: "remote", title };
-  if (hostMtime > localMtime) return { text: "Remote newer", tone: "remote", title };
-  if (localMtime > hostMtime) return { text: "Local newer", tone: "local", title };
-  return { text: "Same time", tone: "neutral", title };
+  if (hostMtime == null) return { text: t("projectFilesView.localOnly"), tone: "local", title };
+  if (localMtime == null) return { text: t("projectFilesView.remoteOnly"), tone: "remote", title };
+  if (hostMtime > localMtime) return { text: t("projectFilesView.remoteNewer"), tone: "remote", title };
+  if (localMtime > hostMtime) return { text: t("projectFilesView.localNewer"), tone: "local", title };
+  return { text: t("projectFilesView.sameTime"), tone: "neutral", title };
 }
 
 interface GitStatus {
@@ -269,6 +280,7 @@ export function ProjectFilesView({
   hidden,
   compact,
 }: ProjectFilesViewProps) {
+  const t = useT();
   const { windows, refresh, untrack } = useWindowsStore();
   const [view, setView] = useState<View>("files");
   const [showSettings, setShowSettings] = useState(false);
@@ -559,9 +571,9 @@ export function ProjectFilesView({
   const scopeTabs = useTabsStore((s) => s.tabsByScope[scope]) ?? EMPTY_SCOPE_TABS;
   const sessionOwners = useMemo(() => {
     const m = new Map<string, string>(); // `${hostId}\0${name}` → owning tab key
-    for (const t of scopeTabs) {
-      const info = persistentSessionOf(scope, t);
-      if (info) m.set(`${info.hostId} ${info.session}`, t.key);
+    for (const tab of scopeTabs) {
+      const info = persistentSessionOf(scope, tab);
+      if (info) m.set(`${info.hostId} ${info.session}`, tab.key);
     }
     return m;
   }, [scopeTabs, scope]);
@@ -594,12 +606,7 @@ export function ProjectFilesView({
   // closed too rather than left showing a defunct terminal.
   const killSession = (hostId: string, name: string) => {
     if (!projectId) return;
-    if (
-      !window.confirm(
-        `Kill the session “${name}” and any process running in it (e.g. a training run)?`,
-      )
-    )
-      return;
+    if (!window.confirm(t("projectFilesView.confirmKillSession", { name }))) return;
     const ownerKey = sessionOwners.get(`${hostId} ${name}`);
     invoke("remote_tmux_kill", { projectId, hostId, session: name })
       .then(() => {
@@ -614,12 +621,12 @@ export function ProjectFilesView({
   // session after a restart (the live client stays attached — rename never drops it).
   const renameSession = (hostId: string, oldName: string) => {
     if (!projectId) return;
-    const proposed = window.prompt("Rename session to:", oldName);
+    const proposed = window.prompt(t("projectFilesView.renameSessionPrompt"), oldName);
     if (proposed === null) return;
     const next = proposed.trim();
     if (!next || next === oldName) return;
     if (!/^[A-Za-z0-9_-]+$/.test(next)) {
-      window.alert("A session name may only contain letters, digits, '-' and '_'.");
+      window.alert(t("projectFilesView.sessionNameInvalid"));
       return;
     }
     invoke("remote_tmux_rename", { projectId, hostId, session: oldName, newName: next })
@@ -634,7 +641,7 @@ export function ProjectFilesView({
           ),
         );
       })
-      .catch((e) => window.alert(`Rename failed: ${e}`));
+      .catch((e) => window.alert(t("projectFilesView.renameSessionFailed", { error: String(e) })));
   };
 
   // ── SLURM jobs (HPC) ──────────────────────────────────────────────────────
@@ -696,7 +703,7 @@ export function ProjectFilesView({
         isRemote: !!project?.remote,
       });
     } catch (e) {
-      window.alert(`Could not resolve the log file for job ${jobId}: ${e}`);
+      window.alert(t("projectFilesView.watchJobResolveFailed", { jobId, error: String(e) }));
     }
   };
 
@@ -746,7 +753,7 @@ export function ProjectFilesView({
   // to be repeated, so the row's own value is passed straight back.
   const extendWs = async (ws: HpcWorkspace) => {
     if (!projectDir) return;
-    const answer = window.prompt(`Extend workspace '${ws.id}' by how many days?`, "30");
+    const answer = window.prompt(t("projectFilesView.extendWorkspacePrompt", { id: ws.id }), "30");
     if (!answer) return;
     const days = Number(answer.trim());
     if (!Number.isFinite(days) || days < 1) return;
@@ -754,7 +761,7 @@ export function ProjectFilesView({
       const next = await wsExtend(wsTargetForProject(projectDir), ws.id, days, ws.filesystem);
       setWsRows((rs) => rs.map((r) => (r.id === ws.id ? { ...r, ...next } : r)));
     } catch (e) {
-      window.alert(`Extending '${ws.id}' failed: ${e}`);
+      window.alert(t("projectFilesView.extendWorkspaceFailed", { id: ws.id, error: String(e) }));
     }
   };
 
@@ -768,13 +775,7 @@ export function ProjectFilesView({
     if (!projectId || !project?.remote) return;
     const folder = basename(project.remote.remote_path.replace(/\/+$/, "")) || projectId;
     const dest = projectPathIn(ws, folder);
-    const ok = window.confirm(
-      `Move this project's host tree to:\n${dest}\n\n` +
-        `The new folder starts EMPTY and is re-seeded from your local mirror ` +
-        `(git lockstep). Files that only exist in the old workspace — job outputs, ` +
-        `anything never synced — are NOT moved and stay there until it expires.\n\n` +
-        `Continue?`,
-    );
+    const ok = window.confirm(t("projectFilesView.confirmMoveProject", { dest }));
     if (!ok) return;
     setWsBusy(true);
     try {
@@ -826,7 +827,7 @@ export function ProjectFilesView({
         logs_dir: logsDir,
       }).catch(() => {});
     } catch (e) {
-      window.alert(`Moving the project failed: ${e}`);
+      window.alert(t("projectFilesView.moveProjectFailed", { error: String(e) }));
     } finally {
       setWsBusy(false);
     }
@@ -839,22 +840,31 @@ export function ProjectFilesView({
     if (!projectId || !dir) return;
     try {
       const n = await pullLogs(projectId, dir);
-      window.alert(n > 0 ? `Copied ${n} log file${n === 1 ? "" : "s"} into logs/.` : "No logs yet.");
+      window.alert(
+        n > 0
+          ? t(n === 1 ? "projectFilesView.pulledLogsOne" : "projectFilesView.pulledLogsMany", { count: n })
+          : t("projectFilesView.noLogsYet"),
+      );
     } catch (e) {
-      window.alert(`Could not copy the logs: ${e}`);
+      window.alert(t("projectFilesView.copyLogsFailed", { error: String(e) }));
     }
   };
 
   // Cancel a job (confirmed). Drops the row optimistically; the poll reconciles.
   const cancelJob = (jobId: string, name: string) => {
     if (!projectDir) return;
-    if (!window.confirm(`Cancel job ${jobId}${name ? ` (${name})` : ""}?`)) return;
+    if (
+      !window.confirm(
+        t("projectFilesView.confirmCancelJob", { jobId, name: name ? ` (${name})` : "" }),
+      )
+    )
+      return;
     slurmCancel(projectDir, jobId)
       .then(() => {
         setJobRows((rs) => rs.filter((r) => r.id !== jobId));
         if (projectId) useHpcJobsStore.getState().remove(projectId, jobId, "primary");
       })
-      .catch((e) => window.alert(`Cancel failed: ${e}`));
+      .catch((e) => window.alert(t("projectFilesView.cancelJobFailed", { error: String(e) })));
   };
 
   // Resolve the scaffold-missing flag whenever the project changes. Failures
@@ -1028,7 +1038,7 @@ export function ProjectFilesView({
           }
           onMouseLeave={!activeBox && project ? () => nameHover.close() : undefined}
         >
-          {activeBox ? `▣ ${activeBox.name}` : project ? project.name : "Files"}
+          {activeBox ? `▣ ${activeBox.name}` : project ? project.name : t("projectFilesView.filesFallbackName")}
         </span>
         {!activeBox && project && (
           <ProjectHoverCard project={project} state={nameHover} showTags={false} />
@@ -1038,19 +1048,23 @@ export function ProjectFilesView({
             like the source switch below. */}
         {!activeBox && typeTags.length > 0 && (
           <span className="right-panel-type-tags">
-            {typeTags.map((t) => {
+            {typeTags.map((tag) => {
               // The SSH tag carries a right-click menu (connect / manage · remote
               // machines); the rest stay pure labels.
-              const isSsh = t.key === "ssh" && !!project?.remote && !!projectId;
+              const isSsh = tag.key === "ssh" && !!project?.remote && !!projectId;
               return (
                 <span
-                  key={t.key}
+                  key={tag.key}
                   className="pill-popup-tag"
-                  title={isSsh ? `${t.title}\nRight-click for connection / machines` : t.title}
+                  title={
+                    isSsh
+                      ? `${tag.title}\n${t("projectFilesView.sshTagContextHint")}`
+                      : tag.title
+                  }
                   style={{
-                    color: t.color,
-                    borderColor: t.color,
-                    background: `${t.color}22`,
+                    color: tag.color,
+                    borderColor: tag.color,
+                    background: `${tag.color}22`,
                     cursor: isSsh ? "context-menu" : undefined,
                   }}
                   onContextMenu={
@@ -1063,7 +1077,7 @@ export function ProjectFilesView({
                       : undefined
                   }
                 >
-                  {t.label}
+                  {tag.label}
                 </span>
               );
             })}
@@ -1085,7 +1099,9 @@ export function ProjectFilesView({
               onPointerDown={(e) => e.stopPropagation()}
             >
               <div className="context-menu-group">
-                <div className="context-menu-group-label">{project?.remote?.host ?? "Remote"}</div>
+                <div className="context-menu-group-label">
+                  {project?.remote?.host ?? t("projectFilesView.remoteFallback")}
+                </div>
                 {/* One unified hub: connect/manage every host (primary + workers)
                     and add a machine, all from "Remote machines…". */}
                 <button
@@ -1095,7 +1111,7 @@ export function ProjectFilesView({
                     setSshTagMenu(null);
                   }}
                 >
-                  Remote machines…
+                  {t("projectFilesView.remoteMachinesEllipsis")}
                   <UntestedTag />
                 </button>
               </div>
@@ -1134,11 +1150,14 @@ export function ProjectFilesView({
             <button
               type="button"
               className="right-panel-conn-logout"
-              aria-label={`Log out of ${project.remote.host} — disconnect this remote project`}
-              title={`Log out of ${project.remote.host}\nDrops the SSH connection${project.remote.openvpn ? " and the VPN tunnel" : ""}. Open tabs stay, their sessions go dead until you reconnect.`}
+              aria-label={t("projectFilesView.logoutAriaLabel", { host: project.remote.host })}
+              title={t("projectFilesView.logoutTitle", {
+                host: project.remote.host,
+                vpn: project.remote.openvpn ? t("projectFilesView.logoutVpnSuffix") : "",
+              })}
               onClick={() => logoutRemote(project)}
             >
-              <span aria-hidden="true">⏻</span> Logout
+              <span aria-hidden="true">⏻</span> {t("projectFilesView.logout")}
             </button>
           )}
           </>
@@ -1161,20 +1180,20 @@ export function ProjectFilesView({
                   className="git-action-btn git-action-btn--commit"
                   disabled={gitBusy}
                   onClick={handleCommitConfirm}
-                  title="Confirm commit"
+                  title={t("projectFilesView.confirmCommitTitle")}
                 >
                   <span data-testid="commit-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#e3b341" }} />
                   <span>↵</span>
-                  <span className="git-btn-label">Confirm</span>
+                  <span className="git-btn-label">{t("projectFilesView.confirm")}</span>
                 </button>
                 <button
                   className="git-action-btn git-action-btn--back"
                   disabled={gitBusy}
                   onClick={() => setCommitMsg(null)}
-                  title="Go back"
+                  title={t("projectFilesView.goBackTitle")}
                 >
                   <span>←</span>
-                  <span className="git-btn-label">Back</span>
+                  <span className="git-btn-label">{t("projectFilesView.back")}</span>
                 </button>
               </>
             ) : (
@@ -1191,19 +1210,19 @@ export function ProjectFilesView({
                       className="git-action-btn git-action-btn--add"
                       disabled={gitBusy}
                       onClick={handleAdd}
-                      title={`Stage all changes (${gitStatus.unstaged + gitStatus.untracked} unstaged)`}
+                      title={t("projectFilesView.stageAllTitle", { count: gitStatus.unstaged + gitStatus.untracked })}
                     >
                       <span data-testid="add-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#f85149" }} />
                       <span>⊕</span>
-                      <span className="git-btn-label">Add ({gitStatus.unstaged + gitStatus.untracked})</span>
+                      <span className="git-btn-label">{t("projectFilesView.add", { count: gitStatus.unstaged + gitStatus.untracked })}</span>
                     </button>
                     <button
                       className="git-action-toggle"
                       disabled={gitBusy}
-                      aria-label="Show changed files"
+                      aria-label={t("projectFilesView.showChangedFiles")}
                       aria-expanded={openTree === "add"}
-                      title="Show changed files"
-                      onClick={() => setOpenTree((t) => (t === "add" ? null : "add"))}
+                      title={t("projectFilesView.showChangedFiles")}
+                      onClick={() => setOpenTree((prev) => (prev === "add" ? null : "add"))}
                     >
                       {openTree === "add" ? "▴" : "▾"}
                     </button>
@@ -1215,19 +1234,19 @@ export function ProjectFilesView({
                       className="git-action-btn git-action-btn--commit"
                       disabled={gitBusy}
                       onClick={handleCommitOpen}
-                      title={`Commit ${gitStatus.staged} staged`}
+                      title={t("projectFilesView.commitStagedTitle", { count: gitStatus.staged })}
                     >
                       <span data-testid="commit-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#e3b341" }} />
                       <span>✔</span>
-                      <span className="git-btn-label">Commit ({gitStatus.staged})</span>
+                      <span className="git-btn-label">{t("projectFilesView.commit", { count: gitStatus.staged })}</span>
                     </button>
                     <button
                       className="git-action-toggle"
                       disabled={gitBusy}
-                      aria-label="Show staged files"
+                      aria-label={t("projectFilesView.showStagedFiles")}
                       aria-expanded={openTree === "commit"}
-                      title="Show staged files"
-                      onClick={() => setOpenTree((t) => (t === "commit" ? null : "commit"))}
+                      title={t("projectFilesView.showStagedFiles")}
+                      onClick={() => setOpenTree((prev) => (prev === "commit" ? null : "commit"))}
                     >
                       {openTree === "commit" ? "▴" : "▾"}
                     </button>
@@ -1239,19 +1258,24 @@ export function ProjectFilesView({
                       className="git-action-btn git-action-btn--push"
                       disabled={gitBusy}
                       onClick={handlePush}
-                      title={`Push ${unpushedCommits.length} commit${unpushedCommits.length === 1 ? "" : "s"} to remote`}
+                      title={t(
+                        unpushedCommits.length === 1
+                          ? "projectFilesView.pushCommitOneTitle"
+                          : "projectFilesView.pushCommitManyTitle",
+                        { count: unpushedCommits.length },
+                      )}
                     >
                       <span data-testid="push-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#3fb950" }} />
                       <span>⬆</span>
-                      <span className="git-btn-label">Push ({unpushedCommits.length})</span>
+                      <span className="git-btn-label">{t("projectFilesView.push", { count: unpushedCommits.length })}</span>
                     </button>
                     <button
                       className="git-action-toggle"
                       disabled={gitBusy}
-                      aria-label="Show files in unpushed commits"
+                      aria-label={t("projectFilesView.showUnpushedFiles")}
                       aria-expanded={openTree === "push"}
-                      title="Show files in unpushed commits"
-                      onClick={() => setOpenTree((t) => (t === "push" ? null : "push"))}
+                      title={t("projectFilesView.showUnpushedFiles")}
+                      onClick={() => setOpenTree((prev) => (prev === "push" ? null : "push"))}
                     >
                       {openTree === "push" ? "▴" : "▾"}
                     </button>
@@ -1301,7 +1325,15 @@ export function ProjectFilesView({
             aria-pressed={view === v}
             onClick={() => setView(v)}
           >
-            {v === "files" ? "Files" : v === "git" ? "Git" : v === "search" ? "Search" : "Apps"}
+            {t(
+              v === "files"
+                ? "projectFilesView.tabFiles"
+                : v === "git"
+                  ? "projectFilesView.tabGit"
+                  : v === "search"
+                    ? "projectFilesView.tabSearch"
+                    : "projectFilesView.tabApps",
+            )}
           </button>
         ))}
         {/* Orange (diverged) files: a dedicated toggle for remote projects,
@@ -1313,7 +1345,7 @@ export function ProjectFilesView({
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "orange"}
             onClick={() => setView((v) => (v === "orange" ? "files" : "orange"))}
-            title={`Diverged (orange) files: ${orangeFiles.length}`}
+            title={t("projectFilesView.divergedFilesTitle", { count: orangeFiles.length })}
           >
             ± {orangeFiles.length > 0 && <span className="right-panel-orange-count">{orangeFiles.length}</span>}
           </button>
@@ -1327,7 +1359,7 @@ export function ProjectFilesView({
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "sessions"}
             onClick={() => setView((v) => (v === "sessions" ? "files" : "sessions"))}
-            title={`Persistent host sessions (tmux): ${sessionRows.length}`}
+            title={t("projectFilesView.persistentSessionsTitle", { count: sessionRows.length })}
           >
             ☰ {sessionRows.length > 0 && <span className="right-panel-orange-count">{sessionRows.length}</span>}
           </button>
@@ -1340,7 +1372,7 @@ export function ProjectFilesView({
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "jobs"}
             onClick={() => setView((v) => (v === "jobs" ? "files" : "jobs"))}
-            title={`SLURM jobs: ${jobRows.length}`}
+            title={t("projectFilesView.slurmJobsTitle", { count: jobRows.length })}
           >
             ⚙ {jobRows.length > 0 && <span className="right-panel-orange-count">{jobRows.length}</span>}
           </button>
@@ -1353,7 +1385,7 @@ export function ProjectFilesView({
               const r = e.currentTarget.getBoundingClientRect();
               setImportMenu({ x: r.left, y: r.bottom + 2 });
             }}
-            title="Import files or a folder into this project"
+            title={t("projectFilesView.importTitle")}
           >
             ⬇
           </button>
@@ -1375,7 +1407,7 @@ export function ProjectFilesView({
                   void importDrop.importViaDialog();
                 }}
               >
-                Import files…
+                {t("projectFilesView.importFiles")}
               </button>
               <button
                 onClick={() => {
@@ -1383,7 +1415,7 @@ export function ProjectFilesView({
                   void importDrop.importFolderViaDialog();
                 }}
               >
-                Import folder (copy)…
+                {t("projectFilesView.importFolder")}
               </button>
             </div>
           </>,
@@ -1394,7 +1426,7 @@ export function ProjectFilesView({
             className="tab-add-btn"
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             onClick={openInOsBrowser}
-            title="Open folder in file manager"
+            title={t("projectFilesView.openInFileManagerTitle")}
           >
             ⧉
           </button>
@@ -1409,7 +1441,7 @@ export function ProjectFilesView({
               // The section lives in the files view; jump there when revealing it.
               if (!showDownloads) setView("files");
             }}
-            title="Show recent downloads (copy into this project)"
+            title={t("projectFilesView.showDownloadsTitle")}
           >
             📥
           </button>
@@ -1419,7 +1451,7 @@ export function ProjectFilesView({
             className="tab-add-btn"
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             onClick={() => setShowSettings(true)}
-            title="Project settings"
+            title={t("projectFilesView.projectSettingsTitle")}
           >
             ⚙
           </button>
@@ -1434,19 +1466,19 @@ export function ProjectFilesView({
       {warnExpiry && projectWs && (
         <div className={`hpc-expiry-banner tone-${expiryTone(projectWs)}`}>
           <span>
-            Workspace <strong>{projectWs.id}</strong> — {remainingLabel(projectWs)}. Its
-            files, including this project's host copy, are deleted at expiry.
+            {t("projectFilesView.expiryPre")} <strong>{projectWs.id}</strong> — {remainingLabel(projectWs)}.{" "}
+            {t("projectFilesView.expiryPost")}
           </span>
           <div className="hpc-expiry-actions">
             <button type="button" onClick={() => void extendWs(projectWs)}>
-              Extend…
+              {t("projectFilesView.extendEllipsis")}
             </button>
             <button type="button" onClick={() => setView("jobs")}>
-              Workspaces
+              {t("projectFilesView.workspaces")}
             </button>
             <button
               type="button"
-              title="Dismiss until the remaining time changes"
+              title={t("projectFilesView.dismissExpiryTitle")}
               onClick={() => setExpiryDismissed(`${projectWs.id}:${projectWs.remaining_days}`)}
             >
               ×
@@ -1490,14 +1522,14 @@ export function ProjectFilesView({
       {view === "git" && (
         <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
           {nestedRoot && (
-            <div className="nested-repo-toggle" role="group" aria-label="Git repository">
+            <div className="nested-repo-toggle" role="group" aria-label={t("projectFilesView.gitRepositoryAriaLabel")}>
               <button
                 type="button"
                 className={`nested-repo-pill${!onNestedRepo ? " active" : ""}`}
                 title={projectDir}
                 onClick={() => setPreferProjectRepo(true)}
               >
-                {project?.name || "Project"}
+                {project?.name || t("projectFilesView.projectFallback")}
               </button>
               <button
                 type="button"
@@ -1525,7 +1557,7 @@ export function ProjectFilesView({
       {view === "orange" && (
         <div className="right-panel-scroll right-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
           {orangeFiles.length === 0 ? (
-            <div className="right-panel-orange-empty">No diverged files</div>
+            <div className="right-panel-orange-empty">{t("projectFilesView.noDivergedFiles")}</div>
           ) : (
             <>
               {/* Bulk "…for all" resolution: take one side for every diverged
@@ -1534,20 +1566,20 @@ export function ProjectFilesView({
                   (not a text button per row) so the bar stays compact. */}
               <div className="orange-bulk-bar">
                 <span className="orange-bulk-count">
-                  {orangeFiles.length} diverged
+                  {t("projectFilesView.divergedCount", { count: orangeFiles.length })}
                 </span>
                 <div className="orange-file-actions">
                   <button
                     type="button"
                     className="orange-file-act orange-file-act--icon orange-file-act--remote"
-                    aria-label="Take the remote copy for all"
-                    title="Take the remote copy for every diverged file (overwrite the local mirror)"
+                    aria-label={t("projectFilesView.takeRemoteAllAria")}
+                    title={t("projectFilesView.takeRemoteAllTitle")}
                     disabled={remoteBlocked}
                     onClick={() => {
                       if (!projectId) return;
                       if (
                         !window.confirm(
-                          `Take the remote copy for all ${orangeFiles.length} diverged files? This overwrites your local mirror edits.`,
+                          t("projectFilesView.confirmTakeRemoteAll", { count: orangeFiles.length }),
                         )
                       )
                         return;
@@ -1561,14 +1593,14 @@ export function ProjectFilesView({
                   <button
                     type="button"
                     className="orange-file-act orange-file-act--icon orange-file-act--local"
-                    aria-label="Keep the local copy for all"
-                    title="Keep the local copy for every diverged file (force-push over the host)"
+                    aria-label={t("projectFilesView.keepLocalAllAria")}
+                    title={t("projectFilesView.keepLocalAllTitle")}
                     disabled={remoteBlocked}
                     onClick={() => {
                       if (!projectId) return;
                       if (
                         !window.confirm(
-                          `Keep the local copy for all ${orangeFiles.length} diverged files? This overwrites the host copies.`,
+                          t("projectFilesView.confirmKeepLocalAll", { count: orangeFiles.length }),
                         )
                       )
                         return;
@@ -1584,7 +1616,7 @@ export function ProjectFilesView({
               {orangeFiles.map((rel) => {
                 const rowHostMtime = syncMap?.[rel]?.hostMtime;
                 const rowLocalMtime = syncMap?.[rel]?.localMtime;
-                const mtimeCue = mtimeDivergenceCue(rowHostMtime, rowLocalMtime);
+                const mtimeCue = mtimeDivergenceCue(t, rowHostMtime, rowLocalMtime);
                 // "Remote only" / "Local only": the other side has no file at
                 // all, so the action that would act on it is a no-op — disable
                 // it rather than leave a button that errors when clicked.
@@ -1596,7 +1628,7 @@ export function ProjectFilesView({
                   type="button"
                   className="orange-file-name"
                   disabled={!mirrorRoot}
-                  title={mirrorRoot ? `Open ${rel}` : rel}
+                  title={mirrorRoot ? t("projectFilesView.openFileTitle", { rel }) : rel}
                   onClick={() => {
                     if (!mirrorRoot) return;
                     const abs = `${mirrorRoot}/${rel}`;
@@ -1626,8 +1658,8 @@ export function ProjectFilesView({
                   <button
                     type="button"
                     className="orange-file-act orange-file-act--icon orange-file-act--remote"
-                    aria-label="Take the remote copy"
-                    title={noHostFile ? "No remote copy to take" : "Take the remote copy (overwrite the local mirror)"}
+                    aria-label={t("projectFilesView.takeRemoteAria")}
+                    title={t(noHostFile ? "projectFilesView.noRemoteCopyTitle" : "projectFilesView.takeRemoteTitle")}
                     disabled={remoteBlocked || noHostFile}
                     onClick={() => projectId && void useSyncStore.getState().pull(projectId, rel)}
                   >
@@ -1636,8 +1668,8 @@ export function ProjectFilesView({
                   <button
                     type="button"
                     className="orange-file-act orange-file-act--icon orange-file-act--local"
-                    aria-label="Keep the local copy"
-                    title={noLocalFile ? "No local copy to keep" : "Keep the local copy (force-push over the host)"}
+                    aria-label={t("projectFilesView.keepLocalAria")}
+                    title={t(noLocalFile ? "projectFilesView.noLocalCopyTitle" : "projectFilesView.keepLocalTitle")}
                     disabled={remoteBlocked || noLocalFile}
                     onClick={() => projectId && void useSyncStore.getState().push(projectId, rel, true)}
                   >
@@ -1657,33 +1689,33 @@ export function ProjectFilesView({
           {!remoteBlocked && (
             <label
               className="tmux-scope-toggle"
-              title={
-                "Off: only this project's sessions — matched by name, or (for a session " +
-                "started before names carried a project, or by hand) by whether it is " +
-                "running inside this project's folder.\n" +
-                "On: every session on the host, including other projects' and ones " +
-                "running outside any project."
-              }
+              title={t("projectFilesView.tmuxScopeOff") + t("projectFilesView.tmuxScopeOn")}
             >
               <input
                 type="checkbox"
                 checked={showAllSessions}
                 onChange={(e) => setShowAllSessions(e.target.checked)}
               />
-              All host sessions
+              {t("projectFilesView.allHostSessions")}
             </label>
           )}
           {sessionRows.length === 0 ? (
             <div className="right-panel-orange-empty">
-              {remoteBlocked
-                ? "Connect to list host sessions"
-                : showAllSessions
-                  ? "No persistent sessions on the host(s)"
-                  : "No sessions for this project on the host(s)"}
+              {t(
+                remoteBlocked
+                  ? "projectFilesView.connectToListSessions"
+                  : showAllSessions
+                    ? "projectFilesView.noSessionsOnHosts"
+                    : "projectFilesView.noSessionsForProject",
+              )}
             </div>
           ) : (
             sessionGroups.map(({ hostId, hostLabel, rows }) => (
-              <section className="tmux-machine-group" key={hostId} aria-label={`Persistent sessions on ${hostLabel}`}>
+              <section
+                className="tmux-machine-group"
+                key={hostId}
+                aria-label={t("projectFilesView.persistentSessionsOnHostAria", { host: hostLabel })}
+              >
                 <div className="tmux-machine-group-title">{hostLabel}</div>
                 {rows.map(({ session: s }) => {
                   const owned = sessionOwners.has(`${hostId} ${s.name}`);
@@ -1697,32 +1729,35 @@ export function ProjectFilesView({
                       <button
                         type="button"
                         className="orange-file-name"
-                        title={owned ? `Reveal the tab running “${s.name}”` : `Attach to “${s.name}”`}
+                        title={t(
+                          owned ? "projectFilesView.revealTabRunning" : "projectFilesView.attachTo",
+                          { name: s.name },
+                        )}
                         onClick={() => openSession(hostId, s.name)}
                       >
                         <span className="orange-file-dot" aria-hidden="true">
                           {s.attached ? "●" : "○"}
                         </span>
                         {s.working && (
-                          <span className="tmux-work-dot" aria-hidden="true" title="Working" />
+                          <span className="tmux-work-dot" aria-hidden="true" title={t("projectFilesView.workingTitle")} />
                         )}
-                        <span className="tmux-session-label">{sessionDisplayName(s.name)}</span>
-                        {owned && <span className="tmux-session-meta">open</span>}
+                        <span className="tmux-session-label">{sessionDisplayName(t, s.name)}</span>
+                        {owned && <span className="tmux-session-meta">{t("projectFilesView.openMeta")}</span>}
                       </button>
                       <div className="orange-file-actions">
                         <button
                           type="button"
                           className="orange-file-act"
-                          title="Rename this session"
+                          title={t("projectFilesView.renameSessionTitle")}
                           onClick={() => renameSession(hostId, s.name)}
                         >
-                          Rename
+                          {t("projectFilesView.rename")}
                         </button>
                         <button
                           type="button"
                           className="orange-file-act"
-                          title="Kill this session and everything running in it"
-                          aria-label={`Kill session ${s.name}`}
+                          title={t("projectFilesView.killSessionTitle")}
+                          aria-label={t("projectFilesView.killSessionAria", { name: s.name })}
                           onClick={() => killSession(hostId, s.name)}
                         >
                           ×
@@ -1757,32 +1792,39 @@ export function ProjectFilesView({
               <UntestedTag />
             </div>
             <div>
-              <span className="file-tooltip-label">Host</span>
+              <span className="file-tooltip-label">{t("projectFilesView.tooltipHost")}</span>
               {statsRow.hostLabel}
             </div>
             <div>
-              <span className="file-tooltip-label">Status</span>
-              {s.working ? `Working — ${s.currentCommand}` : "Idle"}
+              <span className="file-tooltip-label">{t("projectFilesView.tooltipStatus")}</span>
+              {s.working
+                ? t("projectFilesView.tooltipWorking", { command: s.currentCommand })
+                : t("projectFilesView.tooltipIdle")}
             </div>
             <div>
-              <span className="file-tooltip-label">Uptime</span>
-              {relativeDuration(s.created)} (since {absoluteTime(s.created)})
+              <span className="file-tooltip-label">{t("projectFilesView.tooltipUptime")}</span>
+              {t("projectFilesView.tooltipSince", {
+                duration: relativeDuration(s.created),
+                when: absoluteTime(s.created),
+              })}
             </div>
             <div>
-              <span className="file-tooltip-label">{s.working ? "Active" : "Idle for"}</span>
-              {s.working ? "now" : relativeDuration(s.activity)}
+              <span className="file-tooltip-label">
+                {t(s.working ? "projectFilesView.tooltipActive" : "projectFilesView.tooltipIdleFor")}
+              </span>
+              {s.working ? t("projectFilesView.tooltipNow") : relativeDuration(s.activity)}
             </div>
             <div>
-              <span className="file-tooltip-label">Windows</span>
+              <span className="file-tooltip-label">{t("projectFilesView.tooltipWindows")}</span>
               {s.windows}
             </div>
             <div>
-              <span className="file-tooltip-label">Attached</span>
-              {s.attached ? "Yes" : "No"}
+              <span className="file-tooltip-label">{t("projectFilesView.tooltipAttached")}</span>
+              {t(s.attached ? "common.yes" : "common.no")}
             </div>
             <div>
-              <span className="file-tooltip-label">Open in a tab</span>
-              {owned ? "Yes" : "No"}
+              <span className="file-tooltip-label">{t("projectFilesView.tooltipOpenInTab")}</span>
+              {t(owned ? "common.yes" : "common.no")}
             </div>
           </div>,
           document.body,
@@ -1797,15 +1839,15 @@ export function ProjectFilesView({
           {wsRows.length > 0 && (
             <>
               <div className="right-panel-orange-note">
-                Workspaces — data here is deleted at expiry
+                {t("projectFilesView.workspacesNote")}
                 {project?.hpc?.logs_dir && (
                   <button
                     type="button"
                     className="orange-file-act"
-                    title={`Copy the job logs from ${project.hpc.logs_dir} into the mirror's logs/`}
+                    title={t("projectFilesView.pullLogsTitle", { dir: project.hpc.logs_dir })}
                     onClick={() => void pullProjectLogs()}
                   >
-                    Pull logs
+                    {t("projectFilesView.pullLogs")}
                   </button>
                 )}
               </div>
@@ -1818,7 +1860,7 @@ export function ProjectFilesView({
                       {ws.id}
                       <span className={`tmux-session-meta hpc-ws-remaining tone-${expiryTone(ws)}`}>
                         {[
-                          here ? "this project" : "",
+                          here ? t("projectFilesView.thisProject") : "",
                           ws.filesystem ?? "",
                           remainingLabel(ws),
                         ]
@@ -1830,20 +1872,20 @@ export function ProjectFilesView({
                       <button
                         type="button"
                         className="orange-file-act"
-                        title="Extend this workspace (spends one of its extensions)"
+                        title={t("projectFilesView.extendWorkspaceTitle")}
                         onClick={() => void extendWs(ws)}
                       >
-                        Extend
+                        {t("projectFilesView.extend")}
                       </button>
                       {!here && project?.remote && (
                         <button
                           type="button"
                           className="orange-file-act"
                           disabled={wsBusy}
-                          title="Move this project's host tree into this workspace (re-seeded from your local mirror)"
+                          title={t("projectFilesView.moveHereTitle")}
                           onClick={() => void moveProjectTo(ws)}
                         >
-                          Move here
+                          {t("projectFilesView.moveHere")}
                         </button>
                       )}
                     </div>
@@ -1854,9 +1896,11 @@ export function ProjectFilesView({
           )}
           {jobRows.length === 0 ? (
             <div className="right-panel-orange-empty">
-              {remoteBlocked
-                ? "Connect to list SLURM jobs"
-                : "No queued or running jobs (squeue)"}
+              {t(
+                remoteBlocked
+                  ? "projectFilesView.connectToListJobs"
+                  : "projectFilesView.noQueuedJobs",
+              )}
             </div>
           ) : (
             jobRows.map((j) => (
@@ -1864,7 +1908,7 @@ export function ProjectFilesView({
                 <button
                   type="button"
                   className="orange-file-name"
-                  title={`Watch job ${j.id} — tail its output log`}
+                  title={t("projectFilesView.watchJobTitle", { id: j.id })}
                   onClick={() => void watchJob(j.id, j.name)}
                 >
                   <span className="orange-file-dot" aria-hidden="true">
@@ -1882,16 +1926,16 @@ export function ProjectFilesView({
                   <button
                     type="button"
                     className="orange-file-act"
-                    title="Watch this job's output log"
+                    title={t("projectFilesView.watchJobTitle", { id: j.id })}
                     onClick={() => void watchJob(j.id, j.name)}
                   >
-                    Watch
+                    {t("projectFilesView.watch")}
                   </button>
                   <button
                     type="button"
                     className="orange-file-act"
-                    title="Cancel this job (scancel)"
-                    aria-label={`Cancel job ${j.id}`}
+                    title={t("projectFilesView.cancelJobTitle")}
+                    aria-label={t("projectFilesView.cancelJobAria", { id: j.id })}
                     onClick={() => cancelJob(j.id, j.name)}
                   >
                     ×
@@ -1936,7 +1980,7 @@ export function ProjectFilesView({
       {view === "windows" && (
         <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto", padding: 4 }}>
           {windows.length === 0 ? (
-            <div className="file-tree-empty">No opened windows</div>
+            <div className="file-tree-empty">{t("projectFilesView.noOpenedWindows")}</div>
           ) : (
             windows.map((w) => (
               <div key={w.id} className="file-entry">
@@ -1948,7 +1992,7 @@ export function ProjectFilesView({
                 <button
                   className="tab-close"
                   onClick={() => untrack(w.id)}
-                  title="Untrack"
+                  title={t("projectFilesView.untrackTitle")}
                 >
                   ×
                 </button>

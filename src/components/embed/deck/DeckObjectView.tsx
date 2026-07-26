@@ -24,6 +24,7 @@ import type { CSSProperties } from "react";
 import type { DeckObject } from "../../../lib/viewers/deck/model";
 import {
   type TextMetrics,
+  cssFontFor,
   lineOffset,
   listMarker,
   wrapText,
@@ -229,7 +230,11 @@ function TextBody({
   };
 
   const textStyle: CSSProperties = {
-    fontFamily: FONT_STACKS[s.family] ?? FONT_STACKS.sans,
+    // An embedded face is named by the `@font-face` `deckFonts.ts` installs; the
+    // standard stack behind it is the fallback for the frame or two before the
+    // file has been read, and for a font that could not be read at all — which is
+    // also what the exporter substitutes, so the two still agree (#120).
+    fontFamily: cssFontFor(s.family, FONT_STACKS),
     fontSize: s.size * pointScale,
     fontWeight: s.bold ? 700 : 400,
     fontStyle: s.italic ? "italic" : "normal",

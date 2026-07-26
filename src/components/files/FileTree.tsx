@@ -21,6 +21,8 @@ import {
 } from "../../lib/coords";
 import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/dragPlatform";
 import { useSettingsStore } from "../../stores/settings";
+import { useExperimental } from "../../lib/experimental";
+import { createDeckFile } from "../../lib/viewers/deck/create";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSyncStore, isPathExcluded, type SyncFileState } from "../../stores/sync";
@@ -47,6 +49,7 @@ import { normalizeScanPath } from "./ProjectFilesSettings";
 import { FileTreeSearch } from "./FileTreeSearch";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
 import { UntestedTag } from "../common/UntestedTag";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 // Persist whether the collapsed "gitignored" files section is expanded, so the
 // choice survives right-panel hide/show and remounts (FileTree remounts each
@@ -155,18 +158,19 @@ export const STATUS_COLOR: Record<string, string> = {
   ignored:   "#6e7681", // dim gray – ignored by git
 };
 
-const STATUS_TITLE: Record<string, string> = {
-  modified:  "Modified — unstaged changes",
-  untracked: "Untracked — not yet added",
-  staged:    "Staged — not yet committed",
-  unpushed:  "Committed — not yet pushed",
-  ignored:   "Ignored by git",
+const STATUS_TITLE_KEY: Record<string, TranslationKey> = {
+  modified:  "fileTree.statusModified",
+  untracked: "fileTree.statusUntracked",
+  staged:    "fileTree.statusStaged",
+  unpushed:  "fileTree.statusUnpushed",
+  ignored:   "fileTree.statusIgnored",
 };
 
 /** Marker shown to the left of a tree entry for its git status.
  *  Ignored → gray ✕ glyph; everything else → a colored dot (red unstaged/
  *  untracked, orange staged, green committed-not-pushed); clean → empty slot. */
 function GitMarker({ status }: { status: string | undefined }) {
+  const t = useT();
   const slot: React.CSSProperties = {
     width: 11,
     display: "flex",
@@ -179,14 +183,14 @@ function GitMarker({ status }: { status: string | undefined }) {
   };
   if (status === "ignored") {
     return (
-      <span style={{ ...slot, color: STATUS_COLOR[status] }} title={STATUS_TITLE[status]}>
+      <span style={{ ...slot, color: STATUS_COLOR[status] }} title={t(STATUS_TITLE_KEY[status])}>
         ✕
       </span>
     );
   }
   const color = status ? STATUS_COLOR[status] : undefined;
   return (
-    <span style={slot} title={status ? STATUS_TITLE[status] : undefined}>
+    <span style={slot} title={status ? t(STATUS_TITLE_KEY[status]) : undefined}>
       <span style={{ width: 6, height: 6, borderRadius: "50%", background: color ?? "transparent" }} />
     </span>
   );
@@ -226,17 +230,21 @@ function dragDbg(message: string) {
  *  host): the backend's SFTP `open_dir` fails deep in ssh2 with text like
  *  "sftp open_dir failed: …", which means nothing to a user. Say what actually
  *  happened and what to do about it instead. */
-function describeListError(e: unknown, remoteSource: boolean): string {
+function describeListError(
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+  e: unknown,
+  remoteSource: boolean,
+): string {
   const raw = String(e);
   if (remoteSource) {
     // A missing/denied directory on the host. ssh2/libssh surface this as
     // "no such file", "No such file", "failure", or a bare open_dir error.
     if (/open_dir|read_dir|no such file|not found|failure|permission/i.test(raw)) {
-      return "This folder isn't on the remote host — it may be local-only (never synced). Switch to Local to view it.";
+      return t("fileTree.errLocalOnly");
     }
-    return "Couldn't list this folder on the remote host. Check the connection and try again.";
+    return t("fileTree.errRemoteList");
   }
-  return "Couldn't open this folder.";
+  return t("fileTree.errOpenFolder");
 }
 
 export function FileTree({
@@ -256,6 +264,7 @@ export function FileTree({
   syncSource,
   remoteProbeDir,
 }: Props) {
+  const t = useT();
   // Non-null inside a detached popout: replaces the main window's CenterPanel
   // drop authority (which this window can't reach) for a file dragged onto a
   // pane. See fileDropContext.
@@ -483,6 +492,9 @@ export function FileTree({
   const runInBackground = useSettingsStore((s) => s.settings?.run_scripts_in_background ?? true);
   const viewerPrefs = useSettingsStore((s) => s.settings?.viewer_prefs);
   const disabledViewerSet = useMemo(() => disabledViewers(viewerPrefs), [viewerPrefs]);
+  /** Gates the "New Presentation" item, exactly as the PDF viewer's Present
+   *  button is gated — the native presenter is still experimental. */
+  const deckEnabled = useExperimental("deck_presenter");
   const runningScripts = useActivityStore((s) => s.runningScripts);
   const runningRunFiles = useActivityStore((s) => s.runningRunFiles);
   const runScript = useActivityStore((s) => s.runScript);
@@ -1112,7 +1124,7 @@ export function FileTree({
       setGitStatuses({});
       setRelPath(rel);
       onRelPathChange?.(rel);
-      setError(describeListError(e, remoteListing));
+      setError(describeListError(t, e, remoteListing));
       // Remote source: find where the path stops existing on the host so the
       // breadcrumb can show the boundary (on-host prefix vs local-only tail).
       // Only on a remote failure, walking up from the deepest ancestor — a
@@ -1870,7 +1882,12 @@ export function FileTree({
         relPath: destRel,
       }).catch(() => false);
       if (exists) {
-        setError(`"${name}" already exists in ${destFolderRel || "the project root"}`);
+        setError(
+          t("fileTree.alreadyExistsIn", {
+            name,
+            folder: destFolderRel || t("fileTree.projectRootFolder"),
+          }),
+        );
         setLoading(false);
         return;
       }
@@ -2129,7 +2146,7 @@ export function FileTree({
 
   async function renameEntry(entry: FileEntry) {
     setContextMenu(null);
-    const nextName = window.prompt("Rename to:", entry.name);
+    const nextName = window.prompt(t("fileTree.renameToPrompt"), entry.name);
     if (!nextName?.trim() || nextName.trim() === entry.name) return;
     setLoading(true);
     setError(null);
@@ -2152,9 +2169,53 @@ export function FileTree({
     }
   }
 
+  /**
+   * Create an empty `.eldeck.json` and open it in the deck editor.
+   *
+   * The **only** way to start a presentation used to be the "Present" button
+   * inside an already-open PDF viewer, which meant a deck could not exist
+   * without a PDF already existing. "New File" produced an empty file, and
+   * `parseDeck("")` rejected that hard — so the from-blank path the design
+   * documents (write a starter Beamer `.tex`, compile it, place layers on it)
+   * was unreachable in practice (TODO V #107). The sidecar is written with real
+   * contents rather than left empty so the file is a valid deck on disk from the
+   * first moment, not only once the editor has been opened on it.
+   */
+  async function createDeck() {
+    setContextMenu(null);
+    const name = window.prompt(t("fileTree.newPresentationPrompt"), "talk");
+    const trimmed = name?.trim();
+    if (!trimmed) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const { fileName, abs } = await createDeckFile({
+        projectDir,
+        projectId,
+        relDir: relPath,
+        name: trimmed,
+      });
+      await load(relPath);
+      openEntry(
+        {
+          name: fileName,
+          path: abs,
+          is_dir: false,
+          size: 0,
+          extension: "json",
+          mime: "application/json",
+        },
+        false,
+      );
+    } catch (err) {
+      setError(String(err));
+      setLoading(false);
+    }
+  }
+
   async function createEntry(kind: "file" | "dir") {
     setContextMenu(null);
-    const label = kind === "file" ? "New file name:" : "New folder name:";
+    const label = t(kind === "file" ? "fileTree.newFileNamePrompt" : "fileTree.newFolderNamePrompt");
     const name = window.prompt(label, "");
     const trimmed = name?.trim();
     if (!trimmed) return;
@@ -2221,12 +2282,12 @@ export function FileTree({
   function renderPasteButton() {
     if (clipboardEntries.length === 0) return null;
     const multi = clipboardEntries.length > 1;
-    const move = clipboard?.op === "cut" ? " (move)" : "";
+    const move = clipboard?.op === "cut" ? t("fileTree.pasteMoveSuffix") : "";
     return (
       <button onClick={() => (multi ? void pasteAll() : openPastePrompt())}>
         {multi
-          ? `Paste ${clipboardEntries.length} items${move}`
-          : `Paste${move} “${clipboard?.name}”`}
+          ? t("fileTree.pasteItemsCount", { count: clipboardEntries.length, move })
+          : t("fileTree.pasteNamed", { name: clipboard?.name ?? "", move })}
       </button>
     );
   }
@@ -2271,7 +2332,7 @@ export function FileTree({
     if (!pastePrompt) return;
     const newName = pastePrompt.name.trim();
     if (!newName || newName.includes("/") || newName.includes("\\") || newName === "." || newName === "..") {
-      setPastePrompt({ ...pastePrompt, error: "Invalid file name" });
+      setPastePrompt({ ...pastePrompt, error: t("fileTree.invalidFileName") });
       return;
     }
     const destRel = relPath ? `${relPath}/${newName}` : newName;
@@ -2375,7 +2436,7 @@ export function FileTree({
         : undefined,
     });
     if (!plan) {
-      setError(`Run failed: ${entry.path} is outside the current project tree`);
+      setError(t("fileTree.runFailedOutsideTree", { path: entry.path }));
       return;
     }
     const tab = {
@@ -2427,7 +2488,7 @@ export function FileTree({
       // In a detached popout `fileDrop` is set → the tab streams into that window;
       // in the main window it lands in the project's focused subwindow.
       place: placeForFocused(fileDrop),
-    }).catch((err) => setError(`Run failed: ${String(err)}`));
+    }).catch((err) => setError(t("fileTree.runFailed", { error: String(err) })));
   }
 
   /** Open (or refresh) the in-app PDF viewer tab for a freshly compiled PDF.
@@ -2464,7 +2525,9 @@ export function FileTree({
       });
       if (!res.success) {
         const detail = lastLogLine(res.log);
-        setError(`Compile failed for ${entry.name}${detail ? `: ${detail}` : ""}`);
+        setError(
+          t("fileTree.compileFailed", { name: entry.name, detail: detail ? `: ${detail}` : "" }),
+        );
         return;
       }
       await load(relPath);
@@ -2520,7 +2583,7 @@ export function FileTree({
 
   if (!projectDir) {
     return (
-      <div className="file-tree-empty">No project selected</div>
+      <div className="file-tree-empty">{t("common.noProjectSelected")}</div>
     );
   }
 
@@ -2531,8 +2594,8 @@ export function FileTree({
     return (
       <div className="file-tree-empty">
         {remoteSshState === "connecting"
-          ? "Connecting to the remote host…"
-          : "Disconnected — reconnect (header lamp) to browse files."}
+          ? t("fileTree.connectingToHost")
+          : t("fileTree.disconnectedReconnect")}
       </div>
     );
   }
@@ -2567,19 +2630,19 @@ export function FileTree({
           FileTree), so both get the fixed path line. */}
       <div className="file-tree-head">
       {remoteListing && (
-        <div className="file-tree-remote-bar" title="Remote project — live updates are off; refresh to re-list">
+        <div className="file-tree-remote-bar" title={t("fileTree.remoteBarTitle")}>
           <button
             className="file-tree-up file-tree-refresh"
             onClick={() => { load(relPath); if (projectId) void refreshSyncStatus(projectId); }}
             disabled={loading}
-            title="Refresh (re-list over SFTP)"
-            aria-label="Refresh"
+            title={t("fileTree.refreshSftpTitle")}
+            aria-label={t("common.refresh")}
           >
             ↻
           </button>
-          <span className="file-tree-remote-label">remote</span>
+          <span className="file-tree-remote-label">{t("fileSourceSwitch.remote")}</span>
           {syncProgress && (
-            <span className="file-tree-sync-progress" title={`Syncing ${syncProgress.rel || "…"}`}>
+            <span className="file-tree-sync-progress" title={t("fileTree.syncingRel", { rel: syncProgress.rel || "…" })}>
               ⟳ {syncProgress.done}/{syncProgress.total}
             </span>
           )}
@@ -2595,11 +2658,11 @@ export function FileTree({
               placeholder={
                 searchMode === "name"
                   ? searchScope
-                    ? `Find files in ${scopeLabel}…`
-                    : "Find files…"
+                    ? t("fileTree.findFilesInScope", { scope: scopeLabel })
+                    : t("fileTree.findFiles")
                   : searchScope
-                    ? `Search in ${scopeLabel}…`
-                    : "Search in files…"
+                    ? t("fileTree.searchInScope", { scope: scopeLabel })
+                    : t("fileTree.searchInFiles")
               }
               spellCheck={false}
               autoComplete="off"
@@ -2614,8 +2677,8 @@ export function FileTree({
               <button
                 type="button"
                 className="file-tree-search-clear"
-                title="Clear search"
-                aria-label="Clear search"
+                title={t("fileTree.clearSearch")}
+                aria-label={t("fileTree.clearSearch")}
                 onClick={() => setSearch("")}
               >
                 ×
@@ -2628,18 +2691,18 @@ export function FileTree({
               className={`file-tree-search-mode${searchMode === "name" ? " active" : ""}`}
               aria-pressed={searchMode === "name"}
               onClick={() => setSearchMode("name")}
-              title="Search file and folder names"
+              title={t("fileTree.searchNamesTitle")}
             >
-              Name
+              {t("fileTree.searchName")}
             </button>
             <button
               type="button"
               className={`file-tree-search-mode${searchMode === "content" ? " active" : ""}`}
               aria-pressed={searchMode === "content"}
               onClick={() => setSearchMode("content")}
-              title="Search inside file contents"
+              title={t("fileTree.searchContentTitle")}
             >
-              Content
+              {t("fileTree.searchContent")}
             </button>
             {searchMode === "content" && (
               <button
@@ -2647,7 +2710,7 @@ export function FileTree({
                 className={`file-tree-search-mode${searchCase ? " active" : ""}`}
                 aria-pressed={searchCase}
                 onClick={() => setSearchCase((v) => !v)}
-                title="Case sensitive"
+                title={t("search.caseSensitive")}
               >
                 Aa
               </button>
@@ -2661,7 +2724,7 @@ export function FileTree({
                   className={`file-tree-search-mode file-tree-search-scope-folder${!searchRoot ? " active" : ""}`}
                   aria-pressed={!searchRoot}
                   onClick={() => setSearchRoot(false)}
-                  title={`Search under ${relPath}`}
+                  title={t("fileTree.searchUnderScope", { scope: relPath })}
                 >
                   {scopeLabel}
                 </button>
@@ -2670,9 +2733,9 @@ export function FileTree({
                   className={`file-tree-search-mode${searchRoot ? " active" : ""}`}
                   aria-pressed={searchRoot}
                   onClick={() => setSearchRoot(true)}
-                  title="Search the whole project"
+                  title={t("fileTree.searchWholeProject")}
                 >
-                  root
+                  {t("fileTree.searchRoot")}
                 </button>
               </span>
             )}
@@ -2718,7 +2781,7 @@ export function FileTree({
             className={`file-tree-up${moveTargetRel === parentRel ? " move-drop-target" : ""}`}
             data-move-rel={parentRel}
             onClick={goUp}
-            title="Go up"
+            title={t("fileTree.goUp")}
           >
             ↑
           </button>
@@ -2726,7 +2789,7 @@ export function FileTree({
             className={`file-tree-crumb${moveTargetRel === "" ? " move-drop-target" : ""}`}
             data-move-rel=""
             onClick={() => load("")}
-            title="Project root"
+            title={t("fileTree.projectRootTitle")}
           >
             ⌂
           </button>
@@ -2747,7 +2810,13 @@ export function FileTree({
                   className={`file-tree-crumb${isLast ? " current" : ""}${moveTargetRel === target ? " move-drop-target" : ""}${missing ? " crumb-missing" : ""}${onHost ? " crumb-on-host" : ""}`}
                   data-move-rel={target}
                   onClick={() => { if (!isLast) load(target); }}
-                  title={missing ? `${target}\nNot on the remote host — local-only` : onHost ? `${target}\nOn the remote host` : target}
+                  title={
+                    missing
+                      ? t("fileTree.crumbNotOnHost", { target })
+                      : onHost
+                        ? t("fileTree.crumbOnHost", { target })
+                        : target
+                  }
                 >
                   {seg}
                 </button>
@@ -2756,7 +2825,7 @@ export function FileTree({
           })}
           <span
             className="file-tree-path-total"
-            title={sizeTitle(groupSizes.regular, groupSizes.regularIgnored, "Total size of the files shown here")}
+            title={sizeTitle(groupSizes.regular, groupSizes.regularIgnored, t("fileTree.totalSizeShown"))}
           >
             {fmtSize(groupSizes.regular)}
           </span>
@@ -2764,7 +2833,7 @@ export function FileTree({
         );
       })()}
       </div>
-      {loading && <div className="file-tree-loading">Loading…</div>}
+      {loading && <div className="file-tree-loading">{t("common.loading")}</div>}
       {error && <div className="file-tree-error">{error}</div>}
       {!searching && pathEdit === null && !relPath && (
         <label
@@ -2776,10 +2845,10 @@ export function FileTree({
           }}
         >
           <Toggle size="sm" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} />
-          Separate scaffold
+          {t("fileBrowser.separateScaffold")}
           <span
             className="file-tree-path-total"
-            title={sizeTitle(groupSizes.regular, groupSizes.regularIgnored, "Total size of the files shown here")}
+            title={sizeTitle(groupSizes.regular, groupSizes.regularIgnored, t("fileTree.totalSizeShown"))}
           >
             {fmtSize(groupSizes.regular)}
           </span>
@@ -2928,8 +2997,8 @@ export function FileTree({
                   {pathExcluded ? (
                     <span
                       className="file-sync-excluded"
-                      title="Excluded from byte-sync"
-                      aria-label="Excluded from byte-sync"
+                      title={t("fileTree.excludedFromByteSync")}
+                      aria-label={t("fileTree.excludedFromByteSync")}
                     >
                       ✕
                     </span>
@@ -2942,8 +3011,8 @@ export function FileTree({
                           <button
                             type="button"
                             className={`file-sync-btn${thisBusy ? " busy" : ""}`}
-                            title={remoteListing ? "Sync to local" : "Push to host"}
-                            aria-label={remoteListing ? "Sync to local" : "Push to host"}
+                            title={t(remoteListing ? "fileTree.syncToLocal" : "fileTree.pushToHost")}
+                            aria-label={t(remoteListing ? "fileTree.syncToLocal" : "fileTree.pushToHost")}
                             disabled={anyBusy}
                             onClick={(ev) => {
                               ev.preventDefault();
@@ -2959,8 +3028,8 @@ export function FileTree({
                         <button
                           type="button"
                           className="file-diff-btn"
-                          title="Host and local differ — compare and resolve"
-                          aria-label="Compare host vs local and resolve"
+                          title={t("fileTree.diffTitle")}
+                          aria-label={t("fileTree.diffAria")}
                           onClick={(ev) => {
                             ev.preventDefault();
                             ev.stopPropagation();
@@ -2977,8 +3046,8 @@ export function FileTree({
                       {autoSync && syncState === "green" && (
                         <span
                           className="file-autosync-icon"
-                          title="Auto-syncing"
-                          aria-label="Auto-syncing"
+                          title={t("fileTree.autoSyncing")}
+                          aria-label={t("fileTree.autoSyncing")}
                         >
                           ⟳
                         </span>
@@ -2997,7 +3066,7 @@ export function FileTree({
                   // would be a second, uncontrolled hover. Everything it would
                   // have said (run/args/right-click hint) lives in that tooltip
                   // instead.
-                  aria-label={isRunning ? `Running ${e.name}` : `Run ${e.name}`}
+                  aria-label={t(isRunning ? "fileTree.runningName" : "fileTree.runName", { name: e.name })}
                   onClick={(ev) => (canPyRun ? runPythonScript(ev, e) : runShellScript(ev, e))}
                   // Right-click a Python Run button → set arguments (sys.argv). For a
                   // shell script there's nothing to offer, so just swallow it so it
@@ -3022,8 +3091,8 @@ export function FileTree({
               {isCompiling && (
                 <span
                   className="file-run-btn running"
-                  title={`Compiling ${e.name}…`}
-                  aria-label={`Compiling ${e.name}`}
+                  title={t("fileTree.compilingNameEllipsis", { name: e.name })}
+                  aria-label={t("fileTree.compilingName", { name: e.name })}
                 >
                   <span className="file-run-spinner" />
                 </span>
@@ -3033,10 +3102,10 @@ export function FileTree({
               {notOnRemote && (
                 <span
                   className="file-offhost-tag"
-                  title="This folder exists only in the local mirror — it isn't on the remote host yet."
-                  aria-label="Local only — not on the remote host"
+                  title={t("fileTree.localOnlyFolderTitle")}
+                  aria-label={t("fileTree.localOnlyFolderAria")}
                 >
-                  local only
+                  {t("fileTree.localOnlyTag")}
                 </span>
               )}
               {e.is_dir && isScanExcluded(relForEntry(e)) ? (
@@ -3044,9 +3113,9 @@ export function FileTree({
                 // size to show, and saying why is more use than an empty column.
                 <span
                   className="file-size file-size-excluded"
-                  title="Excluded from scans — its size isn't computed and its file activity isn't counted. Right-click to include it again."
+                  title={t("fileTree.excludedFromScansTitle")}
                 >
-                  not scanned
+                  {t("fileTree.notScanned")}
                 </span>
               ) : e.is_dir ? (
                 dirShown !== undefined && (
@@ -3071,13 +3140,13 @@ export function FileTree({
                   className="file-tree-section-divider file-tree-hidden-toggle"
                   aria-expanded={scaffoldExpanded}
                   onClick={() => setScaffoldExpanded((v) => !v)}
-                  title={scaffoldExpanded ? "Collapse scaffold files" : "Expand scaffold files"}
+                  title={t(scaffoldExpanded ? "fileTree.collapseScaffold" : "fileTree.expandScaffold")}
                 >
                   <span className="file-tree-hidden-caret">{scaffoldExpanded ? "▾" : "▸"}</span>
-                  scaffold ({standard.length})
+                  {t("fileTree.scaffoldSection", { count: standard.length })}
                   <span
                     className="file-tree-path-total"
-                    title={sizeTitle(groupSizes.standard, groupSizes.standardIgnored, "Total size of the scaffold group")}
+                    title={sizeTitle(groupSizes.standard, groupSizes.standardIgnored, t("fileTree.totalSizeScaffold"))}
                   >
                     {fmtSize(groupSizes.standard)}
                   </span>
@@ -3096,11 +3165,11 @@ export function FileTree({
                     try { localStorage.setItem(GITIGNORED_EXPANDED_KEY, next ? "1" : "0"); } catch { /* ignore storage failures */ }
                     return next;
                   })}
-                  title={gitignoredExpanded ? "Collapse gitignored files" : "Expand gitignored files"}
+                  title={t(gitignoredExpanded ? "fileTree.collapseGitignored" : "fileTree.expandGitignored")}
                 >
                   <span className="file-tree-hidden-caret">{gitignoredExpanded ? "▾" : "▸"}</span>
-                  gitignored ({gitignored.length})
-                  <span className="file-tree-path-total" title="Total size of the gitignored group">
+                  {t("fileTree.gitignoredSection", { count: gitignored.length })}
+                  <span className="file-tree-path-total" title={t("fileTree.totalSizeGitignored")}>
                     {fmtSize(groupSizes.gitignored)}
                   </span>
                 </button>
@@ -3116,9 +3185,15 @@ export function FileTree({
                 type="button"
                 className="file-tree-section-divider file-tree-more"
                 onClick={() => setRowCap((n) => n + ROW_CAP_STEP)}
-                title={`Only the first ${orderedVisible.length} entries are rendered — showing every file at once in a folder this size would stall the window. Click to render ${Math.min(rows.hidden, ROW_CAP_STEP)} more.`}
+                title={t("fileTree.showMoreTitle", {
+                  shown: orderedVisible.length,
+                  more: Math.min(rows.hidden, ROW_CAP_STEP),
+                })}
               >
-                show {Math.min(rows.hidden, ROW_CAP_STEP)} more ({rows.hidden} not shown)
+                {t("fileTree.showMoreButton", {
+                  more: Math.min(rows.hidden, ROW_CAP_STEP),
+                  hidden: rows.hidden,
+                })}
               </button>
             )}
           </>
@@ -3146,10 +3221,10 @@ export function FileTree({
               style={{ left: argsPopover.x, top: argsPopover.y }}
               onMouseDown={(ev) => ev.stopPropagation()}
               role="dialog"
-              aria-label={`Run arguments for ${argsPopover.entry.name}`}
+              aria-label={t("fileTree.runArgsAria", { name: argsPopover.entry.name })}
             >
               <label className="file-run-args-label">
-                Arguments (sys.argv) — {argsPopover.entry.name}
+                {t("fileTree.runArgsLabel", { name: argsPopover.entry.name })}
               </label>
               <input
                 ref={argsInputRef}
@@ -3184,7 +3259,7 @@ export function FileTree({
                     setArgsPopover(null);
                   }}
                 >
-                  ▶ Run
+                  {t("fileTree.runArgsRun")}
                 </button>
                 <button
                   type="button"
@@ -3194,9 +3269,9 @@ export function FileTree({
                     setPyArgs(argsPopover.entry.path, a);
                     setArgsPopover(null);
                   }}
-                  title="Remember these arguments without running now"
+                  title={t("fileTree.rememberArgsTitle")}
                 >
-                  Save
+                  {t("common.save")}
                 </button>
               </div>
             </div>
@@ -3220,22 +3295,43 @@ export function FileTree({
                       onOpenFolderTab(relPath);
                     }}
                   >
-                    Open this view in a new tab
+                    {t("fileTree.openViewInNewTab")}
                   </button>
                   <hr />
                 </>
               )}
               <button onClick={() => createEntry("file")}>
-                New File
+                {t("fileBrowser.newFile")}
               </button>
               <button onClick={() => createEntry("dir")}>
-                New Folder
+                {t("fileBrowser.newFolder")}
               </button>
+              {/* The native presenter's from-blank path. Without it, creating a
+                  deck required an existing PDF and the "Present" button inside
+                  its viewer — the only affordance in the whole app — so the
+                  from-blank flow the design promises was unreachable (TODO V
+                  #107). Gated on the same experimental flag the PDF button is.
+
+                  Captioned as its own group rather than left loose under "New
+                  File": a `.eldeck.json` is Eldrun's own format, not a file type
+                  the OS or the generic new-file path knows how to make, and the
+                  caption is what says so at the point of choosing. */}
+              {deckEnabled && (
+                <div className="context-menu-group">
+                  <div className="context-menu-group-label">
+                    {t("fileTree.eldrunNativeGroup")}
+                  </div>
+                  <button className="untested" onClick={() => void createDeck()}>
+                    {t("fileTree.newPresentation")}
+                    <UntestedTag />
+                  </button>
+                </div>
+              )}
               {treatLocal && (
                 <>
                   <hr />
                   <button onClick={() => pushAllToHost()}>
-                    Push all to host
+                    {t("fileTree.pushAllToHost")}
                   </button>
                 </>
               )}
@@ -3243,7 +3339,7 @@ export function FileTree({
               {renderPasteButton()}
               {clipboardImage && (
                 <button onClick={openScreenshotPrompt}>
-                  Paste screenshot
+                  {t("fileTree.pasteScreenshot")}
                 </button>
               )}
             </>
@@ -3261,12 +3357,16 @@ export function FileTree({
               const n = menuEntries.length;
               return (
                 <>
-                  <button onClick={() => copyEntries(menuEntries, "copy")}>Copy {n} items</button>
-                  <button onClick={() => copyEntries(menuEntries, "cut")}>Cut {n} items</button>
+                  <button onClick={() => copyEntries(menuEntries, "copy")}>
+                    {t("fileTree.copyItemsCount", { count: n })}
+                  </button>
+                  <button onClick={() => copyEntries(menuEntries, "cut")}>
+                    {t("fileTree.cutItemsCount", { count: n })}
+                  </button>
                   {renderPasteButton()}
                   <hr />
                   <button className="danger" onClick={() => promptDelete(menuEntries)}>
-                    Delete {n} items
+                    {t("fileTree.deleteItemsCount", { count: n })}
                   </button>
                 </>
               );
@@ -3295,7 +3395,7 @@ export function FileTree({
                         onOpenFolderTab(entryRel);
                       }}
                     >
-                      Open in a new tab
+                      {t("fileTree.openInNewTab")}
                     </button>
                     <hr />
                   </>
@@ -3325,13 +3425,13 @@ export function FileTree({
                           return next;
                         });
                       }}
-                      title={
+                      title={t(
                         isScanExcluded(entryRel)
-                          ? "Resume computing this folder's size and counting its file activity"
-                          : "Never walk this folder: no size calculation, no file-activity counting"
-                      }
+                          ? "fileTree.resumeScanTitle"
+                          : "fileTree.neverScanTitle",
+                      )}
                     >
-                      {isScanExcluded(entryRel) ? "Include in scans" : "Exclude from scans"}
+                      {t(isScanExcluded(entryRel) ? "fileTree.includeInScans" : "fileTree.excludeFromScans")}
                     </button>
                     <hr />
                   </>
@@ -3339,11 +3439,11 @@ export function FileTree({
                 {remoteListing && (
                   <>
                     <button onClick={() => syncEntryToLocal(entry)}>
-                      {entry.is_dir ? "Sync folder to local" : "Sync to local"}
+                      {t(entry.is_dir ? "fileTree.syncFolderToLocal" : "fileTree.syncToLocal")}
                     </button>
                     {syncSel && (
                       <button onClick={() => stopSyncingEntry(entry)}>
-                        Stop syncing
+                        {t("fileTree.stopSyncing")}
                       </button>
                     )}
                     <hr />
@@ -3352,7 +3452,7 @@ export function FileTree({
                 {treatLocal && (
                   <>
                     <button onClick={() => pushEntryToHost(entry)}>
-                      {entry.is_dir ? "Push folder to host" : "Push to host"}
+                      {t(entry.is_dir ? "fileTree.pushFolderToHost" : "fileTree.pushToHost")}
                     </button>
                     <hr />
                   </>
@@ -3360,13 +3460,15 @@ export function FileTree({
                 {syncTracked && (
                   <>
                     <button onClick={() => toggleAutoSyncEntry(entry, !autoOn)}>
-                      {autoOn
-                        ? entry.is_dir
-                          ? "Stop auto-syncing folder"
-                          : "Stop auto-syncing"
-                        : entry.is_dir
-                          ? "Auto-sync this folder"
-                          : "Auto-sync this file"}
+                      {t(
+                        autoOn
+                          ? entry.is_dir
+                            ? "fileTree.stopAutoSyncFolder"
+                            : "fileTree.stopAutoSync"
+                          : entry.is_dir
+                            ? "fileTree.autoSyncFolder"
+                            : "fileTree.autoSyncFile",
+                      )}
                     </button>
                     {/* Stronger than "stop auto-syncing": an exclusion is also
                         honoured by the whole-project Sync all / push, which is
@@ -3376,13 +3478,13 @@ export function FileTree({
                       <button
                         className="untested"
                         onClick={() => toggleSyncExcluded(entry, !syncExcluded)}
-                        title={
+                        title={t(
                           syncExcluded
-                            ? "Let this folder take part in syncing again"
-                            : "Never sync this folder: skipped by auto-sync AND by Sync all / Push all (nothing is deleted)"
-                        }
+                            ? "fileTree.includeInSyncTitle"
+                            : "fileTree.excludeFromSyncTitle",
+                        )}
                       >
-                        {syncExcluded ? "Include in sync" : "Exclude from sync"}
+                        {t(syncExcluded ? "fileTree.includeInSync" : "fileTree.excludeFromSync")}
                         <UntestedTag />
                       </button>
                     )}
@@ -3392,7 +3494,7 @@ export function FileTree({
                 {isZip && (
                   <>
                     <button onClick={() => extractArchive(entry)}>
-                      Extract here
+                      {t("fileTree.extractHere")}
                     </button>
                     <hr />
                   </>
@@ -3403,65 +3505,65 @@ export function FileTree({
                       onClick={() => compileTex(entry, true)}
                       disabled={compiling.has(entry.path)}
                     >
-                      Compile &amp; View PDF
+                      {t("fileTree.compileViewPdf")}
                     </button>
                     <button
                       onClick={() => compileTex(entry, false)}
                       disabled={compiling.has(entry.path)}
                     >
-                      Compile PDF
+                      {t("fileTree.compilePdf")}
                     </button>
                     <hr />
                   </>
                 )}
                 {(status === "modified" || status === "untracked") && (
                   <button onClick={() => stageEntry(entry)}>
-                    Stage (git add)
+                    {t("fileTree.stageGitAdd")}
                   </button>
                 )}
                 {status && !entry.is_dir && (
                   <button onClick={() => showDiff(entry)}>
-                    Show diff
+                    {t("fileTree.showDiff")}
                   </button>
                 )}
                 <button onClick={() => updateGitignore(entry, "ignore")}>
-                  Add to .gitignore
+                  {t("fileTree.addToGitignore")}
                 </button>
                 <button onClick={() => updateGitignore(entry, "unignore")}>
-                  Show from .gitignore
+                  {t("fileTree.unignoreFromGitignore")}
                 </button>
                 {!entry.is_dir && entry.extension && (
                   <>
                     <hr />
                     <button onClick={() => { setContextMenu(null); setDefaultAppFor(entry); }}>
-                      Set default app…
+                      {t("fileTree.setDefaultAppEllipsis")}
                     </button>
                   </>
                 )}
                 <hr />
                 <button onClick={() => copyEntries([entry], "copy")}>
-                  Copy
+                  {t("common.copy")}
                 </button>
                 <button onClick={() => copyEntries([entry], "cut")}>
-                  Cut
+                  {t("common.cut")}
                 </button>
                 {renderPasteButton()}
                 {clipboardImage && (
                   <button onClick={openScreenshotPrompt}>
-                    Paste screenshot
+                    {t("fileTree.pasteScreenshot")}
                   </button>
                 )}
                 <hr />
                 <button onClick={() => renameEntry(entry)}>
-                  Rename
+                  {t("fileBrowser.rename")}
                 </button>
                 <button className="danger" onClick={() => promptDelete([entry])}>
-                  Delete
+                  {t("fileBrowser.delete")}
                 </button>
               </>
             );
           })()}
-          <button onClick={() => setContextMenu(null)}>Cancel</button>
+          <button onClick={() => setContextMenu(null)}>{t("common.cancel")}</button>
         </div>,
         document.body,
       )}
@@ -3470,17 +3572,18 @@ export function FileTree({
           <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
             {deleteConfirm.entries.length === 1 ? (
               <>
-                <h2>Delete {deleteConfirm.entries[0].is_dir ? "Folder" : "File"}</h2>
+                <h2>{t(deleteConfirm.entries[0].is_dir ? "fileTree.deleteFolderTitle" : "fileTree.deleteFileTitle")}</h2>
                 <p>
-                  Delete <strong>{deleteConfirm.entries[0].name}</strong>? This permanently removes it from the project.
+                  {t("fileTree.confirmDeleteOnePre")} <strong>{deleteConfirm.entries[0].name}</strong>
+                  {t("fileTree.confirmDeleteOnePost")}
                 </p>
                 <div className="file-delete-path">{relForEntry(deleteConfirm.entries[0])}</div>
               </>
             ) : (
               <>
-                <h2>Delete {deleteConfirm.entries.length} items</h2>
+                <h2>{t("fileTree.deleteItemsTitle", { count: deleteConfirm.entries.length })}</h2>
                 <p>
-                  Delete these <strong>{deleteConfirm.entries.length}</strong> items? This permanently removes them from the project.
+                  {t("fileTree.confirmDeleteMany", { count: deleteConfirm.entries.length })}
                 </p>
                 <div className="file-delete-path">
                   {deleteConfirm.entries.map((e) => e.name).join(", ")}
@@ -3488,8 +3591,8 @@ export function FileTree({
               </>
             )}
             <div className="file-delete-actions">
-              <button type="button" onClick={() => setDeleteConfirm(null)}>Cancel</button>
-              <button type="button" className="danger" onClick={confirmDelete}>Delete</button>
+              <button type="button" onClick={() => setDeleteConfirm(null)}>{t("common.cancel")}</button>
+              <button type="button" className="danger" onClick={confirmDelete}>{t("fileBrowser.delete")}</button>
             </div>
           </div>
         </div>,
@@ -3498,26 +3601,26 @@ export function FileTree({
       {autoConfirm && createPortal(
         <div className="modal-backdrop" onMouseDown={() => setAutoConfirm(null)}>
           <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
-            <h2>Auto-sync this folder?</h2>
+            <h2>{t("fileTree.autoSyncConfirmTitle")}</h2>
             <p>
-              Auto-syncing <strong>{autoConfirm.entry.name}</strong> will pull{" "}
-              <strong>{autoConfirm.files.toLocaleString()} files</strong> (
-              {fmtSize(autoConfirm.bytes)}) from the host into the local mirror, and
-              keep pulling as it changes.
+              {t("fileTree.autoSyncConfirmPre")} <strong>{autoConfirm.entry.name}</strong>{" "}
+              {t("fileTree.autoSyncConfirmMid")}{" "}
+              <strong>{t("fileTree.autoSyncFilesCount", { count: autoConfirm.files.toLocaleString() })}</strong>{" "}
+              ({fmtSize(autoConfirm.bytes)}) {t("fileTree.autoSyncConfirmPost")}
             </p>
             <p>
-              Auto-sync copies bytes and <strong>does not read .gitignore</strong>, so
-              files kept on the host on purpose — experiment output, checkpoints, data
-              — are synced like any other.
+              {t("fileTree.autoSyncConfirmBody2Pre")}{" "}
+              <strong>{t("fileTree.autoSyncConfirmBody2Strong")}</strong>
+              {t("fileTree.autoSyncConfirmBody2Post")}
             </p>
             <div className="file-delete-path">{relForEntry(autoConfirm.entry)}</div>
             <div className="file-delete-actions">
-              <button type="button" onClick={() => setAutoConfirm(null)}>Cancel</button>
+              <button type="button" onClick={() => setAutoConfirm(null)}>{t("common.cancel")}</button>
               <button
                 type="button"
                 onClick={() => applyAutoSync(autoConfirm.entry, true)}
               >
-                Auto-sync anyway
+                {t("fileTree.autoSyncAnyway")}
               </button>
             </div>
           </div>
@@ -3527,27 +3630,31 @@ export function FileTree({
       {pushConflicts.length > 0 && createPortal(
         <div className="modal-backdrop" onMouseDown={() => !pushBusy && resolvePushConflict("skip")}>
           <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
-            <h2>Host changed since last sync</h2>
+            <h2>{t("fileTree.hostChangedTitle")}</h2>
             <p>
-              <strong>{basename(pushConflicts[0]) || pushConflicts[0]}</strong> was
-              modified on the host since you last synced it. Pushing your local copy
-              would overwrite that change.
+              <strong>{basename(pushConflicts[0]) || pushConflicts[0]}</strong>{" "}
+              {t("fileTree.hostChangedPost")}
             </p>
             <div className="file-delete-path">{pushConflicts[0]}</div>
             {pushConflicts.length > 1 && (
               <p style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                {pushConflicts.length - 1} more conflict{pushConflicts.length - 1 > 1 ? "s" : ""} after this.
+                {t(
+                  pushConflicts.length - 1 > 1
+                    ? "fileTree.moreConflictsMany"
+                    : "fileTree.moreConflictsOne",
+                  { count: pushConflicts.length - 1 },
+                )}
               </p>
             )}
             <div className="file-delete-actions">
               <button type="button" disabled={pushBusy} onClick={() => resolvePushConflict("skip")}>
-                Skip
+                {t("common.skip")}
               </button>
               <button type="button" disabled={pushBusy} onClick={() => resolvePushConflict("host")}>
-                Take host
+                {t("fileTree.takeHost")}
               </button>
               <button type="button" className="danger" disabled={pushBusy} onClick={() => resolvePushConflict("keep")}>
-                Keep local
+                {t("fileTree.keepLocal")}
               </button>
             </div>
           </div>
@@ -3559,18 +3666,21 @@ export function FileTree({
           <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
             <h2>
               {pastePrompt.kind === "image"
-                ? "Paste Screenshot"
-                : `Paste ${clipboard?.isDir ? "Folder" : "File"}`}
+                ? t("fileTree.pasteScreenshotTitle")
+                : t(clipboard?.isDir ? "fileTree.pasteFolderTitle" : "fileTree.pasteFileTitle")}
             </h2>
             <p>
               {pastePrompt.kind === "image" ? (
-                <>Save clipboard image</>
+                <>{t("fileTree.saveClipboardImage")}</>
               ) : (
                 <>
-                  {clipboard?.op === "cut" ? "Move" : "Copy"} <strong>{clipboard?.name}</strong>
+                  {t(clipboard?.op === "cut" ? "common.move" : "common.copy")}{" "}
+                  <strong>{clipboard?.name}</strong>
                 </>
               )}{" "}
-              into <strong>{relPath || basename(projectDir) || "project root"}</strong> as:
+              {t("fileTree.pasteIntoPre")}{" "}
+              <strong>{relPath || basename(projectDir) || t("fileTree.projectRootFolder")}</strong>{" "}
+              {t("fileTree.pasteIntoPost")}
             </p>
             <input
               className="file-paste-name"
@@ -3601,9 +3711,9 @@ export function FileTree({
               </div>
             )}
             <div className="file-delete-actions">
-              <button type="button" onClick={() => setPastePrompt(null)} disabled={pasteBusy}>Cancel</button>
+              <button type="button" onClick={() => setPastePrompt(null)} disabled={pasteBusy}>{t("common.cancel")}</button>
               <button type="button" onClick={confirmPaste} disabled={pasteBusy || !pastePrompt.name.trim()}>
-                {pastePrompt.kind === "file" && clipboard?.op === "cut" ? "Move" : "Paste"}
+                {t(pastePrompt.kind === "file" && clipboard?.op === "cut" ? "common.move" : "common.paste")}
               </button>
             </div>
           </div>
@@ -3636,13 +3746,13 @@ export function FileTree({
         >
           <div className="file-tooltip-name">{tooltip.entry.name}</div>
           {(remoteListing || treatLocal) && isPathExcluded(syncStatus, relForEntry(tooltip.entry)) && (
-            <div className="file-tooltip-excluded">Excluded from byte-sync</div>
+            <div className="file-tooltip-excluded">{t("fileTree.excludedFromByteSync")}</div>
           )}
           {tooltip.entry.created_secs && (
-            <div><span className="file-tooltip-label">Created </span>{fmtModified(tooltip.entry.created_secs)}</div>
+            <div><span className="file-tooltip-label">{t("fileTree.tooltipCreated")} </span>{fmtModified(tooltip.entry.created_secs)}</div>
           )}
           {tooltip.entry.modified_secs && (
-            <div><span className="file-tooltip-label">Modified</span>{fmtModified(tooltip.entry.modified_secs)}</div>
+            <div><span className="file-tooltip-label">{t("fileTree.tooltipModified")}</span>{fmtModified(tooltip.entry.modified_secs)}</div>
           )}
           {/* Same rule as the row: no ignored/total split for a folder that is
               itself ignored — "412 MB of 412 MB ignored" says nothing. */}
@@ -3650,9 +3760,10 @@ export function FileTree({
             && displayStatuses[tooltip.entry.name] !== "ignored"
             && dirIgnoredBytes[tooltip.entry.path] !== undefined && (
             <div>
-              <span className="file-tooltip-label">Ignored </span>
+              <span className="file-tooltip-label">{t("fileTree.tooltipIgnored")} </span>
               {fmtSize(dirIgnoredBytes[tooltip.entry.path])}
-              {dirSizes[tooltip.entry.path] !== undefined && ` of ${fmtSize(dirSizes[tooltip.entry.path])} total`}
+              {dirSizes[tooltip.entry.path] !== undefined &&
+                t("fileTree.tooltipOfTotal", { total: fmtSize(dirSizes[tooltip.entry.path]) })}
             </div>
           )}
           {!tooltip.entry.is_dir && isPythonPath(tooltip.entry.path) && (
@@ -3661,8 +3772,8 @@ export function FileTree({
             <>
               {(remoteListing || pyMainByPath[tooltip.entry.path]) && (
                 <div>
-                  <span className="file-tooltip-label">Run </span>
-                  Right-click ▶ to set arguments
+                  <span className="file-tooltip-label">{t("fileTree.tooltipRun")} </span>
+                  {t("fileTree.tooltipRunHint")}
                 </div>
               )}
               {/* Nested under Run, not a top-level "Run args" row — and shown
@@ -3670,7 +3781,7 @@ export function FileTree({
                   guard), so args set earlier don't just look lost. */}
               {pyArgsByPath[tooltip.entry.path] && (
                 <div className="file-tooltip-sub">
-                  <span className="file-tooltip-label">args </span>
+                  <span className="file-tooltip-label">{t("fileTree.tooltipArgs")} </span>
                   {pyArgsByPath[tooltip.entry.path]}
                 </div>
               )}

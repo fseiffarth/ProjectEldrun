@@ -8,6 +8,7 @@ import {
 import { renderMarkdown } from "../../lib/viewers/markdown";
 import { highlight } from "../../lib/viewers/highlight";
 import { parseNotebook, type NbOutput, type ParsedNotebook } from "../../lib/viewers/notebook";
+import { useT } from "../../lib/i18n";
 
 /**
  * Read-only in-app viewer for Jupyter `.ipynb` notebooks (TODO Group K #40, new
@@ -32,6 +33,7 @@ export function NotebookView({
   onOpenExternally: () => void;
   tabKey?: string;
 }) {
+  const t = useT();
   // tabKey accepted for call-site parity with the other viewers; the notebook
   // viewer has no persisted reader position to restore yet.
   useViewerState(tabKey);
@@ -47,22 +49,22 @@ export function NotebookView({
     try {
       const nb = parseNotebook(content);
       if (nb.cells.length === 0 && content.trim().length > 0) {
-        return { nb, parseError: "This notebook has no readable cells." };
+        return { nb, parseError: t("notebookView.noReadableCells") };
       }
       return { nb, parseError: null };
     } catch (e) {
       return { nb: null, parseError: String(e) };
     }
-  }, [content]);
+  }, [content, t]);
 
   return (
     <div className="file-viewer notebook-viewer">
       <ViewerHeader onOpenExternally={onOpenExternally} />
       <div className="notebook-viewer-body">
         {error != null ? (
-          <div className="file-viewer-error">Failed to load notebook: {error}</div>
+          <div className="file-viewer-error">{t("notebookView.failedToLoad", { error })}</div>
         ) : !loaded ? (
-          <div className="file-viewer-loading">Loading…</div>
+          <div className="file-viewer-loading">{t("common.loading")}</div>
         ) : parsed.parseError ? (
           <div className="file-viewer-error">{parsed.parseError}</div>
         ) : parsed.nb ? (
@@ -85,6 +87,7 @@ export function NotebookView({
 
 /** A single code cell: the Python-highlighted source followed by its outputs. */
 function CodeCell({ source, outputs }: { source: string; outputs: NbOutput[] }) {
+  const t = useT();
   // highlight() returns safe HTML, or null when it declines (too large); fall
   // back to escaped plain text in that case. Both branches are escape-first.
   const codeHtml = useMemo(() => highlight(source, "python"), [source]);
@@ -103,7 +106,7 @@ function CodeCell({ source, outputs }: { source: string; outputs: NbOutput[] }) 
             key={i}
             className="notebook-output notebook-output-image"
             src={`data:image/png;base64,${out.pngBase64 ?? ""}`}
-            alt="cell output"
+            alt={t("notebookView.cellOutputAlt")}
           />
         ) : (
           <pre

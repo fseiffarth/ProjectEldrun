@@ -11,7 +11,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import { type Slide, visibleAt } from "../../../lib/viewers/deck/model";
+import { type DeckObject, type Slide, visibleAt } from "../../../lib/viewers/deck/model";
 import type { TextMetrics } from "../../../lib/viewers/deck/fonts";
 import { DeckObjectView } from "./DeckObjectView";
 import { renderPage } from "./deckBase";
@@ -29,6 +29,9 @@ export interface PresentedSlideProps {
   /** Suppresses build entrances — a *preview* of the next slide should not
    *  animate every time the speaker steps a build on the current one. */
   still?: boolean;
+  /** The deck-wide footer for this slide, or null. Synthesized by the caller
+   *  from the theme (`model.footerObject`) rather than stored on the slide. */
+  footer?: DeckObject | null;
 }
 
 /** One slide, letterboxed to its host, with only the objects built so far. */
@@ -42,6 +45,7 @@ export function PresentedSlide({
   assets,
   transition,
   still = false,
+  footer = null,
 }: PresentedSlideProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -83,6 +87,16 @@ export function PresentedSlide({
         style={{ width: size.w, height: size.h }}
       >
         <canvas className="deck-stage-canvas" ref={canvasRef} />
+        {footer && (
+          <DeckObjectView
+            obj={footer}
+            pageW={size.w}
+            pageH={size.h}
+            pointScale={pointScale}
+            metrics={metrics}
+            selected={false}
+          />
+        )}
         {slide.objects.filter((o) => visibleAt(o, step)).map((o) => (
           <div
             key={o.id}
@@ -116,6 +130,20 @@ export interface InterstitialViewProps {
   background: string;
   advance: { on: "manual" } | { on: "end" } | { on: "end-after"; loops: number };
   onEnded: () => void;
+  /**
+   * Whether **this** copy of the clip is allowed to advance the talk when it
+   * ends. Exactly one must be, and it is the presenter window.
+   *
+   * Both windows decode and play the clip on their own rAF clock, so for an
+   * `end`/`end-after` interstitial both reached `onEnded` — the presenter
+   * advanced on its own clip, the audience's forwarded request arrived one IPC
+   * hop later and advanced again, and the deck skipped the slide after every
+   * auto-advancing GIF. Only in dual-window mode, so in front of a room it read
+   * as "it sometimes jumps two" (TODO V #95). This is the same one-owner rule
+   * `present.ts` already states for key-driven navigation, extended to
+   * time-driven transitions; `NavAction.from` is the belt to this pair of braces.
+   */
+  drivesAdvance?: boolean;
 }
 
 /** The GIF that plays between two slides. */
@@ -125,10 +153,13 @@ export function InterstitialView({
   background,
   advance,
   onEnded,
+  drivesAdvance = true,
 }: InterstitialViewProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const endedRef = useRef(onEnded);
   endedRef.current = onEnded;
+  const drivesRef = useRef(drivesAdvance);
+  drivesRef.current = drivesAdvance;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -140,13 +171,17 @@ export function InterstitialView({
     return playGif(canvas, gif, {
       fit,
       background,
-      loop: loops > 1,
+      // A mirroring copy keeps looping rather than freezing on its last frame:
+      // the owner's advance is what ends this stop, and it may be a frame or two
+      // behind. A still image on the projector while the speaker's clip runs on
+      // is the more visible of the two failures.
+      loop: loops > 1 || !drivesAdvance,
       onEnded: () => {
         seen += 1;
-        if (seen >= loops) endedRef.current();
+        if (drivesRef.current && seen >= loops) endedRef.current();
       },
     });
-  }, [gif, fit, background, advance]);
+  }, [gif, fit, background, advance, drivesAdvance]);
 
   if (!gif) {
     return (

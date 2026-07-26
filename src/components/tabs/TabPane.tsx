@@ -9,6 +9,7 @@ import { NetworkTrafficPane } from "../monitoring/NetworkTrafficPane";
 import { SystemMonitorPane } from "../monitoring/SystemMonitorPane";
 import { DiskUsagePane } from "../monitoring/DiskUsagePane";
 import { CalendarPane } from "../calendar/CalendarPane";
+import { MailPane } from "../mail/MailPane";
 import { RemotePaneHold } from "../projects/RemotePaneHold";
 import { effectiveTabLocation, remoteHostIdOf, type TabEntry } from "../../stores/tabs";
 
@@ -89,6 +90,12 @@ function TabPaneImpl({
       return <ProjectBlobPane />;
     case "calendar":
       return <CalendarPane visible={visible} />;
+    case "mail":
+      // Global store, no PTY, no props from the projects store — the same shape
+      // as the calendar pane. `ownsTabs` marks the main window, which is the one
+      // that reports newly-arrived mail (a popout runs its own store instance
+      // against the same backend, so both would otherwise announce it twice).
+      return <MailPane visible={visible} ownsTabs={ownsTabs} />;
     case "network":
       return <NetworkTrafficPane projectId={scope} visible={visible} onConnect={onConnect} />;
     case "monitor":

@@ -22,6 +22,10 @@ import {
 import { basename, dirname, isAbsolute } from "../../lib/paths";
 import { closeTabsForDeletedPath, retargetTabsForRenamedPath } from "./fileTabSync";
 import { openFileEntry } from "./openFileEntry";
+import { useExperimental } from "../../lib/experimental";
+import { createDeckFile } from "../../lib/viewers/deck/create";
+import { UntestedTag } from "../common/UntestedTag";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 type ProjectJson = Record<string, unknown>;
 
@@ -32,12 +36,12 @@ function readStringList(project: ProjectJson | null, key: string): string[] {
 }
 
 type ViewMode = "list" | "icons";
-const SORT_LABELS: Record<SortKey, string> = {
-  name: "Name",
-  type: "Type",
-  size: "Size",
-  modified: "Modified",
-  created: "Created",
+const SORT_LABEL_KEY: Record<SortKey, TranslationKey> = {
+  name: "fileBrowser.sortName",
+  type: "fileBrowser.sortType",
+  size: "fileBrowser.sortSize",
+  modified: "fileBrowser.sortModified",
+  created: "fileBrowser.sortCreated",
 };
 type ContextMenuState =
   | { kind: "entry"; x: number; y: number; path: string }
@@ -50,6 +54,7 @@ interface Props {
 }
 
 export function FileBrowser({ projectDir, projectId, active }: Props) {
+  const t = useT();
   const { openFile } = useWindowsStore();
   const projects = useProjectsStore((s) => s.projects);
   const viewerPrefs = useSettingsStore((s) => s.settings?.viewer_prefs);
@@ -74,6 +79,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const deckEnabled = useExperimental("deck_presenter");
 
   const localFile = projects.find((p) => p.id === projectId)?.local_file ?? null;
 
@@ -208,8 +214,11 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
   }
 
   async function createEntry(kind: "file" | "folder") {
-    const label = kind === "file" ? "file name" : "folder name";
-    const name = window.prompt(`New ${kind}:`, "");
+    const label = t(kind === "file" ? "fileBrowser.fileNameLabel" : "fileBrowser.folderNameLabel");
+    const name = window.prompt(
+      t(kind === "file" ? "fileBrowser.newFilePrompt" : "fileBrowser.newFolderPrompt"),
+      "",
+    );
     if (!name?.trim()) return;
     const rel = joinRel(relPath, name.trim());
     try {
@@ -223,10 +232,48 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
     }
   }
 
+  /**
+   * Create an empty `.eldeck.json` in the browsed folder and open it in the
+   * deck editor — the tree's from-blank path (`FileTree.createDeck`), offered
+   * here too so the browser isn't the one file view where a presentation can't
+   * be started. The write itself is the shared `createDeckFile`: "New File"
+   * would leave the file empty, which `parseDeck` rejects.
+   */
+  async function createDeck() {
+    const name = window.prompt(t("fileTree.newPresentationPrompt"), "talk");
+    if (!name?.trim()) return;
+    try {
+      const { fileName, abs } = await createDeckFile({
+        projectDir,
+        projectId,
+        relDir: relPath,
+        name: name.trim(),
+      });
+      await load(relPath, { replace: true });
+      openFileEntry({
+        entry: {
+          name: fileName,
+          path: abs,
+          is_dir: false,
+          size: 0,
+          extension: "json",
+          mime: "application/json",
+        },
+        projectDir,
+        projectId,
+        origin: "middle_file_browser",
+        external: false,
+        disabled: disabledViewerSet,
+      });
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   async function renameSelected() {
     const target = selectedEntries()[0];
     if (!target) return;
-    const nextName = window.prompt("Rename to:", target.name);
+    const nextName = window.prompt(t("fileBrowser.renameToPrompt"), target.name);
     if (!nextName?.trim() || nextName.trim() === target.name) return;
     try {
       await invoke("rename_path", {
@@ -248,7 +295,12 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
   async function deleteSelected() {
     const targets = selectedEntries();
     if (targets.length === 0) return;
-    const confirmed = window.confirm(`Delete ${targets.length} selected item${targets.length === 1 ? "" : "s"}?`);
+    const confirmed = window.confirm(
+      t(
+        targets.length === 1 ? "fileBrowser.confirmDeleteOne" : "fileBrowser.confirmDeleteMany",
+        { count: targets.length },
+      ),
+    );
     if (!confirmed) return;
     try {
       for (const target of targets) {
@@ -283,14 +335,14 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
   function showProperties() {
     const target = firstSelectedEntry();
     if (!target) return;
-    const type = target.is_dir ? "Folder" : target.mime || target.extension || "File";
+    const type = target.is_dir ? t("fileBrowser.folder") : target.mime || target.extension || t("fileBrowser.file");
     window.alert([
       target.name,
       "",
-      `Path: ${target.path}`,
-      `Type: ${type}`,
-      target.is_dir ? "" : `Size: ${fmtSize(target.size)}`,
-      `Modified: ${fmtModified(target.modified_secs) || "Unknown"}`,
+      `${t("fileBrowser.pathLabel")} ${target.path}`,
+      `${t("fileBrowser.typeLabel")} ${type}`,
+      target.is_dir ? "" : `${t("fileBrowser.sizeLabel")} ${fmtSize(target.size)}`,
+      `${t("fileBrowser.modifiedLabel")} ${fmtModified(target.modified_secs) || t("fileBrowser.unknown")}`,
     ].filter(Boolean).join("\n"));
   }
 
@@ -323,7 +375,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
   }
 
   if (!projectDir) {
-    return <div className="file-browser-empty">No project selected</div>;
+    return <div className="file-browser-empty">{t("common.noProjectSelected")}</div>;
   }
 
   const canMutate = selected.size > 0;
@@ -344,10 +396,10 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
   return (
     <section className={`file-browser ${active ? "active" : ""}`} tabIndex={0} onKeyDown={handleKeyDown}>
       <div className="file-browser-toolbar">
-        <button onClick={goBack} disabled={history.length === 0} title="Back">‹</button>
-        <button onClick={goForward} disabled={future.length === 0} title="Forward">›</button>
-        <button onClick={() => load(parentRel(relPath))} disabled={!relPath} title="Up">↑</button>
-        <button onClick={() => load(relPath, { replace: true })} title="Refresh">↻</button>
+        <button onClick={goBack} disabled={history.length === 0} title={t("common.back")}>‹</button>
+        <button onClick={goForward} disabled={future.length === 0} title={t("fileBrowser.forward")}>›</button>
+        <button onClick={() => load(parentRel(relPath))} disabled={!relPath} title={t("fileBrowser.up")}>↑</button>
+        <button onClick={() => load(relPath, { replace: true })} title={t("common.refresh")}>↻</button>
         <form className="file-browser-path" onSubmit={submitPath}>
           <span>{basename(projectDir) || projectDir}</span>
           <input value={pathEntry} onChange={(e) => setPathEntry(e.target.value)} placeholder="/" />
@@ -356,38 +408,44 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
           className="file-browser-search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search"
+          placeholder={t("fileBrowser.searchPlaceholder")}
         />
-        <button className={viewMode === "list" ? "selected" : ""} onClick={() => setViewMode("list")}>List</button>
-        <button className={viewMode === "icons" ? "selected" : ""} onClick={() => setViewMode("icons")}>Icons</button>
+        <button className={viewMode === "list" ? "selected" : ""} onClick={() => setViewMode("list")}>{t("fileBrowser.list")}</button>
+        <button className={viewMode === "icons" ? "selected" : ""} onClick={() => setViewMode("icons")}>{t("fileBrowser.icons")}</button>
       </div>
 
       <div className="file-browser-actions">
-        <button onClick={() => createEntry("file")}>New File</button>
-        <button onClick={() => createEntry("folder")}>New Folder</button>
-        <button onClick={renameSelected} disabled={!canMutate}>Rename</button>
-        <button onClick={deleteSelected} disabled={!canMutate}>Delete</button>
-        <button onClick={copySelectedPaths} disabled={!canMutate}>Copy Path</button>
-        <button onClick={revealSelected} disabled={!canMutate}>Reveal</button>
-        <label><Toggle size="sm" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} /> Hidden</label>
-        <label><Toggle size="sm" checked={showStandardFiles} onChange={(e) => setShowStandardFiles(e.target.checked)} /> Scaffold</label>
-        <label><Toggle size="sm" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} /> Separate scaffold</label>
-        <label><Toggle size="sm" checked={showUserHidden} onChange={(e) => setShowUserHidden(e.target.checked)} /> User hidden</label>
+        <button onClick={() => createEntry("file")}>{t("fileBrowser.newFile")}</button>
+        <button onClick={() => createEntry("folder")}>{t("fileBrowser.newFolder")}</button>
+        {deckEnabled && (
+          <button onClick={() => void createDeck()}>
+            {t("fileTree.newPresentation")}
+            <UntestedTag />
+          </button>
+        )}
+        <button onClick={renameSelected} disabled={!canMutate}>{t("fileBrowser.rename")}</button>
+        <button onClick={deleteSelected} disabled={!canMutate}>{t("fileBrowser.delete")}</button>
+        <button onClick={copySelectedPaths} disabled={!canMutate}>{t("fileBrowser.copyPath")}</button>
+        <button onClick={revealSelected} disabled={!canMutate}>{t("fileBrowser.reveal")}</button>
+        <label><Toggle size="sm" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} /> {t("fileBrowser.hidden")}</label>
+        <label><Toggle size="sm" checked={showStandardFiles} onChange={(e) => setShowStandardFiles(e.target.checked)} /> {t("fileBrowser.scaffold")}</label>
+        <label><Toggle size="sm" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} /> {t("fileBrowser.separateScaffold")}</label>
+        <label><Toggle size="sm" checked={showUserHidden} onChange={(e) => setShowUserHidden(e.target.checked)} /> {t("fileBrowser.userHidden")}</label>
         <Dropdown
-          title="Sort by"
+          title={t("fileBrowser.sortByTitle")}
           value={sortKey}
           onChange={(v) => setSortKey(v as SortKey)}
-          options={(Object.keys(SORT_LABELS) as SortKey[]).map((key) => ({
+          options={(Object.keys(SORT_LABEL_KEY) as SortKey[]).map((key) => ({
             value: key,
-            label: SORT_LABELS[key],
+            label: t(SORT_LABEL_KEY[key]),
           }))}
         />
-        <button onClick={() => setDescending((v) => !v)}>{descending ? "Desc" : "Asc"}</button>
+        <button onClick={() => setDescending((v) => !v)}>{t(descending ? "fileBrowser.desc" : "fileBrowser.asc")}</button>
       </div>
 
       <div className="file-browser-body">
         <aside className="file-browser-sidebar">
-          <button className={!relPath ? "selected" : ""} onClick={() => load("")}>Project root</button>
+          <button className={!relPath ? "selected" : ""} onClick={() => load("")}>{t("fileBrowser.projectRootLabel")}</button>
           {entries.filter((e) => e.is_dir).slice(0, 80).map((entry) => (
             <button key={entry.path} onClick={() => load(joinRel(relPath, entry.name))}>
               {entry.name}
@@ -395,9 +453,9 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
           ))}
         </aside>
         <div className="file-browser-main" onContextMenu={showBackgroundContextMenu}>
-          {loading && <div className="file-browser-message">Loading...</div>}
+          {loading && <div className="file-browser-message">{t("fileBrowser.loading")}</div>}
           {error && <div className="file-browser-error">{error}</div>}
-          {!loading && displayed.length === 0 && <div className="file-browser-message">No files</div>}
+          {!loading && displayed.length === 0 && <div className="file-browser-message">{t("fileBrowser.noFiles")}</div>}
           {(() => {
             const splitScaffold = !relPath && showStandardFiles && separateScaffold;
             const regular = splitScaffold ? displayed.filter((e) => !STANDARD_PROJECT_FILES.has(e.name)) : displayed;
@@ -413,7 +471,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
                   onContextMenu={(e) => showEntryContextMenu(e, entry)}
                 >
                   <span><b>{entry.is_dir ? folderIcon() : fileIcon(entry.extension)}</b>{entry.name}</span>
-                  <span>{entry.is_dir ? "Folder" : entry.extension || entry.mime || "File"}</span>
+                  <span>{entry.is_dir ? t("fileBrowser.folder") : entry.extension || entry.mime || t("fileBrowser.file")}</span>
                   <span>{entry.is_dir ? "" : fmtSize(entry.size)}</span>
                   <span>{fmtModified(entry.modified_secs)}</span>
                 </div>
@@ -438,12 +496,15 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
             return viewMode === "list" ? (
               <div className="file-browser-list">
                 <div className="file-browser-list-head">
-                  <span>Name</span><span>Type</span><span>Size</span><span>Modified</span>
+                  <span>{t("fileBrowser.sortName")}</span>
+                  <span>{t("fileBrowser.sortType")}</span>
+                  <span>{t("fileBrowser.sortSize")}</span>
+                  <span>{t("fileBrowser.sortModified")}</span>
                 </div>
                 {regular.map((e) => renderListRow(e, false))}
                 {scaffold.length > 0 && (
                   <>
-                    <div className="file-browser-section-divider">scaffold</div>
+                    <div className="file-browser-section-divider">{t("fileBrowser.scaffoldDivider")}</div>
                     {scaffold.map((e) => renderListRow(e, true))}
                   </>
                 )}
@@ -453,7 +514,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
                 {regular.map((e) => renderIconTile(e, false))}
                 {scaffold.length > 0 && (
                   <>
-                    <div className="file-browser-section-divider file-browser-section-divider--icons">scaffold</div>
+                    <div className="file-browser-section-divider file-browser-section-divider--icons">{t("fileBrowser.scaffoldDivider")}</div>
                     {scaffold.map((e) => renderIconTile(e, true))}
                   </>
                 )}
@@ -468,20 +529,38 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
             >
               {contextMenu.kind === "entry" ? (
                 <>
-                  <button onClick={() => runContextAction(() => firstSelectedEntry() && activate(firstSelectedEntry()!))}>Open</button>
-                  <button onClick={() => runContextAction(copySelectedPaths)}>Copy Path</button>
-                  <button onClick={() => runContextAction(revealSelected)}>Reveal</button>
+                  <button onClick={() => runContextAction(() => firstSelectedEntry() && activate(firstSelectedEntry()!))}>{t("fileBrowser.open")}</button>
+                  <button onClick={() => runContextAction(copySelectedPaths)}>{t("fileBrowser.copyPath")}</button>
+                  <button onClick={() => runContextAction(revealSelected)}>{t("fileBrowser.reveal")}</button>
                   <hr />
-                  <button onClick={() => runContextAction(renameSelected)}>Rename</button>
-                  <button onClick={() => runContextAction(deleteSelected)}>Delete</button>
+                  <button onClick={() => runContextAction(renameSelected)}>{t("fileBrowser.rename")}</button>
+                  <button onClick={() => runContextAction(deleteSelected)}>{t("fileBrowser.delete")}</button>
                   <hr />
-                  <button onClick={() => runContextAction(showProperties)}>Properties</button>
+                  <button onClick={() => runContextAction(showProperties)}>{t("fileBrowser.properties")}</button>
                 </>
               ) : (
                 <>
-                  <button onClick={() => runContextAction(() => createEntry("file"))}>New File</button>
-                  <button onClick={() => runContextAction(() => createEntry("folder"))}>New Folder</button>
-                  <button onClick={() => runContextAction(() => load(relPath, { replace: true }))}>Refresh</button>
+                  <button onClick={() => runContextAction(() => createEntry("file"))}>{t("fileBrowser.newFile")}</button>
+                  <button onClick={() => runContextAction(() => createEntry("folder"))}>{t("fileBrowser.newFolder")}</button>
+                  {/* Eldrun's own formats get their own caption: a `.eldeck.json`
+                      is not a file "New File" can make (it must be written with
+                      real contents to parse), so it reads as a separate thing to
+                      create rather than a variant of the generic one. */}
+                  {deckEnabled && (
+                    <div className="context-menu-group">
+                      <div className="context-menu-group-label">
+                        {t("fileTree.eldrunNativeGroup")}
+                      </div>
+                      <button
+                        className="untested"
+                        onClick={() => runContextAction(() => void createDeck())}
+                      >
+                        {t("fileTree.newPresentation")}
+                        <UntestedTag />
+                      </button>
+                    </div>
+                  )}
+                  <button onClick={() => runContextAction(() => load(relPath, { replace: true }))}>{t("common.refresh")}</button>
                 </>
               )}
             </div>
@@ -490,8 +569,11 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
       </div>
 
       <footer className="file-browser-status">
-        {displayed.length} item{displayed.length === 1 ? "" : "s"}
-        {selected.size > 0 ? `, ${selected.size} selected` : ""}
+        {t(
+          displayed.length === 1 ? "fileBrowser.itemCountOne" : "fileBrowser.itemCountMany",
+          { count: displayed.length },
+        )}
+        {selected.size > 0 ? t("fileBrowser.selectedCount", { count: selected.size }) : ""}
         {projectId ? ` · ${projectId}` : ""}
       </footer>
     </section>

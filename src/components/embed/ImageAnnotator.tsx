@@ -12,6 +12,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useFileScope, writeFileBytes } from "./fileAccess";
+import { useT } from "../../lib/i18n";
 import "./ImageAnnotator.css";
 
 type Tool = "pen" | "rect" | "arrow" | "text";
@@ -48,6 +49,7 @@ export function ImageAnnotator({
   /** Close the overlay and return to the plain image viewer. */
   onClose: () => void;
 }) {
+  const t = useT();
   const scope = useFileScope();
   const baseRef = useRef<HTMLCanvasElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
@@ -106,13 +108,13 @@ export function ImageAnnotator({
       setLoaded(true);
     };
     img.onerror = () => {
-      if (!cancelled) setError("Could not load the image for annotation.");
+      if (!cancelled) setError(t("imageAnnotator.loadFailed"));
     };
     img.src = src;
     return () => {
       cancelled = true;
     };
-  }, [src]);
+  }, [src, t]);
 
   const overlayCtx = useCallback((): CanvasRenderingContext2D | null => {
     return overlayRef.current?.getContext("2d") ?? null;
@@ -182,7 +184,7 @@ export function ImageAnnotator({
       const pt = toCanvas(e);
 
       if (toolRef.current === "text") {
-        const text = window.prompt("Annotation text:");
+        const text = window.prompt(t("imageAnnotator.annotationTextPrompt"));
         if (text && text.trim().length > 0) {
           pushUndoSnapshot();
           applyStroke(ctx);
@@ -207,7 +209,7 @@ export function ImageAnnotator({
         ctx.moveTo(pt.x, pt.y);
       }
     },
-    [loaded, saving, overlayCtx, toCanvas, pushUndoSnapshot, applyStroke],
+    [loaded, saving, overlayCtx, toCanvas, pushUndoSnapshot, applyStroke, t],
   );
 
   const onPointerMove = useCallback(
@@ -217,9 +219,9 @@ export function ImageAnnotator({
       const start = startRef.current;
       if (!ctx || !start) return;
       const pt = toCanvas(e);
-      const t = toolRef.current;
+      const tool = toolRef.current;
 
-      if (t === "pen") {
+      if (tool === "pen") {
         applyStroke(ctx);
         ctx.lineTo(pt.x, pt.y);
         ctx.stroke();
@@ -230,9 +232,9 @@ export function ImageAnnotator({
       const baseSnap = gestureBaseRef.current;
       if (baseSnap) ctx.putImageData(baseSnap, 0, 0);
       applyStroke(ctx);
-      if (t === "rect") {
+      if (tool === "rect") {
         ctx.strokeRect(start.x, start.y, pt.x - start.x, pt.y - start.y);
-      } else if (t === "arrow") {
+      } else if (tool === "arrow") {
         drawArrow(ctx, start.x, start.y, pt.x, pt.y, widthRef.current);
       }
     },
@@ -303,7 +305,7 @@ export function ImageAnnotator({
       try {
         const blob = await flatten();
         if (!blob) {
-          setError("Could not render the annotated image.");
+          setError(t("imageAnnotator.renderFailed"));
           setSaving(false);
           return;
         }
@@ -311,11 +313,11 @@ export function ImageAnnotator({
         await writeFileBytes(targetPath, new Uint8Array(buf), scope);
         onClose();
       } catch (err) {
-        setError(`Save failed: ${err instanceof Error ? err.message : String(err)}`);
+        setError(t("imageAnnotator.saveFailed", { msg: err instanceof Error ? err.message : String(err) }));
         setSaving(false);
       }
     },
-    [saving, flatten, onClose, scope],
+    [saving, flatten, onClose, scope, t],
   );
 
   // Esc cancels.
@@ -334,34 +336,34 @@ export function ImageAnnotator({
   const copyTarget = annotatedCopyPath(path);
 
   return (
-    <div className="image-annotator" role="dialog" aria-label={`Annotate ${fileName}`}>
+    <div className="image-annotator" role="dialog" aria-label={t("imageAnnotator.dialogLabel", { fileName })}>
       <div className="image-annotator__toolbar">
         <span className="image-annotator__title" title={path}>
           ✎ {fileName}
         </span>
 
-        <div className="image-annotator__group" role="group" aria-label="Tools">
-          {(["pen", "rect", "arrow", "text"] as Tool[]).map((t) => (
+        <div className="image-annotator__group" role="group" aria-label={t("imageAnnotator.toolsGroup")}>
+          {(["pen", "rect", "arrow", "text"] as Tool[]).map((tl) => (
             <button
-              key={t}
-              className={`image-annotator__btn${tool === t ? " is-active" : ""}`}
-              onClick={() => setTool(t)}
+              key={tl}
+              className={`image-annotator__btn${tool === tl ? " is-active" : ""}`}
+              onClick={() => setTool(tl)}
               title={
-                t === "pen"
-                  ? "Freehand pen"
-                  : t === "rect"
-                    ? "Rectangle"
-                    : t === "arrow"
-                      ? "Arrow"
-                      : "Text"
+                tl === "pen"
+                  ? t("imageAnnotator.toolPen")
+                  : tl === "rect"
+                    ? t("imageAnnotator.toolRect")
+                    : tl === "arrow"
+                      ? t("imageAnnotator.toolArrow")
+                      : t("imageAnnotator.toolText")
               }
             >
-              {t === "pen" ? "✏︎" : t === "rect" ? "▢" : t === "arrow" ? "↗" : "T"}
+              {tl === "pen" ? "✏︎" : tl === "rect" ? "▢" : tl === "arrow" ? "↗" : "T"}
             </button>
           ))}
         </div>
 
-        <div className="image-annotator__group" role="group" aria-label="Colour">
+        <div className="image-annotator__group" role="group" aria-label={t("imageAnnotator.colourGroup")}>
           {PRESET_COLORS.map((c) => (
             <button
               key={c}
@@ -369,7 +371,7 @@ export function ImageAnnotator({
               style={{ background: c }}
               onClick={() => setColor(c)}
               title={c}
-              aria-label={`Colour ${c}`}
+              aria-label={t("imageAnnotator.colourLabel", { c })}
             />
           ))}
           <input
@@ -377,12 +379,12 @@ export function ImageAnnotator({
             className="image-annotator__color-input"
             value={/^#[0-9a-f]{6}$/i.test(color) ? color : "#ff3b30"}
             onChange={(e) => setColor(e.target.value)}
-            title="Custom colour"
-            aria-label="Custom colour"
+            title={t("imageAnnotator.customColourTitle")}
+            aria-label={t("imageAnnotator.customColourTitle")}
           />
         </div>
 
-        <div className="image-annotator__group" role="group" aria-label="Stroke width">
+        <div className="image-annotator__group" role="group" aria-label={t("imageAnnotator.strokeWidthGroup")}>
           {STROKE_WIDTHS.map((w) => (
             <button
               key={w}
@@ -399,11 +401,11 @@ export function ImageAnnotator({
         </div>
 
         <div className="image-annotator__group">
-          <button className="image-annotator__btn" onClick={undo} title="Undo last mark">
-            ⤺ undo
+          <button className="image-annotator__btn" onClick={undo} title={t("imageAnnotator.undoTitle")}>
+            {t("imageAnnotator.undoLabel")}
           </button>
-          <button className="image-annotator__btn" onClick={clear} title="Clear all marks">
-            clear
+          <button className="image-annotator__btn" onClick={clear} title={t("imageAnnotator.clearTitle")}>
+            {t("imageAnnotator.clearLabel")}
           </button>
         </div>
 
@@ -412,27 +414,27 @@ export function ImageAnnotator({
             className="image-annotator__btn image-annotator__btn--primary"
             onClick={() => save(copyTarget)}
             disabled={!loaded || saving}
-            title={`Save a copy to ${copyTarget}`}
+            title={t("imageAnnotator.saveCopyTitle", { target: copyTarget })}
           >
-            {saving ? "Saving…" : "Save a copy"}
+            {saving ? t("common.saving") : t("imageAnnotator.saveCopy")}
           </button>
           {sourceIsPng && (
             <button
               className="image-annotator__btn"
               onClick={() => save(path)}
               disabled={!loaded || saving}
-              title={`Overwrite ${path}`}
+              title={t("imageAnnotator.overwriteTitle", { path })}
             >
-              Overwrite
+              {t("imageAnnotator.overwrite")}
             </button>
           )}
           <button
             className="image-annotator__btn"
             onClick={onClose}
             disabled={saving}
-            title="Discard and close"
+            title={t("imageAnnotator.discardTitle")}
           >
-            Cancel
+            {t("common.cancel")}
           </button>
         </div>
       </div>
@@ -454,7 +456,7 @@ export function ImageAnnotator({
             onPointerCancel={endGesture}
           />
           {!loaded && error == null && (
-            <div className="image-annotator__loading">Loading image…</div>
+            <div className="image-annotator__loading">{t("imageAnnotator.loadingImage")}</div>
           )}
         </div>
       </div>

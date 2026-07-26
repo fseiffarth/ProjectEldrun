@@ -13,6 +13,27 @@
  * `closeTabWithConfirm` is literally `removeTab` — so a deck must never *hold*
  * unsaved state. It is small, it is text, and it is under git, which is where the
  * durable undo belongs. Ctrl+Z is the in-session undo; git is the real one.
+ *
+ * That last paragraph is a promise the code has to keep, and for a while it did
+ * not: the debounce's cleanup cancelled the pending write, so closing the tab
+ * inside 800 ms of an edit discarded it silently while the toolbar said "Saved"
+ * (TODO V #93). The rule now is `dirtyRef` + `deckRef` + a **flush** on unmount
+ * and on window close, and the label reads from `dirtyRef` rather than from the
+ * in-flight write.
+ *
+ * **When the deck must NOT be written.** Three cases, all of them ones where an
+ * autosave would destroy something (TODO V #94, #100):
+ *
+ *  - the file declared a newer deck version, or carried an object kind this build
+ *    cannot model — writing it back would silently downgrade the file;
+ *  - the load produced a parse error — the deck on screen is a blank fallback;
+ *  - re-anchoring had to place several content-bearing slides by *order alone*,
+ *    which on a manually reordered deck can put layers on the wrong pages.
+ *
+ * In all three the deck opens read-only-ish behind a banner, and only the
+ * author's explicit "open anyway" arms the autosave. Merely *looking* at a deck
+ * also no longer rewrites it: `loadedRef` is armed by the first real edit, not by
+ * the load.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -29,26 +50,36 @@ import {
   writeFileBytes,
 } from "../fileAccess";
 import { openLinkedFile, useViewerState } from "../FileViewerPane";
+import { useProjectsStore } from "../../../stores/projects";
 import {
   type Deck,
   type DeckObject,
   type ImageObject,
   type ObjectList,
   type Slide,
+  DEFAULT_PAGE_HEIGHT,
+  DEFAULT_PAGE_WIDTH,
   DUPLICATE_OFFSET,
   alignObjects,
+  footerObject,
   duplicateObjects,
   insertSlide,
   lowerObjects,
   moveObjects,
   moveSlides,
+  sequence,
   newInterstitialId,
   newObjectId,
   newSlideId,
   raiseObjects,
   removeObjects,
+  removeSlides,
+  blankSlide,
+  distributeObjects,
+  slidePageBox,
   toBack,
   toFront,
+  updateObjects,
   updateSlide,
 } from "../../../lib/viewers/deck/model";
 import {
@@ -59,7 +90,7 @@ import {
   reattach,
   reconcile,
 } from "../../../lib/viewers/deck/sidecar";
-import { type TextMetrics, loadMetrics } from "../../../lib/viewers/deck/fonts";
+import { type TextMetrics, loadMetrics, unencodableIn } from "../../../lib/viewers/deck/fonts";
 import type { IconDef } from "../../../lib/viewers/deck/icons";
 import { exportDeck, exportPathFor } from "../../../lib/viewers/deck/export";
 import {
@@ -72,18 +103,22 @@ import { getTexCapability, type TexCompileResult } from "../../../lib/viewers/te
 import { loadBase, renderPage, renderPdfPageToPng } from "./deckBase";
 import {
   dirOf,
+  gifKey,
   interstitialsOf,
   resolveRel,
   useDeckGifs,
   useDeckImages,
 } from "./deckAssets";
+import { useDeckFonts } from "./deckFonts";
 import { DeckStage } from "./DeckStage";
 import { DeckInspector } from "./DeckInspector";
 import { DeckAnimate } from "./DeckAnimate";
 import { DeckNotes } from "./DeckNotes";
 import { DeckTexPanel } from "./DeckTexPanel";
 import { DeckPresenter } from "./DeckPresenter";
+import { DeckThemePanel } from "./DeckThemePanel";
 import { IconPicker } from "./IconPicker";
+import { slideStopIndex } from "../../../lib/viewers/deck/present";
 import { posterPng } from "./gifPlayback";
 
 /** Bounds for the rail's user-resizable width (px). Wide enough at the max that
@@ -107,6 +142,49 @@ const TEX_FIGURE_POLL_MS = 1500;
  *  artifacts (`.aux`/`.log`) never clutter the deck's own folder listing. */
 function texFigureDir(deckPath: string): string {
   return `${deckPath.replace(/\.eldeck\.json$/i, "")}.tex-figures`;
+}
+
+/**
+ * An asset path relative to the deck's own directory — **including** `..` for a
+ * file that sits beside or above it.
+ *
+ * The model promises a relative `src` so a deck survives being moved or synced
+ * (`model.ImageObject`), but the old spelling relativized only files *under* the
+ * deck's folder. A figure in `<project>/figures/` picked into a deck living in
+ * `<project>/talks/` was stored **absolute** — which breaks the moment the
+ * project is synced to a host, moved, or opened on another machine (TODO V #108).
+ *
+ * Falls back to the absolute path only when the two share no root at all (a
+ * different Windows drive), where there genuinely is no relative form.
+ */
+export function deckRelative(dir: string, absolute: string): string {
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+  const from = norm(dir).split("/").filter((s) => s !== "" && s !== ".");
+  const to = norm(absolute).split("/").filter((s) => s !== "" && s !== ".");
+  // A shared root is what makes a relative path meaningful at all.
+  if (norm(dir) === "" || from[0] !== to[0]) return absolute;
+  let i = 0;
+  while (i < from.length && i < to.length && from[i] === to[i]) i += 1;
+  const up = from.length - i;
+  const rel = [...Array<string>(up).fill(".."), ...to.slice(i)].join("/");
+  return rel || ".";
+}
+
+/**
+ * Is `absolute` somewhere the deck will still be able to *read* it?
+ *
+ * `read_file_bytes` confines to the scope project's roots, so an image picked
+ * from outside the project is stored, rendered once from the picker's own bytes —
+ * and then permanently unreadable: a placeholder on the slide and a "not
+ * available" warning in every export, with nothing saying why (TODO V #108).
+ * Cheaper to refuse the pick with an explanation.
+ */
+export function withinProject(projectRoot: string | null, absolute: string): boolean {
+  if (!projectRoot) return true; // Root scope: the backend decides, not us.
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+  const root = norm(projectRoot);
+  const p = norm(absolute);
+  return p === root || p.startsWith(`${root}/`);
 }
 
 /** One slide's thumbnail in the rail — its own small component so each row
@@ -150,6 +228,11 @@ export interface DeckViewProps {
 
 export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewProps) {
   const scope = useFileScope();
+  /** The scope project's own directory — the boundary `read_file_bytes` confines
+   *  to, and therefore the boundary an asset pick has to respect (#108). */
+  const projectRoot = useProjectsStore(
+    (s) => s.projects.find((p) => p.id === scope)?.directory ?? null,
+  );
 
   const [deck, setDeck] = useState<Deck | null>(null);
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
@@ -160,11 +243,19 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
   const [saving, setSaving] = useState(false);
   const [metrics, setMetrics] = useState<TextMetrics | null>(null);
   const [picking, setPicking] = useState<null | "new" | "replace">(null);
-  const [mode, setMode] = useState<"design" | "animate" | "notes" | "tex">("design");
+  const [mode, setMode] = useState<"design" | "animate" | "notes" | "tex" | "deck">("design");
   const [previewStep, setPreviewStep] = useState(0);
   const [presenting, setPresenting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [generating, setGenerating] = useState(false);
+  /** Set when writing this deck back would lose something — see the module note.
+   *  Non-null suspends the autosave until the author dismisses it. */
+  const [hold, setHold] = useState<string | null>(null);
+  /** True once the deck differs from what is on disk. Drives the toolbar label,
+   *  which used to read "Saved" for the whole debounce window. */
+  const [dirty, setDirty] = useState(false);
+  /** Stop to open the presenter on — set by the Present button (#114). */
+  const [presentFrom, setPresentFrom] = useState(0);
   /** Bumped to force a reload after the base plate is (re)generated. */
   const [reloadNonce, setReloadNonce] = useState(0);
   const [texAvailable, setTexAvailable] = useState(false);
@@ -183,8 +274,30 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
 
   const past = useRef<Deck[]>([]);
   const future = useRef<Deck[]>([]);
-  /** Suppresses the autosave that would otherwise fire for the initial load. */
+  /**
+   * Armed by the first genuine edit, never by the load.
+   *
+   * It used to be set immediately after the load's `setDeck`, which meant the
+   * reconciled deck — with `anchor.print` refreshed on every slide — was written
+   * unconditionally 800 ms later. On a git-tracked, lockstep-synced sidecar,
+   * *looking* at a deck produced a diff (TODO V #94).
+   */
   const loadedRef = useRef(false);
+  /** The latest deck, for the flush paths that run outside React's render. */
+  const deckRef = useRef<Deck | null>(null);
+  /** Unwritten changes. Cleared only by a **successful** write, so a failed one
+   *  leaves the flush still owing rather than silently forgetting. */
+  const dirtyRef = useRef(false);
+  /** Mirrors `hold` for the flush paths, which cannot read state. */
+  const holdRef = useRef<string | null>(null);
+  holdRef.current = hold;
+  /** Last mtime this view saw on the sidecar itself, so a foreign write (a
+   *  second deck tab, or the JSON edited in a text tab beside it) is noticed
+   *  rather than silently clobbered (TODO V #116). */
+  const deckMtimeRef = useRef<number | null>(null);
+  /** True while `presenting`, for the background loops that must stand down. */
+  const presentingRef = useRef(false);
+  presentingRef.current = presenting;
   /** Last-seen mtime of each TeX-figure's compiled PDF (by absolute path), so
    *  the poll below can tell "a recompile just happened" from "nothing changed"
    *  without re-rasterizing on every tick. Seeded by every write this view makes
@@ -209,6 +322,9 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
     let cancelled = false;
     let opened: PDFDocumentProxy | null = null;
     loadedRef.current = false;
+    dirtyRef.current = false;
+    setDirty(false);
+    setHold(null);
     setError(null);
     setNotice(null);
 
@@ -226,6 +342,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
         setError(`This deck could not be read: ${parsed.error}`);
         return;
       }
+      deckMtimeRef.current = await fileMtime(path, scope).catch(() => null);
 
       const dir = dirOf(path);
       const basePath = resolveRel(dir, parsed.deck.base ?? pdfPathForDeck(path));
@@ -248,7 +365,26 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       const r = reconcile(parsed.deck, pages);
       setDoc(opened);
       setDeck(r.deck);
+      deckRef.current = r.deck;
       setSlideIndex((i) => Math.min(i, Math.max(0, r.deck.slides.length - 1)));
+
+      // Two independent reasons to refuse to write this deck back. Both are
+      // stated in the author's terms, because the only thing they can do about
+      // either is decide whether the layers or the file matters more.
+      const blockers: string[] = [];
+      if (parsed.lossy) {
+        blockers.push(
+          `This deck carries ${parsed.lossReason ?? "something this build cannot model"}. ` +
+            `Saving it here would write it back without that.`,
+        );
+      }
+      if (r.ambiguous) {
+        blockers.push(
+          "The base PDF changed in a way Eldrun cannot match to this deck's slides, so " +
+            "several layers were placed by order alone. Check they are on the right slides.",
+        );
+      }
+      if (blockers.length) setHold(blockers.join(" "));
 
       const notes: string[] = [];
       if (parsed.repaired) notes.push(`Repaired on load: ${parsed.repaired}.`);
@@ -261,8 +397,9 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       if (r.moved > 0) notes.push(`Re-anchored ${r.moved} slide${r.moved === 1 ? "" : "s"}.`);
       if (notes.length) setNotice(notes.join(" "));
 
-      // Anchors just changed; let the first autosave persist them.
-      loadedRef.current = true;
+      // Deliberately NOT arming the autosave here: re-anchoring alone is not a
+      // reason to rewrite a tracked file (see `loadedRef`). The refreshed anchors
+      // ride along with whatever the author changes next.
     })();
 
     return () => {
@@ -277,77 +414,199 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
   }, []);
 
   // --- autosave ----------------------------------------------------------
+
+  /**
+   * Write the deck now, if it is dirty and allowed to be written.
+   *
+   * The one place bytes leave this view, so the hold, the dirty flag and the
+   * mtime bookkeeping cannot get out of step. `await`able, so the unmount flush
+   * can be sure the write was *issued* before the component goes.
+   */
+  const flush = useCallback(async () => {
+    const d = deckRef.current;
+    if (!d || !dirtyRef.current || holdRef.current) return;
+    setSaving(true);
+    try {
+      await writeFileBytes(path, new TextEncoder().encode(serializeDeck(d)), scope);
+      dirtyRef.current = false;
+      setDirty(false);
+      // Record our own write so the external-change poll below does not mistake
+      // it for someone else's.
+      deckMtimeRef.current = await fileMtime(path, scope).catch(() => deckMtimeRef.current);
+    } catch (e) {
+      // Still dirty — a failed write must not look like a saved one.
+      setError(describeFileError(e));
+    } finally {
+      setSaving(false);
+    }
+  }, [path, scope]);
+
+  const flushRef = useRef(flush);
+  flushRef.current = flush;
+
   useEffect(() => {
-    if (!deck || !loadedRef.current) return;
-    const t = setTimeout(() => {
-      setSaving(true);
-      void writeFileBytes(path, new TextEncoder().encode(serializeDeck(deck)), scope)
-        .catch((e) => setError(describeFileError(e)))
-        .finally(() => setSaving(false));
-    }, AUTOSAVE_MS);
+    if (!deck || !loadedRef.current || hold) return;
+    // Background work stands down during a talk: an autosave mid-presentation is
+    // disk I/O (an SFTP round trip on a remote project) for an edit nobody is
+    // making, on the one machine that must not stutter (TODO V #113).
+    if (presenting) return;
+    const t = setTimeout(() => void flushRef.current(), AUTOSAVE_MS);
     return () => clearTimeout(t);
+  }, [deck, hold, presenting]);
+
+  /**
+   * The unmount / window-close flush.
+   *
+   * The debounce's own cleanup cancels the pending write — which is correct for a
+   * *rescheduled* write and catastrophic for a *final* one. Closing the tab
+   * within 800 ms of an edit silently discarded it, while the toolbar said
+   * "Saved" (TODO V #93). There is no unsaved-work prompt anywhere in Eldrun to
+   * catch it either, by design, so the flush has to be unconditional.
+   */
+  useEffect(() => {
+    const onBeforeUnload = () => {
+      void flushRef.current();
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      void flushRef.current();
+    };
+  }, []);
+
+  // Notice a foreign write to the sidecar itself — two deck tabs on one file
+  // (main window + popout), or the JSON edited in a text tab beside it. Until now
+  // that was last-writer-wins with no warning (TODO V #116).
+  useEffect(() => {
+    if (!deck) return;
+    const id = setInterval(() => {
+      if (presentingRef.current) return;
+      void (async () => {
+        const mt = await fileMtime(path, scope).catch(() => null);
+        if (mt == null || deckMtimeRef.current == null || mt === deckMtimeRef.current) return;
+        deckMtimeRef.current = mt;
+        if (dirtyRef.current) {
+          setHold(
+            "This deck was changed on disk by something else while you were editing it. " +
+              "Reload to take their version (yours is lost), or keep editing to overwrite it.",
+          );
+        } else {
+          setReloadNonce((n) => n + 1);
+          setNotice("This deck changed on disk and was reloaded.");
+        }
+      })();
+    }, TEX_FIGURE_POLL_MS);
+    return () => clearInterval(id);
   }, [deck, path, scope]);
 
   // --- editing -----------------------------------------------------------
+  //
+  // **History is pushed OUTSIDE the state updater.** `commit` used to mutate
+  // `past.current` inside a `setDeck` callback, and `undo`/`redo` `pop()`ed
+  // inside theirs — but React 18 StrictMode is on (`main.tsx`) and double-invokes
+  // updaters in development, which is precisely the build where the
+  // `deck_presenter` flag defaults on. So anyone who could try the feature saw
+  // doubled or broken undo (TODO V #104). Every mutation now computes its next
+  // deck from `deckRef` and calls `setDeck` non-functionally, which makes the
+  // updater pure and running it twice harmless.
 
-  /** Every mutation goes through here, so history is impossible to forget. */
-  const commit = useCallback((next: (d: Deck) => Deck) => {
-    setDeck((cur) => {
-      if (!cur) return cur;
-      const out = next(cur);
-      if (out === cur) return cur;
-      past.current = [...past.current.slice(-99), cur];
-      future.current = [];
-      return out;
-    });
+  /** How long two same-key edits stay one undo step. Long enough to swallow a
+   *  burst of typing, short enough that a pause is a boundary you can feel. */
+  const COALESCE_MS = 600;
+
+  /** Cap on the undo stack. Generous now that a sentence is one entry rather
+   *  than forty — the old 99 was a handful of real actions once notes typing
+   *  had evicted everything structural. */
+  const HISTORY_MAX = 400;
+
+  /** `(key, at)` of the top of `past`, for coalescing. */
+  const lastPush = useRef<{ key: string; at: number } | null>(null);
+
+  /**
+   * Apply a change, pushing one history entry.
+   *
+   * `key` opts the edit into **coalescing**: a run of same-key edits within
+   * `COALESCE_MS` replaces the top of the stack instead of stacking. That is what
+   * makes typing a title one undo rather than forty — and, more importantly, what
+   * stops typing 100 characters of speaker notes from evicting every structural
+   * edit that came before it.
+   */
+  const apply = useCallback((next: (d: Deck) => Deck, key?: string) => {
+    const cur = deckRef.current;
+    if (!cur) return;
+    const out = next(cur);
+    if (out === cur) return;
+    const now = Date.now();
+    const coalesce =
+      key != null &&
+      lastPush.current?.key === key &&
+      now - lastPush.current.at < COALESCE_MS &&
+      past.current.length > 0;
+    if (!coalesce) past.current = [...past.current.slice(-(HISTORY_MAX - 1)), cur];
+    lastPush.current = key != null ? { key, at: now } : null;
+    future.current = [];
+    deckRef.current = out;
+    dirtyRef.current = true;
+    loadedRef.current = true;
+    setDirty(true);
+    setDeck(out);
   }, []);
 
+  /** Every mutation goes through here, so history is impossible to forget. */
+  const commit = useCallback((next: (d: Deck) => Deck) => apply(next), [apply]);
+
   const setObjects = useCallback(
-    (objects: ObjectList) => {
-      commit((d) => ({
-        ...d,
-        slides: updateSlide(d.slides, slideIndex, (s) => ({ ...s, objects })),
-      }));
+    (objects: ObjectList, key?: string) => {
+      apply(
+        (d) => ({
+          ...d,
+          slides: updateSlide(d.slides, slideIndex, (s) => ({ ...s, objects })),
+        }),
+        key,
+      );
     },
-    [commit, slideIndex],
+    [apply, slideIndex],
   );
 
   /** Apply a pure object-list op to the current slide. */
   const withObjects = useCallback(
     (op: (list: ObjectList, ids: string[]) => ObjectList) => {
-      setDeck((cur) => {
-        if (!cur) return cur;
+      apply((cur) => {
         const slide = cur.slides[slideIndex];
         if (!slide) return cur;
         const objects = op(slide.objects, [...selection]);
         if (objects === slide.objects) return cur;
-        past.current = [...past.current.slice(-99), cur];
-        future.current = [];
         return {
           ...cur,
           slides: updateSlide(cur.slides, slideIndex, (s) => ({ ...s, objects })),
         };
       });
     },
-    [slideIndex, selection],
+    [apply, slideIndex, selection],
   );
 
   const undo = useCallback(() => {
-    setDeck((cur) => {
-      const prev = past.current.pop();
-      if (!cur || !prev) return cur;
-      future.current = [...future.current, cur];
-      return prev;
-    });
+    const prev = past.current.pop();
+    const cur = deckRef.current;
+    if (!cur || !prev) return;
+    future.current = [...future.current, cur];
+    lastPush.current = null;
+    deckRef.current = prev;
+    dirtyRef.current = true;
+    setDirty(true);
+    setDeck(prev);
   }, []);
 
   const redo = useCallback(() => {
-    setDeck((cur) => {
-      const next = future.current.pop();
-      if (!cur || !next) return cur;
-      past.current = [...past.current, cur];
-      return next;
-    });
+    const next = future.current.pop();
+    const cur = deckRef.current;
+    if (!cur || !next) return;
+    past.current = [...past.current, cur];
+    lastPush.current = null;
+    deckRef.current = next;
+    dirtyRef.current = true;
+    setDirty(true);
+    setDeck(next);
   }, []);
 
   // --- copy / duplicate ----------------------------------------------------
@@ -439,6 +698,78 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
     [commit],
   );
 
+  /**
+   * Remove a slide from the deck.
+   *
+   * Two things make this more than a `filter`, and both are the module's own
+   * non-destructive contract (`model.DetachedLayer`):
+   *
+   *  - its layers go to `deck.detached` rather than into the bin, so a mis-click
+   *    is one click back rather than a lost afternoon; and
+   *  - its base page is recorded in `deck.skippedPrints`, or `reconcile`'s
+   *    "cover every base page" pass re-adds a blank slide for it on the very next
+   *    load — which is why deleting a slide was impossible before (TODO V #106).
+   */
+  const deleteSlide = useCallback(
+    (index: number) => {
+      const cur = deckRef.current;
+      const victim = cur?.slides[index];
+      if (!cur || !victim) return;
+      const hasContent =
+        victim.objects.length > 0 || victim.notes.trim() !== "" || victim.after != null;
+      if (
+        hasContent &&
+        !window.confirm(
+          `Remove slide ${index + 1} from the deck?\n\n` +
+            `Its ${victim.objects.length} layer object(s) and notes are kept — they move to the ` +
+            `"set aside" list at the bottom, where you can put them back on any slide.`,
+        )
+      ) {
+        return;
+      }
+      commit((d) => ({
+        ...d,
+        slides: removeSlides(d.slides, [victim.id]),
+        detached: hasContent
+          ? [...d.detached, { from: victim.anchor, objects: victim.objects, notes: victim.notes }]
+          : d.detached,
+        ...(victim.anchor.print
+          ? { skippedPrints: [...(d.skippedPrints ?? []), victim.anchor.print] }
+          : {}),
+      }));
+      setSlideIndex((i) => Math.max(0, Math.min(i, cur.slides.length - 2)));
+      setSelection(new Set());
+    },
+    [commit],
+  );
+
+  /** Add an empty slide after `index`, backed by the same base page. The only way
+   *  to grow a deck that is not "recompile the source". */
+  const addBlankSlide = useCallback(
+    (index: number) => {
+      commit((d) => {
+        const anchor = d.slides[index]?.anchor ?? { page: 1 };
+        const fresh: Slide = { ...blankSlide(anchor.page), anchor: { ...anchor } };
+        return { ...d, slides: insertSlide(d.slides, fresh, index + 1) };
+      });
+      setSlideIndex(index + 1);
+      setSelection(new Set());
+    },
+    [commit],
+  );
+
+  /** Keep a slide in the deck but out of the talk — the backup slide, or the
+   *  section cut for a shorter version. */
+  const toggleSkip = useCallback(
+    (index: number) => {
+      commit((d) => ({
+        ...d,
+        slides: updateSlide(d.slides, index, (s) => ({ ...s, skip: s.skip ? undefined : true })),
+      }));
+    },
+    [commit],
+  );
+
   const addRect = useCallback(() => {
     if (!deck) return;
     const id = newObjectId();
@@ -490,7 +821,11 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
   // deck-relative path two different ways.
   const { assets, refresh: refreshImage } = useDeckImages(deck, path, scope);
   const interstitials = useMemo(() => interstitialsOf(deck), [deck]);
-  const gifs = useDeckGifs(interstitials, path, scope);
+  const { gifs } = useDeckGifs(interstitials, path, scope);
+  // Embedded faces (#120). One loader feeds the metrics, the DOM `@font-face`
+  // and the exporter, so the deck cannot be measured against one font and drawn
+  // or exported with another.
+  const fonts = useDeckFonts(deck, path, scope, metrics);
 
   const addIcon = useCallback(
     (def: IconDef) => {
@@ -529,6 +864,36 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
   );
 
   // --- export -------------------------------------------------------------
+
+  /**
+   * Characters in this deck that the built-in PDF fonts cannot write, as a
+   * sentence — or null when there are none.
+   *
+   * Run **before** the export and surfaced in the toolbar, because the exporter's
+   * own fallback (which drops them and warns) tells the author at export time,
+   * and for a talk that is the night before. A Greek letter in a caption is the
+   * single most likely thing to hit this, and it renders perfectly on screen
+   * (CSS font stacks), so nothing else in the editor would ever mention it.
+   * See TODO V #120 for the real fix this is a net under.
+   */
+  const fontWarning = useMemo(() => {
+    if (!deck) return null;
+    const bad = new Set<string>();
+    for (const s of deck.slides) {
+      for (const o of s.objects) {
+        if (o.kind !== "text" || o.hidden) continue;
+        for (const c of unencodableIn(o.text)) bad.add(c);
+      }
+    }
+    if (bad.size === 0) return null;
+    const chars = [...bad].slice(0, 8).map((c) => `"${c}"`).join(", ");
+    return (
+      `${chars}${bad.size > 8 ? ` and ${bad.size - 8} more` : ""} cannot be written by the ` +
+      `built-in PDF fonts, so ${bad.size === 1 ? "it" : "they"} will be left out of the export. ` +
+      `They render fine on screen and in the presenter.`
+    );
+  }, [deck]);
+
   const doExport = useCallback(async () => {
     if (!deck || !metrics) return;
     setExporting(true);
@@ -561,13 +926,22 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       // the (deliberately DOM-free, testable) exporter.
       const posters = new Map<string, Uint8Array>();
       for (const a of interstitials) {
-        const g = gifs.get(a.id);
+        const g = gifs.get(gifKey(a));
         if (!g) continue;
         const png = await posterPng(g, a.poster);
         if (png) posters.set(a.id, png);
       }
 
-      const out = await exportDeck({ deck, baseBytes, images, posters, metrics });
+      const out = await exportDeck({
+        deck,
+        baseBytes,
+        images,
+        posters,
+        metrics,
+        // The SAME bytes the metrics were registered with — the contract that
+        // makes the export match the screen line for line (#120).
+        fonts: fonts.bytes,
+      });
       const target = exportPathFor(path);
       await writeFileBytes(target, out.bytes, scope);
       setNotice(
@@ -579,15 +953,11 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
     } finally {
       setExporting(false);
     }
-  }, [deck, metrics, path, scope, interstitials, gifs]);
+  }, [deck, metrics, path, scope, interstitials, gifs, fonts.bytes]);
 
-  const toDeckRelative = useCallback(
-    (absolute: string) => {
-      const dir = dirOf(path);
-      return dir && absolute.startsWith(`${dir}/`) ? absolute.slice(dir.length + 1) : absolute;
-    },
-    [path],
-  );
+  const toDeckRelative = useCallback((absolute: string) => deckRelative(dirOf(path), absolute), [
+    path,
+  ]);
 
   const patchSlide = useCallback(
     (patch: (s: import("../../../lib/viewers/deck/model").Slide) => import("../../../lib/viewers/deck/model").Slide) => {
@@ -630,6 +1000,12 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
         );
         return;
       }
+      // Record which `.tex` produced this plate. `deck.source` has always been
+      // read and never written, and a SyncTeX anchor needs to know the deck HAS a
+      // source at all (TODO V #100a). Written through `commit` so it is an
+      // ordinary, undoable, autosaved edit.
+      const rel = toDeckRelative(texPath);
+      commit((d) => (d.source === rel ? d : { ...d, source: rel }));
       setNotice(hasTex ? "Recompiled the base PDF." : "Created a starter LaTeX file and compiled it.");
       setReloadNonce((n) => n + 1);
     } catch (e) {
@@ -637,7 +1013,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
     } finally {
       setGenerating(false);
     }
-  }, [path, scope]);
+  }, [path, scope, commit, toDeckRelative]);
 
   /**
    * Place an image. Stored **deck-relative** when the file is under the deck's
@@ -645,19 +1021,43 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
    * path is kept only for a file genuinely outside the tree, where there is no
    * relative form to record.
    */
-  const addImage = useCallback(async () => {
+  /**
+   * Ask for an image file and hand back its **deck-relative** path, or null.
+   *
+   * Refuses a file outside the project rather than storing an absolute path the
+   * confined file commands will later refuse to read — which produced a
+   * permanent placeholder on the slide and an unexplained warning in every
+   * export. Shared by "add" and "replace" so the rule cannot be enforced in one
+   * and forgotten in the other.
+   */
+  const pickImage = useCallback(async (): Promise<string | null> => {
     const chosen = await open({
       multiple: false,
       filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg"] }],
+      ...(projectRoot ? { defaultPath: projectRoot } : {}),
     });
-    if (typeof chosen !== "string") return;
+    if (typeof chosen !== "string") return null;
+    if (!withinProject(projectRoot, chosen)) {
+      setNotice(
+        `"${chosen.split("/").pop()}" is outside this project, so the deck would not be able ` +
+          `to read it again (and it would be missing from every export). Copy it into the ` +
+          `project first — the deck's own folder is the natural home.`,
+      );
+      return null;
+    }
+    return toDeckRelative(chosen);
+  }, [projectRoot, toDeckRelative]);
+
+  const addImage = useCallback(async () => {
+    const src = await pickImage();
+    if (!src) return;
     const id = newObjectId();
     withObjects((list) => [
       ...list,
       {
         id,
         kind: "image",
-        src: toDeckRelative(chosen),
+        src,
         fit: "contain",
         x: 0.3,
         y: 0.3,
@@ -668,7 +1068,25 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       },
     ]);
     setSelection(new Set([id]));
-  }, [withObjects, toDeckRelative]);
+  }, [withObjects, pickImage]);
+
+  /** Swap the file behind an existing image, keeping its geometry, rotation,
+   *  opacity and build step — the whole point of replacing rather than
+   *  deleting and re-placing (TODO V #108). */
+  const replaceImage = useCallback(
+    async (obj: ImageObject) => {
+      const src = await pickImage();
+      if (!src || src === obj.src) return;
+      commit((d) => ({
+        ...d,
+        slides: updateSlide(d.slides, slideIndex, (s) => ({
+          ...s,
+          objects: s.objects.map((o) => (o.id === obj.id ? { ...o, src } : o)),
+        })),
+      }));
+    },
+    [commit, pickImage, slideIndex],
+  );
 
   // --- TeX figures ---------------------------------------------------------
   // A TeX figure is an ordinary `image` object whose `src` PNG is generated by
@@ -823,6 +1241,13 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
     const dir = dirOf(path);
     let cancelled = false;
     const id = setInterval(() => {
+      // Stand down during a talk. A figure that recompiled mid-presentation
+      // called `refreshImage`, which re-seeds only THIS window's asset map — so
+      // the projector kept the old version and the two displays showed different
+      // pictures, the one thing the dual-window design says cannot happen. On a
+      // remote project the poll is also a synchronous SFTP round trip per figure
+      // per tick, on the main thread, during the presentation (TODO V #113).
+      if (presentingRef.current) return;
       void (async () => {
         for (const obj of figures) {
           if (cancelled || texBusyIds.has(obj.id)) continue;
@@ -990,6 +1415,14 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
 
   const slide = deck?.slides[slideIndex];
   const hasSel = selection.size > 0;
+  const pageBox = deck
+    ? slidePageBox(deck, slide)
+    : { width: DEFAULT_PAGE_WIDTH, height: DEFAULT_PAGE_HEIGHT };
+  // Position in the TALK — a skipped slide is not part of the count a footer's
+  // `{n}` should show, or the presenter should pace against (#106).
+  const talkCount = deck ? deck.slides.filter((s) => !s.skip).length : 0;
+  const talkIndex =
+    deck && slide ? deck.slides.filter((s) => !s.skip).findIndex((s) => s.id === slide.id) : 0;
 
   if (error) {
     return (
@@ -1075,6 +1508,49 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
         >
           ⇥
         </button>
+        {/* The vertical half of `alignObjects`, and `distributeObjects` — both
+            modelled and tested from the start, neither reachable from any UI
+            (TODO V #119). */}
+        <button
+          className="file-viewer-zoom-btn"
+          disabled={!hasSel}
+          onClick={() => withObjects((l, ids) => alignObjects(l, ids, "top"))}
+          title="Align top"
+        >
+          ⤒|
+        </button>
+        <button
+          className="file-viewer-zoom-btn"
+          disabled={!hasSel}
+          onClick={() => withObjects((l, ids) => alignObjects(l, ids, "vcenter"))}
+          title="Centre vertically"
+        >
+          ⇕
+        </button>
+        <button
+          className="file-viewer-zoom-btn"
+          disabled={!hasSel}
+          onClick={() => withObjects((l, ids) => alignObjects(l, ids, "bottom"))}
+          title="Align bottom"
+        >
+          ⤓|
+        </button>
+        <button
+          className="file-viewer-zoom-btn"
+          disabled={selection.size < 3}
+          onClick={() => withObjects((l, ids) => distributeObjects(l, ids, "h"))}
+          title="Space evenly across (needs three or more)"
+        >
+          ⇹
+        </button>
+        <button
+          className="file-viewer-zoom-btn"
+          disabled={selection.size < 3}
+          onClick={() => withObjects((l, ids) => distributeObjects(l, ids, "v"))}
+          title="Space evenly down (needs three or more)"
+        >
+          ⇳
+        </button>
         <span className="file-viewer-pdf-toolbar-sep" />
         <button
           className="file-viewer-zoom-btn"
@@ -1137,12 +1613,25 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
         >
           TeX
         </button>
+        <button
+          className={`file-viewer-zoom-text${mode === "deck" ? " active" : ""}`}
+          onClick={() => setMode("deck")}
+          title="Deck-wide defaults: type, colours, safe margin, footer, export"
+        >
+          Deck
+        </button>
         <span className="file-viewer-pdf-toolbar-sep" />
         <button
           className="file-viewer-zoom-text"
-          onClick={() => setPresenting(true)}
+          // Shift presents from the beginning; a plain click resumes at the slide
+          // being edited, which is what "let me see how this looks" means — and
+          // walking the whole deck to check one slide was the old cost (#114).
+          onClick={(e) => {
+            setPresentFrom(e.shiftKey ? 0 : slideIndex);
+            setPresenting(true);
+          }}
           disabled={deck.slides.length === 0}
-          title="Present fullscreen (Esc to exit)"
+          title="Present fullscreen from this slide — shift-click to start at the beginning (Esc to exit)"
         >
           ▶ Present
         </button>
@@ -1150,20 +1639,48 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           className="file-viewer-zoom-text"
           onClick={() => void doExport()}
           disabled={exporting || !metrics}
-          title="Flatten the layers into a PDF beside this deck"
+          title={
+            fontWarning
+              ? `Flatten the layers into a PDF beside this deck. ${fontWarning}`
+              : "Flatten the layers into a PDF beside this deck"
+          }
         >
           {exporting ? "Exporting…" : "Export PDF"}
+          {fontWarning && <span className="deck-export-warn" title={fontWarning}>!</span>}
         </button>
         <span className="file-viewer-header-spacer" />
+        {/* Driven by `dirty`, not by the in-flight write: the old label said
+            "Saved" for the whole 800 ms debounce window, i.e. exactly while the
+            edit was NOT on disk (TODO V #93). */}
         <span className="deck-save-state" aria-live="polite">
-          {saving ? "Saving…" : "Saved"}
+          {saving ? "Saving…" : hold ? "Not saving" : dirty ? "Unsaved…" : "Saved"}
         </span>
         <button className="file-viewer-zoom-btn" onClick={onOpenExternally} title="Open externally">
           ↗
         </button>
       </div>
 
+      {/* The write is held. Blocking-ish rather than a passing notice, because
+          the alternative to reading it is losing part of the file (TODO V #94). */}
+      {hold && (
+        <div className="file-viewer-banner deck-hold-banner">
+          <span>{hold}</span>
+          <button
+            className="deck-inspector-btn"
+            onClick={() => setHold(null)}
+            title="Editing from here on will overwrite the file with what Eldrun could read"
+          >
+            Edit anyway (this will rewrite the file)
+          </button>
+          <button className="deck-inspector-btn" onClick={() => setReloadNonce((n) => n + 1)}>
+            Reload from disk
+          </button>
+        </div>
+      )}
+
       {notice && <div className="file-viewer-banner">{notice}</div>}
+
+      {fontWarning && <div className="file-viewer-banner deck-font-banner">{fontWarning}</div>}
 
       <div className="deck-body">
         <div
@@ -1176,7 +1693,9 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           {deck.slides.map((s, i) => (
             <div
               key={s.id}
-              className={`deck-rail-item${i === slideIndex ? " active" : ""}`}
+              className={`deck-rail-item${i === slideIndex ? " active" : ""}${
+                s.skip ? " skipped" : ""
+              }`}
               role="option"
               aria-selected={i === slideIndex}
               tabIndex={0}
@@ -1245,9 +1764,49 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
                 >
                   ⧉
                 </button>
+                {/* Skip and delete: `removeSlides` and `blankSlide` were written
+                    and tested but had no caller at all, so a deck could only ever
+                    grow (TODO V #106). */}
+                <button
+                  className={`deck-rail-act-btn${s.skip ? " active" : ""}`}
+                  title={s.skip ? "Include this slide in the talk" : "Skip this slide in the talk"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleSkip(i);
+                  }}
+                >
+                  ⤫
+                </button>
+                <button
+                  className="deck-rail-act-btn"
+                  title="Add a blank slide after this one"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    addBlankSlide(i);
+                  }}
+                >
+                  +
+                </button>
+                <button
+                  className="deck-rail-act-btn deck-rail-act-danger"
+                  title="Remove this slide (its layers are set aside, not deleted)"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteSlide(i);
+                  }}
+                >
+                  ␡
+                </button>
               </span>
             </div>
           ))}
+          <button
+            className="deck-rail-add"
+            title="Add a blank slide at the end"
+            onClick={() => addBlankSlide(deck.slides.length - 1)}
+          >
+            + blank slide
+          </button>
         </div>
 
         <div
@@ -1260,8 +1819,11 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           <DeckStage
             slide={slide}
             doc={doc}
-            pageWidth={deck.pageWidth}
-            pageHeight={deck.pageHeight}
+            // The SLIDE's box, not the deck's: a plate that mixes page sizes (a
+            // portrait appendix, an inserted landscape figure page) otherwise
+            // mis-scales every layer on those pages (TODO V #112).
+            pageWidth={pageBox.width}
+            pageHeight={pageBox.height}
             margin={deck.theme.margin}
             selection={selection}
             onSelectionChange={setSelection}
@@ -1270,9 +1832,20 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
             metrics={metrics}
             previewStep={mode === "animate" ? previewStep : undefined}
             showBuildBadges={mode === "animate"}
+            footer={footerObject(deck, talkIndex, talkCount, pageBox.height)}
             onEditObject={(obj) => {
               if (obj.kind === "image" && obj.texSrc) editTexObject(obj);
             }}
+            onTextChange={(id, text) =>
+              // Keyed per object, so a sentence typed on the slide is ONE undo
+              // step rather than one per character (TODO V #104).
+              setObjects(
+                updateObjects(slide.objects, [id], (o) =>
+                  o.kind === "text" ? { ...o, text } : o,
+                ),
+                `text:${id}`,
+              )
+            }
           />
         ) : (
           <div className="deck-stage deck-stage-empty">
@@ -1302,7 +1875,24 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           </div>
         )}
 
-        {mode === "tex" ? (
+        {mode === "deck" ? (
+          <DeckThemePanel
+            deck={deck}
+            selected={slide?.objects.filter((o) => selection.has(o.id)) ?? []}
+            onDeckChange={commit}
+            onApplyTextToAll={() =>
+              commit((d) => ({
+                ...d,
+                slides: d.slides.map((s) => ({
+                  ...s,
+                  objects: s.objects.map((o) =>
+                    o.kind === "text" ? { ...o, style: { ...d.theme.text } } : o,
+                  ),
+                })),
+              }))
+            }
+          />
+        ) : mode === "tex" ? (
           <DeckTexPanel
             deck={deck}
             onJump={jumpToTexFigure}
@@ -1330,6 +1920,8 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
             onPickIcon={() => setPicking("replace")}
             onEditTex={editTexObject}
             onRecompileTex={(obj) => void recompileTexObject(obj)}
+            onReplaceImage={(obj) => void replaceImage(obj)}
+            missingFonts={fonts.missing}
             texBusyIds={texBusyIds}
           />
         )}
@@ -1346,7 +1938,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           gifs={gifs}
           path={path}
           scope={scope}
-          startAt={0}
+          startAt={Math.max(0, slideStopIndex(sequence(deck), presentFrom))}
           onClose={() => setPresenting(false)}
         />
       )}

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useWindowsStore } from "../../stores/windows";
+import { useT } from "../../lib/i18n";
 import { basename } from "../../lib/paths";
 
 interface Props {
@@ -23,6 +24,7 @@ interface Props {
  * and graceful degradation; live in-tab rendering arrives with the X11 layer.
  */
 export function EmbedPane({ path, exec, projectId, visible }: Props) {
+  const t = useT();
   // Open the external app exactly once per tab mount.
   const openedRef = useRef(false);
   useEffect(() => {
@@ -51,7 +53,7 @@ export function EmbedPane({ path, exec, projectId, visible }: Props) {
     >
       <div style={{ fontWeight: 600 }}>{fileName}</div>
       <div style={{ opacity: 0.7 }}>
-        opened externally — in-tab embedding pending
+        {t("embedPane.openedExternally")}
       </div>
     </div>
   );

@@ -23,9 +23,11 @@ import {
   parsePresentParam,
   presentSeedEvent,
   presentStateEvent,
+  nextSlideOf,
   presenterLabel,
   slideStopIndex,
   stepSlide,
+  withFrom,
 } from "../lib/viewers/deck/present";
 import { type Deck, emptyDeck, blankSlide, sequence } from "../lib/viewers/deck/model";
 
@@ -233,5 +235,95 @@ describe("the shared key map", () => {
     for (const k of ["g", "n", "d", "F5", "Tab", "a"]) {
       expect(keyToAction(k)).toBeNull();
     }
+  });
+});
+
+describe("idempotent navigation (V #95)", () => {
+  const stops = sequence(deckFixture());
+
+  it("refuses a request made from a stop the talk has already left", () => {
+    // The stale-`from` case. Two requests race for one advance — an auto-advancing
+    // GIF ending on both windows' own rAF clocks, a clicker that double-fires, a
+    // forwarded key arriving just after the same local one — and without this the
+    // deck moves TWO stops for one press.
+    expect(applyNav(stops, 2, { kind: "next", from: 2 })).toBe(3);
+    expect(applyNav(stops, 3, { kind: "next", from: 2 })).toBe(3);
+    expect(applyNav(stops, 3, { kind: "prev", from: 9 })).toBe(3);
+    expect(applyNav(stops, 1, { kind: "goto", slide: 2, from: 7 })).toBe(1);
+  });
+
+  it("leaves an unstamped request working exactly as before", () => {
+    // The presenter's own toolbar buttons carry no `from`, and must not need one.
+    expect(applyNav(stops, 2, { kind: "next" })).toBe(3);
+    expect(applyNav(stops, 2, { kind: "prev" })).toBe(1);
+  });
+
+  it("stamps only movements — a blackout a beat late still means blackout", () => {
+    expect(withFrom({ kind: "next" }, 4)).toEqual({ kind: "next", from: 4 });
+    expect(withFrom({ kind: "slide", delta: -1 }, 4)).toEqual({
+      kind: "slide",
+      delta: -1,
+      from: 4,
+    });
+    expect(withFrom({ kind: "goto", slide: 2 }, 4)).toEqual({ kind: "goto", slide: 2, from: 4 });
+    expect(withFrom({ kind: "blank", mode: "black" }, 4)).toEqual({
+      kind: "blank",
+      mode: "black",
+    });
+    expect(withFrom({ kind: "close" }, 4)).toEqual({ kind: "close" });
+  });
+});
+
+describe("the next-slide preview (V #101)", () => {
+  const deck = deckFixture(); // slide 1 (index 1) has two builds
+  const stops = sequence(deck);
+
+  it("skips the current slide's own remaining build steps", () => {
+    // The bug this exists for: on a slide with builds the next `kind: "slide"`
+    // stop is the SAME slide's next step, so the speaker console previewed the
+    // slide the room was already looking at — labelled with the wrong number, and
+    // exactly while stepping builds.
+    const entry = stops.findIndex((s) => s.kind === "slide" && s.slide === 1 && s.step === 0);
+    expect(stops[entry + 1]).toEqual({ kind: "slide", slide: 1, step: 1 });
+    expect(nextSlideOf(stops, entry)).toBe(2);
+    // …and still 2 from the middle of the build sequence.
+    expect(nextSlideOf(stops, entry + 1)).toBe(2);
+  });
+
+  it("reports -1 on the last slide rather than wrapping", () => {
+    expect(nextSlideOf(stops, stops.length - 1)).toBe(-1);
+  });
+
+  it("looks past an interstitial to the slide after it", () => {
+    // Slide 0 carries a GIF, so its interstitial stop sits between the two.
+    const gif = stops.findIndex((s) => s.kind === "interstitial");
+    expect(nextSlideOf(stops, gif)).toBe(1);
+  });
+});
+
+describe("skipped slides (V #106)", () => {
+  it("leaves a skipped slide out of the presentation sequence entirely", () => {
+    const deck = deckFixture();
+    const before = sequence(deck).length;
+    const skipped: Deck = {
+      ...deck,
+      slides: deck.slides.map((s, i) => (i === 1 ? { ...s, skip: true } : s)),
+    };
+    const after = sequence(skipped);
+    // Slide 1 has three stops (entry + two builds); all of them go.
+    expect(after.length).toBe(before - 3);
+    expect(after.some((s) => s.slide === 1)).toBe(false);
+    // Its index in `deck.slides` is unchanged, so nothing downstream needs to
+    // translate between "slide" and "stop.slide".
+    expect(after.map((s) => s.slide)).toEqual(after.map((s) => s.slide).sort((a, b) => a - b));
+  });
+
+  it("has no entry stop for a skipped slide, so a goto cannot land on it", () => {
+    const deck = deckFixture();
+    const skipped: Deck = {
+      ...deck,
+      slides: deck.slides.map((s, i) => (i === 1 ? { ...s, skip: true } : s)),
+    };
+    expect(slideStopIndex(sequence(skipped), 1)).toBe(-1);
   });
 });

@@ -13,6 +13,11 @@
  * one off while *in* debug mode — otherwise "turn this off" would silently fail for
  * exactly the people most likely to hit a broken experiment.
  *
+ * Note the one asymmetry a gate must respect: it hides the *entry point*, never a
+ * surface already on screen. `mail_client` gates the new-tab menu item; a mail tab
+ * that is already open (or was restored) keeps rendering, because a flag flip is
+ * not an instruction to close what someone is reading.
+ *
  * Adding an experiment: add its key to `Settings` (and to the Rust `Settings`, so
  * it round-trips through `save_settings`), list it here, and read it through
  * `useExperimental`. Never read `settings.<flag> ?? false` at the call site — that
@@ -27,6 +32,7 @@ export const EXPERIMENTAL_FLAGS = [
   "agent_mode_toggle",
   "python_run_debug",
   "deck_presenter",
+  "mail_client",
 ] as const;
 
 export type ExperimentalFlag = (typeof EXPERIMENTAL_FLAGS)[number];

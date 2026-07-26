@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { Calendar, CalendarTask } from "../../types";
 import { datePart, formatLongDate, todayStr, toStamp } from "../../lib/calendarTime";
 import { calendarColor } from "../../stores/calendar";
+import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 
 interface Props {
   tasks: CalendarTask[];
@@ -19,11 +20,11 @@ interface Props {
 type Filter = "open" | "all" | "done";
 
 /** iCalendar priority: 1-4 high, 5 normal, 6-9 low, 0 unset. */
-function priorityLabel(p: number): string {
+function priorityLabel(p: number, t: (key: TranslationKey) => string): string {
   if (p === 0) return "";
-  if (p <= 4) return "High";
-  if (p === 5) return "Normal";
-  return "Low";
+  if (p <= 4) return t("tasksView.priorityHigh");
+  if (p === 5) return t("tasksView.priorityNormal");
+  return t("tasksView.priorityLow");
 }
 
 function priorityClass(p: number): string {
@@ -57,6 +58,8 @@ export function TasksView({
   onDelete,
   defaultCalendarId,
 }: Props) {
+  const t = useT();
+  const lang = useI18nStore((s) => s.lang);
   const [filter, setFilter] = useState<Filter>("open");
   const [title, setTitle] = useState("");
   const [due, setDue] = useState("");
@@ -119,7 +122,7 @@ export function TasksView({
         <input
           className="cal-input cal-tasks-add-title"
           type="text"
-          placeholder="Add a task…"
+          placeholder={t("tasksView.addTaskPlaceholder")}
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           onKeyDown={(e) => {
@@ -129,12 +132,12 @@ export function TasksView({
         <input
           className="cal-input cal-tasks-add-due"
           type="date"
-          title="Due date"
+          title={t("tasksView.dueDateTitle")}
           value={due}
           onChange={(e) => setDue(e.target.value)}
         />
         <button className="cal-btn cal-btn-primary" disabled={!title.trim()} onClick={() => void addTask()}>
-          Add
+          {t("common.add")}
         </button>
       </div>
 
@@ -145,14 +148,14 @@ export function TasksView({
             className={`cal-chip${filter === f ? " cal-chip-on" : ""}`}
             onClick={() => setFilter(f)}
           >
-            {f === "open" ? "Open" : f === "all" ? "All" : "Completed"}
+            {f === "open" ? t("tasksView.filterOpen") : f === "all" ? t("tasksView.filterAll") : t("tasksView.filterCompleted")}
           </button>
         ))}
       </div>
 
       {shown.length === 0 ? (
         <div className="cal-empty">
-          {filter === "done" ? "Nothing completed yet." : "No tasks. Add one above."}
+          {filter === "done" ? t("tasksView.emptyCompleted") : t("tasksView.emptyNone")}
         </div>
       ) : (
         <div className="cal-tasks-list">
@@ -173,7 +176,7 @@ export function TasksView({
                   className="cal-task-check"
                   checked={done}
                   onChange={() => void toggleDone(task)}
-                  title={done ? "Mark as not done" : "Mark as done"}
+                  title={done ? t("tasksView.markNotDoneTitle") : t("tasksView.markDoneTitle")}
                 />
 
                 <span
@@ -187,19 +190,19 @@ export function TasksView({
 
                 {task.priority ? (
                   <span className={`cal-task-prio${priorityClass(task.priority)}`}>
-                    {priorityLabel(task.priority)}
+                    {priorityLabel(task.priority, t)}
                   </span>
                 ) : null}
 
                 {!done && task.percent > 0 ? (
-                  <span className="cal-task-percent" title={`${task.percent}% complete`}>
+                  <span className="cal-task-percent" title={t("tasksView.percentCompleteTitle", { percent: task.percent })}>
                     <span className="cal-task-percent-fill" style={{ width: `${task.percent}%` }} />
                   </span>
                 ) : null}
 
                 {task.due ? (
-                  <span className="cal-task-due" title={formatLongDate(datePart(task.due))}>
-                    {overdue ? "Overdue · " : ""}
+                  <span className="cal-task-due" title={formatLongDate(datePart(task.due), lang)}>
+                    {overdue ? t("tasksView.overduePrefix") : ""}
                     {datePart(task.due)}
                   </span>
                 ) : null}
@@ -207,20 +210,20 @@ export function TasksView({
                 <select
                   className="cal-task-prio-select"
                   value={task.priority}
-                  title="Priority"
+                  title={t("tasksView.priorityTitle")}
                   onChange={(e) => void onUpdate({ ...task, priority: Number(e.target.value) })}
                 >
                   <option value={0}>—</option>
-                  <option value={1}>High</option>
-                  <option value={5}>Normal</option>
-                  <option value={9}>Low</option>
+                  <option value={1}>{t("tasksView.priorityHigh")}</option>
+                  <option value={5}>{t("tasksView.priorityNormal")}</option>
+                  <option value={9}>{t("tasksView.priorityLow")}</option>
                 </select>
 
                 <button
                   className="cal-link-btn cal-link-danger"
                   onClick={() => void onDelete(task.id)}
                 >
-                  Delete
+                  {t("common.delete")}
                 </button>
               </div>
             );

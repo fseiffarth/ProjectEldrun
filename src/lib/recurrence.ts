@@ -30,8 +30,10 @@ import {
   normalizeSpan,
   parseStamp,
   spanCoversDate,
+  weekdayLabel,
   weekdayOf,
 } from "./calendarTime";
+import type { TranslationKey } from "./i18n";
 
 /**
  * Hard ceiling on occurrences generated for one event in one window. A window is
@@ -342,34 +344,39 @@ export function isRecurring(event: CalendarEvent): boolean {
 }
 
 /** A short human summary of a rule, for the event list and the editor. */
-export function describeRrule(rule: Rrule | null | undefined): string {
-  if (!rule) return "Does not repeat";
+export function describeRrule(
+  rule: Rrule | null | undefined,
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+  lang: string,
+): string {
+  if (!rule) return t("recurrence.doesNotRepeat");
   const n = Math.max(1, rule.interval || 1);
-  const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
   let base: string;
   switch (rule.freq) {
     case "daily":
-      base = n === 1 ? "Daily" : `Every ${n} days`;
+      base = n === 1 ? t("recurrence.daily") : t("recurrence.everyNDays", { n });
       break;
     case "weekly": {
       const days = (rule.byweekday ?? []).filter((d) => d >= 0 && d <= 6).sort((a, b) => a - b);
-      const on = days.length ? ` on ${days.map((d) => WEEKDAYS[d]).join(", ")}` : "";
-      base = (n === 1 ? "Weekly" : `Every ${n} weeks`) + on;
+      const on = days.length
+        ? ` ${t("recurrence.onWeekdays", { days: days.map((d) => weekdayLabel(lang, d, "long")).join(", ") })}`
+        : "";
+      base = (n === 1 ? t("recurrence.weekly") : t("recurrence.everyNWeeks", { n })) + on;
       break;
     }
     case "monthly":
-      base = (n === 1 ? "Monthly" : `Every ${n} months`) +
-        (rule.bymonthday ? ` on day ${rule.bymonthday}` : "");
+      base = (n === 1 ? t("recurrence.monthly") : t("recurrence.everyNMonths", { n })) +
+        (rule.bymonthday ? ` ${t("recurrence.onDayOfMonth", { day: rule.bymonthday })}` : "");
       break;
     case "yearly":
-      base = n === 1 ? "Yearly" : `Every ${n} years`;
+      base = n === 1 ? t("recurrence.yearly") : t("recurrence.everyNYears", { n });
       break;
     default:
-      base = "Repeats";
+      base = t("recurrence.repeats");
   }
 
-  if (rule.count) return `${base}, ${rule.count} times`;
-  if (rule.until) return `${base}, until ${rule.until}`;
+  if (rule.count) return t("recurrence.timesSuffix", { base, count: rule.count });
+  if (rule.until) return t("recurrence.untilSuffix", { base, until: rule.until });
   return base;
 }

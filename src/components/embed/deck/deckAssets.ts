@@ -136,22 +136,53 @@ export function useDeckGifs(
   path: string,
   scope: string | null,
 ) {
+  /**
+   * Cache key: **id AND source path**.
+   *
+   * Replacing an interstitial's GIF reuses the existing interstitial id
+   * (`DeckAnimate.pickGif` does that deliberately, so the object keeps its
+   * identity), so keying by id alone meant a replaced clip was never re-decoded
+   * and the presenter kept playing the old one forever (TODO V #110). Exactly the
+   * bug `useDeckImages` already fixed with `refresh(src)`, one hook over.
+   */
   const [gifs, setGifs] = useState<Map<string, DecodedGif>>(new Map());
+  /**
+   * Sources that failed to decode. Without this the effect re-reads and
+   * **re-decodes** a broken clip on every render that touches the deck — a full
+   * LZW pass over a file that will never work.
+   */
+  const failed = useRef<Set<string>>(new Set());
+
+  const refresh = useCallback((key: string) => {
+    failed.current.delete(key);
+    setGifs((cur) => {
+      const hit = cur.get(key);
+      if (!hit) return cur;
+      disposeGif(hit);
+      const next = new Map(cur);
+      next.delete(key);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     let live = true;
     const dir = dirOf(path);
-    const missing = interstitials.filter((a) => !gifs.has(a.id));
+    const missing = interstitials.filter(
+      (a) => !gifs.has(gifKey(a)) && !failed.current.has(gifKey(a)),
+    );
     if (missing.length === 0) return;
     void (async () => {
       const added = new Map<string, DecodedGif>();
       for (const a of missing) {
         try {
           const bytes = await readFileBytes(resolveRel(dir, a.src), scope);
-          added.set(a.id, await decodeInterstitial(new Uint8Array(bytes)));
+          added.set(gifKey(a), await decodeInterstitial(new Uint8Array(bytes)));
         } catch {
           // A clip that will not decode shows as "Loading animation…" in the
-          // presenter rather than taking the talk down.
+          // presenter rather than taking the talk down — and is remembered as
+          // failed so it is not re-read and re-decoded on every edit.
+          failed.current.add(gifKey(a));
         }
       }
       if (!live) {
@@ -165,6 +196,23 @@ export function useDeckGifs(
     };
   }, [interstitials, gifs, path, scope]);
 
+  // Drop clips no longer in the deck — including the OLD entry of a replaced
+  // one, since its `id:src` key stops being wanted the moment `src` changes.
+  useEffect(() => {
+    const wanted = new Set(interstitials.map(gifKey));
+    const stale = [...gifs.keys()].filter((k) => !wanted.has(k));
+    if (stale.length === 0) return;
+    setGifs((cur) => {
+      const next = new Map(cur);
+      for (const k of stale) {
+        const g = next.get(k);
+        if (g) disposeGif(g);
+        next.delete(k);
+      }
+      return next;
+    });
+  }, [interstitials, gifs]);
+
   const gifsRef = useRef(gifs);
   gifsRef.current = gifs;
   useEffect(
@@ -174,5 +222,11 @@ export function useDeckGifs(
     [],
   );
 
-  return gifs;
+  return { gifs, refresh };
+}
+
+/** The `useDeckGifs` cache key for an interstitial — see the hook's own note on
+ *  why the source path is part of it. */
+export function gifKey(a: Pick<Interstitial, "id" | "src">): string {
+  return `${a.id}:${a.src}`;
 }

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
   CALENDAR_TAB_CMD,
+  MAIL_TAB_CMD,
   DISKUSAGE_TAB_CMD,
   NETWORK_TAB_CMD,
   type TabEntry,
@@ -15,9 +16,12 @@ import {
   agentMenuEntries,
   buildStaticTabSpec,
   isFileTabKind,
+  itemLabel,
   type StaticMenuItem,
 } from "./newTabItems";
 import { AddTabMenuList } from "./AddTabMenuList";
+import { useExperimental } from "../../lib/experimental";
+import { useT } from "../../lib/i18n";
 
 interface Props {
   /** Scope (project id or "root") the new tab belongs to. Gates the project-only
@@ -49,8 +53,14 @@ interface Props {
  * `addTab`; the popout streams an "add" edit to the main window).
  */
 export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onClose, onManageAgents }: Props) {
+  const t = useT();
   const menuRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState(anchor);
+
+  // Experimental — off for users, on in debug. This menu is the DETACHED
+  // window's, and it is a separate React root: an entry added only to `TabBar`
+  // exists in the main window and is silently missing from every popout.
+  const mailClient = useExperimental("mail_client");
 
   const localModel = useSettingsStore(
     (s) => s.settings?.ollama_roles?.tabs ?? s.settings?.ollama_model,
@@ -136,7 +146,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   }, [pos]);
 
   const pickStatic = (item: StaticMenuItem) => {
-    onPick(buildStaticTabSpec(item, projectCwd, projectName));
+    onPick(buildStaticTabSpec(item, projectCwd, projectName, t));
     onClose();
   };
 
@@ -202,7 +212,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
       <AddTabMenuList
         groups={[
           {
-            label: "Agents",
+            label: t("newTabMenu.groupAgents"),
             entries: agentMenuEntries({
               installedBuiltins: enabledAgents,
               installedCmds: installedCustom,
@@ -212,10 +222,13 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                 onClose();
                 onManageAgents();
               },
+              t,
             }),
           },
           {
-            label: localModel ? `Local Model · ${localModel}` : "Local Model",
+            label: localModel
+              ? t("newTabMenu.groupLocalModelWithName", { model: localModel })
+              : t("newTabMenu.groupLocalModel"),
             entries: localModel
               ? [
                   ...(enabledAgents?.has("vibe")
@@ -235,23 +248,23 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                 ]
               : [],
             hint: localModel
-              ? "No local agent installed — install one in the 🧠 menu"
-              : "No local model set — pick one in the app bar",
+              ? t("newTabMenu.noLocalAgentHint")
+              : t("newTabMenu.noLocalModelHint"),
           },
           {
-            label: "Shell",
+            label: t("newTabMenu.groupShell"),
             entries: SHELL_ITEMS.filter((i) => i.kind === "shell").map((item) => ({
               key: item.cmd || "shell",
-              label: item.label,
+              label: itemLabel(item, t),
               color: TAB_ACCENT[item.kind],
               onPick: () => pickStatic(item),
             })),
           },
           {
-            label: "Files",
+            label: t("newTabMenu.groupFiles"),
             entries: SHELL_ITEMS.filter((i) => isFileTabKind(i.kind)).map((item) => ({
               key: item.cmd,
-              label: item.label,
+              label: itemLabel(item, t),
               color: TAB_ACCENT[item.kind],
               disabled: !projectCwd,
               onPick: () => pickStatic(item),
@@ -260,16 +273,16 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
           // Disk Usage can scan anywhere, so it is offered in every scope; Network
           // Traffic is per-project (host/SSH link), so the root scope has none.
           {
-            label: "Monitoring",
+            label: t("newTabMenu.groupMonitoring"),
             entries: [
               {
                 key: "diskusage",
-                label: "Disk Usage",
+                label: t("newTabMenu.itemDiskUsage"),
                 dot: "◕",
                 color: TAB_ACCENT.diskusage,
                 onPick: () =>
                   pickFixed({
-                    label: "Disk Usage",
+                    label: t("newTabMenu.itemDiskUsage"),
                     cmd: DISKUSAGE_TAB_CMD,
                     cwd: projectCwd,
                     kind: "diskusage",
@@ -278,11 +291,11 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               ...(scope !== "root"
                 ? [{
                     key: "network",
-                    label: "Network Traffic",
+                    label: t("newTabMenu.itemNetworkTraffic"),
                     color: TAB_ACCENT.network,
                     onPick: () =>
                       pickFixed({
-                        label: "Network Traffic",
+                        label: t("newTabMenu.itemNetworkTraffic"),
                         cmd: NETWORK_TAB_CMD,
                         cwd: projectCwd,
                         kind: "network",
@@ -292,21 +305,40 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
             ],
           },
           {
-            label: "Calendar",
+            label: t("newTabMenu.calendar"),
             entries: [{
               key: "calendar",
-              label: "Calendar",
+              label: t("newTabMenu.calendar"),
               dot: "◆",
               color: TAB_ACCENT.calendar,
               onPick: () =>
                 pickFixed({
-                  label: "Calendar",
+                  label: t("newTabMenu.calendar"),
                   cmd: CALENDAR_TAB_CMD,
                   cwd: projectCwd,
                   kind: "calendar",
                 }),
             }],
           },
+          ...(mailClient
+            ? [{
+                label: t("newTabMenu.mail"),
+                entries: [{
+                  key: "mail",
+                  label: t("newTabMenu.mail"),
+                  dot: "✉",
+                  color: TAB_ACCENT.mail,
+                  untested: true,
+                  onPick: () =>
+                    pickFixed({
+                      label: t("newTabMenu.mail"),
+                      cmd: MAIL_TAB_CMD,
+                      cwd: projectCwd,
+                      kind: "mail",
+                    }),
+                }],
+              }]
+            : []),
         ]}
       />
     </div>,

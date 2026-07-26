@@ -1,12 +1,7 @@
 import { useMemo, useState } from "react";
 import type { Calendar } from "../../types";
-import { addMonths, datePart, monthGrid, todayStr } from "../../lib/calendarTime";
-
-const MONTHS = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
-];
-const WEEKDAY_INITIALS = ["S", "M", "T", "W", "T", "F", "S"];
+import { addMonths, datePart, monthGrid, monthName, todayStr, weekdayLabel } from "../../lib/calendarTime";
+import { useI18nStore, useT } from "../../lib/i18n";
 
 /** The palette a new calendar picks from. */
 const CALENDAR_COLORS = [
@@ -42,6 +37,8 @@ export function CalendarSidebar({
   onDeleteCalendar,
   weekStart,
 }: Props) {
+  const t = useT();
+  const lang = useI18nStore((s) => s.lang);
   // The mini-month browses independently of the main view's anchor, so you can
   // look ahead without moving what you are working on until you click a day.
   const [browse, setBrowse] = useState(() => datePart(selected));
@@ -58,10 +55,10 @@ export function CalendarSidebar({
     [year, month, weekStart],
   );
 
-  const labels = useMemo(
-    () => [...WEEKDAY_INITIALS.slice(weekStart), ...WEEKDAY_INITIALS.slice(0, weekStart)],
-    [weekStart],
-  );
+  const labels = useMemo(() => {
+    const days = Array.from({ length: 7 }, (_, i) => weekdayLabel(lang, i, "narrow"));
+    return [...days.slice(weekStart), ...days.slice(0, weekStart)];
+  }, [weekStart, lang]);
 
   function submitNew() {
     const name = newName.trim();
@@ -79,15 +76,15 @@ export function CalendarSidebar({
           <button
             className="cal-nav-btn"
             onClick={() => setBrowse(addMonths(browse, -1))}
-            title="Previous month"
+            title={t("calendarSidebar.prevMonthTitle")}
           >
             ‹
           </button>
-          <span className="cal-mini-title">{MONTHS[month - 1]} {year}</span>
+          <span className="cal-mini-title">{monthName(lang, month)} {year}</span>
           <button
             className="cal-nav-btn"
             onClick={() => setBrowse(addMonths(browse, 1))}
-            title="Next month"
+            title={t("calendarSidebar.nextMonthTitle")}
           >
             ›
           </button>
@@ -123,9 +120,9 @@ export function CalendarSidebar({
 
       <div className="cal-list">
         <div className="cal-list-head">
-          <span className="cal-list-title">Calendars</span>
+          <span className="cal-list-title">{t("calendarSidebar.calendarsTitle")}</span>
           <button className="cal-link-btn" onClick={() => setAdding((a) => !a)}>
-            + New
+            {t("calendarSidebar.newButton")}
           </button>
         </div>
 
@@ -134,7 +131,7 @@ export function CalendarSidebar({
             <input
               className="cal-input"
               type="text"
-              placeholder="Calendar name"
+              placeholder={t("calendarSidebar.namePlaceholder")}
               autoFocus
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
@@ -147,7 +144,7 @@ export function CalendarSidebar({
               }}
             />
             <button className="cal-btn cal-btn-primary" disabled={!newName.trim()} onClick={submitNew}>
-              Add
+              {t("common.add")}
             </button>
           </div>
         ) : null}
@@ -158,14 +155,14 @@ export function CalendarSidebar({
               type="checkbox"
               checked={cal.visible}
               onChange={() => onToggleVisible(cal.id)}
-              title={cal.visible ? "Hide this calendar" : "Show this calendar"}
+              title={cal.visible ? t("calendarSidebar.hideCalendarTitle") : t("calendarSidebar.showCalendarTitle")}
             />
 
             <input
               type="color"
               className="cal-color-dot"
               value={cal.color}
-              title="Calendar color"
+              title={t("calendarSidebar.colorTitle")}
               onChange={(e) => onUpdateCalendar({ ...cal, color: e.target.value })}
             />
 
@@ -189,7 +186,7 @@ export function CalendarSidebar({
               <span
                 className={`cal-list-name${cal.visible ? "" : " cal-list-name-off"}`}
                 onDoubleClick={() => setEditing(cal.id)}
-                title="Double-click to rename"
+                title={t("calendarSidebar.renameHintTitle")}
               >
                 {cal.name}
               </span>
@@ -199,7 +196,7 @@ export function CalendarSidebar({
             {calendars.length > 1 ? (
               <button
                 className="cal-link-btn cal-link-danger cal-list-del"
-                title="Delete this calendar and everything on it"
+                title={t("calendarSidebar.deleteCalendarTitle")}
                 onClick={() => onDeleteCalendar(cal.id)}
               >
                 ×

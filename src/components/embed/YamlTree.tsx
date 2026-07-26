@@ -35,6 +35,7 @@ import {
   type YamlNode,
   type YamlValueType,
 } from "../../lib/viewers/yaml";
+import { useT } from "../../lib/i18n";
 
 /**
  * The YAML/JSON tree editor (#yaml) — the structured half of the viewer, the way
@@ -95,6 +96,7 @@ export function YamlTree({
   /** JSON dialect (a `.json` file): keys and strings are always quoted. */
   strict?: boolean;
 }) {
+  const t = useT();
   const doc = useMemo(() => parseYaml(text, { strict }), [text, strict]);
 
   // Collapse state rides with the tab (like the reader's scroll position), so
@@ -137,8 +139,8 @@ export function YamlTree({
     }
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      const t = e.target as HTMLElement | null;
-      if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+      const target = e.target as HTMLElement | null;
+      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
       setCursorId(null);
       setClip(null);
     };
@@ -150,10 +152,10 @@ export function YamlTree({
     return (
       <div className="yaml-tree-notice">
         <p>
-          The tree can't read this file: {doc.error.message} (line {doc.error.line})
+          {t("yamlTree.cantRead", { msg: doc.error.message, line: doc.error.line })}
         </p>
         <p className="yaml-tree-notice-hint">
-          Switch to <strong>Source</strong> to edit it as text — nothing here has been changed.
+          {t("yamlGrid.switchToSourcePre")}<strong>{t("yamlGrid.sourceWord")}</strong>{t("yamlGrid.switchToSourcePost")}
         </p>
       </div>
     );
@@ -163,7 +165,7 @@ export function YamlTree({
     return (
       <div className="yaml-tree" style={fontSize ? { fontSize: `${fontSize}px` } : undefined}>
         <div className="yaml-tree-notice">
-          <p>This file has no entries yet.</p>
+          <p>{t("yamlGrid.noEntriesYet")}</p>
         </div>
         {adding ? (
           <AddRow
@@ -180,10 +182,10 @@ export function YamlTree({
         ) : (
           <div className="yaml-row yaml-row-add">
             <button className="yaml-add" onClick={() => setAdding("root:key")}>
-              + key
+              {t("yamlTree.addKeyButton")}
             </button>
             <button className="yaml-add" onClick={() => setAdding("root:item")}>
-              + item
+              {t("yamlTree.addItemButton")}
             </button>
           </div>
         )}
@@ -198,8 +200,7 @@ export function YamlTree({
       {clip && (
         <div className="yaml-clip-banner">
           <span>
-            Copied <strong>{clip.label}</strong> — click an entry to place the paste cursor after
-            it
+            {t("yamlTree.copiedBannerPre")}<strong>{clip.label}</strong>{t("yamlTree.copiedBannerPost")}
           </span>
           <button
             className="yaml-act"
@@ -207,8 +208,8 @@ export function YamlTree({
               setCursorId(null);
               setClip(null);
             }}
-            title="Forget the copied entry (Esc)"
-            aria-label="Forget the copied entry"
+            title={t("yamlTree.forgetCopiedTitle")}
+            aria-label={t("yamlTree.forgetCopiedLabel")}
           >
             ×
           </button>
@@ -216,7 +217,7 @@ export function YamlTree({
       )}
       {doc.docs.map((root, i) => (
         <div className="yaml-doc" key={root.id}>
-          {doc.docs.length > 1 && <div className="yaml-doc-sep">document {i + 1}</div>}
+          {doc.docs.length > 1 && <div className="yaml-doc-sep">{t("yamlTree.documentSeparator", { n: i + 1 })}</div>}
           <YamlRows
             nodes={root.children}
             parent={root}
@@ -496,6 +497,7 @@ function YamlRow({
   onDragOver: (clientY: number) => void;
   onDragEnd: () => void;
 }) {
+  const t = useT();
   const [renaming, setRenaming] = useState(false);
   const [noting, setNoting] = useState(false);
   // This row's own hover, handed down to its children: a container's row names
@@ -518,7 +520,7 @@ function YamlRow({
   // What this row is called in an action's label. A list item has no key, and
   // "Delete item" would name every sibling equally — to a screen reader and to a
   // test alike — so it is named by its index.
-  const label = inSeq ? `item ${index}` : (node.key ?? "");
+  const label = inSeq ? t("yamlTree.itemLabel", { n: index }) : (node.key ?? "");
   // A list of plain values reads — and edits — better as the values themselves:
   // `web, prod` in one input, where typing a comma adds an item and deleting one
   // removes it. Such a list renders as this ONE line, no item rows: the line IS
@@ -527,8 +529,8 @@ function YamlRow({
   const inlineList = node.kind === "seq" ? inlineListValues(node) : null;
   const count = isContainer
     ? node.kind === "seq"
-      ? `${node.children.length} item${node.children.length === 1 ? "" : "s"}`
-      : `${node.children.length} key${node.children.length === 1 ? "" : "s"}`
+      ? t(node.children.length === 1 ? "yamlGrid.itemsBadgeOne" : "yamlGrid.itemsBadgeMany", { n: node.children.length })
+      : t(node.children.length === 1 ? "yamlGrid.keysBadgeOne" : "yamlGrid.keysBadgeMany", { n: node.children.length })
     : null;
 
   const movable = node.deletable && siblings.length > 1;
@@ -553,7 +555,7 @@ function YamlRow({
   const note = commentOf(node);
   // What the key says about itself on hover: its comment if it has one, since that
   // is the only place a YAML file documents a key.
-  const keyTitle = note ? `# ${note}` : "Click to rename this key";
+  const keyTitle = note ? `# ${note}` : t("yamlTree.renameKeyTitle");
 
   return (
     <>
@@ -584,8 +586,8 @@ function YamlRow({
         onClick={
           pastable
             ? (e) => {
-                const t = e.target as HTMLElement;
-                if (t.closest("button, input, textarea, select")) return;
+                const clicked = e.target as HTMLElement;
+                if (clicked.closest("button, input, textarea, select")) return;
                 setCursor(cursorId === node.id ? null : node.id);
               }
             : undefined
@@ -601,8 +603,8 @@ function YamlRow({
           {movable ? (
             <button
               className="yaml-grip"
-              title="Drag to reorder"
-              aria-label={`Reorder ${label}`}
+              title={t("yamlGrid.dragToReorder")}
+              aria-label={t("yamlGrid.reorderLabel", { title: label })}
               {...grabMark}
               onPointerDown={(e) => {
                 // Pointer capture keeps every later event on the grip, so the gesture
@@ -630,8 +632,8 @@ function YamlRow({
             <button
               className="yaml-act"
               onClick={() => setNoting(true)}
-              title="Add a comment"
-              aria-label={`Comment on ${label}`}
+              title={t("yamlTree.addCommentTitle")}
+              aria-label={t("yamlTree.commentOnLabel", { label })}
               {...actMark}
             >
               #
@@ -650,8 +652,8 @@ function YamlRow({
                 setClip(c);
                 navigator.clipboard?.writeText(c.text).catch(() => {});
               }}
-              title="Copy this entry — then click an entry to paste after it"
-              aria-label={`Copy ${label}`}
+              title={t("yamlTree.copyEntryTitle")}
+              aria-label={t("yamlTree.copyLabel", { label })}
               {...actMark}
             >
               ⧉
@@ -665,8 +667,8 @@ function YamlRow({
                 className="yaml-act"
                 disabled={index === 0}
                 onClick={() => onChange(moveNode(text, siblings, node, -1))}
-                title="Move up"
-                aria-label={`Move ${label} up`}
+                title={t("yamlTree.moveUpTitle")}
+                aria-label={t("yamlTree.moveUpLabel", { label })}
                 {...actMark}
               >
                 ↑
@@ -675,8 +677,8 @@ function YamlRow({
                 className="yaml-act"
                 disabled={index === siblings.length - 1}
                 onClick={() => onChange(moveNode(text, siblings, node, 1))}
-                title="Move down"
-                aria-label={`Move ${label} down`}
+                title={t("yamlTree.moveDownTitle")}
+                aria-label={t("yamlTree.moveDownLabel", { label })}
                 {...actMark}
               >
                 ↓
@@ -696,8 +698,8 @@ function YamlRow({
               // everything marked is what the click will take.
               onMouseEnter={marksSubtree ? () => setMark("del") : undefined}
               onMouseLeave={marksSubtree ? () => setMark("row") : undefined}
-              title={isContainer ? "Delete this entry and everything under it" : "Delete this entry"}
-              aria-label={`Delete ${label}`}
+              title={isContainer ? t("yamlTree.deleteEntryDeepTitle") : t("yamlTree.deleteEntryTitle")}
+              aria-label={t("yamlGrid.deleteLabel", { title: label })}
             >
               ×
             </button>
@@ -711,7 +713,7 @@ function YamlRow({
             className="yaml-caret"
             onClick={() => toggle(node.id)}
             aria-expanded={isOpen}
-            aria-label={isOpen ? `Collapse ${label}` : `Expand ${label}`}
+            aria-label={isOpen ? t("yamlTree.collapseLabel", { label }) : t("yamlTree.expandLabel", { label })}
           >
             {isOpen ? "▾" : "▸"}
           </button>
@@ -727,7 +729,7 @@ function YamlRow({
           <TextCommit
             initial={node.key ?? ""}
             className="yaml-key-input"
-            ariaLabel={`Rename key ${node.key ?? ""}`}
+            ariaLabel={t("yamlTree.renameKeyLabel", { key: node.key ?? "" })}
             onCommit={(next) => {
               setRenaming(false);
               if (next && next !== node.key) onChange(renameKey(text, doc, node, next));
@@ -758,7 +760,7 @@ function YamlRow({
           <>
             {isFlow(node) && (
               <span className="yaml-count">
-                <span className="yaml-flow-tag" title="Written in flow (JSON) style">
+                <span className="yaml-flow-tag" title={t("yamlGrid.flowStyleTitle")}>
                   [ ]
                 </span>
               </span>
@@ -775,7 +777,7 @@ function YamlRow({
             {/* Flow (JSON) style is visible, because it is what the row's edits
                 will keep: adding here splices into the brackets, not new lines. */}
             {isFlow(node) && (
-              <span className="yaml-flow-tag" title="Written in flow (JSON) style">
+              <span className="yaml-flow-tag" title={t("yamlGrid.flowStyleTitle")}>
                 {node.kind === "seq" ? "[ ]" : "{ }"}
               </span>
             )}
@@ -789,8 +791,8 @@ function YamlRow({
           <TextCommit
             initial={note}
             className="yaml-comment-input"
-            ariaLabel={`Comment on ${label}`}
-            placeholder="comment"
+            ariaLabel={t("yamlTree.commentOnLabel", { label })}
+            placeholder={t("yamlTree.commentPlaceholder")}
             onCommit={(next) => {
               setNoting(false);
               if (next !== note) onChange(setComment(text, doc, node, next));
@@ -806,7 +808,7 @@ function YamlRow({
           <button
             className="yaml-note"
             title={`# ${note}`}
-            aria-label={`Comment on ${label}`}
+            aria-label={t("yamlTree.commentOnLabel", { label })}
             onClick={() => setNoting(true)}
             {...actMark}
           >
@@ -833,9 +835,9 @@ function YamlRow({
         {!node.editable && (
           <span
             className="yaml-locked"
-            title="The tree can't rewrite this safely (an anchor, a merge key, or a multi-line value) — edit it in Source."
+            title={t("yamlTree.sourceOnlyLockedTitle")}
           >
-            source only
+            {t("yamlTree.sourceOnlyBadge")}
           </span>
         )}
       </div>
@@ -919,13 +921,13 @@ function YamlRow({
               setCursor(null);
             }}
           >
-            paste {clip.label} here
+            {t("yamlTree.pasteHereButton", { label: clip.label })}
           </button>
           <button
             className="yaml-act"
             onClick={() => setCursor(null)}
-            title="Remove the paste cursor"
-            aria-label="Remove the paste cursor"
+            title={t("yamlTree.removeCursorTitle")}
+            aria-label={t("yamlTree.removeCursorTitle")}
           >
             ×
           </button>
@@ -954,6 +956,7 @@ function AddControls({
   /** The surrounding block's mark — the add row is part of the block. */
   marked?: SubtreeMark;
 }) {
+  const t = useT();
   const open = adding?.startsWith(`${node.id}:`);
   return (
     <span
@@ -980,20 +983,20 @@ function AddControls({
           // list of mappings is actually grown by (`- name: api`).
           title={
             node.kind === "seq"
-              ? "Add an item that is a mapping (- key: value)"
-              : "Add a key under this entry"
+              ? t("yamlTree.addMappingItemTitle")
+              : t("yamlTree.addKeyUnderTitle")
           }
         >
-          + key
+          {t("yamlTree.addKeyButton")}
         </button>
       )}
       {canAddChild(node, "item") && (
         <button
           className="yaml-add"
           onClick={() => setAdding(open ? null : `${node.id}:item`)}
-          title="Add an item to this list"
+          title={t("yamlTree.addItemToListTitle")}
         >
-          + item
+          {t("yamlTree.addItemButton")}
         </button>
       )}
     </span>
@@ -1040,6 +1043,7 @@ function InlineListCell({
   label: string;
   onCommit: (vals: string[]) => void;
 }) {
+  const t = useT();
   const ref = useRef<HTMLInputElement | null>(null);
   const mirrorRef = useRef<HTMLSpanElement | null>(null);
   const raf = useRef<number | null>(null);
@@ -1129,7 +1133,7 @@ function InlineListCell({
           onMouseEnter={() => glide(-1)}
           onMouseLeave={stop}
           tabIndex={-1}
-          aria-label={`Scroll ${label} left`}
+          aria-label={t("yamlTree.scrollLeftLabel", { label })}
         >
           ‹
         </button>
@@ -1139,7 +1143,7 @@ function InlineListCell({
           ref={ref}
           className="yaml-value-input yaml-list-input"
           value={buf}
-          aria-label={`Value of ${label}`}
+          aria-label={t("yamlGrid.valueOfLabel", { label })}
           onChange={(e) => {
             dirty.current = true;
             setBuf(e.target.value);
@@ -1177,7 +1181,7 @@ function InlineListCell({
           onMouseEnter={() => glide(1)}
           onMouseLeave={stop}
           tabIndex={-1}
-          aria-label={`Scroll ${label} right`}
+          aria-label={t("yamlTree.scrollRightLabel", { label })}
         >
           ›
         </button>
@@ -1223,6 +1227,7 @@ function AddRow({
   /** The surrounding block's mark — the form row is part of the block. */
   marked?: SubtreeMark;
 }) {
+  const t = useT();
   const [key, setKey] = useState("");
   const [type, setType] = useState<YamlValueType>("text");
   const [value, setValue] = useState("");
@@ -1260,9 +1265,9 @@ function AddRow({
         <button
           className="yaml-add yaml-add-copy"
           onClick={onCopyLast}
-          title="Add a copy of the last item, to edit in place"
+          title={t("yamlGrid.copyLastTitle")}
         >
-          Copy last
+          {t("yamlGrid.copyLastButton")}
         </button>
       )}
       {kind === "key" ? (
@@ -1270,8 +1275,8 @@ function AddRow({
           ref={first}
           className="yaml-key-input"
           value={key}
-          placeholder="key"
-          aria-label="New key"
+          placeholder={t("yamlTree.newKeyPlaceholder")}
+          aria-label={t("yamlTree.newKeyLabel")}
           onChange={(e) => setKey(e.target.value)}
         />
       ) : (
@@ -1280,21 +1285,21 @@ function AddRow({
       <select
         className="yaml-type"
         value={type}
-        aria-label="Value type"
+        aria-label={t("yamlTree.valueTypeLabel")}
         onChange={(e) => setType(e.target.value as YamlValueType)}
       >
-        <option value="text">text</option>
-        <option value="number">number</option>
-        <option value="boolean">boolean</option>
-        <option value="null">null</option>
-        <option value="map">map</option>
-        <option value="seq">list</option>
+        <option value="text">{t("yamlTree.typeText")}</option>
+        <option value="number">{t("yamlTree.typeNumber")}</option>
+        <option value="boolean">{t("yamlTree.typeBoolean")}</option>
+        <option value="null">{t("yamlTree.typeNull")}</option>
+        <option value="map">{t("yamlTree.typeMap")}</option>
+        <option value="seq">{t("yamlTree.typeList")}</option>
       </select>
       {type === "boolean" ? (
         <select
           className="yaml-type"
           value={value || "true"}
-          aria-label="New value"
+          aria-label={t("yamlTree.newValueLabel")}
           onChange={(e) => setValue(e.target.value)}
         >
           <option value="true">true</option>
@@ -1306,16 +1311,16 @@ function AddRow({
             ref={kind === "item" ? first : undefined}
             className="yaml-value-input"
             value={value}
-            placeholder="value"
-            aria-label="New value"
+            placeholder={t("yamlTree.newValuePlaceholder")}
+            aria-label={t("yamlTree.newValueLabel")}
             onChange={(e) => setValue(e.target.value)}
           />
         )
       )}
       <button className="yaml-add" onClick={submit} disabled={!canAdd}>
-        Add
+        {t("common.add")}
       </button>
-      <button className="yaml-act" onClick={onCancel} aria-label="Cancel">
+      <button className="yaml-act" onClick={onCancel} aria-label={t("common.cancel")}>
         ×
       </button>
     </div>
@@ -1333,6 +1338,7 @@ function ValueCell({
   label: string;
   onCommit: (next: string) => void;
 }) {
+  const t = useT();
   if (!node.editable) {
     return (
       <span className="yaml-value yaml-value-locked" title={node.raw}>
@@ -1346,7 +1352,7 @@ function ValueCell({
         key={node.id}
         initial={node.value}
         tag={node.raw}
-        ariaLabel={`Value of ${label}`}
+        ariaLabel={t("yamlGrid.valueOfLabel", { label })}
         onCommit={onCommit}
       />
     );
@@ -1355,8 +1361,8 @@ function ValueCell({
     <TextCommit
       initial={node.value}
       className={`yaml-value-input yaml-val-${scalarType(node)}`}
-      ariaLabel={`Value of ${label}`}
-      placeholder={node.style === "empty" ? "null" : undefined}
+      ariaLabel={t("yamlGrid.valueOfLabel", { label })}
+      placeholder={node.style === "empty" ? t("yamlGrid.nullPlaceholder") : undefined}
       onCommit={onCommit}
     />
   );

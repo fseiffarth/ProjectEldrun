@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ViewerHeader } from "./FileViewerPane";
+import { useT } from "../../lib/i18n";
 
 /** One page of a table, mirroring the backend `SqlitePage` struct. */
 type SqlitePage = {
@@ -28,6 +29,7 @@ export function SqliteView({
   onOpenExternally: () => void;
   tabKey?: string;
 }) {
+  const t = useT();
   const [tables, setTables] = useState<string[] | null>(null);
   const [tablesError, setTablesError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -113,14 +115,14 @@ export function SqliteView({
             className="file-viewer-loading"
             style={{ padding: "1rem", color: "var(--text-secondary, #8b949e)" }}
           >
-            Loading database…
+            {t("sqliteView.loadingDatabase")}
           </div>
         ) : tables.length === 0 ? (
           <div
             className="file-viewer-empty"
             style={{ padding: "1rem", color: "var(--text-secondary, #8b949e)" }}
           >
-            No tables in this database.
+            {t("sqliteView.noTables")}
           </div>
         ) : (
           <>
@@ -195,7 +197,7 @@ export function SqliteView({
                   className="sqlite-loading"
                   style={{ padding: "1rem", color: "var(--text-secondary, #8b949e)" }}
                 >
-                  Loading rows…
+                  {t("sqliteView.loadingRows")}
                 </div>
               ) : (
                 <>
@@ -279,8 +281,8 @@ export function SqliteView({
                   >
                     <span>
                       {total === 0
-                        ? "0 rows"
-                        : `rows ${firstRow}–${lastRow} of ${total}`}
+                        ? t("sqliteView.zeroRows")
+                        : t("sqliteView.rowsRange", { first: firstRow, last: lastRow, total })}
                     </span>
                     <span style={{ flex: "1 1 auto" }} />
                     <button
@@ -291,7 +293,7 @@ export function SqliteView({
                         opacity: canPrev ? 1 : 0.4,
                       }}
                     >
-                      ‹ Prev
+                      {t("sqliteView.prev")}
                     </button>
                     <button
                       onClick={() =>
@@ -303,7 +305,7 @@ export function SqliteView({
                         opacity: canNext ? 1 : 0.4,
                       }}
                     >
-                      Next ›
+                      {t("sqliteView.next")}
                     </button>
                   </div>
                 </>

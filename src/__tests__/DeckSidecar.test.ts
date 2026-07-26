@@ -182,13 +182,106 @@ describe("defensive parsing", () => {
     });
     expect(deck.slides[0].objects[0].id).toBeTruthy();
   });
+
+  it("keeps a newer deck's version instead of stamping it down (V #94)", () => {
+    // Stamping `DECK_VERSION` is what turned "open a newer deck" into "silently
+    // downgrade it": the autosave 800ms later wrote the coerced result back under
+    // a version number claiming it was fine.
+    const r = normalizeDeck({ version: 99, slides: [] });
+    expect(r.version).toBe(99);
+    expect(r.deck.version).toBe(99);
+    expect(r.lossy).toBe(true);
+    expect(r.lossReason).toContain("newer");
+  });
+
+  it("reports an unmodellable object kind as LOSSY, not merely repaired (V #94)", () => {
+    // The distinction the flag exists for: this is not a coercion that lost
+    // nothing, it is a write-back that would DELETE the object.
+    const r = normalizeDeck({
+      slides: [{ anchor: { page: 1 }, objects: [{ id: "x", kind: "hologram" }] }],
+    });
+    expect(r.lossy).toBe(true);
+    expect(r.deck.slides[0].objects).toHaveLength(0);
+  });
+
+  it("is not lossy for an ordinary deck, however much it repaired", () => {
+    // A numeric field that arrived as a string costs the author nothing, so it
+    // must not hold the autosave — otherwise the banner is permanent noise.
+    const r = normalizeDeck({
+      slides: [{ anchor: { page: 1 }, objects: [{ ...textObj("a"), opacity: "nope" }] }],
+    });
+    expect(r.lossy).toBe(false);
+    expect(r.deck.slides[0].objects[0].opacity).toBe(1);
+  });
+
+  it("re-mints an id a bad merge duplicated (V #109)", () => {
+    // The whole id design exists to survive exactly this, and the reader never
+    // enforced it — so `updateObjects`/`removeObjects`/selection acted on both
+    // objects at once.
+    const r = normalizeDeck({
+      slides: [
+        {
+          id: "s1",
+          anchor: { page: 1 },
+          objects: [textObj("dup"), { ...textObj("dup"), text: "second" }],
+        },
+      ],
+    });
+    const ids = r.deck.slides[0].objects.map((o) => o.id);
+    expect(new Set(ids).size).toBe(2);
+    expect(r.repaired).toContain("duplicate id");
+  });
+
+  it("re-mints a duplicated SLIDE id, which would corrupt reconcile's map", () => {
+    const r = normalizeDeck({
+      slides: [
+        { id: "s", anchor: { page: 1 }, objects: [] },
+        { id: "s", anchor: { page: 2 }, objects: [] },
+      ],
+    });
+    expect(new Set(r.deck.slides.map((s) => s.id)).size).toBe(2);
+  });
+});
+
+describe("parseDeck: the from-blank path (V #107)", () => {
+  it("reads an EMPTY file as a fresh deck rather than an error", () => {
+    // The file tree's "New file" produces a zero-byte file, and rejecting that
+    // made the from-blank authoring path unreachable: the editor refused to open
+    // the very file it needed you to create.
+    for (const text of ["", "   ", "\n\n", "{}"]) {
+      const r = parseDeck(text, "talk.pdf");
+      expect(r.error).toBeUndefined();
+      expect(r.lossy).toBe(false);
+      expect(r.deck.slides).toEqual([]);
+      expect(r.deck.base).toBe("talk.pdf");
+    }
+  });
+
+  it("still refuses malformed JSON that has real content in it", () => {
+    // Overwriting an author's broken-but-real file with a blank deck is the loss
+    // this module exists to prevent — the empty case is safe precisely because
+    // there is nothing there to lose.
+    expect(parseDeck('{"slides": [oops').error).toBeTruthy();
+    expect(parseDeck("[1,2,3]").error).toBeTruthy();
+  });
 });
 
 describe("fingerprint", () => {
-  it("survives an edit past the covered prefix", () => {
+  it("survives an edit in the middle of a long page", () => {
+    // The tolerance the fingerprint exists for: fixing a typo in a slide's body
+    // must not re-anchor it. Head and tail are both covered, so what survives is
+    // an edit *between* them — which is where the body of a long page is.
     const head = "Introduction to the thing ".repeat(10); // comfortably > 200 chars
-    expect(fingerprint({ width: 364, height: 205, text: `${head} early ending` })).toBe(
-      fingerprint({ width: 364, height: 205, text: `${head} a completely different tail` }),
+    const tail = " and in conclusion the thing was introduced".repeat(6);
+    expect(
+      fingerprint({ width: 364, height: 205, items: 4, text: `${head} early middle ${tail}` }),
+    ).toBe(
+      fingerprint({
+        width: 364,
+        height: 205,
+        items: 4,
+        text: `${head} a completely different middle ${tail}`,
+      }),
     );
   });
 
@@ -198,6 +291,21 @@ describe("fingerprint", () => {
     const c = fingerprint({ width: 595, height: 842, text: "Results" });
     expect(a).not.toBe(b);
     expect(a).not.toBe(c);
+  });
+
+  it("tells consecutive Beamer overlay pages apart", () => {
+    // THE case the fingerprint was failing at (TODO V #100b). `\pause` emits
+    // pages whose LEADING text is identical by construction, so a prefix-only
+    // hash gave them all one value — which step 3 then refuses to trust, so
+    // every overlay page fell through to the order fallback.
+    const lead = "Our contribution ".repeat(20); // > 200 chars, shared by all
+    const pages = [
+      { width: 364, height: 205, items: 3, text: `${lead} first point` },
+      { width: 364, height: 205, items: 5, text: `${lead} first point second point` },
+      { width: 364, height: 205, items: 7, text: `${lead} first point second point third` },
+    ];
+    const prints = pages.map(fingerprint);
+    expect(new Set(prints).size).toBe(3);
   });
 
   it("ignores whitespace and case, which the extractor varies", () => {
@@ -375,6 +483,114 @@ describe("reconcile", () => {
     const r = reconcile(deck, [{ page: 1, width: 595, height: 842, text: "Intro" }]);
     expect(r.deck.pageWidth).toBe(595);
     expect(r.deck.pageHeight).toBe(842);
+  });
+
+  it("records a page box that differs from the deck's, per slide (V #112)", () => {
+    // A plate with a portrait appendix. Scaling every layer by page 1's box put
+    // them in the wrong place on those pages; the slide now carries its own.
+    const deck = deckOf(["Intro", "Appendix"], -1);
+    const r = reconcile(deck, [
+      { page: 1, width: 364, height: 205, text: "Intro" },
+      { page: 2, width: 595, height: 842, text: "Appendix" },
+    ]);
+    expect(r.deck.pageWidth).toBe(364);
+    // The landscape page inherits the deck's box (no redundant per-slide copy);
+    // the portrait one states its own.
+    expect(r.deck.slides[0].pageWidth).toBeUndefined();
+    expect(r.deck.slides[1].pageWidth).toBe(595);
+    expect(r.deck.slides[1].pageHeight).toBe(842);
+  });
+
+  it("does not resurrect a slide the author deleted (V #106)", () => {
+    // Deleting a slide used to be undone by the very next load: the "cover every
+    // base page" pass re-added a blank one for the now-uncovered page, so a title
+    // page or a backup frame could not be dropped from the sequence at all.
+    const pages = ["Intro", "Backup"].map((t, i) => page(i + 1, t));
+    const deck: Deck = {
+      ...emptyDeck("talk.pdf"),
+      slides: [{ ...blankSlide(1), id: "s1", anchor: { page: 1, print: fingerprint(pages[0]) } }],
+      skippedPrints: [fingerprint(pages[1])],
+    };
+    const r = reconcile(deck, pages);
+    expect(r.deck.slides.map((s) => s.id)).toEqual(["s1"]);
+    expect(r.added).toBe(0);
+  });
+
+  it("reports `ambiguous` when several content slides are placed by order alone (V #100)", () => {
+    // Nothing matches: no lines, and every fingerprint is stale. Three
+    // content-bearing slides therefore get pages handed out in DECK order, which
+    // on a reordered deck puts layers on the wrong pages — so the caller is told
+    // to hold the autosave rather than persist the guess.
+    const deck: Deck = {
+      ...emptyDeck("talk.pdf"),
+      slides: ["a", "b", "c"].map((id, i) => ({
+        ...blankSlide(i + 1),
+        id,
+        anchor: { page: i + 1, print: "stale" },
+        objects: [textObj(`o${id}`)],
+      })),
+    };
+    const r = reconcile(deck, ["X", "Y", "Z"].map((t, i) => page(i + 1, t)));
+    expect(r.ambiguous).toBe(true);
+    expect(r.detached).toBe(0); // still never loses anything
+  });
+
+  it("does NOT cry ambiguous for a single edited slide", () => {
+    // The ordinary case — one slide's text changed, so only its own fingerprint
+    // went stale. One order placement is evidence-free but unambiguous.
+    const pages = ["Intro", "Method", "Results"].map((t, i) => page(i + 1, t));
+    const deck: Deck = {
+      ...emptyDeck("talk.pdf"),
+      slides: [
+        { ...blankSlide(1), id: "s1", anchor: { page: 1, print: fingerprint(pages[0]) } },
+        {
+          ...blankSlide(2),
+          id: "s2",
+          anchor: { page: 2, print: "stale" },
+          objects: [textObj("o")],
+        },
+        { ...blankSlide(3), id: "s3", anchor: { page: 3, print: fingerprint(pages[2]) } },
+      ],
+    };
+    const r = reconcile(deck, pages);
+    expect(r.ambiguous).toBe(false);
+    expect(r.deck.slides.find((s) => s.objects.length > 0)!.anchor.page).toBe(2);
+  });
+
+  it("matches overlay pages WITHIN their shared source line (V #100)", () => {
+    // A Beamer frame with `\pause` attributes every one of its pages to the same
+    // source lines, so a line names a FRAME, not a page. The k-th slide anchored
+    // to line L must claim the k-th page L produced — a first-match-wins map
+    // would pile all three overlays onto the frame's first page.
+    const deck: Deck = {
+      ...emptyDeck("talk.pdf", "talk.tex"),
+      slides: [
+        { ...blankSlide(1), id: "o1", anchor: { page: 1, line: 12 }, objects: [textObj("a")] },
+        { ...blankSlide(2), id: "o2", anchor: { page: 2, line: 12 }, objects: [textObj("b")] },
+        { ...blankSlide(3), id: "o3", anchor: { page: 3, line: 12 }, objects: [textObj("c")] },
+      ],
+    };
+    // The frame moved down two pages (a title and an outline were inserted).
+    const pages = [
+      page(1, "Title", [2]),
+      page(2, "Outline", [7]),
+      page(3, "Contribution", [12]),
+      page(4, "Contribution more", [12]),
+      page(5, "Contribution most", [12]),
+    ];
+    const r = reconcile(deck, pages);
+    expect(r.detached).toBe(0);
+    expect(r.deck.slides.filter((s) => s.objects.length > 0).map((s) => s.anchor.page)).toEqual([
+      3, 4, 5,
+    ]);
+  });
+
+  it("writes the source line back, so the anchor exists on the NEXT load too", () => {
+    // The producer half of the line anchor: it was documented and consumed but
+    // never written, so the mechanism did not exist at runtime (V #100a).
+    const deck = deckOf(["Intro", "Method"], -1);
+    const r = reconcile(deck, [page(1, "Intro", [4]), page(2, "Method", [19])]);
+    expect(r.deck.slides.map((s) => s.anchor.line)).toEqual([4, 19]);
   });
 });
 

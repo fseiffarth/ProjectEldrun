@@ -16,6 +16,7 @@ import {
   formatLongDate,
   minutesBetween,
   monthGrid,
+  monthName,
   startOfWeek,
   todayStr,
   weekDates,
@@ -28,27 +29,23 @@ import { AgendaView } from "./AgendaView";
 import { TasksView } from "./TasksView";
 import { CalendarSidebar } from "./CalendarSidebar";
 import { EventDialog, type EditScope, type EventDialogTarget } from "./EventDialog";
+import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 
 interface Props {
   /** Whether this pane's tab is the visible one in its group. */
   visible?: boolean;
 }
 
-const MONTHS = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
-];
-
 /** Weeks the multiweek view shows. */
 const MULTIWEEK_WEEKS = 4;
 
-const VIEWS: { kind: CalendarViewKind; label: string; key: string }[] = [
-  { kind: "day", label: "Day", key: "1" },
-  { kind: "week", label: "Week", key: "2" },
-  { kind: "multiweek", label: "Multiweek", key: "3" },
-  { kind: "month", label: "Month", key: "4" },
-  { kind: "agenda", label: "Agenda", key: "5" },
-  { kind: "tasks", label: "Tasks", key: "6" },
+const VIEW_KEYS: { kind: CalendarViewKind; labelKey: TranslationKey; key: string }[] = [
+  { kind: "day", labelKey: "calendarPane.viewDay", key: "1" },
+  { kind: "week", labelKey: "calendarPane.viewWeek", key: "2" },
+  { kind: "multiweek", labelKey: "calendarPane.viewMultiweek", key: "3" },
+  { kind: "month", labelKey: "calendarPane.viewMonth", key: "4" },
+  { kind: "agenda", labelKey: "calendarPane.viewAgenda", key: "5" },
+  { kind: "tasks", labelKey: "calendarPane.viewTasks", key: "6" },
 ];
 
 /**
@@ -64,6 +61,8 @@ const VIEWS: { kind: CalendarViewKind; label: string; key: string }[] = [
  * event is just many occurrences and no view has to know about rules.
  */
 export function CalendarPane({ visible }: Props) {
+  const t = useT();
+  const lang = useI18nStore((s) => s.lang);
   const calendars = useCalendarStore((s) => s.calendars);
   const events = useCalendarStore((s) => s.events);
   const tasks = useCalendarStore((s) => s.tasks);
@@ -180,16 +179,16 @@ export function CalendarPane({ visible }: Props) {
 
   /** The heading over the grid — what range you are looking at. */
   const title = useMemo(() => {
-    if (view === "tasks") return "Tasks";
-    if (view === "day") return formatLongDate(datePart(anchor));
+    if (view === "tasks") return t("calendarPane.viewTasks");
+    if (view === "day") return formatLongDate(datePart(anchor), lang);
     if (view === "month") {
-      return `${MONTHS[Number(anchor.slice(5, 7)) - 1]} ${anchor.slice(0, 4)}`;
+      return `${monthName(lang, Number(anchor.slice(5, 7)))} ${anchor.slice(0, 4)}`;
     }
     const first = windowDates[0];
     const last = windowDates[windowDates.length - 1];
     if (!first || !last) return "";
-    return `${formatLongDate(first)} – ${formatLongDate(last)}`;
-  }, [view, anchor, windowDates]);
+    return `${formatLongDate(first, lang)} – ${formatLongDate(last, lang)}`;
+  }, [view, anchor, windowDates, t, lang]);
 
   // Arrow keys and view digits, scoped to the pane (it must not steal keys from
   // a terminal in another tab, so the handler lives on the pane, not the window).
@@ -206,7 +205,7 @@ export function CalendarPane({ visible }: Props) {
     } else if (e.key === "n" || e.key === "N") {
       openCreate(datePart(anchor));
     } else {
-      const match = VIEWS.find((v) => v.key === e.key);
+      const match = VIEW_KEYS.find((v) => v.key === e.key);
       if (match) setView(match.kind);
       else return;
     }
@@ -361,7 +360,7 @@ export function CalendarPane({ visible }: Props) {
       // deleting that one calendar — and can never silently mix into "Personal".
       const name = fileStem(path);
       const target = await createCalendar({
-        name: name || "Imported",
+        name: name || t("calendarPane.importedCalendarName"),
         color: "#8d8fd6",
         visible: true,
         readonly: false,
@@ -370,18 +369,18 @@ export function CalendarPane({ visible }: Props) {
       for (const e of parsed.events) {
         await createEvent({ ...e, calendar_id: target.id });
       }
-      for (const t of parsed.tasks) {
-        await createTask({ ...t, calendar_id: target.id });
+      for (const tk of parsed.tasks) {
+        await createTask({ ...tk, calendar_id: target.id });
       }
 
       setNotice(
-        `Imported ${parsed.events.length} event(s)` +
-          (parsed.tasks.length ? ` and ${parsed.tasks.length} task(s)` : "") +
-          ` into “${target.name}”` +
-          (parsed.skipped ? ` — skipped ${parsed.skipped} unsupported item(s).` : "."),
+        t("calendarPane.importedEvents", { count: parsed.events.length }) +
+          (parsed.tasks.length ? t("calendarPane.andTasks", { count: parsed.tasks.length }) : "") +
+          t("calendarPane.intoCalendar", { name: target.name }) +
+          (parsed.skipped ? t("calendarPane.skippedSuffix", { count: parsed.skipped }) : t("calendarPane.periodSuffix")),
       );
     } catch (err) {
-      setNotice(`Import failed: ${String(err)}`);
+      setNotice(t("calendarPane.importFailed", { error: String(err) }));
     }
   }
 
@@ -397,12 +396,12 @@ export function CalendarPane({ visible }: Props) {
       // what you see is what you get.
       const text = serializeIcs(
         events.filter((e) => visibleIds.has(e.calendar_id)),
-        tasks.filter((t) => visibleIds.has(t.calendar_id)),
+        tasks.filter((tk) => visibleIds.has(tk.calendar_id)),
       );
       await invoke<void>("calendar_write_ics", { path, content: text });
-      setNotice(`Exported to ${path}`);
+      setNotice(t("calendarPane.exportedTo", { path }));
     } catch (err) {
-      setNotice(`Export failed: ${String(err)}`);
+      setNotice(t("calendarPane.exportFailed", { error: String(err) }));
     }
   }
 
@@ -419,24 +418,24 @@ export function CalendarPane({ visible }: Props) {
     >
       <div className="cal-toolbar">
         <div className="cal-toolbar-nav">
-          <button className="cal-nav-btn" onClick={() => shift(-1)} title="Previous (←)">‹</button>
-          <button className="cal-btn" onClick={() => setAnchor(todayStr())} title="Today (T)">
-            Today
+          <button className="cal-nav-btn" onClick={() => shift(-1)} title={t("calendarPane.previousTitle")}>‹</button>
+          <button className="cal-btn" onClick={() => setAnchor(todayStr())} title={t("calendarPane.todayTitle")}>
+            {t("calendar.today")}
           </button>
-          <button className="cal-nav-btn" onClick={() => shift(1)} title="Next (→)">›</button>
+          <button className="cal-nav-btn" onClick={() => shift(1)} title={t("calendarPane.nextTitle")}>›</button>
         </div>
 
         <div className="cal-toolbar-title">{title}</div>
 
         <div className="cal-toolbar-views">
-          {VIEWS.map((v) => (
+          {VIEW_KEYS.map((v) => (
             <button
               key={v.kind}
               className={`cal-chip${view === v.kind ? " cal-chip-on" : ""}`}
               onClick={() => setView(v.kind)}
-              title={`${v.label} (${v.key})`}
+              title={t("calendarPane.viewTitle", { label: t(v.labelKey), key: v.key })}
             >
-              {v.label}
+              {t(v.labelKey)}
             </button>
           ))}
         </div>
@@ -444,7 +443,7 @@ export function CalendarPane({ visible }: Props) {
         <input
           className="cal-input cal-search"
           type="search"
-          placeholder="Search events…"
+          placeholder={t("calendarPane.searchPlaceholder")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -453,21 +452,21 @@ export function CalendarPane({ visible }: Props) {
           <button
             className="cal-btn cal-btn-primary"
             onClick={() => openCreate(datePart(anchor))}
-            title="New event (N)"
+            title={t("calendarPane.newEventTitle")}
           >
-            + Event
+            {t("calendarPane.addEventButton")}
           </button>
-          <button className="cal-btn" onClick={() => void importIcs()} title="Import an .ics file">
-            Import
+          <button className="cal-btn" onClick={() => void importIcs()} title={t("calendarPane.importTitle")}>
+            {t("calendarPane.importButton")}
           </button>
-          <button className="cal-btn" onClick={() => void exportIcs()} title="Export to an .ics file">
-            Export
+          <button className="cal-btn" onClick={() => void exportIcs()} title={t("calendarPane.exportTitle")}>
+            {t("calendarPane.exportButton")}
           </button>
         </div>
       </div>
 
       {notice ? (
-        <div className="cal-notice" onClick={() => setNotice(null)} title="Click to dismiss">
+        <div className="cal-notice" onClick={() => setNotice(null)} title={t("calendarPane.dismissNoticeTitle")}>
           {notice}
         </div>
       ) : null}
@@ -505,7 +504,9 @@ export function CalendarPane({ visible }: Props) {
               use24h={use24h}
               onOpen={openOccurrence}
               emptyLabel={
-                search.trim() ? `No events match “${search.trim()}”.` : "Nothing scheduled."
+                search.trim()
+                  ? t("calendar.noEventsMatch", { query: search.trim() })
+                  : t("calendar.nothingScheduled")
               }
             />
           ) : view === "month" || view === "multiweek" ? (
@@ -577,12 +578,14 @@ function AllDayBar({
   selected: string;
   onSelect: (date: string) => void;
 }) {
+  const t = useT();
+  const lang = useI18nStore((s) => s.lang);
   const today = todayStr();
   const allDay = occurrences.filter((o) => o.allDay);
 
   return (
     <div className="cal-allday">
-      <div className="cal-allday-gutter">all-day</div>
+      <div className="cal-allday-gutter">{t("calendar.allDayGutterLabel")}</div>
       <div className="cal-allday-cols">
         {dates.map((date) => {
           const here = allDay.filter((o) =>
@@ -601,7 +604,7 @@ function AllDayBar({
             >
               <div className="cal-allday-head">
                 <span className="cal-allday-dow">
-                  {d.toLocaleDateString("en", { weekday: "short" })}
+                  {d.toLocaleDateString(lang, { weekday: "short" })}
                 </span>
                 <span className="cal-allday-num">{Number(date.slice(8, 10))}</span>
               </div>
@@ -615,7 +618,7 @@ function AllDayBar({
                   }}
                   title={o.title}
                 >
-                  {o.title || "(untitled)"}
+                  {o.title || t("calendar.untitled")}
                 </div>
               ))}
             </div>

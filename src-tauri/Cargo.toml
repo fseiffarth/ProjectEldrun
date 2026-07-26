@@ -54,6 +54,11 @@ tempfile = "3"
 # Extract dropped/double-clicked .zip archives in place (deflate covers the vast
 # majority of real-world zips; "stored" entries need no feature).
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Read the `.synctex.gz` a TeX compile emits, so a deck slide can be anchored to
+# the source line that produced its page rather than to a content fingerprint
+# (commands::tex::synctex_page_lines). Already in the tree via `zip`'s deflate
+# feature, so naming it directly costs no new dependency.
+flate2 = "1"
 # Store git-hosting access tokens in the OS credential store (Windows Credential
 # Manager / macOS Keychain / Linux Secret Service) instead of plaintext on disk.
 # The backend deps are target-gated inside the crate, so enabling all three
@@ -86,6 +91,45 @@ bytes = "1"
 # (`/sys/class/power_supply`), Windows (`GetSystemPowerStatus`), and macOS
 # (IOKit), so it needs no cfg-gating here.
 starship-battery = "0.10"
+
+# ── Mail (see docs/mail_client_plan_b.md) ────────────────────────────────────
+# MIME parsing of untrusted network input. Chosen over hand-rolling because it is
+# 100% safe Rust, continuously fuzzed and MIRI-checked — this is the crate that
+# eats attacker-controlled bytes first, so its memory-safety story is the whole
+# argument.
+mail-parser = "0.11"
+# Outbound MIME construction (plain text + explicitly picked attachments only).
+mail-builder = "0.4"
+# SMTP over rustls. `default-features = false` drops `dkim` (we sign nothing),
+# `digest-md5`/`cram-md5` (weak mechanisms whose mere availability gives a MITM a
+# downgrade target — see plan B §4.5), and swaps the default `aws_lc_rs` provider
+# for `ring`, which needs no cmake on the Windows runner.
+mail-send = { version = "0.6", default-features = false, features = ["builder", "ring", "tls12"] }
+# IMAP. `default-features = false` is load-bearing: the crate's default runtime is
+# async-std, and `runtime-tokio` puts it on the runtime Eldrun already has. The
+# `compress` feature is deliberately NOT enabled — COMPRESS=DEFLATE lets a hostile
+# server hand us a decompression bomb (plan B §3.6).
+async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
+# The one TLS stack for both protocols. rustls (no OpenSSL anywhere in the bundle)
+# with the OS trust store, so a private CA is added by the system administrator
+# rather than by an "ignore certificate" checkbox this client does not have
+# (plan B §4.3).
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std", "logging"] }
+rustls-platform-verifier = "0.7"
+rustls-pki-types = "1"
+# HTML sanitization in the backend, before a single attacker byte reaches the
+# webview (plan B §2.3). html5ever-based, so it parses hostile markup the same way
+# the renderer will rather than pattern-matching it.
+ammonia = "4"
+# Zero password buffers on drop; nothing in this crate's API can be logged.
+zeroize = { version = "1", features = ["derive"] }
+# Punycode/IDNA for the link-safety host comparison (plan B §2.5).
+idna = "1"
+# SHA-256 for the content-addressed blob store (plan B §3.1: attachment payloads
+# are stored under `blobs/<sha256>` with no extension, so a sender-supplied
+# filename never reaches a syscall).
+sha2 = "0.10"
 
 # Linux/Unix: workspace backends + crash signal handling
 [target.'cfg(target_os = "linux")'.dependencies]

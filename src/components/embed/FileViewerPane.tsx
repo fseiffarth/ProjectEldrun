@@ -27,6 +27,7 @@ import { parseDetachedParam } from "../../stores/detached";
 import { Dropdown } from "../common/Dropdown";
 import { CompareView } from "./CompareView";
 import { PresentationOverlay } from "./PresentationOverlay";
+import { usePresentationStore } from "../../stores/presentation";
 import { renderMarkdown } from "../../lib/viewers/markdown";
 import { enrichMarkdownDom } from "../../lib/viewers/markdownEnrich";
 import { highlight, languageForPath, escapeHtml } from "../../lib/viewers/highlight";
@@ -152,6 +153,7 @@ import { YamlTree } from "./YamlTree";
 import { YamlGrid } from "./YamlGrid";
 import { isTreePath, isJsonPath } from "../../lib/viewers/yaml";
 import { hasCards } from "../../lib/viewers/yamlGrid";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 /**
  * Persisted reader-position plumbing for an in-app viewer. Snapshots the tab's
@@ -193,16 +195,16 @@ export function useViewerState(tabKey: string | undefined) {
 // The modifier that opens a recognised file link (Ctrl/Cmd+Click). Shown verbatim
 // in the hover hint, so it must read as the key the user actually presses.
 const OPEN_MODIFIER = IS_MAC ? "⌘" : "Ctrl";
-const OPEN_LINK_HINT = `${OPEN_MODIFIER}+Click to open`;
 
 /** A small floating "{Ctrl}+Click to open" hint, anchored just above a hovered
  *  file link (#49). `at` is viewport coordinates of the link's top-left, or null
  *  to hide. Purely informational: pointer-events:none so it never blocks a click. */
 function LinkOpenHint({ at }: { at: { left: number; top: number } | null }) {
+  const t = useT();
   if (!at) return null;
   return (
     <div className="link-open-hint" role="tooltip" style={{ left: at.left, top: at.top }}>
-      {OPEN_LINK_HINT}
+      {t("fileViewer.linkOpenHint", { modifier: OPEN_MODIFIER })}
     </div>
   );
 }
@@ -307,6 +309,10 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
   // JSON it physically is. Read up here because the dispatch below sits after an
   // early return, and a hook cannot.
   const deckOn = useExperimental("deck_presenter");
+
+  // A talk in progress withdraws this pane's marker/laser overlay — see the note
+  // at the render below, and `stores/presentation` for why it is a store.
+  const presenting = usePresentationStore((s) => s.presenting > 0);
 
   // Resolve whether these bytes are remote-native (host SFTP) or the local
   // mirror, and publish it to the tab strip so the Remote/Local badge rides on
@@ -507,10 +513,16 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
         {/* A single relative host so the marker/laser presentation overlay can
             sit over ANY viewer without each one wiring it in (see
             PresentationOverlay). `.presentation-host` is height:100% so the
-            existing `.file-viewer` (also 100%) fills it unchanged. */}
+            existing `.file-viewer` (also 100%) fills it unchanged.
+
+            Withdrawn while a deck presenter is on screen: the presenter renders
+            through a portal *over* this pane and mounts its own overlay, so this
+            one is invisible and inert — but its window-level Escape listener is
+            not, and a second handler competing for Escape mid-talk is exactly
+            what made holstering the laser end the talk (TODO V #98). */}
         <div className="presentation-host">
           {view}
-          <PresentationOverlay />
+          {!presenting && <PresentationOverlay />}
         </div>
       </ViewerHeaderInfoContext.Provider>
     </FileScopeContext.Provider>
@@ -572,6 +584,7 @@ function autoSyncRel(
  * disconnected (the backend engine can't act until reconnected).
  */
 function AutoSyncHeaderToggle({ path, projectId }: { path: string; projectId: string | null }) {
+  const t = useT();
   const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
   const rel = useMemo(() => autoSyncRel(project, path), [project, path]);
   const auto = useSyncStore((s) =>
@@ -587,12 +600,12 @@ function AutoSyncHeaderToggle({ path, projectId }: { path: string; projectId: st
       className={`file-viewer-autosync${auto ? " on" : ""}`}
       title={
         !connected
-          ? "Auto-sync (connect the remote to change)"
+          ? t("fileViewer.autoSyncConnectFirst")
           : auto
-            ? "Auto-syncing — click to stop"
-            : "Auto-sync this file"
+            ? t("fileViewer.autoSyncOnHint")
+            : t("fileTree.autoSyncFile")
       }
-      aria-label={auto ? "Stop auto-syncing this file" : "Auto-sync this file"}
+      aria-label={auto ? t("fileViewer.stopAutoSyncFile") : t("fileTree.autoSyncFile")}
       aria-pressed={auto}
       disabled={!connected}
       onClick={() => void setAuto(projectId, [rel], !auto, false)}
@@ -613,6 +626,7 @@ function AutoSyncHeaderToggle({ path, projectId }: { path: string; projectId: st
  * orange list builds it, regardless of which side this viewer is currently showing.
  */
 function SyncResolveHeaderButton({ path, projectId }: { path: string; projectId: string | null }) {
+  const t = useT();
   const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
   const rel = useMemo(() => autoSyncRel(project, path), [project, path]);
   const mirrorRoot = useMemo(() => localMirrorRootFor(project), [project]);
@@ -625,8 +639,8 @@ function SyncResolveHeaderButton({ path, projectId }: { path: string; projectId:
     <button
       type="button"
       className="file-viewer-resolve"
-      title="This file diverged (local ⇄ host) — open the three-way resolver"
-      aria-label="Resolve divergence"
+      title={t("fileViewer.resolveDivergenceTitle")}
+      aria-label={t("fileViewer.resolveDivergence")}
       onClick={() =>
         openLinkedFile(undefined, dirname(mirrorPath), {
           path: mirrorPath,
@@ -851,6 +865,7 @@ export function ViewerHeader({
   // TabBar's tab-source badge), so it costs no header row. The auto-sync toggle
   // and the Local/Remote source switch (both remote projects only) ride in from
   // context so no sub-viewer has to pass them.
+  const t = useT();
   const info = useContext(ViewerHeaderInfoContext);
   return (
     <div className="file-viewer-header">
@@ -868,8 +883,8 @@ export function ViewerHeader({
       <button
         className="file-viewer-open-external"
         onClick={onOpenExternally}
-        title="Open in external app"
-        aria-label="Open in external app"
+        title={t("pdfViewer.openExternalTitle")}
+        aria-label={t("pdfViewer.openExternalTitle")}
       >
         ↗
       </button>
@@ -965,14 +980,17 @@ const GRAMMAR_DEBOUNCE_MS = 2500;
 // a ghost suggestion is showing) and human labels for the status line / settings
 // dropdown. Kept in sync with the Rust `CompletionMode`.
 const AC_MODES: AutocompleteMode[] = ["sentence", "block", "scope"];
-const AC_MODE_LABELS: Record<AutocompleteMode, string> = {
-  sentence: "Sentence",
-  block: "Block",
-  scope: "Scope",
-};
 /** Next mode in the cycle (wraps), for the live Shift+Tab toggle. */
 function nextAcMode(m: AutocompleteMode): AutocompleteMode {
   return AC_MODES[(AC_MODES.indexOf(m) + 1) % AC_MODES.length];
+}
+/** Human label for a completion-length mode, shared by the live status line and
+ *  the settings dropdown. A pure helper (not a component), so it takes `t` as an
+ *  explicit parameter — mirrors `TableView.tsx`'s `delimiterLabel`. */
+function acModeLabel(m: AutocompleteMode, t: ReturnType<typeof useT>): string {
+  if (m === "sentence") return t("projectSettings.sentence");
+  if (m === "block") return t("projectSettings.block");
+  return t("projectSettings.scope");
 }
 
 /** React wrapper over `editHistoryReducer` exposing `value`, a coalescing
@@ -1171,11 +1189,12 @@ export function ExternalChangeBanner({
   onReload: () => void;
   onKeep: () => void;
 }) {
+  const t = useT();
   return (
     <div className="file-viewer-reload-banner" role="alert">
-      <span>This file changed on disk and you have unsaved edits.</span>
-      <button className="file-viewer-reload-btn" onClick={onReload}>Reload</button>
-      <button className="file-viewer-reload-btn" onClick={onKeep}>Keep mine</button>
+      <span>{t("fileViewer.externalChangeMsg")}</span>
+      <button className="file-viewer-reload-btn" onClick={onReload}>{t("common.reload")}</button>
+      <button className="file-viewer-reload-btn" onClick={onKeep}>{t("fileViewer.keepMine")}</button>
     </div>
   );
 }
@@ -1872,6 +1891,7 @@ function CodeEditor({
    *  proportionally linked to a side-by-side viewer subwindow (scrollSync). */
   groupId?: string | null;
 }) {
+  const t = useT();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Proportional scroll-link to a paired subwindow (no-op unless linked).
   const reportScrollSync = useScrollSync(groupId, textareaRef);
@@ -2017,7 +2037,7 @@ function CodeEditor({
   // accepted (else null). If the very next keystroke is closing punctuation, the
   // space is removed so it reads "\cite{x}." rather than "\cite{x} .".
   const autoSpace = useRef<number | null>(null);
-  const bumpCaret = useCallback(() => setCaretTick((t) => t + 1), []);
+  const bumpCaret = useCallback(() => setCaretTick((n) => n + 1), []);
 
   // Snap the line-height to whole device pixels so the textarea caret and the
   // highlight <pre> share a vertical grid and don't drift apart over a long file
@@ -2328,14 +2348,14 @@ function CodeEditor({
   const deleteIdRef = useRef(0);
   const deleteTimersRef = useRef<number[]>([]);
   const clearDeleteTimers = useCallback(() => {
-    deleteTimersRef.current.forEach((t) => window.clearTimeout(t));
+    deleteTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     deleteTimersRef.current = [];
   }, []);
   const scheduleDeleteRemoval = useCallback((id: number) => {
-    const t = window.setTimeout(() => {
+    const timer = window.setTimeout(() => {
       setDeletes((prev) => prev.filter((g) => g.id !== id));
     }, DELETE_GHOST_MS);
-    deleteTimersRef.current.push(t);
+    deleteTimersRef.current.push(timer);
   }, []);
   useEffect(() => () => clearDeleteTimers(), [clearDeleteTimers]);
   const lastEditRef = useRef<string | null>(null);
@@ -2871,7 +2891,7 @@ function CodeEditor({
     const ctl = new AbortController();
     acAbort.current = ctl;
     setSuggestion(null);
-    setAcStatus(`Autocomplete · ${AC_MODE_LABELS[mode]}…`);
+    setAcStatus(t("fileViewer.autocompleteStatus", { mode: acModeLabel(mode, t) }));
     try {
       // Resolve the currently-loaded model at trigger time (it may have been
       // unloaded since the editor mounted). `list_ollama_models_detailed`
@@ -2886,9 +2906,7 @@ function CodeEditor({
           ? autocomplete.preferred
           : loaded[0] ?? "";
       if (!model) {
-        setAcStatus(
-          auto ? null : "Autocomplete unavailable — load a local model (🧠 menu) to enable it.",
-        );
+        setAcStatus(auto ? null : t("fileViewer.autocompleteUnavailable"));
         return;
       }
       const text = await invoke<string>("complete_text", {
@@ -2906,7 +2924,7 @@ function CodeEditor({
         setSuggestion({ text, at: caret });
         setAcStatus(null);
       } else {
-        setAcStatus(auto ? null : "No suggestion");
+        setAcStatus(auto ? null : t("fileViewer.noSuggestion"));
       }
     } catch (e) {
       if (ctl.signal.aborted) return;
@@ -2916,8 +2934,8 @@ function CodeEditor({
       }
       setAcStatus(
         String(e).includes("not_running")
-          ? "Autocomplete unavailable — load a local model (🧠 menu) to enable it."
-          : "Autocomplete failed — see the local model.",
+          ? t("fileViewer.autocompleteUnavailable")
+          : t("fileViewer.autocompleteFailed"),
       );
     }
   }, [autocomplete, draft, lang, acMode, contextFiles]);
@@ -3256,7 +3274,7 @@ function CodeEditor({
   };
 
   if (error != null) return <div className="file-viewer-error">{error}</div>;
-  if (!loaded) return <div className="file-viewer-loading">Loading…</div>;
+  if (!loaded) return <div className="file-viewer-loading">{t("common.loading")}</div>;
 
   // Ghost text: while a suggestion is pending, render the WHOLE projected
   // document — prefix + suggestion + the existing suffix shifted past it — over
@@ -3373,9 +3391,17 @@ function CodeEditor({
                 // breakpoint, it does not move the cursor or steal focus.
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => onToggleBreakpoint(n)}
-                title={broken ? `Remove breakpoint on line ${n}` : `Break on line ${n}`}
+                title={
+                  broken
+                    ? t("fileViewer.removeBreakpoint", { line: n })
+                    : t("fileViewer.addBreakpoint", { line: n })
+                }
                 aria-pressed={broken}
-                aria-label={broken ? `Remove breakpoint on line ${n}` : `Break on line ${n}`}
+                aria-label={
+                  broken
+                    ? t("fileViewer.removeBreakpoint", { line: n })
+                    : t("fileViewer.addBreakpoint", { line: n })
+                }
               >
                 {n}
               </button>
@@ -3531,7 +3557,7 @@ function CodeEditor({
               // mousedown keeps the textarea from stealing focus before the click.
               onMouseDown={(e) => { e.preventDefault(); applyGrammarFix(grammarTip.range); }}
             >
-              Fix → <span className="file-viewer-grammar-tip-sugg">{grammarTip.range.issue.suggestion}</span>
+              {t("fileViewer.grammarFix")} <span className="file-viewer-grammar-tip-sugg">{grammarTip.range.issue.suggestion}</span>
             </button>
           )}
         </div>
@@ -3550,7 +3576,7 @@ function CodeEditor({
               <span className="file-viewer-blame-tip-hash">{b.short}</span>
               <span className="file-viewer-blame-tip-author">{b.author}</span>
             </div>
-            <div className="file-viewer-blame-tip-date">{blameRelDate(b.author_time)} ago</div>
+            <div className="file-viewer-blame-tip-date">{t("fileViewer.blameAgo", { time: blameRelDate(b.author_time) })}</div>
             <div className="file-viewer-blame-tip-summary">{b.summary}</div>
           </div>
         );
@@ -3563,16 +3589,16 @@ function CodeEditor({
             type="button"
             className="file-viewer-ac-context-add"
             onClick={() => setAcPicker(true)}
-            title="Add a project file as autocomplete context"
+            title={t("fileViewer.addContextTitle")}
           >
-            + Context{contextFiles.length ? ` (${contextFiles.length})` : ""}
+            {t("fileViewer.addContext")}{contextFiles.length ? ` (${contextFiles.length})` : ""}
           </button>
           {contextFiles.map((f) => (
             <span key={f.path} className="file-viewer-ac-context-chip" title={f.rel}>
               {f.rel.split("/").pop()}
               <button
                 type="button"
-                aria-label={`Remove ${f.rel} from context`}
+                aria-label={t("fileViewer.removeFromContext", { file: f.rel })}
                 onClick={() => removeContextFile(f.path)}
               >
                 ×
@@ -3621,8 +3647,8 @@ function CodeEditor({
               className={`file-viewer-find-toggle${replaceOpen ? " active" : ""}`}
               onClick={() => setReplaceOpen((v) => !v)}
               aria-pressed={replaceOpen}
-              aria-label={replaceOpen ? "Hide replace" : "Show replace"}
-              title={replaceOpen ? "Hide replace" : "Show replace (Ctrl+R)"}
+              aria-label={replaceOpen ? t("fileViewer.hideReplace") : t("fileViewer.showReplace")}
+              title={replaceOpen ? t("fileViewer.hideReplace") : t("fileViewer.showReplaceTitle")}
             >
               {replaceOpen ? "▾" : "▸"}
             </button>
@@ -3631,8 +3657,8 @@ function CodeEditor({
               className="file-viewer-find-input"
               type="text"
               value={query}
-              placeholder="Find"
-              aria-label="Find"
+              placeholder={t("pdfViewer.findLabel")}
+              aria-label={t("pdfViewer.findLabel")}
               spellCheck={false}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={onFindKeyDown}
@@ -3644,8 +3670,8 @@ function CodeEditor({
               className={`file-viewer-find-btn${caseSensitive ? " active" : ""}`}
               onClick={() => setCaseSensitive((v) => !v)}
               aria-pressed={caseSensitive}
-              title="Match case"
-              aria-label="Match case"
+              title={t("pdfViewer.matchCaseTitle")}
+              aria-label={t("pdfViewer.matchCaseTitle")}
             >
               Aa
             </button>
@@ -3653,8 +3679,8 @@ function CodeEditor({
               className="file-viewer-find-btn"
               onClick={() => goToMatch(-1)}
               disabled={matches.length === 0}
-              title="Previous match (Shift+Enter)"
-              aria-label="Previous match"
+              title={t("pdfViewer.prevMatchTitle")}
+              aria-label={t("pdfViewer.prevMatchLabel")}
             >
               ↑
             </button>
@@ -3662,16 +3688,16 @@ function CodeEditor({
               className="file-viewer-find-btn"
               onClick={() => goToMatch(1)}
               disabled={matches.length === 0}
-              title="Next match (Enter)"
-              aria-label="Next match"
+              title={t("pdfViewer.nextMatchTitle")}
+              aria-label={t("pdfViewer.nextMatchLabel")}
             >
               ↓
             </button>
             <button
               className="file-viewer-find-btn"
               onClick={closeFind}
-              title="Close (Esc)"
-              aria-label="Close find"
+              title={t("pdfViewer.closeFindTitle")}
+              aria-label={t("pdfViewer.closeFindLabel")}
             >
               ✕
             </button>
@@ -3683,8 +3709,8 @@ function CodeEditor({
                 className="file-viewer-find-input"
                 type="text"
                 value={replaceWith}
-                placeholder="Replace"
-                aria-label="Replace with"
+                placeholder={t("fileViewer.replacePlaceholder")}
+                aria-label={t("fileViewer.replaceWithLabel")}
                 spellCheck={false}
                 onChange={(e) => setReplaceWith(e.target.value)}
                 onKeyDown={onReplaceKeyDown}
@@ -3693,19 +3719,19 @@ function CodeEditor({
                 className="file-viewer-find-btn file-viewer-replace-btn"
                 onClick={replaceCurrent}
                 disabled={matches.length === 0}
-                title="Replace current match (Enter)"
-                aria-label="Replace"
+                title={t("fileViewer.replaceCurrentTitle")}
+                aria-label={t("fileViewer.replaceLabel")}
               >
-                Replace
+                {t("fileViewer.replaceLabel")}
               </button>
               <button
                 className="file-viewer-find-btn file-viewer-replace-btn"
                 onClick={replaceAll}
                 disabled={matches.length === 0}
-                title="Replace all matches (Ctrl+Enter)"
-                aria-label="Replace all"
+                title={t("fileViewer.replaceAllTitle")}
+                aria-label={t("fileViewer.replaceAllLabel")}
               >
-                All
+                {t("fileViewer.replaceAllBtn")}
               </button>
             </div>
           )}
@@ -3729,6 +3755,7 @@ export function SaveButton({
   saving: boolean;
   save: () => void;
 }) {
+  const t = useT();
   const icon = saving ? (
     <span className="file-viewer-save-spinner" aria-hidden="true" />
   ) : isDirty ? (
@@ -3741,8 +3768,8 @@ export function SaveButton({
       className={`file-viewer-save${isDirty ? " is-dirty" : ""}${saving ? " is-saving" : ""}`}
       onClick={save}
       disabled={!isDirty || saving}
-      aria-label="Save"
-      title={saving ? "Saving…" : isDirty ? "Save (Ctrl+S)" : "No unsaved changes"}
+      aria-label={t("common.save")}
+      title={saving ? t("common.saving") : isDirty ? t("fileViewer.saveWithShortcut") : t("fileViewer.noUnsavedChanges")}
     >
       {icon}
     </button>
@@ -3762,13 +3789,14 @@ function PrintButton({
   busy?: boolean;
   disabled?: boolean;
 }) {
+  const t = useT();
   return (
     <button
       className={`file-viewer-print${busy ? " is-busy" : ""}`}
       onClick={onPrint}
       disabled={disabled || busy}
-      title={busy ? "Preparing…" : "Print"}
-      aria-label="Print"
+      title={busy ? t("pdfViewer.preparing") : t("pdfViewer.printLabel")}
+      aria-label={t("pdfViewer.printLabel")}
     >
       {busy ? <span className="file-viewer-save-spinner" aria-hidden="true" /> : "🖨"}
     </button>
@@ -3787,14 +3815,15 @@ export function UndoRedoButtons({
   canUndo: boolean;
   canRedo: boolean;
 }) {
+  const t = useT();
   return (
-    <div className="file-viewer-history" role="group" aria-label="Edit history">
+    <div className="file-viewer-history" role="group" aria-label={t("fileViewer.editHistory")}>
       <button
         className="file-viewer-history-btn"
         onClick={undo}
         disabled={!canUndo}
-        aria-label="Undo"
-        title="Undo (Ctrl+Z)"
+        aria-label={t("common.undo")}
+        title={t("fileViewer.undoShortcut")}
       >
         ↶
       </button>
@@ -3802,8 +3831,8 @@ export function UndoRedoButtons({
         className="file-viewer-history-btn"
         onClick={redo}
         disabled={!canRedo}
-        aria-label="Redo"
-        title="Redo (Ctrl+Shift+Z)"
+        aria-label={t("common.redo")}
+        title={t("fileViewer.redoShortcut")}
       >
         ↷
       </button>
@@ -3821,6 +3850,7 @@ export function UndoRedoButtons({
  * is written back through `setDraft`, so it lands as one undo step.
  */
 function useFormatter(path: string, draft: string, setDraft: (v: string) => void) {
+  const t = useT();
   const lang = useMemo(() => formatLangForPath(path), [path]);
   const inProcess = useMemo(() => isInProcessJson(path), [path]);
   const enabled = inProcess || lang != null;
@@ -3859,7 +3889,7 @@ function useFormatter(path: string, draft: string, setDraft: (v: string) => void
       if (res.ok) {
         if (res.text !== text) setDraft(res.text);
       } else {
-        setStatus(`Can't format: ${res.error}`);
+        setStatus(t("fileViewer.cantFormat", { error: res.error }));
       }
       return;
     }
@@ -3872,14 +3902,14 @@ function useFormatter(path: string, draft: string, setDraft: (v: string) => void
       const msg = String(e);
       if (msg.startsWith("formatter-unavailable")) {
         setAvailable(false);
-        setStatus("No formatter installed for this file type");
+        setStatus(t("fileViewer.noFormatterInstalled"));
       } else {
         setStatus(msg.length > 240 ? `${msg.slice(0, 240)}…` : msg);
       }
     } finally {
       setBusy(false);
     }
-  }, [busy, inProcess, lang, path, setDraft]);
+  }, [busy, inProcess, lang, path, setDraft, t]);
 
   return { enabled, available, busy, status, run };
 }
@@ -3895,16 +3925,17 @@ function FormatButton({
   busy: boolean;
   run: () => void;
 }) {
+  const t = useT();
   return (
     <button
       className="file-viewer-format-btn"
       onMouseDown={(e) => e.preventDefault()}
       onClick={run}
       disabled={!available || busy}
-      title={available ? "Format document" : "No formatter found for this file type"}
-      aria-label="Format document"
+      title={available ? t("fileViewer.formatDocument") : t("fileViewer.noFormatterFound")}
+      aria-label={t("fileViewer.formatDocument")}
     >
-      {busy ? <span className="file-viewer-save-spinner" aria-hidden="true" /> : "Format"}
+      {busy ? <span className="file-viewer-save-spinner" aria-hidden="true" /> : t("fileViewer.formatBtn")}
     </button>
   );
 }
@@ -3944,6 +3975,7 @@ function ValidationBanner({
   issue: SyntaxIssue | null;
   onJump: (line: number, column: number) => void;
 }) {
+  const t = useT();
   if (!issue) return null;
   const where = issue.line
     ? ` (line ${issue.line}${issue.column ? `, col ${issue.column}` : ""})`
@@ -3960,7 +3992,7 @@ function ValidationBanner({
           className="file-viewer-validation-jump"
           onClick={() => onJump(issue.line, issue.column)}
         >
-          Go to line
+          {t("fileViewer.goToLine")}
         </button>
       )}
     </div>
@@ -4006,6 +4038,7 @@ function RenderedPreview({
   content: string;
   fileName: string;
 }) {
+  const t = useT();
   const doc = useMemo(() => buildPreviewDoc(kind, content), [kind, content]);
   return (
     <iframe
@@ -4013,7 +4046,7 @@ function RenderedPreview({
       // sandbox, so no script in the file can run.
       sandbox=""
       srcDoc={doc}
-      title={`Preview of ${fileName}`}
+      title={t("fileViewer.previewOf", { file: fileName })}
       className="file-viewer-html-frame"
       style={{ width: "100%", height: "100%", border: "none", background: "#fff" }}
     />
@@ -4025,6 +4058,7 @@ function RenderedPreview({
  *  each action is one undo step. Buttons `preventDefault` on mousedown so the
  *  editor keeps its selection as the action's target. */
 function MarkdownToolbar({ api }: { api: React.MutableRefObject<EditorApi | null> }) {
+  const t = useT();
   const act = (fn: (v: string, s: number, e: number) => EditResult) => () =>
     api.current?.applyEdit(fn);
   const btn = (label: React.ReactNode, title: string, fn: (v: string, s: number, e: number) => EditResult) => (
@@ -4039,14 +4073,14 @@ function MarkdownToolbar({ api }: { api: React.MutableRefObject<EditorApi | null
     </button>
   );
   return (
-    <div className="file-viewer-md-toolbar" role="group" aria-label="Formatting">
-      {btn(<b>B</b>, "Bold", (v, s, e) => toggleInline(v, s, e, "**"))}
-      {btn(<i>I</i>, "Italic", (v, s, e) => toggleInline(v, s, e, "_"))}
-      {btn(<span style={{ fontFamily: "var(--font-mono, monospace)" }}>{"<>"}</span>, "Inline code", (v, s, e) => toggleInline(v, s, e, "`"))}
-      {btn("H", "Cycle heading", (v, s) => cycleHeading(v, s))}
-      {btn("🔗", "Link", (v, s, e) => makeLink(v, s, e))}
-      {btn("•", "Bulleted list", (v, s, e) => toggleLinePrefix(v, s, e, "- "))}
-      {btn("TOC", "Insert table of contents", (v, s, e) => {
+    <div className="file-viewer-md-toolbar" role="group" aria-label={t("fileViewer.formattingGroup")}>
+      {btn(<b>B</b>, t("fileViewer.mdBold"), (v, s, e) => toggleInline(v, s, e, "**"))}
+      {btn(<i>I</i>, t("fileViewer.mdItalic"), (v, s, e) => toggleInline(v, s, e, "_"))}
+      {btn(<span style={{ fontFamily: "var(--font-mono, monospace)" }}>{"<>"}</span>, t("fileViewer.mdInlineCode"), (v, s, e) => toggleInline(v, s, e, "`"))}
+      {btn("H", t("fileViewer.mdCycleHeading"), (v, s) => cycleHeading(v, s))}
+      {btn("🔗", t("fileViewer.mdLink"), (v, s, e) => makeLink(v, s, e))}
+      {btn("•", t("fileViewer.mdBulletedList"), (v, s, e) => toggleLinePrefix(v, s, e, "- "))}
+      {btn("TOC", t("fileViewer.mdInsertToc"), (v, s, e) => {
         const toc = generateToc(v);
         const ins = toc ? `${toc}\n` : "";
         return { value: v.slice(0, s) + ins + v.slice(e), selStart: s, selEnd: s + ins.length };
@@ -4182,10 +4216,11 @@ function useLocalModelLoaded(): boolean {
  * local model is loaded into memory, since neither feature can run then.
  */
 function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
+  const t = useT();
   const modelLoaded = useLocalModelLoaded();
   if (!modelLoaded) return null;
   return (
-    <div className="file-viewer-ai-controls" role="group" aria-label="AI assist">
+    <div className="file-viewer-ai-controls" role="group" aria-label={t("fileViewer.aiAssistGroup")}>
       <button
         type="button"
         className={`file-viewer-ai-btn${ai.autocomplete ? " active" : ""}`}
@@ -4193,22 +4228,22 @@ function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
         aria-pressed={ai.autocomplete}
         title={
           ai.autocomplete
-            ? "Local autocomplete is on (Ctrl+Space) — click to disable"
-            : "Local autocomplete is off — click to enable (needs a loaded local model)"
+            ? t("fileViewer.autocompleteOnHint")
+            : t("fileViewer.autocompleteOffHint")
         }
       >
-        Autocomplete
+        {t("fileViewer.autocompleteLabel")}
       </button>
       {ai.autocomplete && (
         <Dropdown
           className="file-viewer-ai-mode"
           value={ai.mode}
-          title="Completion length (Shift+Tab cycles it while a suggestion is showing)"
+          title={t("fileViewer.completionLengthTitle")}
           onChange={(v) => ai.setMode(v as AutocompleteMode)}
           options={[
-            { value: "sentence", label: "Sentence" },
-            { value: "block", label: "Block" },
-            { value: "scope", label: "Scope" },
+            { value: "sentence", label: t("projectSettings.sentence") },
+            { value: "block", label: t("projectSettings.block") },
+            { value: "scope", label: t("projectSettings.scope") },
           ]}
         />
       )}
@@ -4219,11 +4254,11 @@ function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
         aria-pressed={ai.grammar}
         title={
           ai.grammar
-            ? "Local grammar check is on — click to disable"
-            : "Local grammar check is off — click to enable (needs a loaded local model)"
+            ? t("fileViewer.grammarOnHint")
+            : t("fileViewer.grammarOffHint")
         }
       >
-        Grammar
+        {t("fileViewer.grammarLabel")}
       </button>
     </div>
   );
@@ -4338,22 +4373,23 @@ function FontSizeControls({
   dec: () => void;
   reset: () => void;
 }) {
+  const t = useT();
   return (
-    <div className="file-viewer-zoom file-viewer-fontsize" role="group" aria-label="Text size">
+    <div className="file-viewer-zoom file-viewer-fontsize" role="group" aria-label={t("fileViewer.textSizeGroup")}>
       <button
         className="file-viewer-zoom-btn"
         onClick={dec}
         disabled={fontSize <= EDITOR_FONT_MIN}
-        title="Decrease text size (Ctrl+−)"
-        aria-label="Decrease text size"
+        title={t("fileViewer.decreaseTextSize")}
+        aria-label={t("fileViewer.decreaseTextSizeLabel")}
       >
         A−
       </button>
       <button
         className="file-viewer-zoom-level file-viewer-fontsize-level"
         onClick={reset}
-        title="Reset text size (Ctrl+0)"
-        aria-label="Reset text size"
+        title={t("fileViewer.resetTextSize")}
+        aria-label={t("fileViewer.resetTextSizeLabel")}
       >
         {fontSize}
       </button>
@@ -4361,8 +4397,8 @@ function FontSizeControls({
         className="file-viewer-zoom-btn"
         onClick={inc}
         disabled={fontSize >= EDITOR_FONT_MAX}
-        title="Increase text size (Ctrl++)"
-        aria-label="Increase text size"
+        title={t("fileViewer.increaseTextSize")}
+        aria-label={t("fileViewer.increaseTextSizeLabel")}
       >
         A+
       </button>
@@ -4480,16 +4516,17 @@ function useBlame(path: string, enabled: boolean): Map<number, BlameLine> {
 /** "Blame" toolbar toggle. When active the code editor paints a per-line blame
  *  column in the gutter plus a faint current-line inline annotation. */
 function BlameButton({ active, toggle }: { active: boolean; toggle: () => void }) {
+  const t = useT();
   return (
     <button
       className={`file-viewer-format-btn file-viewer-blame-btn${active ? " active" : ""}`}
       onMouseDown={(e) => e.preventDefault()}
       onClick={toggle}
-      title={active ? "Hide git blame" : "Show git blame"}
-      aria-label="Toggle git blame"
+      title={active ? t("fileViewer.blameHideTitle") : t("fileViewer.blameShowTitle")}
+      aria-label={t("fileViewer.blameToggleLabel")}
       aria-pressed={active}
     >
-      Blame
+      {t("fileViewer.blameBtn")}
     </button>
   );
 }
@@ -4595,6 +4632,7 @@ function RunDebugButtons({
   onRun: () => void;
   onDebug: () => void;
 }) {
+  const t = useT();
   const [argsOpen, setArgsOpen] = useState(false);
   // Hovering the Run/Debug buttons shows the saved args in an in-DOM popover — the
   // native `title` tooltip is unreliable under WebKitGTK, so it can't be the only
@@ -4647,10 +4685,10 @@ function RunDebugButtons({
         onClick={onRun}
         onContextMenu={(e) => e.preventDefault()}
         disabled={busy}
-        title="Run this file in a terminal tab\nRight-click to set arguments"
-        aria-label="Run file"
+        title={`${t("fileViewer.runFileTitle")}\n${t("fileViewer.rightClickArgs")}`}
+        aria-label={t("fileViewer.runFileLabel")}
       >
-        ▶ Run{args ? " *" : ""}
+        ▶ {t("fileViewer.runLabel")}{args ? " *" : ""}
       </button>
       {showDebug && (
       <button
@@ -4664,28 +4702,29 @@ function RunDebugButtons({
         disabled={busy}
         title={
           (breakpointCount > 0
-            ? `Debug under pdb, breaking on ${breakpointCount} line${
-                breakpointCount === 1 ? "" : "s"
-              } (click the gutter to set more)`
-            : "Debug under pdb — stops at the first line. Click a line number to set a breakpoint.") +
-          "\nRight-click to set arguments"
+            ? t(
+                breakpointCount === 1 ? "fileViewer.debugPdbLinesOne" : "fileViewer.debugPdbLinesMany",
+                { count: breakpointCount },
+              )
+            : t("fileViewer.debugPdbFirstLine")) +
+          `\n${t("fileViewer.rightClickArgs")}`
         }
-        aria-label="Debug file"
+        aria-label={t("fileViewer.debugFileLabel")}
       >
-        🐞 Debug
+        🐞 {t("fileViewer.debugLabel")}
       </button>
       )}
       {/* Saved-args hover hint. Shown only while hovering, only when args are set,
           and never over the editor popover (which shows them already). */}
       {hovering && args && !argsOpen && (
         <div className="file-viewer-run-argshint" role="tooltip">
-          <span className="file-viewer-run-argshint-label">args:</span>
+          <span className="file-viewer-run-argshint-label">{t("fileViewer.argsHintLabel")}</span>
           <span className="file-viewer-run-argshint-val">{args}</span>
         </div>
       )}
       {argsOpen && (
-        <div className="file-viewer-run-args" role="dialog" aria-label="Run arguments">
-          <label className="file-viewer-run-args-label">Arguments (sys.argv)</label>
+        <div className="file-viewer-run-args" role="dialog" aria-label={t("fileViewer.runArgumentsDialog")}>
+          <label className="file-viewer-run-args-label">{t("fileViewer.argsFieldLabel")}</label>
           <input
             ref={inputRef}
             className="file-viewer-run-args-input"
@@ -4716,7 +4755,7 @@ function RunDebugButtons({
                 onRun();
               }}
             >
-              ▶ Run
+              ▶ {t("fileViewer.runLabel")}
             </button>
             <button
               type="button"
@@ -4727,9 +4766,9 @@ function RunDebugButtons({
                 setArgs("");
               }}
               disabled={!draft}
-              title="Clear arguments"
+              title={t("fileViewer.clearArgsTitle")}
             >
-              Clear
+              {t("fileViewer.clearArgsBtn")}
             </button>
           </div>
         </div>
@@ -4738,18 +4777,19 @@ function RunDebugButtons({
   );
 }
 
-/** Human labels for the `#SBATCH` keys the directive form surfaces. */
-const SBATCH_FIELD_LABELS: Record<string, string> = {
-  "job-name": "Job name",
-  account: "Account",
-  partition: "Partition",
-  time: "Time",
-  nodes: "Nodes",
-  ntasks: "Tasks",
-  "cpus-per-task": "CPUs/task",
-  mem: "Memory",
-  gres: "GRES",
-  output: "Output",
+/** Human labels for the `#SBATCH` keys the directive form surfaces. Mirrors
+ *  `HpcPipelineWizard.tsx`'s `SBATCH_LABEL_KEYS` (same field set, same keys). */
+const SBATCH_FIELD_LABEL_KEYS: Record<string, TranslationKey> = {
+  "job-name": "hpcWizard.sbatchJobName",
+  account: "hpcWizard.sbatchAccount",
+  partition: "hpcWizard.sbatchPartition",
+  time: "hpcWizard.sbatchTime",
+  nodes: "hpcWizard.sbatchNodes",
+  ntasks: "hpcWizard.sbatchTasks",
+  "cpus-per-task": "hpcWizard.sbatchCpusPerTask",
+  mem: "hpcWizard.sbatchMemory",
+  gres: "hpcWizard.sbatchGres",
+  output: "hpcWizard.sbatchOutput",
 };
 
 /** Placeholder hints per key, so an empty field still teaches the format. */
@@ -4787,6 +4827,7 @@ function SlurmBar({
   onSubmit: () => void;
   onInteractive: (res: InteractiveResources) => void;
 }) {
+  const t = useT();
   const [varsOpen, setVarsOpen] = useState(false);
   const [interOpen, setInterOpen] = useState(false);
   // Per-field typed drafts, so a splice (and its undo step) happens on commit
@@ -4816,38 +4857,40 @@ function SlurmBar({
         onMouseDown={(e) => e.preventDefault()}
         onClick={onSubmit}
         disabled={busy}
-        title="Submit this job to SLURM (sbatch) and open a log tab"
-        aria-label="Submit SLURM job"
+        title={t("fileViewer.submitSlurmTitle")}
+        aria-label={t("fileViewer.submitSlurmLabel")}
       >
-        ⏫ Submit job
+        ⏫ {t("fileViewer.submitJobLabel")}
       </button>
       <button
         className={`file-viewer-format-btn${varsOpen ? " active" : ""}`}
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => { setVarsOpen((v) => !v); setInterOpen(false); }}
-        title="Edit #SBATCH directives (resources)"
+        title={t("fileViewer.editSbatchTitle")}
         aria-pressed={varsOpen}
       >
-        Variables
+        {t("fileViewer.variablesBtn")}
       </button>
       <button
         className={`file-viewer-format-btn${interOpen ? " active" : ""}`}
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => { setInterOpen((v) => !v); setVarsOpen(false); }}
-        title="Open an interactive shell on a compute node (srun --pty)"
+        title={t("fileViewer.openInteractiveTitle")}
         aria-pressed={interOpen}
       >
-        ⚡ Interactive session…
+        ⚡ {t("fileViewer.interactiveSessionLabel")}
       </button>
       <UntestedTag />
 
       {varsOpen && (
-        <div className="file-viewer-run-args" role="dialog" aria-label="SBATCH variables">
-          <label className="file-viewer-run-args-label">#SBATCH directives</label>
+        <div className="file-viewer-run-args" role="dialog" aria-label={t("fileViewer.sbatchVariablesDialog")}>
+          <label className="file-viewer-run-args-label">{t("fileViewer.sbatchDirectivesLabel")}</label>
           <div className="slurm-directive-grid">
             {COMMON_SBATCH_KEYS.map((key) => (
               <label key={key} className="slurm-directive-field">
-                <span className="slurm-directive-key">{SBATCH_FIELD_LABELS[key] ?? key}</span>
+                <span className="slurm-directive-key">
+                  {SBATCH_FIELD_LABEL_KEYS[key] ? t(SBATCH_FIELD_LABEL_KEYS[key]) : key}
+                </span>
                 <input
                   className="file-viewer-run-args-input"
                   value={valueFor(key)}
@@ -4869,19 +4912,19 @@ function SlurmBar({
       )}
 
       {interOpen && (
-        <div className="file-viewer-run-args" role="dialog" aria-label="Interactive session">
-          <label className="file-viewer-run-args-label">Interactive session (srun --pty)</label>
+        <div className="file-viewer-run-args" role="dialog" aria-label={t("fileViewer.interactiveSessionDialog")}>
+          <label className="file-viewer-run-args-label">{t("fileViewer.interactiveSessionFieldLabel")}</label>
           <div className="slurm-directive-grid">
             {([
-              ["account", "Account", "your-group"],
-              ["partition", "Partition", "gpu"],
-              ["time", "Time", "01:00:00"],
-              ["cpus", "CPUs/task", "4"],
-              ["mem", "Memory", "8G"],
-              ["gpus", "GPUs", "1"],
-            ] as const).map(([k, label, hint]) => (
+              ["account", "hpcWizard.sbatchAccount", "your-group"],
+              ["partition", "hpcWizard.sbatchPartition", "gpu"],
+              ["time", "hpcWizard.sbatchTime", "01:00:00"],
+              ["cpus", "hpcWizard.sbatchCpusPerTask", "4"],
+              ["mem", "hpcWizard.sbatchMemory", "8G"],
+              ["gpus", "fileViewer.sbatchGpus", "1"],
+            ] as const).map(([k, labelKey, hint]) => (
               <label key={k} className="slurm-directive-field">
-                <span className="slurm-directive-key">{label}</span>
+                <span className="slurm-directive-key">{t(labelKey)}</span>
                 <input
                   className="file-viewer-run-args-input"
                   value={inter[k] ?? ""}
@@ -4899,7 +4942,7 @@ function SlurmBar({
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => { setInterOpen(false); onInteractive(inter); }}
             >
-              ⚡ Start
+              ⚡ {t("fileViewer.startLabel")}
             </button>
           </div>
         </div>
@@ -4911,16 +4954,17 @@ function SlurmBar({
 /** "Compare" toolbar toggle. When active the editor body is replaced by the
  *  three-column compare/merge view (old commit ⇄ live content ⇄ editable result). */
 function CompareButton({ active, toggle }: { active: boolean; toggle: () => void }) {
+  const t = useT();
   return (
     <button
       className={`file-viewer-format-btn file-viewer-compare-btn${active ? " active" : ""}`}
       onMouseDown={(e) => e.preventDefault()}
       onClick={toggle}
-      title={active ? "Close compare view" : "Compare with a previous version"}
-      aria-label="Toggle compare view"
+      title={active ? t("fileViewer.compareCloseTitle") : t("fileViewer.compareOpenTitle")}
+      aria-label={t("fileViewer.compareToggleLabel")}
       aria-pressed={active}
     >
-      Compare
+      {t("fileViewer.compareBtn")}
     </button>
   );
 }
@@ -4950,6 +4994,7 @@ function TextView({
   type?: InternalViewer;
   groupId?: string | null;
 }) {
+  const t = useT();
   const {
     error, draft, setDraft, loaded, isDirty, saving, saveError, save,
     undo, redo, canUndo, canRedo, externalChange, reloadFromDisk, keepMine,
@@ -5244,14 +5289,14 @@ function TextView({
             value={mode}
             onChange={setMode}
             options={[
-              { value: "preview", label: isYaml ? "Tree" : "Preview" },
+              { value: "preview", label: isYaml ? t("fileViewer.modeTree") : t("fileViewer.modePreview") },
               // The card view leads no longer — Tree is the default. It is still
               // offered, but only for a file with nesting to card (the tree's
               // honesty rule).
-              ...(gridAvailable ? [{ value: "grid" as const, label: "Cards" }] : []),
+              ...(gridAvailable ? [{ value: "grid" as const, label: t("fileViewer.modeCards") }] : []),
               {
                 value: "edit",
-                label: isYaml || previewKind === "svg" ? "Source" : "Edit",
+                label: isYaml || previewKind === "svg" ? t("fileViewer.modeSource") : t("fileViewer.modeEdit"),
               },
             ]}
           />
@@ -5323,7 +5368,7 @@ function TextView({
           error != null ? (
             <div className="file-viewer-error">{error}</div>
           ) : !loaded ? (
-            <div className="file-viewer-loading">Loading…</div>
+            <div className="file-viewer-loading">{t("common.loading")}</div>
           ) : showGrid ? (
             // The grid edits the same draft by splice, just like the tree — a cell
             // edit is dirty, undoable and saveable exactly like a typed one.
@@ -5409,6 +5454,7 @@ function MarkdownView({
   tabKey?: string;
   groupId?: string | null;
 }) {
+  const t = useT();
   const {
     error, draft, setDraft, loaded, isDirty, saving, saveError, save,
     undo, redo, canUndo, canRedo, externalChange, reloadFromDisk, keepMine,
@@ -5548,14 +5594,14 @@ function MarkdownView({
             aria-pressed={mode === "preview"}
             onClick={() => setMode("preview")}
           >
-            Preview
+            {t("fileViewer.modePreview")}
           </button>
           <button
             className={`file-viewer-mode${mode === "edit" ? " active" : ""}`}
             aria-pressed={mode === "edit"}
             onClick={() => setMode("edit")}
           >
-            Edit
+            {t("fileViewer.modeEdit")}
           </button>
         </div>
         {mode === "edit" && <MarkdownToolbar api={editorApi} />}
@@ -5622,7 +5668,7 @@ function MarkdownView({
         ) : error != null ? (
           <div className="file-viewer-error">{error}</div>
         ) : !loaded ? (
-          <div className="file-viewer-loading">Loading…</div>
+          <div className="file-viewer-loading">{t("common.loading")}</div>
         ) : (
           <div
             ref={previewRef}
@@ -5744,7 +5790,6 @@ const TEX_INSTALL_CMD = IS_WINDOWS
   : IS_MAC
     ? "brew install --cask mactex-no-gui"
     : "sudo apt-get install -y texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended latexmk";
-const TEX_INSTALL_LABEL = IS_WINDOWS ? "Install MiKTeX" : "Install LaTeX";
 
 function TexView({
   path,
@@ -5756,6 +5801,8 @@ function TexView({
   /** This viewer tab's key, for #50 same-subwindow link routing. */
   tabKey?: string;
 }) {
+  const t = useT();
+  const texInstallLabel = IS_WINDOWS ? t("fileViewer.texInstallMiktex") : t("fileViewer.texInstallLatex");
   const {
     error, draft, setDraft, loaded, isDirty, saving, saveError, save,
     undo, redo, canUndo, canRedo, externalChange, reloadFromDisk, keepMine,
@@ -5979,7 +6026,7 @@ function TexView({
         const parsed = parseTexErrors(res.log);
         setErrors(parsed);
         const detail = parsed[0]?.message || lastLogLine(res.log);
-        setCompileError(detail || "Compilation failed.");
+        setCompileError(detail || t("fileViewer.compilationFailed"));
         return;
       }
       setCompileError(null);
@@ -6006,7 +6053,7 @@ function TexView({
     } finally {
       setCompiling(false);
     }
-  }, [compiling, save, path, engine, outDir, extraFlags, openPdf]);
+  }, [compiling, save, path, engine, outDir, extraFlags, openPdf, t]);
 
   // Auto-dismiss the forward-search miss notice a few seconds after it appears.
   useEffect(() => {
@@ -6032,26 +6079,26 @@ function TexView({
         {cap && !cap.available && (
           <div className="tex-install-banner" role="note">
             <span className="tex-install-banner-text">
-              No LaTeX engine found — install one to compile this document to a PDF.
+              {t("fileViewer.noTexEngine")}
             </span>
             <code className="ollama-install-cmd">{TEX_INSTALL_CMD}</code>
             <button
               type="button"
               className="ollama-action-btn primary"
-              title="Run this command in a new terminal tab"
+              title={t("projectDialog.runInTerminalTitle")}
               onClick={() =>
-                runInstallInTab(TEX_INSTALL_LABEL, TEX_INSTALL_CMD, IS_WINDOWS ? "default" : "bash")
+                runInstallInTab(texInstallLabel, TEX_INSTALL_CMD, IS_WINDOWS ? "default" : "bash")
               }
             >
-              Run in terminal
+              {t("ollama.runInTerminal")}
             </button>
             <button
               type="button"
               className="ollama-action-btn"
-              title="Re-check after installing"
+              title={t("fileViewer.recheckAfterInstallTitle")}
               onClick={() => void refreshTexCapability().then(setCap)}
             >
-              Recheck
+              {t("common.recheck")}
             </button>
           </div>
         )}
@@ -6115,23 +6162,27 @@ function TexView({
           disabled={compiling}
           title={
             isChild
-              ? `Save and compile ${rootName} (parent of this file)`
-              : "Save and compile to PDF"
+              ? t("fileViewer.saveAndCompileNamed", { name: rootName })
+              : t("fileViewer.saveAndCompile")
           }
         >
-          {compiling ? "Compiling…" : isChild ? `Compile ${rootName} ▸` : "Compile ▸"}
+          {compiling
+            ? t("fileViewer.compiling")
+            : isChild
+              ? t("fileViewer.compileNamed", { name: rootName })
+              : t("fileViewer.compileBtn")}
         </button>
         {cap.engines.length > 1 && (
           <Dropdown
             className="file-viewer-tex-engine"
-            title="LaTeX engine"
+            title={t("fileViewer.latexEngineTitle")}
             value={engine}
             onChange={setEngine}
             disabled={compiling}
             options={[
               // "" lets the backend pick; label it with the engine it would use
               // (the first installed one, matching the backend's default order).
-              { value: "", label: `${cap.engines[0]} (default)` },
+              { value: "", label: t("fileViewer.engineDefault", { engine: cap.engines[0] }) },
               ...cap.engines.map((eng) => ({ value: eng, label: eng })),
             ]}
           />
@@ -6141,17 +6192,17 @@ function TexView({
           className={`file-viewer-tex-options-toggle${showOptions ? " active" : ""}`}
           onClick={() => setShowOptions((v) => !v)}
           aria-pressed={showOptions}
-          title="Compiler options (output folder, extra flags)"
+          title={t("fileViewer.compilerOptionsTitle")}
         >
-          Options ⚙
+          {t("fileViewer.optionsBtn")}
         </button>
         {pdfVersion > 0 && pdfPath && (
           <button
             className="file-viewer-tex-open-pdf"
             onClick={() => openPdf(pdfPath)}
-            title="Open the compiled PDF in its own tab"
+            title={t("fileViewer.openCompiledPdfTitle")}
           >
-            Open PDF ↗
+            {t("fileViewer.openPdfBtn")}
           </button>
         )}
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
@@ -6162,23 +6213,23 @@ function TexView({
         <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
       </ViewerHeader>
       {compiling && (
-        <div className="file-viewer-tex-progress" role="progressbar" aria-label="Compiling">
+        <div className="file-viewer-tex-progress" role="progressbar" aria-label={t("fileViewer.compilingLabel")}>
           <div className="file-viewer-tex-progress-bar" />
         </div>
       )}
       {showOptions && (
-        <div className="file-viewer-tex-options" role="group" aria-label="Compiler options">
+        <div className="file-viewer-tex-options" role="group" aria-label={t("fileViewer.compilerOptionsGroup")}>
           <label className="file-viewer-tex-option">
-            <span>Output folder</span>
+            <span>{t("fileViewer.outputFolderLabel")}</span>
             <input
               type="text"
               value={outDir}
-              placeholder="(beside source)"
+              placeholder={t("fileViewer.outputFolderPlaceholder")}
               onChange={(e) => setOutDir(e.target.value)}
             />
           </label>
           <label className="file-viewer-tex-option">
-            <span>Extra flags</span>
+            <span>{t("fileViewer.extraFlagsLabel")}</span>
             <input
               type="text"
               value={extraFlags}
@@ -6187,24 +6238,21 @@ function TexView({
             />
           </label>
           <p className="file-viewer-tex-options-note">
-            Shell-escape / <code>\write18</code> flags are always stripped — Eldrun
-            never enables them.
+            {t("fileViewer.shellEscapeNotePre")} <code>\write18</code> {t("fileViewer.shellEscapeNotePost")}
           </p>
         </div>
       )}
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
       {syncMiss && (
         <div className="file-viewer-tex-sync-miss" role="status">
-          Compiled — couldn't locate the cursor in the PDF (no SyncTeX match), so
-          its position was kept. Put the caret in body text and recompile to jump.
+          {t("fileViewer.syncMissMsg")}
         </div>
       )}
       {shellEscape && (
         <div className="file-viewer-tex-shell-warning" role="alert">
-          ⚠ This compile ran with LaTeX shell-escape (<code>\write18</code>) active —
-          the document was able to execute shell commands. Eldrun never enables it,
-          so a system <code>texmf.cnf</code> or <code>latexmkrc</code> turned it on.
-          Only compile <code>.tex</code> files you trust.
+          {t("fileViewer.shellEscapeWarnPre")}<code>\write18</code>{t("fileViewer.shellEscapeWarnMid")}{" "}
+          <code>texmf.cnf</code> {t("fileViewer.shellEscapeWarnOr")} <code>latexmkrc</code>{" "}
+          {t("fileViewer.shellEscapeWarnPost")} <code>.tex</code> {t("fileViewer.shellEscapeWarnEnd")}
         </div>
       )}
       {saveError && <div className="file-viewer-error">{saveError}</div>}
@@ -6217,7 +6265,7 @@ function TexView({
                 <li key={`${err.file}:${err.line}:${i}`}>
                   <button
                     className="file-viewer-tex-error-jump"
-                    title={`Jump to ${err.file}:${err.line}`}
+                    title={t("fileViewer.jumpToLocation", { location: `${err.file}:${err.line}` })}
                     onClick={() =>
                       jumpToSource(
                         resolveTexErrorPath(rootDir, err.file),
@@ -6240,7 +6288,7 @@ function TexView({
               className="file-viewer-tex-log-toggle"
               onClick={() => setShowLog((s) => !s)}
             >
-              {showLog ? "Hide log" : "Show full log"}
+              {showLog ? t("fileViewer.hideLog") : t("fileViewer.showFullLog")}
             </button>
           )}
           {showLog && log && <pre className="file-viewer-tex-log">{log}</pre>}
@@ -6325,6 +6373,7 @@ function ImageView({
   onOpenExternally: () => void;
   tabKey?: string;
 }) {
+  const t = useT();
   const viewPos = useViewerState(tabKey);
   const { url, error } = useBlobUrl(path, "");
   // Print the image, fit to the page. The blob URL resolves in the print iframe
@@ -6508,23 +6557,23 @@ function ImageView({
   return (
     <div className="file-viewer">
       <ViewerHeader onOpenExternally={onOpenExternally}>
-        <div className="file-viewer-zoom" role="group" aria-label="Zoom controls">
+        <div className="file-viewer-zoom" role="group" aria-label={t("imageZoom.controlsLabel")}>
           <button
             className="file-viewer-zoom-btn"
             onClick={() => zoomTo(scale / ZOOM_STEP)}
             disabled={!natural || scale <= MIN_SCALE}
-            title="Zoom out"
-            aria-label="Zoom out"
+            title={t("imageZoom.zoomOutTitle")}
+            aria-label={t("imageZoom.zoomOutTitle")}
           >
             −
           </button>
-          <span className="file-viewer-zoom-level" title="Current zoom">{percent}%</span>
+          <span className="file-viewer-zoom-level" title={t("imageZoom.currentZoomTitle")}>{percent}%</span>
           <button
             className="file-viewer-zoom-btn"
             onClick={() => zoomTo(scale * ZOOM_STEP)}
             disabled={!natural || scale >= MAX_SCALE}
-            title="Zoom in"
-            aria-label="Zoom in"
+            title={t("imageZoom.zoomInTitle")}
+            aria-label={t("imageZoom.zoomInTitle")}
           >
             +
           </button>
@@ -6532,15 +6581,15 @@ function ImageView({
             className="file-viewer-zoom-btn file-viewer-zoom-text"
             onClick={() => fit()}
             disabled={!natural}
-            title="Fit to window"
+            title={t("imageZoom.fitTitle")}
           >
-            Fit
+            {t("imageZoom.fit")}
           </button>
           <button
             className="file-viewer-zoom-btn file-viewer-zoom-text"
             onClick={() => zoomTo(1)}
             disabled={!natural}
-            title="Actual size (100%)"
+            title={t("imageZoom.actualSizeTitle")}
           >
             1:1
           </button>
@@ -6548,9 +6597,9 @@ function ImageView({
             className="file-viewer-zoom-btn file-viewer-zoom-text"
             onClick={() => setAnnotating(true)}
             disabled={!url}
-            title="Annotate / mark up this image"
+            title={t("fileViewer.annotateTitle")}
           >
-            ✎ Annotate
+            {t("fileViewer.annotateBtn")}
           </button>
         </div>
         <PrintButton onPrint={handlePrint} disabled={!url} />
@@ -6567,7 +6616,7 @@ function ImageView({
         {error != null ? (
           <div className="file-viewer-error">{error}</div>
         ) : url == null ? (
-          <div className="file-viewer-loading">Loading…</div>
+          <div className="file-viewer-loading">{t("common.loading")}</div>
         ) : (
           <div
             ref={setViewport}

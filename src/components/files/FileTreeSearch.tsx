@@ -23,6 +23,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { basename, resolvePath } from "../../lib/paths";
 import { disabledViewers, fileIcon, folderIcon, type FileEntry } from "../../lib/viewers/fileUtils";
 import { openFileEntry } from "./openFileEntry";
+import { useT } from "../../lib/i18n";
 
 /** The `.ext` (lowercased, dot-included) of a path's basename, matching the
  *  shape `fileIcon` and `FileEntry.extension` use; "" when there is none. */
@@ -97,6 +98,7 @@ export function FileTreeSearch({
   scopeRel: string;
   onReveal: (rel: string, isDir: boolean) => void;
 }) {
+  const t = useT();
   const viewerPrefs = useSettingsStore((s) => s.settings?.viewer_prefs);
   const disabledViewerSet = useMemo(() => disabledViewers(viewerPrefs), [viewerPrefs]);
 
@@ -248,22 +250,33 @@ export function FileTreeSearch({
   }
 
   if (mode === "content" && trimmed.length > 0 && trimmed.length < MIN_CONTENT_LEN) {
-    return <div className="file-tree-empty">Type at least {MIN_CONTENT_LEN} characters</div>;
+    return (
+      <div className="file-tree-empty">
+        {t("search.tooShort", { count: MIN_CONTENT_LEN })}
+      </div>
+    );
   }
 
   if (mode === "name") {
     if (!namesLoaded && paths.length === 0) {
-      return <div className="file-tree-empty">Searching…</div>;
+      return <div className="file-tree-empty">{t("search.searching")}</div>;
     }
     if (nameResults.length === 0) {
-      return <div className="file-tree-empty">No matching files</div>;
+      return <div className="file-tree-empty">{t("fileTreeSearch.noMatchingFiles")}</div>;
     }
     return (
       <div className="file-search-results">
         <div className="file-search-count">
-          {nameResults.length}
-          {nameResults.length >= MAX_NAME_RESULTS ? "+" : ""} file
-          {nameResults.length === 1 ? "" : "s"}
+          {t(
+            nameResults.length >= MAX_NAME_RESULTS
+              ? nameResults.length === 1
+                ? "fileTreeSearch.fileCountOnePlus"
+                : "fileTreeSearch.fileCountManyPlus"
+              : nameResults.length === 1
+                ? "fileTreeSearch.fileCountOne"
+                : "fileTreeSearch.fileCountMany",
+            { count: nameResults.length },
+          )}
         </div>
         {nameResults.map((e) => {
           // Display the path relative to the browsed scope; reveal/open stay
@@ -273,7 +286,7 @@ export function FileTreeSearch({
           <div
             key={e.path}
             className={`file-entry file-search-row ${e.is_dir ? "dir" : "file"}`}
-            title={`${e.path} — click to reveal in tree`}
+            title={t("fileTreeSearch.revealTitle", { path: e.path })}
             onClick={() => onReveal(e.path, e.is_dir)}
             onDoubleClick={() => openEntry(e.path, e.is_dir)}
           >
@@ -285,8 +298,8 @@ export function FileTreeSearch({
               <button
                 type="button"
                 className="file-search-act"
-                title="Open in a viewer tab"
-                aria-label="Open file"
+                title={t("fileTreeSearch.openInViewerTab")}
+                aria-label={t("fileTreeSearch.openFile")}
                 onClick={(ev) => {
                   ev.stopPropagation();
                   openEntry(e.path, false);
@@ -311,18 +324,25 @@ export function FileTreeSearch({
     );
   }
   if (loading && content.length === 0) {
-    return <div className="file-tree-empty">Searching…</div>;
+    return <div className="file-tree-empty">{t("search.searching")}</div>;
   }
   if (contentSearched && content.length === 0) {
-    return <div className="file-tree-empty">No results</div>;
+    return <div className="file-tree-empty">{t("search.noResults")}</div>;
   }
   return (
     <div className="file-search-results">
       {content.length > 0 && (
         <div className="file-search-count">
-          {content.length}
-          {content.length >= MAX_CONTENT_RESULTS ? "+" : ""} match
-          {content.length === 1 ? "" : "es"}
+          {t(
+            content.length >= MAX_CONTENT_RESULTS
+              ? content.length === 1
+                ? "search.matchCountOnePlus"
+                : "search.matchCountManyPlus"
+              : content.length === 1
+                ? "search.matchCountOne"
+                : "search.matchCountMany",
+            { count: content.length },
+          )}
         </div>
       )}
       {content.map((m, i) => {
@@ -334,7 +354,7 @@ export function FileTreeSearch({
           <div
             key={`${projectRel}:${m.line}:${m.col}:${i}`}
             className="file-entry file-search-row file-search-content"
-            title={`${projectRel}:${m.line} — click to open`}
+            title={t("fileTreeSearch.openTitle", { path: `${projectRel}:${m.line}` })}
             onClick={() => openEntry(projectRel, false, m.line, m.col)}
           >
             <div className="file-search-content-body">
@@ -356,8 +376,8 @@ export function FileTreeSearch({
             <button
               type="button"
               className="file-search-act"
-              title="Reveal in tree"
-              aria-label="Reveal in tree"
+              title={t("fileTreeSearch.revealInTree")}
+              aria-label={t("fileTreeSearch.revealInTree")}
               onClick={(ev) => {
                 ev.stopPropagation();
                 onReveal(projectRel, false);

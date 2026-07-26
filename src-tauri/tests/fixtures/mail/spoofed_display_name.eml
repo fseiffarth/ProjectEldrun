@@ -1,0 +1,6 @@
+From: "security@bank.example" <attacker@evil.example>
+To: b@example.org
+Subject: urgent
+Content-Type: text/plain
+
+body

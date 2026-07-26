@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settings";
 import { runInstallInTab } from "../../lib/installCommand";
+import { useT } from "../../lib/i18n";
 import type { CustomAgent } from "../../types";
 
 interface Props {
@@ -39,6 +40,7 @@ function mintId(): string {
  * blank and the tab is launch-only, dropped on restart like Aider.
  */
 export function CustomAgentDialog({ onClose }: Props) {
+  const t = useT();
   const settings = useSettingsStore((s) => s.settings);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const agents = useMemo(() => settings?.custom_agents ?? [], [settings]);
@@ -82,7 +84,7 @@ export function CustomAgentDialog({ onClose }: Props) {
     const name = label.trim();
     const command = cmd.trim();
     if (!name || !command) {
-      setError("A label and a command are both required.");
+      setError(t("customAgentDialog.requiredError"));
       return;
     }
     const args = parseArgs(argsText);
@@ -121,14 +123,13 @@ export function CustomAgentDialog({ onClose }: Props) {
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="settings-title-row">
-          <h2>Custom agents</h2>
+          <h2>{t("customAgentDialog.title")}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <div className="dialog-scroll">
         <p className="settings-help">
-          Add any command-line agent so it appears in the <strong>Agents</strong>{" "}
-          section of the new-tab menu. Eldrun launches the command in the project
-          directory as an agent tab.
+          {t("customAgentDialog.helpPre")} <strong>{t("newTabMenu.groupAgents")}</strong>{" "}
+          {t("customAgentDialog.helpPost")}
         </p>
 
         {agents.length > 0 && (
@@ -142,8 +143,8 @@ export function CustomAgentDialog({ onClose }: Props) {
                     {[a.cmd, ...(a.args ?? [])].join(" ")}
                   </code>
                   {a.resumeArgs?.length ? (
-                    <span className="custom-agent-row-tag" title="Survives a restart">
-                      resumable
+                    <span className="custom-agent-row-tag" title={t("customAgentDialog.survivesRestartTitle")}>
+                      {t("customAgentDialog.resumable")}
                     </span>
                   ) : null}
                   {missing &&
@@ -151,23 +152,23 @@ export function CustomAgentDialog({ onClose }: Props) {
                       <button
                         type="button"
                         className="custom-agent-install"
-                        title={`Run: ${a.installCmd}`}
+                        title={t("customAgentDialog.runTitle", { cmd: a.installCmd })}
                         onClick={() => install(a)}
                       >
-                        Install
+                        {t("customAgentDialog.install")}
                       </button>
                     ) : (
                       <span
                         className="custom-agent-row-missing"
-                        title="Command not found on PATH"
+                        title={t("customAgentDialog.commandNotFoundTitle")}
                       >
-                        not found
+                        {t("globalApps.notFoundPlaceholder")}
                       </span>
                     ))}
                   <button
                     type="button"
                     className="custom-agent-remove"
-                    title="Remove this agent"
+                    title={t("customAgentDialog.removeAgentTitle")}
                     disabled={busy}
                     onClick={() => remove(a.id)}
                   >
@@ -181,73 +182,69 @@ export function CustomAgentDialog({ onClose }: Props) {
 
         <div className="custom-agent-form">
           <label className="custom-agent-field">
-            <span>Label</span>
+            <span>{t("customAgentDialog.labelField")}</span>
             <input
               value={label}
-              placeholder="e.g. My Agent"
+              placeholder={t("customAgentDialog.labelPlaceholder")}
               autoFocus
               onChange={(e) => setLabel(e.target.value)}
             />
           </label>
           <label className="custom-agent-field">
-            <span>Command</span>
+            <span>{t("customAgentDialog.commandField")}</span>
             <input
               value={cmd}
-              placeholder="e.g. my-agent  (binary name or full path)"
+              placeholder={t("customAgentDialog.commandPlaceholder")}
               spellCheck={false}
               onChange={(e) => setCmd(e.target.value)}
             />
           </label>
           <label className="custom-agent-field">
-            <span>Arguments <em>(optional)</em></span>
+            <span>{t("customAgentDialog.argumentsField")} <em>{t("customAgentDialog.optional")}</em></span>
             <input
               value={argsText}
-              placeholder="e.g. --model gpt-x"
+              placeholder={t("customAgentDialog.argumentsPlaceholder")}
               spellCheck={false}
               onChange={(e) => setArgsText(e.target.value)}
             />
           </label>
           <label className="custom-agent-field">
-            <span>Resume flag <em>(optional)</em></span>
+            <span>{t("customAgentDialog.resumeFlagField")} <em>{t("customAgentDialog.optional")}</em></span>
             <input
               value={resumeText}
-              placeholder="e.g. --continue  (keeps the tab across a restart)"
+              placeholder={t("customAgentDialog.resumeFlagPlaceholder")}
               spellCheck={false}
               onChange={(e) => setResumeText(e.target.value)}
             />
           </label>
           <label className="custom-agent-field">
-            <span>Install command <em>(optional)</em></span>
+            <span>{t("customAgentDialog.installCommandField")} <em>{t("customAgentDialog.optional")}</em></span>
             <input
               value={installText}
-              placeholder="e.g. npm install -g @scope/my-agent"
+              placeholder={t("customAgentDialog.installCommandPlaceholder")}
               spellCheck={false}
               onChange={(e) => setInstallText(e.target.value)}
             />
           </label>
           <p className="settings-help">
-            An install command lets Eldrun install the agent for you: when its
-            binary isn&apos;t found, an <strong>Install</strong> button runs the
-            command in a new root terminal tab. Any one-liner works (npm, pipx,
-            curl&nbsp;| sh, …).
+            {t("customAgentDialog.installHelpPre")} <strong>{t("customAgentDialog.install")}</strong>{" "}
+            {t("customAgentDialog.installHelpPost")}
           </p>
           <p className="settings-help">
-            A resume flag lets Eldrun relaunch the agent on its most recent session
-            after a restart. Leave it blank if the agent has no such flag — the tab
-            will simply start fresh next time.
+            {t("customAgentDialog.resumeHelp")}
           </p>
         </div>
 
         {error && <div className="settings-error">{error}</div>}
 
         <div className="project-dialog-actions">
-          <button type="button" onClick={onClose}>Done</button>
+          <button type="button" onClick={onClose}>{t("machines.done")}</button>
           <button
             type="button"
             disabled={busy || !label.trim() || !cmd.trim()}
             onClick={() => void add()}
           >
-            Add agent
+            {t("customAgentDialog.addAgentButton")}
           </button>
         </div>
         </div>

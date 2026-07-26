@@ -1,4 +1,6 @@
 import { Fragment, useState } from "react";
+import { UntestedTag } from "../common/UntestedTag";
+import { useT } from "../../lib/i18n";
 
 /** One pickable row in the add-tab menu. */
 export interface AddMenuEntry {
@@ -10,6 +12,11 @@ export interface AddMenuEntry {
   /** Dot color (a TAB_ACCENT value or any CSS color). */
   color: string;
   disabled?: boolean;
+  /** Render the shared `<UntestedTag />` after the label (and give the button the
+   *  `untested` class, so label and tag lay out in a row). A menu entry cannot
+   *  carry a ReactNode label — the search box filters on `label` as a string — so
+   *  the tag is a flag here rather than markup at the call site. */
+  untested?: boolean;
   onPick: () => void;
 }
 
@@ -31,6 +38,7 @@ export interface AddMenuGroup {
  * pickable match, and Escape clears the query before it closes the menu.
  */
 export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
+  const t = useT();
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
 
@@ -57,7 +65,7 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
       <input
         className="tab-new-menu-search"
         type="text"
-        placeholder="Search…"
+        placeholder={t("newTabMenu.searchPlaceholder")}
         value={query}
         autoFocus
         spellCheck={false}
@@ -74,14 +82,16 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
           }
         }}
       />
-      {visible.length === 0 && <div className="tab-new-menu-hint">No matches</div>}
+      {visible.length === 0 && <div className="tab-new-menu-hint">{t("newTabMenu.noMatches")}</div>}
       {visible.map((g) => (
         <Fragment key={g.label}>
           <div className="tab-new-menu-group-label">{g.label}</div>
           {g.entries.map((e) => (
             <button
               key={e.key}
-              className={`tab-new-menu-item${e === first ? " enter-target" : ""}`}
+              className={`tab-new-menu-item${e === first ? " enter-target" : ""}${
+                e.untested ? " untested" : ""
+              }`}
               disabled={e.disabled}
               onClick={e.onPick}
             >
@@ -89,6 +99,7 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
                 {e.dot ?? "●"}
               </span>
               {e.label}
+              {e.untested && <UntestedTag />}
             </button>
           ))}
           {g.entries.length === 0 && g.hint && (

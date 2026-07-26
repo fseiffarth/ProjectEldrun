@@ -62,9 +62,14 @@ export function docFor(sources: PdfSources, src: SourceId): PDFDocumentProxy | u
  * Throws when the arrangement is empty (a PDF must have at least one page) or when a
  * source it references is not loaded.
  */
-export async function buildPdf(list: PageList, sources: PdfSources): Promise<Uint8Array> {
+export async function buildPdf(
+  list: PageList,
+  sources: PdfSources,
+  emptyMsg = "A PDF must have at least one page.",
+  sourceClosedMsg = "The source document for some pages is no longer open.",
+): Promise<Uint8Array> {
   if (list.length === 0) {
-    throw new Error("A PDF must have at least one page.");
+    throw new Error(emptyMsg);
   }
 
   const out = await PDFDocument.create();
@@ -74,7 +79,7 @@ export async function buildPdf(list: PageList, sources: PdfSources): Promise<Uin
   const copies = new Map<string, Awaited<ReturnType<PDFDocument["copyPages"]>>[number]>();
   for (const src of new Set(list.map((r) => r.src))) {
     const bytes = sources.get(src)?.bytes;
-    if (!bytes) throw new Error(`The source document for some pages is no longer open.`);
+    if (!bytes) throw new Error(sourceClosedMsg);
     const from = await PDFDocument.load(bytes, { ignoreEncryption: true });
     const refs = list.filter((r) => r.src === src);
     const copied = await out.copyPages(

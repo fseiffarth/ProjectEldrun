@@ -67,6 +67,7 @@ import {
   type TextItemBox,
   type CaretPhrase,
 } from "../../../lib/viewers/tex";
+import { useT } from "../../../lib/i18n";
 
 // pdf.js renders pages on a worker; point it at the bundled worker asset. Vite
 // emits a hashed URL that resolves in both dev and the packaged Tauri build.
@@ -426,6 +427,7 @@ function OutlineRow({
   onJump: (page: number) => void;
   onHover: (page: number | null, rect: DOMRect | null) => void;
 }) {
+  const t = useT();
   const hasKids = node.children.length > 0;
   const isCollapsed = collapsed.has(node.id);
   return (
@@ -438,8 +440,8 @@ function OutlineRow({
           <button
             className="file-viewer-pdf-outline-caret"
             onClick={() => onToggle(node.id)}
-            aria-label={isCollapsed ? "Expand" : "Collapse"}
-            title={isCollapsed ? "Expand" : "Collapse"}
+            aria-label={isCollapsed ? t("pdfOutline.expand") : t("pdfOutline.collapse")}
+            title={isCollapsed ? t("pdfOutline.expand") : t("pdfOutline.collapse")}
           >
             {isCollapsed ? "▸" : "▾"}
           </button>
@@ -456,7 +458,7 @@ function OutlineRow({
           }
           onMouseLeave={() => onHover(null, null)}
           disabled={node.page == null}
-          title={node.page != null ? `${node.title} — page ${node.page}` : node.title}
+          title={node.page != null ? t("pdfOutline.titlePageSuffix", { title: node.title, page: node.page }) : node.title}
         >
           {node.title}
         </button>
@@ -501,6 +503,7 @@ function OutlinePreview({
   left: number;
   cache: Map<number, string>;
 }) {
+  const t = useT();
   const [url, setUrl] = useState<string | null>(() => cache.get(page) ?? null);
   useEffect(() => {
     const hit = cache.get(page);
@@ -540,9 +543,9 @@ function OutlinePreview({
       {url ? (
         <img src={url} alt="" draggable={false} />
       ) : (
-        <div className="file-viewer-pdf-outline-preview-loading">Rendering page {page}…</div>
+        <div className="file-viewer-pdf-outline-preview-loading">{t("pdfOutline.renderingPage", { page })}</div>
       )}
-      <div className="file-viewer-pdf-outline-preview-cap">Page {page}</div>
+      <div className="file-viewer-pdf-outline-preview-cap">{t("pdfOutline.pageCaption", { page })}</div>
     </div>
   );
 }
@@ -572,6 +575,7 @@ function OutlinePane({
   currentId: string | null;
   onJump: (page: number) => void;
 }) {
+  const t = useT();
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const toggle = useCallback((id: string) => {
     setCollapsed((prev) => {
@@ -612,12 +616,12 @@ function OutlinePane({
   return (
     <div className="file-viewer-pdf-outline" ref={paneRef}>
       <div className="file-viewer-pdf-outline-head">
-        <span>Contents</span>
+        <span>{t("pdfOutline.contentsHeader")}</span>
         <UntestedTag />
       </div>
       {derived && nodes && nodes.length > 0 && (
-        <div className="file-viewer-pdf-outline-note" title="This document has no embedded table of contents; these headings were inferred from the text's font sizes.">
-          Inferred from text
+        <div className="file-viewer-pdf-outline-note" title={t("pdfOutline.derivedNoteTitle")}>
+          {t("pdfOutline.derivedNote")}
         </div>
       )}
       <div
@@ -680,6 +684,7 @@ function PdfCanvas({
   /** Hosting subwindow (group) id, for proportional scroll-linking (scrollSync). */
   groupId?: string | null;
 }) {
+  const t = useT();
   const scope = useFileScope();
 
   // "Present": turn this PDF into a deck — a sidecar of editable layers beside
@@ -936,7 +941,7 @@ function PdfCanvas({
     setSaving(true);
     setEditError(null);
     try {
-      const bytes = await buildPdf(pages, sources);
+      const bytes = await buildPdf(pages, sources, t("pdfViewer.pdfBuildEmpty"), t("pdfViewer.pdfSourceClosed"));
       await writeFileBytes(path, bytes, scope);
       const m = await fileMtime(path, scope).catch(() => null);
       if (m != null) lastMtime.current = m;
@@ -947,7 +952,7 @@ function PdfCanvas({
     } finally {
       setSaving(false);
     }
-  }, [dirty, saving, pages, sources, path, scope]);
+  }, [dirty, saving, pages, sources, path, scope, t]);
 
   // ── Merge: splice another PDF's pages into this arrangement ──────────────
   // The project the viewed file belongs to (the longest project directory that is a
@@ -997,11 +1002,11 @@ function PdfCanvas({
         await spliceIn(new Uint8Array(bytes), insertAt());
       } catch (e) {
         setEditError(
-          `Could not insert ${basename(abs)}: ${e instanceof Error ? e.message : String(e)}`,
+          t("pdfViewer.insertFailed", { name: basename(abs), msg: e instanceof Error ? e.message : String(e) }),
         );
       }
     },
-    [scope, spliceIn, insertAt],
+    [scope, spliceIn, insertAt, t],
   );
 
   // ── Dragging pages to another PDF viewer, in this window or another ──────
@@ -1015,17 +1020,17 @@ function PdfCanvas({
       const picked = pagesRef.current.filter((r) => ids.includes(r.id));
       if (picked.length === 0) return null;
       try {
-        const bytes = await buildPdf(picked, sourcesRef.current);
+        const bytes = await buildPdf(picked, sourcesRef.current, t("pdfViewer.pdfBuildEmpty"), t("pdfViewer.pdfSourceClosed"));
         const token = await invoke<string>("pdf_clip_set", { bytes: Array.from(bytes) });
         return { token, count: picked.length };
       } catch (e) {
         setEditError(
-          `Could not copy those pages: ${e instanceof Error ? e.message : String(e)}`,
+          t("pdfViewer.copyPagesFailed", { msg: e instanceof Error ? e.message : String(e) }),
         );
         return null;
       }
     },
-    [],
+    [t],
   );
 
   /** Take pages dragged out of another viewer and splice them in at `index`. */
@@ -1037,12 +1042,12 @@ function PdfCanvas({
           await spliceIn(new Uint8Array(bytes), index);
         } catch (e) {
           setEditError(
-            `Could not insert those pages: ${e instanceof Error ? e.message : String(e)}`,
+            t("pdfViewer.insertPagesFailed", { msg: e instanceof Error ? e.message : String(e) }),
           );
         }
       })();
     },
-    [spliceIn],
+    [spliceIn, t],
   );
 
   /** The dragged pages were MOVED (Shift) and the drop was acknowledged: drop them. */
@@ -1510,13 +1515,14 @@ function PdfCanvas({
     let cancelled = false;
     void (async () => {
       try {
-        const nodes = await loadOutline(doc);
+        const nodes = await loadOutline(doc, t("pdfOutline.untitled"));
         if (!cancelled) setOutline(nodes);
       } catch {
         if (!cancelled) setOutline([]); // treat an unreadable outline as none
       }
     })();
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc]);
 
   // Font-size heading fallback: when the PDF ships NO embedded outline, infer
@@ -1563,10 +1569,10 @@ function PdfCanvas({
     activeOutline && activeOutline.length > 0
       ? null
       : outline == null
-        ? "Reading outline…"
+        ? t("pdfOutline.reading")
         : outlineDerived && headings == null
-          ? "Scanning for headings…"
-          : "No chapters in this document.";
+          ? t("pdfOutline.scanning")
+          : t("pdfOutline.noChapters");
 
   // Jump the reader to a 1-based FILE page from the contents sidebar. The reader
   // shows an arrangement, so resolve the file page to whichever sheet is showing
@@ -1689,15 +1695,15 @@ function PdfCanvas({
 
   return (
     <div className="file-viewer-pdf-host" onKeyDown={onHostKeyDown}>
-      <div className="file-viewer-pdf-toolbar" role="group" aria-label="PDF zoom controls">
+      <div className="file-viewer-pdf-toolbar" role="group" aria-label={t("pdfViewer.zoomControlsLabel")}>
         {/* Contents (chapters) sits at the far left — it opens the navigation
             column on the same side, so the button lines up over it. */}
         <button
           className={`file-viewer-zoom-btn${outlineOpen ? " active" : ""}`}
           onClick={() => setOutlineOpen((v) => !v)}
           disabled={!doc}
-          title="Contents (chapters)"
-          aria-label="Contents"
+          title={t("pdfViewer.contentsTitle")}
+          aria-label={t("pdfViewer.contentsLabel")}
           aria-pressed={outlineOpen}
         >
           ☰
@@ -1710,8 +1716,8 @@ function PdfCanvas({
             setScale((s) => clampPdfScale(s / PDF_ZOOM_STEP));
           }}
           disabled={!doc || scale <= PDF_MIN_SCALE}
-          title="Zoom out"
-          aria-label="Zoom out"
+          title={t("imageZoom.zoomOutTitle")}
+          aria-label={t("imageZoom.zoomOutTitle")}
         >
           −
         </button>
@@ -1723,8 +1729,8 @@ function PdfCanvas({
             setScale((s) => clampPdfScale(s * PDF_ZOOM_STEP));
           }}
           disabled={!doc || scale >= PDF_MAX_SCALE}
-          title="Zoom in"
-          aria-label="Zoom in"
+          title={t("imageZoom.zoomInTitle")}
+          aria-label={t("imageZoom.zoomInTitle")}
         >
           +
         </button>
@@ -1732,9 +1738,9 @@ function PdfCanvas({
           className="file-viewer-zoom-btn file-viewer-zoom-text"
           onClick={() => doc && void fitWidth(doc)}
           disabled={!doc}
-          title="Fit page width"
+          title={t("pdfViewer.fitPageWidthTitle")}
         >
-          Fit width
+          {t("pdfViewer.fitWidthButton")}
         </button>
         {doc && (
           pageJumpOpen ? (
@@ -1745,7 +1751,7 @@ function PdfCanvas({
               min={1}
               max={pages.length}
               value={pageJumpValue}
-              aria-label="Go to page"
+              aria-label={t("pdfViewer.goToPageLabel")}
               onChange={(e) => setPageJumpValue(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
@@ -1762,8 +1768,8 @@ function PdfCanvas({
             <button
               className="file-viewer-zoom-btn file-viewer-pdf-pagenum"
               onClick={openPageJump}
-              title="Go to page (Ctrl+G)"
-              aria-label="Go to page"
+              title={t("pdfViewer.goToPageTitle")}
+              aria-label={t("pdfViewer.goToPageLabel")}
             >
               {visiblePage} / {pages.length}
             </button>
@@ -1773,8 +1779,8 @@ function PdfCanvas({
           className={`file-viewer-zoom-btn${findOpen ? " active" : ""}`}
           onClick={() => (findOpen ? closeFind() : openFind())}
           disabled={!doc}
-          title="Find (Ctrl+F)"
-          aria-label="Find"
+          title={t("pdfViewer.findTitle")}
+          aria-label={t("pdfViewer.findLabel")}
           aria-pressed={findOpen}
         >
           🔍
@@ -1786,8 +1792,8 @@ function PdfCanvas({
           className={`file-viewer-zoom-btn${railOpen ? " active" : ""}`}
           onClick={() => setRailOpen((v) => !v)}
           disabled={!doc}
-          title="Arrange pages"
-          aria-label="Arrange pages"
+          title={t("pdfViewer.arrangePagesTitle")}
+          aria-label={t("pdfViewer.arrangePagesTitle")}
           aria-pressed={railOpen}
         >
           ▤
@@ -1798,10 +1804,10 @@ function PdfCanvas({
           disabled={!doc || !pdfProjectDir}
           title={
             pdfProjectDir
-              ? "Insert the pages of another PDF from this project"
-              : "Insert PDF: no project tree to pick from"
+              ? t("pdfViewer.insertPdfTitle")
+              : t("pdfViewer.insertPdfNoProjectTitle")
           }
-          aria-label="Insert PDF"
+          aria-label={t("pdfViewer.insertPdfLabel")}
         >
           ⊕
         </button>
@@ -1809,8 +1815,8 @@ function PdfCanvas({
           className="file-viewer-zoom-btn"
           onClick={undo}
           disabled={past.length === 0}
-          title="Undo (Ctrl+Z)"
-          aria-label="Undo"
+          title={t("pdfViewer.undoTitle")}
+          aria-label={t("common.undo")}
         >
           ↶
         </button>
@@ -1818,8 +1824,8 @@ function PdfCanvas({
           className="file-viewer-zoom-btn"
           onClick={redo}
           disabled={future.length === 0}
-          title="Redo (Ctrl+Shift+Z)"
-          aria-label="Redo"
+          title={t("pdfViewer.redoTitle")}
+          aria-label={t("common.redo")}
         >
           ↷
         </button>
@@ -1827,20 +1833,20 @@ function PdfCanvas({
           className={`file-viewer-zoom-btn file-viewer-zoom-text${dirty ? " is-dirty" : ""}`}
           onClick={() => void handleSave()}
           disabled={!dirty || saving}
-          title={dirty ? "Save the rearranged PDF (Ctrl+S)" : "No page changes to save"}
+          title={dirty ? t("pdfViewer.saveDirtyTitle") : t("pdfViewer.saveCleanTitle")}
         >
           {saving ? (
             <span className="file-viewer-save-spinner" aria-hidden="true" />
           ) : (
-            `Save${dirty ? " •" : ""}`
+            `${t("pdfViewer.saveButton")}${dirty ? " •" : ""}`
           )}
         </button>
         <button
           className={`file-viewer-print file-viewer-pdf-print${printing ? " is-busy" : ""}`}
           onClick={() => void handlePrint()}
           disabled={!doc || printing}
-          title={printing ? "Preparing…" : "Print"}
-          aria-label="Print"
+          title={printing ? t("pdfViewer.preparing") : t("pdfViewer.printLabel")}
+          aria-label={t("pdfViewer.printLabel")}
         >
           {printing ? <span className="file-viewer-save-spinner" aria-hidden="true" /> : "🖨"}
         </button>
@@ -1849,17 +1855,17 @@ function PdfCanvas({
             className="file-viewer-zoom-text"
             onClick={() => void openAsDeck()}
             disabled={!doc || makingDeck}
-            title="Open this PDF as a presentation: editable layers on top, and a fullscreen presenter"
+            title={t("pdfViewer.presentTitle")}
           >
-            {makingDeck ? "…" : "Present"}
+            {makingDeck ? "…" : t("pdfViewer.presentButton")}
           </button>
         )}
         {onOpenExternally && (
           <button
             className="file-viewer-open-external file-viewer-pdf-external"
             onClick={onOpenExternally}
-            title="Open in external app"
-            aria-label="Open in external app"
+            title={t("pdfViewer.openExternalTitle")}
+            aria-label={t("pdfViewer.openExternalTitle")}
           >
             ↗
           </button>
@@ -1873,8 +1879,8 @@ function PdfCanvas({
               className="file-viewer-find-input"
               type="text"
               value={query}
-              placeholder="Find in document"
-              aria-label="Find"
+              placeholder={t("pdfViewer.findPlaceholder")}
+              aria-label={t("pdfViewer.findLabel")}
               spellCheck={false}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={onFindKeyDown}
@@ -1886,8 +1892,8 @@ function PdfCanvas({
               className={`file-viewer-find-btn${caseSensitive ? " active" : ""}`}
               onClick={() => setCaseSensitive((v) => !v)}
               aria-pressed={caseSensitive}
-              title="Match case"
-              aria-label="Match case"
+              title={t("pdfViewer.matchCaseTitle")}
+              aria-label={t("pdfViewer.matchCaseTitle")}
             >
               Aa
             </button>
@@ -1895,8 +1901,8 @@ function PdfCanvas({
               className="file-viewer-find-btn"
               onClick={() => goToMatch(-1)}
               disabled={matches.length === 0}
-              title="Previous match (Shift+Enter)"
-              aria-label="Previous match"
+              title={t("pdfViewer.prevMatchTitle")}
+              aria-label={t("pdfViewer.prevMatchLabel")}
             >
               ↑
             </button>
@@ -1904,16 +1910,16 @@ function PdfCanvas({
               className="file-viewer-find-btn"
               onClick={() => goToMatch(1)}
               disabled={matches.length === 0}
-              title="Next match (Enter)"
-              aria-label="Next match"
+              title={t("pdfViewer.nextMatchTitle")}
+              aria-label={t("pdfViewer.nextMatchLabel")}
             >
               ↓
             </button>
             <button
               className="file-viewer-find-btn"
               onClick={closeFind}
-              title="Close (Esc)"
-              aria-label="Close find"
+              title={t("pdfViewer.closeFindTitle")}
+              aria-label={t("pdfViewer.closeFindLabel")}
             >
               ✕
             </button>
@@ -1925,22 +1931,22 @@ function PdfCanvas({
         // away and saving would overwrite the newer file, so neither happens on its
         // own — the reader picks.
         <div className="file-viewer-banner" role="alert">
-          <span>This PDF changed on disk, and you have unsaved page changes.</span>
+          <span>{t("pdfViewer.staleOnDiskMessage")}</span>
           <button
             onClick={() => {
               setStaleOnDisk(false);
               setDiskVersion((v) => v + 1);
             }}
           >
-            Reload &amp; discard my changes
+            {t("pdfViewer.reloadDiscardButton")}
           </button>
-          <button onClick={() => setStaleOnDisk(false)}>Keep my changes</button>
+          <button onClick={() => setStaleOnDisk(false)}>{t("pdfViewer.keepChangesButton")}</button>
         </div>
       )}
       {editError && (
         <div className="file-viewer-banner is-error" role="alert">
           <span>{editError}</span>
-          <button onClick={() => setEditError(null)}>Dismiss</button>
+          <button onClick={() => setEditError(null)}>{t("pdfViewer.dismiss")}</button>
         </div>
       )}
       <div className="file-viewer-pdf-scroll-wrap">
@@ -1975,9 +1981,9 @@ function PdfCanvas({
               badgeFor={(_ref, i) => String(i + 1)}
               titleFor={(ref) =>
                 (ref.src === SELF
-                  ? `Page ${ref.page}`
-                  : `Page ${ref.page} of a merged document`) +
-                (ref.rot ? ` · turned ${ref.rot}°` : "")
+                  ? t("pdfViewer.pageOf", { n: ref.page })
+                  : t("pdfViewer.pageOfMerged", { n: ref.page })) +
+                (ref.rot ? t("pdfViewer.turnedSuffix", { deg: ref.rot }) : "")
               }
             />
           </div>
@@ -1991,7 +1997,7 @@ function PdfCanvas({
           {error != null ? (
             <div className="file-viewer-error">{error}</div>
           ) : !doc ? (
-            <div className="file-viewer-loading">Loading…</div>
+            <div className="file-viewer-loading">{t("common.loading")}</div>
           ) : (
             <div className="file-viewer-pdf-pages" ref={contentRef}>
               {/* The reader renders the ARRANGEMENT, sheet by sheet — each pulled
@@ -2045,7 +2051,7 @@ function PdfCanvas({
           onPick={(rel) => {
             const abs = `${pdfProjectDir}/${rel}`;
             if (!/\.pdf$/i.test(abs)) {
-              setEditError(`${basename(abs)} is not a PDF.`);
+              setEditError(t("pdfViewer.notAPdf", { name: basename(abs) }));
               return;
             }
             setPickerOpen(false);

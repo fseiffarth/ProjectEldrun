@@ -19,6 +19,7 @@ pub mod git_publish;
 pub mod global_machines;
 pub mod hpc_ws;
 pub mod local_loss;
+pub mod mail;
 pub mod monitor;
 pub mod net_usage;
 pub mod network;

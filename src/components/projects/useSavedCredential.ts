@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { KeyringState } from "../../lib/keyring";
 
@@ -123,21 +123,24 @@ export interface SavedCredentialHandle {
 }
 
 /**
- * Track the saved-password state of `target`. Re-reads whenever the target
- * changes; `opts.enabled` gates the read entirely for a surface that must not
- * touch the keychain until the user asks (a pill's context menu — one unbounded
- * D-Bus trip per project at launch is exactly the cost this avoids).
+ * The machinery, factored off the SSH target so a second credential kind can
+ * reuse it rather than grow a second copy of the tri-state, the 4 s bound and the
+ * "unknown is not absence" rule (the mail client is the first such kind — its
+ * secret is keyed by account, not by `user@host:port`).
+ *
+ * `key` identifies the credential: it is the effect's dependency, and an EMPTY
+ * key means "there is nothing to ask about", which resolves to `notSaved` without
+ * a store trip — the same answer a missing host has always produced. `read` and
+ * `forget` are held in a ref rather than being effect deps, so a caller need not
+ * memoize them for the read to stay keyed to the credential's identity.
  */
-export function useSavedCredential(
-  target: CredentialTarget | null | undefined,
+export function useSavedCredentialSource(
+  key: string,
+  read: () => Promise<SavedPasswordState>,
+  forget: () => Promise<void>,
   opts?: { enabled?: boolean },
 ): SavedCredentialHandle {
   const enabled = opts?.enabled ?? true;
-  // Destructured to primitives so the effect keys off the *identity of the host*,
-  // not off a spec object the store re-creates on every unrelated patch.
-  const user = target?.user ?? null;
-  const host = target?.host ?? "";
-  const port = target?.port ?? null;
 
   const [state, setState] = useState<SavedCredential>("checking");
   const [keyring, setKeyring] = useState<KeyringState>("unlocked");
@@ -145,9 +148,12 @@ export function useSavedCredential(
   // Bumped by `refresh`; a dep of the read effect rather than a second code path.
   const [nonce, setNonce] = useState(0);
 
+  const io = useRef({ read, forget });
+  io.current = { read, forget };
+
   useEffect(() => {
-    if (!host || !enabled) {
-      // No host to ask about (or nobody asking yet) is genuinely "nothing saved" —
+    if (!key || !enabled) {
+      // Nothing to ask about (or nobody asking yet) is genuinely "nothing saved" —
       // there is no store trip to be uncertain about.
       setState("notSaved");
       return;
@@ -156,7 +162,7 @@ export function useSavedCredential(
     setState("checking");
     setSaveError("");
     void withTimeout(
-      invoke<SavedPasswordState>("remote_saved_password_state", { user, host, port }).catch(
+      io.current.read().catch(
         // The command is declared infallible, so a rejection means the bridge
         // itself is gone — which tells us nothing about the store.
         () => ({ saved: false, keyring: "unavailable" as KeyringState }),
@@ -181,16 +187,16 @@ export function useSavedCredential(
     return () => {
       cancelled = true;
     };
-  }, [user, host, port, enabled, nonce]);
+  }, [key, enabled, nonce]);
 
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
 
-  const forget = useCallback(async () => {
-    if (!host) return;
-    await invoke("remote_forget_password", { user, host, port }).catch(() => {});
+  const doForget = useCallback(async () => {
+    if (!key) return;
+    await io.current.forget().catch(() => {});
     setState("notSaved");
     setSaveError("");
-  }, [user, host, port]);
+  }, [key]);
 
   const applyOutcome = useCallback((outcome: SshConnectOutcome | null | undefined) => {
     // No outcome (an older/void call site) leaves the state alone rather than
@@ -208,7 +214,40 @@ export function useSavedCredential(
     checking: state === "checking",
     saveError,
     refresh,
-    forget,
+    forget: doForget,
     applyOutcome,
   };
+}
+
+/**
+ * Track the saved-password state of an SSH `target`. Re-reads whenever the target
+ * changes; `opts.enabled` gates the read entirely for a surface that must not
+ * touch the keychain until the user asks (a pill's context menu — one unbounded
+ * D-Bus trip per project at launch is exactly the cost this avoids).
+ */
+export function useSavedCredential(
+  target: CredentialTarget | null | undefined,
+  opts?: { enabled?: boolean },
+): SavedCredentialHandle {
+  // Destructured to primitives so the effect keys off the *identity of the host*,
+  // not off a spec object the store re-creates on every unrelated patch.
+  const user = target?.user ?? null;
+  const host = target?.host ?? "";
+  const port = target?.port ?? null;
+
+  const read = useCallback(
+    () => invoke<SavedPasswordState>("remote_saved_password_state", { user, host, port }),
+    [user, host, port],
+  );
+  const forget = useCallback(
+    () => invoke<void>("remote_forget_password", { user, host, port }),
+    [user, host, port],
+  );
+
+  return useSavedCredentialSource(
+    host ? `ssh:${user ?? ""}@${host}:${port ?? ""}` : "",
+    read,
+    forget,
+    opts,
+  );
 }

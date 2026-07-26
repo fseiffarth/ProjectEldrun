@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Dropdown } from "../common/Dropdown";
 import { UntestedTag } from "../common/UntestedTag";
+import { useT } from "../../lib/i18n";
 import { useProjectsStore } from "../../stores/projects";
 import { resolveProjectDirectory } from "../../types";
 import { isPathWithin } from "../../lib/paths";
@@ -97,6 +98,7 @@ function SideColumn({
   /** Snap all panes to a block (from a ruler-bar click). */
   onJump?: (b: ChangeBlock) => void;
 }) {
+  const t = useT();
   const lang = useMemo(() => languageForPath(path), [path]);
   const lines = useMemo(() => {
     const out: { text: string; tint: string | undefined; no: number; ri: number }[] = [];
@@ -145,7 +147,7 @@ function SideColumn({
   // would re-render every line on every scroll frame and make scrolling stutter.
   const LINE_H = 18;
   const takeScrollRef = useRef<HTMLDivElement>(null);
-  const label = side === "left" ? "Take ▶" : "◀ Take";
+  const label = side === "left" ? t("compareView.takeLabelLeft") : t("compareView.takeLabelRight");
 
   return (
     <div className="file-viewer-compare-col">
@@ -195,9 +197,9 @@ function SideColumn({
                     title={
                       enabled
                         ? side === "left"
-                          ? "Take this change from the left"
-                          : "Take this change from the right"
-                        : "Edited manually — can no longer be reassigned"
+                          ? t("compareView.takeFromLeftTitle")
+                          : t("compareView.takeFromRightTitle")
+                        : t("compareView.editedManuallyTitle")
                     }
                     onClick={() => enabled && onTake(b)}
                   >
@@ -229,6 +231,7 @@ function DiffRuler({
   side: "left" | "right" | "mid";
   onJump?: (b: ChangeBlock) => void;
 }) {
+  const t = useT();
   if (!blocks || blocks.length === 0 || totalRows === 0) return null;
   return (
     <div className="file-viewer-compare-ruler">
@@ -236,7 +239,7 @@ function DiffRuler({
         <div
           className={`file-viewer-compare-ruler-mark ${side}${onJump ? " clickable" : ""}`}
           key={b.id}
-          title={onJump ? "Jump to this change" : undefined}
+          title={onJump ? t("compareView.jumpToChangeTitle") : undefined}
           onClick={onJump ? () => onJump(b) : undefined}
           style={{
             top: `${(b.startRow / totalRows) * 100}%`,
@@ -281,6 +284,7 @@ export function CompareView({
   /** Label for the apply button. Defaults to "Apply to file". */
   applyLabel?: string;
 }) {
+  const t = useT();
   const syncMode = left != null;
   const projectDir = useMemo(() => projectDirFor(path), [path]);
   const relPath = useMemo(() => relFromAbs(projectDir, path), [projectDir, path]);
@@ -468,7 +472,7 @@ export function CompareView({
   const options =
     history.length > 0
       ? history.map((c) => ({ value: c.hash, label: revLabel(c) }))
-      : [{ value: "", label: "No history for this file" }];
+      : [{ value: "", label: t("compareView.noHistoryOption") }];
   const selected = history.find((c) => c.hash === rev);
   const loading = rev !== "" && oldText == null && error == null;
 
@@ -479,18 +483,18 @@ export function CompareView({
           // Sync merge: left/right are fixed (local mirror vs remote host), so
           // there is no commit to pick — just name the two sides.
           <span className="file-viewer-compare-label">
-            {left!.title} ⇄ {rightTitle ?? "Current"}
+            {left!.title} ⇄ {rightTitle ?? t("compareView.currentFallback")}
           </span>
         ) : (
           <>
-            <span className="file-viewer-compare-label">Compare against</span>
+            <span className="file-viewer-compare-label">{t("compareView.compareAgainst")}</span>
             <Dropdown
               value={rev}
               options={options}
               onChange={setRev}
               className="file-viewer-compare-rev"
-              title="Pick a commit from this file's history"
-              placeholder="Select a commit"
+              title={t("compareView.pickCommitTitle")}
+              placeholder={t("compareView.selectCommitPlaceholder")}
             />
             {selected && <span className="file-viewer-compare-date">{selected.date}</span>}
           </>
@@ -506,17 +510,17 @@ export function CompareView({
               className="file-viewer-format-btn file-viewer-compare-take-all local"
               onClick={() => setAll("reject")}
               disabled={blocks.length === 0}
-              title="Take the local (mirror) side for every change"
+              title={t("compareView.takeAllLocalTitle")}
             >
-              Take all local
+              {t("compareView.takeAllLocal")}
             </button>
             <button
               className="file-viewer-format-btn file-viewer-compare-take-all remote"
               onClick={() => setAll("accept")}
               disabled={blocks.length === 0}
-              title="Take the remote (host) side for every change"
+              title={t("compareView.takeAllRemoteTitle")}
             >
-              Take all remote
+              {t("compareView.takeAllRemote")}
             </button>
           </>
         ) : (
@@ -525,40 +529,46 @@ export function CompareView({
               className="file-viewer-format-btn"
               onClick={() => setAll("accept")}
               disabled={blocks.length === 0}
-              title="Keep the current (new) version for every change"
+              title={t("compareView.acceptAllTitle")}
             >
-              Accept all
+              {t("compareView.acceptAll")}
             </button>
             <button
               className="file-viewer-format-btn"
               onClick={() => setAll("reject")}
               disabled={blocks.length === 0}
-              title="Revert every change to the old version"
+              title={t("compareView.rejectAllTitle")}
             >
-              Reject all
+              {t("compareView.rejectAll")}
             </button>
           </>
         )}
         <button
           className="file-viewer-format-btn file-viewer-compare-apply"
           onClick={() => onApply(resultText)}
-          title={syncMode ? "Save the merged result to both sides" : "Write the merged result into the editor"}
+          title={syncMode ? t("compareView.applyTitleSync") : t("compareView.applyTitleGit")}
         >
-          {applyLabel ?? "Apply to file"}
+          {applyLabel ?? t("compareView.applyToFile")}
         </button>
-        <button className="file-viewer-format-btn" onClick={onClose} title="Close compare">
-          Close
+        <button className="file-viewer-format-btn" onClick={onClose} title={t("compareView.closeTitle")}>
+          {t("common.close")}
         </button>
       </div>
 
       {error != null ? (
         <div className="file-viewer-error">{error}</div>
       ) : loading ? (
-        <div className="file-viewer-loading">Loading version…</div>
+        <div className="file-viewer-loading">{t("compareView.loadingVersion")}</div>
       ) : (
         <div className="file-viewer-compare-cols">
           <SideColumn
-            title={syncMode ? left!.title : selected ? `Old — ${selected.short}` : "Old"}
+            title={
+              syncMode
+                ? left!.title
+                : selected
+                  ? t("compareView.oldWithRev", { rev: selected.short })
+                  : t("compareView.oldFallback")
+            }
             rows={rows}
             side="left"
             path={path}
@@ -574,7 +584,7 @@ export function CompareView({
 
           <div className="file-viewer-compare-col file-viewer-compare-col-mid">
             <div className="file-viewer-compare-col-head">
-              <span>Result</span>
+              <span>{t("compareView.result")}</span>
               {blocks.length > 0 && (
                 <div className="file-viewer-compare-chips">
                   {blocks.map((b, i) => {
@@ -587,9 +597,9 @@ export function CompareView({
                         title={
                           enabled
                             ? dec === "accept"
-                              ? "Change kept (new). Click to revert to old."
-                              : "Change reverted (old). Click to keep new."
-                            : "Edited manually — toggle unavailable"
+                              ? t("compareView.chipKeptTitle")
+                              : t("compareView.chipRevertedTitle")
+                            : t("compareView.chipDisabledTitle")
                         }
                         onClick={() => {
                           scrollToBlock(b);
@@ -644,7 +654,7 @@ export function CompareView({
           </div>
 
           <SideColumn
-            title={rightTitle ?? "Current (editor)"}
+            title={rightTitle ?? t("compareView.currentEditor")}
             rows={rows}
             side="right"
             path={path}

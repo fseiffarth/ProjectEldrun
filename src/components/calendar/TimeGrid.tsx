@@ -14,6 +14,7 @@ import {
 } from "../../lib/calendarTime";
 import { eventColor } from "../../lib/calendarCategories";
 import { calendarColor } from "../../stores/calendar";
+import { useT } from "../../lib/i18n";
 
 /** Pixel height of one hour row. The whole grid's geometry derives from this. */
 const HOUR_PX = 44;
@@ -78,6 +79,7 @@ export function TimeGrid({
   onMove,
   onResize,
 }: Props) {
+  const t = useT();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
@@ -277,7 +279,7 @@ export function TimeGrid({
                       onDoubleClick={() => onOpen(occ)}
                       title={`${occ.title}${occ.location ? ` — ${occ.location}` : ""}`}
                     >
-                      <div className="cal-block-title">{occ.title || "(untitled)"}</div>
+                      <div className="cal-block-title">{occ.title || t("calendar.untitled")}</div>
                       {!compact ? (
                         <div className="cal-block-time">
                           {formatTime(timeOf(occ.start), prefs.use24h)}

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
 import { openLinkedFile } from "../embed/FileViewerPane";
 import { useEditorJumpStore } from "../../stores/editorJump";
+import { useT } from "../../lib/i18n";
 
 /** Mirror of the Rust `SearchMatch` struct from `commands::search`. */
 interface SearchMatch {
@@ -43,6 +44,7 @@ export function SearchPanel({
   projectDir: string;
   linkingTabKey?: string;
 }) {
+  const t = useT();
   const [query, setQuery] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [results, setResults] = useState<SearchMatch[]>([]);
@@ -100,7 +102,7 @@ export function SearchPanel({
   if (!projectDir) {
     return (
       <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto", padding: 8 }}>
-        <div className="file-tree-empty">Open a project to search</div>
+        <div className="file-tree-empty">{t("search.openProjectToSearch")}</div>
       </div>
     );
   }
@@ -123,7 +125,7 @@ export function SearchPanel({
           type="text"
           value={query}
           autoFocus
-          placeholder="Search project files…"
+          placeholder={t("search.placeholder")}
           onChange={(e) => setQuery(e.target.value)}
           style={{
             width: "100%",
@@ -151,7 +153,7 @@ export function SearchPanel({
             checked={caseSensitive}
             onChange={(e) => setCaseSensitive(e.target.checked)}
           />
-          <span>Case sensitive</span>
+          <span>{t("search.caseSensitive")}</span>
         </label>
       </div>
 
@@ -168,11 +170,13 @@ export function SearchPanel({
             {error}
           </div>
         ) : tooShort ? (
-          <div className="file-tree-empty">Type at least {MIN_QUERY_LEN} characters</div>
+          <div className="file-tree-empty">
+            {t("search.tooShort", { count: MIN_QUERY_LEN })}
+          </div>
         ) : loading && results.length === 0 ? (
-          <div className="file-tree-empty">Searching…</div>
+          <div className="file-tree-empty">{t("search.searching")}</div>
         ) : searched && results.length === 0 ? (
-          <div className="file-tree-empty">No results</div>
+          <div className="file-tree-empty">{t("search.noResults")}</div>
         ) : (
           <>
             {results.length > 0 && (
@@ -183,9 +187,16 @@ export function SearchPanel({
                   padding: "4px 8px",
                 }}
               >
-                {results.length}
-                {results.length >= MAX_RESULTS ? "+" : ""} match
-                {results.length === 1 ? "" : "es"}
+                {t(
+                  results.length >= MAX_RESULTS
+                    ? results.length === 1
+                      ? "search.matchCountOnePlus"
+                      : "search.matchCountManyPlus"
+                    : results.length === 1
+                      ? "search.matchCountOne"
+                      : "search.matchCountMany",
+                  { count: results.length },
+                )}
               </div>
             )}
             {results.map((m, i) => {

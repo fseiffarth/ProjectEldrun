@@ -4,6 +4,7 @@ import { useIndependentFileSource } from "./ProjectFilesPane";
 import { useProjectsStore } from "../../stores/projects";
 import { PROJECT_FILES_TAB_CMD, useTabsStore } from "../../stores/tabs";
 import { resolveProjectDirectory } from "../../types";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 /**
  * Open a Files (Project) tab on a folder — what the file tree's "Open in a new
@@ -13,9 +14,13 @@ import { resolveProjectDirectory } from "../../types";
  * plain "Files" explorer) at a glance; the browsed folder shows in the tab's
  * own header instead (see `ProjectFilesView`'s header).
  */
-export function openProjectFilesTab(cwd: string, folder: string) {
+export function openProjectFilesTab(
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+  cwd: string,
+  folder: string,
+) {
   useTabsStore.getState().addTab({
-    label: "Files (Project)",
+    label: t("tabKind.projectfiles"),
     cmd: PROJECT_FILES_TAB_CMD,
     args: [],
     env: {},
@@ -72,6 +77,7 @@ export function ProjectFilesTab({
   compact,
   persistFolder,
 }: Props) {
+  const t = useT();
   const projects = useProjectsStore((s) => s.projects);
   const project = projects.find((p) => p.id === scope) ?? null;
   const projectDir = project ? resolveProjectDirectory(project) : cwd;
@@ -97,7 +103,7 @@ export function ProjectFilesTab({
   };
 
   if (!projectDir) {
-    return <div className="file-tree-empty">No project selected</div>;
+    return <div className="file-tree-empty">{t("common.noProjectSelected")}</div>;
   }
 
   return (
@@ -114,7 +120,7 @@ export function ProjectFilesTab({
       // must not run git/windows probes off-screen.
       active={visible ?? true}
       mountTree
-      onOpenFolderTab={canOpenTabs ? (rel) => openProjectFilesTab(projectDir, rel) : undefined}
+      onOpenFolderTab={canOpenTabs ? (rel) => openProjectFilesTab(t, projectDir, rel) : undefined}
       containerClassName="project-files-tab"
       compact={compact}
     />

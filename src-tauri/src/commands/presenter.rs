@@ -124,12 +124,16 @@ pub async fn open_presenter_window(app: AppHandle, label: String) -> Result<Stri
     // are PHYSICAL px, and feeding those to a logical setter multiplies them by
     // the display scale — the bug that put a detached window off-screen on every
     // scaled display (#42).
+    //
+    // Placed here, pre-fullscreen. Going fullscreen is DEFERRED into the kick
+    // below and deliberately not done here: the resize nudge that forces
+    // WebKitGTK to paint at all was guarded by `is_fullscreen() == false`, so
+    // whenever a second monitor was found the window was already fullscreen and
+    // the nudge never ran — i.e. the workaround skipped exactly the case it
+    // exists for, and first real use was a black projector (TODO V #97).
     if let Some(m) = target {
         let _ = win.set_position(PhysicalPosition::new(m.x, m.y));
         let _ = win.set_size(PhysicalSize::new(m.w, m.h));
-        // Fullscreen AFTER placing it, so the WM makes *that* monitor fullscreen
-        // and not the one the window was born on.
-        let _ = win.set_fullscreen(true);
     }
 
     // Force the first paint, deferred so the webview has mounted. Same two
@@ -138,6 +142,7 @@ pub async fn open_presenter_window(app: AppHandle, label: String) -> Result<Stri
     // blank WHITE one until it is shown/focused.
     let nudge_app = app.clone();
     let nudge_label = label.clone();
+    let go_fullscreen = target.is_some();
     std::thread::spawn(move || {
         let kick = |app: AppHandle, label: String, reveal: bool| {
             let app_main = app.clone();
@@ -149,9 +154,9 @@ pub async fn open_presenter_window(app: AppHandle, label: String) -> Result<Stri
                         let _ = w.set_focus();
                     }
                     // A fullscreen window must not be resized — that would drop it
-                    // out of fullscreen. Showing/focusing is enough there, and on
-                    // Linux the fullscreen transition is itself the resize that
-                    // paints the surface.
+                    // out of fullscreen — so the nudge only runs while the window
+                    // is still windowed, which is now every window on its first
+                    // kick.
                     if let Ok(false) = w.is_fullscreen() {
                         if let Ok(sz) = w.inner_size() {
                             let delta: i32 = if reveal { 1 } else { -1 };
@@ -165,7 +170,21 @@ pub async fn open_presenter_window(app: AppHandle, label: String) -> Result<Stri
         std::thread::sleep(std::time::Duration::from_millis(250));
         kick(nudge_app.clone(), nudge_label.clone(), true);
         std::thread::sleep(std::time::Duration::from_millis(50));
-        kick(nudge_app, nudge_label, false);
+        kick(nudge_app.clone(), nudge_label.clone(), false);
+
+        // Only now go fullscreen, on the monitor the window has already been
+        // moved to — after the ±1 nudge has produced the genuine OS-level resize
+        // WebKitGTK needs, and with the fullscreen transition as a second one.
+        if go_fullscreen {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let app_main = nudge_app.clone();
+            let fs_label = nudge_label.clone();
+            let _ = nudge_app.run_on_main_thread(move || {
+                if let Some(w) = app_main.get_webview_window(&fs_label) {
+                    let _ = w.set_fullscreen(true);
+                }
+            });
+        }
     });
 
     Ok(label)
@@ -184,6 +203,86 @@ pub fn close_presenter_window(app: AppHandle, label: String) -> Result<(), Strin
         // `onCloseRequested`, which reports back that it went away — a message the
         // presenter that just asked for this does not need.
         let _ = win.destroy();
+    }
+    Ok(())
+}
+
+// ── Keeping the projector awake ──────────────────────────────────────────────
+//
+// A 45-minute talk with a long Q&A pause has no pointer movement and no key
+// presses, so the screensaver blanks the projector mid-answer. Nothing in the
+// deck subsystem asked the OS not to, so it did.
+//
+// Linux gets the real thing; every other platform is a documented no-op, exactly
+// as `platform/` already degrades. The cost of being wrong here is asymmetric —
+// an inhibit that never released would leave the user's machine unable to sleep
+// for the rest of the session — so the process is held in a mutex, is
+// idempotent, and is released on the presenter's unmount, on app exit, and by
+// the child dying with us if all else fails.
+
+/// The live inhibitor, if any. `None` = nothing is held.
+static INHIBIT: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
+
+/// Ask the desktop not to blank the screen while a talk is on.
+///
+/// `xdg-screensaver suspend <window-id>` is the portable spelling and needs an
+/// X11 window id we do not have here, so this uses `systemd-inhibit` with a
+/// long-lived child instead: the inhibition lasts exactly as long as the child,
+/// which means killing it is the release and a crashed Eldrun releases it too.
+/// Falls back to reporting `false` rather than erroring — a talk must not fail to
+/// start because a desktop has no inhibit mechanism.
+#[tauri::command]
+pub fn presenter_inhibit_sleep(reason: String) -> Result<bool, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut held = INHIBIT.lock().map_err(|_| "inhibit lock poisoned".to_string())?;
+        if held.is_some() {
+            // Idempotent: two presenters (main window + a popout) share one.
+            return Ok(true);
+        }
+        // The reason string is shown by the desktop's own "what is keeping this
+        // machine awake" UI, so it is passed as a single argv element (never a
+        // shell) and clipped to something a list can render.
+        let why: String = reason.chars().filter(|c| !c.is_control()).take(80).collect();
+        let child = crate::paths::command_no_window("systemd-inhibit")
+            .args([
+                "--what=idle:sleep",
+                "--who=Eldrun",
+                &format!("--why={}", if why.is_empty() { "Presenting" } else { &why }),
+                "--mode=block",
+                "sleep",
+                "infinity",
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        match child {
+            Ok(c) => {
+                *held = Some(c);
+                Ok(true)
+            }
+            // No systemd-inhibit on PATH. Nothing to report to the user: the talk
+            // works, the screen may blank, and a modal about it mid-presentation
+            // would be worse than the thing it warns about.
+            Err(_) => Ok(false),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = reason;
+        Ok(false)
+    }
+}
+
+/// Release the inhibitor. Idempotent — nothing held is the state the caller
+/// wanted, and the presenter's unmount races app exit's own release.
+#[tauri::command]
+pub fn presenter_release_sleep() -> Result<(), String> {
+    let mut held = INHIBIT.lock().map_err(|_| "inhibit lock poisoned".to_string())?;
+    if let Some(mut child) = held.take() {
+        let _ = child.kill();
+        let _ = child.wait();
     }
     Ok(())
 }
@@ -256,6 +355,15 @@ mod tests {
         // sitting at, i.e. the one surface the audience must NOT get.
         let ms = [rect(0, 0), rect(1920, 0), rect(3840, 0)];
         assert_eq!(choose_audience_monitor(&ms, None), Some(rect(1920, 0)));
+    }
+
+    #[test]
+    fn releasing_an_unheld_inhibitor_is_not_an_error() {
+        // The presenter's unmount races app exit's own release, and a talk that
+        // never managed to inhibit at all (no systemd-inhibit on PATH) still
+        // releases on the way out.
+        assert!(presenter_release_sleep().is_ok());
+        assert!(presenter_release_sleep().is_ok());
     }
 
     #[test]

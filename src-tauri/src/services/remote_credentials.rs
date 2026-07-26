@@ -46,6 +46,42 @@ pub fn ssh_account(user: &Option<String>, host: &str, port: Option<u16>) -> Stri
     format!("ssh:{user}@{host}:{port}")
 }
 
+/// Which mail protocol a saved secret belongs to. IMAP and SMTP get separate
+/// entries because they are separate credentials even when they usually match —
+/// an app password issued for one is routinely not valid for the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MailProto {
+    Imap,
+    Smtp,
+}
+
+impl MailProto {
+    fn as_str(self) -> &'static str {
+        match self {
+            MailProto::Imap => "imap",
+            MailProto::Smtp => "smtp",
+        }
+    }
+}
+
+/// The keychain account for a mail login: `"mail:imap:{user}@{host}:{port}"`.
+///
+/// Keyed by **server target, not account id**, matching the SSH rule at
+/// [`ssh_account`]: one saved secret per login, whichever dialog saved it, so
+/// two Eldrun accounts pointed at the same mailbox share one entry instead of
+/// silently disagreeing about whether a password is saved. The host is
+/// lower-cased for the same reason it is there (DNS is case-insensitive, so
+/// `Imap.Example` and `imap.example` are one machine); the login name is *not*
+/// folded, because a different login is a different account.
+///
+/// The **backend owns this spelling** — the frontend never mints an account
+/// string, which is what keeps the key stable when the UI is rewritten.
+pub fn mail_account(proto: MailProto, user: &str, host: &str, port: u16) -> String {
+    let user = user.trim();
+    let host = host.trim().to_lowercase();
+    format!("mail:{}:{user}@{host}:{port}", proto.as_str())
+}
+
 /// The keychain account for an OpenVPN tunnel's primary secret, keyed by its
 /// stored config path — the `auth-user-pass` account password, or (for a config
 /// with no account) the private-key passphrase.
@@ -600,6 +636,48 @@ mod tests {
             ssh_account(&Some("a".into()), "h", Some(22)),
             ssh_account(&Some("a".into()), "h", Some(2222))
         );
+    }
+
+    /// IMAP and SMTP are separate credentials; sharing an entry would mean
+    /// saving one overwrote the other.
+    #[test]
+    fn mail_accounts_are_per_protocol_and_per_target() {
+        assert_eq!(
+            mail_account(MailProto::Imap, "user@example.com", "imap.example.com", 993),
+            "mail:imap:user@example.com@imap.example.com:993"
+        );
+        assert_ne!(
+            mail_account(MailProto::Imap, "u", "h.example", 993),
+            mail_account(MailProto::Smtp, "u", "h.example", 993)
+        );
+        assert_ne!(
+            mail_account(MailProto::Imap, "u", "h.example", 993),
+            mail_account(MailProto::Imap, "u", "h.example", 143)
+        );
+    }
+
+    /// One machine, one entry — the same lesson [`ssh_account`] learned.
+    #[test]
+    fn mail_account_folds_host_case_and_trims() {
+        assert_eq!(
+            mail_account(MailProto::Imap, " user ", " Imap.Example ", 993),
+            mail_account(MailProto::Imap, "user", "imap.example", 993)
+        );
+        // The login is deliberately not folded.
+        assert_ne!(
+            mail_account(MailProto::Imap, "User", "imap.example", 993),
+            mail_account(MailProto::Imap, "user", "imap.example", 993)
+        );
+    }
+
+    /// A mail key must never collide with an SSH or OpenVPN one — they share
+    /// the `eldrun-remote` service.
+    #[test]
+    fn mail_keys_never_collide_with_the_other_credential_kinds() {
+        let m = mail_account(MailProto::Imap, "u", "h.example", 993);
+        assert!(m.starts_with("mail:"));
+        assert_ne!(m, ssh_account(&Some("u".into()), "h.example", Some(993)));
+        assert_ne!(m, openvpn_account("h.example"));
     }
 
     #[test]

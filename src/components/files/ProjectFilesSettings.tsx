@@ -6,6 +6,7 @@ import { Dropdown } from "../common/Dropdown";
 import { useSettingsStore } from "../../stores/settings";
 import { VIEWER_PREF_TYPES } from "../../lib/viewers/fileUtils";
 import { PythonInterpreterWindow } from "../projects/PythonInterpreterWindow";
+import { useT } from "../../lib/i18n";
 import type { ProjectEntry, ViewerPref } from "../../types";
 
 /**
@@ -206,6 +207,7 @@ export function ProjectFilesSettingsDialog({
   filters: ProjectFileFilters;
   onClose: () => void;
 }) {
+  const t = useT();
   const settings = useSettingsStore((s) => s.settings);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const { availableEndings, hiddenEndings, error, toggleHiddenEnding } = filters;
@@ -223,16 +225,14 @@ export function ProjectFilesSettingsDialog({
     <div className="modal-backdrop how-to-start-backdrop" onMouseDown={onClose}>
       <div className="settings-dialog project-settings-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>Project Settings</h2>
+          <h2>{t("projectSettings.title")}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
 
-        <div className="settings-section-title">File Hiding</div>
-        <p className="settings-help">
-          Click an ending to hide matching files in the project file views. Dimmed endings are hidden.
-        </p>
+        <div className="settings-section-title">{t("projectSettings.fileHiding")}</div>
+        <p className="settings-help">{t("projectSettings.fileHidingHelp")}</p>
         {availableEndings.length === 0 ? (
-          <div className="settings-empty">No file endings found in this project.</div>
+          <div className="settings-empty">{t("projectSettings.noEndingsFound")}</div>
         ) : (
           <div className="settings-list project-ending-list">
             {availableEndings.map((ending) => {
@@ -244,7 +244,10 @@ export function ProjectFilesSettingsDialog({
                   key={ending}
                   aria-pressed={checked}
                   onClick={() => toggleHiddenEnding(ending, !checked)}
-                  title={checked ? `Show ${ending} files` : `Hide ${ending} files`}
+                  title={t(
+                    checked ? "projectSettings.showEndingFiles" : "projectSettings.hideEndingFiles",
+                    { ending },
+                  )}
                 >
                   {ending}
                 </button>
@@ -256,18 +259,15 @@ export function ProjectFilesSettingsDialog({
 
         {hasPython && project && (
           <>
-            <div className="settings-section-title">Python</div>
-            <p className="settings-help">
-              Which interpreter the code viewer's Run and Debug buttons use.
-              Auto-detect by default; pin a venv or other environment when
-              Eldrun can't infer it.
-            </p>
+            <div className="settings-section-title">{t("projectSettings.python")}</div>
+            <p className="settings-help">{t("projectSettings.pythonHelp")}</p>
             <button
               className="tab-add-btn"
               style={{ fontSize: 11, padding: "2px 8px" }}
               onClick={() => setShowPython(true)}
             >
-              {project.python_interpreter ? "✓ " : ""}Python interpreter…
+              {project.python_interpreter ? "✓ " : ""}
+              {t("projectSettings.pythonInterpreter")}
             </button>
           </>
         )}
@@ -275,19 +275,15 @@ export function ProjectFilesSettingsDialog({
         {/* #48 per-file-type native-viewer settings (global, not per-project).
             Toggles opt-in local autocomplete (#45) per type, plus the global
             autosave (#47). */}
-        <div className="settings-section-title">Native Viewers</div>
-        <p className="settings-help">
-          Eldrun renders these file types in-app. Disable a type to open its
-          files in your external default app instead. Autocomplete is
-          local-only (Ollama) and opt-in.
-        </p>
+        <div className="settings-section-title">{t("projectSettings.nativeViewers")}</div>
+        <p className="settings-help">{t("projectSettings.nativeViewersHelp")}</p>
         <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
           <Toggle
             size="sm"
             checked={settings?.autosave !== false}
             onChange={(e) => void updateSettings({ autosave: e.target.checked })}
           />
-          <span>Autosave edits</span>
+          <span>{t("projectSettings.autosaveEdits")}</span>
         </label>
         <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
           <Toggle
@@ -295,32 +291,32 @@ export function ProjectFilesSettingsDialog({
             checked={settings?.change_tint !== false}
             onChange={(e) => void updateSettings({ change_tint: e.target.checked })}
           />
-          <span>Highlight recent edits (new→old colour trail)</span>
+          <span>{t("projectSettings.highlightRecentEdits")}</span>
         </label>
         <div className="viewer-prefs-list">
-          {VIEWER_PREF_TYPES.map((t) => {
-            const pref: ViewerPref = settings?.viewer_prefs?.[t.id] ?? {};
+          {VIEWER_PREF_TYPES.map((vt) => {
+            const pref: ViewerPref = settings?.viewer_prefs?.[vt.id] ?? {};
             const enabled = pref.enabled !== false;
             const patch = (next: ViewerPref) =>
               void updateSettings({
                 viewer_prefs: {
                   ...(settings?.viewer_prefs ?? {}),
-                  [t.id]: { ...pref, ...next },
+                  [vt.id]: { ...pref, ...next },
                 },
               });
             return (
-              <div className="viewer-pref-row" key={t.id}>
-                <span className="viewer-pref-name">{t.label}</span>
-                <span className="viewer-pref-exts">{t.extensions.join(" ")}</span>
+              <div className="viewer-pref-row" key={vt.id}>
+                <span className="viewer-pref-name">{vt.label}</span>
+                <span className="viewer-pref-exts">{vt.extensions.join(" ")}</span>
                 <label className="viewer-pref-toggle">
                   <Toggle
                     size="sm"
                     checked={enabled}
                     onChange={(e) => patch({ enabled: e.target.checked })}
                   />
-                  <span>Enabled</span>
+                  <span>{t("agents.enabled")}</span>
                 </label>
-                {t.autocomplete && (
+                {vt.autocomplete && (
                   <>
                     <label className="viewer-pref-toggle">
                       <Toggle
@@ -329,7 +325,7 @@ export function ProjectFilesSettingsDialog({
                         disabled={!enabled}
                         onChange={(e) => patch({ autocomplete: e.target.checked })}
                       />
-                      <span>Autocomplete</span>
+                      <span>{t("localModel.role.autocomplete")}</span>
                     </label>
                     {/* #45 default completion-length mode; toggled live
                         in-editor with Shift+Tab while a suggestion shows. */}
@@ -337,14 +333,14 @@ export function ProjectFilesSettingsDialog({
                       className="viewer-pref-mode"
                       value={pref.autocomplete_mode ?? "sentence"}
                       disabled={!enabled || pref.autocomplete !== true}
-                      title="Default completion length (toggle live with Shift+Tab)"
+                      title={t("projectSettings.completionLengthTitle")}
                       onChange={(v) =>
                         patch({ autocomplete_mode: v as ViewerPref["autocomplete_mode"] })
                       }
                       options={[
-                        { value: "sentence", label: "Sentence" },
-                        { value: "block", label: "Block" },
-                        { value: "scope", label: "Scope" },
+                        { value: "sentence", label: t("projectSettings.sentence") },
+                        { value: "block", label: t("projectSettings.block") },
+                        { value: "scope", label: t("projectSettings.scope") },
                       ]}
                     />
                     {/* Local-model grammar/spelling check — underlines typos
@@ -356,7 +352,7 @@ export function ProjectFilesSettingsDialog({
                         disabled={!enabled}
                         onChange={(e) => patch({ grammar_check: e.target.checked })}
                       />
-                      <span>Grammar</span>
+                      <span>{t("localModel.role.grammar")}</span>
                     </label>
                   </>
                 )}
@@ -367,7 +363,7 @@ export function ProjectFilesSettingsDialog({
 
         {settings?.debug && (
           <>
-            <div className="settings-section-title">Debug</div>
+            <div className="settings-section-title">{t("projectSettings.debug")}</div>
             <button
               className="tab-add-btn"
               style={{ fontSize: 11, padding: "2px 8px", width: "100%", color: "var(--danger, #f85149)" }}
@@ -377,7 +373,7 @@ export function ProjectFilesSettingsDialog({
                 }).catch(console.error);
               }}
             >
-              Clear session storage
+              {t("projectSettings.clearSessionStorage")}
             </button>
           </>
         )}

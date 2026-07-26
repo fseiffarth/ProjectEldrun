@@ -11,6 +11,15 @@ import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes"
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import type { ProjectBox, ProjectEntry } from "../../types";
 import type { SortKey } from "../../lib/viewers/fileUtils";
+import { useT, type TranslationKey } from "../../lib/i18n";
+
+const SORT_KEY_LABEL: Record<SortKey, TranslationKey> = {
+  name: "sortKey.name",
+  size: "sortKey.size",
+  type: "sortKey.type",
+  created: "sortKey.created",
+  modified: "sortKey.modified",
+};
 
 /**
  * THE project file view — the tree, its sort row, the remote sync row and the
@@ -112,20 +121,21 @@ export function FileSourceSwitch({
   remoteDisabled?: boolean;
   remoteDisabledTitle?: string;
 }) {
+  const t = useT();
   // Never disable the segment that's currently active — that would leave the
   // switch with no lit button. (A remote-native tab whose file is missing shows
   // its own read error; the escape hatch there is switching TO Local.)
   const disableRemote = remoteDisabled && source !== "remote";
   return (
-    <span className="right-panel-source-switch" role="group" aria-label="File source">
+    <span className="right-panel-source-switch" role="group" aria-label={t("fileSourceSwitch.ariaLabel")}>
       <button
         type="button"
         className={`source-seg${source === "local" ? " active" : ""}`}
         aria-pressed={source === "local"}
         onClick={() => onChange("local")}
-        title="Show the local synced mirror copy."
+        title={t("fileSourceSwitch.localTitle")}
       >
-        Local
+        {t("fileSourceSwitch.local")}
       </button>
       <button
         type="button"
@@ -135,11 +145,11 @@ export function FileSourceSwitch({
         onClick={() => onChange("remote")}
         title={
           disableRemote
-            ? remoteDisabledTitle ?? "This file isn't on the remote host (local-only)."
-            : "Show the host tree over SFTP (remote)."
+            ? remoteDisabledTitle ?? t("fileSourceSwitch.remoteDisabledTitle")
+            : t("fileSourceSwitch.remoteTitle")
         }
       >
-        Remote
+        {t("fileSourceSwitch.remote")}
       </button>
     </span>
   );
@@ -197,6 +207,7 @@ function BoxRootSection({
   sortKey,
   descending,
 }: BoxRoot & { sortKey: SortKey; descending: boolean }) {
+  const t = useT();
   const [collapsed, setCollapsed] = useState(false);
   const rel = useProjectsStore((s) => s.rightPanelFolderByProject[rootId] ?? "");
   const setRightPanelFolder = useProjectsStore((s) => s.setRightPanelFolder);
@@ -215,7 +226,9 @@ function BoxRootSection({
           {icon}
         </span>
         <span className="file-root-name">{label}</span>
-        <span className="file-root-kind">{variant === "box" ? "box" : "project"}</span>
+        <span className="file-root-kind">
+          {t(variant === "box" ? "fileRoot.kindBox" : "fileRoot.kindProject")}
+        </span>
       </button>
       {!collapsed && (
         <div className="file-root-body">
@@ -297,6 +310,7 @@ export function ProjectFilesPane({
   mountTree = true,
   compact,
 }: Props) {
+  const t = useT();
   const { activeBox, boxRoots } = useBoxRoots(scope);
   const projectId = project?.id ?? null;
   const isRemoteProject = !!project?.remote;
@@ -331,13 +345,13 @@ export function ProjectFilesPane({
                 onClick={() =>
                   void useSyncStore.getState().setAuto(projectId, [""], !autoAll, true)
                 }
-                title={
+                title={t(
                   autoAll
-                    ? "Auto-syncing the whole project (⟳). Click to stop. Individual files/folders can still be excluded or included from their right-click menu."
-                    : "Auto-sync the whole project bidirectionally (host ⇄ local mirror). Diverged files are left for manual resolution; per-file/folder toggles override this."
-                }
+                    ? "projectFilesPane.autoSyncOnTitle"
+                    : "projectFilesPane.autoSyncOffTitle",
+                )}
               >
-                {autoAll ? "⟳ Auto-sync: all" : "Auto-sync all"}
+                {t(autoAll ? "projectFilesPane.autoSyncOn" : "projectFilesPane.autoSyncOff")}
               </button>
             );
           })()}
@@ -350,27 +364,27 @@ export function ProjectFilesPane({
             className="tab-add-btn"
             style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
             onClick={() => useBigFoldersStore.getState().open(projectId)}
-            title="Find the folders too big to sync (on this machine and on the host) and choose which to exclude"
+            title={t("projectFilesPane.bigFoldersTitle")}
           >
-            Large folders…
+            {t("projectFilesPane.bigFolders")}
           </button>
           {source === "remote" ? (
             <button
               className="tab-add-btn"
               style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: "auto" }}
               onClick={() => void useSyncStore.getState().syncWholeProject(projectId)}
-              title="Sync the whole project tree into the local mirror (remote → local)"
+              title={t("projectFilesPane.syncAllRemoteTitle")}
             >
-              Sync all
+              {t("projectFilesPane.syncAll")}
             </button>
           ) : (
             <button
               className="tab-add-btn"
               style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: "auto" }}
               onClick={() => void useSyncStore.getState().pushWholeProject(projectId)}
-              title="Push the whole local mirror to the host (local → remote). Files that diverged on the host (orange) are skipped, never overwritten."
+              title={t("projectFilesPane.syncAllLocalTitle")}
             >
-              Sync all
+              {t("projectFilesPane.syncAll")}
             </button>
           )}
         </div>
@@ -386,9 +400,17 @@ export function ProjectFilesPane({
                 ? onSortChange(key, !descending)
                 : onSortChange(key, descending)
             }
-            title={sortKey === key ? (descending ? "Descending — click to reverse" : "Ascending — click to reverse") : `Sort by ${key}`}
+            title={
+              sortKey === key
+                ? t(
+                    descending
+                      ? "projectFilesPane.sortDescendingTitle"
+                      : "projectFilesPane.sortAscendingTitle",
+                  )
+                : t("projectFilesPane.sortByTitle", { key: t(SORT_KEY_LABEL[key]) })
+            }
           >
-            {key}{sortKey === key ? (descending ? " ↓" : " ↑") : ""}
+            {t(SORT_KEY_LABEL[key])}{sortKey === key ? (descending ? " ↓" : " ↑") : ""}
           </button>
         ))}
       </div>
@@ -396,7 +418,7 @@ export function ProjectFilesPane({
       <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
         {mountTree && activeBox ? (
           boxRoots.length === 0 ? (
-            <div className="file-tree-empty">No member project folders</div>
+            <div className="file-tree-empty">{t("projectFilesPane.noMemberFolders")}</div>
           ) : (
             boxRoots.map((r) => (
               <BoxRootSection
@@ -423,8 +445,8 @@ export function ProjectFilesPane({
                 <div className="file-tree-empty" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
                   <div>
                     {remoteSshState === "connecting"
-                      ? "Connecting to the remote host…"
-                      : "Disconnected — connect to browse the remote tree."}
+                      ? t("projectFilesPane.connecting")
+                      : t("projectFilesPane.disconnected")}
                   </div>
                   {remoteSshState !== "connecting" && projectId && (
                     <button
@@ -432,7 +454,7 @@ export function ProjectFilesPane({
                       className="dialog-connect-btn"
                       onClick={() => useRemoteMachinesStore.getState().open(projectId)}
                     >
-                      Connect
+                      {t("common.connect")}
                     </button>
                   )}
                 </div>

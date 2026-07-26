@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ViewerHeader, useReadonlyFile } from "./FileViewerPane";
+import { useT } from "../../lib/i18n";
 import { useProjectsStore } from "../../stores/projects";
 import { resolveProjectDirectory } from "../../types";
 import { relFromAbs } from "../../lib/viewers/fileUtils";
@@ -100,6 +101,7 @@ export function DiffView({
   onOpenExternally: () => void;
   tabKey?: string;
 }) {
+  const t = useT();
   const patchMode = isPatchFile(path);
 
   // Hooks must run unconditionally. In patch mode we use this file's content; in
@@ -164,11 +166,11 @@ export function DiffView({
           </div>
         ) : !loaded ? (
           <div className="diff-loading" style={{ padding: "1rem", color: "var(--text-secondary, #8b949e)" }}>
-            Loading diff…
+            {t("diffView.loading")}
           </div>
         ) : files.length === 0 ? (
           <div className="diff-empty" style={{ padding: "1rem", color: "var(--text-secondary, #8b949e)" }}>
-            No changes.
+            {t("diffView.noChanges")}
           </div>
         ) : (
           files.map((file, fi) => (

@@ -1,0 +1,6 @@
+From: a@example.com
+To: b@example.org
+Subject: charset
+Content-Type: text/html; charset=utf-7
+
++ADw-script+AD4-alert(1)+ADw-/script+AD4-

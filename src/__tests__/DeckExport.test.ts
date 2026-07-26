@@ -15,20 +15,29 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import {
   type TextMetrics,
+  encodableIn,
   listMarker,
   loadMetrics,
   lineOffset,
   standardFontFor,
+  toEncodable,
+  unencodableIn,
   wrapText,
 } from "../lib/viewers/deck/fonts";
 import { exportDeck, exportPathFor } from "../lib/viewers/deck/export";
 import {
   type Deck,
   type DeckObject,
+  type FontFamily,
   type TextStyle,
   blankSlide,
+  customFontPath,
+  customFontsOf,
+  defaultFooter,
   defaultTextStyle,
   emptyDeck,
+  fontKey,
+  footerObject,
 } from "../lib/viewers/deck/model";
 
 let metrics: TextMetrics;
@@ -419,5 +428,224 @@ describe("exportDeck", () => {
 describe("exportPathFor", () => {
   it("names the output beside the deck", () => {
     expect(exportPathFor("/p/talk.eldeck.json")).toBe("/p/talk.export.pdf");
+  });
+});
+
+describe("characters the standard-14 fonts cannot write (V #96)", () => {
+  const textObj = (text: string): DeckObject => ({
+    ...common,
+    id: "t",
+    kind: "text",
+    text,
+    style: style(),
+    padding: 2,
+  });
+
+  it("classifies what WinAnsi can and cannot carry", () => {
+    expect(encodableIn("Ordinary text — with an em dash, “quotes” and €")).toBe(true);
+    expect(encodableIn("σ = 3")).toBe(false);
+    expect(unencodableIn("σ and μ and σ again")).toEqual(["σ", "μ"]);
+    expect(toEncodable("σ = 3")).toBe(" = 3");
+  });
+
+  it("exports the rest of the deck instead of throwing on a Greek letter", async () => {
+    // The whole failure: `drawText` threw straight out of `exportDeck`, so ONE
+    // Greek letter in one caption cost the entire export — with no partial PDF
+    // and no warning naming the character. It renders fine on screen, so the
+    // first anyone knew was the export, the night before the talk.
+    const r = await exportDeck({
+      deck: deckWith([textObj("σ = 3.2 and μ = 0.1")], 2),
+      baseBytes: null,
+      images: new Map(),
+      posters: new Map(),
+      metrics,
+    });
+    expect(r.pages).toBe(2);
+    expect(new TextDecoder().decode(r.bytes.slice(0, 5))).toBe("%PDF-");
+    expect(r.warnings.join(" ")).toContain("σ");
+  });
+
+  it("survives a CJK string too, and still names it", async () => {
+    const r = await exportDeck({
+      deck: deckWith([textObj("結果は良好です")], 1),
+      baseBytes: null,
+      images: new Map(),
+      posters: new Map(),
+      metrics,
+    });
+    expect(r.pages).toBe(1);
+    expect(r.warnings.length).toBeGreaterThan(0);
+  });
+
+  it("says nothing at all about an ordinary Latin-1 deck", async () => {
+    const r = await exportDeck({
+      deck: deckWith([textObj("Café — naïve résumé “quoted” €5")], 1),
+      baseBytes: null,
+      images: new Map(),
+      posters: new Map(),
+      metrics,
+    });
+    expect(r.warnings).toEqual([]);
+  });
+});
+
+describe("skipped slides and the deck footer in the export", () => {
+  it("leaves a skipped slide out of the handout entirely (V #106)", async () => {
+    const deck = deckWith([], 3);
+    deck.slides[1].skip = true;
+    const r = await exportDeck({
+      deck,
+      baseBytes: await basePdf(3),
+      images: new Map(),
+      posters: new Map(),
+      metrics,
+    });
+    expect(r.pages).toBe(2);
+  });
+
+  it("copies the RIGHT base pages when a slide is skipped", async () => {
+    // The trap: the page copy and the layer loop must agree on which slides
+    // exist, or every page after the first skipped one draws the wrong layers.
+    const deck = deckWith([], 3);
+    deck.slides[0].skip = true;
+    deck.slides[1].anchor.page = 2;
+    deck.slides[2].anchor.page = 3;
+    const r = await exportDeck({
+      deck,
+      baseBytes: await basePdf(3),
+      images: new Map(),
+      posters: new Map(),
+      metrics,
+    });
+    expect(r.pages).toBe(2);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it("draws the deck footer without a stored object anywhere (V #117)", async () => {
+    const deck = deckWith([], 3);
+    deck.theme.footer = { ...defaultFooter(), text: "{n} / {N}" };
+    const r = await exportDeck({
+      deck,
+      baseBytes: null,
+      images: new Map(),
+      posters: new Map(),
+      metrics,
+    });
+    expect(r.pages).toBe(3);
+    expect(r.warnings).toEqual([]);
+    // The footer is synthesized per render, so nothing is added to any slide.
+    expect(deck.slides.every((s) => s.objects.length === 0)).toBe(true);
+  });
+
+  it("numbers the footer by position in the TALK, not in the slide array", () => {
+    const deck = deckWith([], 3);
+    deck.theme.footer = { ...defaultFooter(), text: "{n} / {N}", skipFirst: false };
+    // Two slides in the talk (one skipped), so slide two of the talk reads "2 / 2".
+    const f = footerObject(deck, 1, 2);
+    expect((f as Extract<DeckObject, { kind: "text" }>).text).toBe("2 / 2");
+    expect(footerObject({ ...deck, theme: { ...deck.theme, footer: undefined } }, 0, 2)).toBeNull();
+  });
+
+  it("leaves the title page bare when asked to", () => {
+    const deck = deckWith([], 2);
+    deck.theme.footer = { ...defaultFooter(), skipFirst: true };
+    expect(footerObject(deck, 0, 2)).toBeNull();
+    expect(footerObject(deck, 1, 2)).not.toBeNull();
+  });
+});
+
+describe("embedded fonts (V #120)", () => {
+  /** A real TTF, so fontkit has something to parse: the one pdf-lib ships for
+   *  its standard-14 tests is not exposed, so build a minimal valid font is out
+   *  of scope — instead use a font file from the machine when there is one, and
+   *  skip the embedding half when there is not. The CONTRACT half below needs no
+   *  font file at all and always runs. */
+  it("keeps a custom family through the model helpers", () => {
+    const f: FontFamily = { custom: "/fonts/LatinModern.otf" };
+    expect(customFontPath(f)).toBe("/fonts/LatinModern.otf");
+    expect(customFontPath("sans")).toBeNull();
+    expect(fontKey(f)).toBe("custom:/fonts/LatinModern.otf");
+    expect(fontKey("serif")).toBe("serif");
+  });
+
+  it("substitutes a standard face — the SAME one the metrics fall back to", async () => {
+    // The load-bearing property. A font the exporter cannot embed must be
+    // substituted with exactly the face `fonts.ts` measured with, or the export
+    // reflows: text laid out for one font, drawn with another. Both sides answer
+    // `standardFontFor`, which maps a custom family to `sans`.
+    expect(standardFontFor({ family: { custom: "/nope.ttf" }, bold: false, italic: false })).toBe(
+      StandardFonts.Helvetica,
+    );
+    expect(standardFontFor({ family: { custom: "/nope.ttf" }, bold: true, italic: false })).toBe(
+      StandardFonts.HelveticaBold,
+    );
+
+    const deck = deckWith(
+      [
+        {
+          ...common,
+          id: "t",
+          kind: "text",
+          text: "Latin Modern please",
+          style: style({ family: { custom: "/nope.ttf" } }),
+          padding: 2,
+        },
+      ],
+      1,
+    );
+    const r = await exportDeck({
+      deck,
+      baseBytes: null,
+      images: new Map(),
+      posters: new Map(),
+      metrics,
+      fonts: new Map(),
+    });
+    expect(r.pages).toBe(1);
+    // Named, not silent: the author has to be able to tell the export is not
+    // what they see on screen.
+    expect(r.warnings.join(" ")).toContain("/nope.ttf");
+  });
+
+  it("measures an unregistered custom family with the face it will be drawn in", () => {
+    // `metrics.width` for a custom family that was never registered must fall
+    // back to the standard face rather than to zero or to a guess — same face
+    // the exporter substitutes, so the line breaks agree either way.
+    const custom = style({ family: { custom: "/nope.ttf" } });
+    const sans = style({ family: "sans" });
+    expect(metrics.width("Hello world", custom)).toBeCloseTo(metrics.width("Hello world", sans), 6);
+    expect(metrics.has("/nope.ttf")).toBe(false);
+  });
+
+  it("reports a font file it cannot parse instead of pretending it registered", async () => {
+    const ok = await metrics.register("/bogus.ttf", new Uint8Array([1, 2, 3, 4]));
+    expect(ok).toBe(false);
+    expect(metrics.has("/bogus.ttf")).toBe(false);
+  });
+
+  it("finds every custom font a deck references, once each", () => {
+    const deck = deckWith(
+      [
+        {
+          ...common,
+          id: "a",
+          kind: "text",
+          text: "one",
+          style: style({ family: { custom: "/a.ttf" } }),
+          padding: 2,
+        },
+        {
+          ...common,
+          id: "b",
+          kind: "text",
+          text: "two",
+          style: style({ family: { custom: "/a.ttf" } }),
+          padding: 2,
+        },
+      ],
+      1,
+    );
+    deck.theme.text = style({ family: { custom: "/theme.otf" } });
+    expect(customFontsOf(deck).sort()).toEqual(["/a.ttf", "/theme.otf"]);
   });
 });

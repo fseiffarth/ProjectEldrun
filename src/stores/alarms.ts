@@ -14,6 +14,7 @@ import {
 } from "../lib/alarms";
 import { expandEvents } from "../lib/recurrence";
 import { formatStampTime } from "../lib/calendarTime";
+import { translate, useI18nStore } from "../lib/i18n";
 import { useCalendarStore } from "./calendar";
 
 /** How often the ticker looks for due reminders. */
@@ -85,11 +86,14 @@ async function notifyOs(alarm: DueAlarm) {
     }
     if (!osPermission) return;
 
+    const lang = useI18nStore.getState().lang;
+    const t = (key: Parameters<typeof translate>[1], params?: Record<string, string | number>) =>
+      translate(lang, key, params);
     const when = alarm.allDay
-      ? "Today"
-      : formatStampTime(alarm.start, true) || describeLead(alarm.minutesBefore);
+      ? t("alarms.today")
+      : formatStampTime(alarm.start, true) || describeLead(alarm.minutesBefore, t);
     sendNotification({
-      title: alarm.title || "Event",
+      title: alarm.title || t("alarms.defaultEventTitle"),
       body: [when, alarm.location].filter(Boolean).join(" · "),
     });
   } catch {

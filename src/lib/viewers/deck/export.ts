@@ -29,11 +29,14 @@ import {
   type PDFPage,
   type PDFImage,
 } from "pdf-lib";
-import type { Deck, DeckObject } from "./model";
+import fontkit from "@pdf-lib/fontkit";
+import { type Deck, type DeckObject, customFontPath, footerObject, slidePageBox } from "./model";
 import {
   type TextMetrics,
   lineOffset,
   standardFontFor,
+  toEncodable,
+  unencodableIn,
   wrapText,
 } from "./fonts";
 import { ICON_VIEWBOX, iconByKey } from "./icons";
@@ -59,6 +62,17 @@ export interface ExportInputs {
    */
   posters: ReadonlyMap<string, Uint8Array>;
   metrics: TextMetrics;
+  /**
+   * Custom font path → the file's bytes.
+   *
+   * **The same bytes `metrics.register` was given.** That is the whole contract
+   * of `fonts.ts`: if the exporter embedded a different file from the one the
+   * layout was measured against, the export would reflow — the exact failure the
+   * shared-metrics design exists to prevent (TODO V #120). A path missing here
+   * falls back to the standard face, with a warning, rather than drawing text
+   * laid out for a font that is not in the document.
+   */
+  fonts?: ReadonlyMap<string, Uint8Array>;
 }
 
 export interface ExportResult {
@@ -86,19 +100,27 @@ const color = (hex: string | undefined, fallback?: { r: number; g: number; b: nu
 const alphaOf = (hex: string | undefined): number => parseColor(hex)?.a ?? 1;
 
 export async function exportDeck(input: ExportInputs): Promise<ExportResult> {
-  const { deck, baseBytes, images, posters, metrics } = input;
+  const { deck, baseBytes, images, posters, metrics, fonts: fontBytes } = input;
   const warnings: string[] = [];
   const out = await PDFDocument.create();
+  // Needed before any `embedFont(bytes)`; harmless for a deck that uses none.
+  out.registerFontkit(fontkit);
 
   // --- base plate --------------------------------------------------------
   // Copy the pages the slides point at, in slide order, so a reordered deck
   // exports reordered. One `copyPages` call for the whole set, so shared fonts
   // and images cross once rather than per page.
+  // A slide marked `skip` is in the deck but not in the talk (#106), so it is
+  // not in the handout either. Resolved once, up front, because the base-page
+  // copy and the slide loop must agree on which slides exist or every page after
+  // the first skipped one draws the wrong layers.
+  const slides = deck.slides.filter((s) => !s.skip);
+
   let copied: PDFPage[] = [];
   if (baseBytes) {
     try {
       const src = await PDFDocument.load(baseBytes);
-      const wanted = deck.slides.map((s) => Math.min(src.getPageCount(), Math.max(1, s.anchor.page)) - 1);
+      const wanted = slides.map((s) => Math.min(src.getPageCount(), Math.max(1, s.anchor.page)) - 1);
       copied = await out.copyPages(src, wanted);
     } catch (e) {
       warnings.push(`The base PDF could not be read, so slides export blank (${String(e)}).`);
@@ -109,6 +131,25 @@ export async function exportDeck(input: ExportInputs): Promise<ExportResult> {
   // twelve.
   const fontCache = new Map<string, PDFFont>();
   const fontFor = async (o: Extract<DeckObject, { kind: "text" }>): Promise<PDFFont> => {
+    const path = customFontPath(o.style.family);
+    if (path) {
+      const hit = fontCache.get(`custom:${path}`);
+      if (hit) return hit;
+      const bytes = fontBytes?.get(path);
+      if (bytes) {
+        try {
+          const f = await out.embedFont(bytes);
+          fontCache.set(`custom:${path}`, f);
+          return f;
+        } catch (e) {
+          warnings.push(`Font "${path}" could not be embedded (${String(e)}); Helvetica was used.`);
+        }
+      } else {
+        warnings.push(`Font "${path}" was not available; Helvetica was used instead.`);
+      }
+      // Fall through to the standard face — which is exactly what `fonts.ts`
+      // measured with too, since `register` failed there for the same reason.
+    }
     const std = standardFontFor(o.style);
     const hit = fontCache.get(std);
     if (hit) return hit;
@@ -139,15 +180,21 @@ export async function exportDeck(input: ExportInputs): Promise<ExportResult> {
   };
 
   // --- slides ------------------------------------------------------------
-  for (let i = 0; i < deck.slides.length; i += 1) {
-    const slide = deck.slides[i];
-    const page = copied[i] ? out.addPage(copied[i]) : out.addPage([deck.pageWidth, deck.pageHeight]);
+  for (let i = 0; i < slides.length; i += 1) {
+    const slide = slides[i];
+    const box = slidePageBox(deck, slide);
+    const page = copied[i] ? out.addPage(copied[i]) : out.addPage([box.width, box.height]);
     const { width: pw, height: ph } = page.getSize();
 
     for (const obj of slide.objects) {
       if (obj.hidden) continue;
       await drawObject(page, obj, pw, ph, { fontFor, imageFor, metrics, warnings });
     }
+
+    // The deck-wide footer, drawn last so it sits over the layers, and through
+    // the ordinary text path so it cannot look different from the screen (#117).
+    const footer = footerObject(deck, i, slides.length, box.height);
+    if (footer) await drawObject(page, footer, pw, ph, { fontFor, imageFor, metrics, warnings });
 
     // --- the interstitial that follows this slide ---
     if (slide.after && deck.theme.exportInterstitials) {
@@ -334,37 +381,77 @@ async function drawObject(
       const ascent = ctx.metrics.ascent(s);
       const textColor = color(s.color, { r: 0, g: 0, b: 0 })!;
 
+      /**
+       * Write one run, surviving a character the face cannot encode.
+       *
+       * The standard-14 fonts are WinAnsi, so a Greek letter or a CJK glyph makes
+       * pdf-lib *throw* — which, uncaught, took the whole export down with a raw
+       * error and no partial PDF. It renders fine on screen (CSS font stacks), so
+       * the first anyone learned of it was the export, the night before the talk.
+       * Falling back to the encodable subset keeps the other twenty slides, and
+       * the warning names the object and the exact characters so the author can
+       * fix the one that matters.
+       */
+      const write = (text: string, x: number, y: number, rotate: number) => {
+        try {
+          page.drawText(text, {
+            x,
+            y,
+            size: s.size,
+            font,
+            color: textColor,
+            opacity: obj.opacity,
+            rotate: degrees(rotate),
+          });
+        } catch {
+          const embedded = customFontPath(s.family) != null;
+          const bad = unencodableIn(text);
+          const safe = toEncodable(text);
+          ctx.warnings.push(
+            `Text "${preview(obj.text)}" contains ${
+              bad.length ? bad.map((c) => `"${c}"`).join(", ") : "characters"
+            }, which ${
+              embedded ? "the chosen font has no glyphs for" : "the built-in PDF fonts cannot write"
+            }; ${bad.length === 1 ? "it was" : "they were"} left out of the export.`,
+          );
+          if (!safe) return;
+          try {
+            page.drawText(safe, {
+              x,
+              y,
+              size: s.size,
+              font,
+              color: textColor,
+              opacity: obj.opacity,
+              rotate: degrees(rotate),
+            });
+          } catch {
+            // Nothing left to salvage on this line; the warning already said so.
+          }
+        }
+      };
+
       lines.forEach((line, i) => {
         // `drawText` positions a BASELINE; the wrap positions line BOXES. The
         // ascent is the drop between them — without it every line sits high.
         const baseline = pad + i * lineH + ascent;
         if (line.marker) {
           const mp = pdfPlacement(rect, obj.rot, pad, baseline);
-          page.drawText(line.marker, {
-            x: mp.x,
-            y: mp.y,
-            size: s.size,
-            font,
-            color: textColor,
-            opacity: obj.opacity,
-            rotate: degrees(mp.rotate),
-          });
+          write(line.marker, mp.x, mp.y, mp.rotate);
         }
         if (!line.text) return;
         const p = pdfPlacement(rect, obj.rot, pad + lineOffset(line, s, inner), baseline);
-        page.drawText(line.text, {
-          x: p.x,
-          y: p.y,
-          size: s.size,
-          font,
-          color: textColor,
-          opacity: obj.opacity,
-          rotate: degrees(p.rotate),
-        });
+        write(line.text, p.x, p.y, p.rotate);
       });
       return;
     }
   }
+}
+
+/** A short, single-line excerpt of an object's text, for naming it in a warning. */
+function preview(text: string): string {
+  const one = text.replace(/\s+/g, " ").trim();
+  return one.length > 40 ? `${one.slice(0, 40)}…` : one;
 }
 
 /** The export's default filename: `talk.eldeck.json` → `talk.export.pdf`. */

@@ -63,12 +63,13 @@ async function resolveItem(
   doc: PDFDocumentProxy,
   raw: RawOutlineItem,
   id: string,
+  untitledLabel: string,
 ): Promise<OutlineNode> {
   const [page, children] = await Promise.all([
     destToPage(doc, raw.dest ?? null),
-    resolveItems(doc, raw.items ?? [], id),
+    resolveItems(doc, raw.items ?? [], id, untitledLabel),
   ]);
-  return { id, title: raw.title || "Untitled", page, children };
+  return { id, title: raw.title || untitledLabel, page, children };
 }
 
 /** Resolve a sibling list, giving each child a path-derived id. */
@@ -76,20 +77,28 @@ async function resolveItems(
   doc: PDFDocumentProxy,
   items: RawOutlineItem[],
   parentId: string,
+  untitledLabel: string,
 ): Promise<OutlineNode[]> {
   return Promise.all(
-    items.map((it, i) => resolveItem(doc, it, parentId ? `${parentId}.${i}` : String(i))),
+    items.map((it, i) => resolveItem(doc, it, parentId ? `${parentId}.${i}` : String(i), untitledLabel)),
   );
 }
 
 /**
  * Load the document's outline as a resolved, jump-ready tree. Returns `[]` when
  * the PDF carries no outline (many scanned or exported PDFs don't).
+ *
+ * `untitledLabel` names a bookmark whose author left its title blank — pass the
+ * translated string; it defaults to the English literal for callers (tests) that
+ * don't have a translator in scope.
  */
-export async function loadOutline(doc: PDFDocumentProxy): Promise<OutlineNode[]> {
+export async function loadOutline(
+  doc: PDFDocumentProxy,
+  untitledLabel = "Untitled",
+): Promise<OutlineNode[]> {
   const raw = (await doc.getOutline()) as RawOutlineItem[] | null;
   if (!raw || raw.length === 0) return [];
-  return resolveItems(doc, raw, "");
+  return resolveItems(doc, raw, "", untitledLabel);
 }
 
 /**

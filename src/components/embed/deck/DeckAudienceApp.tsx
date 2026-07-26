@@ -17,7 +17,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import {
   useSettingsStore,
@@ -34,12 +34,21 @@ import {
   keyToAction,
   presentSeedEvent,
   presentStateEvent,
+  withFrom,
 } from "../../../lib/viewers/deck/present";
-import { type Deck, type Slide, type Stop, sequence } from "../../../lib/viewers/deck/model";
+import {
+  type Deck,
+  type Slide,
+  type Stop,
+  footerObject,
+  sequence,
+  slidePageBox,
+} from "../../../lib/viewers/deck/model";
 import { parseDeck, pdfPathForDeck } from "../../../lib/viewers/deck/sidecar";
 import { type TextMetrics, loadMetrics } from "../../../lib/viewers/deck/fonts";
 import { loadBase } from "./deckBase";
-import { dirOf, interstitialsOf, resolveRel, useDeckGifs, useDeckImages } from "./deckAssets";
+import { useDeckFonts } from "./deckFonts";
+import { dirOf, gifKey, interstitialsOf, resolveRel, useDeckGifs, useDeckImages } from "./deckAssets";
 import { InterstitialView, PresentedSlide } from "./DeckSlideView";
 
 /** How often to re-announce readiness until a seed lands. The presenter window
@@ -56,6 +65,10 @@ export function DeckAudienceApp({ label }: DeckAudienceAppProps) {
 
   const [seed, setSeed] = useState<PresentSeed | null>(null);
   const [state, setState] = useState<PresentState>({ index: 0, blank: null });
+  /** The live stop, for the key handler — which must stamp requests with where
+   *  it was when it asked without re-subscribing on every advance of the talk. */
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const [deck, setDeck] = useState<Deck | null>(null);
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [metrics, setMetrics] = useState<TextMetrics | null>(null);
@@ -137,12 +150,18 @@ export function DeckAudienceApp({ label }: DeckAudienceAppProps) {
   // back to the single-display presenter instead of streaming at a dead window.
   // (A close driven from the presenter side `destroy()`s, which bypasses this —
   // it already knows.)
+  //
+  // The handler is `async` and the emit is **awaited**: Tauri awaits the handler
+  // and then destroys the window, so a fire-and-forget emit is one scheduling
+  // decision away from being dropped by the teardown it is racing. Losing it
+  // leaves the presenter holding `audience`, streaming state at a dead label and
+  // reporting a second display that is gone (TODO V #122).
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     void getCurrentWindow()
-      .onCloseRequested(() => {
-        void emit(PRESENT_CLOSED, { label });
+      .onCloseRequested(async () => {
+        await emit(PRESENT_CLOSED, { label });
       })
       .then((fn) => {
         if (cancelled) fn();
@@ -153,6 +172,52 @@ export function DeckAudienceApp({ label }: DeckAudienceAppProps) {
       unlisten?.();
     };
   }, [label]);
+
+  // --- this window's own exits ---------------------------------------------
+  //
+  // Until now the audience window had none. `Escape` only *forwarded* a close
+  // request, so if the main webview died — this repo has a documented WebKitGTK
+  // renderer-crash history — the projector kept a fullscreen slide with no key
+  // that dismissed it, no titlebar (fullscreen) and no pointer (`cursor: none`).
+  // And when a display is unplugged the WM relocates the still-fullscreen window
+  // over the speaker's own notes, where the only key that reacted was the one
+  // that ended the whole talk (TODO V #103).
+
+  const [fullscreen, setFullscreen] = useState(false);
+
+  useEffect(() => {
+    const win = getCurrentWindow();
+    void win.isFullscreen().then(setFullscreen).catch(() => {});
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    // A monitor unplug moves this window; if it lands on the same monitor as the
+    // main window, being fullscreen there is actively in the way. Drop out of it
+    // and let the speaker deal with an ordinary window.
+    void win
+      .onResized(() => {
+        void (async () => {
+          try {
+            const fs = await win.isFullscreen();
+            setFullscreen(fs);
+            if (!fs) return;
+            const monitors = await availableMonitors();
+            if (monitors.length > 1) return;
+            await win.setFullscreen(false);
+            setFullscreen(false);
+          } catch {
+            // Nothing to do: the window is where the WM put it either way.
+          }
+        })();
+      })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   const send = useCallback(
     (action: NavAction) => {
@@ -204,7 +269,11 @@ export function DeckAudienceApp({ label }: DeckAudienceAppProps) {
 
   const interstitials = useMemo(() => interstitialsOf(deck), [deck]);
   const { assets } = useDeckImages(deck, seed?.path ?? "", seed?.scope ?? null);
-  const gifs = useDeckGifs(interstitials, seed?.path ?? "", seed?.scope ?? null);
+  const { gifs } = useDeckGifs(interstitials, seed?.path ?? "", seed?.scope ?? null);
+  // This window is its own webview with its own `document`, so it installs its
+  // own `@font-face` rules and registers its own metrics rather than being handed
+  // the editor's — the same reason `deckAssets` exists (#120).
+  useDeckFonts(deck, seed?.path ?? "", seed?.scope ?? null, metrics);
 
   // --- keys ----------------------------------------------------------------
 
@@ -212,6 +281,37 @@ export function DeckAudienceApp({ label }: DeckAudienceAppProps) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Keys this window answers ITSELF, before the shared map gets a look.
+      // Escape here closes *this* window, not the talk: the previous behaviour
+      // (forward a close, end everywhere) meant the only key the projector
+      // reacted to was the one that could not be taken back. "End everywhere"
+      // moves to Shift+Escape / Q, which is deliberate rather than reachable.
+      if (e.key === "Escape" && !e.shiftKey) {
+        e.preventDefault();
+        void (async () => {
+          await emit(PRESENT_CLOSED, { label });
+          await getCurrentWindow().destroy();
+        })();
+        return;
+      }
+      if ((e.key === "Escape" && e.shiftKey) || e.key === "q" || e.key === "Q") {
+        e.preventDefault();
+        send({ kind: "close" });
+        return;
+      }
+      // F11 toggles this window's own fullscreen — the escape hatch for a
+      // display that was unplugged, or one the WM put fullscreen on the wrong
+      // screen. The window capability is already granted.
+      if (e.key === "F11") {
+        e.preventDefault();
+        void (async () => {
+          const win = getCurrentWindow();
+          const fs = await win.isFullscreen().catch(() => false);
+          await win.setFullscreen(!fs).catch(() => {});
+          setFullscreen(!fs);
+        })();
+        return;
+      }
       if (e.key === "Enter") {
         if (gotoRef.current) {
           send({ kind: "goto", slide: Number(gotoRef.current) - 1 });
@@ -229,11 +329,14 @@ export function DeckAudienceApp({ label }: DeckAudienceAppProps) {
         return;
       }
       e.preventDefault();
-      send(action);
+      // Stamp the stop this request was made from, so a key pressed here that
+      // races the same key pressed on the presenter moves the talk once rather
+      // than twice — see `NavAction`.
+      send(withFrom(action, stateRef.current.index));
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [send]);
+  }, [send, label]);
 
   // --- render --------------------------------------------------------------
 
@@ -253,9 +356,16 @@ export function DeckAudienceApp({ label }: DeckAudienceAppProps) {
     prevSlideRef.current = stop.slide;
   }
 
+  // `cursor: none` is scoped to fullscreen. An arrow parked in the middle of a
+  // projected slide is the most-noticed artefact of presenting from a laptop —
+  // but a *windowed* audience window (one monitor, or one the speaker dropped
+  // out of fullscreen after an unplug) needs a pointer to be draggable at all
+  // (TODO V #103).
+  const shellClass = `deck-presenter deck-audience${fullscreen ? " is-fullscreen" : ""}`;
+
   if (!deck || !stop) {
     return (
-      <div className="deck-presenter deck-audience">
+      <div className={shellClass}>
         <div className="deck-presenter-main">
           <div className="deck-presenter-fit deck-presenter-loading">
             Waiting for the presentation…
@@ -265,17 +375,25 @@ export function DeckAudienceApp({ label }: DeckAudienceAppProps) {
     );
   }
 
+  const box = slidePageBox(deck, slide);
+  const talkSlides = deck.slides.filter((s) => !s.skip);
+  const talkPos = talkSlides.findIndex((s) => s.id === deck.slides[stop.slide]?.id);
+
   return (
-    <div className="deck-presenter deck-audience">
+    <div className={shellClass}>
       <div className="deck-presenter-main">
         <div className="presentation-host deck-presenter-stage">
           {stop.kind === "interstitial" && slide?.after ? (
             <InterstitialView
-              gif={gifs.get(slide.after.id)}
+              gif={gifs.get(gifKey(slide.after))}
               fit={slide.after.fit}
               background={slide.after.background}
               advance={slide.after.advance}
-              onEnded={() => send({ kind: "next" })}
+              // This window MIRRORS: the presenter window owns the advance. Both
+              // used to fire on their own clip end, and the deck skipped the
+              // slide after every auto-advancing GIF (TODO V #95).
+              drivesAdvance={false}
+              onEnded={() => {}}
             />
           ) : (
             slide && (
@@ -284,11 +402,12 @@ export function DeckAudienceApp({ label }: DeckAudienceAppProps) {
                 slide={slide}
                 step={stop.kind === "slide" ? stop.step : 0}
                 doc={doc}
-                pageWidth={deck.pageWidth}
-                pageHeight={deck.pageHeight}
+                pageWidth={box.width}
+                pageHeight={box.height}
                 metrics={metrics}
                 assets={assets}
                 transition={transitionRef.current}
+                footer={footerObject(deck, talkPos, talkSlides.length, box.height)}
               />
             )
           )}

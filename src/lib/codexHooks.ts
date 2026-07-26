@@ -45,7 +45,9 @@ export function openCodexHooksTab(): void {
   if (!item) return;
   const rootDir = useProjectsStore.getState().rootDir ?? "";
   useTabsStore.getState().addTabToScope("root", {
-    ...buildStaticTabSpec(item, rootDir, ""),
+    // `item` is a built-in agent (no `labelKey`), so buildStaticTabSpec never
+    // resolves a translation through this — the label below overrides it anyway.
+    ...buildStaticTabSpec(item, rootDir, "", (key) => key),
     label: "Codex — hooks",
     initialInput: "/hooks",
   });

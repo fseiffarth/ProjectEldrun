@@ -6,6 +6,7 @@ import {
 } from "../../stores/tabs";
 import type { CustomAgent } from "../../types";
 import type { AddMenuEntry } from "./AddTabMenuList";
+import type { TranslationKey } from "../../lib/i18n";
 
 /**
  * A static entry in the "new tab" add menu. Shared by the main-window `TabBar`
@@ -27,6 +28,10 @@ export interface StaticMenuItem {
   // own session after the project. Only set for agents with a known
   // session-rename command; others are skipped to avoid typing junk into them.
   sessionRename?: (projectName: string) => string;
+  // For a generic (non-brand) item — "Shell", "Files" — the key to resolve the
+  // displayed/persisted label through. Agent items keep their brand name as a
+  // literal `label` and never set this (Claude/Codex/… are proper nouns).
+  labelKey?: TranslationKey;
   // When set, Eldrun mints a UUID at launch and passes it to the agent so it
   // owns a deterministic session id (e.g. Claude's `--session-id <uuid>`). The
   // returned strings are appended to the spawn args. Lets us surface the
@@ -57,9 +62,15 @@ export const SHELL_ITEMS: StaticMenuItem[] = [
   // Empty cmd → backend `default_shell()` picks the OS-appropriate shell
   // (cmd.exe on Windows, zsh on macOS, bash on Linux). Hardcoding "bash" here
   // fails to spawn on Windows where bash isn't on PATH.
-  { label: "Shell", cmd: "",              kind: "shell" },
-  { label: "Files", cmd: FILES_TAB_CMD,   kind: "files" },
+  { label: "Shell", labelKey: "newTabMenu.groupShell", cmd: "",              kind: "shell" },
+  { label: "Files", labelKey: "newTabMenu.groupFiles", cmd: FILES_TAB_CMD,   kind: "files" },
 ];
+
+/** Resolve a {@link StaticMenuItem}'s display/persisted label: translated for a
+ *  generic item (`labelKey` set), the literal brand name for an agent. */
+export function itemLabel(item: StaticMenuItem, t: (key: TranslationKey) => string): string {
+  return item.labelKey ? t(item.labelKey) : item.label;
+}
 
 /** The pure-frontend file panes kept to one tab per cwd (see TabBar.handleAdd).
  *  "projectfiles" is no longer offered as a standalone new-tab entry (it merely
@@ -83,6 +94,7 @@ export const TAB_ACCENT: Record<TabKind, string> = {
   monitor: "var(--success, #3fb950)",
   diskusage: "var(--warning, #e3b341)",
   calendar: "var(--accent)",
+  mail: "var(--info, #4aa3df)",
 };
 
 /**
@@ -97,6 +109,7 @@ export function buildStaticTabSpec(
   item: StaticMenuItem,
   projectCwd: string,
   projectName: string,
+  t: (key: TranslationKey) => string,
 ): Omit<TabEntry, "key"> {
   const initialInput =
     item.sessionRename && projectName ? item.sessionRename(projectName) : undefined;
@@ -115,7 +128,7 @@ export function buildStaticTabSpec(
     ...(resumable && sessionId ? { ELDRUN_TAB_UID: sessionId } : {}),
   };
   return {
-    label: item.label,
+    label: itemLabel(item, t),
     cmd: item.cmd,
     args,
     env,
@@ -164,6 +177,7 @@ export function agentMenuEntries(opts: {
   customAgents: CustomAgent[];
   pick: (item: StaticMenuItem) => void;
   onAddCustom: () => void;
+  t: (key: TranslationKey) => string;
 }): AddMenuEntry[] {
   const builtins = AGENT_ITEMS.filter((item) =>
     opts.installedBuiltins?.has(item.cmd),
@@ -177,7 +191,7 @@ export function agentMenuEntries(opts: {
     const missing = opts.installedCmds != null && !opts.installedCmds.has(ca.cmd);
     return {
       key: `custom:${ca.id}`,
-      label: missing ? `${ca.label} (not found)` : ca.label,
+      label: missing ? `${ca.label} (${opts.t("globalApps.notFoundPlaceholder")})` : ca.label,
       color: TAB_ACCENT.agent,
       disabled: missing,
       onPick: () => opts.pick(customAgentToItem(ca)),
@@ -188,7 +202,7 @@ export function agentMenuEntries(opts: {
     ...custom,
     {
       key: "__add_custom_agent__",
-      label: "Add agent…",
+      label: opts.t("newTabMenu.addAgent"),
       dot: "＋",
       color: "var(--text-muted)",
       onPick: opts.onAddCustom,

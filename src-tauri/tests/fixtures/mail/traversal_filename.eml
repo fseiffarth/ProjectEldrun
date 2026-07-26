@@ -1,0 +1,15 @@
+From: a@example.com
+To: b@example.org
+Subject: traversal
+Content-Type: multipart/mixed; boundary="B"
+
+--B
+Content-Type: text/plain
+
+see attached
+--B
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename*=UTF-8''%2e%2e%2f%2e%2e%2fetc%2fpasswd
+
+root:x:0:0
+--B--

@@ -464,3 +464,31 @@ export function formatLongDate(date: string, locale = "en"): string {
     year: "numeric",
   });
 }
+
+/**
+ * Full month name (1-based) in the given locale, via `Intl` — no hand-rolled
+ * translation table, so it's correct (spelling, casing convention) for any
+ * locale the browser supports without maintaining one.
+ */
+export function monthName(locale: string, month: number): string {
+  return new Date(Date.UTC(2000, month - 1, 1)).toLocaleDateString(locale, {
+    month: "long",
+    timeZone: "UTC",
+  });
+}
+
+/**
+ * Weekday label for a day-of-week index (0 = Sunday .. 6 = Saturday), in the
+ * given form ("long"/"short"/"narrow"), via `Intl`. 2023-01-01 is a Sunday
+ * (UTC), so UTC day `1 + dayIndex` always lands on the right weekday.
+ */
+export function weekdayLabel(
+  locale: string,
+  dayIndex: number,
+  form: "long" | "short" | "narrow" = "long",
+): string {
+  return new Date(Date.UTC(2023, 0, 1 + dayIndex)).toLocaleDateString(locale, {
+    weekday: form,
+    timeZone: "UTC",
+  });
+}

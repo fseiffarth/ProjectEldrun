@@ -12,6 +12,7 @@
 import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { invoke } from "@tauri-apps/api/core";
 import { readFileBytes } from "../fileAccess";
 import type { BasePage } from "../../../lib/viewers/deck/sidecar";
 
@@ -19,9 +20,16 @@ import type { BasePage } from "../../../lib/viewers/deck/sidecar";
 // without that module ever having loaded.
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
-/** How much page text the fingerprint needs. Reading more costs time per page
- *  for nothing — see `sidecar.FINGERPRINT_CHARS`. */
-const TEXT_BUDGET = 400;
+/**
+ * How much page text the fingerprint needs.
+ *
+ * Enough for the leading AND trailing window `sidecar.fingerprint` hashes, plus
+ * slack — the trailing window is what tells two Beamer overlay pages apart, and
+ * truncating at 400 characters would make it a copy of the leading one for any
+ * page with real content. `getTextContent` has already produced the whole page by
+ * the time this loop runs, so a larger budget costs only string concatenation.
+ */
+const TEXT_BUDGET = 4000;
 
 export interface LoadedBase {
   doc: PDFDocumentProxy;
@@ -29,8 +37,14 @@ export interface LoadedBase {
 }
 
 /**
- * Open `path` and describe every page: its box in points, and enough text to
- * fingerprint it.
+ * Open `path` and describe every page: its box in points, enough text to
+ * fingerprint it, and — when the plate was compiled from a `.tex` that left a
+ * SyncTeX map beside it — the source lines that produced it.
+ *
+ * The SyncTeX read is the *good* anchor (`model.SlideAnchor`) and is best-effort
+ * by design: an imported PDF, a remote project, or a plate built by something
+ * that emitted no map all simply return no lines, and `reconcile` falls back to
+ * content fingerprinting exactly as before.
  *
  * The caller owns the returned `doc` and **must** `destroy()` it.
  */
@@ -38,27 +52,51 @@ export async function loadBase(path: string, scope: string | null): Promise<Load
   const bytes = await readFileBytes(path, scope);
   const doc = await pdfjs.getDocument({ data: new Uint8Array(bytes) }).promise;
 
+  const linesByPage = await pageLines(path);
+
   const pages: BasePage[] = [];
   for (let n = 1; n <= doc.numPages; n += 1) {
     const page = await doc.getPage(n);
     const vp = page.getViewport({ scale: 1 });
     let text = "";
+    let items = 0;
     try {
       const content = await page.getTextContent();
       for (const item of content.items) {
         const s = (item as { str?: string }).str;
         if (!s) continue;
-        text += `${s} `;
-        if (text.length >= TEXT_BUDGET) break;
+        items += 1;
+        if (text.length < TEXT_BUDGET) text += `${s} `;
       }
     } catch {
       // A page whose text layer will not extract still has a valid box, and a
       // fingerprint over an empty string is stable. Anchoring falls back to
       // SyncTeX or to order, which is exactly what it is there for.
     }
-    pages.push({ page: n, width: vp.width, height: vp.height, text: text.trim() });
+    const lines = linesByPage.get(n);
+    pages.push({
+      page: n,
+      width: vp.width,
+      height: vp.height,
+      text: text.trim(),
+      items,
+      ...(lines && lines.length ? { lines } : {}),
+    });
   }
   return { doc, pages };
+}
+
+/** SyncTeX's page → source-line map for `pdfPath`, or an empty map. Never throws:
+ *  the anchor is an optimisation over the fingerprint, not a requirement. */
+async function pageLines(pdfPath: string): Promise<Map<number, number[]>> {
+  try {
+    const rows = await invoke<Array<{ page: number; lines: number[] }>>("synctex_page_lines", {
+      pdf: pdfPath,
+    });
+    return new Map(rows.map((r) => [r.page, r.lines]));
+  } catch {
+    return new Map();
+  }
 }
 
 /**

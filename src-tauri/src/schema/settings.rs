@@ -55,6 +55,26 @@ pub struct Settings {
     /// Calendar: minutes-before reminder pre-filled on a new event. `0` = none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar_default_reminder_minutes: Option<i64>,
+    /// Mail: the experimental gate for the embedded mail client
+    /// (`src/lib/experimental.ts` — unset falls back to debug mode, so a flag
+    /// still moving is invisible to someone *using* Eldrun and on by default
+    /// for someone building it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_client: Option<bool>,
+    /// Mail: which account a fresh mail tab opens on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_default_account: Option<String>,
+    /// Mail: minutes between background checks (Phase 2; the backend does not
+    /// poll yet, so this is stored and honoured by the frontend only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_check_interval_min: Option<u32>,
+    /// Mail: whether to offer remote images at all. **Default false** — loading
+    /// them tells the sender the message was opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_show_remote_images: Option<bool>,
+    /// Mail: OS notification on new inbox mail (default on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_notify_new: Option<bool>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_host: Option<String>,

@@ -20,6 +20,7 @@ import {
   alignObjects,
   blankSlide,
   boundingBox,
+  rotatedCorners,
   distributeObjects,
   duplicateObjects,
   emptyDeck,
@@ -160,6 +161,53 @@ describe("bounding box", () => {
     expect(b.y).toBeCloseTo(0.1);
     expect(b.w).toBeCloseTo(0.5);
     expect(b.h).toBeCloseTo(0.5);
+  });
+
+  it("encloses ROTATED content, not the box it was authored in (V #111)", () => {
+    // The selection rectangle, the marquee hit test and every align/distribute
+    // are computed from this. An axis-aligned box over the *unrotated* geometry
+    // put all three somewhere the object is not.
+    const square = { ...box("a", 0.4, 0.4, 0.2, 0.2), rot: 45 };
+    const b = boundingBox([square], 1);
+    // A square turned 45° needs √2 of its side, still centred where it was.
+    expect(b.w).toBeCloseTo(0.2 * Math.SQRT2, 4);
+    expect(b.x + b.w / 2).toBeCloseTo(0.5, 6);
+    expect(b.y + b.h / 2).toBeCloseTo(0.5, 6);
+  });
+
+  it("is unchanged for unrotated objects, whatever the page aspect", () => {
+    // The overwhelmingly common case must cost nothing and move nothing.
+    const objs = [box("a", 0.2, 0.1, 0.1, 0.1), box("b", 0.5, 0.4, 0.2, 0.2)];
+    expect(boundingBox(objs, 16 / 9)).toEqual(boundingBox(objs));
+  });
+
+  it("turns in an aspect-corrected frame, so a square does not shear", () => {
+    // The page is not square. Rotating in page space would come back a lozenge —
+    // wider than tall for a 16:9 plate — which is exactly what the render does
+    // NOT do, and the two must agree.
+    const square = { ...box("a", 0.4, 0.4, 0.2, 0.2), rot: 90 };
+    const b = boundingBox([square], 16 / 9);
+    // A 90° turn swaps the box's PHYSICAL sides, which in normalized terms means
+    // dividing/multiplying by the page aspect — 0.2 → 0.1125 across, 0.3556 down.
+    expect(b.w).toBeCloseTo(0.2 * (9 / 16), 6);
+    expect(b.h).toBeCloseTo(0.2 * (16 / 9), 6);
+    // Still centred where it was: rotation is about the centre.
+    expect(b.x + b.w / 2).toBeCloseTo(0.5, 6);
+    expect(b.y + b.h / 2).toBeCloseTo(0.5, 6);
+  });
+
+  it("gives every corner of a rotated object", () => {
+    const square = { x: 0, y: 0, w: 1, h: 1, rot: 0 };
+    expect(rotatedCorners(square)).toEqual([
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1],
+    ]);
+    // 180° maps each corner to its opposite.
+    const flipped = rotatedCorners({ ...square, rot: 180 });
+    expect(flipped[0][0]).toBeCloseTo(1, 6);
+    expect(flipped[0][1]).toBeCloseTo(1, 6);
   });
 });
 

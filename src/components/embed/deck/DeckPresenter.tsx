@@ -32,13 +32,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { PDFDocumentProxy } from "pdfjs-dist";
+import { PLATFORM } from "../../../lib/platform";
 import { PresentationOverlay } from "../PresentationOverlay";
+import { isToolArmed, usePresentationStore } from "../../../stores/presentation";
 import {
   type Deck,
   type Slide,
   type Stop,
+  footerObject,
   sequence,
+  slidePageBox,
 } from "../../../lib/viewers/deck/model";
 import { serializeDeck } from "../../../lib/viewers/deck/sidecar";
 import {
@@ -52,6 +57,7 @@ import {
   applyNav,
   clampStop,
   keyToAction,
+  nextSlideOf,
   presentSeedEvent,
   presentStateEvent,
   presenterLabel,
@@ -59,6 +65,8 @@ import {
 } from "../../../lib/viewers/deck/present";
 import type { TextMetrics } from "../../../lib/viewers/deck/fonts";
 import { type DecodedGif, disposeGif } from "./gifPlayback";
+import { gifKey } from "./deckAssets";
+import { renderPage } from "./deckBase";
 import { InterstitialView, PresentedSlide } from "./DeckSlideView";
 
 export interface DeckPresenterProps {
@@ -75,6 +83,30 @@ export interface DeckPresenterProps {
   /** Stop to open on. */
   startAt?: number;
   onClose: () => void;
+}
+
+/** One overview-grid tile's page render — the presenter's twin of the editor
+ *  rail's `DeckRailThumb`, same "render into a ref'd canvas via an effect" shape
+ *  `DeckStage` uses for the full-size page. */
+function PresenterGridThumb({ doc, page }: { doc: PDFDocumentProxy | null; page: number }) {
+  const ref = useRef<HTMLCanvasElement | null>(null);
+  const [box, setBox] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const canvas = ref.current;
+    const host = canvas?.parentElement;
+    if (!host) return;
+    const measure = () => setBox({ w: host.clientWidth, h: host.clientHeight });
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(host);
+    return () => ro.disconnect();
+  }, []);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas || !doc || box.w <= 0 || box.h <= 0) return;
+    return renderPage(doc, page, canvas, box.w, box.h);
+  }, [doc, page, box.w, box.h]);
+  return <canvas className="deck-presenter-grid-thumb" ref={ref} />;
 }
 
 export function DeckPresenter({
@@ -94,8 +126,15 @@ export function DeckPresenter({
   const [grid, setGrid] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [goto, setGoto] = useState("");
-  const [started] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
+  // The clock is elapsed-since-`started` *plus* whatever was banked before the
+  // last pause, so pause/resume needs no second ticker and a reset is one write.
+  const [started, setStarted] = useState(() => Date.now());
+  const [banked, setBanked] = useState(0);
+  const [paused, setPaused] = useState(false);
+  /** Target talk length in minutes; 0 = no target, so no amber/red. */
+  const [target, setTarget] = useState(0);
+  const [notesSize, setNotesSize] = useState(13);
   /** The audience window's label while it is open, else null. */
   const [audience, setAudience] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -125,8 +164,86 @@ export function DeckPresenter({
     return () => clearInterval(t);
   }, []);
 
+  // Tell the rest of the app a talk is on, so `FileViewerPane` withdraws the
+  // marker/laser overlay it keeps mounted behind this portal — see
+  // `stores/presentation`.
+  useEffect(() => {
+    const { setPresenting } = usePresentationStore.getState();
+    setPresenting(true);
+    return () => setPresenting(false);
+  }, []);
+
+  /**
+   * Actually fill the screen.
+   *
+   * `.deck-presenter` is `position: fixed; inset: 0` inside a window that is
+   * maximized-but-not-fullscreen (`tauri.conf.json`, and `AppShell` keeps
+   * Linux/Windows out of fullscreen deliberately). So "Present fullscreen"
+   * presented the talk with the desktop panel and the app chrome around it —
+   * on a single monitor, which is the common conference case (TODO V #99).
+   *
+   * Two rules keep this from fighting the shell. The prior state is **read and
+   * restored**, never blindly set to false: `AppShell` has its own reasons for
+   * where the window was. And Windows maximizes instead, for the reason
+   * `useKeyboard`'s F11 already documents — real fullscreen there strips the
+   * window styles Aero Snap and title-bar dragging rely on.
+   */
+  useEffect(() => {
+    const win = getCurrentWindow();
+    let restore: (() => void) | undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        if (PLATFORM === "windows") {
+          const was = await win.isMaximized();
+          if (cancelled) return;
+          if (!was) {
+            await win.maximize();
+            restore = () => void win.unmaximize().catch(() => {});
+          }
+        } else {
+          const was = await win.isFullscreen();
+          if (cancelled) return;
+          if (!was) {
+            await win.setFullscreen(true);
+            restore = () => void win.setFullscreen(false).catch(() => {});
+          }
+        }
+      } catch {
+        // A window manager that refuses is not a reason to fail to present; the
+        // talk still runs, just inside the window it was already in.
+      }
+    })();
+    return () => {
+      cancelled = true;
+      restore?.();
+    };
+  }, []);
+
+  // Keep the projector awake: a long Q&A pause has no input at all, and the
+  // screensaver does not know a talk is a talk. Linux-only behind the command;
+  // everywhere else it resolves false and nothing happens (TODO V #121).
+  useEffect(() => {
+    void invoke("presenter_inhibit_sleep", { reason: "Presenting a deck" }).catch(() => {});
+    return () => {
+      void invoke("presenter_release_sleep").catch(() => {});
+    };
+  }, []);
+
   const next = useCallback(() => setIndex((i) => clampStop(stops, i + 1)), [stops]);
   const prev = useCallback(() => setIndex((i) => clampStop(stops, i - 1)), [stops]);
+
+  // Bank the elapsed time on pause and restart the reference on resume, so the
+  // displayed clock is continuous across both.
+  useEffect(() => {
+    if (paused) setBanked((b) => b + (Date.now() - started));
+    else setStarted(Date.now());
+  }, [paused]);
+
+  const resetTimer = useCallback(() => {
+    setBanked(0);
+    setStarted(Date.now());
+  }, []);
 
   const jumpToSlide = useCallback(
     (n: number) => {
@@ -146,6 +263,12 @@ export function DeckPresenter({
     try {
       await invoke("open_presenter_window", { label });
       setAudience(label);
+      // Take focus back. The new window has it, and over there `N`, `G`, `D` and
+      // digit-goto are all inert — so without this the speaker's first few
+      // keystrokes after pressing `D` land on the projector and do nothing
+      // (TODO V #103c). The audience window still forwards the keys it *does*
+      // claim, so a clicker bound to it keeps working either way.
+      await getCurrentWindow().setFocus().catch(() => {});
     } catch (e) {
       setLinkError(
         `The second display could not be opened (${e instanceof Error ? e.message : String(e)}).`,
@@ -219,6 +342,17 @@ export function DeckPresenter({
 
   // Keys pressed on the audience window arrive as requests; this window remains
   // the only place the index actually moves.
+  //
+  // The handler reads `stops`/`closeAll` through refs so the subscription depends
+  // on `audience` alone. `listen()` is async, so every re-subscribe opens a
+  // sub-round-trip window in which an audience keypress is silently dropped —
+  // and this used to re-subscribe whenever `closeAll` changed identity, i.e. on
+  // every toggle of the second display (TODO V #122).
+  const stopsRef = useRef(stops);
+  stopsRef.current = stops;
+  const closeAllRef = useRef(closeAll);
+  closeAllRef.current = closeAll;
+
   useEffect(() => {
     if (!audience) return;
     let unlisten: (() => void) | undefined;
@@ -227,14 +361,14 @@ export function DeckPresenter({
       if (e.payload.label !== audience) return;
       const action = e.payload.action;
       if (action.kind === "close") {
-        closeAll();
+        closeAllRef.current();
         return;
       }
       if (action.kind === "blank") {
         setBlank((v) => (v === action.mode ? null : action.mode));
         return;
       }
-      setIndex((i) => applyNav(stops, i, action));
+      setIndex((i) => applyNav(stopsRef.current, i, action));
     }).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
@@ -243,7 +377,7 @@ export function DeckPresenter({
       cancelled = true;
       unlisten?.();
     };
-  }, [audience, stops, closeAll]);
+  }, [audience]);
 
   // The audience window was closed from the WM: drop back to one screen rather
   // than streaming at a window that is not there.
@@ -278,6 +412,13 @@ export function DeckPresenter({
   );
 
   // --- keys ----------------------------------------------------------------
+
+  /** The overview grid's own cursor, so arrows browse it instead of the talk. */
+  const [gridPick, setGridPick] = useState(0);
+  useEffect(() => {
+    if (grid && stop) setGridPick(stop.slide);
+  }, [grid, stop?.slide]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // Keys this window owns alone: the overlays and the second display are
@@ -287,6 +428,14 @@ export function DeckPresenter({
           if (goto) {
             jumpToSlide(Number(goto) - 1);
             setGoto("");
+            return;
+          }
+          // With the grid open, Enter is what *commits* the browsed slide — see
+          // the movement branch below.
+          if (grid) {
+            e.preventDefault();
+            jumpToSlide(gridPick);
+            return;
           }
           return;
         case "g":
@@ -304,7 +453,14 @@ export function DeckPresenter({
           return;
         case "Escape":
           // Escape peels one layer at a time rather than dumping you out of the
-          // talk from whatever overlay happens to be open.
+          // talk from whatever overlay happens to be open — and the marker/laser
+          // is one of those layers even though it is a different component's
+          // state. Three window listeners see this one key (here, the overlay,
+          // and `useKeyboard`), none of them stops propagation, and none can see
+          // the others; so holstering the laser with nothing else open used to
+          // END THE TALK (TODO V #98). Declining the key here leaves the disarm
+          // to the overlay's own handler, which runs immediately after.
+          if (isToolArmed()) return;
           if (grid) setGrid(false);
           else if (blank) setBlank(null);
           else closeAll();
@@ -333,6 +489,28 @@ export function DeckPresenter({
         return;
       }
       e.preventDefault();
+
+      // The overview grid is a place to LOOK, not a place to navigate from. It
+      // used to pass movement straight through, so the speaker hunting for slide
+      // 23 advanced the live talk on the projector while browsing for it
+      // (TODO V #102). Arrows move the grid's own cursor; Enter commits.
+      if (grid) {
+        const step =
+          action.kind === "next"
+            ? 1
+            : action.kind === "prev"
+              ? -1
+              : action.kind === "slide"
+                ? action.delta
+                : 0;
+        if (action.kind === "first") setGridPick(0);
+        else if (action.kind === "last") setGridPick(Math.max(0, deck.slides.length - 1));
+        else if (step)
+          setGridPick((p) => Math.min(Math.max(0, p + step), Math.max(0, deck.slides.length - 1)));
+        else if (action.kind === "goto") jumpToSlide(action.slide);
+        return;
+      }
+
       // A blanked screen swallows the first advance: the key that wakes the
       // screen should not also move the talk on.
       if (blank && (action.kind === "next" || action.kind === "prev")) {
@@ -347,7 +525,9 @@ export function DeckPresenter({
     stops,
     blank,
     grid,
+    gridPick,
     goto,
+    deck.slides.length,
     jumpToSlide,
     closeAll,
     audience,
@@ -362,16 +542,35 @@ export function DeckPresenter({
   const root = typeof document !== "undefined" ? document.getElementById("root") : null;
   if (!root || !stop) return null;
 
-  const elapsed = Math.floor((now - started) / 1000);
+  const elapsed = Math.floor((banked + (paused ? 0 : now - started)) / 1000);
   const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
   const ss = String(elapsed % 60).padStart(2, "0");
+  const timerTone = paused
+    ? "paused"
+    : target > 0 && elapsed >= target * 60
+      ? "over"
+      : target > 0 && elapsed >= target * 60 * 0.9
+        ? "near"
+        : "ok";
   const wall = new Date(now).toLocaleTimeString(undefined, {
     hour: "2-digit",
     minute: "2-digit",
   });
 
-  const nextSlideIndex = stops.slice(index + 1).find((s) => s.kind === "slide")?.slide;
+  // The next DIFFERENT slide. On a slide with builds the next `kind: "slide"`
+  // stop is the same slide's next build step, so the naive search showed the
+  // speaker a preview of what the room was already looking at, under the wrong
+  // number, exactly while stepping builds (TODO V #101). The arithmetic lives in
+  // `present.ts` so it is testable rather than inline in this JSX.
+  const nextIdx = nextSlideOf(stops, index);
+  const nextSlideIndex = nextIdx >= 0 ? nextIdx : undefined;
   const nextSlide = nextSlideIndex !== undefined ? deck.slides[nextSlideIndex] : undefined;
+  const box = slidePageBox(deck, slide);
+  const nextBox = slidePageBox(deck, nextSlide);
+  // Position in the TALK, not in the slide array: a skipped slide is not part of
+  // the count the speaker is pacing against (#106).
+  const talkSlides = deck.slides.filter((s) => !s.skip);
+  const talkPos = stop ? talkSlides.findIndex((s) => s.id === deck.slides[stop.slide]?.id) + 1 : 0;
   // With the audience on its own screen this window IS the presenter view, so
   // the notes column stops being optional — hiding it would leave the speaker
   // looking at a second copy of what the room already sees.
@@ -391,11 +590,14 @@ export function DeckPresenter({
         <div className="presentation-host deck-presenter-stage">
           {stop.kind === "interstitial" && slide?.after ? (
             <InterstitialView
-              gif={gifs.get(slide.after.id)}
+              gif={gifs.get(gifKey(slide.after))}
               fit={slide.after.fit}
               background={slide.after.background}
               advance={slide.after.advance}
               onEnded={next}
+              // This window owns the advance — the audience window mirrors. See
+              // `InterstitialView`'s note on the double-step this closes.
+              drivesAdvance
             />
           ) : (
             slide && (
@@ -406,28 +608,45 @@ export function DeckPresenter({
                 slide={slide}
                 step={stop.kind === "slide" ? stop.step : 0}
                 doc={doc}
-                pageWidth={deck.pageWidth}
-                pageHeight={deck.pageHeight}
+                pageWidth={box.width}
+                pageHeight={box.height}
                 metrics={metrics}
                 assets={assets}
                 transition={transitionRef.current}
+                footer={footerObject(deck, talkPos - 1, talkSlides.length, box.height)}
               />
             )
           )}
           <PresentationOverlay />
         </div>
 
-        {blank && <div className={`deck-presenter-blank is-${blank}`} />}
+        {/* Blanking is for the ROOM. In dual-window mode the speaker keeps their
+            own view of the slide — blanking both is how you end up talking about
+            a slide you can no longer see (TODO V #126's first half). */}
+        {blank && !audience && <div className={`deck-presenter-blank is-${blank}`} />}
 
         {grid && (
           <div className="deck-presenter-grid" role="listbox" aria-label="All slides">
             {deck.slides.map((s, i) => (
               <button
                 key={s.id}
-                className={`deck-presenter-grid-cell${i === stop.slide ? " active" : ""}`}
+                className={
+                  "deck-presenter-grid-cell" +
+                  (i === stop.slide ? " active" : "") +
+                  (i === gridPick ? " picked" : "") +
+                  (s.skip ? " skipped" : "")
+                }
                 onClick={() => jumpToSlide(i)}
+                onMouseEnter={() => setGridPick(i)}
               >
+                {/* Real thumbnails, not numbered blanks: past ~15 slides a grid
+                    of numbers is unusable as a jump target, which is the one job
+                    it has (TODO V #126). `DeckRailThumb` in the editor already
+                    renders exactly this, so the presenter renders the page the
+                    same way rather than inventing a second path. */}
+                <PresenterGridThumb doc={doc} page={s.anchor.page} />
                 <span className="deck-presenter-grid-num">{i + 1}</span>
+                {s.skip && <span className="deck-presenter-grid-skip" title="Skipped in the talk">⤫</span>}
                 {s.notes.trim() && <span className="deck-presenter-grid-note" title={s.notes} />}
               </button>
             ))}
@@ -438,15 +657,43 @@ export function DeckPresenter({
       </div>
 
       {showNotes && (
-        <aside className="deck-presenter-notes">
+        <aside className="deck-presenter-notes" style={{ ["--deck-notes-size" as string]: `${notesSize}px` }}>
           <div className="deck-presenter-notes-head">
             <span>
-              Slide {stop.slide + 1} / {deck.slides.length}
+              Slide {talkPos} / {talkSlides.length}
               {stop.kind === "slide" && stop.step > 0 && ` · build ${builds}`}
               {stop.kind === "interstitial" && " · animation"}
             </span>
-            <span className="deck-presenter-timer" title={`Started at ${new Date(started).toLocaleTimeString()}`}>
+            <span
+              className={`deck-presenter-timer is-${timerTone}`}
+              title={
+                target > 0
+                  ? `${target} min target · started at ${new Date(started).toLocaleTimeString()}`
+                  : `Started at ${new Date(started).toLocaleTimeString()}`
+              }
+            >
               {mm}:{ss}
+            </span>
+            {/* A talk's clock has to be controllable: it used to run from mount
+                with no pause and no reset, so a laptop suspend added the sleep to
+                it and a rehearsal restarted meant restarting the presenter
+                (TODO V #126). */}
+            <span className="deck-presenter-timer-btns">
+              <button onClick={() => setPaused((p) => !p)} title={paused ? "Resume timer" : "Pause timer"}>
+                {paused ? "▶" : "⏸"}
+              </button>
+              <button onClick={resetTimer} title="Reset timer">
+                ↺
+              </button>
+              <button
+                onClick={() => setTarget((t) => (t + 5) % 65)}
+                title="Target duration — the elapsed clock turns amber near it and red past it"
+              >
+                {target > 0 ? `${target}m` : "⏱"}
+              </button>
+              <button onClick={() => setNotesSize((n) => (n >= 20 ? 11 : n + 2))} title="Notes text size">
+                A
+              </button>
             </span>
           </div>
 
@@ -462,15 +709,15 @@ export function DeckPresenter({
               flicker in the corner of their eye for the whole talk. */}
           {nextSlide && (
             <div className="deck-presenter-next-preview">
-              <span className="deck-presenter-next-label">Next · slide {(nextSlideIndex ?? 0) + 1}</span>
+              <span className="deck-presenter-next-label">Next · slide {talkPos + 1}</span>
               <div className="deck-presenter-next-frame">
                 <PresentedSlide
                   key={`next-${nextSlide.id}`}
                   slide={nextSlide}
                   step={Number.MAX_SAFE_INTEGER}
                   doc={doc}
-                  pageWidth={deck.pageWidth}
-                  pageHeight={deck.pageHeight}
+                  pageWidth={nextBox.width}
+                  pageHeight={nextBox.height}
                   metrics={metrics}
                   assets={assets}
                   transition="none"
@@ -487,7 +734,7 @@ export function DeckPresenter({
           <div className="deck-presenter-next">
             {nextSlideIndex !== undefined ? (
               <>
-                Next: slide {nextSlideIndex + 1}
+                Next: slide {talkPos + 1}
                 {deck.slides[nextSlideIndex]?.after && " (animation follows)"}
               </>
             ) : (
@@ -503,7 +750,7 @@ export function DeckPresenter({
           ‹
         </button>
         <span className="deck-presenter-pos">
-          {stop.slide + 1} / {deck.slides.length}
+          {talkPos} / {talkSlides.length}
         </span>
         <button onClick={next} title="Next (Space / →)" aria-label="Next">
           ›

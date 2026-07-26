@@ -422,6 +422,12 @@ pub fn run() {
 
     install_crash_logger();
 
+    // More than one crate in the tree can supply a rustls `CryptoProvider`, and
+    // rustls refuses to guess — it panics at the *first handshake* instead, i.e.
+    // at runtime, mid-connect, on a user's machine. Install ours explicitly
+    // before anything can reach TLS, and ignore an already-installed one.
+    services::mail_engine::install_crypto_provider();
+
     let pty_registry: RegistryState = Arc::new(Mutex::new(PtyRegistry::default()));
     let win_registry: WindowRegistryState = Arc::new(Mutex::new(WindowRegistry::default()));
     let workspace: WorkspaceStateArc = Arc::new(Mutex::new(WorkspaceState::new()));
@@ -446,6 +452,10 @@ pub fn run() {
     // Cancel flags for in-flight disk-usage scans, one per scanning pane. See
     // `commands::disk_usage`.
     let disk_scans = commands::disk_usage::new_state();
+    // The mail client's session state: the lazily-opened local store, the
+    // in-memory-only passwords for accounts the user chose not to persist, and
+    // the per-account sync cancel flags. See `commands::mail`.
+    let mail_state = commands::mail::new_state();
     // Recursive file-churn watcher on the active project + the counters it has
     // seen since the last flush (see `services::usage_stats`).
     let usage_watch = services::usage_stats::new_state();
@@ -464,6 +474,7 @@ pub fn run() {
         .manage(git_peer)
         .manage(worker_sync)
         .manage(disk_scans)
+        .manage(mail_state)
         .manage(usage_watch.clone())
         .setup(|_app| {
             #[cfg(target_os = "linux")]
@@ -669,6 +680,31 @@ pub fn run() {
             commands::calendar::delete_calendar,
             commands::calendar::calendar_read_ics,
             commands::calendar::calendar_write_ics,
+            // Embedded mail client (docs/mail_client_plan_{a,b}.md). Every one
+            // of these is `async` on purpose — a sync command runs on the main
+            // thread, and an unreachable IMAP server would freeze the whole
+            // window for the TCP timeout. None of them takes a path: files
+            // cross the boundary only through `mail_attach_pick` /
+            // `mail_attachment_save`, which raise the OS dialog inside Rust.
+            commands::mail::mail_accounts_list,
+            commands::mail::mail_account_upsert,
+            commands::mail::mail_account_delete,
+            commands::mail::mail_account_test,
+            commands::mail::mail_password_state,
+            commands::mail::mail_forget_password,
+            commands::mail::mail_folders,
+            commands::mail::mail_sync,
+            commands::mail::mail_sync_cancel,
+            commands::mail::mail_headers,
+            commands::mail::mail_body,
+            commands::mail::mail_flag,
+            commands::mail::mail_move,
+            commands::mail::mail_draft_save,
+            commands::mail::mail_draft_send,
+            commands::mail::mail_attach_pick,
+            commands::mail::mail_attach_remove,
+            commands::mail::mail_attachment_save,
+            commands::mail::mail_attachment_preview,
             // SSH / remote projects
             commands::ssh::ssh_connect,
             commands::ssh::ssh_probe,
@@ -826,6 +862,8 @@ pub fn run() {
             commands::tex::compile_tex,
             commands::tex::synctex_edit,
             commands::tex::synctex_view,
+            commands::tex::synctex_page_lines,
+            commands::tex::list_fonts,
             commands::tex::resolve_tex_root,
             // Terminal
             commands::terminal::pty_spawn,
@@ -864,6 +902,8 @@ pub fn run() {
             // The deck presenter's audience window (M#90)
             commands::presenter::open_presenter_window,
             commands::presenter::close_presenter_window,
+            commands::presenter::presenter_inhibit_sleep,
+            commands::presenter::presenter_release_sleep,
             commands::workspace::workspace_name,
             commands::workspace::network_conn_type,
             // Project-runtime switching (replaces switch_project_windows)

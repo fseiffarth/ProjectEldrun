@@ -519,7 +519,26 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [ ] **Known gap:** the laser/marker overlay is drawn on the presenter
       window and is **not** mirrored to the audience one, so in dual-window mode
       the room does not see the pointer. Needs the stroke/laser stream to cross
-      windows (the `DETACHED_DRAG_*` cursor stream is the precedent).
+      windows (the `DETACHED_DRAG_*` cursor stream is the precedent). *Now
+      tracked as [Group V](group-v.md) #127, with the letterbox-normalization
+      trap noted.*
+
+    > **⚠️ Before the manual QA below, see [Group V](group-v.md)
+    > (#93–#141).** A three-way static analysis of the shipped code found two
+    > defects that **destroy authored work with no prompt** — the debounced
+    > autosave is cancelled on unmount (#93) and a newer-version deck is
+    > silently downgraded and overwritten (#94) — plus six failures that would
+    > show up in front of a room on first use: auto-advancing GIFs skip a slide
+    > in dual-window mode (#95), export throws on any non-WinAnsi character
+    > (#96), the audience window's WebKitGTK paint kick is skipped in exactly
+    > the case it exists for (#97), Escape-to-holster-the-laser ends the talk
+    > (#98), "Present fullscreen" only fills the app window (#99), and the
+    > SyncTeX anchoring described above **is never populated at runtime**, so
+    > every deck falls through to a fingerprint that Beamer overlays defeat by
+    > construction (#100). The 148 automated cases cover only the pure modules;
+    > all of the above live in `DeckView`'s effects and `presenter.rs`, which
+    > have no coverage. Fix #93–#100 before spending a projector session on the
+    > two manual-test items.
     - [ ] 🖐️ Manual test — open a `.eldeck.json` beside a compiled PDF; drag,
       resize and rotate objects and confirm the guides name the right reason;
       recompile the `.tex` with a slide inserted and confirm layers follow their
@@ -533,4 +552,11 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       opening the second display twice re-uses one window. With **one** monitor
       it opens windowed and decorated, draggable onto the projector.
     - [ ] **Known gap:** `compile_tex` is **local-only** (no remote dispatch), so
-      a remote project must compile on its local mirror.
+      a remote project must compile on its local mirror. (It is also a
+      *synchronous* Tauri command, so every compile freezes the window — see
+      [Group V](group-v.md) #105.)
+
+    **Follow-on work: [Group V](group-v.md) #93–#141** — post-Phase-7 hardening
+    and gaps, organized as V.1 blockers (data loss + first-real-use failures),
+    V.2 correctness and core usability, V.3 performance, polish and the
+    differentiated bet.

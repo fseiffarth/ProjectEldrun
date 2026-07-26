@@ -13,6 +13,7 @@ import {
 import { useFileSourcesStore } from "../../stores/fileSources";
 import { useRunHostPrefStore } from "../../stores/runHostPref";
 import { UntestedTag } from "../common/UntestedTag";
+import { useT } from "../../lib/i18n";
 
 /**
  * The two per-tab local/remote badges + the locality menu, factored out so the
@@ -42,6 +43,7 @@ export function tabLocation(tab: TabEntry | undefined): TabLocation {
  *  the viewer published a switch (the file exists on both sides of a remote
  *  project), else the plain read-only glyph. Renders nothing on a local tab. */
 export function TabSourceBadge({ tabKey }: { tabKey: string }) {
+  const t = useT();
   const src = useFileSourcesStore((s) => s.byTab[tabKey]);
   const ctl = useFileSourcesStore((s) => s.controlsByTab[tabKey]);
   if (ctl) {
@@ -52,10 +54,10 @@ export function TabSourceBadge({ tabKey }: { tabKey: string }) {
         className={`tab-source clickable ${onRemote ? "remote" : "local"}${blocked ? " disabled" : ""}`}
         title={
           blocked
-            ? "This file has no copy on the host — nothing to switch to."
+            ? t("tabLocality.noCopyTitle")
             : onRemote
-              ? "Reading from the host over SFTP — click to read the local mirror copy."
-              : "Reading the local mirror copy — click to read from the host over SFTP."
+              ? t("tabLocality.readingRemoteTitle")
+              : t("tabLocality.readingLocalTitle")
         }
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => {
@@ -74,8 +76,8 @@ export function TabSourceBadge({ tabKey }: { tabKey: string }) {
       className={`tab-source ${src}`}
       title={
         src === "remote"
-          ? "Remote-native: read directly from the host over SFTP (no local copy)."
-          : "Local mirror: read from this project's local synced copy of the host file."
+          ? t("tabLocality.remoteNativeTitle")
+          : t("tabLocality.localMirrorTitle")
       }
     >
       {src === "remote" ? "☁" : "⌂"}
@@ -100,6 +102,7 @@ export function TabLocalityBadge({
    *  remote→remote reassignment). */
   onOpen: (rect: DOMRect, startOnMachines: boolean) => void;
 }) {
+  const t = useT();
   if (!isLocatableKind(tab.kind)) return null;
   const loc = effectiveTabLocation(tab);
   const hostId = remoteHostIdOf(loc);
@@ -107,7 +110,7 @@ export function TabLocalityBadge({
   return (
     <button
       className={`tab-locality ${hostId === null ? "local" : "remote"}`}
-      title={`Runs on: ${label} — click to change where this tab runs`}
+      title={t("tabLocality.runsOnClickTitle", { label })}
       onPointerDown={(e) => e.stopPropagation()}
       onClick={(e) => {
         e.stopPropagation();
@@ -142,6 +145,7 @@ export function LocalityMenu({
   onChangeView: (view: "root" | "machines") => void;
   onChoose: (key: string, loc: TabLocation) => void;
 }) {
+  const t = useT();
   const cur = current;
   const onRemoteNow = remoteHostIdOf(cur) !== null;
   const choose = (loc: TabLocation) => {
@@ -180,7 +184,7 @@ export function LocalityMenu({
       >
         {menu.view === "root" ? (
           <>
-            {machineItem("local", "⌂", "Local (mirror)")}
+            {machineItem("local", "⌂", t("tabLocality.localMirrorItem"))}
             <button
               className="tab-new-menu-item"
               onClick={() => onChangeView("machines")}
@@ -188,8 +192,8 @@ export function LocalityMenu({
               <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>
                 {onRemoteNow ? "●" : "☁"}
               </span>
-              Remote…
-              <span className="tab-menu-hint">choose machine ›</span>
+              {t("tabLocality.remoteEllipsis")}
+              <span className="tab-menu-hint">{t("tabLocality.chooseMachineHint")}</span>
             </button>
           </>
         ) : (
@@ -199,13 +203,13 @@ export function LocalityMenu({
               onClick={() => onChangeView("root")}
             >
               <span className="tab-new-menu-dot">‹</span>
-              Run on machine
+              {t("tabLocality.runOnMachine")}
               <UntestedTag />
             </button>
             {machineItem(
               "remote",
               "☁",
-              primaryHost ? `Primary (${primaryHost})` : "Primary",
+              primaryHost ? t("tabLocality.primaryWithHost", { host: primaryHost }) : t("tabLocality.primary"),
             )}
             {(computeHosts ?? []).map((h) =>
               machineItem(
@@ -216,9 +220,8 @@ export function LocalityMenu({
                   ? undefined
                   : {
                       disabled: true,
-                      note: "sync off",
-                      title:
-                        "This machine holds no code — enable “Auto-sync code” or shared filesystem in Remote machines… to run scripts here. Sync stays with the primary.",
+                      note: t("tabLocality.syncOff"),
+                      title: t("tabLocality.syncOffTitle"),
                     },
               ),
             )}
@@ -248,6 +251,7 @@ export function RunHostPicker({
   primaryHost?: string;
   computeHosts?: LocalityHost[];
 }) {
+  const t = useT();
   const pref = useRunHostPrefStore((s) => s.byProject[projectId]);
   const setPref = useRunHostPrefStore((s) => s.set);
   const [menu, setMenu] = useState<LocalityMenuState | null>(null);
@@ -263,7 +267,7 @@ export function RunHostPicker({
         className="right-panel-run-host"
         // The label ellipsizes in a narrow (docked subwindow) row, so the full
         // machine name has to survive somewhere — the tooltip names it.
-        title={`Runs on: ${label}\nWhere Run/Debug and shells launched from this project run — the machine, not which side files are read from.`}
+        title={`${t("tabLocality.runHostTitle", { label })}\n${t("tabLocality.runHostSubtitle")}`}
         onClick={(e) => {
           const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
           setMenu({
@@ -275,7 +279,7 @@ export function RunHostPicker({
         }}
       >
         <span aria-hidden="true">{onRemote ? "☁" : "⌂"}</span>
-        <span className="run-host-label">Run: {label}</span>
+        <span className="run-host-label">{t("tabLocality.runLabel", { label })}</span>
       </button>
       {menu && (
         <LocalityMenu

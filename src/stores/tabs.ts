@@ -54,7 +54,8 @@ export type TabKind =
   | "network"
   | "monitor"
   | "diskusage"
-  | "calendar";
+  | "calendar"
+  | "mail";
 
 /**
  * SSH-sync Phase 0 — a PTY tab's locality on a REMOTE (SSH) project: does it run
@@ -162,6 +163,23 @@ export const DISKUSAGE_TAB_CMD = "__eldrun_diskusage__";
  * by this command so cmdToKind can recover its kind.
  */
 export const CALENDAR_TAB_CMD = "__eldrun_calendar__";
+
+/**
+ * Sentinel `cmd` for the embedded mail tab: an IMAP/SMTP client whose store is
+ * global — one `~/.local/share/eldrun/mail/`, one zustand store — so a mail tab
+ * opened from any scope shows the same mailbox and the tab is a singleton per
+ * scope. Carries no PTY: like the calendar pane it owns no process at all, which
+ * is exactly why it is identified by this command (so `cmdToKind` recovers its
+ * kind from a bare persisted `cmd`) and why it must never enter the spawn/kill/
+ * activity paths (`isPtyTabKind` deliberately does NOT list it).
+ *
+ * A restored mail tab renders from the local index and **never connects on its
+ * own** — it shows a "Check mail" button. Reaching a server on a launch path is
+ * the one thing a mail client must not do: an unreachable IMAP host hangs for the
+ * whole TCP timeout, and nothing about a window being reopened is consent to dial
+ * out (see `docs/mail_client_plan_a.md` §2, rule 5).
+ */
+export const MAIL_TAB_CMD = "__eldrun_mail__";
 
 /**
  * Synthetic group id for the empty-state placeholder subwindow (rendered by
@@ -3682,6 +3700,7 @@ export function cmdToKind(cmd: string): TabKind {
   if (cmd === MONITOR_TAB_CMD) return "monitor";
   if (cmd === DISKUSAGE_TAB_CMD) return "diskusage";
   if (cmd === CALENDAR_TAB_CMD) return "calendar";
+  if (cmd === MAIL_TAB_CMD) return "mail";
   if (AGENT_CMDS.has(cmd)) return "agent";
   return "shell";
 }
@@ -3709,7 +3728,12 @@ export function isRestorableKind(kind: TabKind): boolean {
     // The tab comes back, but on its home screen — a scan is far too expensive to
     // replay on every launch, so the pane never auto-rescans.
     kind === "diskusage" ||
-    kind === "calendar"
+    kind === "calendar" ||
+    // Mail has no live process and no session to lose — it re-renders from its
+    // own global store — so it belongs in the always-restore set. What it must
+    // NOT do is sync on restore: the restored tab shows a "Check mail" button
+    // and reaches the network only when clicked (MAIL_TAB_CMD's note).
+    kind === "mail"
   );
 }
 

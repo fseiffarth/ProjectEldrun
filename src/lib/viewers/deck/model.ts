@@ -70,15 +70,52 @@ export const newInterstitialId = (): string => mintId("g");
 // ---------------------------------------------------------------------------
 
 /**
- * The three standard-14 font families, which are the only ones a deck uses.
+ * A deck's type: one of the three standard-14 families, or an **embedded** face
+ * named by the path of the font file it comes from.
  *
- * That is a deliberate constraint, not an oversight: the editor and the exporter
- * both wrap text with pdf-lib's own metrics (`deck/fonts.ts`), so what is on
- * screen is what exports, *by construction*. Arbitrary TTFs would need
- * `@pdf-lib/fontkit` plus a font-embedding UI, and would reintroduce exactly the
- * editor-vs-exporter metric drift this avoids.
+ * The load-bearing constraint is not "standard-14 only" — it is that *one*
+ * module measures and embeds (`deck/fonts.ts`), so the stage and the exporter
+ * break lines identically **by construction** rather than by luck. The standard
+ * families keep that for free (pdf-lib carries their metrics). A custom face
+ * keeps it by the same rule stated explicitly: the bytes registered for
+ * measurement must be the bytes embedded on export, so both sides take the file
+ * path as the key and the same `fonts` map as the source.
+ *
+ * A Beamer plate is typeset in Computer Modern / Latin Modern, so with
+ * standard-14 alone *every* layer caption sat in Helvetica on top of it — and a
+ * non-Latin talk was out of reach entirely, since the standard faces are WinAnsi
+ * (TODO V #96/#120).
  */
-export type FontFamily = "sans" | "serif" | "mono";
+export type FontFamily = "sans" | "serif" | "mono" | { custom: string };
+
+/** The three built-in families, for a control that offers them. */
+export const STANDARD_FAMILIES = ["sans", "serif", "mono"] as const;
+
+/** The font-file path of a custom family, or null for a standard one. */
+export function customFontPath(f: FontFamily): string | null {
+  return typeof f === "object" && typeof f.custom === "string" ? f.custom : null;
+}
+
+/** A stable key for a family, usable as a map key and in a `<select>` value. */
+export function fontKey(f: FontFamily): string {
+  const custom = customFontPath(f);
+  return custom ? `custom:${custom}` : (f as string);
+}
+
+/** Every custom font path a deck references, deduplicated. The viewer reads
+ *  these files and hands their bytes to both the metrics and the exporter. */
+export function customFontsOf(deck: Deck): string[] {
+  const out = new Set<string>();
+  const add = (f: FontFamily | undefined) => {
+    const p = f && customFontPath(f);
+    if (p) out.add(p);
+  };
+  add(deck.theme.text.family);
+  for (const s of deck.slides) {
+    for (const o of s.objects) if (o.kind === "text") add(o.style.family);
+  }
+  return [...out];
+}
 
 export type TextAlign = "left" | "center" | "right";
 
@@ -294,6 +331,36 @@ export interface Slide {
   transition: Transition;
   /** Plays after this slide, before the next. See {@link Interstitial}. */
   after?: Interstitial;
+  /**
+   * Keep the slide in the deck but out of the *talk*: skipped by
+   * {@link sequence} and by the PDF export.
+   *
+   * Distinct from deleting it, and the reason both exist: a backup slide for
+   * the Q&A, or a section the author cut for a shorter version of the talk, is
+   * content they want to keep authoring — the alternative today is deleting it
+   * from the `.tex` and losing its layers.
+   */
+  skip?: boolean;
+  /**
+   * Page box in points, when this slide's base page differs from the deck's.
+   *
+   * Absent — the overwhelmingly common case — means "the deck's box". Present
+   * for a plate that mixes sizes (a portrait appendix, an inserted landscape
+   * figure page), where scaling every layer by page 1's box mis-places them.
+   */
+  pageWidth?: number;
+  pageHeight?: number;
+}
+
+/** The page box a slide's layers are scaled against — its own, or the deck's. */
+export function slidePageBox(
+  deck: Pick<Deck, "pageWidth" | "pageHeight">,
+  slide: Pick<Slide, "pageWidth" | "pageHeight"> | undefined,
+): { width: number; height: number } {
+  return {
+    width: slide?.pageWidth ?? deck.pageWidth,
+    height: slide?.pageHeight ?? deck.pageHeight,
+  };
 }
 
 /**
@@ -313,6 +380,43 @@ export interface DetachedLayer {
 // Deck
 // ---------------------------------------------------------------------------
 
+/**
+ * A footer / slide-number line drawn on every slide.
+ *
+ * Rendered as a **synthetic text object** ({@link footerObject}) rather than a
+ * real one on each slide: it belongs to the deck, so making it N stored objects
+ * would mean N edits to change it and N objects to accidentally drag. The
+ * renderer and the exporter both draw the synthetic object through their
+ * ordinary text path, so it cannot look different in the two places.
+ */
+export interface DeckFooter {
+  /**
+   * The line itself. `{n}` expands to the slide's 1-based position in the talk
+   * and `{N}` to the number of slides in it — so "{n} / {N}" is a page counter
+   * and a bare "{n}" is a slide number.
+   */
+  text: string;
+  align: TextAlign;
+  /** PDF points, like every other type size in the deck. */
+  size: number;
+  color: string;
+  /** Distance from the bottom page edge, as a fraction of the page height. */
+  offset: number;
+  /** Leave the first slide bare — a title page rarely wants a page number. */
+  skipFirst: boolean;
+}
+
+export function defaultFooter(): DeckFooter {
+  return {
+    text: "{n}",
+    align: "right",
+    size: 8,
+    color: "#666666",
+    offset: 0.03,
+    skipFirst: true,
+  };
+}
+
 /** Defaults a new object inherits, so a deck looks consistent without effort. */
 export interface DeckTheme {
   text: TextStyle;
@@ -325,6 +429,8 @@ export interface DeckTheme {
   margin: number;
   /** Whether the PDF export writes a poster page per interstitial. */
   exportInterstitials: boolean;
+  /** Drawn on every slide (bar the first, optionally). Absent = no footer. */
+  footer?: DeckFooter;
 }
 
 export interface Deck {
@@ -339,6 +445,17 @@ export interface Deck {
   slides: Slide[];
   detached: DetachedLayer[];
   theme: DeckTheme;
+  /**
+   * Fingerprints of base pages the author **deleted** a slide for.
+   *
+   * Without this, `reconcile`'s "cover every base page" pass resurrects the
+   * slide on the very next load, and deleting a title page or a backup frame is
+   * impossible short of hand-editing the JSON. Stored as fingerprints rather
+   * than page numbers because a page number stops meaning anything the moment
+   * the source is recompiled — which is the case the whole anchoring design
+   * exists for.
+   */
+  skippedPrints?: string[];
 }
 
 /** 16:9 at the usual TeX beamer size, in points. */
@@ -367,6 +484,52 @@ export function defaultTheme(): DeckTheme {
     iconStrokeWidth: 1.5,
     margin: 0.05,
     exportInterstitials: true,
+  };
+}
+
+/**
+ * The footer as a drawable text object for slide `index` of `total`, or null
+ * when the deck has no footer (or this slide is exempt).
+ *
+ * Its id is fixed and namespaced (`__footer`) so nothing can select, drag or
+ * persist it: it is regenerated from the theme on every render.
+ */
+export function footerObject(
+  deck: Pick<Deck, "theme" | "pageHeight">,
+  index: number,
+  total: number,
+  /** The slide's own page height, when it differs from the deck's (#112). */
+  pageHeight: number = deck.pageHeight,
+): TextObject | null {
+  const f = deck.theme.footer;
+  if (!f || !f.text.trim()) return null;
+  if (f.skipFirst && index === 0) return null;
+  const text = f.text.replace(/\{n\}/g, String(index + 1)).replace(/\{N\}/g, String(total));
+  const margin = deck.theme.margin;
+  // The box is exactly one line tall, sized from the type rather than from the
+  // offset — an offset small enough to sit close to the edge would otherwise be
+  // a box too short for its own text, which the renderer flags as an overflow.
+  const lineH = Math.max(0.001, (f.size * 1.15) / Math.max(1, pageHeight));
+  return {
+    id: "__footer",
+    kind: "text",
+    text,
+    style: {
+      family: deck.theme.text.family,
+      size: f.size,
+      bold: false,
+      italic: false,
+      color: f.color,
+      align: f.align,
+      lineHeight: 1.15,
+    },
+    padding: 0,
+    x: margin,
+    y: 1 - f.offset - lineH,
+    w: Math.max(0.05, 1 - margin * 2),
+    h: lineH,
+    rot: 0,
+    opacity: 1,
   };
 }
 
@@ -593,18 +756,63 @@ export interface Box {
   h: number;
 }
 
-/** The tight box around `objects`. Empty input gives a zero box at the origin. */
-export function boundingBox(objects: readonly DeckObject[]): Box {
+/**
+ * The four corners of an object **after** its rotation, in normalized page
+ * coordinates.
+ *
+ * Rotation is about the box's centre (what a rotation handle implies) and the
+ * page is not square, so the turn has to happen in an aspect-corrected frame or
+ * a 45°-rotated square comes back as a lozenge. `aspect` is `pageWidth /
+ * pageHeight`; passing 1 gives the un-corrected turn, which is right when the
+ * caller is already working in a square space.
+ */
+export function rotatedCorners(
+  o: Pick<DeckObject, "x" | "y" | "w" | "h" | "rot">,
+  aspect = 1,
+): Array<[number, number]> {
+  const cx = o.x + o.w / 2;
+  const cy = o.y + o.h / 2;
+  const corners: Array<[number, number]> = [
+    [o.x, o.y],
+    [o.x + o.w, o.y],
+    [o.x + o.w, o.y + o.h],
+    [o.x, o.y + o.h],
+  ];
+  if (!o.rot) return corners;
+  const rad = (o.rot * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return corners.map(([px, py]) => {
+    // Into an isotropic frame, turn, and back — otherwise the ellipse-shaped
+    // distortion of the page aspect is baked into the result.
+    const dx = (px - cx) * aspect;
+    const dy = py - cy;
+    return [cx + (dx * cos - dy * sin) / aspect, cy + (dx * sin + dy * cos)] as [number, number];
+  });
+}
+
+/**
+ * The tight box around `objects`, honouring each one's rotation. Empty input
+ * gives a zero box at the origin.
+ *
+ * Rotation matters here because this box is what the selection rectangle, the
+ * marquee hit test and every align/distribute are computed from — an
+ * axis-aligned box over the *unrotated* geometry puts all three in the wrong
+ * place for turned content.
+ */
+export function boundingBox(objects: readonly DeckObject[], aspect = 1): Box {
   if (objects.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
   let x0 = Infinity;
   let y0 = Infinity;
   let x1 = -Infinity;
   let y1 = -Infinity;
   for (const o of objects) {
-    x0 = Math.min(x0, o.x);
-    y0 = Math.min(y0, o.y);
-    x1 = Math.max(x1, o.x + o.w);
-    y1 = Math.max(y1, o.y + o.h);
+    for (const [px, py] of rotatedCorners(o, aspect)) {
+      x0 = Math.min(x0, px);
+      y0 = Math.min(y0, py);
+      x1 = Math.max(x1, px);
+      y1 = Math.max(y1, py);
+    }
   }
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
@@ -683,10 +891,17 @@ export function maxBuildStep(slide: Slide): number {
   return slide.objects.reduce((m, o) => Math.max(m, o.build?.step ?? 0), 0);
 }
 
-/** Expand the deck into the ordered list of presenter stops. */
+/**
+ * Expand the deck into the ordered list of presenter stops.
+ *
+ * A slide marked `skip` contributes none: it stays in the deck (and in the
+ * editor's rail) but is not part of the talk. `Stop.slide` remains an index into
+ * `deck.slides`, so the rest of the presenter needs no translation.
+ */
 export function sequence(deck: Deck): Stop[] {
   const out: Stop[] = [];
   deck.slides.forEach((s, i) => {
+    if (s.skip) return;
     const steps = maxBuildStep(s);
     for (let step = 0; step <= steps; step += 1) {
       out.push({ kind: "slide", slide: i, step });

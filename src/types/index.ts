@@ -131,6 +131,18 @@ export interface Settings {
   calendar_day_end_hour?: number;
   /** Calendar: minutes-before reminder pre-filled on a new event. `0` = none. */
   calendar_default_reminder_minutes?: number;
+  /** Mail: the experimental gate for the embedded mail client (`lib/experimental`
+   *  — unset means "on in debug mode", which is NOT the same as false). */
+  mail_client?: boolean;
+  /** Mail: the account a fresh mail tab opens on. Falls back to the first. */
+  mail_default_account?: string;
+  /** Mail: minutes between background checks. Default 5; polling is Phase 2. */
+  mail_check_interval_min?: number;
+  /** Mail: load remote images without asking. **Default false, and it should
+   *  stay that way** — loading them tells the sender the message was opened. */
+  mail_show_remote_images?: boolean;
+  /** Mail: raise an OS notification for new inbox mail. Default true. */
+  mail_notify_new?: boolean;
   default_agent_cmd?: string;
   /** User-defined custom agents offered in the add-tab menu's Agents group,
    *  added/removed from the "＋ Add agent…" dialog. Round-trips through the

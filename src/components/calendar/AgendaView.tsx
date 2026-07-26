@@ -3,6 +3,7 @@ import type { Calendar, Occurrence } from "../../types";
 import { datePart, formatLongDate, formatTime, spanDates, todayStr } from "../../lib/calendarTime";
 import { eventColor } from "../../lib/calendarCategories";
 import { calendarColor } from "../../stores/calendar";
+import { useI18nStore, useT } from "../../lib/i18n";
 
 interface Props {
   occurrences: Occurrence[];
@@ -20,6 +21,8 @@ interface Props {
  * the matches among empty cells, whereas a list shows exactly the hits.
  */
 export function AgendaView({ occurrences, calendars, use24h, onOpen, emptyLabel }: Props) {
+  const t = useT();
+  const lang = useI18nStore((s) => s.lang);
   const today = todayStr();
 
   /**
@@ -40,7 +43,7 @@ export function AgendaView({ occurrences, calendars, use24h, onOpen, emptyLabel 
   }, [occurrences]);
 
   if (days.length === 0) {
-    return <div className="cal-empty">{emptyLabel ?? "Nothing scheduled."}</div>;
+    return <div className="cal-empty">{emptyLabel ?? t("calendar.nothingScheduled")}</div>;
   }
 
   return (
@@ -50,8 +53,8 @@ export function AgendaView({ occurrences, calendars, use24h, onOpen, emptyLabel 
           <div
             className={`cal-agenda-date${date === today ? " cal-agenda-date-today" : ""}`}
           >
-            {formatLongDate(date)}
-            {date === today ? <span className="cal-agenda-today-tag">Today</span> : null}
+            {formatLongDate(date, lang)}
+            {date === today ? <span className="cal-agenda-today-tag">{t("calendar.today")}</span> : null}
           </div>
 
           {list.map((occ) => {
@@ -70,12 +73,12 @@ export function AgendaView({ occurrences, calendars, use24h, onOpen, emptyLabel 
                 <span className="cal-agenda-swatch" style={{ color }}>●</span>
                 <span className="cal-agenda-time">
                   {occ.allDay
-                    ? "All day"
+                    ? t("calendar.allDay")
                     : startsHere
                       ? formatTime(occ.start.split("T")[1] ?? "", use24h)
-                      : "continues"}
+                      : t("calendar.continues")}
                 </span>
-                <span className="cal-agenda-title">{occ.title || "(untitled)"}</span>
+                <span className="cal-agenda-title">{occ.title || t("calendar.untitled")}</span>
                 {occ.location ? (
                   <span className="cal-agenda-location">{occ.location}</span>
                 ) : null}

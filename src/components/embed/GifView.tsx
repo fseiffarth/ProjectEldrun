@@ -12,6 +12,7 @@ import {
 import { useFileScope, readFileBytes, fileMtime } from "./fileAccess";
 import { openGif, effectiveDelayMs } from "../../lib/viewers/gif";
 import { Dropdown } from "../common/Dropdown";
+import { useT } from "../../lib/i18n";
 
 /**
  * Animated-GIF viewer with frame-level transport (#gifviewer). The plain image
@@ -133,6 +134,7 @@ export function GifView({
   onOpenExternally: () => void;
   tabKey?: string;
 }) {
+  const t = useT();
   const viewPos = useViewerState(tabKey);
   const { bytes, error } = useGifBytes(path);
 
@@ -447,13 +449,13 @@ export function GifView({
     <div className="file-viewer">
       <ViewerHeader onOpenExternally={onOpenExternally}>
         {decoded != null && (
-          <div className="file-viewer-zoom gif-transport" role="group" aria-label="Playback controls">
+          <div className="file-viewer-zoom gif-transport" role="group" aria-label={t("gifView.playbackControlsLabel")}>
             <button
               className="file-viewer-zoom-btn"
               onClick={prevFrame}
               disabled={frameCount < 2}
-              title="Previous frame"
-              aria-label="Previous frame"
+              title={t("gifView.previousFrame")}
+              aria-label={t("gifView.previousFrame")}
             >
               ⏮
             </button>
@@ -461,8 +463,8 @@ export function GifView({
               className="file-viewer-zoom-btn"
               onClick={() => setPlaying((p) => !p)}
               disabled={frameCount < 2}
-              title={playing ? "Pause" : "Play"}
-              aria-label={playing ? "Pause" : "Play"}
+              title={playing ? t("gifView.pause") : t("gifView.play")}
+              aria-label={playing ? t("gifView.pause") : t("gifView.play")}
             >
               {playing ? "⏸" : "▶"}
             </button>
@@ -470,8 +472,8 @@ export function GifView({
               className="file-viewer-zoom-btn"
               onClick={nextFrame}
               disabled={frameCount < 2}
-              title="Next frame"
-              aria-label="Next frame"
+              title={t("gifView.nextFrame")}
+              aria-label={t("gifView.nextFrame")}
             >
               ⏭
             </button>
@@ -485,21 +487,21 @@ export function GifView({
               onPointerDown={onScrubDown}
               onPointerUp={onScrubUp}
               onChange={(e) => setFrameIndex(Number(e.target.value))}
-              title="Scrub frames"
-              aria-label="Frame scrubber"
+              title={t("gifView.scrubFrames")}
+              aria-label={t("gifView.frameScrubber")}
             />
             <Dropdown
               className="gif-speed"
               value={String(speed)}
               options={SPEED_OPTIONS}
               onChange={(v) => setSpeed(Number(v))}
-              title="Playback speed"
+              title={t("gifView.playbackSpeed")}
             />
             <button
               className="file-viewer-zoom-btn"
               onClick={() => setLoop((l) => !l)}
-              title={loop ? "Looping — click to play once" : "Play once — click to loop"}
-              aria-label="Loop"
+              title={loop ? t("gifView.loopingTitle") : t("gifView.playOnceTitle")}
+              aria-label={t("gifView.loop")}
               aria-pressed={loop}
               style={loop ? undefined : { opacity: 0.45 }}
             >
@@ -511,31 +513,31 @@ export function GifView({
               // value was bumped by the 100ms convention, the tooltip says so.
               title={
                 shownDelay !== currentDelay
-                  ? `Authored ${currentDelay} ms; played at the ${shownDelay} ms browser convention`
-                  : "Frame / total · frame delay"
+                  ? t("gifView.authoredDelayTooltip", { authored: currentDelay, shown: shownDelay })
+                  : t("gifView.frameDelayTooltip")
               }
             >
               {Math.min(frameIndex + 1, frameCount)} / {frameCount} · {shownDelay} ms
             </span>
           </div>
         )}
-        <div className="file-viewer-zoom" role="group" aria-label="Zoom controls">
+        <div className="file-viewer-zoom" role="group" aria-label={t("imageZoom.controlsLabel")}>
           <button
             className="file-viewer-zoom-btn"
             onClick={() => zoomTo(scale / ZOOM_STEP)}
             disabled={!decoded || scale <= MIN_SCALE}
-            title="Zoom out"
-            aria-label="Zoom out"
+            title={t("imageZoom.zoomOutTitle")}
+            aria-label={t("imageZoom.zoomOutTitle")}
           >
             −
           </button>
-          <span className="file-viewer-zoom-level" title="Current zoom">{percent}%</span>
+          <span className="file-viewer-zoom-level" title={t("imageZoom.currentZoomTitle")}>{percent}%</span>
           <button
             className="file-viewer-zoom-btn"
             onClick={() => zoomTo(scale * ZOOM_STEP)}
             disabled={!decoded || scale >= MAX_SCALE}
-            title="Zoom in"
-            aria-label="Zoom in"
+            title={t("imageZoom.zoomInTitle")}
+            aria-label={t("imageZoom.zoomInTitle")}
           >
             +
           </button>
@@ -543,15 +545,15 @@ export function GifView({
             className="file-viewer-zoom-btn file-viewer-zoom-text"
             onClick={() => fit()}
             disabled={!decoded}
-            title="Fit to window"
+            title={t("imageZoom.fitTitle")}
           >
-            Fit
+            {t("imageZoom.fit")}
           </button>
           <button
             className="file-viewer-zoom-btn file-viewer-zoom-text"
             onClick={() => zoomTo(1)}
             disabled={!decoded}
-            title="Actual size (100%)"
+            title={t("imageZoom.actualSizeTitle")}
           >
             1:1
           </button>
@@ -565,8 +567,7 @@ export function GifView({
           // so a decoder gap only loses the transport, never the picture.
           <div className="gif-fallback" style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%" }}>
             <div className="file-viewer-loading" style={{ padding: "4px 8px" }}>
-              Couldn't decode this GIF for frame control — showing native playback.
-              Try opening it externally if it looks wrong.
+              {t("gifView.decodeFailedMessage")}
             </div>
             {fallbackUrl != null && (
               <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
@@ -579,13 +580,14 @@ export function GifView({
             )}
           </div>
         ) : decoded == null ? (
-          <div className="file-viewer-loading">{bytes == null ? "Loading…" : "Decoding…"}</div>
+          <div className="file-viewer-loading">{bytes == null ? t("common.loading") : t("gifView.decoding")}</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%" }}>
             {decoded.truncated && (
               <div className="file-viewer-loading" style={{ padding: "4px 8px" }}>
-                Showing the first {frameCount} frame{frameCount === 1 ? "" : "s"} — the file is
-                truncated or exceeds the decode memory cap.
+                {frameCount === 1
+                  ? t("gifView.truncatedOne", { count: frameCount })
+                  : t("gifView.truncatedMany", { count: frameCount })}
               </div>
             )}
             <div

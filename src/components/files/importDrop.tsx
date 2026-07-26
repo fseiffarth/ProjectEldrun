@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Toggle } from "../common/Toggle";
 import { basename, fromFileUri } from "../../lib/paths";
+import { useT } from "../../lib/i18n";
 
 /**
  * Importing OS files into a project by dropping them onto a file view — shared
@@ -73,6 +74,7 @@ interface Options {
  * leaks one path per drag, so the picker is the reliable multi-file route).
  */
 export function useImportDrop({ projectDir, enabled, destRel, onImported }: Options) {
+  const t = useT();
   const [dropActive, setDropActive] = useState(false);
   const [dropFlash, setDropFlash] = useState(false);
   const [conflict, setConflict] = useState<
@@ -202,10 +204,10 @@ export function useImportDrop({ projectDir, enabled, destRel, onImported }: Opti
         >
           <div className="settings-dialog" style={{ maxWidth: 380 }} onMouseDown={(e) => e.stopPropagation()}>
             <div className="settings-title-row">
-              <h2>File already exists</h2>
+              <h2>{t("importDrop.title")}</h2>
             </div>
             <p className="settings-help" style={{ wordBreak: "break-all" }}>
-              <code>{conflict.name}</code> already exists in this folder. Replace it, or keep both (the new copy is renamed)?
+              <code>{conflict.name}</code> {t("importDrop.bodyPost")}
             </p>
             {conflict.remaining > 0 && (
               <label className="viewer-pref-toggle" style={{ marginBottom: 8 }}>
@@ -214,22 +216,29 @@ export function useImportDrop({ projectDir, enabled, destRel, onImported }: Opti
                   checked={conflictAll}
                   onChange={(e) => setConflictAll(e.target.checked)}
                 />
-                <span>Apply to the {conflict.remaining} remaining file{conflict.remaining > 1 ? "s" : ""}</span>
+                <span>
+                  {t(
+                    conflict.remaining > 1
+                      ? "importDrop.applyToRemainingMany"
+                      : "importDrop.applyToRemainingOne",
+                    { count: conflict.remaining },
+                  )}
+                </span>
               </label>
             )}
             <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
               <button className="tab-add-btn" onClick={() => conflict.resolve({ choice: "skip", all: conflictAll })}>
-                Skip
+                {t("importDrop.skip")}
               </button>
               <button className="tab-add-btn" onClick={() => conflict.resolve({ choice: "rename", all: conflictAll })}>
-                Keep both
+                {t("importDrop.keepBoth")}
               </button>
               <button
                 className="tab-add-btn"
                 style={{ color: "var(--danger, #f85149)" }}
                 onClick={() => conflict.resolve({ choice: "replace", all: conflictAll })}
               >
-                Replace
+                {t("importDrop.replace")}
               </button>
             </div>
           </div>

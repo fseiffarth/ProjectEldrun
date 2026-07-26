@@ -18,6 +18,7 @@ import { fuzzyMatch, fuzzyRank } from "../../lib/fuzzy";
 import { basename, resolvePath } from "../../lib/paths";
 import { IS_MAC } from "../../lib/platform";
 import { openLinkedFile, viewerForPath } from "../embed/FileViewerPane";
+import { useT } from "../../lib/i18n";
 import "./QuickOpen.css";
 
 interface PathEntry {
@@ -53,6 +54,7 @@ function HighlightedPath({ text, query }: { text: string; query: string }) {
 }
 
 export function QuickOpen() {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [files, setFiles] = useState<string[]>([]);
@@ -181,7 +183,7 @@ export function QuickOpen() {
           ref={inputRef}
           className="qo-input"
           type="text"
-          placeholder="Go to file…"
+          placeholder={t("quickOpen.placeholder")}
           value={query}
           spellCheck={false}
           autoComplete="off"
@@ -193,9 +195,11 @@ export function QuickOpen() {
         />
         <div className="qo-list" ref={listRef}>
           {loading ? (
-            <div className="qo-empty">Loading…</div>
+            <div className="qo-empty">{t("quickOpen.loading")}</div>
           ) : results.length === 0 ? (
-            <div className="qo-empty">{files.length === 0 ? "No files" : "No matches"}</div>
+            <div className="qo-empty">
+              {files.length === 0 ? t("quickOpen.noFiles") : t("quickOpen.noMatches")}
+            </div>
           ) : (
             results.map((rel, idx) => (
               <div

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { UntestedTag } from "../common/UntestedTag";
+import { usePresentationStore } from "../../stores/presentation";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 /**
  * A presentation / walkthrough aid layered over EVERY native viewer (image,
@@ -36,13 +38,13 @@ interface Stroke {
 }
 
 /** Highlighter palette — translucent, so overlapping strokes read as ink. */
-const PALETTE: Array<{ name: string; value: string }> = [
-  { name: "Yellow", value: "#ffe14d" },
-  { name: "Green", value: "#7cf06a" },
-  { name: "Pink", value: "#ff6ec7" },
-  { name: "Blue", value: "#5cc8ff" },
-  { name: "Orange", value: "#ffa63d" },
-  { name: "Red", value: "#ff5252" },
+const PALETTE: Array<{ nameKey: TranslationKey; value: string }> = [
+  { nameKey: "presentationOverlay.colorYellow", value: "#ffe14d" },
+  { nameKey: "presentationOverlay.colorGreen", value: "#7cf06a" },
+  { nameKey: "presentationOverlay.colorPink", value: "#ff6ec7" },
+  { nameKey: "presentationOverlay.colorBlue", value: "#5cc8ff" },
+  { nameKey: "presentationOverlay.colorOrange", value: "#ffa63d" },
+  { nameKey: "presentationOverlay.colorRed", value: "#ff5252" },
 ];
 
 /** Default highlighter stroke width, in CSS px, at device-pixel-ratio 1. */
@@ -57,6 +59,7 @@ const MAX_ALPHA = 1;
 const LASER_LIFETIME = 420;
 
 export function PresentationOverlay() {
+  const t = useT();
   const [tool, setTool] = useState<Tool>("off");
   const [open, setOpen] = useState(false);
   const [color, setColor] = useState(PALETTE[0].value);
@@ -201,15 +204,24 @@ export function PresentationOverlay() {
         // behind it but the head does not vanish).
         const head = laserPos.current ?? trail.current[trail.current.length - 1];
         if (head) {
-          // Bright glowing core.
-          ctx.globalAlpha = 1;
-          ctx.shadowColor = colorRef.current;
-          ctx.shadowBlur = 18 * dpr;
+          // The glow is three concentric fills at decreasing alpha, NOT
+          // `ctx.shadowBlur`. A canvas shadow is a real Gaussian, recomputed
+          // every frame over a full-window canvas, and this repo renders in
+          // software (DMABUF is disabled — see the animated-box-shadow note in
+          // themes.css). Paying for that at 60fps on the machine also driving a
+          // second webview for the projector is the one place a stutter is
+          // guaranteed to be noticed.
           ctx.fillStyle = colorRef.current;
-          ctx.beginPath();
-          ctx.arc(head.x * dpr, head.y * dpr, 7 * dpr, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.shadowBlur = 0;
+          for (const [r, a] of [
+            [16, 0.12],
+            [11, 0.22],
+            [7, 1],
+          ] as const) {
+            ctx.globalAlpha = a;
+            ctx.beginPath();
+            ctx.arc(head.x * dpr, head.y * dpr, r * dpr, 0, Math.PI * 2);
+            ctx.fill();
+          }
           ctx.fillStyle = "#ffffff";
           ctx.globalAlpha = 0.9;
           ctx.beginPath();
@@ -308,6 +320,17 @@ export function PresentationOverlay() {
     return () => cap.removeEventListener("wheel", onWheel);
   }, [active]);
 
+  // Publish "a tool is armed" app-wide while one is. The deck presenter reads it
+  // to keep Escape from ending the talk when all the speaker meant was to put the
+  // laser away — see `stores/presentation` for why this cannot be a prop or a
+  // context.
+  useEffect(() => {
+    if (!active) return;
+    const { setArmed } = usePresentationStore.getState();
+    setArmed(true);
+    return () => setArmed(false);
+  }, [active]);
+
   // Esc leaves the active tool (back to click-through) without closing the bar.
   useEffect(() => {
     if (!active) return;
@@ -350,27 +373,27 @@ export function PresentationOverlay() {
         {!open ? (
           <button
             className="presentation-fab"
-            title="Presentation tools (marker & laser)"
-            aria-label="Presentation tools"
+            title={t("presentationOverlay.toolsTitle")}
+            aria-label={t("presentationOverlay.toolsLabel")}
             onClick={() => setOpen(true)}
           >
             <PenIcon />
           </button>
         ) : (
-          <div className="presentation-tools" role="toolbar" aria-label="Presentation tools">
+          <div className="presentation-tools" role="toolbar" aria-label={t("presentationOverlay.toolsLabel")}>
             <button
               className={`presentation-tool${tool === "marker" ? " on" : ""}`}
-              title="Marker (highlight)"
+              title={t("presentationOverlay.markerTitle")}
               aria-pressed={tool === "marker"}
-              onClick={() => setTool((t) => (t === "marker" ? "off" : "marker"))}
+              onClick={() => setTool((cur) => (cur === "marker" ? "off" : "marker"))}
             >
               <MarkerIcon />
             </button>
             <button
               className={`presentation-tool${tool === "laser" ? " on" : ""}`}
-              title="Laser pointer"
+              title={t("presentationOverlay.laserTitle")}
               aria-pressed={tool === "laser"}
-              onClick={() => setTool((t) => (t === "laser" ? "off" : "laser"))}
+              onClick={() => setTool((cur) => (cur === "laser" ? "off" : "laser"))}
             >
               <LaserIcon />
             </button>
@@ -382,8 +405,8 @@ export function PresentationOverlay() {
                     key={c.value}
                     className={`presentation-swatch${color === c.value ? " on" : ""}`}
                     style={{ background: c.value }}
-                    title={c.name}
-                    aria-label={c.name}
+                    title={t(c.nameKey)}
+                    aria-label={t(c.nameKey)}
                     aria-pressed={color === c.value}
                     onClick={() => setColor(c.value)}
                   />
@@ -395,18 +418,18 @@ export function PresentationOverlay() {
               <div className="presentation-settings-wrap">
                 <button
                   className={`presentation-tool${settingsOpen ? " on" : ""}`}
-                  title="Thickness & opacity"
-                  aria-label="Thickness & opacity"
+                  title={t("presentationOverlay.thicknessOpacityTitle")}
+                  aria-label={t("presentationOverlay.thicknessOpacityTitle")}
                   aria-pressed={settingsOpen}
                   onClick={() => setSettingsOpen((o) => !o)}
                 >
                   <SlidersIcon />
                 </button>
                 {settingsOpen && (
-                  <div className="presentation-settings" role="group" aria-label="Marker settings">
+                  <div className="presentation-settings" role="group" aria-label={t("presentationOverlay.markerSettingsLabel")}>
                     <label className="presentation-slider">
                       <span className="presentation-slider-label">
-                        Thickness <b>{width}px</b>
+                        {t("presentationOverlay.thickness")} <b>{width}px</b>
                       </span>
                       <input
                         type="range"
@@ -419,7 +442,7 @@ export function PresentationOverlay() {
                     </label>
                     <label className="presentation-slider">
                       <span className="presentation-slider-label">
-                        Opacity <b>{Math.round(alpha * 100)}%</b>
+                        {t("presentationOverlay.opacity")} <b>{Math.round(alpha * 100)}%</b>
                       </span>
                       <input
                         type="range"
@@ -443,8 +466,8 @@ export function PresentationOverlay() {
             <span className="presentation-sep" aria-hidden="true" />
             <button
               className="presentation-tool"
-              title="Undo last mark"
-              aria-label="Undo last mark"
+              title={t("presentationOverlay.undoTitle")}
+              aria-label={t("presentationOverlay.undoTitle")}
               disabled={strokes.length === 0}
               onClick={undo}
             >
@@ -452,8 +475,8 @@ export function PresentationOverlay() {
             </button>
             <button
               className="presentation-tool"
-              title="Clear all marks"
-              aria-label="Clear all marks"
+              title={t("presentationOverlay.clearTitle")}
+              aria-label={t("presentationOverlay.clearTitle")}
               disabled={strokes.length === 0}
               onClick={clear}
             >
@@ -461,8 +484,8 @@ export function PresentationOverlay() {
             </button>
             <button
               className="presentation-tool"
-              title="Close presentation tools"
-              aria-label="Close presentation tools"
+              title={t("presentationOverlay.closeTitle")}
+              aria-label={t("presentationOverlay.closeTitle")}
               onClick={() => {
                 setTool("off");
                 setOpen(false);

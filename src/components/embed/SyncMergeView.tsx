@@ -6,6 +6,7 @@ import { useSyncStore } from "../../stores/sync";
 import { useTabsStore } from "../../stores/tabs";
 import { resolveProjectDirectory, resolveLocalMirror } from "../../types";
 import { relFromAbs } from "../../lib/viewers/fileUtils";
+import { useT } from "../../lib/i18n";
 
 /** Join a remote directory and a project-relative path with a single `/`
  *  (POSIX — the host is always Unix here), tolerating a trailing slash on the
@@ -35,6 +36,7 @@ export function SyncMergeView({
   projectId: string | null;
   tabKey?: string;
 }) {
+  const t = useT();
   const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
 
   // Resolve the mirror root the same way FileViewerPane does, so `rel` keys the
@@ -87,7 +89,7 @@ export function SyncMergeView({
   // `read_file_text`, which routes by whether the path is under the mirror).
   useEffect(() => {
     if (!hostPath) {
-      setError("This file is not part of a remote project's mirror.");
+      setError(t("syncMergeView.notMirrorFile"));
       return;
     }
     let cancelled = false;
@@ -109,7 +111,7 @@ export function SyncMergeView({
     return () => {
       cancelled = true;
     };
-  }, [path, hostPath, projectId]);
+  }, [path, hostPath, projectId, t]);
 
   const closeTab = () => {
     if (tabKey) useTabsStore.getState().removeTab(tabKey);
@@ -151,7 +153,7 @@ export function SyncMergeView({
   if (!loaded) {
     return (
       <div style={{ position: "absolute", inset: 0 }}>
-        <div className="file-viewer-loading" style={{ padding: "1rem" }}>Loading both sides…</div>
+        <div className="file-viewer-loading" style={{ padding: "1rem" }}>{t("syncMergeView.loadingBothSides")}</div>
       </div>
     );
   }
@@ -172,21 +174,19 @@ export function SyncMergeView({
             background: "var(--bg-elevated, rgba(255,255,255,0.04))",
           }}
         >
-          The mirror and host bytes are <strong>identical</strong> — this file was
-          flagged diverged only because its size/modified-time drifted from the
-          recorded sync base, not its content.{" "}
+          {t("syncMergeView.identicalPre")}<strong>{t("syncMergeView.identicalStrong")}</strong>{t("syncMergeView.identicalPost")}{" "}
           {autoResolved
-            ? "The divergence has been resolved automatically (the base was re-recorded and the amber marker cleared)."
-            : "“Resolve” just re-records the base and clears the amber marker."}
+            ? t("syncMergeView.autoResolvedNote")
+            : t("syncMergeView.manualResolveNote")}
         </div>
       )}
       <div style={{ flex: "1 1 auto", minHeight: 0, position: "relative" }}>
         <CompareView
           path={path}
-          left={{ text: localText, title: "Local (mirror)" }}
+          left={{ text: localText, title: t("syncMergeView.localMirror") }}
           rightText={hostText}
-          rightTitle="Remote (host)"
-          applyLabel={applying ? "Resolving…" : "Resolve"}
+          rightTitle={t("syncMergeView.remoteHost")}
+          applyLabel={applying ? t("syncMergeView.resolving") : t("syncMergeView.resolve")}
           onApply={apply}
           onClose={closeTab}
         />

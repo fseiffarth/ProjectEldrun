@@ -16,43 +16,45 @@ import { useAgentTaskStore } from "../../stores/agentTask";
 import { useFileSourcesStore } from "../../stores/fileSources";
 import type { InternalViewer } from "../../lib/viewers/fileUtils";
 import { TAB_ACCENT } from "./newTabItems";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 /** Friendly, human-readable name for a tab kind, shown as the card's muted
  *  sub-line. Falls back to the raw kind for anything unmapped. */
-const KIND_LABEL: Record<TabKind, string> = {
-  agent: "AI agent",
-  local_agent: "Local agent",
-  shell: "Shell",
-  files: "Files",
-  projectfiles: "Files (Project)",
-  embed: "Embedded app",
-  projects3d: "Projects (3D)",
-  network: "Network traffic",
-  monitor: "System monitor",
-  diskusage: "Disk usage",
-  calendar: "Calendar",
+const KIND_LABEL_KEY: Record<TabKind, TranslationKey> = {
+  agent: "tabKind.agent",
+  local_agent: "tabKind.local_agent",
+  shell: "newTabMenu.groupShell",
+  files: "newTabMenu.groupFiles",
+  projectfiles: "tabKind.projectfiles",
+  embed: "tabKind.embed",
+  projects3d: "newTabMenu.itemProjects3d",
+  network: "tabKind.network",
+  monitor: "tabKind.monitor",
+  diskusage: "tabKind.diskusage",
+  calendar: "newTabMenu.calendar",
+  mail: "newTabMenu.mail",
 };
 
 /** Which built-in viewer a file tab renders in — "Embedded app" says nothing
  *  exactly where the card is most used, six viewer tabs deep. */
-const VIEWER_LABEL: Record<InternalViewer, string> = {
-  pdf: "PDF viewer",
-  image: "Image viewer",
-  gif: "GIF viewer",
-  markdown: "Markdown viewer",
-  text: "Text editor",
-  tex: "TeX editor",
-  table: "Table viewer",
-  notebook: "Notebook viewer",
-  diff: "Diff viewer",
-  syncdiff: "Sync diff",
-  syncmerge: "Sync merge",
-  odt: "Document viewer",
-  media: "Media player",
-  html: "HTML viewer",
-  sqlite: "SQLite browser",
-  yaml: "YAML/JSON editor",
-  eldeck: "Presentation",
+const VIEWER_LABEL_KEY: Record<InternalViewer, TranslationKey> = {
+  pdf: "viewerLabel.pdf",
+  image: "viewerLabel.image",
+  gif: "viewerLabel.gif",
+  markdown: "viewerLabel.markdown",
+  text: "viewerLabel.text",
+  tex: "viewerLabel.tex",
+  table: "viewerLabel.table",
+  notebook: "viewerLabel.notebook",
+  diff: "viewerLabel.diff",
+  syncdiff: "viewerLabel.syncdiff",
+  syncmerge: "viewerLabel.syncmerge",
+  odt: "viewerLabel.odt",
+  media: "viewerLabel.media",
+  html: "viewerLabel.html",
+  sqlite: "viewerLabel.sqlite",
+  yaml: "viewerLabel.yaml",
+  eldeck: "viewerLabel.eldeck",
 };
 
 /** Gap between the tab and the card, and the keep-inside-the-window margin. */
@@ -124,6 +126,7 @@ export function TabHoverCard({
   anchorX: number;
   anchorY: number;
 }) {
+  const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   // null until measured — kept hidden for that first frame so the clamp doesn't
   // flash the card at the un-clamped position.
@@ -152,27 +155,27 @@ export function TabHoverCard({
   // (remote projects), and which side a viewed file came from.
   const kindBits: string[] = [
     tab.kind === "embed" && tab.viewer
-      ? (VIEWER_LABEL[tab.viewer] ?? KIND_LABEL.embed)
-      : (KIND_LABEL[tab.kind] ?? tab.kind),
+      ? t(VIEWER_LABEL_KEY[tab.viewer] ?? KIND_LABEL_KEY.embed)
+      : t(KIND_LABEL_KEY[tab.kind]),
   ];
   if (isAgent && tab.agentMode) {
-    kindBits.push(tab.agentMode === "plan" ? "Plan mode" : "Auto mode");
+    kindBits.push(tab.agentMode === "plan" ? t("tabHoverCard.planMode") : t("tabHoverCard.autoMode"));
   }
   if (isRemote && isLocatableKind(tab.kind)) {
     const loc = effectiveTabLocation(tab);
     if (remoteHostIdOf(loc) === null) {
-      kindBits.push("local mirror");
+      kindBits.push(t("tabHoverCard.localMirror"));
     } else {
       // Name the concrete machine when known ("Primary (gpu-1)" / "gpu-2"); the
       // detached window has no host list, so it degrades to a generic label.
       const named = primaryHost || computeHosts ? localityHostLabel(loc, { primaryHost, computeHosts }) : null;
-      kindBits.push(named ? `on ${named}` : "on host (SSH)");
+      kindBits.push(named ? t("tabHoverCard.onHost", { name: named }) : t("tabHoverCard.onHostSsh"));
     }
   }
   if (tab.kind === "embed" && fileSource === "remote") {
-    kindBits.push("remote-native (SFTP)");
+    kindBits.push(t("tabHoverCard.remoteNative"));
   } else if (tab.kind === "embed" && fileSource === "local") {
-    kindBits.push("local mirror");
+    kindBits.push(t("tabHoverCard.localMirror"));
   }
 
   // "working" / "quiet for N min" — only for tabs that own a process, and only
@@ -180,17 +183,17 @@ export function TabHoverCard({
   // e.g. a fresh popout — has nothing truthful to say, so it says nothing).
   const lastOut = isPtyTabKind(tab.kind) ? lastPtyOutputAt(ptyId) : undefined;
   const activity = busy
-    ? "working — streaming output"
+    ? t("tabHoverCard.working")
     : lastOut !== undefined
-      ? `quiet for ${formatQuiet(now - lastOut)}`
+      ? t("tabHoverCard.quietFor", { duration: formatQuiet(now - lastOut) })
       : null;
 
   // Whether the conversation survives an app restart — a real behavioral split
   // between agents (see RESUMABLE_AGENTS) that nothing else surfaces.
   const restart = isAgent
     ? isResumableAgentTab(tab)
-      ? "conversation resumes on relaunch"
-      : "conversation is dropped on relaunch"
+      ? t("tabHoverCard.resumesOnRelaunch")
+      : t("tabHoverCard.droppedOnRelaunch")
     : null;
 
   const path = cardPath(tab);
@@ -233,20 +236,20 @@ export function TabHoverCard({
       <span className="tab-popup-kind">{kindBits.join(" · ")}</span>
       {activity && (
         <span className="pill-popup-path-row">
-          <span className="pill-popup-path-label">activity</span>
+          <span className="pill-popup-path-label">{t("tabHoverCard.activityLabel")}</span>
           <span className={`tab-popup-meta${busy ? " working" : ""}`}>{activity}</span>
         </span>
       )}
       {restart && (
         <span className="pill-popup-path-row">
-          <span className="pill-popup-path-label">restart</span>
+          <span className="pill-popup-path-label">{t("tabHoverCard.restartLabel")}</span>
           <span className="tab-popup-meta">{restart}</span>
         </span>
       )}
       {path && <span className="pill-popup-path">{path}</span>}
       {tab.sessionId && (
         <span className="pill-popup-path-row">
-          <span className="pill-popup-path-label">session</span>
+          <span className="pill-popup-path-label">{t("tabHoverCard.sessionLabel")}</span>
           <span className="pill-popup-path">{tab.sessionId}</span>
         </span>
       )}

@@ -13,6 +13,7 @@
 
 import type { Alarm, Occurrence } from "../types";
 import { addDays, addMinutes, minutesBetween, toStamp } from "./calendarTime";
+import type { TranslationKey } from "./i18n";
 
 /** A reminder that has come due and wants showing. */
 export interface DueAlarm {
@@ -140,15 +141,18 @@ export function wokenSnoozes(snoozes: Snoozed[], now: Date = new Date()): Snooze
 }
 
 /** A human lead-in for the notification body: "in 15 minutes", "now", "2 hours ago". */
-export function describeLead(minutesBefore: number): string {
-  if (minutesBefore === 0) return "now";
+export function describeLead(
+  minutesBefore: number,
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+): string {
+  if (minutesBefore === 0) return t("alarms.now");
   const before = minutesBefore > 0;
   const abs = Math.abs(minutesBefore);
   const unit =
     abs >= 1440
-      ? `${Math.round(abs / 1440)} day${Math.round(abs / 1440) === 1 ? "" : "s"}`
+      ? t(Math.round(abs / 1440) === 1 ? "alarms.dayOne" : "alarms.dayMany", { n: Math.round(abs / 1440) })
       : abs >= 60
-        ? `${Math.round(abs / 60)} hour${Math.round(abs / 60) === 1 ? "" : "s"}`
-        : `${abs} minute${abs === 1 ? "" : "s"}`;
-  return before ? `in ${unit}` : `${unit} ago`;
+        ? t(Math.round(abs / 60) === 1 ? "alarms.hourOne" : "alarms.hourMany", { n: Math.round(abs / 60) })
+        : t(abs === 1 ? "alarms.minuteOne" : "alarms.minuteMany", { n: abs });
+  return before ? t("alarms.inUnit", { unit }) : t("alarms.unitAgo", { unit });
 }

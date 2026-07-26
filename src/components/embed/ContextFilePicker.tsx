@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { fuzzyMatch, fuzzyRank } from "../../lib/fuzzy";
+import { useT } from "../../lib/i18n";
 import "../files/QuickOpen.css";
 
 interface PathEntry {
@@ -59,6 +60,7 @@ export function ContextFilePicker({
   onPick: (rel: string) => void;
   onClose: () => void;
 }) {
+  const t = useT();
   const [loading, setLoading] = useState(true);
   const [files, setFiles] = useState<string[]>([]);
   const [query, setQuery] = useState("");
@@ -144,12 +146,12 @@ export function ContextFilePicker({
   return createPortal(
     <div className="qo-backdrop qo-context-backdrop" onMouseDown={onClose}>
       <div className="qo-panel qo-context-panel" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="qo-context-header">Autocomplete context files</div>
+        <div className="qo-context-header">{t("contextFilePicker.title")}</div>
         <input
           ref={inputRef}
           className="qo-input"
           type="text"
-          placeholder="Add file as autocomplete context…"
+          placeholder={t("contextFilePicker.placeholder")}
           value={query}
           spellCheck={false}
           autoComplete="off"
@@ -161,10 +163,14 @@ export function ContextFilePicker({
         />
         <div className="qo-list" ref={listRef}>
           {loading ? (
-            <div className="qo-empty">Loading…</div>
+            <div className="qo-empty">{t("common.loading")}</div>
           ) : results.length === 0 ? (
             <div className="qo-empty">
-              {!projectDir ? "No project" : files.length === 0 ? "No files" : "No matches"}
+              {!projectDir
+                ? t("contextFilePicker.noProject")
+                : files.length === 0
+                  ? t("quickOpen.noFiles")
+                  : t("quickOpen.noMatches")}
             </div>
           ) : (
             results.map((rel, idx) => (
