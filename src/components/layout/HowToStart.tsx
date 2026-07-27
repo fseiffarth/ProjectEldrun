@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { HOW_TO_START_STEPS } from "../../lib/hints";
+import { HOW_TO_START_STEPS, focusModeTip } from "../../lib/hints";
 import { useT } from "../../lib/i18n";
 
 /**
@@ -36,11 +36,12 @@ export function HowToStart({ onClose }: { onClose: () => void }) {
 
         <ol className="how-to-start-steps">
           {HOW_TO_START_STEPS.map((step, i) => (
-            <li key={step.title} className="how-to-start-step">
+            <li key={step.titleKey} className="how-to-start-step">
               <span className="how-to-start-num">{i + 1}</span>
               <div>
-                <div className="how-to-start-step-title">{step.title}</div>
-                <div className="settings-help">{step.body}</div>
+                <div className="how-to-start-step-title">{t(step.titleKey)}</div>
+                {/* Only step4's key has a {tip} placeholder; t() ignores unused params. */}
+                <div className="settings-help">{t(step.bodyKey, { tip: focusModeTip(t) })}</div>
               </div>
             </li>
           ))}

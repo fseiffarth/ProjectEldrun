@@ -1,5 +1,5 @@
 import { Fragment, useEffect } from "react";
-import { LESSONS } from "../../lib/lessons";
+import { LESSONS, categoryLabel } from "../../lib/lessons";
 import { useTourStore } from "../../stores/tour";
 import { useT } from "../../lib/i18n";
 
@@ -46,7 +46,7 @@ export function LessonsMenu({ onClose }: { onClose: () => void }) {
             return (
               <Fragment key={lesson.id}>
                 {newSection && (
-                  <h3 className="lessons-section-title">{lesson.category}</h3>
+                  <h3 className="lessons-section-title">{categoryLabel(lesson.category, t)}</h3>
                 )}
                 <button
                   type="button"
@@ -56,8 +56,8 @@ export function LessonsMenu({ onClose }: { onClose: () => void }) {
                     startLesson(lesson.steps);
                   }}
                 >
-                  <span className="lesson-item-title">{lesson.title}</span>
-                  <span className="lesson-item-blurb">{lesson.blurb}</span>
+                  <span className="lesson-item-title">{t(lesson.titleKey)}</span>
+                  <span className="lesson-item-blurb">{t(lesson.blurbKey)}</span>
                 </button>
               </Fragment>
             );

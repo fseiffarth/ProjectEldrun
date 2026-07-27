@@ -1,6 +1,7 @@
 import { createPortal } from "react-dom";
 import { useGlobalMachineMonitorStore } from "../../stores/globalMachineMonitor";
 import { SystemMonitorPane } from "./SystemMonitorPane";
+import { useT } from "../../lib/i18n";
 
 /**
  * Mounted once (AppShell). Renders the full system-monitor dialog for whichever
@@ -24,6 +25,7 @@ function GlobalMachineMonitorDialog({
   machine: { id: string; user?: string; host: string; port?: number; label?: string };
   onClose: () => void;
 }) {
+  const t = useT();
   return createPortal(
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div
@@ -31,7 +33,7 @@ function GlobalMachineMonitorDialog({
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="settings-title-row">
-          <h2>System monitor — {machine.label || machine.host}</h2>
+          <h2>{t("tabKind.monitor")} — {machine.label || machine.host}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>
             ×
           </button>

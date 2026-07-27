@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { LESSON_CATEGORIES, LESSONS } from "../lib/lessons";
+import { translate } from "../lib/i18n";
+
+const t = (key: Parameters<typeof translate>[1]) => translate("en", key);
 
 const PLACEMENTS = new Set(["top", "bottom", "left", "right"]);
 
@@ -52,8 +55,8 @@ describe("LESSONS catalog", () => {
 
   it("gives every lesson a title, blurb, and at least three steps", () => {
     for (const lesson of LESSONS) {
-      expect(lesson.title.length).toBeGreaterThan(0);
-      expect(lesson.blurb.length).toBeGreaterThan(0);
+      expect(t(lesson.titleKey).length).toBeGreaterThan(0);
+      expect(t(lesson.blurbKey).length).toBeGreaterThan(0);
       expect(lesson.steps.length).toBeGreaterThanOrEqual(3);
     }
   });
@@ -64,8 +67,8 @@ describe("LESSONS catalog", () => {
       expect(new Set(stepIds).size).toBe(stepIds.length);
       for (const step of lesson.steps) {
         expect(PLACEMENTS.has(step.placement)).toBe(true);
-        expect(step.title.length).toBeGreaterThan(0);
-        expect(step.body.length).toBeGreaterThan(0);
+        expect(t(step.titleKey).length).toBeGreaterThan(0);
+        expect(t(step.bodyKey).length).toBeGreaterThan(0);
         // anchor is either null (centered card) or a non-empty selector.
         expect(step.anchor === null || step.anchor.length > 0).toBe(true);
       }

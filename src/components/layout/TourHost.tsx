@@ -3,6 +3,7 @@ import { useTourStore } from "../../stores/tour";
 import { useProjectsStore } from "../../stores/projects";
 import { nextEligibleIndex } from "../../lib/tour";
 import { TourCoachmark } from "../common/TourCoachmark";
+import { useT } from "../../lib/i18n";
 
 // How long to wait for a step's anchor to appear before falling back to a
 // centered card. Tour targets are persistent header/chrome that mount well
@@ -20,6 +21,7 @@ const ANCHOR_WAIT_MS = 600;
  * only the impure DOM/timing concerns, mirroring `HintHost`.
  */
 export function TourHost() {
+  const t = useT();
   const active = useTourStore((s) => s.active);
   const index = useTourStore((s) => s.index);
   const steps = useTourStore((s) => s.steps);
@@ -138,8 +140,8 @@ export function TourHost() {
     <TourCoachmark
       rect={rect}
       placement={step.placement}
-      title={step.title}
-      body={step.body}
+      title={t(step.titleKey)}
+      body={t(step.bodyKey, step.bodyParams?.(t))}
       stepNumber={stepNumber}
       stepTotal={stepTotal}
       isFirst={isFirst}

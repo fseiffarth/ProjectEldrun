@@ -50,6 +50,7 @@ import { loadBase } from "./deckBase";
 import { useDeckFonts } from "./deckFonts";
 import { dirOf, gifKey, interstitialsOf, resolveRel, useDeckGifs, useDeckImages } from "./deckAssets";
 import { InterstitialView, PresentedSlide } from "./DeckSlideView";
+import { useT } from "../../../lib/i18n";
 
 /** How often to re-announce readiness until a seed lands. The presenter window
  *  may still be mounting its listener when this window first asks. */
@@ -61,6 +62,7 @@ export interface DeckAudienceAppProps {
 }
 
 export function DeckAudienceApp({ label }: DeckAudienceAppProps) {
+  const t = useT();
   const loadSettings = useSettingsStore((s) => s.load);
 
   const [seed, setSeed] = useState<PresentSeed | null>(null);
@@ -133,14 +135,14 @@ export function DeckAudienceApp({ label }: DeckAudienceAppProps) {
     // listener race on open, and a dropped first request would leave a black
     // projector with no way back.
     void emit(PRESENT_READY, { label });
-    const t = setInterval(() => {
+    const retryTimer = setInterval(() => {
       if (seededRef.current) return;
       void emit(PRESENT_READY, { label });
     }, READY_RETRY_MS);
 
     return () => {
       cancelled = true;
-      clearInterval(t);
+      clearInterval(retryTimer);
       unlistenSeed?.();
       unlistenState?.();
     };
@@ -368,7 +370,7 @@ export function DeckAudienceApp({ label }: DeckAudienceAppProps) {
       <div className={shellClass}>
         <div className="deck-presenter-main">
           <div className="deck-presenter-fit deck-presenter-loading">
-            Waiting for the presentation…
+            {t("deckAudienceApp.waitingForPresentation")}
           </div>
         </div>
       </div>

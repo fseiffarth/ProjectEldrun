@@ -30,6 +30,7 @@ import {
   stagger,
   updateObjects,
 } from "../../../lib/viewers/deck/model";
+import { useT, type TranslationKey } from "../../../lib/i18n";
 
 export interface DeckAnimateProps {
   slide: Slide;
@@ -43,13 +44,13 @@ export interface DeckAnimateProps {
   toDeckRelative: (absolute: string) => string;
 }
 
-const EFFECTS: Array<{ id: BuildEffect; label: string }> = [
-  { id: "none", label: "Appear" },
-  { id: "fade", label: "Fade in" },
-  { id: "rise", label: "Rise" },
-  { id: "scale", label: "Scale" },
-  { id: "wipe", label: "Wipe" },
-  { id: "draw", label: "Draw" },
+export const EFFECT_KEYS: Array<{ id: BuildEffect; key: TranslationKey }> = [
+  { id: "none", key: "deckAnimate.effectNone" },
+  { id: "fade", key: "deckAnimate.effectFade" },
+  { id: "rise", key: "deckAnimate.effectRise" },
+  { id: "scale", key: "deckAnimate.effectScale" },
+  { id: "wipe", key: "deckAnimate.effectWipe" },
+  { id: "draw", key: "deckAnimate.effectDraw" },
 ];
 
 export function DeckAnimate({
@@ -61,6 +62,7 @@ export function DeckAnimate({
   onPreviewStep,
   toDeckRelative,
 }: DeckAnimateProps) {
+  const t = useT();
   const ids = [...selection];
   const sel = slide.objects.filter((o) => selection.has(o.id));
   const steps = maxBuildStep(slide);
@@ -88,18 +90,15 @@ export function DeckAnimate({
   return (
     <div className="deck-inspector deck-animate">
       {/* --- build steps --- */}
-      <div className="deck-inspector-head">Builds</div>
+      <div className="deck-inspector-head">{t("deckAnimate.buildsTitle")}</div>
 
       {sel.length === 0 ? (
-        <p className="deck-inspector-empty">
-          Select objects to give them a build step. Step 0 is visible when the slide
-          opens.
-        </p>
+        <p className="deck-inspector-empty">{t("deckAnimate.buildsEmpty")}</p>
       ) : (
         <>
           <div className="deck-field-row">
             <label className="deck-field deck-field-narrow">
-              <span>Step</span>
+              <span>{t("deckAnimate.stepLabel")}</span>
               <input
                 type="number"
                 min={0}
@@ -117,7 +116,7 @@ export function DeckAnimate({
               />
             </label>
             <label className="deck-field">
-              <span>Effect</span>
+              <span>{t("deckAnimate.effectLabel")}</span>
               <select
                 value={sel[0].build?.effect ?? "fade"}
                 onChange={(e) =>
@@ -129,9 +128,9 @@ export function DeckAnimate({
                   )
                 }
               >
-                {EFFECTS.map((f) => (
+                {EFFECT_KEYS.map((f) => (
                   <option key={f.id} value={f.id}>
-                    {f.label}
+                    {t(f.key)}
                   </option>
                 ))}
               </select>
@@ -142,9 +141,9 @@ export function DeckAnimate({
             <button
               className="deck-inspector-btn"
               onClick={() => onObjectsChange(stagger(slide.objects, ids, 1))}
-              title="Give each selected object its own step, in paint order"
+              title={t("deckAnimate.staggerTitle")}
             >
-              Stagger
+              {t("deckAnimate.staggerBtn")}
             </button>
             <button
               className="deck-inspector-btn"
@@ -153,9 +152,9 @@ export function DeckAnimate({
                   updateObjects(slide.objects, ids, (o) => ({ ...o, build: undefined })),
                 )
               }
-              title="Show these from the start"
+              title={t("deckAnimate.clearStepTitle")}
             >
-              Clear
+              {t("deckAnimate.clearStepBtn")}
             </button>
           </div>
         </>
@@ -163,9 +162,7 @@ export function DeckAnimate({
 
       {/* --- preview --- */}
       <div className="deck-field">
-        <span>
-          Preview step {previewStep} of {steps}
-        </span>
+        <span>{t("deckAnimate.previewStep", { step: previewStep, total: steps })}</span>
         <input
           type="range"
           min={0}
@@ -176,32 +173,29 @@ export function DeckAnimate({
       </div>
 
       {/* --- transition --- */}
-      <div className="deck-inspector-head">Transition</div>
+      <div className="deck-inspector-head">{t("deckAnimate.transitionTitle")}</div>
       <label className="deck-field">
-        <span>Leaving this slide</span>
+        <span>{t("deckAnimate.leavingLabel")}</span>
         <select
           value={slide.transition}
           onChange={(e) =>
             onSlideChange((s) => ({ ...s, transition: e.target.value as Transition }))
           }
         >
-          <option value="none">None</option>
-          <option value="fade">Fade</option>
-          <option value="push">Push</option>
-          <option value="wipe">Wipe</option>
+          <option value="none">{t("deckAnimate.transitionNone")}</option>
+          <option value="fade">{t("deckAnimate.transitionFade")}</option>
+          <option value="push">{t("deckAnimate.transitionPush")}</option>
+          <option value="wipe">{t("deckAnimate.transitionWipe")}</option>
         </select>
       </label>
 
       {/* --- interstitial --- */}
-      <div className="deck-inspector-head">Animation after this slide</div>
-      <p className="deck-inspector-empty">
-        A GIF that plays between this slide and the next, as its own step. A PDF
-        cannot hold animation, so this is where it lives.
-      </p>
+      <div className="deck-inspector-head">{t("deckAnimate.afterTitle")}</div>
+      <p className="deck-inspector-empty">{t("deckAnimate.afterDesc")}</p>
 
       {!after ? (
         <button className="deck-inspector-btn" onClick={() => void pickGif()}>
-          Add a GIF…
+          {t("deckAnimate.addGifBtn")}
         </button>
       ) : (
         <>
@@ -210,7 +204,7 @@ export function DeckAnimate({
           </div>
           <div className="deck-field-row">
             <label className="deck-field">
-              <span>Fit</span>
+              <span>{t("deckAnimate.fitLabel")}</span>
               <select
                 value={after.fit}
                 onChange={(e) =>
@@ -220,12 +214,12 @@ export function DeckAnimate({
                   }))
                 }
               >
-                <option value="contain">Fit (letterbox)</option>
-                <option value="cover">Fill (crop)</option>
+                <option value="contain">{t("deckAnimate.fitContain")}</option>
+                <option value="cover">{t("deckAnimate.fitCover")}</option>
               </select>
             </label>
             <label className="deck-field deck-field-color">
-              <span>Back</span>
+              <span>{t("deckAnimate.backLabel")}</span>
               <input
                 type="color"
                 value={after.background}
@@ -239,7 +233,7 @@ export function DeckAnimate({
             </label>
           </div>
           <label className="deck-field">
-            <span>Then</span>
+            <span>{t("deckAnimate.thenLabel")}</span>
             <select
               value={after.advance.on}
               onChange={(e) => {
@@ -252,14 +246,14 @@ export function DeckAnimate({
                 }));
               }}
             >
-              <option value="manual">Loop until I advance</option>
-              <option value="end">Play once, then continue</option>
-              <option value="end-after">Play N times, then continue</option>
+              <option value="manual">{t("deckAnimate.thenManual")}</option>
+              <option value="end">{t("deckAnimate.thenEnd")}</option>
+              <option value="end-after">{t("deckAnimate.thenEndAfter")}</option>
             </select>
           </label>
           {after.advance.on === "end-after" && (
             <label className="deck-field deck-field-narrow">
-              <span>Times</span>
+              <span>{t("deckAnimate.timesLabel")}</span>
               <input
                 type="number"
                 min={1}
@@ -276,12 +270,12 @@ export function DeckAnimate({
             </label>
           )}
           <label className="deck-field deck-field-narrow">
-            <span>Poster frame</span>
+            <span>{t("deckAnimate.posterLabel")}</span>
             <input
               type="number"
               min={0}
               value={after.poster}
-              title="The frame the PDF export writes in place of the animation"
+              title={t("deckAnimate.posterTitle")}
               onChange={(e) => {
                 const poster = Math.max(0, Math.round(Number(e.target.value)));
                 if (!Number.isFinite(poster)) return;
@@ -293,7 +287,7 @@ export function DeckAnimate({
             className="deck-inspector-btn"
             onClick={() => onSlideChange((s) => ({ ...s, after: undefined }))}
           >
-            Remove animation
+            {t("deckAnimate.removeBtn")}
           </button>
         </>
       )}

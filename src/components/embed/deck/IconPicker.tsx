@@ -15,6 +15,7 @@ import {
   ICON_VIEWBOX,
   searchIcons,
 } from "../../../lib/viewers/deck/icons";
+import { useT } from "../../../lib/i18n";
 
 export interface IconPickerProps {
   onPick: (icon: IconDef) => void;
@@ -22,6 +23,7 @@ export interface IconPickerProps {
 }
 
 export function IconPicker({ onPick, onClose }: IconPickerProps) {
+  const t = useT();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<IconCategory | null>(null);
 
@@ -38,11 +40,11 @@ export function IconPicker({ onPick, onClose }: IconPickerProps) {
         className="project-dialog deck-icon-picker"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label="Choose an icon"
+        aria-label={t("deckIconPicker.ariaLabel")}
       >
         <div className="settings-title-row">
-          <h3>Icons</h3>
-          <button className="dialog-close-btn" onClick={onClose} aria-label="Close">
+          <h3>{t("deckIconPicker.title")}</h3>
+          <button className="dialog-close-btn" onClick={onClose} aria-label={t("common.close")}>
             ×
           </button>
         </div>
@@ -50,7 +52,7 @@ export function IconPicker({ onPick, onClose }: IconPickerProps) {
         <input
           className="deck-icon-search"
           autoFocus
-          placeholder="Search icons…"
+          placeholder={t("deckIconPicker.searchPlaceholder")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -60,7 +62,7 @@ export function IconPicker({ onPick, onClose }: IconPickerProps) {
             className={`deck-icon-cat${category === null ? " active" : ""}`}
             onClick={() => setCategory(null)}
           >
-            All
+            {t("deckIconPicker.allCategory")}
           </button>
           {ICON_CATEGORIES.map((c) => (
             <button
@@ -105,7 +107,7 @@ export function IconPicker({ onPick, onClose }: IconPickerProps) {
               <span className="deck-icon-label">{def.label}</span>
             </button>
           ))}
-          {results.length === 0 && <div className="deck-icon-empty">No icon matches that.</div>}
+          {results.length === 0 && <div className="deck-icon-empty">{t("deckIconPicker.noMatches")}</div>}
         </div>
       </div>
     </div>

@@ -9,6 +9,7 @@
  */
 
 import type { Deck, ImageObject } from "../../../lib/viewers/deck/model";
+import { useT } from "../../../lib/i18n";
 
 export interface TexFigureEntry {
   slideIndex: number;
@@ -36,15 +37,14 @@ export interface DeckTexPanelProps {
 }
 
 export function DeckTexPanel({ deck, onJump, onEditTex, onRecompileTex, texBusyIds }: DeckTexPanelProps) {
+  const t = useT();
   const entries = texFigures(deck);
 
   return (
     <div className="deck-inspector deck-tex-panel">
-      <div className="deck-inspector-head">TeX figures</div>
+      <div className="deck-inspector-head">{t("deckTexPanel.title")}</div>
       {entries.length === 0 ? (
-        <p className="deck-inspector-empty">
-          No TeX figures yet — use the toolbar's TeX button to add one to a slide.
-        </p>
+        <p className="deck-inspector-empty">{t("deckTexPanel.empty")}</p>
       ) : (
         <ul className="deck-tex-list">
           {entries.map(({ slideIndex, obj }) => (
@@ -54,7 +54,9 @@ export function DeckTexPanel({ deck, onJump, onEditTex, onRecompileTex, texBusyI
                 onClick={() => onJump(slideIndex, obj.id)}
                 title={obj.texSrc}
               >
-                <span className="deck-tex-list-slide">Slide {slideIndex + 1}</span>
+                <span className="deck-tex-list-slide">
+                  {t("deckTexPanel.slideLabel", { n: slideIndex + 1 })}
+                </span>
                 <span className="deck-tex-list-name">{obj.texSrc.split("/").pop()}</span>
               </button>
               <div className="deck-tex-list-actions">
@@ -63,14 +65,14 @@ export function DeckTexPanel({ deck, onJump, onEditTex, onRecompileTex, texBusyI
                   disabled={texBusyIds?.has(obj.id)}
                   onClick={() => onEditTex(obj)}
                 >
-                  Edit
+                  {t("deckTexPanel.editBtn")}
                 </button>
                 <button
                   className="deck-inspector-btn"
                   disabled={texBusyIds?.has(obj.id)}
                   onClick={() => onRecompileTex(obj)}
                 >
-                  {texBusyIds?.has(obj.id) ? "Compiling…" : "Recompile"}
+                  {texBusyIds?.has(obj.id) ? t("deckTexPanel.compiling") : t("deckTexPanel.recompile")}
                 </button>
               </div>
             </li>

@@ -29,6 +29,7 @@ import { ConnLamp } from "../common/ConnLamp";
 import { UntestedTag } from "../common/UntestedTag";
 import { hostsForProject } from "../../lib/remoteHosts";
 import { PRIMARY_HOST, sshOf, useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 // ── Backend snapshot shape (mirrors sysstat::SystemSnapshot, snake_case) ──────
 
@@ -138,11 +139,6 @@ const REMOTE_POLL_MS = 3000;
  *  nothing. Both apply ONLY to a careful host; an ordinary remote box keeps the
  *  responsive cadence it always had. */
 const CAREFUL_POLL_MS = 12_000;
-/** What the pane says when a **tagged** host refuses an unattended read. Not an
- *  error: the backend and this pane agree about it (`lib/hpcGuard.ts`), and a
- *  machine that is merely waiting to be asked must not read as a broken pane. */
-const HPC_NOT_READ =
-  "Not read — this machine is tagged HPC. Press Refresh above to read it once.";
 
 // ── Pure delta helpers (unit-tested in SystemMonitorSampling.test.ts) ─────────
 
@@ -230,12 +226,22 @@ function usageTone(pct: number): UsageTone {
   return "red";
 }
 
+const TONE_KEY: Record<UsageTone, TranslationKey> = {
+  green: "usage.toneGreen",
+  orange: "usage.toneOrange",
+  red: "usage.toneRed",
+};
+
 /** The same green/orange/red dot the remote-usage dialog puts next to a user's
  *  CPU share (`.remote-usage-light`), reused here so the two panels match. */
 function UsageLight({ pct }: { pct: number }) {
+  const t = useT();
   const tone = usageTone(pct);
   return (
-    <span className={`remote-usage-light is-${tone}`} aria-label={`utilization ${tone}`} />
+    <span
+      className={`remote-usage-light is-${tone}`}
+      aria-label={t("usage.utilizationAria", { tone: t(TONE_KEY[tone]) })}
+    />
   );
 }
 
@@ -434,11 +440,12 @@ function GpuSection({ gpu }: { gpu: GpuSample }) {
 /** Top processes by GPU memory. Empty (renders nothing) when the driver reports
  *  no per-process data — best-effort, so its absence is silent, not an error. */
 function GpuProcList({ procs }: { procs: GpuProc[] }) {
+  const t = useT();
   const top = procs.filter((p) => p.mem_bytes > 0).slice(0, 8);
   if (top.length === 0) return null;
   return (
     <div className="sysmon-gpu-procs">
-      <div className="sysmon-gpu-procs-head">GPU memory by process</div>
+      <div className="sysmon-gpu-procs-head">{t("sysmon.gpuMemByProcess")}</div>
       {top.map((p) => (
         <div className="sysmon-gpu-proc" key={p.pid}>
           <span className="sysmon-gpu-proc-mem">{formatBytes(p.mem_bytes)}</span>
@@ -453,6 +460,7 @@ function GpuProcList({ procs }: { procs: GpuProc[] }) {
 }
 
 export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) {
+  const t = useT();
   const [pair, setPair] = useState<{ snap: SystemSnapshot; prev: SystemSnapshot | null } | null>(
     null,
   );
@@ -542,8 +550,8 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
     : onHost && selectedHostId != null && connState(selectedHostId) === "connected";
   const selectedHost = hosts.find((h) => h.id === selectedHostId) ?? null;
   const remoteHost = onHost
-    ? (globalMachine ? "this machine" : (selectedHost?.label ?? "the host"))
-    : "the host";
+    ? (globalMachine ? t("sysmon.thisMachineLower") : (selectedHost?.label ?? t("sysmon.theHost")))
+    : t("sysmon.theHost");
   // Whether the pane is actually sampling (and so the table/meters below apply).
   const sampling = visible && !(onHost && !hostConnected);
 
@@ -668,7 +676,7 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
       } catch (e) {
         // A tagged host refusing an unattended read is the tag working, not a
         // failure — say so, rather than printing the raw sentinel.
-        if (!cancelled) setError(hpcGuardRefusal(e) ? HPC_NOT_READ : String(e));
+        if (!cancelled) setError(hpcGuardRefusal(e) ? t("sysmon.hpcNotRead") : String(e));
       } finally {
         inFlight = false;
         schedule();
@@ -771,14 +779,14 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
       {(isRemoteProject || (onHost && carefulTarget)) && (
         <div className="sysmon-source">
           {isRemoteProject && (
-            <div className="sysmon-source-tabs" role="tablist" aria-label="Monitor source">
+            <div className="sysmon-source-tabs" role="tablist" aria-label={t("sysmon.monitorSourceAria")}>
               <button
                 className={source === "local" ? "sysmon-source-btn active" : "sysmon-source-btn"}
                 onClick={() => pickSource("local")}
                 role="tab"
                 aria-selected={source === "local"}
               >
-                This machine
+                {t("sysmon.thisMachineCap")}
               </button>
               {/* One button per connected machine — the primary and every multi-host
                   `compute_hosts` worker — each carrying its own live SSH traffic light
@@ -795,7 +803,7 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                     onClick={() => pickSource({ hostId: h.id })}
                     role="tab"
                     aria-selected={active}
-                    title={connected ? `System monitor on ${h.label}` : `${h.label}: ${state}`}
+                    title={connected ? t("sysmon.systemMonitorOn", { host: h.label }) : `${h.label}: ${state}`}
                   >
                     <ConnLamp status={state} label={h.label} />
                     {h.label}
@@ -828,21 +836,27 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
               <div
                 className="sysmon-mode"
                 role="radiogroup"
-                aria-label={`Reading${carefulMachineName ? ` for ${carefulMachineName}` : ""}`}
+                aria-label={
+                  carefulMachineName
+                    ? t("sysmon.readingForAria", { machine: carefulMachineName })
+                    : t("sysmon.readingAria")
+                }
               >
                 <button
                   className={carefulMode ? "sysmon-mode-btn active" : "sysmon-mode-btn"}
                   onClick={() => void updateSettings(setCarefulPatch(settings, carefulTarget, true))}
                   role="radio"
                   aria-checked={carefulMode}
-                  title={`Light reading of ${carefulMachineName || "this machine"}${
-                    carefulMode && !carefulExplicit ? " (the default for a remote machine)" : ""
-                  }: only your own processes in full, everyone else counted anonymously, and a slow poll that pauses while Eldrun is in the background. For a login node or any machine you share.`}
+                  title={t("sysmon.lightTitle", {
+                    machine: carefulMachineName || t("sysmon.thisMachineLower"),
+                    suffix:
+                      carefulMode && !carefulExplicit ? t("sysmon.lightDefaultSuffix") : "",
+                  })}
                 >
                   <span className="sysmon-mode-icon" aria-hidden="true">
                     🪶
                   </span>
-                  <span className="sysmon-mode-txt">Light</span>
+                  <span className="sysmon-mode-txt">{t("sysmon.light")}</span>
                 </button>
                 <button
                   className={
@@ -863,14 +877,18 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                   aria-checked={!carefulMode}
                   title={
                     hpcTagged
-                      ? `${carefulMachineName || "This machine"} is tagged HPC, so it is always read lightly. Untag it in the Machines menu if it is not a shared cluster login node.`
-                      : `Detailed reading of ${carefulMachineName || "this machine"}: every process with its owner and command line, at the ordinary remote cadence — the same reading this machine gets. Remembered for this host. For a machine that is yours.`
+                      ? t("sysmon.detailedTaggedTitle", {
+                          machine: carefulMachineName || t("sysmon.thisMachineCap"),
+                        })
+                      : t("sysmon.detailedTitle", {
+                          machine: carefulMachineName || t("sysmon.thisMachineLower"),
+                        })
                   }
                 >
                   <span className="sysmon-mode-icon" aria-hidden="true">
                     🔬
                   </span>
-                  <span className="sysmon-mode-txt">Detailed</span>
+                  <span className="sysmon-mode-txt">{t("sysmon.detailed")}</span>
                 </button>
               </div>
               {/* The only thing that reads a tagged machine after the pane's first
@@ -884,9 +902,11 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                   className="sysmon-source-btn"
                   onClick={() => pollNowRef.current?.()}
                   disabled={!sampling}
-                  title={`Read ${carefulMachineName || "this machine"} once. It is tagged HPC, so nothing samples it on a timer — a shared login node is not to carry a background load nobody asked for.`}
+                  title={t("sysmon.refreshOnceTitle", {
+                    machine: carefulMachineName || t("sysmon.thisMachineLower"),
+                  })}
                 >
-                  ↻ Refresh
+                  ↻ {t("common.refresh")}
                 </button>
               )}
             </>
@@ -900,15 +920,15 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
               Machines menu the pane was opened out of, so the placeholder points
               there rather than at a project that doesn't exist. */}
           {globalMachine
-            ? `Connect ${carefulMachineName || "this machine"} in the Machines menu to view its system monitor.`
-            : `Connect this project to view ${remoteHost}’s system monitor.`}
+            ? t("sysmon.connectGlobalMachine", {
+                machine: carefulMachineName || t("sysmon.thisMachineLower"),
+              })
+            : t("sysmon.connectProject", { host: remoteHost })}
         </div>
       ) : snap && !snap.supported ? (
-        <div className="sysmon-placeholder">
-          The system monitor is currently available on Linux only.
-        </div>
+        <div className="sysmon-placeholder">{t("sysmon.linuxOnly")}</div>
       ) : !snap ? (
-        <div className="sysmon-placeholder">{error ?? "Sampling…"}</div>
+        <div className="sysmon-placeholder">{error ?? t("sysmon.sampling")}</div>
       ) : (
         // One scroll region for the whole body (a single scrollbar): the vitals and
         // the process table scroll together, the table's sticky thead pinning to this
@@ -919,26 +939,24 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
               node full of unnamed rows would otherwise read as a bug. */}
           {careful && (
             <div className="sysmon-careful-note">
-              <b>Light reading.</b> Only your own processes are shown in full — everyone
-              else&rsquo;s are counted as <i>other users</i> without names or commands, and
-              this host is{" "}
+              <b>{t("sysmon.carefulLightReadingBold")}</b>
+              {t("sysmon.carefulPre")}
+              <i>{t("sysmon.carefulOtherUsersItalic")}</i>
+              {t("sysmon.carefulMid")}
               {hpcTagged ? (
                 <>
-                  sampled <b>once</b>, then only when you press <b>Refresh</b> above — it
-                  is tagged HPC, and a timer against a shared login node is the
-                  unattended load the tag exists to stop
+                  {t("sysmon.carefulTaggedPre")}
+                  <b>{t("sysmon.carefulOnceBold")}</b>
+                  {t("sysmon.carefulTaggedMid")}
+                  <b>{t("common.refresh")}</b>
+                  {t("sysmon.carefulTaggedPost")}
                 </>
               ) : (
-                <>
-                  sampled every {Math.round(CAREFUL_POLL_MS / 1000)}s (and not at all
-                  while Eldrun is in the background)
-                </>
+                t("sysmon.carefulUntaggedFull", { secs: Math.round(CAREFUL_POLL_MS / 1000) })
               )}
-              . It is how every remote machine is
-              sampled until you say otherwise: a shared cluster&rsquo;s usage rules don&rsquo;t
-              allow collecting other people&rsquo;s account names or command lines, and a
-              login node shouldn&rsquo;t carry a constant poll. Switch this machine to{" "}
-              <b>Detailed</b> above if it is yours.
+              {t("sysmon.carefulPost")}
+              <b>{t("sysmon.detailed")}</b>
+              {t("sysmon.carefulEnd")}
             </div>
           )}
           {/* Hardware vitals as two columns: CPU over Memory on the left, the GPU
@@ -949,13 +967,17 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
               <div className="sysmon-cpu-group">
                 <div className="sysmon-group-title">
                   CPU
-                  <span className="sysmon-group-sub">{snap.num_cores} cores</span>
+                  <span className="sysmon-group-sub">
+                    {t(snap.num_cores === 1 ? "sysmon.coreCountOne" : "sysmon.coreCountMany", {
+                      count: snap.num_cores,
+                    })}
+                  </span>
                 </div>
                 <div className="sysmon-cores">
                   {coreUsages.length > 0 ? (
                     coreUsages.map((pct, i) => <Meter key={i} label={`${i}`} pct={pct} />)
                   ) : (
-                    <Meter label="all" pct={aggregateUsage} />
+                    <Meter label={t("sysmon.allLabel")} pct={aggregateUsage} />
                   )}
                 </div>
                 {/* System-load stats belong with the CPU: load average, task count,
@@ -963,32 +985,32 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                     one — omitted rather than shown as a fake zero). */}
                 <div className="sysmon-stats">
                   <span>
-                    load <b>{snap.load_avg.map((n) => n.toFixed(2)).join(" ")}</b>
+                    {t("sysmon.loadLabel")} <b>{snap.load_avg.map((n) => n.toFixed(2)).join(" ")}</b>
                   </span>
                   <span>
-                    tasks <b>{snap.processes.length}</b>
+                    {t("sysmon.tasksLabel")} <b>{snap.processes.length}</b>
                   </span>
                   <span>
-                    up <b>{formatUptime(snap.uptime_secs)}</b>
+                    {t("sysmon.upLabel")} <b>{formatUptime(snap.uptime_secs)}</b>
                   </span>
                   {snap.cpu_temp_c != null && (
                     <span>
-                      cpu temp <b>{formatTempC(snap.cpu_temp_c)}</b>
+                      {t("sysmon.cpuTempLabel")} <b>{formatTempC(snap.cpu_temp_c)}</b>
                     </span>
                   )}
                 </div>
               </div>
               <div className="sysmon-mem-group">
-                <div className="sysmon-group-title">Memory</div>
+                <div className="sysmon-group-title">{t("usage.memory")}</div>
                 <Meter
-                  label="Mem"
+                  label={t("usage.memCol")}
                   pct={memPercent(snap.mem_total_kib - snap.mem_available_kib, snap.mem_total_kib)}
                   caption={`${formatKib(snap.mem_total_kib - snap.mem_available_kib)} / ${formatKib(
                     snap.mem_total_kib,
                   )}`}
                 />
                 <Meter
-                  label="Swp"
+                  label={t("sysmon.swpLabel")}
                   pct={
                     snap.swap_total_kib > 0
                       ? memPercent(snap.swap_total_kib - snap.swap_free_kib, snap.swap_total_kib)
@@ -999,15 +1021,15 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                       ? `${formatKib(snap.swap_total_kib - snap.swap_free_kib)} / ${formatKib(
                           snap.swap_total_kib,
                         )}`
-                      : "none"
+                      : t("sysmon.noneLabel")
                   }
                 />
                 <div className="sysmon-stats">
                   <span>
-                    avail <b>{formatKib(snap.mem_available_kib)}</b>
+                    {t("sysmon.availLabel")} <b>{formatKib(snap.mem_available_kib)}</b>
                   </span>
                   <span>
-                    used{" "}
+                    {t("sysmon.usedLabel")}{" "}
                     <b>
                       {memPercent(
                         snap.mem_total_kib - snap.mem_available_kib,
@@ -1018,14 +1040,14 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                   </span>
                   {snap.swap_total_kib > 0 && (
                     <span>
-                      swap free <b>{formatKib(snap.swap_free_kib)}</b>
+                      {t("sysmon.swapFreeLabel")} <b>{formatKib(snap.swap_free_kib)}</b>
                     </span>
                   )}
                   {/* Hottest DIMM temperature, when the board wires an on-module
                       sensor (jc42/spd5118); omitted otherwise — most desktops have none. */}
                   {snap.mem_temp_c != null && (
                     <span>
-                      mem temp <b>{formatTempC(snap.mem_temp_c)}</b>
+                      {t("sysmon.memTempLabel")} <b>{formatTempC(snap.mem_temp_c)}</b>
                     </span>
                   )}
                 </div>
@@ -1041,8 +1063,10 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                 <div className="sysmon-group-title">
                   GPU
                   <span className="sysmon-group-sub">
-                    {(snap.gpus ?? []).length}{" "}
-                    {(snap.gpus ?? []).length === 1 ? "adapter" : "adapters"}
+                    {t(
+                      (snap.gpus ?? []).length === 1 ? "sysmon.adapterOne" : "sysmon.adapterMany",
+                      { count: (snap.gpus ?? []).length },
+                    )}
                   </span>
                 </div>
                 {(snap.gpus ?? []).map((gpu, i) => (
@@ -1076,14 +1100,17 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                   className="sysmon-proc-toggle"
                   onClick={() => setSessionsOpen((v) => !v)}
                   aria-expanded={sessionsOpen}
-                  title={sessionsOpen ? "Collapse logged-in sessions" : "Expand logged-in sessions"}
+                  title={sessionsOpen ? t("sysmon.collapseLoggedIn") : t("sysmon.expandLoggedIn")}
                 >
                   <span className="sysmon-proc-caret">{sessionsOpen ? "▾" : "▸"}</span>
-                  <span className="sysmon-group-title">Logged in</span>
+                  <span className="sysmon-group-title">{t("usage.loggedIn")}</span>
                   <UntestedTag />
                 </button>
                 <span className="sysmon-count">
-                  {sessionRows.length} {sessionRows.length === 1 ? "user" : "users"}
+                  {t(
+                    sessionRows.length === 1 ? "sysmon.userCountOne" : "sysmon.userCountMany",
+                    { count: sessionRows.length },
+                  )}
                 </span>
               </div>
               {sessionsOpen &&
@@ -1091,10 +1118,10 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                   <div className="sysmon-users">
                     <ul className="remote-usage-users">
                       <li className="remote-usage-users-head" aria-hidden="true">
-                        <span>User</span>
-                        <span>CPU</span>
-                        <span>Sessions</span>
-                        <span>Mem</span>
+                        <span>{t("usage.userCol")}</span>
+                        <span>{t("usage.cpu")}</span>
+                        <span>{t("usage.sessionsCol")}</span>
+                        <span>{t("usage.memCol")}</span>
                       </li>
                       {sessionRows.map((s) => (
                         <li key={s.user}>
@@ -1103,9 +1130,9 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                             {s.isSelf && (
                               <span
                                 className="remote-usage-user-you"
-                                title="The account Eldrun is connected as"
+                                title={t("sysmon.youChipTitle")}
                               >
-                                you
+                                {t("sysmon.youChip")}
                               </span>
                             )}
                           </span>
@@ -1121,7 +1148,7 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                   </div>
                 ) : (
                   <div className="sysmon-users sysmon-users-empty">
-                    No interactive logins on this host.
+                    {t("usage.noInteractiveLogins")}
                   </div>
                 ))}
             </>
@@ -1143,24 +1170,26 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                   className="sysmon-proc-toggle"
                   onClick={() => setUsersOpen((v) => !v)}
                   aria-expanded={usersOpen}
-                  title={usersOpen ? "Collapse per-user usage" : "Expand per-user usage"}
+                  title={usersOpen ? t("sysmon.collapseByUser") : t("sysmon.expandByUser")}
                 >
                   <span className="sysmon-proc-caret">{usersOpen ? "▾" : "▸"}</span>
-                  <span className="sysmon-group-title">By user</span>
+                  <span className="sysmon-group-title">{t("sysmon.byUser")}</span>
                   <UntestedTag />
                 </button>
                 <span className="sysmon-count">
-                  {userRows.length} {userRows.length === 1 ? "user" : "users"}
+                  {t(userRows.length === 1 ? "sysmon.userCountOne" : "sysmon.userCountMany", {
+                    count: userRows.length,
+                  })}
                 </span>
               </div>
               {usersOpen && (
                 <div className="sysmon-users">
                   <ul className="remote-usage-users">
                     <li className="remote-usage-users-head" aria-hidden="true">
-                      <span>User</span>
-                      <span>CPU</span>
-                      <span>Procs</span>
-                      <span>Mem</span>
+                      <span>{t("usage.userCol")}</span>
+                      <span>{t("usage.cpu")}</span>
+                      <span>{t("sysmon.procsCol")}</span>
+                      <span>{t("usage.memCol")}</span>
                     </li>
                     {userRows.map((u) => (
                       <li key={u.user}>
@@ -1187,13 +1216,15 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
               className="sysmon-proc-toggle"
               onClick={() => setProcOpen((v) => !v)}
               aria-expanded={procOpen}
-              title={procOpen ? "Collapse process list" : "Expand process list"}
+              title={procOpen ? t("sysmon.collapseProcesses") : t("sysmon.expandProcesses")}
             >
               <span className="sysmon-proc-caret">{procOpen ? "▾" : "▸"}</span>
-              <span className="sysmon-group-title">Processes</span>
+              <span className="sysmon-group-title">{t("sysmon.processes")}</span>
             </button>
             <span className="sysmon-count">
-              {rows.length} {rows.length === 1 ? "process" : "processes"}
+              {t(rows.length === 1 ? "sysmon.processCountOne" : "sysmon.processCountMany", {
+                count: rows.length,
+              })}
             </span>
           </div>
 
@@ -1202,7 +1233,7 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
           <div className="sysmon-toolbar">
             <input
               className="sysmon-filter"
-              placeholder="Filter by name, command, or PID…"
+              placeholder={t("sysmon.filterPlaceholder")}
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
               spellCheck={false}
@@ -1236,7 +1267,7 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                   </th>
                   <th className="st">S</th>
                   <th className={`cmd ${sortedCls("comm") ?? ""}`} onClick={() => toggleSort("comm")}>
-                    Command{arrow("comm")}
+                    {t("sysmon.commandCol")}{arrow("comm")}
                   </th>
                 </tr>
               </thead>

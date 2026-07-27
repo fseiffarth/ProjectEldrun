@@ -22,6 +22,7 @@
 
 import type { CSSProperties } from "react";
 import type { DeckObject } from "../../../lib/viewers/deck/model";
+import { useT } from "../../../lib/i18n";
 import {
   type TextMetrics,
   cssFontFor,
@@ -67,6 +68,7 @@ export function DeckObjectView({
   metrics,
   selected,
 }: ObjectViewProps) {
+  const t = useT();
   const w = obj.w * pageW;
   const h = obj.h * pageH;
 
@@ -88,7 +90,7 @@ export function DeckObjectView({
       style={frame}
       data-object-id={obj.id}
     >
-      {body(obj, w, h, pointScale, metrics, assetUrl)}
+      {body(obj, w, h, pointScale, metrics, assetUrl, t)}
     </div>
   );
 }
@@ -99,11 +101,12 @@ function body(
   h: number,
   pointScale: number,
   metrics: TextMetrics | null,
-  assetUrl?: string,
+  assetUrl: string | undefined,
+  t: ReturnType<typeof useT>,
 ) {
   switch (obj.kind) {
     case "text":
-      return <TextBody obj={obj} w={w} h={h} pointScale={pointScale} metrics={metrics} />;
+      return <TextBody obj={obj} w={w} h={h} pointScale={pointScale} metrics={metrics} t={t} />;
 
     case "image":
       return assetUrl ? (
@@ -210,12 +213,14 @@ function TextBody({
   h,
   pointScale,
   metrics,
+  t,
 }: {
   obj: Extract<DeckObject, { kind: "text" }>;
   w: number;
   h: number;
   pointScale: number;
   metrics: TextMetrics | null;
+  t: ReturnType<typeof useT>;
 }) {
   const s = obj.style;
   const pad = obj.padding * pointScale;
@@ -310,7 +315,9 @@ function TextBody({
       ))}
       {/* A box too short for its text is a real authoring mistake, not a render
           bug — say so rather than silently clipping the last line away. */}
-      {lines.length * lineH > h - pad * 2 && <span className="deck-text-overflow" title="Text is taller than its box" />}
+      {lines.length * lineH > h - pad * 2 && (
+        <span className="deck-text-overflow" title={t("deckObjectView.textOverflowTitle")} />
+      )}
     </div>
   );
 }

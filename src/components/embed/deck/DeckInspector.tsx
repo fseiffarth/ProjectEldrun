@@ -18,6 +18,8 @@ import type {
 } from "../../../lib/viewers/deck/model";
 import { customFontPath, fontKey, updateObjects } from "../../../lib/viewers/deck/model";
 import { FontField } from "./FontField";
+import { ALIGN_KEYS } from "./DeckThemePanel";
+import { useT } from "../../../lib/i18n";
 
 export interface DeckInspectorProps {
   objects: ObjectList;
@@ -63,6 +65,7 @@ export function ColorField({
   alpha?: boolean;
   title?: string;
 }) {
+  const t = useT();
   const rgb = (value ?? "#000000").slice(0, 7);
   const a = alphaOf(value);
   return (
@@ -82,7 +85,7 @@ export function ColorField({
             max={100}
             step={1}
             value={Math.round(a * 100)}
-            title={`Opacity ${Math.round(a * 100)}%`}
+            title={t("deckInspector.opacityTitle", { pct: Math.round(a * 100) })}
             onChange={(e) => onChange(withAlpha(rgb, Number(e.target.value) / 100))}
           />
         )}
@@ -132,11 +135,12 @@ export function DeckInspector({
   onReplaceImage,
   missingFonts,
 }: DeckInspectorProps) {
+  const t = useT();
   const sel = objects.filter((o) => selection.has(o.id));
   if (sel.length === 0) {
     return (
       <div className="deck-inspector">
-        <p className="deck-inspector-empty">Select something to edit its properties.</p>
+        <p className="deck-inspector-empty">{t("deckInspector.emptyMsg")}</p>
       </div>
     );
   }
@@ -152,22 +156,30 @@ export function DeckInspector({
   const allShape = shapes.length === sel.length;
   const allIcon = icons.length === sel.length;
   const allImage = images.length === sel.length;
+  const KIND_KEYS = {
+    text: "deckInspector.kindText",
+    shape: "deckInspector.kindShape",
+    icon: "deckInspector.kindIcon",
+    image: "deckInspector.kindImage",
+  } as const;
 
   return (
     <div className="deck-inspector">
       <div className="deck-inspector-head">
-        {sel.length === 1 ? sel[0].kind : `${sel.length} objects`}
+        {sel.length === 1
+          ? t(KIND_KEYS[sel[0].kind])
+          : t("deckInspector.multiObjectsHead", { n: sel.length })}
       </div>
 
       {/* --- text --- */}
       {allText && (
         <>
           <label className="deck-field deck-field-wide">
-            <span>Text</span>
+            <span>{t("deckInspector.textLabel")}</span>
             <textarea
               rows={3}
               value={shared(texts, (o) => (o as typeof texts[number]).text) ?? ""}
-              placeholder={sel.length > 1 ? "(differs)" : ""}
+              placeholder={sel.length > 1 ? t("deckInspector.differsPlaceholder") : ""}
               onChange={(e) =>
                 patch((o) => (o.kind === "text" ? { ...o, text: e.target.value } : o))
               }
@@ -186,7 +198,7 @@ export function DeckInspector({
               }
             />
             <label className="deck-field deck-field-narrow">
-              <span>Size</span>
+              <span>{t("deckInspector.sizeLabel")}</span>
               <input
                 type="number"
                 min={1}
@@ -209,7 +221,7 @@ export function DeckInspector({
                   o.kind === "text" ? { ...o, style: { ...o.style, bold: !o.style.bold } } : o,
                 )
               }
-              title="Bold"
+              title={t("deckInspector.boldTitle")}
             >
               <b>B</b>
             </button>
@@ -220,7 +232,7 @@ export function DeckInspector({
                   o.kind === "text" ? { ...o, style: { ...o.style, italic: !o.style.italic } } : o,
                 )
               }
-              title="Italic"
+              title={t("deckInspector.italicTitle")}
             >
               <i>I</i>
             </button>
@@ -231,7 +243,7 @@ export function DeckInspector({
                 onClick={() =>
                   patch((o) => (o.kind === "text" ? { ...o, style: { ...o.style, align: a } } : o))
                 }
-                title={`Align ${a}`}
+                title={t("deckInspector.alignTitle", { align: t(ALIGN_KEYS[a]) })}
               >
                 {a === "left" ? "⬅" : a === "center" ? "↔" : "➡"}
               </button>
@@ -248,14 +260,14 @@ export function DeckInspector({
                     o.kind === "text" ? { ...o, style: { ...o.style, color: e.target.value } } : o,
                   )
                 }
-                title="Text colour"
+                title={t("deckInspector.textColourTitle")}
               />
             </label>
           </div>
 
           <div className="deck-field-row">
             <label className="deck-field">
-              <span>List</span>
+              <span>{t("deckInspector.listLabel")}</span>
               <select
                 value={shared(texts, (o) => o.list?.kind ?? "none") ?? "none"}
                 onChange={(e) => {
@@ -269,8 +281,8 @@ export function DeckInspector({
                   );
                 }}
               >
-                <option value="none">None</option>
-                <option value="bullet">Bullets</option>
+                <option value="none">{t("deckInspector.listNone")}</option>
+                <option value="bullet">{t("deckInspector.listBullets")}</option>
                 <option value="number">1. 2. 3.</option>
                 <option value="alpha">a. b. c.</option>
                 <option value="roman">i. ii. iii.</option>
@@ -278,7 +290,7 @@ export function DeckInspector({
             </label>
             {texts.some((o) => o.list && o.list.kind !== "bullet") && (
               <label className="deck-field deck-field-narrow">
-                <span>Start at</span>
+                <span>{t("deckInspector.startAtLabel")}</span>
                 <input
                   type="number"
                   min={1}
@@ -299,13 +311,13 @@ export function DeckInspector({
               all, so setting it meant hand-editing the sidecar JSON (TODO V #119). */}
           <div className="deck-field-row">
             <label className="deck-field deck-field-narrow">
-              <span>Padding</span>
+              <span>{t("deckInspector.paddingLabel")}</span>
               <input
                 type="number"
                 min={0}
                 step={0.5}
                 value={shared(texts, (o) => o.padding) ?? ""}
-                title="Inset between the box and the text, in points"
+                title={t("deckInspector.paddingTitle")}
                 onChange={(e) => {
                   const padding = Number(e.target.value);
                   if (!Number.isFinite(padding) || padding < 0) return;
@@ -314,13 +326,13 @@ export function DeckInspector({
               />
             </label>
             <label className="deck-field deck-field-narrow">
-              <span>Line height</span>
+              <span>{t("deckInspector.lineHeightLabel")}</span>
               <input
                 type="number"
                 min={0.5}
                 step={0.05}
                 value={shared(texts, (o) => o.style.lineHeight) ?? ""}
-                title="Baseline-to-baseline distance, as a multiple of the type size"
+                title={t("deckInspector.lineHeightTitle")}
                 onChange={(e) => {
                   const lineHeight = Number(e.target.value);
                   if (!Number.isFinite(lineHeight) || lineHeight < 0.5) return;
@@ -334,32 +346,32 @@ export function DeckInspector({
 
           <div className="deck-field-row">
             <ColorField
-              label="Box"
+              label={t("deckInspector.boxLabel")}
               value={shared(texts, (o) => o.fill) ?? "#ffffff"}
-              title="Fill behind the text"
+              title={t("deckInspector.boxFillTitle")}
               onChange={(fill) => patch((o) => (o.kind === "text" ? { ...o, fill } : o))}
             />
             <button
               className="deck-toggle"
               onClick={() => patch((o) => (o.kind === "text" ? { ...o, fill: undefined } : o))}
-              title="No box fill"
+              title={t("deckInspector.noBoxFillTitle")}
             >
               ⃠
             </button>
             <ColorField
-              label="Border"
+              label={t("deckInspector.borderLabel")}
               value={shared(texts, (o) => o.stroke) ?? "#111111"}
               onChange={(stroke) => patch((o) => (o.kind === "text" ? { ...o, stroke } : o))}
             />
             <button
               className="deck-toggle"
               onClick={() => patch((o) => (o.kind === "text" ? { ...o, stroke: undefined } : o))}
-              title="No border"
+              title={t("deckInspector.noBorderTitle")}
             >
               ⃠
             </button>
             <label className="deck-field deck-field-narrow">
-              <span>Width</span>
+              <span>{t("deckInspector.widthLabel")}</span>
               <input
                 type="number"
                 min={0}
@@ -380,7 +392,7 @@ export function DeckInspector({
       {allShape && (
         <>
           <label className="deck-field">
-            <span>Shape</span>
+            <span>{t("deckInspector.shapeLabel")}</span>
             <select
               value={shared(shapes, (o) => o.shape) ?? ""}
               onChange={(e) =>
@@ -389,34 +401,34 @@ export function DeckInspector({
                 )
               }
             >
-              <option value="rect">Rectangle</option>
-              <option value="roundrect">Rounded rectangle</option>
-              <option value="ellipse">Ellipse</option>
-              <option value="line">Line</option>
-              <option value="arrow">Arrow</option>
-              <option value="callout">Callout</option>
+              <option value="rect">{t("deckInspector.shapeRect")}</option>
+              <option value="roundrect">{t("deckInspector.shapeRoundrect")}</option>
+              <option value="ellipse">{t("deckInspector.shapeEllipse")}</option>
+              <option value="line">{t("deckInspector.shapeLine")}</option>
+              <option value="arrow">{t("deckInspector.shapeArrow")}</option>
+              <option value="callout">{t("deckInspector.shapeCallout")}</option>
             </select>
           </label>
           <div className="deck-field-row">
             <ColorField
-              label="Fill"
+              label={t("deckInspector.fillLabel")}
               value={shared(shapes, (o) => o.fill) ?? "#ffffff"}
               onChange={(fill) => patch((o) => (o.kind === "shape" ? { ...o, fill } : o))}
             />
             <button
               className="deck-toggle"
               onClick={() => patch((o) => (o.kind === "shape" ? { ...o, fill: undefined } : o))}
-              title="No fill"
+              title={t("deckInspector.noFillTitle")}
             >
               ⃠
             </button>
             <ColorField
-              label="Line"
+              label={t("deckInspector.strokeLineLabel")}
               value={shared(shapes, (o) => o.stroke) ?? "#111111"}
               onChange={(stroke) => patch((o) => (o.kind === "shape" ? { ...o, stroke } : o))}
             />
             <label className="deck-field deck-field-narrow">
-              <span>Width</span>
+              <span>{t("deckInspector.widthLabel")}</span>
               <input
                 type="number"
                 min={0}
@@ -433,7 +445,7 @@ export function DeckInspector({
           {shapes.some((o) => o.shape === "line" || o.shape === "arrow") && (
             <div className="deck-field-row">
               <label className="deck-field">
-                <span>Start</span>
+                <span>{t("deckInspector.startLabel")}</span>
                 <select
                   value={shared(shapes, (o) => o.tail ?? "none") ?? "none"}
                   onChange={(e) =>
@@ -444,14 +456,14 @@ export function DeckInspector({
                     )
                   }
                 >
-                  <option value="none">None</option>
-                  <option value="arrow">Arrow</option>
-                  <option value="dot">Dot</option>
-                  <option value="bar">Bar</option>
+                  <option value="none">{t("deckInspector.headNone")}</option>
+                  <option value="arrow">{t("deckInspector.headArrow")}</option>
+                  <option value="dot">{t("deckInspector.headDot")}</option>
+                  <option value="bar">{t("deckInspector.headBar")}</option>
                 </select>
               </label>
               <label className="deck-field">
-                <span>End</span>
+                <span>{t("deckInspector.endLabel")}</span>
                 <select
                   value={shared(shapes, (o) => o.head ?? "none") ?? "none"}
                   onChange={(e) =>
@@ -462,10 +474,10 @@ export function DeckInspector({
                     )
                   }
                 >
-                  <option value="none">None</option>
-                  <option value="arrow">Arrow</option>
-                  <option value="dot">Dot</option>
-                  <option value="bar">Bar</option>
+                  <option value="none">{t("deckInspector.headNone")}</option>
+                  <option value="arrow">{t("deckInspector.headArrow")}</option>
+                  <option value="dot">{t("deckInspector.headDot")}</option>
+                  <option value="bar">{t("deckInspector.headBar")}</option>
                 </select>
               </label>
             </div>
@@ -477,16 +489,16 @@ export function DeckInspector({
       {allIcon && (
         <div className="deck-field-row">
           <button className="deck-inspector-btn" onClick={onPickIcon}>
-            Change icon…
+            {t("deckInspector.changeIconBtn")}
           </button>
           <ColorField
-            label="Colour"
+            label={t("deckInspector.colourLabel")}
             alpha={false}
             value={shared(icons, (o) => o.color) ?? "#111111"}
             onChange={(color) => patch((o) => (o.kind === "icon" ? { ...o, color } : o))}
           />
           <label className="deck-field deck-field-narrow">
-            <span>Weight</span>
+            <span>{t("deckInspector.weightLabel")}</span>
             <input
               type="number"
               min={0}
@@ -506,7 +518,7 @@ export function DeckInspector({
       {allImage && (
         <div className="deck-field-row">
           <label className="deck-field">
-            <span>Fit</span>
+            <span>{t("deckInspector.fitLabel")}</span>
             <select
               value={shared(images, (o) => o.fit) ?? ""}
               onChange={(e) =>
@@ -515,9 +527,9 @@ export function DeckInspector({
                 )
               }
             >
-              <option value="contain">Contain</option>
-              <option value="cover">Cover</option>
-              <option value="stretch">Stretch</option>
+              <option value="contain">{t("deckInspector.fitContain")}</option>
+              <option value="cover">{t("deckInspector.fitCover")}</option>
+              <option value="stretch">{t("deckInspector.fitStretch")}</option>
             </select>
           </label>
           {/* Swapping the picture was simply not offered: the only route was
@@ -530,7 +542,7 @@ export function DeckInspector({
               onClick={() => onReplaceImage(images[0])}
               title={images[0].src}
             >
-              Replace image…
+              {t("deckInspector.replaceImageBtn")}
             </button>
           )}
         </div>
@@ -540,7 +552,7 @@ export function DeckInspector({
           "edit" and "recompile" are inherently a one-object action. --- */}
       {sel.length === 1 && sel[0].kind === "image" && sel[0].texSrc && (
         <div className="deck-field deck-field-wide deck-tex-field">
-          <span>TeX figure</span>
+          <span>{t("deckInspector.texFigureLabel")}</span>
           <div className="deck-field-row">
             <button
               className="deck-inspector-btn"
@@ -548,14 +560,14 @@ export function DeckInspector({
               onClick={() => onEditTex?.(sel[0] as ImageObject)}
               title={sel[0].texSrc}
             >
-              Edit source
+              {t("deckInspector.editSourceBtn")}
             </button>
             <button
               className="deck-inspector-btn"
               disabled={texBusyIds?.has(sel[0].id)}
               onClick={() => onRecompileTex?.(sel[0] as ImageObject)}
             >
-              {texBusyIds?.has(sel[0].id) ? "Compiling…" : "Recompile"}
+              {texBusyIds?.has(sel[0].id) ? t("deckTexPanel.compiling") : t("deckTexPanel.recompile")}
             </button>
           </div>
         </div>
@@ -564,7 +576,7 @@ export function DeckInspector({
       {/* --- common --- */}
       <div className="deck-field-row">
         <label className="deck-field deck-field-narrow">
-          <span>Opacity</span>
+          <span>{t("deckInspector.opacityLabel")}</span>
           <input
             type="range"
             min={0}
@@ -575,7 +587,7 @@ export function DeckInspector({
           />
         </label>
         <label className="deck-field deck-field-narrow">
-          <span>Rotation</span>
+          <span>{t("deckInspector.rotationLabel")}</span>
           <input
             type="number"
             step={1}
@@ -600,7 +612,7 @@ export function DeckInspector({
               ),
             );
           }}
-          title="Lock: keep this object out of the way of edits"
+          title={t("deckInspector.lockTitle")}
         >
           🔒
         </button>
@@ -618,7 +630,7 @@ export function DeckInspector({
               ),
             );
           }}
-          title="Hide: keep this object in the deck but off the slide and out of the export"
+          title={t("deckInspector.hideTitle")}
         >
           👁
         </button>

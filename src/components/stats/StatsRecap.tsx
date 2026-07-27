@@ -17,6 +17,7 @@ import {
 } from "../../lib/usageRollup";
 import { formatBytes, type ByteCounts, type NetUsageReport } from "../monitoring/NetworkTrafficPane";
 import { Toggle } from "../common/Toggle";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 /** Human duration, matching the header timer's phrasing. */
 function formatTime(secs: number): string {
@@ -26,16 +27,12 @@ function formatTime(secs: number): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-/** `n thing` / `n things` — the recap reads as a sentence, so it must agree. */
-function plural(n: number, one: string, many = `${one}s`): string {
-  return `${n} ${n === 1 ? one : many}`;
-}
-
-const PERIODS: { id: Period; label: string }[] = [
-  { id: "day", label: "Day" },
-  { id: "week", label: "Week" },
-  { id: "month", label: "Month" },
-];
+const PERIOD_LABEL_KEYS: Record<Period, TranslationKey> = {
+  day: "stats.periodDay",
+  week: "stats.periodWeek",
+  month: "stats.periodMonth",
+};
+const PERIODS: Period[] = ["day", "week", "month"];
 
 const DAY_MS = 86_400_000;
 
@@ -69,7 +66,15 @@ function Bar({ label, value, max, suffix }: { label: string; value: number; max:
  * every other graph in Eldrun (there is no chart dependency, and this is not the
  * place to add one). Only meaningful for the Day period.
  */
-function HourSparkline({ hours, anchorMs }: { hours: Record<string, Counters>; anchorMs: number }) {
+function HourSparkline({
+  hours,
+  anchorMs,
+  t,
+}: {
+  hours: Record<string, Counters>;
+  anchorMs: number;
+  t: ReturnType<typeof useT>;
+}) {
   const date = dayKey(anchorMs);
   const values = Array.from({ length: 24 }, (_, h) => {
     const bucket = hours[`${date}T${String(h).padStart(2, "0")}`] ?? {};
@@ -93,7 +98,7 @@ function HourSparkline({ hours, anchorMs }: { hours: Record<string, Counters>; a
         viewBox={`0 0 ${width} ${height}`}
         preserveAspectRatio="none"
         role="img"
-        aria-label="Activity by hour of day (UTC)"
+        aria-label={t("stats.sparklineAriaLabel")}
       >
         {values.map((v, h) => (
           <rect
@@ -107,8 +112,8 @@ function HourSparkline({ hours, anchorMs }: { hours: Record<string, Counters>; a
         ))}
       </svg>
       <div className="stats-spark-legend">
-        <span>busiest hour {String(busiest).padStart(2, "0")}:00 UTC</span>
-        <span className="stats-spark-scale">peak {max}</span>
+        <span>{t("stats.busiestHour", { hour: String(busiest).padStart(2, "0") })}</span>
+        <span className="stats-spark-scale">{t("stats.peak", { value: max })}</span>
       </div>
     </div>
   );
@@ -125,6 +130,7 @@ interface Props {
 }
 
 export function StatsRecap({ onClose, initialAnchorMs, showAutoToggle }: Props) {
+  const t = useT();
   const [period, setPeriod] = useState<Period>("day");
   const [anchorMs] = useState(initialAnchorMs);
   const [timeByDay, setTimeByDay] = useState<Record<string, Record<string, number>>>({});
@@ -220,7 +226,7 @@ export function StatsRecap({ onClose, initialAnchorMs, showAutoToggle }: Props) 
   }
   const appSecs = keys.reduce((sum, k) => sum + (timeByDay[k]?.[APP_TIMER_ID] ?? 0), 0);
   const projectName = (id: string) =>
-    id === ROOT_SCOPE ? "Root terminal" : projects.find((p) => p.id === id)?.name ?? id;
+    id === ROOT_SCOPE ? t("stats.rootTerminal") : projects.find((p) => p.id === id)?.name ?? id;
   const rankedProjects = Object.entries(secsByProject)
     .filter(([, secs]) => secs > 0)
     .sort((a, b) => b[1] - a[1]);
@@ -240,23 +246,24 @@ export function StatsRecap({ onClose, initialAnchorMs, showAutoToggle }: Props) 
   const workedS = counters[METRIC.AGENT_WORKED_S] ?? 0;
   const decisions = counters[METRIC.AGENT_DECISION] ?? 0;
 
-  const label = period === "day" ? dayLabel(anchorMs) : period === "week" ? "This week" : "This month";
+  const label =
+    period === "day" ? dayLabel(anchorMs, t) : period === "week" ? t("stats.thisWeek") : t("stats.thisMonth");
   const empty = openedTabs + prompts + shellCommands + created + modified + deleted === 0;
 
   return createPortal(
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="stats-dialog dialog-framed" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>Your work in Eldrun</h2>
-          <div className="stats-period-switch" role="group" aria-label="Period">
+          <h2>{t("stats.title")}</h2>
+          <div className="stats-period-switch" role="group" aria-label={t("stats.periodGroupLabel")}>
             {PERIODS.map((p) => (
               <button
-                key={p.id}
+                key={p}
                 type="button"
-                className={period === p.id ? "stats-period-btn active" : "stats-period-btn"}
-                onClick={() => setPeriod(p.id)}
+                className={period === p ? "stats-period-btn active" : "stats-period-btn"}
+                onClick={() => setPeriod(p)}
               >
-                {p.label}
+                {t(PERIOD_LABEL_KEYS[p])}
               </button>
             ))}
           </div>
@@ -267,17 +274,21 @@ export function StatsRecap({ onClose, initialAnchorMs, showAutoToggle }: Props) 
         <p className="settings-help stats-window-label">{label}</p>
 
         {empty ? (
-          <p className="stats-empty">
-            Nothing recorded for this period yet. Open an agent, run a command, edit a
-            file — it will show up here.
-          </p>
+          <p className="stats-empty">{t("stats.emptyState")}</p>
         ) : (
           <>
             {/* ── Agents ───────────────────────────────────────────────── */}
-            <div className="settings-section-title">Agents</div>
+            <div className="settings-section-title">{t("stats.sectionAgents")}</div>
             <p className="stats-headline">
-              You used <strong>{plural(usedTabs, "agent tab")}</strong>, asking them{" "}
-              <strong>{plural(prompts, "thing")}</strong>.
+              {t("stats.headlinePre")}
+              <strong>
+                {t(usedTabs === 1 ? "stats.usedTabsOne" : "stats.usedTabsMany", { count: usedTabs })}
+              </strong>
+              {t("stats.headlineMid")}
+              <strong>
+                {t(prompts === 1 ? "stats.promptsOne" : "stats.promptsMany", { count: prompts })}
+              </strong>
+              {t("stats.headlinePost")}
             </p>
             {Object.keys(byModel).length > 0 && (
               <div className="stats-bars">
@@ -289,21 +300,21 @@ export function StatsRecap({ onClose, initialAnchorMs, showAutoToggle }: Props) 
               </div>
             )}
             <div className="stats-metrics">
-              <Metric label="Agent tabs opened" value={String(openedTabs)} />
+              <Metric label={t("stats.metricTabsOpened")} value={String(openedTabs)} />
               <Metric
-                label="Agents working"
+                label={t("stats.metricAgentsWorking")}
                 value={formatTime(workedS)}
-                sub="summed across tabs"
+                sub={t("stats.metricSummedAcrossTabs")}
               />
               <Metric
-                label="Stopped to ask you"
+                label={t("stats.metricStoppedToAsk")}
                 value={String(decisions)}
-                sub={decisions === 1 ? "time" : "times"}
+                sub={t(decisions === 1 ? "stats.timeOne" : "stats.timeMany")}
               />
             </div>
 
             {/* ── Work per project ─────────────────────────────────────── */}
-            <div className="settings-section-title">Work</div>
+            <div className="settings-section-title">{t("stats.sectionWork")}</div>
             {rankedProjects.length > 0 ? (
               <div className="stats-bars">
                 {rankedProjects.map(([pid, secs]) => (
@@ -317,40 +328,43 @@ export function StatsRecap({ onClose, initialAnchorMs, showAutoToggle }: Props) 
                 ))}
               </div>
             ) : (
-              <p className="settings-help">No tracked time in this period.</p>
+              <p className="settings-help">{t("stats.noTrackedTime")}</p>
             )}
             <div className="stats-metrics">
-              <Metric label="Eldrun open" value={formatTime(appSecs)} />
-              <Metric label="Commands run" value={String(shellCommands)} sub="in shell tabs" />
-              <Metric label="Network" value={`↓ ${formatBytes(bytes.rx)}`} sub={`↑ ${formatBytes(bytes.tx)}`} />
+              <Metric label={t("stats.metricEldrunOpen")} value={formatTime(appSecs)} />
+              <Metric
+                label={t("stats.metricCommandsRun")}
+                value={String(shellCommands)}
+                sub={t("stats.metricInShellTabs")}
+              />
+              <Metric
+                label={t("stats.metricNetwork")}
+                value={`↓ ${formatBytes(bytes.rx)}`}
+                sub={`↑ ${formatBytes(bytes.tx)}`}
+              />
             </div>
 
             {/* ── Files ────────────────────────────────────────────────── */}
-            <div className="settings-section-title">Files</div>
+            <div className="settings-section-title">{t("stats.sectionFiles")}</div>
             <div className="stats-metrics">
-              <Metric label="Created" value={String(created)} />
-              <Metric label="Modified" value={String(modified)} />
-              <Metric label="Deleted" value={String(deleted)} />
+              <Metric label={t("fileTree.tooltipCreated")} value={String(created)} />
+              <Metric label={t("fileTree.tooltipModified")} value={String(modified)} />
+              <Metric label={t("stats.metricDeleted")} value={String(deleted)} />
               {git && (
                 <Metric
-                  label="Committed"
-                  value={plural(git.commits, "commit")}
+                  label={t("stats.metricCommitted")}
+                  value={t(git.commits === 1 ? "stats.commitOne" : "stats.commitMany", { count: git.commits })}
                   sub={`+${git.linesAdded} −${git.linesRemoved}`}
                 />
               )}
             </div>
-            <p className="settings-help">
-              File counts come from watching your project tree, so they cover only local
-              files — a remote project is counted through its local mirror, and one
-              without a mirror records nothing. Commits are counted from git, for commits
-              you authored.
-            </p>
+            <p className="settings-help">{t("stats.fileFootnote")}</p>
 
             {/* ── Rhythm ───────────────────────────────────────────────── */}
             {period === "day" && report?.hours && (
               <>
-                <div className="settings-section-title">Rhythm</div>
-                <HourSparkline hours={report.hours} anchorMs={anchorMs} />
+                <div className="settings-section-title">{t("stats.sectionRhythm")}</div>
+                <HourSparkline hours={report.hours} anchorMs={anchorMs} t={t} />
               </>
             )}
           </>
@@ -358,7 +372,7 @@ export function StatsRecap({ onClose, initialAnchorMs, showAutoToggle }: Props) 
 
         {showAutoToggle && (
           <label className="settings-switch-row stats-auto-row">
-            <span>Show this at the start of each day</span>
+            <span>{t("stats.autoToggleLabel")}</span>
             <Toggle
               checked={autoOn}
               onChange={(e) => void updateSettings({ daily_stats_recap: e.target.checked })}
@@ -373,10 +387,10 @@ export function StatsRecap({ onClose, initialAnchorMs, showAutoToggle }: Props) 
 }
 
 /** "Yesterday" / "Today" / the date, for the Day window's caption. */
-function dayLabel(anchorMs: number): string {
+function dayLabel(anchorMs: number, t: ReturnType<typeof useT>): string {
   const today = dayKey(Date.now());
   const anchor = dayKey(anchorMs);
-  if (anchor === today) return "Today";
-  if (anchor === dayKey(Date.now() - DAY_MS)) return "Yesterday";
+  if (anchor === today) return t("stats.today");
+  if (anchor === dayKey(Date.now() - DAY_MS)) return t("stats.yesterday");
   return anchor;
 }

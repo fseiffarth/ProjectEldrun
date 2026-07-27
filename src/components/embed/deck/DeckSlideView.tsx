@@ -16,6 +16,7 @@ import type { TextMetrics } from "../../../lib/viewers/deck/fonts";
 import { DeckObjectView } from "./DeckObjectView";
 import { renderPage } from "./deckBase";
 import { type DecodedGif, playGif } from "./gifPlayback";
+import { useT } from "../../../lib/i18n";
 
 export interface PresentedSlideProps {
   slide: Slide;
@@ -155,6 +156,7 @@ export function InterstitialView({
   onEnded,
   drivesAdvance = true,
 }: InterstitialViewProps) {
+  const t = useT();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const endedRef = useRef(onEnded);
   endedRef.current = onEnded;
@@ -186,7 +188,7 @@ export function InterstitialView({
   if (!gif) {
     return (
       <div className="deck-presenter-fit deck-presenter-loading" style={{ background }}>
-        Loading animation…
+        {t("deckSlideView.loadingAnimation")}
       </div>
     );
   }

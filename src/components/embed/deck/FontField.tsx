@@ -21,6 +21,7 @@ import {
   customFontPath,
   fontKey,
 } from "../../../lib/viewers/deck/model";
+import { useT } from "../../../lib/i18n";
 
 export interface FontFile {
   path: string;
@@ -71,7 +72,9 @@ export interface FontFieldProps {
   missing?: boolean;
 }
 
-export function FontField({ value, onChange, label = "Font", missing }: FontFieldProps) {
+export function FontField({ value, onChange, label, missing }: FontFieldProps) {
+  const t = useT();
+  const resolvedLabel = label ?? t("deckFontField.defaultLabel");
   const fonts = useFontList();
   const current = value ?? "sans";
   const path = customFontPath(current);
@@ -83,8 +86,13 @@ export function FontField({ value, onChange, label = "Font", missing }: FontFiel
   return (
     <label className="deck-field">
       <span>
-        {label}
-        {missing && <span className="deck-font-missing" title="This font could not be read, so Helvetica is being used"> · missing</span>}
+        {resolvedLabel}
+        {missing && (
+          <span className="deck-font-missing" title={t("deckFontField.missingTitle")}>
+            {" · "}
+            {t("deckFontField.missing")}
+          </span>
+        )}
       </span>
       <select
         value={fontKey(current)}
@@ -95,18 +103,18 @@ export function FontField({ value, onChange, label = "Font", missing }: FontFiel
           );
         }}
       >
-        <optgroup label="Built in (no embedding needed)">
+        <optgroup label={t("deckFontField.builtInGroup")}>
           <option value="sans">Helvetica</option>
           <option value="serif">Times</option>
           <option value="mono">Courier</option>
         </optgroup>
         {orphan && (
-          <optgroup label="Named by this deck, not found here">
+          <optgroup label={t("deckFontField.namedNotFoundGroup")}>
             <option value={`custom:${path}`}>{path!.split("/").pop()}</option>
           </optgroup>
         )}
         {fonts.length > 0 && (
-          <optgroup label="Installed on this machine (embedded on export)">
+          <optgroup label={t("deckFontField.installedGroup")}>
             {fonts.map((f) => (
               <option key={f.path} value={`custom:${f.path}`} title={f.path}>
                 {f.name}

@@ -23,6 +23,7 @@ import { FILES_TAB_CMD, useTabsStore } from "../../stores/tabs";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { OrbitSpinner } from "../common/OrbitSpinner";
+import { useT } from "../../lib/i18n";
 
 interface Props {
   /** Owning project, or `null` in the root scope. */
@@ -78,6 +79,7 @@ function parentDir(path: string): string {
 // ── Pane ──────────────────────────────────────────────────────────────────────
 
 export function DiskUsagePane({ projectId, projectCwd, tabKey, visible }: Props) {
+  const t = useT();
   const [devices, setDevices] = useState<DuDevice[]>([]);
   const [scan, setScan] = useState<DuScan | null>(null);
   const [progress, setProgress] = useState<DuProgress | null>(null);
@@ -176,7 +178,11 @@ export function DiskUsagePane({ projectId, projectCwd, tabKey, visible }: Props)
   }
 
   async function pickFolder() {
-    const picked = await open({ directory: true, multiple: false, title: "Scan a folder" });
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: t("diskUsage.scanFolderDialogTitle"),
+    });
     if (typeof picked === "string") {
       void startScan(picked, false, picked.slice(picked.lastIndexOf("/") + 1) || picked);
     }
@@ -232,7 +238,7 @@ export function DiskUsagePane({ projectId, projectCwd, tabKey, visible }: Props)
   function revealInFiles(node: DuNode) {
     setMenu(null);
     addTab({
-      label: node.is_dir ? node.name : "Files",
+      label: node.is_dir ? node.name : t("newTabMenu.groupFiles"),
       cmd: FILES_TAB_CMD,
       cwd: node.is_dir ? node.path : parentDir(node.path),
       kind: "files",
@@ -250,15 +256,19 @@ export function DiskUsagePane({ projectId, projectCwd, tabKey, visible }: Props)
     return (
       <div className="du-root du-centered">
         <OrbitSpinner />
-        <div className="du-scanning-title">Scanning {scanningRoot}</div>
+        <div className="du-scanning-title">{t("diskUsage.scanningTitle", { root: scanningRoot })}</div>
         <div className="du-scanning-stats">
           {progress
-            ? `${progress.dirs.toLocaleString()} folders · ${progress.files.toLocaleString()} files · ${formatBytes(progress.bytes)}`
-            : "Starting…"}
+            ? t("diskUsage.statsFoldersFilesBytes", {
+                dirs: progress.dirs.toLocaleString(),
+                files: progress.files.toLocaleString(),
+                bytes: formatBytes(progress.bytes),
+              })
+            : t("diskUsage.starting")}
         </div>
         <div className="du-scanning-path">{progress?.path ?? ""}</div>
         <button className="du-btn" onClick={cancelScan}>
-          Cancel
+          {t("common.cancel")}
         </button>
       </div>
     );
@@ -267,7 +277,7 @@ export function DiskUsagePane({ projectId, projectCwd, tabKey, visible }: Props)
   if (!scan) {
     return (
       <div className="du-root du-home">
-        <h2 className="du-home-title">Disk Usage Analyzer</h2>
+        <h2 className="du-home-title">{t("diskUsage.analyzerTitle")}</h2>
         {error && <div className="du-error">{error}</div>}
 
         <div className="du-targets">
@@ -290,8 +300,10 @@ export function DiskUsagePane({ projectId, projectCwd, tabKey, visible }: Props)
                     />
                   </span>
                   <span className="du-target-caption">
-                    {formatBytes(dev.total_bytes - dev.free_bytes)} of {formatBytes(dev.total_bytes)}{" "}
-                    used
+                    {t("diskUsage.usedOfTotal", {
+                      used: formatBytes(dev.total_bytes - dev.free_bytes),
+                      total: formatBytes(dev.total_bytes),
+                    })}
                   </span>
                 </>
               )}
@@ -306,21 +318,21 @@ export function DiskUsagePane({ projectId, projectCwd, tabKey, visible }: Props)
                 void startScan(projectScanRoot, isRemoteProject, project?.name ?? "project")
               }
             >
-              <span className="du-target-label">This project</span>
+              <span className="du-target-label">{t("diskUsage.thisProject")}</span>
               <span className="du-target-path">{projectScanRoot}</span>
               <span className="du-target-caption">
                 {!isRemoteProject
-                  ? "Local"
+                  ? t("diskUsage.local")
                   : hostConnected
-                    ? `On ${project?.remote?.host}`
-                    : "Connect the project to scan its host"}
+                    ? t("diskUsage.onHost", { host: project?.remote?.host ?? "" })
+                    : t("diskUsage.connectToScan")}
               </span>
             </button>
           )}
 
           <button className="du-target" onClick={() => void pickFolder()}>
-            <span className="du-target-label">Scan a folder…</span>
-            <span className="du-target-caption">Pick any folder on this machine</span>
+            <span className="du-target-label">{t("diskUsage.scanFolderEllipsis")}</span>
+            <span className="du-target-caption">{t("diskUsage.pickAnyFolder")}</span>
           </button>
         </div>
       </div>
@@ -332,8 +344,8 @@ export function DiskUsagePane({ projectId, projectCwd, tabKey, visible }: Props)
   return (
     <div className="du-root" onMouseDown={() => setMenu(null)}>
       <div className="du-toolbar">
-        <button className="du-btn" onClick={backToHome} title="Scan something else">
-          ‹ Scans
+        <button className="du-btn" onClick={backToHome} title={t("diskUsage.scansTitle")}>
+          ‹ {t("diskUsage.scansLabel")}
         </button>
         <div className="du-crumbs">
           {crumbs.map((crumb, i) => (
@@ -351,22 +363,25 @@ export function DiskUsagePane({ projectId, projectCwd, tabKey, visible }: Props)
         </div>
         <span className="du-total">{formatBytes(chartRoot?.size ?? total)}</span>
         <span className="du-stats">
-          {scan.dirs.toLocaleString()} folders · {scan.files.toLocaleString()} files
-          {scan.errors > 0 && ` · ${scan.errors.toLocaleString()} unreadable`}
-          {scan.cancelled && " · cancelled (partial)"}
+          {t("diskUsage.statsCountLine", {
+            dirs: scan.dirs.toLocaleString(),
+            files: scan.files.toLocaleString(),
+          })}
+          {scan.errors > 0 && t("diskUsage.statsUnreadable", { errors: scan.errors.toLocaleString() })}
+          {scan.cancelled && t("diskUsage.statsCancelledPartial")}
         </span>
         <span className="du-chart-toggle">
           <button
             className={chart === "rings" ? "du-btn active" : "du-btn"}
             onClick={() => setChart("rings")}
-            title="Rings"
+            title={t("diskUsage.ringsTitle")}
           >
             ◍
           </button>
           <button
             className={chart === "treemap" ? "du-btn active" : "du-btn"}
             onClick={() => setChart("treemap")}
-            title="Treemap"
+            title={t("diskUsage.treemapTitle")}
           >
             ▦
           </button>
@@ -392,6 +407,7 @@ export function DiskUsagePane({ projectId, projectCwd, tabKey, visible }: Props)
               canGoUp={crumbs.length > 1}
               onHover={setHover}
               onMenu={(node, x, y) => setMenu({ node, x, y })}
+              t={t}
             />
           ) : chartRoot ? (
             <Treemap
@@ -399,6 +415,7 @@ export function DiskUsagePane({ projectId, projectCwd, tabKey, visible }: Props)
               onZoom={zoomTo}
               onHover={setHover}
               onMenu={(node, x, y) => setMenu({ node, x, y })}
+              t={t}
             />
           ) : null}
         </div>
@@ -434,9 +451,9 @@ export function DiskUsagePane({ projectId, projectCwd, tabKey, visible }: Props)
             style={{ left: menu.x, top: menu.y }}
             onMouseDown={(e) => e.stopPropagation()}
           >
-            <button onClick={() => openExternally(menu.node)}>Open</button>
-            <button onClick={() => revealInFiles(menu.node)}>Reveal in Files tab</button>
-            <button onClick={() => copyPath(menu.node)}>Copy path</button>
+            <button onClick={() => openExternally(menu.node)}>{t("fileBrowser.open")}</button>
+            <button onClick={() => revealInFiles(menu.node)}>{t("diskUsage.menuReveal")}</button>
+            <button onClick={() => copyPath(menu.node)}>{t("fileBrowser.copyPath")}</button>
           </div>,
           document.body,
         )}
@@ -535,6 +552,7 @@ interface ChartProps {
   onZoom: (node: DuNode) => void;
   onHover: (h: { node: DuNode | null; x: number; y: number } | null) => void;
   onMenu: (node: DuNode, x: number, y: number) => void;
+  t: ReturnType<typeof useT>;
 }
 
 function Rings({
@@ -544,6 +562,7 @@ function Rings({
   canGoUp,
   onHover,
   onMenu,
+  t,
 }: ChartProps & { onUp: () => void; canGoUp: boolean }) {
   const [ref, { w, h }] = useChartSize();
   const arcs = useMemo(() => layoutRings(root, RING_DEPTH), [root]);
@@ -558,7 +577,7 @@ function Rings({
   return (
     <div className="du-svg-wrap" ref={ref}>
       {side > 40 && (
-        <svg width={w} height={h} role="img" aria-label={`Disk usage of ${root.name}`}>
+        <svg width={w} height={h} role="img" aria-label={t("diskUsage.diskUsageOf", { name: root.name })}>
           {arcs.map((arc) => {
             const r0 = centre + (arc.depth - 1) * ringW;
             const node = arc.node;
@@ -598,7 +617,7 @@ function Rings({
   );
 }
 
-function Treemap({ root, onZoom, onHover, onMenu }: ChartProps) {
+function Treemap({ root, onZoom, onHover, onMenu, t }: ChartProps) {
   const [ref, { w, h }] = useChartSize();
   const cells = useMemo(
     () => squarify(root, { x: 0, y: 0, w: Math.max(0, w - 2), h: Math.max(0, h - 2) }),
@@ -608,7 +627,7 @@ function Treemap({ root, onZoom, onHover, onMenu }: ChartProps) {
   return (
     <div className="du-svg-wrap" ref={ref}>
       {w > 20 && h > 20 && (
-        <svg width={w} height={h} role="img" aria-label={`Disk usage of ${root.name}`}>
+        <svg width={w} height={h} role="img" aria-label={t("diskUsage.diskUsageOf", { name: root.name })}>
           {cells.map((cell) => {
             const node = cell.node;
             const label = cell.w > 56 && cell.h > 24;
@@ -632,7 +651,7 @@ function Treemap({ root, onZoom, onHover, onMenu }: ChartProps) {
                 />
                 {label && (
                   <text className="du-cell-label" x={cell.x + 7} y={cell.y + 16}>
-                    {node ? node.name : `${root.hidden_children} more`}
+                    {node ? node.name : t("diskUsage.moreCount", { count: root.hidden_children })}
                   </text>
                 )}
               </g>

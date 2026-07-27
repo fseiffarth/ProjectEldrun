@@ -120,6 +120,7 @@ import { DeckThemePanel } from "./DeckThemePanel";
 import { IconPicker } from "./IconPicker";
 import { slideStopIndex } from "../../../lib/viewers/deck/present";
 import { posterPng } from "./gifPlayback";
+import { useT } from "../../../lib/i18n";
 
 /** Bounds for the rail's user-resizable width (px). Wide enough at the max that
  *  a thumbnail is actually legible, narrow enough at the min to stay a rail. */
@@ -227,6 +228,7 @@ export interface DeckViewProps {
 }
 
 export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewProps) {
+  const t = useT();
   const scope = useFileScope();
   /** The scope project's own directory — the boundary `read_file_bytes` confines
    *  to, and therefore the boundary an asset pick has to respect (#108). */
@@ -339,7 +341,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       }
       if (cancelled) return;
       if (parsed.error) {
-        setError(`This deck could not be read: ${parsed.error}`);
+        setError(t("deckView.readError", { msg: parsed.error }));
         return;
       }
       deckMtimeRef.current = await fileMtime(path, scope).catch(() => null);
@@ -355,7 +357,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       } catch (e) {
         // A missing base plate is not a broken deck — the layers are still
         // intact and worth showing. Say so rather than failing the whole view.
-        if (!cancelled) setNotice(`Base PDF could not be opened (${describeFileError(e)}).`);
+        if (!cancelled) setNotice(t("deckView.basePdfError", { msg: describeFileError(e) }));
       }
       if (cancelled) {
         opened?.destroy();
@@ -374,27 +376,26 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       const blockers: string[] = [];
       if (parsed.lossy) {
         blockers.push(
-          `This deck carries ${parsed.lossReason ?? "something this build cannot model"}. ` +
-            `Saving it here would write it back without that.`,
+          t("deckView.lossyBlocker", {
+            reason: parsed.lossReason ?? t("deckView.unknownLossReason"),
+          }),
         );
       }
       if (r.ambiguous) {
-        blockers.push(
-          "The base PDF changed in a way Eldrun cannot match to this deck's slides, so " +
-            "several layers were placed by order alone. Check they are on the right slides.",
-        );
+        blockers.push(t("deckView.ambiguousBlocker"));
       }
       if (blockers.length) setHold(blockers.join(" "));
 
       const notes: string[] = [];
-      if (parsed.repaired) notes.push(`Repaired on load: ${parsed.repaired}.`);
+      if (parsed.repaired) notes.push(t("deckView.repairedNote", { detail: parsed.repaired }));
       if (r.detached > 0) {
         notes.push(
-          `${r.detached} layer${r.detached === 1 ? "" : "s"} no longer match a page and ` +
-            `${r.detached === 1 ? "was" : "were"} set aside rather than deleted.`,
+          t(r.detached === 1 ? "deckView.detachedOne" : "deckView.detachedMany", { n: r.detached }),
         );
       }
-      if (r.moved > 0) notes.push(`Re-anchored ${r.moved} slide${r.moved === 1 ? "" : "s"}.`);
+      if (r.moved > 0) {
+        notes.push(t(r.moved === 1 ? "deckView.reanchoredOne" : "deckView.reanchoredMany", { n: r.moved }));
+      }
       if (notes.length) setNotice(notes.join(" "));
 
       // Deliberately NOT arming the autosave here: re-anchoring alone is not a
@@ -450,8 +451,8 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
     // disk I/O (an SFTP round trip on a remote project) for an edit nobody is
     // making, on the one machine that must not stutter (TODO V #113).
     if (presenting) return;
-    const t = setTimeout(() => void flushRef.current(), AUTOSAVE_MS);
-    return () => clearTimeout(t);
+    const autosaveTimer = setTimeout(() => void flushRef.current(), AUTOSAVE_MS);
+    return () => clearTimeout(autosaveTimer);
   }, [deck, hold, presenting]);
 
   /**
@@ -486,13 +487,10 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
         if (mt == null || deckMtimeRef.current == null || mt === deckMtimeRef.current) return;
         deckMtimeRef.current = mt;
         if (dirtyRef.current) {
-          setHold(
-            "This deck was changed on disk by something else while you were editing it. " +
-              "Reload to take their version (yours is lost), or keep editing to overwrite it.",
-          );
+          setHold(t("deckView.externalChangeHeld"));
         } else {
           setReloadNonce((n) => n + 1);
-          setNotice("This deck changed on disk and was reloaded.");
+          setNotice(t("deckView.externalChangeReloaded"));
         }
       })();
     }, TEX_FIGURE_POLL_MS);
@@ -720,9 +718,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       if (
         hasContent &&
         !window.confirm(
-          `Remove slide ${index + 1} from the deck?\n\n` +
-            `Its ${victim.objects.length} layer object(s) and notes are kept — they move to the ` +
-            `"set aside" list at the bottom, where you can put them back on any slide.`,
+          t("deckView.removeSlideConfirm", { n: index + 1, count: victim.objects.length }),
         )
       ) {
         return;
@@ -886,13 +882,10 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       }
     }
     if (bad.size === 0) return null;
-    const chars = [...bad].slice(0, 8).map((c) => `"${c}"`).join(", ");
-    return (
-      `${chars}${bad.size > 8 ? ` and ${bad.size - 8} more` : ""} cannot be written by the ` +
-      `built-in PDF fonts, so ${bad.size === 1 ? "it" : "they"} will be left out of the export. ` +
-      `They render fine on screen and in the presenter.`
-    );
-  }, [deck]);
+    const list = [...bad].slice(0, 8).map((c) => `"${c}"`).join(", ");
+    const chars = bad.size > 8 ? `${list} ${t("deckView.andMore", { n: bad.size - 8 })}` : list;
+    return t(bad.size === 1 ? "deckView.fontWarningOne" : "deckView.fontWarningMany", { chars });
+  }, [deck, t]);
 
   const doExport = useCallback(async () => {
     if (!deck || !metrics) return;
@@ -942,18 +935,20 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
         // makes the export match the screen line for line (#120).
         fonts: fonts.bytes,
       });
-      const target = exportPathFor(path);
-      await writeFileBytes(target, out.bytes, scope);
+      const exportTarget = exportPathFor(path);
+      await writeFileBytes(exportTarget, out.bytes, scope);
       setNotice(
-        `Exported ${out.pages} page${out.pages === 1 ? "" : "s"} to ${target.split("/").pop()}.` +
-          (out.warnings.length ? ` ${out.warnings.join(" ")}` : ""),
+        t(out.pages === 1 ? "deckView.exportedOne" : "deckView.exportedMany", {
+          n: out.pages,
+          file: exportTarget.split("/").pop() ?? exportTarget,
+        }) + (out.warnings.length ? ` ${out.warnings.join(" ")}` : ""),
       );
     } catch (e) {
       setError(describeFileError(e));
     } finally {
       setExporting(false);
     }
-  }, [deck, metrics, path, scope, interstitials, gifs, fonts.bytes]);
+  }, [deck, metrics, path, scope, interstitials, gifs, fonts.bytes, t]);
 
   const toDeckRelative = useCallback((absolute: string) => deckRelative(dirOf(path), absolute), [
     path,
@@ -996,7 +991,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       const res = await invoke<TexCompileResult>("compile_tex", { path: texPath });
       if (!res.success) {
         setNotice(
-          `The starter LaTeX did not compile. ${res.log.trim().split("\n").slice(-3).join(" ")}`,
+          t("deckView.starterTexFailed", { log: res.log.trim().split("\n").slice(-3).join(" ") }),
         );
         return;
       }
@@ -1006,14 +1001,14 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       // ordinary, undoable, autosaved edit.
       const rel = toDeckRelative(texPath);
       commit((d) => (d.source === rel ? d : { ...d, source: rel }));
-      setNotice(hasTex ? "Recompiled the base PDF." : "Created a starter LaTeX file and compiled it.");
+      setNotice(t(hasTex ? "deckView.recompiledBasePdf" : "deckView.createdStarterTex"));
       setReloadNonce((n) => n + 1);
     } catch (e) {
       setError(describeFileError(e));
     } finally {
       setGenerating(false);
     }
-  }, [path, scope, commit, toDeckRelative]);
+  }, [path, scope, commit, toDeckRelative, t]);
 
   /**
    * Place an image. Stored **deck-relative** when the file is under the deck's
@@ -1038,15 +1033,11 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
     });
     if (typeof chosen !== "string") return null;
     if (!withinProject(projectRoot, chosen)) {
-      setNotice(
-        `"${chosen.split("/").pop()}" is outside this project, so the deck would not be able ` +
-          `to read it again (and it would be missing from every export). Copy it into the ` +
-          `project first — the deck's own folder is the natural home.`,
-      );
+      setNotice(t("deckView.outsideProjectNotice", { name: chosen.split("/").pop() ?? chosen }));
       return null;
     }
     return toDeckRelative(chosen);
-  }, [projectRoot, toDeckRelative]);
+  }, [projectRoot, toDeckRelative, t]);
 
   const addImage = useCallback(async () => {
     const src = await pickImage();
@@ -1135,13 +1126,13 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       const res = await invoke<TexCompileResult>("compile_tex", { path: texAbs });
       if (!res.success || !res.pdf_path) {
         setNotice(
-          `The TeX figure did not compile. ${res.log.trim().split("\n").slice(-3).join(" ")}`,
+          t("deckView.texFigureFailed", { log: res.log.trim().split("\n").slice(-3).join(" ") }),
         );
         return;
       }
       const rendered = await rasterizeInto(res.pdf_path, pngAbs);
       if (!rendered) {
-        setNotice("The TeX figure compiled, but Eldrun could not rasterize the result.");
+        setNotice(t("deckView.texFigureRasterFailed"));
         return;
       }
       // Preserve the figure's own aspect ratio rather than forcing it into a
@@ -1170,7 +1161,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
     } finally {
       markTexBusy(id, false);
     }
-  }, [deck, path, scope, withObjects, toDeckRelative, rasterizeInto, markTexBusy]);
+  }, [deck, path, scope, withObjects, toDeckRelative, rasterizeInto, markTexBusy, t]);
 
   /** Open a TeX-figure's source as its own tab — Eldrun's full TeX editor, with
    *  its own Compile button and SyncTeX. The poll below is what notices when
@@ -1199,12 +1190,12 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       try {
         const res = await invoke<TexCompileResult>("compile_tex", { path: texAbs });
         if (!res.success || !res.pdf_path) {
-          setNotice(`Recompile failed. ${res.log.trim().split("\n").slice(-3).join(" ")}`);
+          setNotice(t("deckView.recompileFailed", { log: res.log.trim().split("\n").slice(-3).join(" ") }));
           return;
         }
         const rendered = await rasterizeInto(res.pdf_path, pngAbs);
         if (!rendered) {
-          setNotice("Recompiled, but Eldrun could not rasterize the result.");
+          setNotice(t("deckView.recompiledRasterFailed"));
           return;
         }
         refreshImage(obj.src);
@@ -1214,7 +1205,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
         markTexBusy(obj.id, false);
       }
     },
-    [path, rasterizeInto, refreshImage, markTexBusy],
+    [path, rasterizeInto, refreshImage, markTexBusy, t],
   );
 
   /** Jump to a TeX figure from the deck-wide list (`DeckTexPanel`): select its
@@ -1295,13 +1286,13 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       // A keystroke aimed at a form control (the inspector's text/number fields)
       // is that control's — never a canvas shortcut. Without this, typing a space
       // or hitting Backspace while editing text would nudge or delete the object.
-      const t = e.target as HTMLElement | null;
+      const target = e.target as HTMLElement | null;
       if (
-        t &&
-        (t.isContentEditable ||
-          t.tagName === "INPUT" ||
-          t.tagName === "TEXTAREA" ||
-          t.tagName === "SELECT")
+        target &&
+        (target.isContentEditable ||
+          target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT")
       ) {
         return;
       }
@@ -1434,35 +1425,35 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
   if (!deck) {
     return (
       <div className="file-viewer">
-        <div className="file-viewer-loading">Opening presentation…</div>
+        <div className="file-viewer-loading">{t("deckView.openingPresentation")}</div>
       </div>
     );
   }
 
   return (
     <div className="file-viewer deck-view" tabIndex={0} onKeyDown={onKeyDown}>
-      <div className="file-viewer-pdf-toolbar" role="group" aria-label="Presentation tools">
+      <div className="file-viewer-pdf-toolbar" role="group" aria-label={t("deckView.presentationToolsAria")}>
         <span className="deck-toolbar-title">
-          Presentation <UntestedTag />
+          {t("deckView.presentationTitle")} <UntestedTag />
         </span>
         <span className="file-viewer-pdf-toolbar-sep" />
-        <button className="file-viewer-zoom-btn" onClick={addText} title="Add a text box">
+        <button className="file-viewer-zoom-btn" onClick={addText} title={t("deckView.addTextBoxTitle")}>
           T
         </button>
-        <button className="file-viewer-zoom-btn" onClick={addRect} title="Add a rectangle">
+        <button className="file-viewer-zoom-btn" onClick={addRect} title={t("deckView.addRectTitle")}>
           ▭
         </button>
         <button
           className="file-viewer-zoom-btn"
           onClick={() => setPicking("new")}
-          title="Add an icon"
+          title={t("deckView.addIconTitle")}
         >
           ☆
         </button>
         <button
           className="file-viewer-zoom-btn"
           onClick={() => void addImage()}
-          title="Add an image (PNG or JPEG)"
+          title={t("deckView.addImageTitle")}
         >
           ▣
         </button>
@@ -1470,7 +1461,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           className="file-viewer-zoom-btn"
           onClick={() => void addTexFigure()}
           disabled={!texAvailable || texBusyIds.size > 0}
-          title="Add a TeX figure: opens a blank, ready-to-compile .tex and places its compiled PDF as an image"
+          title={t("deckView.addTexFigureTitle")}
         >
           𝒯+
         </button>
@@ -1479,7 +1470,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           className="file-viewer-zoom-btn"
           disabled={!hasSel}
           onClick={duplicateSelection}
-          title="Duplicate selection (Ctrl+D)"
+          title={t("deckView.duplicateSelectionTitle")}
         >
           ⧉
         </button>
@@ -1488,7 +1479,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           className="file-viewer-zoom-btn"
           disabled={!hasSel}
           onClick={() => withObjects((l, ids) => alignObjects(l, ids, "left"))}
-          title="Align left"
+          title={t("deckView.alignLeftTitle")}
         >
           ⇤
         </button>
@@ -1496,7 +1487,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           className="file-viewer-zoom-btn"
           disabled={!hasSel}
           onClick={() => withObjects((l, ids) => alignObjects(l, ids, "hcenter"))}
-          title="Centre horizontally"
+          title={t("deckView.centerHorizontalTitle")}
         >
           ⇔
         </button>
@@ -1504,7 +1495,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           className="file-viewer-zoom-btn"
           disabled={!hasSel}
           onClick={() => withObjects((l, ids) => alignObjects(l, ids, "right"))}
-          title="Align right"
+          title={t("deckView.alignRightTitle")}
         >
           ⇥
         </button>
@@ -1515,7 +1506,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           className="file-viewer-zoom-btn"
           disabled={!hasSel}
           onClick={() => withObjects((l, ids) => alignObjects(l, ids, "top"))}
-          title="Align top"
+          title={t("deckView.alignTopTitle")}
         >
           ⤒|
         </button>
@@ -1523,7 +1514,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           className="file-viewer-zoom-btn"
           disabled={!hasSel}
           onClick={() => withObjects((l, ids) => alignObjects(l, ids, "vcenter"))}
-          title="Centre vertically"
+          title={t("deckView.centerVerticalTitle")}
         >
           ⇕
         </button>
@@ -1531,7 +1522,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           className="file-viewer-zoom-btn"
           disabled={!hasSel}
           onClick={() => withObjects((l, ids) => alignObjects(l, ids, "bottom"))}
-          title="Align bottom"
+          title={t("deckView.alignBottomTitle")}
         >
           ⤓|
         </button>
@@ -1539,7 +1530,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           className="file-viewer-zoom-btn"
           disabled={selection.size < 3}
           onClick={() => withObjects((l, ids) => distributeObjects(l, ids, "h"))}
-          title="Space evenly across (needs three or more)"
+          title={t("deckView.distributeHTitle")}
         >
           ⇹
         </button>
@@ -1547,7 +1538,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           className="file-viewer-zoom-btn"
           disabled={selection.size < 3}
           onClick={() => withObjects((l, ids) => distributeObjects(l, ids, "v"))}
-          title="Space evenly down (needs three or more)"
+          title={t("deckView.distributeVTitle")}
         >
           ⇳
         </button>
@@ -1556,7 +1547,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           className="file-viewer-zoom-btn"
           disabled={!hasSel}
           onClick={() => withObjects((l, ids) => toFront(l, ids))}
-          title="Bring to front"
+          title={t("deckView.bringFrontTitle")}
         >
           ⤒
         </button>
@@ -1564,7 +1555,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           className="file-viewer-zoom-btn"
           disabled={!hasSel}
           onClick={() => withObjects((l, ids) => raiseObjects(l, ids))}
-          title="Raise"
+          title={t("deckView.raiseTitle")}
         >
           ↑
         </button>
@@ -1572,7 +1563,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           className="file-viewer-zoom-btn"
           disabled={!hasSel}
           onClick={() => withObjects((l, ids) => lowerObjects(l, ids))}
-          title="Lower"
+          title={t("deckView.lowerTitle")}
         >
           ↓
         </button>
@@ -1580,7 +1571,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           className="file-viewer-zoom-btn"
           disabled={!hasSel}
           onClick={() => withObjects((l, ids) => toBack(l, ids))}
-          title="Send to back"
+          title={t("deckView.sendBackTitle")}
         >
           ⤓
         </button>
@@ -1588,37 +1579,37 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
         <button
           className={`file-viewer-zoom-text${mode === "design" ? " active" : ""}`}
           onClick={() => setMode("design")}
-          title="Arrange objects on the slide"
+          title={t("deckView.designModeTitle")}
         >
-          Design
+          {t("deckView.designModeBtn")}
         </button>
         <button
           className={`file-viewer-zoom-text${mode === "animate" ? " active" : ""}`}
           onClick={() => setMode("animate")}
-          title="Build steps, transitions, and GIF animations between slides"
+          title={t("deckView.animateModeTitle")}
         >
-          Animate
+          {t("deckView.animateModeBtn")}
         </button>
         <button
           className={`file-viewer-zoom-text${mode === "notes" ? " active" : ""}`}
           onClick={() => setMode("notes")}
-          title="Speaker notes for the current slide (shown only in the presenter view)"
+          title={t("deckView.notesModeTitle")}
         >
-          Notes
+          {t("deckView.notesModeBtn")}
         </button>
         <button
           className={`file-viewer-zoom-text${mode === "tex" ? " active" : ""}`}
           onClick={() => setMode("tex")}
-          title="Every TeX figure in this deck, across all slides"
+          title={t("deckView.texModeTitle")}
         >
           TeX
         </button>
         <button
           className={`file-viewer-zoom-text${mode === "deck" ? " active" : ""}`}
           onClick={() => setMode("deck")}
-          title="Deck-wide defaults: type, colours, safe margin, footer, export"
+          title={t("deckView.deckModeTitle")}
         >
-          Deck
+          {t("deckView.deckModeBtn")}
         </button>
         <span className="file-viewer-pdf-toolbar-sep" />
         <button
@@ -1631,9 +1622,9 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
             setPresenting(true);
           }}
           disabled={deck.slides.length === 0}
-          title="Present fullscreen from this slide — shift-click to start at the beginning (Esc to exit)"
+          title={t("deckView.presentTitle")}
         >
-          ▶ Present
+          ▶ {t("deckView.presentBtn")}
         </button>
         <button
           className="file-viewer-zoom-text"
@@ -1641,11 +1632,11 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           disabled={exporting || !metrics}
           title={
             fontWarning
-              ? `Flatten the layers into a PDF beside this deck. ${fontWarning}`
-              : "Flatten the layers into a PDF beside this deck"
+              ? t("deckView.exportPdfTitleWarn", { warning: fontWarning })
+              : t("deckView.exportPdfTitle")
           }
         >
-          {exporting ? "Exporting…" : "Export PDF"}
+          {exporting ? t("deckView.exportingBtn") : t("deckView.exportPdfBtn")}
           {fontWarning && <span className="deck-export-warn" title={fontWarning}>!</span>}
         </button>
         <span className="file-viewer-header-spacer" />
@@ -1653,9 +1644,15 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
             "Saved" for the whole 800 ms debounce window, i.e. exactly while the
             edit was NOT on disk (TODO V #93). */}
         <span className="deck-save-state" aria-live="polite">
-          {saving ? "Saving…" : hold ? "Not saving" : dirty ? "Unsaved…" : "Saved"}
+          {saving
+            ? t("deckView.savingState")
+            : hold
+              ? t("deckView.notSavingState")
+              : dirty
+                ? t("deckView.unsavedState")
+                : t("deckView.savedState")}
         </span>
-        <button className="file-viewer-zoom-btn" onClick={onOpenExternally} title="Open externally">
+        <button className="file-viewer-zoom-btn" onClick={onOpenExternally} title={t("deckView.openExternallyTitle")}>
           ↗
         </button>
       </div>
@@ -1668,12 +1665,12 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           <button
             className="deck-inspector-btn"
             onClick={() => setHold(null)}
-            title="Editing from here on will overwrite the file with what Eldrun could read"
+            title={t("deckView.editAnywayTitle")}
           >
-            Edit anyway (this will rewrite the file)
+            {t("deckView.editAnywayBtn")}
           </button>
           <button className="deck-inspector-btn" onClick={() => setReloadNonce((n) => n + 1)}>
-            Reload from disk
+            {t("deckView.reloadFromDiskBtn")}
           </button>
         </div>
       )}
@@ -1686,10 +1683,10 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
         <div
           className="deck-rail"
           role="listbox"
-          aria-label="Slides"
+          aria-label={t("deckView.slidesAria")}
           style={{ width: liveRailWidth ?? railWidth }}
         >
-          <div className="deck-rail-head">Slides</div>
+          <div className="deck-rail-head">{t("deckView.slidesHead")}</div>
           {deck.slides.map((s, i) => (
             <div
               key={s.id}
@@ -1719,12 +1716,15 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
               />
               <span className="deck-rail-num">{i + 1}</span>
               {s.objects.length > 0 && (
-                <span className="deck-rail-badge" title={`${s.objects.length} layer objects`}>
+                <span
+                  className="deck-rail-badge"
+                  title={t("deckView.layerObjectsTitle", { n: s.objects.length })}
+                >
                   {s.objects.length}
                 </span>
               )}
               {s.after && (
-                <span className="deck-rail-gif" title="A GIF plays after this slide">
+                <span className="deck-rail-gif" title={t("deckView.gifPlaysTitle")}>
                   ▶
                 </span>
               )}
@@ -1735,7 +1735,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
                 <button
                   className="deck-rail-act-btn"
                   disabled={i === 0}
-                  title="Move slide earlier"
+                  title={t("deckView.moveEarlierTitle")}
                   onClick={(e) => {
                     e.stopPropagation();
                     moveSlide(i, -1);
@@ -1746,7 +1746,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
                 <button
                   className="deck-rail-act-btn"
                   disabled={i === deck.slides.length - 1}
-                  title="Move slide later"
+                  title={t("deckView.moveLaterTitle")}
                   onClick={(e) => {
                     e.stopPropagation();
                     moveSlide(i, 1);
@@ -1756,7 +1756,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
                 </button>
                 <button
                   className="deck-rail-act-btn"
-                  title="Duplicate slide"
+                  title={t("deckView.duplicateSlideTitle")}
                   onClick={(e) => {
                     e.stopPropagation();
                     duplicateSlide(i);
@@ -1769,7 +1769,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
                     grow (TODO V #106). */}
                 <button
                   className={`deck-rail-act-btn${s.skip ? " active" : ""}`}
-                  title={s.skip ? "Include this slide in the talk" : "Skip this slide in the talk"}
+                  title={s.skip ? t("deckView.includeSlideTitle") : t("deckView.skipSlideTitle")}
                   onClick={(e) => {
                     e.stopPropagation();
                     toggleSkip(i);
@@ -1779,7 +1779,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
                 </button>
                 <button
                   className="deck-rail-act-btn"
-                  title="Add a blank slide after this one"
+                  title={t("deckView.addBlankAfterTitle")}
                   onClick={(e) => {
                     e.stopPropagation();
                     addBlankSlide(i);
@@ -1789,7 +1789,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
                 </button>
                 <button
                   className="deck-rail-act-btn deck-rail-act-danger"
-                  title="Remove this slide (its layers are set aside, not deleted)"
+                  title={t("deckView.removeSlideTitle")}
                   onClick={(e) => {
                     e.stopPropagation();
                     deleteSlide(i);
@@ -1802,16 +1802,16 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           ))}
           <button
             className="deck-rail-add"
-            title="Add a blank slide at the end"
+            title={t("deckView.addBlankEndTitle")}
             onClick={() => addBlankSlide(deck.slides.length - 1)}
           >
-            + blank slide
+            + {t("deckView.addBlankEndBtn")}
           </button>
         </div>
 
         <div
           className="deck-rail-resize"
-          title="Drag to resize the slide overview"
+          title={t("deckView.resizeRailTitle")}
           onPointerDown={startRailResize}
         />
 
@@ -1849,28 +1849,20 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           />
         ) : (
           <div className="deck-stage deck-stage-empty">
-            <p>This presentation has no base PDF yet.</p>
+            <p>{t("deckView.noBasePdfMsg")}</p>
             {texAvailable ? (
               <>
-                <p>
-                  Eldrun can write a starter LaTeX file beside it and compile it. The
-                  file is yours afterwards — recompiling keeps whatever layers you add,
-                  which re-anchor to the slides they were placed on.
-                </p>
+                <p>{t("deckView.canWriteStarterMsg")}</p>
                 <button
                   className="deck-inspector-btn"
                   onClick={() => void generateBase()}
                   disabled={generating}
                 >
-                  {generating ? "Compiling…" : "Create a starter presentation"}
+                  {generating ? t("deckTexPanel.compiling") : t("deckView.createStarterBtn")}
                 </button>
               </>
             ) : (
-              <p>
-                No LaTeX engine was found on PATH, so a base PDF cannot be generated
-                here. Point this deck at an existing PDF instead, or install a TeX
-                distribution.
-              </p>
+              <p>{t("deckView.noLatexEngineMsg")}</p>
             )}
           </div>
         )}
@@ -1946,19 +1938,23 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       {deck.detached.length > 0 && (
         <div className="file-viewer-banner deck-detached-banner">
           <span>
-            {deck.detached.length} layer{deck.detached.length === 1 ? "" : "s"} lost
-            {deck.detached.length === 1 ? " its" : " their"} slide when the base PDF
-            changed. Nothing was deleted — pick one to put back on the slide you are
-            viewing.
+            {t(
+              deck.detached.length === 1 ? "deckView.detachedBannerOne" : "deckView.detachedBannerMany",
+              { n: deck.detached.length },
+            )}
           </span>
           {deck.detached.map((d, i) => (
             <button
               key={i}
               className="deck-inspector-btn"
-              title={`${d.objects.length} object(s), last seen on page ${d.from.page}`}
+              title={t("deckView.detachedObjTitle", { n: d.objects.length, page: d.from.page })}
               onClick={() => commit((cur) => reattach(cur, i, slideIndex))}
             >
-              Page {d.from.page} ({d.objects.length}) → slide {slideIndex + 1}
+              {t("deckView.detachedRestoreBtn", {
+                page: d.from.page,
+                count: d.objects.length,
+                n: slideIndex + 1,
+              })}
             </button>
           ))}
         </div>

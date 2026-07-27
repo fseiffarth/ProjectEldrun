@@ -68,6 +68,7 @@ import { type DecodedGif, disposeGif } from "./gifPlayback";
 import { gifKey } from "./deckAssets";
 import { renderPage } from "./deckBase";
 import { InterstitialView, PresentedSlide } from "./DeckSlideView";
+import { useT } from "../../../lib/i18n";
 
 export interface DeckPresenterProps {
   deck: Deck;
@@ -120,6 +121,7 @@ export function DeckPresenter({
   startAt = 0,
   onClose,
 }: DeckPresenterProps) {
+  const t = useT();
   const stops = useMemo(() => sequence(deck), [deck]);
   const [index, setIndex] = useState(() => Math.min(startAt, Math.max(0, stops.length - 1)));
   const [blank, setBlank] = useState<Blank>(null);
@@ -160,8 +162,8 @@ export function DeckPresenter({
   // A one-second tick for the elapsed clock. Cheap, and the presenter is the one
   // place a wall clock genuinely earns its re-render.
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
+    const tickTimer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(tickTimer);
   }, []);
 
   // Tell the rest of the app a talk is on, so `FileViewerPane` withdraws the
@@ -271,10 +273,10 @@ export function DeckPresenter({
       await getCurrentWindow().setFocus().catch(() => {});
     } catch (e) {
       setLinkError(
-        `The second display could not be opened (${e instanceof Error ? e.message : String(e)}).`,
+        t("deckPresenter.linkErrorMsg", { msg: e instanceof Error ? e.message : String(e) }),
       );
     }
-  }, [label]);
+  }, [label, t]);
 
   const closeAudience = useCallback(() => {
     setAudience(null);
@@ -626,7 +628,7 @@ export function DeckPresenter({
         {blank && !audience && <div className={`deck-presenter-blank is-${blank}`} />}
 
         {grid && (
-          <div className="deck-presenter-grid" role="listbox" aria-label="All slides">
+          <div className="deck-presenter-grid" role="listbox" aria-label={t("deckPresenter.allSlidesAria")}>
             {deck.slides.map((s, i) => (
               <button
                 key={s.id}
@@ -646,30 +648,39 @@ export function DeckPresenter({
                     same way rather than inventing a second path. */}
                 <PresenterGridThumb doc={doc} page={s.anchor.page} />
                 <span className="deck-presenter-grid-num">{i + 1}</span>
-                {s.skip && <span className="deck-presenter-grid-skip" title="Skipped in the talk">⤫</span>}
+                {s.skip && (
+                  <span className="deck-presenter-grid-skip" title={t("deckPresenter.skippedTitle")}>
+                    ⤫
+                  </span>
+                )}
                 {s.notes.trim() && <span className="deck-presenter-grid-note" title={s.notes} />}
               </button>
             ))}
           </div>
         )}
 
-        {goto && <div className="deck-presenter-goto">Go to slide {goto}…</div>}
+        {goto && (
+          <div className="deck-presenter-goto">{t("deckPresenter.gotoSlide", { n: goto })}</div>
+        )}
       </div>
 
       {showNotes && (
         <aside className="deck-presenter-notes" style={{ ["--deck-notes-size" as string]: `${notesSize}px` }}>
           <div className="deck-presenter-notes-head">
             <span>
-              Slide {talkPos} / {talkSlides.length}
-              {stop.kind === "slide" && stop.step > 0 && ` · build ${builds}`}
-              {stop.kind === "interstitial" && " · animation"}
+              {t("deckPresenter.slideOfTotal", { pos: talkPos, total: talkSlides.length })}
+              {stop.kind === "slide" && stop.step > 0 && ` · ${t("deckPresenter.buildSuffix", { n: builds })}`}
+              {stop.kind === "interstitial" && ` · ${t("deckPresenter.animationSuffix")}`}
             </span>
             <span
               className={`deck-presenter-timer is-${timerTone}`}
               title={
                 target > 0
-                  ? `${target} min target · started at ${new Date(started).toLocaleTimeString()}`
-                  : `Started at ${new Date(started).toLocaleTimeString()}`
+                  ? t("deckPresenter.targetStartedTitle", {
+                      target,
+                      time: new Date(started).toLocaleTimeString(),
+                    })
+                  : t("deckPresenter.startedAtTitle", { time: new Date(started).toLocaleTimeString() })
               }
             >
               {mm}:{ss}
@@ -679,19 +690,25 @@ export function DeckPresenter({
                 it and a rehearsal restarted meant restarting the presenter
                 (TODO V #126). */}
             <span className="deck-presenter-timer-btns">
-              <button onClick={() => setPaused((p) => !p)} title={paused ? "Resume timer" : "Pause timer"}>
+              <button
+                onClick={() => setPaused((p) => !p)}
+                title={paused ? t("deckPresenter.resumeTimerTitle") : t("deckPresenter.pauseTimerTitle")}
+              >
                 {paused ? "▶" : "⏸"}
               </button>
-              <button onClick={resetTimer} title="Reset timer">
+              <button onClick={resetTimer} title={t("deckPresenter.resetTimerTitle")}>
                 ↺
               </button>
               <button
-                onClick={() => setTarget((t) => (t + 5) % 65)}
-                title="Target duration — the elapsed clock turns amber near it and red past it"
+                onClick={() => setTarget((v) => (v + 5) % 65)}
+                title={t("deckPresenter.targetDurationTitle")}
               >
                 {target > 0 ? `${target}m` : "⏱"}
               </button>
-              <button onClick={() => setNotesSize((n) => (n >= 20 ? 11 : n + 2))} title="Notes text size">
+              <button
+                onClick={() => setNotesSize((n) => (n >= 20 ? 11 : n + 2))}
+                title={t("deckPresenter.notesTextSizeTitle")}
+              >
                 A
               </button>
             </span>
@@ -699,7 +716,7 @@ export function DeckPresenter({
 
           {audience && (
             <div className="deck-presenter-audience-note">
-              Audience view is on the second display. <kbd>D</kbd> closes it.
+              {t("deckPresenter.audienceNotePre")} <kbd>D</kbd> {t("deckPresenter.audienceNotePost")}
             </div>
           )}
           {linkError && <div className="deck-presenter-audience-note is-error">{linkError}</div>}
@@ -709,7 +726,9 @@ export function DeckPresenter({
               flicker in the corner of their eye for the whole talk. */}
           {nextSlide && (
             <div className="deck-presenter-next-preview">
-              <span className="deck-presenter-next-label">Next · slide {talkPos + 1}</span>
+              <span className="deck-presenter-next-label">
+                {t("deckPresenter.nextSlideLabel", { n: talkPos + 1 })}
+              </span>
               <div className="deck-presenter-next-frame">
                 <PresentedSlide
                   key={`next-${nextSlide.id}`}
@@ -728,17 +747,17 @@ export function DeckPresenter({
           )}
 
           <div className="deck-presenter-notes-body">
-            {slide?.notes.trim() ? slide.notes : <em>No notes for this slide.</em>}
+            {slide?.notes.trim() ? slide.notes : <em>{t("deckPresenter.noNotes")}</em>}
           </div>
 
           <div className="deck-presenter-next">
             {nextSlideIndex !== undefined ? (
               <>
-                Next: slide {talkPos + 1}
-                {deck.slides[nextSlideIndex]?.after && " (animation follows)"}
+                {t("deckPresenter.nextColonSlide", { n: talkPos + 1 })}
+                {deck.slides[nextSlideIndex]?.after && ` ${t("deckPresenter.animationFollows")}`}
               </>
             ) : (
-              "Last slide."
+              t("deckPresenter.lastSlide")
             )}
             <span className="deck-presenter-wall">{wall}</span>
           </div>
@@ -746,34 +765,38 @@ export function DeckPresenter({
       )}
 
       <div className="deck-presenter-bar">
-        <button onClick={prev} title="Previous (←)" aria-label="Previous">
+        <button onClick={prev} title={t("deckPresenter.previousTitle")} aria-label={t("deckPresenter.previousAria")}>
           ‹
         </button>
         <span className="deck-presenter-pos">
           {talkPos} / {talkSlides.length}
         </span>
-        <button onClick={next} title="Next (Space / →)" aria-label="Next">
+        <button onClick={next} title={t("deckPresenter.nextTitle")} aria-label={t("deckPresenter.nextAria")}>
           ›
         </button>
         <button
           className={notesOpen ? "active" : ""}
           onClick={() => setNotesOpen((v) => !v)}
-          title="Speaker notes (N)"
+          title={t("deckPresenter.speakerNotesTitle")}
         >
           ☰
         </button>
-        <button className={grid ? "active" : ""} onClick={() => setGrid((v) => !v)} title="Overview (G)">
+        <button
+          className={grid ? "active" : ""}
+          onClick={() => setGrid((v) => !v)}
+          title={t("deckPresenter.overviewTitle")}
+        >
           ⊞
         </button>
         <button
           className={audience ? "active" : ""}
           onClick={() => (audience ? closeAudience() : void openAudience())}
-          title="Audience view on a second display (D)"
-          aria-label="Second display"
+          title={t("deckPresenter.audienceViewTitle")}
+          aria-label={t("deckPresenter.secondDisplayAria")}
         >
           ⧉
         </button>
-        <button onClick={closeAll} title="Exit (Esc)" aria-label="Exit">
+        <button onClick={closeAll} title={t("deckPresenter.exitTitle")} aria-label={t("deckPresenter.exitAria")}>
           ✕
         </button>
       </div>

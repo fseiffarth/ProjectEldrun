@@ -5,13 +5,21 @@ import { useSettingsStore } from "../../stores/settings";
 import { useHintsStore } from "../../stores/hints";
 import { useTabsStore } from "../../stores/tabs";
 import { useTourStore } from "../../stores/tour";
-import { HINTS, pickHint, type HintActionId, type HintCtx, type HintId } from "../../lib/hints";
+import {
+  HINTS,
+  pickHint,
+  resolveHintBody,
+  type HintActionId,
+  type HintCtx,
+  type HintId,
+} from "../../lib/hints";
 import {
   codexHookNeedsTrust,
   openCodexHooksTab,
   type CodexHookState,
 } from "../../lib/codexHooks";
 import { HintBubble } from "../common/HintBubble";
+import { useT } from "../../lib/i18n";
 
 /** Handlers for hints that carry a one-click action (`HintDef.action`). */
 const HINT_ACTIONS: Record<HintActionId, () => void> = {
@@ -31,6 +39,7 @@ const GAP_MS = 12_000;
  * `stores/hints.ts`; this component owns timing, anchor measurement, and Esc.
  */
 export function HintHost() {
+  const t = useT();
   const projectCount = useProjectsStore((s) => s.projects.length);
   const activeId = useProjectsStore((s) => s.activeId);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
@@ -177,10 +186,10 @@ export function HintHost() {
     <HintBubble
       rect={rect}
       placement={def.placement}
-      title={def.title}
-      body={def.body}
+      title={t(def.titleKey)}
+      body={resolveHintBody(def, t)}
       action={
-        def.action && { label: def.action.label, run: HINT_ACTIONS[def.action.id] }
+        def.action && { label: t(def.action.labelKey), run: HINT_ACTIONS[def.action.id] }
       }
       onDismiss={() => {
         lastClearedAt.current = Date.now();

@@ -45,6 +45,8 @@ import {
 import { type TextMetrics, cssFontFor } from "../../../lib/viewers/deck/fonts";
 import { DeckObjectView, FONT_STACKS } from "./DeckObjectView";
 import { renderPage } from "./deckBase";
+import { EFFECT_KEYS } from "./DeckAnimate";
+import { useT } from "../../../lib/i18n";
 
 /** Snap radius in CSS pixels. Generous enough to catch, tight enough that a
  *  deliberate 3px offset is still reachable (Alt suspends it entirely). */
@@ -125,6 +127,7 @@ export function DeckStage({
   onTextChange,
   footer = null,
 }: DeckStageProps) {
+  const t = useT();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const pageRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -570,7 +573,10 @@ export function DeckStage({
                 key={`b-${o.id}`}
                 className="deck-build-badge"
                 style={{ left: o.x * size.w, top: o.y * size.h }}
-                title={`Appears at build step ${o.build!.step} (${o.build!.effect})`}
+                title={t("deckStage.buildBadgeTitle", {
+                  step: o.build!.step,
+                  effect: t(EFFECT_KEYS.find((f) => f.id === o.build!.effect)?.key ?? "deckAnimate.effectNone"),
+                })}
               >
                 {o.build!.step}
               </span>

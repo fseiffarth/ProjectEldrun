@@ -1,4 +1,5 @@
 import { IS_MAC, IS_WINDOWS } from "./platform";
+import type { TranslationKey } from "./i18n";
 
 // The panel-toggle key is "Super" on Linux/KDE, "F9" on Windows (the lone Win
 // key belongs to the OS — Start opens on release and can't be suppressed, see
@@ -11,43 +12,30 @@ export const PANEL_TOGGLE_KEY = IS_MAC
     ? "F9"
     : "Super";
 
-// How to enter "focus mode" (panels hidden). On Linux a lone Super toggles the
-// panels; on Windows it's F9 (the Win key is OS-reserved); on macOS the Meta
-// key is reserved for Cmd shortcuts, so the lone-key toggle is disabled (see
-// useKeyboard) — there the panels stay reachable via the cursor-to-edge reveal.
-// F11 always toggles fullscreen. Keeps the onboarding copy accurate per OS.
-export const FOCUS_MODE_TIP = IS_MAC
-  ? "Panels auto-reveal when you push the cursor to a screen edge; press F11 for fullscreen."
-  : `Press ${PANEL_TOGGLE_KEY} (while Eldrun is focused) to hide the panels for a full-screen terminal, and F11 for fullscreen.`;
+/** How to enter "focus mode" (panels hidden), translated. On Linux a lone
+ *  Super toggles the panels; on Windows it's F9 (the Win key is OS-reserved);
+ *  on macOS the Meta key is reserved for Cmd shortcuts, so the lone-key toggle
+ *  is disabled (see useKeyboard) — there the panels stay reachable via the
+ *  cursor-to-edge reveal. F11 always toggles fullscreen. Takes `t` as a
+ *  parameter since this is a pure (store-free) helper, not a component. */
+export function focusModeTip(t: (key: TranslationKey, params?: Record<string, string | number>) => string): string {
+  return IS_MAC
+    ? t("onboarding.focusModeTipMac")
+    : t("onboarding.focusModeTipOther", { key: PANEL_TOGGLE_KEY });
+}
 
 /** One numbered step in the first-run "How to start" instruction. The same copy
  *  feeds the dialog and the Feature Guide so onboarding stays in lockstep. */
 export interface HowToStep {
-  title: string;
-  body: string;
+  titleKey: TranslationKey;
+  bodyKey: TranslationKey;
 }
 
 export const HOW_TO_START_STEPS: HowToStep[] = [
-  {
-    title: "Use the root terminal",
-    body:
-      "The ▣ logo (top-left) is your always-on control terminal, living in Eldrun's root folder. Click + on its tab bar to open a shell or an AI agent there.",
-  },
-  {
-    title: "Create or import a project",
-    body:
-      "Click + in the project bar to create a new project (scaffolds files and a git repo) or import an existing folder. Each project gets its own terminals, tabs, and file tree.",
-  },
-  {
-    title: "Add agents and tabs",
-    body:
-      "Use + on a project's tab bar to add a Claude, Codex, or Gemini agent — or a plain shell. Drag a tab to a pane edge to split the view side-by-side.",
-  },
-  {
-    title: "Find your files and focus",
-    body:
-      `Push your cursor to the right edge to reveal the file tree; click the pin to dock it. ${FOCUS_MODE_TIP}`,
-  },
+  { titleKey: "howToStart.step1Title", bodyKey: "howToStart.step1Body" },
+  { titleKey: "howToStart.step2Title", bodyKey: "howToStart.step2Body" },
+  { titleKey: "howToStart.step3Title", bodyKey: "howToStart.step3Body" },
+  { titleKey: "howToStart.step4Title", bodyKey: "howToStart.step4Body" },
 ];
 
 /** Stable id for a contextual hint. Persisted in `settings.hints_seen`, so renaming
@@ -87,11 +75,13 @@ export interface HintDef {
   anchor: string | null;
   /** Which side of the anchor the bubble sits on. Ignored for banners. */
   placement: "top" | "bottom";
-  title: string;
-  body: string;
+  titleKey: TranslationKey;
+  /** Static body key, or null when the body is computed dynamically (see
+   *  `resolveHintBody`) — only "toggle-panels" needs that, for its per-OS tip. */
+  bodyKey: TranslationKey | null;
   /** An extra button that *does* the thing the hint is about, instead of only
    *  describing it. */
-  action?: { label: string; id: HintActionId };
+  action?: { labelKey: TranslationKey; id: HintActionId };
   /** Eligible to surface only while this returns true for the current context. */
   when: (ctx: HintCtx) => boolean;
 }
@@ -104,10 +94,9 @@ export const HINTS: HintDef[] = [
     priority: 90,
     anchor: null,
     placement: "top",
-    title: "Codex resume is running on a fallback",
-    body:
-      "Codex won't run Eldrun's session hook until you trust it, so Eldrun has to work out which conversation belongs to which tab by itself. Enable the hook once for exact resume.",
-    action: { label: "Enable in Codex", id: "codex-hooks" },
+    titleKey: "hint.codexHookTitle",
+    bodyKey: "hint.codexHookBody",
+    action: { labelKey: "hint.codexHookAction", id: "codex-hooks" },
     when: (c) => c.codexHookNeedsTrust === true,
   },
   {
@@ -115,9 +104,8 @@ export const HINTS: HintDef[] = [
     priority: 100,
     anchor: '[data-hint-anchor="add-project"]',
     placement: "bottom",
-    title: "Create your first project",
-    body:
-      "Click + here to create or import a project. Each one gets its own terminal, tabs, and file tree.",
+    titleKey: "hint.createProjectTitle",
+    bodyKey: "hint.createProjectBody",
     when: (c) => c.projectCount === 0,
   },
   {
@@ -125,9 +113,8 @@ export const HINTS: HintDef[] = [
     priority: 80,
     anchor: '[data-hint-anchor="tab-add"]',
     placement: "bottom",
-    title: "Add an AI agent",
-    body:
-      "Use + on the tab bar to open a Claude, Codex, or Gemini agent — or a plain shell. Drag tabs to a pane edge to split the view.",
+    titleKey: "hint.addTabTitle",
+    bodyKey: "hint.addTabBody",
     when: (c) => c.activeId !== null,
   },
   {
@@ -135,8 +122,8 @@ export const HINTS: HintDef[] = [
     priority: 60,
     anchor: null,
     placement: "top",
-    title: "Focus mode",
-    body: FOCUS_MODE_TIP,
+    titleKey: "hint.togglePanelsTitle",
+    bodyKey: null,
     when: (c) => c.activeId !== null,
   },
   {
@@ -144,12 +131,20 @@ export const HINTS: HintDef[] = [
     priority: 50,
     anchor: null,
     placement: "top",
-    title: "Your project files",
-    body:
-      "Push your cursor to the right edge to reveal the file tree. Click the pin to keep it docked.",
+    titleKey: "hint.fileTreeTitle",
+    bodyKey: "hint.fileTreeBody",
     when: (c) => c.activeId !== null,
   },
 ];
+
+/** Resolve a hint's body text. Every hint but "toggle-panels" is a static key;
+ *  that one is the per-OS focus-mode tip, computed at read time. */
+export function resolveHintBody(
+  def: HintDef,
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+): string {
+  return def.bodyKey ? t(def.bodyKey) : focusModeTip(t);
+}
 
 /** Pure selection: the highest-priority unseen hint eligible for this context,
  *  or null. Returns null when hints are disabled. Exported for unit tests. */

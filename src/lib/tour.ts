@@ -1,4 +1,5 @@
-import { HINTS, HOW_TO_START_STEPS, FOCUS_MODE_TIP, type HintCtx } from "./hints";
+import { focusModeTip, type HintCtx } from "./hints";
+import type { TranslationKey } from "./i18n";
 
 /**
  * The guided "Take a tour" walkthrough: an ordered, index-driven sequence of
@@ -32,8 +33,14 @@ export interface TourStep {
    *  back to the centered-card path rather than blocking the tour. */
   anchor: string | null;
   placement: TourPlacement;
-  title: string;
-  body: string;
+  titleKey: TranslationKey;
+  bodyKey: TranslationKey;
+  /** Extra `t()` params a step's `bodyKey` needs beyond its own text — only
+   *  "settings-focus" uses this, for its per-OS `{tip}` (see `focusModeTip` in
+   *  `hints.ts`). Computed lazily so it only runs for the active step. */
+  bodyParams?: (
+    t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+  ) => Record<string, string | number>;
   /** Eligible only while this holds for the current context (defaults to
    *  always). Ineligible steps are skipped by the Back/Next navigation. */
   when?: (ctx: TourCtx) => boolean;
@@ -43,40 +50,34 @@ export interface TourStep {
   prepare?: () => void;
 }
 
-/** Body copy for a contextual hint, by id — so the tour reuses the exact hint
- *  prose instead of re-typing it (single source of truth, per `hints.ts`). */
-function hintBody(id: string): string {
-  return HINTS.find((h) => h.id === id)?.body ?? "";
-}
-
 export const TOUR_STEPS: TourStep[] = [
   {
     id: "root-terminal",
     anchor: '[aria-label="Root terminal"]',
     placement: "bottom",
-    title: "Use the root terminal",
-    body: HOW_TO_START_STEPS[0].body,
+    titleKey: "howToStart.step1Title",
+    bodyKey: "howToStart.step1Body",
   },
   {
     id: "create-project",
     anchor: '[data-hint-anchor="add-project"]',
     placement: "bottom",
-    title: "Create or import a project",
-    body: hintBody("create-project"),
+    titleKey: "howToStart.step2Title",
+    bodyKey: "hint.createProjectBody",
   },
   {
     id: "remote-projects",
     anchor: null,
     placement: "bottom",
-    title: "Work on remote machines",
-    body: "In the New/Import dialog, flip \"Remote (SSH) project\" to host a project on another machine — Eldrun runs it over SSH/SFTP (agent tabs, files, and git on the remote; no local mount). If the host sits behind a VPN, enable \"Connect via OpenVPN\" to bring up the tunnel first, then connect SSH through it. The Lessons menu has a step-by-step \"SSH project via OpenVPN\" walkthrough.",
+    titleKey: "tour.remoteProjectsTitle",
+    bodyKey: "tour.remoteProjectsBody",
   },
   {
     id: "switch-projects",
     anchor: ".project-pills-region",
     placement: "bottom",
-    title: "Switch between projects",
-    body: "Each open project is a pill here. Click to switch; drag to reorder, or drop one onto another to group them into a box.",
+    titleKey: "tour.switchProjectsTitle",
+    bodyKey: "tour.switchProjectsBody",
     // Nothing to point at until at least one project is open.
     when: (c) => c.projectCount > 0,
   },
@@ -84,36 +85,37 @@ export const TOUR_STEPS: TourStep[] = [
     id: "add-tab",
     anchor: '[data-hint-anchor="tab-add"]',
     placement: "bottom",
-    title: "Add agents and split tabs",
-    body: hintBody("add-tab"),
+    titleKey: "tour.addTabTitle",
+    bodyKey: "hint.addTabBody",
   },
   {
     id: "file-tree",
     anchor: '[data-hint-anchor="file-tree-edge"]',
     placement: "left",
-    title: "Find your files",
-    body: hintBody("file-tree"),
+    titleKey: "tour.fileTreeTitle",
+    bodyKey: "hint.fileTreeBody",
   },
   {
     id: "global-apps",
     anchor: '[aria-label="Global apps"]',
     placement: "bottom",
-    title: "Launch your tools",
-    body: "Open your editor, browser, or other tools from here. Right-click a slot to set which app it launches.",
+    titleKey: "tour.globalAppsTitle",
+    bodyKey: "tour.globalAppsBody",
   },
   {
     id: "time-tracking",
     anchor: ".app-timer-btn",
     placement: "bottom",
-    title: "Track your time",
-    body: "Eldrun logs how long you work in each project. Click to pause, or right-click for the activity view.",
+    titleKey: "tour.timeTrackingTitle",
+    bodyKey: "tour.timeTrackingBody",
   },
   {
     id: "settings-focus",
     anchor: '[data-hint-anchor="settings"]',
     placement: "bottom",
-    title: "Settings and focus mode",
-    body: `Theme, Git, and shortcuts live behind ⚙ — which also reopens this tour and the Feature Guide. ${FOCUS_MODE_TIP}`,
+    titleKey: "tour.settingsFocusTitle",
+    bodyKey: "tour.settingsFocusBody",
+    bodyParams: (t) => ({ tip: focusModeTip(t) }),
   },
 ];
 

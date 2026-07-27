@@ -7,6 +7,7 @@ import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSettingsStore } from "../../stores/settings";
 import { isCarefulHost, primaryTargetOf } from "../../lib/carefulHost";
 import { isHpcHost } from "../../lib/hpcHost";
+import { useT } from "../../lib/i18n";
 
 export interface NetworkInterfaceSnapshot {
   name: string;
@@ -227,7 +228,15 @@ function endpoint(address: string, port: string): string {
   return `${host}:${port}`;
 }
 
-function TrafficGraph({ points, pollMs }: { points: TrafficPoint[]; pollMs: number }) {
+function TrafficGraph({
+  points,
+  pollMs,
+  t,
+}: {
+  points: TrafficPoint[];
+  pollMs: number;
+  t: ReturnType<typeof useT>;
+}) {
   const width = 600;
   const height = 150;
   // How far back the graph actually reaches: a fixed point count at a cadence
@@ -246,13 +255,13 @@ function TrafficGraph({ points, pollMs }: { points: TrafficPoint[]; pollMs: numb
 
   return (
     <div className="network-graph-wrap">
-      <div className="network-graph-scale">peak {formatRate(max)}</div>
+      <div className="network-graph-scale">{t("network.graphPeak", { rate: formatRate(max) })}</div>
       <svg
         className="network-graph"
         viewBox={`0 0 ${width} ${height}`}
         preserveAspectRatio="none"
         role="img"
-        aria-label={`${spanMin}-minute receive and transmit rate history`}
+        aria-label={t("network.graphAriaLabel", { span: spanMin })}
       >
         <line x1="0" y1={height - 1} x2={width} y2={height - 1} className="network-grid-line" />
         {points.length > 1 && (
@@ -263,9 +272,9 @@ function TrafficGraph({ points, pollMs }: { points: TrafficPoint[]; pollMs: numb
         )}
       </svg>
       <div className="network-graph-legend">
-        <span className="receive">● Download</span>
-        <span className="transmit">● Upload</span>
-        <span className="network-history-label">rolling {spanMin} min</span>
+        <span className="receive">● {t("network.download")}</span>
+        <span className="transmit">● {t("network.upload")}</span>
+        <span className="network-history-label">{t("network.rollingMin", { span: spanMin })}</span>
       </div>
     </div>
   );
@@ -275,10 +284,12 @@ function StatusPanel({
   title,
   message,
   reconnect,
+  t,
 }: {
   title: string;
   message: string;
   reconnect?: () => void;
+  t: ReturnType<typeof useT>;
 }) {
   return (
     <div className="network-status-panel">
@@ -286,7 +297,7 @@ function StatusPanel({
       <div className="network-status-message">{message}</div>
       {reconnect && (
         <button className="btn-primary" onClick={reconnect}>
-          Connect
+          {t("common.connect")}
         </button>
       )}
     </div>
@@ -294,6 +305,7 @@ function StatusPanel({
 }
 
 export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
+  const t = useT();
   const [view, setView] = useState<"host" | "link">("host");
   const [host, setHost] = useState<NetworkHostSnapshot | null>(null);
   const [link, setLink] = useState<SshLinkSnapshot | null>(null);
@@ -496,7 +508,7 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
   }, [connections, protocol, query]);
 
   if (error && !host && !link) {
-    return <StatusPanel title="Network monitor unavailable" message={error} />;
+    return <StatusPanel title={t("network.unavailableTitle")} message={error} t={t} />;
   }
 
   if (!available) {
@@ -506,17 +518,18 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
         {remote && (
           <div className="network-view-tabs">
             <button className={view === "host" ? "active" : ""} onClick={() => setView("host")}>
-              Remote Host
+              {t("network.remoteHostTab")}
             </button>
             <button className={view === "link" ? "active" : ""} onClick={() => setView("link")}>
-              SSH Link
+              {t("network.sshLinkTab")}
             </button>
           </div>
         )}
         <StatusPanel
-          title={connected === false ? "SSH project disconnected" : "Collector unsupported"}
-          message={warning ?? error ?? "Network data is unavailable on this platform."}
+          title={connected === false ? t("network.disconnectedTitle") : t("network.unsupportedTitle")}
+          message={warning ?? error ?? t("network.unavailableMessage")}
           reconnect={connected === false ? onConnect : undefined}
+          t={t}
         />
       </div>
     );
@@ -526,34 +539,34 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
     <div className="network-pane">
       <div className="network-toolbar">
         <div>
-          <div className="network-heading">Network Traffic</div>
+          <div className="network-heading">{t("network.heading")}</div>
           <div className="network-subheading">
             {view === "link"
-              ? `${link?.localEndpoint ?? "local"} ↔ ${link?.remoteEndpoint ?? host?.hostLabel ?? "SSH host"}`
-              : host?.hostLabel ?? "Local host"}
+              ? `${link?.localEndpoint ?? t("network.localFallback")} ↔ ${link?.remoteEndpoint ?? host?.hostLabel ?? t("network.sshHostFallback")}`
+              : host?.hostLabel ?? t("network.localHost")}
           </div>
         </div>
         {remote && (
           <div className="network-view-tabs">
             <button className={view === "host" ? "active" : ""} onClick={() => setView("host")}>
-              Remote Host
+              {t("network.remoteHostTab")}
             </button>
             <button className={view === "link" ? "active" : ""} onClick={() => setView("link")}>
-              SSH Link
+              {t("network.sshLinkTab")}
             </button>
           </div>
         )}
         {view === "host" && (
           <label className="network-interface-select">
-            Interface
+            {t("network.interfaceLabel")}
             <Dropdown
               value={selectedInterface}
               onChange={setSelectedInterface}
               options={[
-                { value: "aggregate", label: "Active non-loopback" },
+                { value: "aggregate", label: t("network.activeNonLoopback") },
                 ...(host?.interfaces ?? []).map((iface) => ({
                   value: iface.name,
-                  label: `${iface.name}${!iface.up ? " (down)" : ""}`,
+                  label: `${iface.name}${!iface.up ? t("network.downSuffix") : ""}`,
                 })),
               ]}
             />
@@ -563,27 +576,27 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
 
       <div className="network-metrics">
         <div className="network-metric receive">
-          <span>Download</span>
+          <span>{t("network.download")}</span>
           <strong>{formatRate(current.rxRate)}</strong>
-          <small>{formatBytes(sessionRx)} this view</small>
+          <small>{formatBytes(sessionRx)} {t("network.thisView")}</small>
         </div>
         <div className="network-metric transmit">
-          <span>Upload</span>
+          <span>{t("network.upload")}</span>
           <strong>{formatRate(current.txRate)}</strong>
-          <small>{formatBytes(sessionTx)} this view</small>
+          <small>{formatBytes(sessionTx)} {t("network.thisView")}</small>
         </div>
       </div>
 
       {remote && (
         <div className="network-usage-totals">
-          <span className="network-usage-label">SSH-link usage</span>
+          <span className="network-usage-label">{t("network.sshLinkUsage")}</span>
           {(
             [
-              ["This hour", usageTotals.hour],
-              ["Today", usageTotals.today],
-              ["This week", usageTotals.week],
-              ["This month", usageTotals.month],
-              ["Overall", usageTotals.overall],
+              [t("network.thisHour"), usageTotals.hour],
+              [t("stats.today"), usageTotals.today],
+              [t("stats.thisWeek"), usageTotals.week],
+              [t("stats.thisMonth"), usageTotals.month],
+              [t("network.overall"), usageTotals.overall],
             ] as const
           ).map(([label, counts]) => (
             <span key={label} className="network-usage-stat">
@@ -596,14 +609,14 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
 
       {remote && (
         <div className="network-usage-totals">
-          <span className="network-usage-label">Files synced</span>
+          <span className="network-usage-label">{t("network.filesSynced")}</span>
           {(
             [
-              ["This hour", fileTotals.hour],
-              ["Today", fileTotals.today],
-              ["This week", fileTotals.week],
-              ["This month", fileTotals.month],
-              ["Overall", fileTotals.overall],
+              [t("network.thisHour"), fileTotals.hour],
+              [t("stats.today"), fileTotals.today],
+              [t("stats.thisWeek"), fileTotals.week],
+              [t("stats.thisMonth"), fileTotals.month],
+              [t("network.overall"), fileTotals.overall],
             ] as const
           ).map(([label, counts]) => (
             <span key={label} className="network-usage-stat">
@@ -614,7 +627,7 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
         </div>
       )}
 
-      <TrafficGraph points={history} pollMs={pollMs} />
+      <TrafficGraph points={history} pollMs={pollMs} t={t} />
 
       {warning && <div className="network-warning">{warning}</div>}
       {error && <div className="network-warning">{error}</div>}
@@ -623,22 +636,22 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
         <section className="network-connections">
           <div className="network-connections-head">
             <div>
-              <h3>Connections</h3>
-              <span>{filteredConnections.length} visible</span>
+              <h3>{t("network.connections")}</h3>
+              <span>{t("network.visibleCount", { count: filteredConnections.length })}</span>
             </div>
             <div className="network-connection-filters">
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search endpoint, process, PID…"
-                aria-label="Search network connections"
+                placeholder={t("network.searchPlaceholder")}
+                aria-label={t("network.searchAriaLabel")}
               />
               <Dropdown
                 value={protocol}
-                title="Filter connection protocol"
+                title={t("network.filterProtocolTitle")}
                 onChange={(v) => setProtocol(v as "ALL" | "TCP" | "UDP")}
                 options={[
-                  { value: "ALL", label: "TCP + UDP" },
+                  { value: "ALL", label: t("network.protocolBoth") },
                   { value: "TCP", label: "TCP" },
                   { value: "UDP", label: "UDP" },
                 ]}
@@ -649,11 +662,11 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
             <table>
               <thead>
                 <tr>
-                  <th>Protocol</th>
-                  <th>State</th>
-                  <th>Local</th>
-                  <th>Remote</th>
-                  <th>Process</th>
+                  <th>{t("network.colProtocol")}</th>
+                  <th>{t("network.colState")}</th>
+                  <th>{t("network.colLocal")}</th>
+                  <th>{t("network.colRemote")}</th>
+                  <th>{t("network.colProcess")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -674,24 +687,17 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
                 {filteredConnections.length === 0 && (
                   <tr>
                     <td colSpan={5} className="network-empty-row">
-                      No matching connections
+                      {t("network.noMatchingConnections")}
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
-          <div className="network-table-note">
-            Host-wide view. Process names are limited to sockets visible to the current user.
-          </div>
+          <div className="network-table-note">{t("network.hostWideNote")}</div>
         </section>
       )}
-      {view === "link" && (
-        <div className="network-link-note">
-          Counts the shared SSH transport. Terminals, SFTP, sync, git, and any projects using
-          the same ControlMaster contribute to these totals.
-        </div>
-      )}
+      {view === "link" && <div className="network-link-note">{t("network.linkNote")}</div>}
     </div>
   );
 }

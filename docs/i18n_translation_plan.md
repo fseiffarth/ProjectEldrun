@@ -1,20 +1,206 @@
 # Full app-wide i18n — Implementation Plan (Group N, TODO #92)
 
-> **Status: IN PROGRESS.** Settings dialog + all sub-panels, all of
+> **Status: DONE.** Every component under `src/components/` is translated,
+> plus the content-data files that hold real UI prose outside any component
+> (`src/lib/hints.ts`, `tour.ts`, `lessons.ts`) — the last item this plan
+> tracked as outstanding. `src/lib/i18n.ts` holds **3716 keys**, full
+> 5-language parity verified, `tsc`/vitest green throughout (2201 tests, up
+> from the 2192 baseline at the top of this doc). See "Final batch" below for
+> what that last session did; everything above it is the history that got the
+> plan here.
+>
+> **Final batch: `hints.ts` + `tour.ts` + `lessons.ts` (325 keys added).**
+> These three files back the first-run modal, the contextual-hint engine, the
+> guided tour, and the 23-lesson picker — all four onboarding surfaces share
+> this content, so translating it here is what makes onboarding itself
+> multilingual, not just the chrome around it. Unlike every prior batch (a
+> React component calling `useT()`), these are plain data modules with no
+> hook access, so the fields storing prose (`HowToStep.body`, `HintDef.body`,
+> `TourStep.body`, `Lesson.blurb`, etc.) were restructured to `bodyKey`/
+> `titleKey`/`blurbKey: TranslationKey`, resolved via `t()` at the three call
+> sites (`HowToStart.tsx`, `HintHost.tsx`, `TourHost.tsx`, `LessonsMenu.tsx`)
+> instead of read as raw strings.
+> 1. **One genuinely dynamic string needed a function, not a key.**
+>    `FOCUS_MODE_TIP` was a module-level `const` built from an `IS_MAC`
+>    ternary (the same "move it inside where `t` is in scope" class of fix as
+>    `TEX_INSTALL_LABEL` in an earlier batch) — replaced with
+>    `focusModeTip(t)`, called at each of its three use sites
+>    (`HowToStart`'s step 4, the `toggle-panels` hint, the tour's
+>    `settings-focus` step) since a plain key can't branch on platform. The
+>    `toggle-panels` hint has no static `bodyKey` at all (`bodyKey: null`) —
+>    `resolveHintBody(def, t)` special-cases it to `focusModeTip(t)`, the one
+>    place in the hint system where body resolution isn't a plain `t(key)`.
+> 2. **Reuse was the norm, not the exception, across these three files.**
+>    `tour.ts`'s `create-project`/`add-tab`/`file-tree` steps reuse
+>    `hint.*Body` keys verbatim (the tour's own copy of `hintBody(id)` used to
+>    do this at runtime by searching `HINTS`; now it's a direct key reference,
+>    simpler and equally correct since both are static at author time), and
+>    its `root-terminal` step reuses `howToStart.step1Title`/`Body` outright —
+>    three onboarding surfaces sharing prose was already the design intent
+>    (see this file's own doc comment), the restructuring just made the reuse
+>    static instead of computed.
+> 3. **`LessonCategory` stopped being English text.** `LESSON_CATEGORIES` was
+>    `["Basics", "Agents & models", "Advanced"] as const` — a string union
+>    doing double duty as both a stable identity (equality-checked for the
+>    picker's contiguous-run grouping) and displayed text. Split those roles:
+>    the ids are now `["basics", "agentsModels", "advanced"]`, with a
+>    `LESSON_CATEGORY_LABEL_KEYS` map + `categoryLabel(category, t)` resolver
+>    for display — the same `Record<K, TranslationKey>` + resolver shape as
+>    `newTabItems.ts`'s `itemLabel` and `AC_MODE_LABELS` from earlier batches.
+> 4. **Key naming for ~130 lesson steps across 23 lessons**: each lesson's
+>    English id becomes its key namespace (`add-project` → `lessons.addProject.*`),
+>    each step's own id becomes its field suffix in camelCase
+>    (`pill-strip` → `pillStripTitle`/`pillStripBody`). Two lessons needed a
+>    disambiguating suffix because their id would otherwise collide with an
+>    unrelated existing namespace: `add-tab` → `lessons.addTab.*` (fine on its
+>    own, but note `tour.addTabTitle` is a *different* key in a different
+>    lesson-vs-tour namespace, not a dupe) and `calendar` →
+>    `lessons.calendarLesson.*` (the bare `lessons.calendar.*` would have
+>    read confusingly close to the unrelated `calendar.*` namespace the
+>    Calendar tab's own components use).
+> 5. **`App.tsx` needed no keys at all** — it's 24 lines of pure JSX
+>    composition (which top-level component to render) with no rendered text
+>    of its own, closing out the one item TODO #92's original session list
+>    still had at "not yet started."
+> 6. **Whole-repo final sweep** (the density-grep pattern from "Verify" below,
+>    run across every file in `src/components/` plus `App.tsx`) turned up
+>    only already-documented exceptions: `FontField.tsx`'s Helvetica/Times/
+>    Courier (proper nouns), `AppResourceDisplay.tsx`'s CPU/RAM (technical
+>    abbreviations), `LogoIcon.tsx`'s "Eldrun" (brand name), `GitHistory.tsx`'s
+>    HEAD / `VpnIndicator.tsx`'s OpenVPN (git/protocol proper nouns),
+>    `HeaderBar.tsx`'s DEBUG (dev-only badge), and a handful of placeholder
+>    example values (`placeholder="my-project"`, a sample SyncTeX flag, a
+>    sample search-engine URL) — no missed translation work.
+>
+> Everything below this point is the history of how the plan got here —
+> batch-by-batch notes, the methodology, and the concurrent-editing hazard —
+> kept for the next time a similar app-wide sweep is needed (a 6th language,
+> or auditing an existing one).
+>
+> ---
+>
+> Settings dialog + all sub-panels, all of
 > `components/layout/`, all of `components/common/`, all 16 of 16
 > `.tsx` files in `components/projects/`, all 8 of 8 files in
 > `components/header/`, all 9 of 9 files in `components/tabs/`, all 8 of 8
 > files in `components/calendar/`, all 15 of 15 `.tsx` files in
-> `components/files/`, and now **all ~34 files in `components/embed/`
-> proper** — the last remaining one, `FileViewerPane.tsx` (6655 lines, the
-> largest single file in the app), is now done too — are fully translated
-> across all 5 languages (en/de/es/fr/it). Only `embed/deck/` (15 files, a
-> deliberately-skipped subdirectory — see below) remains in `embed/`.
-> `src/lib/i18n.ts` holds **2841 keys**, all with parity across every
-> language (verified by the key-count script below). `npx tsc --noEmit` and
-> the full vitest suite (2102 tests) are green throughout — this doc exists
-> so the remaining files can be picked up in a fresh session without
-> re-deriving the approach.
+> `components/files/`, all of `components/embed/` (including `embed/deck/`),
+> and now **all 4 files in `components/monitoring/` + both files in
+> `components/stats/`** — both directories are done. `src/lib/i18n.ts` holds
+> **3387 keys**, all with parity across every language (verified by the
+> key-count script below). `npx tsc --noEmit` and the full vitest suite
+> (2192 tests) are green throughout — this doc exists so the remaining
+> files can be picked up in a fresh session without re-deriving the approach.
+>
+> **`components/monitoring/` + `components/stats/` batch (6 files,
+> ~164 keys added):** `StatsRecapHost.tsx` needed no keys (0 user-facing
+> strings — pure timing/event-dispatch logic). `DiskUsagePane.tsx` looked
+> already-partially-wired on the initial `grep -l "useT"` scan — it wasn't;
+> the hit was a false positive on `useTabsStore` (the substring `useT`
+> matches inside `useTabsStore`), so the file was actually 0% wired despite
+> looking like a continuation task. **Lesson: `grep -l "useT"` on a file
+> that also imports any `useT*`-prefixed store hook (`useTabsStore`,
+> `useTimerStore`, etc.) is a false positive — grep for `useT()` with the
+> call parens, or `const t = useT()`, not the bare identifier.**
+> `SystemMonitorPane.tsx` (1750 lines, the batch's largest file) is ~55%
+> CSS-in-JS (a `SYSMON_CSS` template-literal constant, lines ~1278–1750,
+> zero translatable content) — the actual component logic needing
+> translation was only the first ~1275 lines. Found rich reuse: this file's
+> "Logged in"/"By user" grids are explicitly documented in its own comments
+> as rendered "in that dialog's exact look" referring to
+> `common/RemoteUsageWarningDialog.tsx` (already translated, `usage.*`
+> namespace) — reused `usage.cpu`/`usage.userCol`/`usage.memCol`/
+> `usage.sessionsCol`/`usage.loggedIn`/`usage.noInteractiveLogins`/
+> `usage.memory`/`usage.utilizationAria`/`usage.toneGreen`/`Orange`/`Red`
+> verbatim instead of minting duplicates, including copying that dialog's
+> `TONE_KEY` map + `UsageLight` aria-label pattern exactly (two independent
+> `UsageLight` components in the app now render identical accessible
+> labels). **Technical abbreviations kept literal, not translated** (extending
+> the existing CPU/GPU/MB precedent): the process table's `PID`/`CPU%`/
+> `MEM%`/`RSS`/`THR`/`S` column headers, the `CPU`/`GPU` vitals-panel group
+> titles, and the `VRAM`/`Util` GPU-meter labels — these are universal
+> monitoring-tool abbreviations (htop/top convention) that stay English in
+> every locale of every real system monitor, translated or not; only the
+> full-word labels (`Memory`, `Command`, `Processes`, `Light`/`Detailed`,
+> etc.) and the short-but-ordinary-word meter labels (`Mem`→reused
+> `usage.memCol`, `Swp`→new `sysmon.swpLabel`) were translated. **The
+> "careful reading" notice paragraph** (`sysmon-careful-note`, a ~120-word
+> block with 4 separate bold/italic spans and a hpcTagged-vs-not branch with
+> no shared bold markup on one side) needed an 11-key split
+> (`sysmon.carefulLightReadingBold` through `sysmon.carefulEnd`) — the
+> deepest markup-preserving split in the app so far. Restructured one
+> fragment boundary from English's to fit German's verb-final clause
+> grammar (`carefulMid` ends "...und dieser Host wird " so the German
+> separable-verb pair `wird ... abgetastet` and `Stelle ... um` land
+> correctly around the bolded interpolated words), while leaving the
+> `hpcTagged` branch's word "above" a deliberately dropped word in the
+> German fragment only (`" above — it is tagged..."` → German's
+> `" drückst — sie ist als HPC markiert..."` has no "oben", since German
+> verb-final order can't place a trailing adverb before an already-placed
+> bold word the way SVO Romance languages can) — a good example of the
+> "accepted stylistic imperfection under flat-string concatenation" tradeoff
+> this doc's methodology section already documents, applied deliberately
+> rather than by accident. The untagged branch avoided the split entirely by
+> using one key with a `{secs}` param (`sysmon.carefulUntaggedFull`) since
+> that branch has no internal bold markup to preserve.
+>
+> **`embed/deck/` batch (13 `.tsx` files + 4 pure `.ts` helpers,
+> ~274 keys added):** genuinely not started when picked up (0 of 13 files
+> used `useT()`), unlike the earlier `embed/` batch's header/ false-negative.
+> The 4 helper files (`deckAssets.ts`, `deckBase.ts`, `deckFonts.ts`,
+> `gifPlayback.ts`) needed no `t`-as-parameter treatment at all — pure
+> hooks/logic with zero user-facing strings, the first batch where that was
+> true for every helper file checked.
+> 1. **Three files scored 0 hits on the density grep but had real text**
+>    (`DeckSlideView.tsx`'s "Loading animation…" fallback,
+>    `DeckAudienceApp.tsx`'s "Waiting for the presentation…" fallback,
+>    `DeckStage.tsx`'s build-step badge tooltip) — confirms the `embed/`
+>    density-grep warning from the prior batch generalizes: always read a
+>    0-hit file in this directory rather than trusting the score.
+> 2. **Four separate `t`-shadow instances**, more than any batch before it:
+>    `DeckAudienceApp.tsx`'s `const t = setInterval(...)` (retry timer,
+>    renamed `retryTimer`), `DeckPresenter.tsx`'s `const t = setInterval(...)`
+>    (clock tick, renamed `tickTimer`) *and* a `setTarget((t) => (t + 5) % 65)`
+>    updater param (renamed `v`), `DeckThemePanel.tsx`'s own theme object
+>    (`const t = deck.theme` — renamed to `theme`, every `t.text`/`t.shapeFill`
+>    call site updated), and `DeckView.tsx`'s keyboard handler's
+>    `const t = e.target` (renamed `target`) plus an autosave
+>    `const t = setTimeout(...)` (renamed `autosaveTimer`). Grep a file for
+>    `const t ` / `(t) =>` / `(t)` **before** adding `useT()`, not after —
+>    `DeckThemePanel.tsx`'s shadow would have silently broken every theme
+>    read if the rename had come after wiring instead of before.
+> 3. **Hit the exact `\n`-vs-`\\n` batch-insert hazard the `components/files/`
+>    batch's notes warned about**, for real this time: a Python multi-line
+>    confirm string (`DeckView.tsx`'s delete-slide `window.confirm`) written
+>    as `"...deck?\n\nIts {count}..."` in the insert script had its `\n\n`
+>    interpreted as two literal newline *characters* (not the two-character
+>    escape) because the surrounding Python string was not raw and the
+>    escape sequence was written as an actual line break in the source,
+>    landing as unescaped newlines inside a double-quoted TS string —
+>    invalid syntax, and it broke `tsc` across the *entire* file with a wall
+>    of unrelated-looking `TS1005`/`TS1002` errors starting hundreds of lines
+>    past the actual defect. Fixed by re-joining each of the 5 language
+>    values back onto one line with a literal `\n\n` escape. **Lesson:**
+>    when `tsc` erupts after an i18n insert, grep the diff for a key holding
+>    `\n` and check byte-for-byte whether it is one line or three in the
+>    file — the multi-line case is the tell, and the reported error line
+>    number is nowhere near the actual break.
+> 4. **Cross-file key reuse, twice:** `DeckThemePanel.tsx`'s `ALIGN_KEYS`
+>    (`Record<TextAlign, TranslationKey>`) and `DeckAnimate.tsx`'s
+>    `EFFECT_KEYS` (`Record<BuildEffect, TranslationKey>`) were each minted
+>    once, then exported and reused verbatim by `DeckInspector.tsx` (align
+>    tooltips) and `DeckStage.tsx` (the build-badge tooltip) respectively,
+>    rather than re-minting a second "left"/"center"/"right" or
+>    "fade"/"rise"/… key set per file. `DeckInspector.tsx`'s own
+>    `onEditTex`/`onRecompileTex` section also reused `deckTexPanel.compiling`
+>    /`deckTexPanel.recompile` verbatim (same English text, same feature
+>    area) instead of minting file-local duplicates — worth checking for
+>    before minting a "Compiling…"/action-verb key in a new file when an
+>    adjacent one in the same feature already has it.
+> 5. **Font family names stay literal** (`FontField.tsx`'s "Helvetica"/
+>    "Times"/"Courier" option labels) — confirmed proper nouns per the
+>    existing "never translate" list, the only 3 grep hits left unwired in
+>    the whole batch.
 >
 > **Note on this `components/embed/` batch:** translated `DiffView.tsx`,
 > `EmbedPane.tsx`, `SqliteView.tsx`, `NotebookView.tsx`, `MediaView.tsx`,
@@ -263,9 +449,12 @@ all batches").
 | `components/files/` — **15 of 15 done** | SubwindowFilesSidebar, ProjectFilesTab, QuickOpen, SearchPanel, GitChangeTree, importDrop, SetDefaultAppDialog, DownloadsSection, ProjectFilesSettings, FileTreeSearch, ProjectFilesPane, FileBrowser, **GitHistory.tsx** (git lockstep bar, worktrees, commit window), **ProjectFilesView.tsx** (1970 lines — view switcher, git action bar, orange/sessions/jobs views, HPC workspace banner), **FileTree.tsx** (3684 lines, largest single file in the app — context menu, 4 modal dialogs, sync overlay, drag/drop, run/compile buttons) | ~410 |
 | `components/embed/` — **17 of ~34 done** (everything except `FileViewerPane.tsx` and `embed/deck/`) | DiffView, EmbedPane, SqliteView, NotebookView, MediaView, OdtView, SyncMergeView, ContextFilePicker, CompareView, ImageAnnotator, PresentationOverlay, GifView, TableView, YamlGrid, YamlTree, **embed/pdf/PdfViewer.tsx** (2081 lines — zoom/find/print toolbar, contents sidebar, page rail) + `outline.ts`/`pdfDoc.ts` pure helpers | ~300 |
 | `components/embed/FileViewerPane.tsx` — **the last file in `embed/` proper** | 6655 lines, the app's largest single file — shared viewer plumbing (`ViewerHeader`, edit-history/editable-file hooks, `SaveButton`/`PrintButton`/`UndoRedoButtons`, find/replace bar), `CodeEditor` (syntax highlight, autocomplete, grammar check, git-blame gutter, breakpoints, Run/Debug, SLURM bar), `TextView`, `MarkdownView`, `TexView` (compile toolbar, SyncTeX), `ImageView` (zoom, reused `imageZoom.*`) | ~140 |
+| `components/embed/deck/` — **13 of 13 `.tsx` files, all of `embed/` now done** | DeckNotes, DeckTexPanel, IconPicker, FontField, DeckObjectView, DeckAnimate, DeckThemePanel, DeckSlideView, DeckAudienceApp, DeckStage, **DeckPresenter.tsx** (785 lines — dual-window presenter, timer, overview grid), **DeckInspector.tsx** (628 lines — per-kind property panel), **DeckView.tsx** (1971 lines, the editor shell — toolbar, rail, autosave notices, export). The 4 pure `.ts` helpers (`deckAssets.ts`, `deckBase.ts`, `deckFonts.ts`, `gifPlayback.ts`) needed no keys — zero user-facing strings in any of them | ~274 |
+| `components/monitoring/` (all 4) + `components/stats/` (both) — **both dirs done** | GlobalMachineMonitorDialog, StatsRecapHost (no keys needed), StatsRecap, DiskUsagePane (falsely looked partially-wired — was 0%, see notes above), NetworkTrafficPane, **SystemMonitorPane.tsx** (1750 lines, ~475 of it CSS-in-JS with no translatable content — heavy `usage.*` namespace reuse from `RemoteUsageWarningDialog.tsx`, technical monitoring abbreviations PID/CPU%/MEM%/RSS/THR/VRAM/Util kept literal) | ~164 |
+| `App.tsx` (no keys needed — pure composition, no rendered text) + `src/lib/hints.ts`/`tour.ts`/`lessons.ts` — **the content-data restructuring, plan closed out** | `HowToStep`/`HintDef`/`TourStep`/`Lesson` fields moved from raw strings to `TranslationKey`s (`titleKey`/`bodyKey`/`blurbKey`), resolved via `t()` in `HowToStart.tsx`/`HintHost.tsx`/`TourHost.tsx`/`LessonsMenu.tsx`; `FOCUS_MODE_TIP` became the `focusModeTip(t)` function; `LessonCategory` ids decoupled from their display text via `LESSON_CATEGORY_LABEL_KEYS` + `categoryLabel()`; all 23 lessons (~130 steps) re-keyed | ~325 |
 
-Total so far: **2841 keys**, all 5 languages at parity (script below confirms
-this after every batch).
+Total: **3716 keys**, all 5 languages at parity (script below confirms this
+after every batch) — **plan complete**.
 
 ### Notes from finishing `components/projects/`
 - `sshPasteEntries`/`vpnPasteEntries` (`CredentialPasteBar.tsx`) and
@@ -290,34 +479,20 @@ this after every batch).
 
 ## What's left
 
-### Remaining directories (not yet started)
-- **`components/embed/deck/`** (15 files: `DeckView.tsx`, `DeckPresenter.tsx`,
-  `DeckInspector.tsx`, `DeckStage.tsx`, `DeckAudienceApp.tsx`,
-  `DeckSlideView.tsx`, `DeckObjectView.tsx`, `DeckThemePanel.tsx`,
-  `FontField.tsx`, `DeckAnimate.tsx`, `DeckNotes.tsx`, `DeckTexPanel.tsx`,
-  `IconPicker.tsx`, plus the non-component `deckAssets.ts`/`deckBase.ts`/
-  `deckFonts.ts`/`gifPlayback.ts` helpers) — **re-check `git status` /
-  `git diff HEAD --stat -- src/components/embed/deck/` before starting.** At
-  the start of this session it was ~2200 lines into an uncommitted
-  theme-panel/font-picker feature landing from elsewhere; translating on top
-  of a file mid-rewrite risks fighting that session's edits. If it's settled
-  by the time you read this, it's just another `embed/` batch — same
-  methodology.
-- `components/monitoring/` + `components/stats/` (6 files)
-- `App.tsx` + final whole-repo verification pass (this was Task #11 in the
-  original session's todo list — a last grep sweep for anything missed, plus
-  updating `src/lib/i18n.ts`'s own doc comment to say coverage is complete
-  rather than "wired through Settings only").
+Nothing — see the "Status: DONE" note at the top of this doc. This section is
+kept (rather than deleted) as the place a future audit — a 6th language, or
+re-verifying parity after a long stretch of concurrent edits — would record
+what it found.
 
-### Content data files (separate, not yet scoped)
+### Content data files (historical — now done, see "Final batch" above)
 `src/lib/hints.ts` (contextual hint copy), `src/lib/tour.ts` (guided-tour step
 copy), `src/lib/lessons.ts` (lesson picker copy) hold real UI prose but are
-data files, not components — `HintHost`/`TourHost`/`LessonsMenu` render their
-`title`/`body` fields directly as plain strings. These need their own
-`TranslationKey`-based restructuring (mirroring what was done for
-`HELP_SECTIONS` in `SettingsPanel.tsx` — see that file's `HelpItem`/
-`HelpSection` interfaces for the pattern: store `titleKey`/`descKey` instead
-of raw strings, resolve via `t()` at render time). Not started.
+data files, not components — `HintHost`/`TourHost`/`LessonsMenu` used to
+render their `title`/`body` fields directly as plain strings. They got the
+same `TranslationKey`-based restructuring already used for `HELP_SECTIONS` in
+`SettingsPanel.tsx` (see that file's `HelpItem`/`HelpSection` interfaces for
+the original precedent: store `titleKey`/`descKey` instead of raw strings,
+resolve via `t()` at render time).
 
 ## Methodology (proven across ~860 keys — reuse this exactly)
 
@@ -501,15 +676,11 @@ If not, `git status`/`git log` to see what's mid-flight and route around it
 
 ## Batch order suggestion for the next session
 
-1. **`components/embed/deck/`** — the only file set left in `embed/` at all.
-   Re-check it isn't still mid-refactor first (see the note above — as of
-   the `FileViewerPane.tsx` batch it was still ~2158 uncommitted lines in,
-   unchanged from the batch before); if settled, it's an ordinary ~15-file
-   batch.
-2. `components/monitoring/` + `components/stats/`.
-3. `App.tsx`, then the content-data-file restructuring (hints/tour/lessons),
-   then a final whole-repo grep sweep + update `i18n.ts`'s own top-of-file
-   doc comment (it still says "Currently wired through the Settings dialog's
-   main panel" — that sentence should be removed/updated once this plan is
-   fully closed out).
+There is no next session for this plan — it's done (see "Status: DONE" at
+the top). Kept here as a template for a *similar* future effort (a 6th
+language, or a parity re-audit after a long stretch of concurrent edits):
+scope directories with the density-grep in "Verify" below, batch by
+directory (or lesson-category-sized chunks for a big data file like
+`lessons.ts`), re-run the parity/dupe-check script after every batch, and
+finish with a whole-repo grep sweep before declaring victory.
 </content>

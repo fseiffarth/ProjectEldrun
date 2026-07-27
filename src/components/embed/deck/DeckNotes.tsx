@@ -9,6 +9,7 @@
  */
 
 import type { Slide } from "../../../lib/viewers/deck/model";
+import { useT } from "../../../lib/i18n";
 
 export interface DeckNotesProps {
   slide: Slide;
@@ -16,13 +17,14 @@ export interface DeckNotesProps {
 }
 
 export function DeckNotes({ slide, onSlideChange }: DeckNotesProps) {
+  const t = useT();
   return (
     <div className="deck-inspector deck-notes">
-      <div className="deck-inspector-head">Speaker notes</div>
+      <div className="deck-inspector-head">{t("deckNotes.title")}</div>
       <textarea
         className="deck-notes-textarea"
         value={slide.notes}
-        placeholder="Notes for this slide — shown only in the presenter view."
+        placeholder={t("deckNotes.placeholder")}
         onChange={(e) => {
           const notes = e.target.value;
           onSlideChange((s) => ({ ...s, notes }));
