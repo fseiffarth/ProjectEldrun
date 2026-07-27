@@ -287,9 +287,16 @@ pub fn global_machines_import_read(path: String) -> Result<Vec<MachineIo>, Strin
                 continue;
             }
         }
+        // The label is the string this machine is *picked by* in the hub's list,
+        // and it is the one imported field with no `validate_arg` behind it —
+        // nothing downstream execs it, so refusing the row would be the wrong
+        // trade. It is still attacker-chosen display text from a shared file, so
+        // it gets the treatment mail and browser titles get: bidi overrides and
+        // zero-width characters removed, so a label cannot render as one machine
+        // while sitting beside another's address.
         let label = m
             .label
-            .map(|l| l.trim().to_string())
+            .map(|l| crate::services::web_safety::strip_format_controls(l.trim()))
             .filter(|l| !l.is_empty());
         out.push(MachineIo {
             host,

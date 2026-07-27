@@ -87,6 +87,44 @@ describe("the app CSP is present and restrictive", () => {
   });
 });
 
+/**
+ * The print preview renders untrusted file bytes, so it is sandboxed like every
+ * other hostile-content frame — asserted here rather than left to review.
+ *
+ * `buildPreviewDoc` returns an HTML/SVG file's own source verbatim, and
+ * `FileViewerPane`'s Print button hands that straight to `printDocument`. The
+ * frame is also deliberately same-origin (the module reads `contentDocument`),
+ * so `allow-scripts` is the one token that must never appear: with it, a hostile
+ * `.html` in a cloned repo would run in the app origin — and, because
+ * `allow-same-origin` is present, could strip its own sandbox.
+ */
+describe("the print preview frame is sandboxed", () => {
+  const PRINT_SRC = readFileSync("src/lib/viewers/print.ts", "utf8");
+  const SANDBOX = /setAttribute\(\s*"sandbox"\s*,\s*"([^"]*)"\s*\)/.exec(PRINT_SRC);
+
+  it("sets a sandbox attribute on the preview iframe at all", () => {
+    // Absent entirely is the regression this whole block exists to catch: the
+    // frame is same-origin, so an unsandboxed one leaves the app CSP's
+    // inheritance into `about:srcdoc` as the only thing making the file inert.
+    expect(SANDBOX).not.toBeNull();
+  });
+
+  it("never grants allow-scripts", () => {
+    const tokens = (SANDBOX?.[1] ?? "").split(/\s+/).filter(Boolean);
+    expect(tokens).not.toContain("allow-scripts");
+    // allow-popups/allow-top-navigation would let a hostile document leave the
+    // preview and drive the surrounding app; neither is needed to print.
+    expect(tokens).not.toContain("allow-popups");
+    expect(tokens).not.toContain("allow-top-navigation");
+    expect(tokens).not.toContain("allow-top-navigation-by-user-activation");
+  });
+
+  it("grants only the two tokens the preview genuinely needs", () => {
+    const tokens = (SANDBOX?.[1] ?? "").split(/\s+/).filter(Boolean).sort();
+    expect(tokens).toEqual(["allow-modals", "allow-same-origin"]);
+  });
+});
+
 describe("the global Tauri IPC object is not exposed", () => {
   it("leaves withGlobalTauri off", () => {
     // With it on, `window.__TAURI__` hands the full command surface to any script

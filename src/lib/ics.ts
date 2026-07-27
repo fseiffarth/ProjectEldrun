@@ -26,6 +26,7 @@ import type {
   Rrule,
 } from "../types";
 import { addDays, datePart, parseStamp } from "./calendarTime";
+import { stripFormatControls } from "./textSafety";
 
 const ICS_WEEKDAYS = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
 
@@ -321,8 +322,15 @@ export function parseIcs(text: string): ParsedIcs {
   };
 
   const first = (name: string): Line | undefined => cur[name]?.[0];
+  // Every text field of an event or a task comes through here, which is why the
+  // format-control strip lives here rather than on the three or four fields
+  // somebody remembered. An imported `.ics` is a file another person wrote — the
+  // same trust level as a mail subject or a page title, both of which are
+  // stripped — and a `SUMMARY` carrying U+202E renders in the agenda as an event
+  // it is not. Unescaping first is deliberate: ICS escaping is the transport, so
+  // a disguise hidden behind it would otherwise appear only after this ran.
   const val = (name: string): string =>
-    first(name) ? unescapeText(first(name)!.value) : "";
+    first(name) ? stripFormatControls(unescapeText(first(name)!.value)) : "";
 
   for (const raw of lines) {
     const line = parseLine(raw);

@@ -362,6 +362,31 @@ export function printDocument(fullHtml: string): Promise<void> {
     const iframe = document.createElement("iframe");
     iframe.className = "print-preview-frame";
     iframe.setAttribute("title", "Print preview");
+    // The sandbox is load-bearing and the token list is exactly two, deliberately.
+    //
+    // What lands in `srcdoc` is not always a document Eldrun assembled: for an
+    // HTML/SVG file `buildPreviewDoc` returns the file's **own source verbatim**,
+    // so a hostile file in a cloned repo reaches this frame the moment someone
+    // hits Print. The rendered *preview* of that same file has always been
+    // `sandbox=""` (`FileViewerPane`'s `RenderedPreview`); this frame is the same
+    // bytes and needs the same containment.
+    //
+    // `allow-scripts` is **absent**, which is the whole point — that is what makes
+    // the file inert, rather than relying on the app CSP being inherited into
+    // `about:srcdoc`. That inheritance does hold today, but it is precisely the
+    // mechanism the mail and reader frames refuse to lean on ("a bonus, never the
+    // mechanism"), because a policy that lives somewhere else is a policy that can
+    // be relaxed by an edit that never mentions printing.
+    //
+    // The two tokens that ARE here are the ones the preview cannot work without:
+    //  - `allow-same-origin`: this module reads `contentDocument` to inject the
+    //    options stylesheet and to collect `.print-page` elements. Safe only
+    //    because `allow-scripts` is absent — the two together are a sandbox
+    //    escape, since a script could then remove the sandbox attribute itself.
+    //  - `allow-modals`: `frameWin.print()` opens a modal on this browsing
+    //    context, which the sandbox otherwise blocks — the Print button would
+    //    silently do nothing.
+    iframe.setAttribute("sandbox", "allow-same-origin allow-modals");
 
     // ── Options row ─────────────────────────────────────────────────────────
     let opts = loadPrintOptions();

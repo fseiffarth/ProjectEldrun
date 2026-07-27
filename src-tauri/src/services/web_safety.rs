@@ -41,10 +41,17 @@ use url::{Host, Url};
 /// `invoicexe.png` in every UI that does not strip these — the single most
 /// effective filename disguise there is, and the same trick works on a page
 /// title (`example.com — Secure  \u{2069}`).
+///
+/// This list is mirrored in `src/lib/textSafety.ts`, which spells it as
+/// character *ranges*. That difference is why `src/__tests__/TextSafety.test.ts`
+/// reads this array out of this file and compares both directions: the
+/// invisible-math block `U+2061`–`U+2064` was in the range on the TS side and
+/// absent here, so the same string came back cleaned or not depending on which
+/// side of the IPC boundary had touched it last. Add to both, or to neither.
 pub const FORMAT_CHARS: &[char] = &[
     '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}',
     '\u{2067}', '\u{2068}', '\u{2069}', '\u{061C}', '\u{00AD}', '\u{FEFF}', '\u{200B}', '\u{200C}',
-    '\u{200D}', '\u{2060}', '\u{180E}',
+    '\u{200D}', '\u{2060}', '\u{2061}', '\u{2062}', '\u{2063}', '\u{2064}', '\u{180E}',
 ];
 
 pub fn is_format_char(c: char) -> bool {

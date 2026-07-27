@@ -18,15 +18,32 @@
 //! longer mount a local FUSE filesystem, but the SSH validation/argv helpers the
 //! mount once shared are still needed by every remote path.
 
-/// Reject values that contain control characters (incl. NUL/newline) or that
+/// Reject values that contain control characters (incl. NUL/newline), that carry
+/// Unicode *format* characters (bidi overrides, zero-width joiners), or that
 /// begin with `-` (which `ssh`/`ls` would treat as an option). Empty values are
 /// allowed here; callers decide whether emptiness is acceptable.
+///
+/// The format-character half is separate from the control half because
+/// `char::is_control` does **not** cover it: it tests the Unicode `Cc` category
+/// only, so `U+202E RIGHT-TO-LEFT OVERRIDE`, `U+200B ZERO WIDTH SPACE` and the
+/// isolate/embedding controls (`Cf`) all passed a check whose name reads as
+/// though it caught them. That matters here because every value reaching this
+/// function is one a human is shown and asked to trust — a host, a login, a
+/// remote path, an `.ovpn` config — and a machine imported from a shared file
+/// (`commands::global_machines`) is chosen from a *list*, where a host rendering
+/// as `gpu-01.trusted.example` while dialling somewhere else is the entire
+/// attack. `web_safety::strip_format_controls` is the display-side answer for
+/// text that must still render; a connection target is not display text, so it
+/// is refused outright rather than silently rewritten into a different host.
 pub fn validate_arg(label: &str, value: &str) -> Result<(), String> {
     if value.starts_with('-') {
         return Err(format!("{label} must not start with '-'"));
     }
     if value.chars().any(|c| c.is_control()) {
         return Err(format!("{label} contains invalid control characters"));
+    }
+    if value.chars().any(crate::services::web_safety::is_format_char) {
+        return Err(format!("{label} contains invalid formatting characters"));
     }
     Ok(())
 }
@@ -1951,6 +1968,33 @@ mod tests {
         assert!(validate_arg("path", "-rf").is_err());
         assert!(validate_arg("path", "a\nb").is_err());
         assert!(validate_arg("path", "a\0b").is_err());
+    }
+
+    /// A bidi/zero-width disguise is refused, not merely stripped.
+    ///
+    /// This is a regression test with a specific past behaviour behind it:
+    /// `char::is_control` is `Cc`-only, so every one of these passed the control
+    /// check above while rendering as a different host than the one dialled. An
+    /// imported machines file (`commands::global_machines`) is picked from a
+    /// rendered list, which is exactly where that gap is worth something.
+    #[test]
+    fn validate_arg_rejects_bidi_and_zero_width_disguises() {
+        // The overrides that reorder a rendered host.
+        assert!(validate_arg("host", "gpu-01\u{202E}moc.live").is_err());
+        assert!(validate_arg("host", "gpu-01\u{202D}x").is_err());
+        // The isolates, which do the same job with newer characters.
+        assert!(validate_arg("host", "gpu\u{2066}-01\u{2069}").is_err());
+        // Zero-width: invisible entirely, so two distinct hosts render alike.
+        assert!(validate_arg("host", "trusted\u{200B}.example").is_err());
+        assert!(validate_arg("user", "root\u{FEFF}").is_err());
+        // A soft hyphen renders as nothing mid-word in most UIs.
+        assert!(validate_arg("host", "a\u{00AD}b.example").is_err());
+        // Ordinary values — including non-ASCII ones — still pass: the rule is
+        // about disguises, not about being un-English. An IDN host reaches here
+        // in its Unicode form and must not be refused for having one.
+        assert!(validate_arg("host", "münchen.example").is_ok());
+        assert!(validate_arg("host", "gpu-01.cluster.example").is_ok());
+        assert!(validate_arg("path", "/home/user/projekte/über").is_ok());
     }
 
     #[test]

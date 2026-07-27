@@ -22,6 +22,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { stripFormatControls } from "./textSafety";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   MailAccount,
@@ -348,13 +349,14 @@ export function formatAddress(addr: { name?: string; address: string }): string 
 
 /** Remove bidi overrides, isolates and zero-width characters from display text.
  *  These are what turn a filename with an embedded RLO into something that
- *  reads as a harmless .png. */
-export function stripFormatControls(text: string): string {
-  return text.replace(
-    /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\u00AD\u061C\u180E\uFEFF]/g,
-    "",
-  );
-}
+ *  reads as a harmless .png.
+ *
+ *  Re-exported from `lib/textSafety`, not defined here. It moved because this
+ *  module imports the Tauri invoke surface, which made one regex unreachable
+ *  from the pure layers that need it just as much (`lib/ics.ts` renders event
+ *  titles somebody else wrote). Same function, same behaviour, one definition \u2014
+ *  every mail call site below still imports it from here. */
+export { stripFormatControls };
 
 /** A byte count for an attachment chip. */
 export function formatSize(bytes: number): string {
