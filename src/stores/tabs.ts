@@ -3459,13 +3459,23 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         sessionId: t.sessionId,
         resumeArgs: t.resumeArgs,
       };
-      // A custom agent carries its own resume flag on the tab; a built-in looks
-      // its cmd up in the static table (which needs the captured session id).
+      // A built-in looks its cmd up in the static table; only a custom agent
+      // falls back to the resume flag carried on the tab.
+      //
+      // The table is preferred **whenever it has an entry**, rather than letting a
+      // persisted `resumeArgs` win: the layout this is read from lives inside the
+      // project tree, i.e. inside a container's writable mount and inside any
+      // cloned repo, so a persisted arg vector is attacker-controlled. It used to
+      // be handed to `pty_spawn` verbatim, which turned "write a file in my
+      // project" into "choose the argv of a host-bound agent CLI". For a built-in
+      // the table produces the same args anyway, so preferring it costs nothing.
+      // A custom agent's flag is re-derived from `settings.json` by the backend
+      // sanitizer (`terminal_service::sanitize_tab_layout`) before it reaches here.
       const base =
         isResumableAgentTab(tabShape) && t.sessionId
-          ? t.resumeArgs?.length
-            ? t.resumeArgs
-            : RESUMABLE_AGENTS[t.cmd](t.sessionId)
+          ? t.cmd in RESUMABLE_AGENTS
+            ? RESUMABLE_AGENTS[t.cmd](t.sessionId)
+            : (t.resumeArgs ?? [])
           : [];
       // Args are rebuilt from scratch here, so a persisted planner/doer mode has
       // to be re-applied onto them or the tab would silently come back in the

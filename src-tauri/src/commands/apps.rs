@@ -435,13 +435,26 @@ pub fn open_file(
 /// [`windows_script_command`] picks an interpreter by extension (`.ps1` →
 /// PowerShell, everything else → `cmd /C`, which honours `.bat`/`.cmd` and the
 /// file's shell association) while still yielding a waitable child process.
+///
+/// `script_path` is **confined** to `project_id`'s project tree (and its box
+/// siblings) by the same check every file command uses
+/// (`commands::fs::confine_project_path`). This is a raw exec primitive — `bash
+/// <any path>` — so without confinement one `invoke` runs any script on the host;
+/// the only legitimate caller is the file tree's "run in background" on a file it
+/// is displaying, which is by construction inside the project.
 #[tauri::command]
 pub fn run_script_detached(
     app: tauri::AppHandle,
     script_path: String,
     cwd: Option<String>,
     run_id: Option<String>,
+    project_id: Option<String>,
 ) -> Result<(), String> {
+    let path = Path::new(&script_path);
+    if !path.is_absolute() {
+        return Err(format!("run {script_path}: script path must be absolute"));
+    }
+    crate::commands::fs::confine_project_path(path, project_id.as_deref())?;
     #[cfg(target_os = "windows")]
     let mut cmd = windows_script_command(&script_path);
     #[cfg(not(target_os = "windows"))]
@@ -858,7 +871,7 @@ pub fn embed_capability(
 /// the project's `local_file` → project.json `default_apps`. Returns an empty
 /// map when the id is absent or any read fails, so resolution then falls back to
 /// the global map / system default.
-fn project_apps_for_id(project_id: Option<&str>) -> HashMap<String, String> {
+pub(crate) fn project_apps_for_id(project_id: Option<&str>) -> HashMap<String, String> {
     let Some(id) = project_id else {
         return HashMap::new();
     };

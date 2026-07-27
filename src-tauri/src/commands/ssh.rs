@@ -474,7 +474,15 @@ pub fn remote_login_command(
     host: String,
     port: Option<u16>,
 ) -> Result<String, String> {
-    crate::services::ssh_exec::interactive_login_command(&user, &host, port)
+    let command = crate::services::ssh_exec::interactive_login_command(&user, &host, port)?;
+    // Remember which login this command line opens, so `credential_paste_to_pty`
+    // can later verify that the PTY it is asked to type this host's saved password
+    // into is actually running *this* login (see `commands::credentials`).
+    crate::commands::credentials::note_minted_login(
+        &command,
+        crate::commands::credentials::LoginTarget::Ssh { user, host, port },
+    );
+    Ok(command)
 }
 
 /// Verify the remote host is reachable over SSH (non-interactive). With a

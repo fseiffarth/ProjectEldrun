@@ -15,10 +15,15 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) 
 
 import { supportsAgentMode, withAgentMode } from "../components/tabs/agentModes";
 import { useTabsStore, type SavedLayoutTree } from "../stores/tabs";
+import { useSettingsStore } from "../stores/settings";
 
 const invokeMock = vi.mocked(invoke);
 
 function resetStore() {
+  // The mode feature is experimental, and the fail-closed Plan default on restore
+  // is gated on it being live (see loadFromLayout) — with no UI to leave Plan mode
+  // there would be nothing to protect and no way out.
+  useSettingsStore.setState({ settings: { agent_mode_toggle: true } });
   useTabsStore.setState({
     scope: "p",
     tabsByScope: {},
@@ -210,7 +215,7 @@ describe("agentMode round-trips through save/load", () => {
     expect(tabs[0].args).toEqual(["--resume", "uuid-1", "--permission-mode", "plan"]);
   });
 
-  it("a tab with no persisted mode restores exactly as before (no flag added)", () => {
+  it("a mode-capable tab with NO persisted mode fails CLOSED — it comes back in Plan", () => {
     useTabsStore.getState().loadFromLayout(
       [
         {
@@ -226,7 +231,52 @@ describe("agentMode round-trips through save/load", () => {
       "p",
     );
     const tabs = useTabsStore.getState().tabsByScope["p"];
-    expect(tabs[0].args).toEqual(["--resume", "uuid-1"]);
+    // The layout this field is read from lives inside the project tree, so an
+    // absent `agentMode` must not mean "the agent's default permissions" —
+    // deleting the field from a tab entry would otherwise promote a planner tab
+    // into a doer on the next restart.
+    expect(tabs[0].args).toEqual(["--resume", "uuid-1", "--permission-mode", "plan"]);
+    expect(tabs[0].agentMode).toBe("plan");
+  });
+
+  it("does NOT default to Plan while the mode feature is off — there'd be no way out", () => {
+    useSettingsStore.setState({ settings: { agent_mode_toggle: false } });
+    useTabsStore.getState().loadFromLayout(
+      [
+        {
+          key: "agent-11",
+          label: "Claude",
+          cmd: "claude",
+          cwd: "/p",
+          kind: "agent",
+          sessionId: "uuid-3",
+        },
+      ],
+      "/p",
+      "p",
+    );
+    const tabs = useTabsStore.getState().tabsByScope["p"];
+    expect(tabs[0].args).toEqual(["--resume", "uuid-3"]);
+    expect(tabs[0].agentMode).toBeUndefined();
+  });
+
+  it("an agent with no mode support is still restored with no mode flag at all", () => {
+    useTabsStore.getState().loadFromLayout(
+      [
+        {
+          key: "agent-10",
+          label: "Codex",
+          cmd: "codex",
+          cwd: "/p",
+          kind: "agent",
+          sessionId: "uuid-2",
+        },
+      ],
+      "/p",
+      "p",
+    );
+    const tabs = useTabsStore.getState().tabsByScope["p"];
+    expect(tabs[0].args).toEqual([]);
     expect(tabs[0].agentMode).toBeUndefined();
   });
 });

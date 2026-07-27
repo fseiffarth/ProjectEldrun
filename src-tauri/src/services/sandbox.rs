@@ -30,9 +30,13 @@
 //!
 //! Only these host paths are bind-mounted, each at its identical absolute path:
 //! - the **project directory** (rw) — the sole project bytes exposed;
-//! - `~/.claude`, `~/.codex` (rw, when present) — agent auth + session transcripts;
-//! - `<state_dir>/live_sessions` (rw) — where the in-container SessionStart hook
-//!   records a tab's live session id for resume;
+//! - selected subpaths of `~/.claude`, `~/.codex` (rw, when present) — the agent
+//!   auth + transcript files resume needs, and **only** those (see [`rw_mounts`]);
+//! - `<state_dir>/live_sessions/<project-id>` (rw) — where the in-container
+//!   SessionStart hook records a tab's live session id for resume. **Per project**,
+//!   not the shared root: one flat directory let a contained agent overwrite
+//!   another project's tab record and so choose which conversation an
+//!   *uncontained* agent resumes;
 //! - Gemini creds (`~/.gemini`, `~/.config/gemini`, rw, when present) — narrowed
 //!   from the whole `~/.config` so `gh`/`gcloud`/etc. secrets are *not* exposed;
 //! - `<state_dir>/hooks` mounted **read-only** (see the RCE note below);
@@ -42,8 +46,17 @@
 //!   `<state_dir>/sandbox-stage/<project-id>/` and refreshed from the host
 //!   originals at each `up`.
 //!
-//! Nothing else under `$HOME` or `state_dir` (notably `projects.json`, other
-//! projects' conversation history, `time_log.json`) is mounted.
+//! Nothing else under `$HOME` or `state_dir` (notably `projects.json`,
+//! `time_log.json`, or another project's `live_sessions` record) is mounted.
+//!
+//! One caveat the mount list cannot hide: `~/.claude/projects` **is** mounted, and
+//! Claude keys its transcripts by encoded cwd, not by Eldrun project — so a
+//! contained agent can read (and write) the conversation history of every project
+//! whose transcripts live there. Narrowing that to this project's own encoded-cwd
+//! directory needs Claude's encoding replicated on the Rust side and is tracked
+//! separately; the other formerly-exposed `~/.claude` entries (shell snapshots,
+//! plugins, agents, hooks-bearing backups, telemetry, the global history) are no
+//! longer mounted at all.
 //!
 //! ## Hook mounts (host-RCE defence)
 //!
@@ -375,6 +388,129 @@ pub fn docker_exec_args(
     a
 }
 
+// ── Authority resolution (pure) ───────────────────────────────────────────
+//
+// `PtyOptions.sandbox` and `PtyOptions.local_only` arrive from the renderer,
+// which derives them from the tab store — and the tab store is rehydrated from a
+// layout file that lives INSIDE the project tree (`.eldrun/sessions/terminals.json`
+// and `project.json`), i.e. inside the container's own writable mount and inside
+// any cloned/imported repo. A persisted tab that declares `location: "local"`
+// therefore used to defeat the container it was supposed to be confined by:
+// `pty_spawn`'s gate is `if sandbox && !local_only { docker } else if !local_only
+// { ssh }`, so `local_only == true` takes neither branch and the argv runs on the
+// host.
+//
+// So the two flags are re-derived here from the trustworthy store (`projects.json`
+// under `state_dir`, which is never mounted into a container) and the renderer's
+// values are only honoured where they cannot lower authority.
+
+/// The authority flags a spawn actually runs with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpawnAuthority {
+    pub sandbox: bool,
+    pub local_only: bool,
+}
+
+/// Env var Eldrun sets on every local-model tab (both the `vibe` per-model driver
+/// and the `prepare_local_launch` drivers) to record which Ollama model it drives.
+/// Doubles as the marker that identifies a genuinely host-bound `local_agent` tab.
+pub const LOCAL_MODEL_ENV: &str = "ELDRUN_LOCAL_MODEL";
+
+/// The commands a **host-bound** local-model tab can spawn: `vibe`, `ollama`
+/// (`ollama launch <agent> --model …`) and the direct fallbacks of
+/// `commands::ollama::LOCAL_DRIVERS`. These tabs must not be containerized even
+/// when the project's toggle is on — they depend on the host's Ollama server,
+/// `VIBE_HOME`, and each agent's host-side wiring, none of which exists inside the
+/// image. Kept as an explicit allowlist rather than "trust whatever says it is
+/// local": several of these names (`claude`, `codex`, …) are also ordinary agent
+/// CLIs, which is exactly why the [`LOCAL_MODEL_ENV`] marker is required too.
+pub const HOST_BOUND_LOCAL_AGENT_CMDS: &[&str] =
+    &["vibe", "ollama", "claude", "codex", "opencode", "droid", "openclaw"];
+
+/// Whether this spawn is one of the host-bound local-model driver tabs (see
+/// [`HOST_BOUND_LOCAL_AGENT_CMDS`]): the command is a known driver **and** the tab
+/// carries the local-model marker env var.
+pub fn is_host_bound_local_agent(cmd: &str, env: &HashMap<String, String>) -> bool {
+    if env.get(LOCAL_MODEL_ENV).is_none_or(|m| m.trim().is_empty()) {
+        return false;
+    }
+    HOST_BOUND_LOCAL_AGENT_CMDS.contains(&cmd)
+}
+
+/// Re-derive a spawn's authority flags from the trustworthy project record.
+///
+/// - **No owning project** (root/global scope, connection terminals): pass through
+///   — there is no project record to consult and no container to apply.
+/// - **Remote project**: containers are local-only, so `sandbox` is forced off;
+///   `local_only` is left to the renderer because it is a legitimate per-tab
+///   choice there (run in the local mirror vs. on the host) and cannot escape a
+///   container that was never going to apply.
+/// - **Local project, toggle off**: `sandbox` forced off (the renderer must not be
+///   able to invent a container spec); `local_only` is irrelevant — with no remote
+///   to wrap, both values spawn on the host.
+/// - **Local project, toggle on**: everything is containerized. `local_only` is
+///   ignored — the ONLY exception is a host-bound local-model driver tab, which
+///   keeps running on the host exactly as before.
+pub fn resolve_spawn_authority(
+    has_project: bool,
+    is_remote: bool,
+    toggle_on: bool,
+    requested: SpawnAuthority,
+    cmd: &str,
+    env: &HashMap<String, String>,
+) -> SpawnAuthority {
+    if !has_project {
+        return requested;
+    }
+    if is_remote || !toggle_on {
+        return SpawnAuthority {
+            sandbox: false,
+            local_only: requested.local_only,
+        };
+    }
+    if is_host_bound_local_agent(cmd, env) {
+        return SpawnAuthority {
+            sandbox: false,
+            local_only: true,
+        };
+    }
+    SpawnAuthority {
+        sandbox: true,
+        local_only: false,
+    }
+}
+
+/// State-dir-backed wrapper around [`resolve_spawn_authority`]: resolve the
+/// project's remoteness and container toggle from `projects.json` and apply the
+/// result to `opts` in place. Called from `pty_spawn` before any wrapping.
+pub fn enforce_spawn_authority(opts: &mut PtyOptions) {
+    let Some(project_id) = opts.project_id.clone() else {
+        return;
+    };
+    let is_remote = crate::services::remote::remote_target_for(&project_id).is_some();
+    let toggle_on = sandbox_spec_for(&project_id).is_some_and(|s| s.enabled);
+    let resolved = resolve_spawn_authority(
+        true,
+        is_remote,
+        toggle_on,
+        SpawnAuthority {
+            sandbox: opts.sandbox,
+            local_only: opts.local_only,
+        },
+        &opts.cmd,
+        &opts.env,
+    );
+    if resolved.sandbox != opts.sandbox || resolved.local_only != opts.local_only {
+        eprintln!(
+            "sandbox: authority for tab '{}' resolved from the project record \
+             (sandbox {} -> {}, local_only {} -> {})",
+            opts.id, opts.sandbox, resolved.sandbox, opts.local_only, resolved.local_only
+        );
+    }
+    opts.sandbox = resolved.sandbox;
+    opts.local_only = resolved.local_only;
+}
+
 // ── Spawn-path entry point ────────────────────────────────────────────────
 
 /// Rewrite `opts` to run its command inside the project's session container:
@@ -388,12 +524,25 @@ pub fn wrap_pty_options_docker(opts: &mut PtyOptions) -> Result<(), String> {
     }
     // Defence-in-depth: containers are local-only. Never docker-wrap a remote
     // project (resolved explicitly from the tab's owning project id).
-    if opts
-        .project_id
-        .as_deref()
-        .is_some_and(|id| crate::services::remote::remote_target_for(id).is_some())
-    {
-        return Ok(());
+    //
+    // This is reachable with the toggle showing ON: a local project that had the
+    // container enabled and was later `extend_project_to_remote`d keeps its
+    // `sandbox.enabled` spec while every tab now runs on the remote host — possibly
+    // an HPC login node. Refusing the spawn would break exactly those projects, so
+    // the case stays a no-op, but it is no longer a *silent* one: it is logged and
+    // surfaced to the frontend so the pill can say the container is not applied
+    // (`enforce_spawn_authority` has already cleared `opts.sandbox` for the same
+    // reason, so in practice this branch is the belt to that braces).
+    if let Some(id) = opts.project_id.as_deref() {
+        if crate::services::remote::remote_target_for(id).is_some() {
+            eprintln!(
+                "sandbox: project '{id}' has the container toggle ON but is a REMOTE project — \
+                 the container is NOT applied and tab '{}' runs unsandboxed on the remote host. \
+                 Clear the toggle to make the pill honest.",
+                opts.id
+            );
+            return Ok(());
+        }
     }
     let project_id = opts
         .project_id
@@ -467,18 +616,25 @@ pub fn up(project_id: &str, spec: Option<&SandboxSpec>, project_dir: &str) -> Re
     let (uid, gid) = host_uid_gid();
     let state_dir = storage::state_dir();
     let live_sessions = state_dir.join("live_sessions");
+    // This project's own slice of the live-session records — the only one the
+    // container gets to see (see `rw_mounts`).
+    let live_sessions_own = crate::services::agent_session::project_live_sessions_dir(project_id);
     let hooks_dir = state_dir.join("hooks");
     // Ensure the hook's write target and the staging dir exist so their bind
     // mounts map real host paths rather than docker-auto-created (root-owned)
     // ones. Best effort.
-    let _ = std::fs::create_dir_all(&live_sessions);
+    let _ = std::fs::create_dir_all(&live_sessions_own);
     let stage = stage_dir(project_id);
     let _ = std::fs::create_dir_all(&stage);
 
     // Refresh the staged config copies from the host originals at every up.
     // `fs::copy` overwrites in place (same inode), so a running container's
     // bind mounts see the refreshed content too.
-    let mut rw_mounts = rw_mounts(&home, &live_sessions.to_string_lossy());
+    let mut rw_mounts = rw_mounts(
+        &home,
+        &live_sessions_own.to_string_lossy(),
+        &live_sessions.to_string_lossy(),
+    );
     rw_mounts.extend(
         staged_config_mounts(&home, &stage).into_iter().map(|(src, dst)| format!("{src}:{dst}")),
     );
@@ -648,11 +804,82 @@ fn probe_container(name: &str) -> ContainerProbe {
     }
 }
 
+/// Resolve a spec's `dockerfile` to an absolute path **inside** the project.
+///
+/// `docker build` runs the Dockerfile's `RUN` steps as **root** with default
+/// capabilities and full network — a strictly larger blast radius than the session
+/// container (`--user <uid>` / `--cap-drop ALL` / `no-new-privileges`). The value
+/// was joined onto `project_dir` with no traversal check, so an absolute path or a
+/// `../..` chain pointed the build at a file outside the project entirely. Refuse
+/// both, then confine the canonicalized result against the project root so a
+/// symlinked Dockerfile cannot smuggle the same escape.
+fn resolve_spec_dockerfile(project_dir: &Path, df: &str) -> Result<PathBuf, String> {
+    let rel = Path::new(df);
+    if rel.is_absolute() || df.starts_with('/') || df.starts_with('\\') {
+        return Err(format!(
+            "Project container: Dockerfile '{df}' must be a path inside the project, not absolute."
+        ));
+    }
+    if rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err(format!(
+            "Project container: Dockerfile '{df}' must not contain '..'."
+        ));
+    }
+    let joined = project_dir.join(rel);
+    // Canonicalize both sides so the prefix check compares resolved paths (the
+    // Dockerfile must exist to be built, so canonicalization is expected to work).
+    let root = project_dir
+        .canonicalize()
+        .unwrap_or_else(|_| project_dir.to_path_buf());
+    let resolved = joined.canonicalize().map_err(|e| {
+        format!(
+            "Project container: Dockerfile '{}' is unreadable: {e}",
+            joined.display()
+        )
+    })?;
+    crate::commands::fs::enforce_confinement(&root, &resolved)
+        .map_err(|e| format!("Project container: {e}"))?;
+    Ok(resolved)
+}
+
+/// Docker networks a project spec may name.
+///
+/// `bridge`/`none` are the two meaningful built-ins; a user-created network is any
+/// `[A-Za-z0-9_.-]+` name. **`host` is refused**: it removes network isolation
+/// outright (the container shares the host's stack, reaching every loopback-bound
+/// service), and the spec can be written by a compromised renderer or — before the
+/// `project.json` fallback was removed — from inside the project tree. Docker's own
+/// `container:<id>` and `ns:<path>` forms are refused for the same reason.
+pub fn validate_network(net: &str) -> Result<(), String> {
+    let net = net.trim();
+    if net.is_empty() {
+        return Err("Project container: network name cannot be empty.".to_string());
+    }
+    if net.eq_ignore_ascii_case("host") {
+        return Err(
+            "Project container: network 'host' is not allowed — it removes the container's \
+             network isolation. Use 'bridge', 'none', or a custom docker network."
+                .to_string(),
+        );
+    }
+    if net
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "Project container: '{net}' is not a valid docker network name."
+        ))
+    }
+}
+
 /// Make the image runnable: build it from the project's in-repo Dockerfile when
 /// the spec says so, otherwise require it to already exist locally.
 fn ensure_image(spec: Option<&SandboxSpec>, project_dir: &str, image: &str) -> Result<(), String> {
     if let Some(df) = spec.and_then(|s| s.dockerfile.as_deref()) {
-        let df_path = Path::new(project_dir).join(df);
+        let df_path = resolve_spec_dockerfile(Path::new(project_dir), df)?;
+        let df_path = df_path.as_path();
         let out = docker(&[
             "build",
             "-t",
@@ -898,18 +1125,101 @@ pub fn detect_spec_sources(project_dir: &Path, spec: &mut SandboxSpec) {
 
 // ── Mounts / identity (shared helpers) ────────────────────────────────────
 
-/// Read-write identical-path mounts: the agent auth/state dirs the resume
-/// machinery depends on. `~/.claude`/`~/.codex` and Gemini creds are mounted only
-/// when they exist so we never auto-create empty root-owned dirs in `$HOME`.
-fn rw_mounts(home: &str, live_sessions: &str) -> Vec<String> {
-    let mut m = Vec::new();
-    for cand in [format!("{home}/.claude"), format!("{home}/.codex")] {
-        if Path::new(&cand).is_dir() {
-            m.push(format!("{cand}:{cand}"));
-        }
+/// Entries of `~/.claude` that are deliberately **not** mounted into a container.
+///
+/// The whole dir used to be one rw mount, which handed a contained agent several
+/// routes straight back to **host** code execution and to every project's history:
+/// - `shell-snapshots/` — Claude sources a snapshot for each host Bash call, so one
+///   appended line runs on the host the next time an *uncontained* session does;
+/// - `plugins/`, `agents/` — register hook commands / steer every future session;
+/// - `backups/`, `file-history/` — copies of the config the staged shadow protects,
+///   and a rewrite target with the same effect;
+/// - `history.jsonl`, `sessions/`, `session-env/`, `stats-cache.json`, `daemon.*` —
+///   cross-project state a project container has no business reading or writing;
+/// - `telemetry/` — likewise.
+///
+/// `settings.json`/`settings.local.json` are excluded here because
+/// [`staged_config_mounts`] mounts a writable per-project **copy** at those exact
+/// paths; mounting the originals as well would be a duplicate destination.
+///
+/// A trailing `*` matches by prefix (`daemon.*`). Everything not listed is still
+/// mounted — deliberately: an unknown new entry breaking resume is worse than an
+/// unknown new entry being reachable, and the named holes are the exploitable ones.
+const CLAUDE_UNMOUNTED: &[&str] = &[
+    "shell-snapshots",
+    "plugins",
+    "agents",
+    "backups",
+    "file-history",
+    "telemetry",
+    "history.jsonl",
+    "sessions",
+    "session-env",
+    "stats-cache.json",
+    "daemon.*",
+    "settings.json",
+    "settings.local.json",
+];
+
+/// Entries of `~/.codex` that are not mounted. Much shorter than
+/// [`CLAUDE_UNMOUNTED`] on purpose: `sessions/` **must** stay mounted, because a
+/// containerized Codex writes its rollout logs there and the host-side
+/// `agent_session::codex_session_exists` reads them back to decide whether a tab
+/// can resume — unmounting it would silently kill Codex resume in every container.
+/// `config.toml` is the staged-shadow destination (see [`staged_config_mounts`]).
+const CODEX_UNMOUNTED: &[&str] = &["history.jsonl", "config.toml"];
+
+/// Whether a directory entry name is excluded by a `*_UNMOUNTED` list. A pattern
+/// ending in `*` matches by prefix; everything else is an exact match.
+fn is_unmounted_entry(name: &str, patterns: &[&str]) -> bool {
+    patterns.iter().any(|p| match p.strip_suffix('*') {
+        Some(prefix) => name.starts_with(prefix),
+        None => *p == name,
+    })
+}
+
+/// Per-entry identical-path mounts for one agent state dir, skipping the excluded
+/// entries. Mounting the children rather than the parent is what makes the
+/// exclusion real: an unmounted child is simply not reachable, and the container
+/// cannot create new top-level entries in the host's dir either.
+fn narrowed_agent_mounts(dir: &str, unmounted: &[&str]) -> Vec<String> {
+    let base = Path::new(dir);
+    if !base.is_dir() {
+        return Vec::new();
     }
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|n| !is_unmounted_entry(n, unmounted))
+        .collect();
+    // Deterministic order so the spec fingerprint doesn't flap with readdir order.
+    names.sort();
+    names.iter().map(|n| format!("{dir}/{n}:{dir}/{n}")).collect()
+}
+
+/// Read-write mounts: the agent auth/state paths the resume machinery depends on.
+///
+/// `~/.claude`/`~/.codex` are mounted **per entry** with an exclusion list rather
+/// than wholesale (see [`CLAUDE_UNMOUNTED`]); Gemini creds are mounted only when
+/// they exist so we never auto-create empty root-owned dirs in `$HOME`.
+///
+/// `live_sessions_src` is this project's **own** subdirectory of
+/// `<state_dir>/live_sessions`, mounted at `live_sessions_dst` — the canonical root
+/// path the hook script writes to. This is the one deliberately non-identical
+/// mount: the hook's target path is baked into a read-only script shared with
+/// host-run agents, so per-project isolation has to come from *what* is mounted
+/// there. With the shared root mounted, a contained agent could overwrite another
+/// project's tab record and thereby choose which conversation an **uncontained**
+/// agent resumes.
+fn rw_mounts(home: &str, live_sessions_src: &str, live_sessions_dst: &str) -> Vec<String> {
+    let mut m = Vec::new();
+    m.extend(narrowed_agent_mounts(&format!("{home}/.claude"), CLAUDE_UNMOUNTED));
+    m.extend(narrowed_agent_mounts(&format!("{home}/.codex"), CODEX_UNMOUNTED));
     // The in-container SessionStart hook writes a tab's live id here.
-    m.push(format!("{live_sessions}:{live_sessions}"));
+    m.push(format!("{live_sessions_src}:{live_sessions_dst}"));
     // Gemini credentials only — narrowed from the whole `~/.config` so unrelated
     // secrets (`gh`, `gcloud`, …) are never exposed to the container.
     for cand in [format!("{home}/.gemini"), format!("{home}/.config/gemini")] {
@@ -949,6 +1259,14 @@ fn stage_dir(project_id: &str) -> PathBuf {
 /// SessionStart hook. Best effort: a file that is absent or fails to copy is
 /// simply not mounted.
 ///
+/// The shadow is **unconditional**: a host file that does not exist yet is staged
+/// as an empty default instead of being skipped. Skipping it was the hole the
+/// shadow exists to close — with no mount at that path, the container's write went
+/// *through* to the real host `~/.claude/settings.local.json` (or
+/// `~/.codex/config.toml`), which is exactly the "repoint the host's SessionStart
+/// hook at an attacker command" escape. Installs where the file simply hadn't been
+/// created yet were therefore unprotected.
+///
 /// Returned as `(copy on host, original path)` **pairs**, not pre-joined
 /// `src:dst` strings: a host path is not colon-free on every platform (a
 /// Windows drive letter carries one), so joining here would hand the caller a
@@ -959,18 +1277,33 @@ fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, String)> {
     for rel in [".claude/settings.json", ".claude/settings.local.json", ".codex/config.toml"] {
         // Native separators: the container path is the host original's own path.
         let src_path = rel.split('/').fold(home.to_path_buf(), |p, seg| p.join(seg));
-        if !src_path.is_file() {
-            continue;
-        }
         // Flatten the host path to a unique leaf so the three files never collide.
         let src = src_path.to_string_lossy().into_owned();
         let leaf = src.trim_start_matches(['/', '\\']).replace(['/', '\\', ':'], "_");
         let dst = stage.join(&leaf);
-        if std::fs::copy(&src_path, &dst).is_ok() {
+        let staged = if src_path.is_file() {
+            std::fs::copy(&src_path, &dst).is_ok()
+        } else {
+            // No host original: stage an empty default so the container still gets
+            // a real, writable file at that path — and its writes stay in the
+            // throwaway copy rather than creating the host's.
+            std::fs::write(&dst, default_agent_config(rel)).is_ok()
+        };
+        if staged {
             mounts.push((dst.to_string_lossy().into_owned(), src));
         }
     }
     mounts
+}
+
+/// Placeholder content for a shadowed agent-config file the host does not have
+/// yet: a JSON file needs to parse, a TOML file may be empty.
+fn default_agent_config(rel: &str) -> &'static [u8] {
+    if rel.ends_with(".json") {
+        b"{}\n"
+    } else {
+        b""
+    }
 }
 
 /// Build the runtime hardening flags from a project's spec, applying built-in
@@ -980,7 +1313,18 @@ fn harden_opts(spec: Option<&SandboxSpec>) -> HardenOpts {
         pids_limit: spec.and_then(|s| s.pids_limit).unwrap_or(DEFAULT_PIDS_LIMIT),
         memory: spec.and_then(|s| s.memory.clone()),
         cpus: spec.and_then(|s| s.cpus.clone()),
-        network: spec.and_then(|s| s.network.clone()),
+        // A rejected network falls back to docker's default bridge rather than
+        // failing the spawn: dropping it is the fail-CLOSED direction (the value
+        // being refused is one that would *remove* isolation), and the loud
+        // rejection lives at the point the spec is written
+        // (`commands::projects::set_project_sandbox_spec`).
+        network: spec.and_then(|s| s.network.clone()).filter(|n| match validate_network(n) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("sandbox: ignoring spec network '{n}': {e}");
+                false
+            }
+        }),
         readonly_rootfs: spec.map(|s| s.readonly_rootfs).unwrap_or(false),
     }
 }
@@ -1308,24 +1652,37 @@ mod tests {
         let home_str = home.to_string_lossy().into_owned();
         let mounts = staged_config_mounts(&home_str, &stage);
 
-        // Exactly one mount (only settings.json exists), dst == the host path.
-        assert_eq!(mounts.len(), 1, "got: {mounts:?}");
+        // All THREE registration files are shadowed — the two that don't exist on
+        // this fake host included. That is the point: a missing shadow used to let
+        // the container write through and create the real host file.
+        assert_eq!(mounts.len(), 3, "got: {mounts:?}");
         let (src, dst) = (mounts[0].0.clone(), mounts[0].1.clone());
         assert_eq!(dst, settings.to_string_lossy());
         // Source is a real copy living under the stage dir, not the host file.
         assert!(Path::new(&src).starts_with(&stage));
         assert_ne!(Path::new(&src), settings.as_path());
         assert_eq!(std::fs::read(&src).unwrap(), b"{\"hooks\":{}}");
+        // The absent ones are staged as parseable/empty defaults, and the host
+        // originals are still absent (nothing wrote through).
+        for (staged_src, original) in &mounts[1..] {
+            assert!(Path::new(staged_src).is_file(), "{staged_src} must be staged");
+            assert!(
+                !Path::new(original).exists(),
+                "staging must never create the host original {original}"
+            );
+        }
+        assert_eq!(std::fs::read(&mounts[1].0).unwrap(), b"{}\n");
+        assert_eq!(std::fs::read(&mounts[2].0).unwrap(), b"");
 
-        // Refresh-at-up: a second pass overwrites the same single copy in
-        // place (same path, new content) — never a second file.
+        // Refresh-at-up: a second pass overwrites the same copies in place (same
+        // paths, new content) — never a second set of files.
         std::fs::write(&settings, b"{\"hooks\":{\"v\":2}}").unwrap();
         let again = staged_config_mounts(&home_str, &stage);
         assert_eq!(again, mounts, "mount list must be stable across refreshes");
         assert_eq!(std::fs::read(src).unwrap(), b"{\"hooks\":{\"v\":2}}");
         assert_eq!(
             std::fs::read_dir(&stage).unwrap().count(),
-            1,
+            3,
             "one staged copy per file, refreshed in place"
         );
 
@@ -1406,6 +1763,216 @@ mod tests {
         wrap_pty_options_docker(&mut opts).unwrap();
         assert_eq!(opts.cmd, "claude");
         assert_eq!(opts.args, args(&["--session-id", "x"]));
+    }
+
+    // ── Authority resolution (S-2 / S-6) ──────────────────────────────────
+
+    fn want(sandbox: bool, local_only: bool) -> SpawnAuthority {
+        SpawnAuthority { sandbox, local_only }
+    }
+
+    fn local_model_env() -> HashMap<String, String> {
+        HashMap::from([(LOCAL_MODEL_ENV.to_string(), "qwen3:8b".to_string())])
+    }
+
+    #[test]
+    fn a_toggled_local_project_containerizes_regardless_of_the_renderers_flags() {
+        // The S-2 escape: a persisted tab declaring itself local (which makes
+        // `pty_spawn` skip BOTH the docker and the ssh wrap) is overruled.
+        let resolved = resolve_spawn_authority(
+            true,
+            false,
+            true,
+            want(false, true),
+            "bash",
+            &HashMap::new(),
+        );
+        assert_eq!(resolved, want(true, false));
+
+        // …including when it also claims to be a `local_agent` kind by naming an
+        // agent CLI, but carries no local-model marker.
+        let resolved = resolve_spawn_authority(
+            true,
+            false,
+            true,
+            want(false, true),
+            "claude",
+            &HashMap::new(),
+        );
+        assert_eq!(resolved, want(true, false));
+    }
+
+    #[test]
+    fn host_bound_local_model_tabs_still_run_on_the_host() {
+        for cmd in HOST_BOUND_LOCAL_AGENT_CMDS {
+            let resolved = resolve_spawn_authority(
+                true,
+                false,
+                true,
+                want(false, true),
+                cmd,
+                &local_model_env(),
+            );
+            assert_eq!(resolved, want(false, true), "{cmd} must stay on the host");
+        }
+        // The marker alone is not enough — the command must be a known driver.
+        let resolved = resolve_spawn_authority(
+            true,
+            false,
+            true,
+            want(false, true),
+            "/tmp/pwn.sh",
+            &local_model_env(),
+        );
+        assert_eq!(resolved, want(true, false));
+        // An empty marker is no marker.
+        let env = HashMap::from([(LOCAL_MODEL_ENV.to_string(), "  ".to_string())]);
+        assert!(!is_host_bound_local_agent("vibe", &env));
+    }
+
+    #[test]
+    fn toggle_off_and_remote_projects_can_never_be_told_they_are_sandboxed() {
+        // Toggle off: the renderer cannot invent a container.
+        assert_eq!(
+            resolve_spawn_authority(true, false, false, want(true, false), "bash", &HashMap::new()),
+            want(false, false)
+        );
+        // Remote project: containers are local-only, but `local_only` is a real
+        // per-tab choice there (mirror vs. host) and is left alone.
+        assert_eq!(
+            resolve_spawn_authority(true, true, true, want(true, true), "claude", &HashMap::new()),
+            want(false, true)
+        );
+        assert_eq!(
+            resolve_spawn_authority(true, true, true, want(true, false), "claude", &HashMap::new()),
+            want(false, false)
+        );
+    }
+
+    #[test]
+    fn a_projectless_spawn_passes_through_untouched() {
+        // Root scope / connection terminals: no project record to consult.
+        let requested = want(false, true);
+        assert_eq!(
+            resolve_spawn_authority(false, false, false, requested, "", &HashMap::new()),
+            requested
+        );
+    }
+
+    // ── Mount narrowing (S-3) ─────────────────────────────────────────────
+
+    #[test]
+    fn unmounted_entry_matching_is_exact_with_a_star_prefix() {
+        assert!(is_unmounted_entry("shell-snapshots", CLAUDE_UNMOUNTED));
+        assert!(is_unmounted_entry("plugins", CLAUDE_UNMOUNTED));
+        assert!(is_unmounted_entry("history.jsonl", CLAUDE_UNMOUNTED));
+        // `daemon.*` is a prefix pattern.
+        assert!(is_unmounted_entry("daemon.log", CLAUDE_UNMOUNTED));
+        assert!(is_unmounted_entry("daemon.sock", CLAUDE_UNMOUNTED));
+        // Not a prefix match for a non-star pattern.
+        assert!(!is_unmounted_entry("plugins-of-mine", CLAUDE_UNMOUNTED));
+        // What resume needs stays mounted.
+        assert!(!is_unmounted_entry("projects", CLAUDE_UNMOUNTED));
+        assert!(!is_unmounted_entry(".credentials.json", CLAUDE_UNMOUNTED));
+        // Codex keeps `sessions/` — a containerized Codex writes its rollouts there
+        // and the host reads them back to decide whether a tab can resume.
+        assert!(!is_unmounted_entry("sessions", CODEX_UNMOUNTED));
+        assert!(is_unmounted_entry("history.jsonl", CODEX_UNMOUNTED));
+    }
+
+    #[test]
+    fn narrowed_agent_mounts_skips_the_excluded_entries_and_is_deterministic() {
+        let base = std::env::temp_dir().join(format!("eldrun-narrow-{}", std::process::id()));
+        let claude = base.join(".claude");
+        std::fs::create_dir_all(claude.join("projects")).unwrap();
+        std::fs::create_dir_all(claude.join("shell-snapshots")).unwrap();
+        std::fs::create_dir_all(claude.join("plugins")).unwrap();
+        std::fs::write(claude.join("history.jsonl"), b"{}").unwrap();
+        std::fs::write(claude.join("daemon.log"), b"").unwrap();
+        std::fs::write(claude.join(".credentials.json"), b"{}").unwrap();
+        std::fs::write(claude.join("settings.json"), b"{}").unwrap();
+
+        let dir = claude.to_string_lossy().into_owned();
+        let mounts = narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED);
+
+        let mounted: Vec<&str> = mounts
+            .iter()
+            .map(|m| m.split(':').next().unwrap())
+            .map(|src| src.rsplit('/').next().unwrap())
+            .collect();
+        assert_eq!(mounted, vec![".credentials.json", "projects"]);
+        // Identical-path mounts (the property agent resume depends on).
+        for m in &mounts {
+            let (src, dst) = m.split_once(':').unwrap();
+            assert_eq!(src, dst);
+        }
+        // `settings.json` is deliberately absent here — `staged_config_mounts`
+        // owns that destination with a writable per-project copy.
+        assert!(!mounted.contains(&"settings.json"));
+        // Stable across calls, so the spec fingerprint doesn't flap.
+        assert_eq!(narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED), mounts);
+        // A dir that isn't there mounts nothing (never auto-created).
+        assert!(narrowed_agent_mounts(&base.join("nope").to_string_lossy(), CLAUDE_UNMOUNTED).is_empty());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn live_sessions_is_mounted_per_project_at_the_canonical_path() {
+        let mounts = rw_mounts("/home/alice", "/state/live_sessions/p1", "/state/live_sessions");
+        // The ONE deliberately non-identical mount: the hook script's baked-in path
+        // is served by this project's own slice.
+        assert!(mounts.contains(&"/state/live_sessions/p1:/state/live_sessions".to_string()));
+        assert!(!mounts.contains(&"/state/live_sessions:/state/live_sessions".to_string()));
+    }
+
+    // ── Dockerfile confinement + network allowlist (S-8) ──────────────────
+
+    #[test]
+    fn spec_dockerfile_must_stay_inside_the_project() {
+        let base = std::env::temp_dir().join(format!("eldrun-df-{}", std::process::id()));
+        let proj = base.join("proj");
+        std::fs::create_dir_all(proj.join("docker")).unwrap();
+        std::fs::write(proj.join("Dockerfile"), b"FROM debian:stable").unwrap();
+        std::fs::write(proj.join("docker").join("Dockerfile"), b"FROM debian:stable").unwrap();
+        std::fs::write(base.join("evil.Dockerfile"), b"FROM debian\nRUN pwn").unwrap();
+
+        assert!(resolve_spec_dockerfile(&proj, "Dockerfile").is_ok());
+        assert!(resolve_spec_dockerfile(&proj, "docker/Dockerfile").is_ok());
+        // Traversal out of the project — the build runs as root, so this mattered.
+        assert!(resolve_spec_dockerfile(&proj, "../evil.Dockerfile").is_err());
+        assert!(resolve_spec_dockerfile(&proj, "docker/../../evil.Dockerfile").is_err());
+        // Absolute paths are refused outright.
+        assert!(resolve_spec_dockerfile(&proj, "/etc/passwd").is_err());
+        // A path that doesn't exist can't be built either.
+        assert!(resolve_spec_dockerfile(&proj, "missing.Dockerfile").is_err());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn network_allowlist_refuses_host_and_accepts_real_network_names() {
+        assert!(validate_network("none").is_ok());
+        assert!(validate_network("bridge").is_ok());
+        assert!(validate_network("my-allowlist_net.1").is_ok());
+        // The one value that removes the container's network isolation.
+        assert!(validate_network("host").is_err());
+        assert!(validate_network("HOST").is_err());
+        // Docker's other isolation-sharing forms carry characters we reject.
+        assert!(validate_network("container:deadbeef").is_err());
+        assert!(validate_network("ns:/proc/1/ns/net").is_err());
+        assert!(validate_network("").is_err());
+        // And a rejected spec value falls back to docker's default bridge.
+        let spec = SandboxSpec {
+            network: Some("host".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(harden_opts(Some(&spec)).network, None);
+        let spec = SandboxSpec {
+            network: Some("none".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(harden_opts(Some(&spec)).network.as_deref(), Some("none"));
     }
 
     #[test]

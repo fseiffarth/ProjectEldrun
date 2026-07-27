@@ -39,6 +39,15 @@ pub async fn pty_spawn(
         opts.cwd = root_dir.to_string_lossy().into_owned();
     }
 
+    // The renderer's two authority flags (`sandbox`, `local_only`) are re-derived
+    // here from `projects.json` in the state dir — the one project record a
+    // containerized agent cannot write, unlike the persisted tab layout the
+    // renderer rehydrates them from (which lives inside the project tree). Without
+    // this a planted layout entry declaring `location: "local"` skipped both the
+    // docker wrap and the ssh wrap and ran its argv on the host. Runs first, so
+    // every step below sees the enforced values.
+    crate::services::sandbox::enforce_spawn_authority(&mut opts);
+
     // SSH-sync Phase 1: a LOCAL-running tab on a REMOTE project runs in the
     // project's local mirror — it can't reach the remote tree. Resolve the cwd to
     // the mirror here (authoritative, OS-correct path) and ensure it exists, so a
@@ -267,6 +276,10 @@ pub async fn pty_write(
     id: String,
     data: Vec<u8>,
 ) -> Result<(), String> {
+    // Watch for an Eldrun-minted interactive login command being typed in, which is
+    // what marks this PTY as a legitimate destination for the matching saved
+    // credential (see `commands::credentials`).
+    crate::commands::credentials::note_pty_input(&id, &data);
     registry
         .lock()
         .unwrap()
@@ -286,6 +299,9 @@ pub async fn pty_resize(
 
 #[tauri::command]
 pub async fn pty_kill(registry: State<'_, RegistryState>, id: String) -> Result<(), String> {
+    // The terminal is gone, so its login marking must not outlive it and bless a
+    // future PTY that reuses the id.
+    crate::commands::credentials::forget_login_pty(&id);
     registry.lock().unwrap().kill(&id);
     Ok(())
 }

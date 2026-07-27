@@ -53,7 +53,10 @@ pub fn resolve_agent_session(opts: PtyOptions) -> PtyOptions {
 /// or the hook not trusted), we leave the args untouched → a fresh Codex session.
 fn resolve_codex_session(opts: PtyOptions) -> PtyOptions {
     let sessions = paths::home_dir().join(".codex").join("sessions");
-    resolve_codex_session_impl(opts, &sessions, read_live_session)
+    let project_id = opts.project_id.clone();
+    resolve_codex_session_impl(opts, &sessions, |uid| {
+        read_live_session_for(project_id.as_deref(), uid)
+    })
 }
 
 /// Testable core of [`resolve_codex_session`].
@@ -125,7 +128,10 @@ fn codex_session_exists(root: &std::path::Path, uuid: &str) -> bool {
 ///    found"). This also safely downgrades a restore that asked for `--resume`.
 fn resolve_claude_session(opts: PtyOptions) -> PtyOptions {
     let projects = paths::home_dir().join(".claude").join("projects");
-    resolve_claude_session_impl(opts, &projects, read_live_session)
+    let project_id = opts.project_id.clone();
+    resolve_claude_session_impl(opts, &projects, |uid| {
+        read_live_session_for(project_id.as_deref(), uid)
+    })
 }
 
 /// Testable core of [`resolve_claude_session`]: `projects` is the Claude session
@@ -193,8 +199,48 @@ fn claude_session_exists(projects: &std::path::Path, uuid: &str) -> bool {
 
 /// `~/.local/share/eldrun/live_sessions/` — one file per tab (named by the
 /// tab's stable launch uuid) holding that tab's current live Claude session id.
+///
+/// This is where **host-run** (uncontained) agents record, via the hook script's
+/// baked-in path. A *containerized* agent records into the project's own
+/// subdirectory ([`project_live_sessions_dir`]), which `services::sandbox` mounts
+/// **at** this path inside the container — see [`read_live_session_for`].
 pub fn live_sessions_dir() -> PathBuf {
     storage::state_dir().join("live_sessions")
+}
+
+/// A project's own slice of the live-session records:
+/// `<state_dir>/live_sessions/<sanitized project id>/`.
+///
+/// The container mounts *this* directory at [`live_sessions_dir`]'s path, so the
+/// read-only hook script keeps writing its one baked-in path while each project's
+/// records stay physically separate on the host. With the shared root mounted into
+/// every container, a contained agent could enumerate other tabs' uids and
+/// overwrite one — choosing which conversation an **uncontained** agent in a
+/// *different* project resumes, i.e. prompt injection with that agent's full host
+/// authority.
+pub fn project_live_sessions_dir(project_id: &str) -> PathBuf {
+    live_sessions_dir().join(sanitize_project_key(project_id))
+}
+
+/// Reduce a project id to a single path-safe component. Mirrors
+/// `services::sandbox::sanitize_key` (kept local so this module stays free of a
+/// dependency on the sandbox module, which is the *caller* here).
+fn sanitize_project_key(id: &str) -> String {
+    let safe: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe.is_empty() {
+        "x".to_string()
+    } else {
+        safe
+    }
 }
 
 fn hook_script_path() -> PathBuf {
@@ -222,21 +268,70 @@ fn hook_command() -> String {
     }
 }
 
-/// uuid-ish guard: hex digits + dashes only, non-empty. Doubles as path-traversal
-/// protection for the file key.
+/// uuid-ish guard: hex digits + dashes only, non-empty. Applied to the recorded
+/// session *value*, which is whatever the agent minted.
 pub fn is_uuidish(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
-/// Read the live Claude session id recorded for `uid` (the tab's stable launch
-/// id), if the hook has written one. Returns `None` when absent or malformed.
+/// Strict canonical-UUID shape (`8-4-4-4-12` hex). Used for the tab **key**, which
+/// becomes a path component: `ELDRUN_TAB_UID` arrives in the renderer-supplied
+/// `PtyOptions.env`, so the looser [`is_uuidish`] (which happens to exclude `.`
+/// and `/`, and so blocked traversal by accident rather than by design) is not the
+/// check to rely on. Every real key is a `crypto.randomUUID()` / agent session id,
+/// so requiring the shape costs nothing.
+pub fn is_uuid_shaped(s: &str) -> bool {
+    let groups = [8usize, 4, 4, 4, 12];
+    let mut parts = s.split('-');
+    for want in groups {
+        match parts.next() {
+            Some(p) if p.len() == want && p.chars().all(|c| c.is_ascii_hexdigit()) => {}
+            _ => return false,
+        }
+    }
+    parts.next().is_none()
+}
+
+/// Read the live session id recorded for `uid` (the tab's stable launch id) by the
+/// SessionStart hook, if any — looking in the right place for the tab's project.
+///
+/// Two writers record under two roots and either can be the current one, because
+/// the container toggle can be flipped between spawns:
+/// - a **containerized** agent writes into `<state_dir>/live_sessions/<project>/`
+///   (that dir is what the container sees mounted at the canonical path);
+/// - a **host-run** agent writes into `<state_dir>/live_sessions/` itself.
+///
+/// So both are read and the **more recently written** record wins; preferring one
+/// root unconditionally would resume a stale conversation after a toggle flip.
+pub fn read_live_session_for(project_id: Option<&str>, uid: &str) -> Option<String> {
+    let root = live_sessions_dir();
+    let mut best: Option<(std::time::SystemTime, String)> = None;
+    let mut consider = |dir: &std::path::Path| {
+        if let Some(id) = read_live_session_in(dir, uid) {
+            let stamp = std::fs::metadata(dir.join(uid))
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            if best.as_ref().is_none_or(|(t, _)| stamp >= *t) {
+                best = Some((stamp, id));
+            }
+        }
+    };
+    consider(&root);
+    if let Some(pid) = project_id {
+        consider(&project_live_sessions_dir(pid));
+    }
+    best.map(|(_, id)| id)
+}
+
+/// Read the live session id recorded for `uid` from the shared (host-agent) root
+/// only. Prefer [`read_live_session_for`] on any path that knows its project.
 pub fn read_live_session(uid: &str) -> Option<String> {
     read_live_session_in(&live_sessions_dir(), uid)
 }
 
 /// Testable core of [`read_live_session`] against an explicit directory.
 pub fn read_live_session_in(dir: &std::path::Path, uid: &str) -> Option<String> {
-    if !is_uuidish(uid) {
+    if !is_uuid_shaped(uid) {
         return None;
     }
     let raw = std::fs::read_to_string(dir.join(uid)).ok()?;
@@ -261,7 +356,7 @@ pub fn write_live_session(uid: &str, id: &str) -> std::io::Result<()> {
 /// rename so a hook writing the same key concurrently can never observe a torn
 /// value.
 pub fn write_live_session_in(dir: &std::path::Path, uid: &str, id: &str) -> std::io::Result<()> {
-    if !is_uuidish(uid) || !is_uuidish(id) {
+    if !is_uuid_shaped(uid) || !is_uuidish(id) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "live-session keys must be uuid-ish",
@@ -850,6 +945,60 @@ mod tests {
         assert_eq!(read_live_session_in(&tmp, uid), None);
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn tab_keys_must_be_uuid_shaped_before_becoming_a_path_component() {
+        // `ELDRUN_TAB_UID` arrives in the renderer-supplied `PtyOptions.env`, so the
+        // key is validated by SHAPE rather than by "happens to contain no slash".
+        assert!(is_uuid_shaped("11111111-2222-3333-4444-555555555555"));
+        assert!(is_uuid_shaped("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"));
+        assert!(!is_uuid_shaped(""));
+        assert!(!is_uuid_shaped("----"));
+        assert!(!is_uuid_shaped("deadbeef"));
+        assert!(!is_uuid_shaped("../etc/passwd"));
+        assert!(!is_uuid_shaped("11111111-2222-3333-4444-555555555555-extra"));
+        assert!(!is_uuid_shaped("11111111-2222-3333-4444-55555555555"));
+        assert!(!is_uuid_shaped("g1111111-2222-3333-4444-555555555555"));
+        // A key that only passed the looser value guard is now refused as a key.
+        assert!(is_uuidish("deadbeef"));
+        assert!(!is_uuid_shaped("deadbeef"));
+    }
+
+    #[test]
+    fn per_project_live_session_records_are_separate_and_the_newer_one_wins() {
+        // The S-4 primitive: with one shared directory a contained agent could
+        // overwrite another project's tab record and so pick which conversation an
+        // UNCONTAINED agent resumes. Records now live in per-project subdirs.
+        let root = std::env::temp_dir().join(format!("eldrun-live-pp-{}", std::process::id()));
+        let own = root.join("p1");
+        std::fs::create_dir_all(&own).unwrap();
+        let uid = "11111111-2222-3333-4444-555555555555";
+        let host_id = "aaaaaaaa-1111-1111-1111-111111111111";
+        let contained_id = "bbbbbbbb-2222-2222-2222-222222222222";
+
+        // Host-run agent's record (shared root) only.
+        std::fs::write(root.join(uid), host_id).unwrap();
+        assert_eq!(read_live_session_in(&root, uid).as_deref(), Some(host_id));
+        assert_eq!(read_live_session_in(&own, uid), None);
+
+        // The containerized agent's own record, written later, wins.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(own.join(uid), contained_id).unwrap();
+        assert_eq!(read_live_session_in(&own, uid).as_deref(), Some(contained_id));
+
+        // A DIFFERENT project's subdir is not consulted for this project.
+        let other = root.join("p2");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join(uid), "cccccccc-3333-3333-3333-333333333333").unwrap();
+        assert_eq!(read_live_session_in(&own, uid).as_deref(), Some(contained_id));
+
+        // The project id is reduced to exactly one path-safe component.
+        assert_eq!(sanitize_project_key("my proj/../x"), "my_proj____x");
+        assert_eq!(sanitize_project_key(""), "x");
+        assert!(project_live_sessions_dir("p1").ends_with("live_sessions/p1"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[cfg(not(windows))]

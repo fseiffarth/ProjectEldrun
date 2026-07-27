@@ -230,7 +230,15 @@ fn forget_password_blocking(config: &str) -> Result<(), String> {
 /// off (see `services::openvpn::interactive_connect_command`).
 #[tauri::command]
 pub async fn openvpn_login_command(config: String) -> Result<String, String> {
-    openvpn::interactive_connect_command(&config)
+    let command = openvpn::interactive_connect_command(&config)?;
+    // Same reason as `remote_login_command`: record which tunnel this command line
+    // brings up, so a saved VPN secret can only be typed into a PTY the backend has
+    // seen run *this* connect (see `commands::credentials`).
+    crate::commands::credentials::note_minted_login(
+        &command,
+        crate::commands::credentials::LoginTarget::Vpn { config },
+    );
+    Ok(command)
 }
 
 /// Tear down the OpenVPN tunnel for `config` if it is up. Idempotent.

@@ -2575,6 +2575,11 @@ pub async fn checkout_lockstep(
     initiating_side: &str,
     already_checked_out: bool,
 ) -> Result<GitPeerState, String> {
+    // `target` is a branch name that came out of the repo (either side's
+    // `git branch` listing), and `git checkout <target>` has no `--` boundary — a
+    // refname beginning with `-` would be parsed as an option on BOTH peers, one of
+    // which runs over ssh. Validate once, here, before either `run` sees it.
+    crate::commands::git::check_rev(target)?;
     // #28p D4: a checkout writes to both trees; never start one against a host we
     // cannot reach (the remote half would fail command by command).
     if !connected(pool, project_id).await {

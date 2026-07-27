@@ -45,6 +45,48 @@ fn run_git(
     }
 }
 
+/// Whether `s` is safe to hand `git` as a revision / refname / commit-ish.
+///
+/// `git check-ref-format` happily accepts a refname whose last component starts
+/// with `-` (`refs/heads/--output=/tmp/x` is format-legal), so a hostile upstream
+/// can publish one, `git_branches` will list it, and the moment it reaches `git`
+/// as a bare positional argument git parses it as an **option**. On the
+/// `log`/`show`/`diff` family the useful one is `--output=<file>`: an arbitrary
+/// attacker-directed file write as the user, which the persisted-layout and
+/// `open_apps` sinks then turn into execution.
+///
+/// A `--` separator is *not* the fix for a rev: `git checkout <branch> --` means
+/// "check out this tree-ish with an empty pathspec" and `git log <rev> --` changes
+/// what the pathspec limits to, so inserting one would silently change behaviour.
+/// Every path argument in this module already has its `--` (see `git add`,
+/// `git status`, `git diff`, `git blame`, `git log --follow`); revisions are
+/// validated instead.
+///
+/// Rejected: empty, a leading `-`, whitespace, and ASCII control characters —
+/// none of which a legal refname can contain, so nothing legitimate is lost.
+pub(crate) fn valid_rev(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with('-')
+        && !s.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// [`valid_rev`] as a command error, so a call site is one `?` away from safe.
+pub(crate) fn check_rev(s: &str) -> Result<(), String> {
+    if valid_rev(s) {
+        Ok(())
+    } else {
+        Err(format!("'{s}' is not a valid git revision"))
+    }
+}
+
+/// Whether `s` is safe to hand `git` as a bare positional **path** at a call site
+/// that cannot take a `--` separator (`git worktree add/remove`, whose synopsis has
+/// no pathspec boundary). Only the option-lookalike case is rejected; everything
+/// else about the path is git's business.
+fn valid_positional_path(s: &str) -> bool {
+    !s.trim().is_empty() && !s.starts_with('-')
+}
+
 /// Cheap "not a git repo" short-circuit for the read commands. Applies only to
 /// **local** projects, where a missing `.git` means "no repo" without spawning
 /// git. A remote project's `.git` lives on the host, so it is never short-
@@ -950,6 +992,9 @@ fn git_file_at_rev_blocking(
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(String::new());
     }
+    // `git show <rev>:<path>` is one combined argument, so it can take no `--`
+    // separator — the rev is validated instead (see `valid_rev`).
+    check_rev(&rev)?;
     // `git show <rev>:<path>` wants a repo-relative, forward-slash path.
     let spec = format!("{rev}:{}", rel_path.replace('\\', "/"));
     let out = run_git(target.as_ref(), &project_dir, &["show", &spec])?;
@@ -1008,6 +1053,9 @@ pub async fn git_checkout(project_dir: String, target: String) -> Result<String,
 }
 
 fn git_checkout_blocking(project_dir: String, target: String) -> Result<String, String> {
+    // `target` originates from `git_branches` output, i.e. from repo content — a
+    // refname beginning with `-` would be parsed by git as an option.
+    check_rev(&target)?;
     let rt = remote_target_for_dir(&project_dir);
     let out = run_git(rt.as_ref(), &project_dir, &["checkout", &target])?;
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
@@ -1025,6 +1073,7 @@ pub async fn git_commit_message(project_dir: String, hash: String) -> Result<Str
 }
 
 fn git_commit_message_blocking(project_dir: String, hash: String) -> Result<String, String> {
+    check_rev(&hash)?;
     let target = remote_target_for_dir(&project_dir);
     let out = run_git(target.as_ref(), &project_dir, &["log", "-1", "--pretty=format:%B", &hash])?;
     if !out.status.success() {
@@ -1325,6 +1374,12 @@ fn git_worktree_add_blocking(
     if branch.trim().is_empty() {
         return Err("Branch cannot be empty".to_string());
     }
+    // `git worktree add` has no pathspec boundary, so neither positional can be
+    // shielded with `--`; both are checked for the option-lookalike case instead.
+    check_rev(&branch)?;
+    if !valid_positional_path(&path) {
+        return Err(format!("'{path}' is not a valid worktree path"));
+    }
     let mut args: Vec<&str> = vec!["worktree", "add"];
     if new_branch {
         args.push("-b");
@@ -1353,6 +1408,9 @@ pub async fn git_worktree_remove(project_dir: String, path: String, force: bool)
 }
 
 fn git_worktree_remove_blocking(project_dir: String, path: String, force: bool) -> Result<(), String> {
+    if !valid_positional_path(&path) {
+        return Err(format!("'{path}' is not a valid worktree path"));
+    }
     let mut args: Vec<&str> = vec!["worktree", "remove"];
     if force {
         args.push("--force");
@@ -1955,5 +2013,48 @@ filename note.txt
         // A non-auth failure is passed through unchanged (no misleading hint).
         let msg = clone_error("fatal: destination path exists", false, true);
         assert_eq!(msg, "fatal: destination path exists");
+    }
+
+    // ── Revision / positional-path validation (S-9) ───────────────────────────
+
+    #[test]
+    fn valid_rev_rejects_option_lookalike_refnames() {
+        // The primitive: a format-legal refname that git would parse as an option.
+        assert!(!valid_rev("--output=/home/u/.bashrc"));
+        assert!(!valid_rev("-evil"));
+        assert!(!valid_rev(""));
+        // Whitespace and control characters cannot occur in a legal refname, and a
+        // shell-quoted-looking rev is never one either.
+        assert!(!valid_rev("main; rm -rf /"));
+        assert!(!valid_rev("ma\nin"));
+        assert!(!valid_rev("refs/heads/a b"));
+    }
+
+    #[test]
+    fn valid_rev_accepts_every_ordinary_revision_spelling() {
+        for rev in [
+            "HEAD",
+            "HEAD~3",
+            "HEAD^{tree}",
+            "main",
+            "origin/main",
+            "refs/heads/feature/x",
+            "@{u}..",
+            "0123456789abcdef0123456789abcdef01234567",
+            "v1.2.3",
+        ] {
+            assert!(valid_rev(rev), "{rev} must be accepted");
+            assert!(check_rev(rev).is_ok());
+        }
+        assert!(check_rev("-evil").is_err());
+    }
+
+    #[test]
+    fn positional_paths_reject_only_the_option_lookalike() {
+        assert!(valid_positional_path("/home/u/wt/feature"));
+        assert!(valid_positional_path("../sibling-worktree"));
+        assert!(!valid_positional_path("--force"));
+        assert!(!valid_positional_path("-x"));
+        assert!(!valid_positional_path("   "));
     }
 }

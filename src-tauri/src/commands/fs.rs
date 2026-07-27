@@ -1636,6 +1636,17 @@ fn confine_abs_write(p: &Path, scope_id: Option<&str>) -> Result<(), String> {
     confine_abs(p, scope_id)
 }
 
+/// Confine a path a **non-file** command is about to act on (today:
+/// `commands::apps::run_script_detached`, which runs `bash <path>`) to exactly the
+/// per-project roots every file command is bound by.
+///
+/// Exposed because the confinement logic in this module — canonicalize-then-prefix,
+/// fail-closed on an unknown scope — is the only correct implementation in the
+/// codebase, and a second copy elsewhere would drift from it.
+pub(crate) fn confine_project_path(p: &Path, scope_id: Option<&str>) -> Result<(), String> {
+    confine_abs(p, scope_id)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 fn canonical(path: &str) -> Result<PathBuf, String> {

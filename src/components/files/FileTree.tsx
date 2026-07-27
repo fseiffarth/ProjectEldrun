@@ -2418,7 +2418,7 @@ export function FileTree({
       // Detached spawn: no tab, no captured output. The activity store tracks
       // the run (and the app-lifetime `script-finished` listener clears it) so
       // the spinner survives right-panel hide/show — see TODO group R #34.
-      runScript(entry.path, projectDir);
+      runScript(entry.path, projectDir, projectId);
       return;
     }
     const interp = shellRunnerFor(entry.extension, PLATFORM) as ScriptShell | null;

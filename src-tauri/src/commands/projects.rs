@@ -707,18 +707,17 @@ pub fn set_project_sandbox(project_id: String, enabled: bool) -> Result<SandboxS
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("project '{project_id}' not found"))?;
 
-    // Existing spec: the projects.json mirror is authoritative; fall back to
-    // project.json for entries predating the mirror.
-    let local_file = entry.local_file.clone();
+    // Existing spec: the `projects.json` mirror in the state dir is the ONLY
+    // source. There used to be a `project.json` fallback for entries predating the
+    // mirror, but `project.json` lives inside the project tree — inside the
+    // container's own rw mount and inside any cloned repo — so it could seed the
+    // spec that decides which Dockerfile gets built as root and whether the
+    // container runs with `--network host`. A pre-mirror project simply starts from
+    // the default spec on its next toggle, which is trivially re-set.
     let existing: Option<SandboxSpec> = entry
         .extra
         .get("sandbox")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .or_else(|| {
-            storage::read_json::<Project>(&PathBuf::from(&local_file))
-                .ok()
-                .and_then(|p| p.sandbox)
-        });
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
     let first_enable = enabled && existing.is_none();
     let mut spec = existing.unwrap_or_default();
     spec.enabled = enabled;
@@ -760,6 +759,12 @@ pub fn set_project_sandbox_spec(
     clean(&mut spec.memory);
     clean(&mut spec.cpus);
     clean(&mut spec.network);
+    // Refuse `host` (and any non-name) here, where the user can see the error —
+    // `services::sandbox::harden_opts` additionally drops an invalid network at
+    // spawn, so a spec written before this check still can't remove isolation.
+    if let Some(net) = spec.network.as_deref() {
+        crate::services::sandbox::validate_network(net)?;
+    }
 
     let list_path = storage::state_dir().join("projects.json");
     let mut list: ProjectsList = if list_path.exists() {
@@ -1406,6 +1411,13 @@ pub fn load_project(local_file: String) -> Result<Project, String> {
     let mut project: Project = storage::read_json(&path).map_err(|e| e.to_string())?;
     if let Some(gt) = project.git_type.as_deref() {
         project.git_type = Some(normalize_git_type(gt));
+    }
+    // `project.json` lives inside the project tree, and the frontend's relaunch
+    // path restores tabs straight out of this response — so the layout gets the
+    // same untrusted-input treatment `load_terminal_session` applies to the
+    // `.eldrun` mirror (see `services::terminal_service::sanitize_tab_layout`).
+    if let Some(tabs) = project.tab_layout.as_mut() {
+        crate::services::terminal_service::sanitize_loaded_layout(tabs);
     }
     Ok(project)
 }
@@ -2253,6 +2265,35 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
     finish_import(req, id, target, None)
 }
 
+/// Drop every field of an *adopted* `project.json` that Eldrun later reads back as
+/// executable intent, keeping only the descriptive ones.
+///
+/// Importing a folder (or cloning/forking a repo) adopts whatever `project.json`
+/// the tree happens to ship. That file is written by whoever wrote the tree, and
+/// several of its fields are commands Eldrun runs on the **host**, unprompted:
+///
+/// - `open_apps` — auto-launched on every project activation
+///   (`services::restore_service`, which now also allowlists each entry);
+/// - `tab_layout` / `tab_groups` — restored tabs whose `cmd`/`args`/`env`/`cwd`/
+///   `location` become a `pty_spawn` (`services::terminal_service` sanitizes what
+///   survives, but a foreign layout has no business being adopted at all);
+/// - `sandbox` — the container spec, including a repo-supplied `dockerfile` that
+///   `docker build`s as root, and `network`;
+/// - `default_apps` — the per-extension handler `open_file` resolves;
+/// - `python_interpreter` — the binary the viewer's Run/Debug executes.
+///
+/// The user re-establishes any of these in two clicks, so dropping them is the
+/// safe direction. Pure, so the policy is unit-tested.
+fn strip_untrusted_project_fields(project: &mut Project) {
+    project.open_apps = None;
+    project.tab_layout = None;
+    project.tab_groups = None;
+    project.open_tab_sessions = None;
+    project.sandbox = None;
+    project.default_apps = None;
+    project.python_interpreter = None;
+}
+
 /// Shared tail of `import_project`: scaffold over `target`, build/merge the
 /// `project.json`, register the entry in `projects.json`, and return it.
 /// `remote` is `Some` for remote imports (where `target` is the mountpoint).
@@ -2332,6 +2373,11 @@ fn finish_import(
 
     let project = if project_file.exists() {
         let mut existing: Project = storage::read_json(&project_file).unwrap_or_default();
+        // The adopted `project.json` came with the folder — a foreign repository, a
+        // clone, a fork, or a tree someone else wrote — so anything in it that
+        // Eldrun would later read back as *executable intent* must not be adopted
+        // along with the descriptive fields (see `strip_untrusted_project_fields`).
+        strip_untrusted_project_fields(&mut existing);
         existing.id = id.clone();
         existing.name = req.name.clone();
         existing.directory = directory.clone();
@@ -3133,5 +3179,58 @@ mod tests {
 
         assert!(report.git_initialized);
         assert!(tmp.path().join(".git").is_dir());
+    }
+
+    #[test]
+    fn adopted_project_json_loses_every_executable_intent_field() {
+        let mut project = Project {
+            id: "old".to_string(),
+            name: "Hostile".to_string(),
+            directory: "/somewhere".to_string(),
+            description: Some("keep me".to_string()),
+            git_type: Some("local".to_string()),
+            created_at: Some("2020-01-01".to_string()),
+            open_apps: Some(vec![crate::schema::project::OpenApp {
+                exec: "/tmp/pwn.sh".to_string(),
+                file: None,
+                mode: Some("standalone".to_string()),
+                opened_at: None,
+                pid: None,
+                extra: Default::default(),
+            }]),
+            tab_layout: Some(vec![crate::schema::project::TabEntry {
+                key: "t1".to_string(),
+                label: "Shell".to_string(),
+                cmd: "/tmp/pwn.sh".to_string(),
+                cwd: "/".to_string(),
+                session_id: None,
+                extra: Default::default(),
+            }]),
+            tab_groups: Some(serde_json::json!({ "type": "group" })),
+            open_tab_sessions: Some(serde_json::json!(["uuid"])),
+            sandbox: Some(SandboxSpec {
+                enabled: true,
+                dockerfile: Some("Dockerfile".to_string()),
+                network: Some("host".to_string()),
+                ..Default::default()
+            }),
+            default_apps: Some(HashMap::from([(".md".to_string(), "/tmp/pwn.sh".to_string())])),
+            python_interpreter: Some("./pwn".to_string()),
+            ..Default::default()
+        };
+
+        strip_untrusted_project_fields(&mut project);
+
+        assert!(project.open_apps.is_none());
+        assert!(project.tab_layout.is_none());
+        assert!(project.tab_groups.is_none());
+        assert!(project.open_tab_sessions.is_none());
+        assert!(project.sandbox.is_none());
+        assert!(project.default_apps.is_none());
+        assert!(project.python_interpreter.is_none());
+        // Descriptive fields survive — the import still adopts the metadata.
+        assert_eq!(project.description.as_deref(), Some("keep me"));
+        assert_eq!(project.git_type.as_deref(), Some("local"));
+        assert_eq!(project.created_at.as_deref(), Some("2020-01-01"));
     }
 }

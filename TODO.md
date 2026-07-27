@@ -165,7 +165,7 @@ toward broad, cloud, team-scale agent automation — and the defensibility
 | L | [`todo/group-l.md`](todo/group-l.md) | Center Panel: Tabs, Subwindows & Navigation — detach-to-window, tab UX fixes, keyboard nav, on top of the done tiling split model. |
 | M | [`todo/group-m.md`](todo/group-m.md) | In-App Viewers — text/TeX/image enhancements (Phase 2+) on top of the done file→tab viewer infrastructure. |
 | N | [`todo/group-n.md`](todo/group-n.md) | Internationalization (i18n) — full app-wide translation coverage; in progress, ~40% of components done. Plan: [`docs/i18n_translation_plan.md`](docs/i18n_translation_plan.md). |
-| O | [`todo/group-o.md`](todo/group-o.md) | Project Security & Permissions — per-project policy for downloads, agent spawn, and git-push guardrails. |
+| O | [`todo/group-o.md`](todo/group-o.md) | Project Security & Permissions — per-project policy for downloads, agent spawn, and git-push guardrails, plus the **sandbox-audit follow-ups** (#142–#150: move `.eldrun/sessions/` out of the project tree, confirm a repo-supplied Dockerfile, per-window capabilities, narrow `~/.claude/projects`, drop the env-var host-bound marker). Phased plan: [`docs/sandbox_hardening_plan.md`](docs/sandbox_hardening_plan.md). |
 | R | [`todo/group-r.md`](todo/group-r.md) | Right Panel: Polish & App-Window Tracking — follow-on polish + a tracking-display bug on the done pin toggle. |
 | S | [`todo/group-s.md`](todo/group-s.md) | Local Agents via Ollama — generalize the local `vibe` model tab into a family of local Ollama-backed agent tabs. |
 | T | [`todo/group-t.md`](todo/group-t.md) | Smart / Native Shell Terminal — research done, not yet built; shell-completion via a new Ollama command. |

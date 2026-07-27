@@ -4,6 +4,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settings";
+import { useProjectsStore } from "../../stores/projects";
+import { useT } from "../../lib/i18n";
 import { cmdToKind, isDetachedPtyId, type TabKind } from "../../stores/tabs";
 import { notePtySpawn, noteUserInput, splitPtyId, useActivityStore } from "../../stores/activity";
 import { useAgentTaskStore } from "../../stores/agentTask";
@@ -11,7 +13,7 @@ import { noteInput } from "../../lib/promptCount";
 import { METRIC, agentPromptLeaf, sub } from "../../lib/usageMetrics";
 import { ROOT_SCOPE, bumpUsage, markAgentActive } from "../../stores/usage";
 import { onTerminalExit, onTerminalOutput, onTerminalReady } from "../../lib/terminalBus";
-import { claimInitialInput, initialInputForPty, isTerminalIdentityResponse } from "../../lib/terminalControl";
+import { claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isTerminalIdentityResponse } from "../../lib/terminalControl";
 import "@xterm/xterm/css/xterm.css";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
@@ -213,6 +215,12 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const pendingOutput = useRef("");
   const doFitRef = useRef<(() => void) | null>(null);
   const visibleRef = useRef(visible);
+  // Announcement text for an accepted OSC 52 clipboard write, held in a ref because
+  // the OSC handler is registered once inside the setup effect (see below).
+  const t = useT();
+  const clipboardNoticeRef = useRef(t("terminal.clipboardSetByProgram"));
+  clipboardNoticeRef.current = t("terminal.clipboardSetByProgram");
+
   const focusedRef = useRef(focused);
   visibleRef.current = visible;
   focusedRef.current = focused;
@@ -388,22 +396,19 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // `c` is the only target register Eldrun has one clipboard for; a `?`
     // query (read-back) is intentionally left unhandled — implementing it would
     // let any program read whatever the user last copied elsewhere.
+    // Gated rather than trusted: the payload is sanitized and capped by
+    // `decodeOsc52Clipboard` (newlines stripped, read-back refused), and the write
+    // is allowed only while THIS pane has the keyboard focus — so a background
+    // agent, a build script or a remote host cannot silently swap the clipboard
+    // out from under whatever the user is actually working in. Every accepted
+    // write announces itself in the transient toast, so a clipboard the user did
+    // not fill is never a surprise.
     const oscHandler = term.parser.registerOscHandler(52, (data) => {
-      const parts = data.split(";");
-      // Pc (parts[0]) names the target selection buffer(s) — "c" (clipboard),
-      // "" (spec default, also clipboard), or a combination like "cp"/"cs"
-      // that includes clipboard alongside primary/select. Anything without
-      // "c" (e.g. a primary-selection-only "p") isn't Eldrun's one clipboard.
-      if (parts.length < 2 || (parts[0] !== "" && !parts[0].includes("c")) || parts[1] === "?") return true;
-      try {
-        const binary = atob(parts[1]);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        const text = new TextDecoder("utf-8").decode(bytes);
-        navigator.clipboard?.writeText(text).catch(() => {});
-      } catch {
-        /* malformed OSC 52 payload — ignore rather than surface a write error */
-      }
+      if (!focusedRef.current) return true;
+      const text = decodeOsc52Clipboard(data);
+      if (text === null) return true;
+      navigator.clipboard?.writeText(text).catch(() => {});
+      useProjectsStore.setState({ switchToast: clipboardNoticeRef.current });
       return true;
     });
 
