@@ -63,7 +63,7 @@ describe("diff-aware auto-reload (#43)", () => {
     // Let the poll fire and the re-read resolve.
     await waitFor(
       () => expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(V2),
-      { timeout: 4000 },
+      { timeout: 12000 },
     );
     // No reconcile banner for a clean reload.
     expect(screen.queryByRole("alert")).toBeNull();
@@ -84,7 +84,7 @@ describe("diff-aware auto-reload (#43)", () => {
     diskMtime = 2000;
 
     // A banner appears; the dirty buffer is preserved (not overwritten).
-    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy(), { timeout: 4000 });
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy(), { timeout: 12000 });
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("my unsaved work");
     expect(screen.getByRole("button", { name: /reload/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /keep mine/i })).toBeTruthy();

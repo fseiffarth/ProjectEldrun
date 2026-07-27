@@ -76,24 +76,419 @@ fn ollama_http(method: &str, path: &str, json_body: Option<&str>) -> Result<Stri
             .ok()
             .and_then(|v| v["error"].as_str().map(String::from))
             .unwrap_or_else(|| format!("HTTP {status}"));
-        return Err(msg);
+        return Err(friendly_ollama_error(&msg));
     }
 
     Ok(body)
 }
 
+/// Rewrite a raw Ollama error into a clearer, actionable message for the failure
+/// modes that otherwise surface as an opaque HTTP 500 / "internal server error"
+/// (e.g. when driven through vibe). Currently detects a broken install whose
+/// inference runner (`llama-server`) is missing: Ollama answers API requests but
+/// cannot load any model, so every generate/chat call 500s. Unrecognised errors
+/// pass through unchanged. Pure + tested.
+fn friendly_ollama_error(raw: &str) -> String {
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("llama-server") && lower.contains("not found") {
+        let cmd = ollama_install_cmd();
+        return format!(
+            "Ollama's inference runner (llama-server) is missing, so Ollama can \
+            serve its API but cannot load any model — the install is incomplete. \
+            Reinstall Ollama with `{cmd}`."
+        );
+    }
+    raw.to_string()
+}
+
 // ── New management commands ───────────────────────────────────────────────
 
-/// True when the `ollama` binary is available in PATH.
+// PATH lookups go through the shared, cross-platform `crate::paths::binary_on_path`
+// (`where` on Windows, `which` elsewhere); see that module for the rationale.
+use crate::paths::binary_on_path;
+
+/// True when the `ollama` binary is available. Checks PATH first, then (on
+/// Windows) the well-known per-user install location, since winget/the GUI
+/// installer drop `ollama.exe` under `%LOCALAPPDATA%\Programs\Ollama` and a
+/// running Eldrun's inherited PATH won't pick it up until a new session.
 #[tauri::command]
 pub async fn ollama_is_installed() -> bool {
-    std::process::Command::new("which")
-        .arg("ollama")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    if binary_on_path("ollama") {
+        return true;
+    }
+    if cfg!(target_os = "windows") {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            if std::path::Path::new(&local)
+                .join("Programs")
+                .join("Ollama")
+                .join("ollama.exe")
+                .exists()
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The manual download page, offered as a last-resort fallback on every OS.
+pub const OLLAMA_DOWNLOAD_URL: &str = "https://ollama.com/download";
+
+/// The recommended Ollama install command for the host OS. Kept here so the
+/// backend installer, the error messages, and the UI's copy-to-clipboard
+/// fallback all stay in sync with whatever the installer actually runs.
+///
+/// - Windows: winget (present on all supported Windows 10/11 builds).
+/// - Linux/macOS: the official distro-agnostic install script.
+pub fn ollama_install_cmd() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "winget install --id Ollama.Ollama -e --silent --accept-source-agreements --accept-package-agreements"
+    } else {
+        "curl -fsSL https://ollama.com/install.sh | sh"
+    }
+}
+
+/// Install Ollama using the host OS's native package mechanism, streaming its
+/// combined stdout+stderr to the frontend line-by-line via
+/// `ollama-install-progress` events (`{ line }`) so the UI can show live progress.
+///
+/// Per-OS strategy (see [`ollama_install_cmd`]):
+/// - **Windows**: `winget install --id Ollama.Ollama …` (silent, per-user). winget
+///   ships with all supported Windows 10/11 builds; if it is absent or fails, the
+///   UI falls back to the manual command + the ollama.com download link.
+/// - **Linux/macOS**: the official `curl … install.sh | sh` script. It needs root
+///   to drop the binary and register the systemd service; it invokes `sudo` itself,
+///   so a non-interactive run only succeeds with passwordless sudo or as root.
+///
+/// Returns the install log on success, or the tail of the output on failure.
+#[tauri::command]
+pub async fn install_ollama(app: tauri::AppHandle) -> Result<String, String> {
+    use std::io::{BufRead, BufReader};
+    use tauri::Emitter;
+
+    if ollama_is_installed().await {
+        return Ok("Ollama is already installed.".to_string());
+    }
+
+    let cmd = ollama_install_cmd();
+
+    // Build the OS-native invocation. We merge stderr into stdout (`2>&1`) at the
+    // shell level so a single reader sees every line in order. On unsupported
+    // platforms there is no automated path — point at the manual download.
+    let (program, args): (&str, Vec<String>) = if cfg!(target_os = "windows") {
+        ("cmd", vec!["/C".into(), format!("{cmd} 2>&1")])
+    } else if cfg!(any(target_os = "linux", target_os = "macos")) {
+        ("sh", vec!["-c".into(), format!("{cmd} 2>&1")])
+    } else {
+        return Err(format!(
+            "Automatic install isn't supported on this OS. Download Ollama from {OLLAMA_DOWNLOAD_URL}."
+        ));
+    };
+
+    // Per-OS hint appended to failure messages (the likely reason it didn't take).
+    let fail_hint: &str = if cfg!(target_os = "windows") {
+        "It may need winget (App Installer) or administrator rights"
+    } else {
+        "It likely needs sudo"
+    };
+
+    let emit = |line: &str| {
+        let _ = app.emit(
+            "ollama-install-progress",
+            serde_json::json!({ "line": line }),
+        );
+    };
+    emit("Starting Ollama installer…");
+
+    // `command_no_window` suppresses the transient console window the `cmd`/`sh`
+    // wrapper would otherwise pop on Windows; progress is surfaced in-app via the
+    // piped stdout below.
+    let mut child = crate::paths::command_no_window(program)
+        .args(&args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to launch installer: {e}"))?;
+
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        for line in BufReader::new(stdout).lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            emit(&line);
+            lines.push(line);
+        }
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("installer did not finish: {e}"))?;
+    let combined = lines.join("\n");
+    let combined = combined.trim().to_string();
+
+    if !status.success() {
+        let tail: Vec<&str> = combined.lines().rev().take(20).collect();
+        let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
+        return Err(if tail.is_empty() {
+            format!(
+                "installer exited unsuccessfully ({status}). {fail_hint} — \
+                run `{cmd}` in a terminal."
+            )
+        } else {
+            tail
+        });
+    }
+
+    // The post-install check is the real source of truth: an installer can print a
+    // warning to stderr yet still have placed the binary, or vice versa.
+    if !ollama_is_installed().await {
+        return Err(format!(
+            "installer ran but `ollama` is still not detected. {fail_hint}, or it \
+            may need a fresh session so the install dir is on PATH — run `{cmd}` in \
+            a terminal.\n\n{combined}"
+        ));
+    }
+
+    emit("Done.");
+    Ok(if combined.is_empty() {
+        "Ollama installed.".to_string()
+    } else {
+        combined
+    })
+}
+
+/// OS-appropriate install guidance for the frontend, so the UI can render the
+/// right command and wording without hardcoding a platform. `auto` is true when
+/// [`install_ollama`] can drive the install itself on this OS.
+#[derive(serde::Serialize, Clone)]
+pub struct OllamaInstallStrategy {
+    /// "windows" | "macos" | "linux" | "unknown".
+    pub os: String,
+    /// The exact command Eldrun runs / the user can copy-paste.
+    pub command: String,
+    /// Whether one-click `install_ollama` is supported on this OS.
+    pub auto: bool,
+    /// Manual download page, always provided as a last resort.
+    pub download_url: String,
+}
+
+/// Report the OS-dependent Ollama install strategy (detect OS + suggest command).
+#[tauri::command]
+pub async fn ollama_install_strategy() -> OllamaInstallStrategy {
+    let os = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "unknown"
+    };
+    OllamaInstallStrategy {
+        os: os.to_string(),
+        command: ollama_install_cmd().to_string(),
+        auto: cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )),
+        download_url: OLLAMA_DOWNLOAD_URL.to_string(),
+    }
+}
+
+// ── Vibe (local-model agent runtime) ──────────────────────────────────────
+//
+// Local Ollama models are driven through Mistral's `vibe` CLI (the Local Model
+// tab spawns `vibe` with a per-model VIBE_HOME). Vibe is a separate install
+// from Ollama itself, so without it the tab fails with "unable to spawn vibe".
+// We surface install/detection here, alongside the Ollama installer, so the
+// Ollama settings window can guide the user through the full prerequisite.
+
+/// The official Vibe install command for the host OS. Kept here so the backend
+/// installer, the error messages, and the UI's copy-to-clipboard fallback all
+/// stay in sync with whatever the installer actually runs. Both paths install
+/// per-user (no administrator rights / `sudo`).
+///
+/// - **Windows**: install Astral's `uv` (per-user, into `%USERPROFILE%\.local\bin`)
+///   via its PowerShell installer, then `uv tool install mistral-vibe`, which drops
+///   `vibe.exe` alongside it. uv isn't on `PATH` in the same session that just
+///   installed it, so the command invokes `uv.exe` by full path to work in one shot.
+/// - **Linux/macOS**: the official `curl … install.sh | bash` script (installs via
+///   `uv` into `~/.local/bin`).
+pub fn vibe_install_cmd() -> &'static str {
+    if cfg!(target_os = "windows") {
+        // PowerShell. The second statement calls uv by full path because the
+        // freshly-installed uv is not yet on this session's PATH.
+        "irm https://astral.sh/uv/install.ps1 | iex; & \"$env:USERPROFILE\\.local\\bin\\uv.exe\" tool install mistral-vibe"
+    } else {
+        "curl -LsSf https://mistral.ai/vibe/install.sh | bash"
+    }
+}
+
+/// True when the `vibe` binary is reachable. Checks `PATH` (cross-platform, via
+/// `where`/`which`) and the well-known user install locations the installer uses,
+/// since Eldrun's inherited `PATH` may omit `~/.local/bin` even when a login shell
+/// would include it.
+#[tauri::command]
+pub async fn vibe_is_installed() -> bool {
+    if binary_on_path("vibe") {
+        return true;
+    }
+    let home = crate::paths::home_dir();
+    [".local/bin/vibe", ".cargo/bin/vibe"].iter().any(|rel| {
+        let base = home.join(rel);
+        if base.exists() {
+            return true;
+        }
+        // On Windows the install dir holds `vibe.exe` (the uv tool shim), which
+        // the bare extensionless relative path misses.
+        cfg!(target_os = "windows")
+            && ["exe", "cmd", "bat", "ps1"]
+                .iter()
+                .any(|ext| base.with_extension(ext).exists())
+    })
+}
+
+/// Install the Vibe CLI via its official per-user install command (see
+/// [`vibe_install_cmd`]).
+///
+/// Streams the installer's combined stdout+stderr to the frontend line-by-line via
+/// `vibe-install-progress` events (`{ line }`) so the UI can show live progress. The
+/// install is per-user (no `sudo` / administrator rights), so this runs
+/// non-interactively. Returns the install log on success, or the tail of the output
+/// on failure.
+///
+/// Per-OS the command is driven through the native shell: PowerShell on Windows
+/// (uv → `uv tool install mistral-vibe`), the POSIX shell on Linux/macOS.
+#[tauri::command]
+pub async fn install_vibe(app: tauri::AppHandle) -> Result<String, String> {
+    use std::io::{BufRead, BufReader};
+    use tauri::Emitter;
+
+    if vibe_is_installed().await {
+        return Ok("Vibe is already installed.".to_string());
+    }
+
+    let cmd = vibe_install_cmd();
+
+    // Build the OS-native invocation, merging stderr into stdout (`2>&1`) so a
+    // single reader sees every line in order.
+    let (program, args): (&str, Vec<String>) = if cfg!(target_os = "windows") {
+        (
+            "powershell",
+            vec![
+                "-NoProfile".into(),
+                "-ExecutionPolicy".into(),
+                "Bypass".into(),
+                "-Command".into(),
+                format!("{cmd} 2>&1"),
+            ],
+        )
+    } else if cfg!(any(target_os = "linux", target_os = "macos")) {
+        ("sh", vec!["-c".into(), format!("{cmd} 2>&1")])
+    } else {
+        return Err("Automatic install isn't supported on this OS. \
+            See https://docs.mistral.ai/getting-started/quickstarts/vibe-code/install-cli."
+            .to_string());
+    };
+
+    let emit = |line: &str| {
+        let _ = app.emit("vibe-install-progress", serde_json::json!({ "line": line }));
+    };
+    emit("Starting Vibe installer…");
+
+    // `command_no_window` suppresses the transient console window the PowerShell/
+    // `sh` wrapper would otherwise pop on Windows; progress is surfaced in-app.
+    let mut child = crate::paths::command_no_window(program)
+        .args(&args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to launch installer: {e}"))?;
+
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        for line in BufReader::new(stdout).lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            emit(&line);
+            lines.push(line);
+        }
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("installer did not finish: {e}"))?;
+    let combined = lines.join("\n").trim().to_string();
+
+    if !status.success() {
+        let tail: Vec<&str> = combined.lines().rev().take(20).collect();
+        let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
+        return Err(if tail.is_empty() {
+            format!("installer exited unsuccessfully ({status}). Run `{cmd}` in a terminal.")
+        } else {
+            tail
+        });
+    }
+
+    // The post-install check is the real source of truth.
+    if !vibe_is_installed().await {
+        return Err(format!(
+            "installer ran but `vibe` is still not detected. It may need a new shell so \
+            the install dir (`~/.local/bin`) is on PATH — run `{cmd}` in a terminal.\n\n{combined}"
+        ));
+    }
+
+    emit("Done.");
+    Ok(if combined.is_empty() {
+        "Vibe installed.".to_string()
+    } else {
+        combined
+    })
+}
+
+/// OS-appropriate Vibe install guidance for the frontend, so the UI renders the
+/// right command and wording without hardcoding a platform. `auto` is true when
+/// [`install_vibe`] can drive the install itself on this OS.
+#[derive(serde::Serialize, Clone)]
+pub struct VibeInstallStrategy {
+    /// "windows" | "macos" | "linux" | "unknown".
+    pub os: String,
+    /// The exact command Eldrun runs / the user can copy-paste.
+    pub command: String,
+    /// Whether one-click `install_vibe` is supported on this OS.
+    pub auto: bool,
+    /// Docs URL, always provided as a last resort.
+    pub docs: String,
+}
+
+/// Report the OS-dependent Vibe install strategy (detect OS + suggest command).
+#[tauri::command]
+pub async fn vibe_install_strategy() -> VibeInstallStrategy {
+    let os = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "unknown"
+    };
+    VibeInstallStrategy {
+        os: os.to_string(),
+        command: vibe_install_cmd().to_string(),
+        auto: cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )),
+        docs: "https://docs.mistral.ai/getting-started/quickstarts/vibe-code/install-cli"
+            .to_string(),
+    }
 }
 
 /// Return detailed info for every locally installed model, cross-referenced
@@ -150,26 +545,412 @@ pub async fn stop_ollama_model(model: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Pull (download or update) a model from the Ollama registry.
-/// Blocks until complete — may take minutes for large models.
-#[tauri::command]
-pub async fn pull_ollama_model(model: String) -> Result<(), String> {
-    let body = serde_json::json!({"model": model, "stream": false}).to_string();
-    let response = ollama_http("POST", "/api/pull", Some(&body))?;
+// ── Interrupted-pull tracking ─────────────────────────────────────────────
+// A pull that is in flight is recorded in a small JSON file so that if Eldrun
+// exits or crashes mid-download the model can be resumed on the next launch
+// (Ollama's /api/pull continues a partially-fetched model). The entry is added
+// when a pull starts and removed only on success; a caught error or a crash
+// leaves it behind so the UI can offer "Continue".
 
-    // Response may be multiple newline-delimited JSON objects; check last line.
-    for line in response.lines().rev() {
+fn pending_pulls_path() -> std::path::PathBuf {
+    crate::storage::state_dir().join("ollama_pending_pulls.json")
+}
+
+fn read_pending_pulls() -> Vec<String> {
+    crate::storage::read_json::<Vec<String>>(&pending_pulls_path()).unwrap_or_default()
+}
+
+fn mark_pending_pull(model: &str, active: bool) {
+    let mut list = read_pending_pulls();
+    let existed = list.iter().any(|m| m == model);
+    if active {
+        if existed {
+            return;
+        }
+        list.push(model.to_string());
+    } else {
+        if !existed {
+            return;
+        }
+        list.retain(|m| m != model);
+    }
+    let _ = crate::storage::write_json(&pending_pulls_path(), &list);
+}
+
+/// Model refs whose download was interrupted (Eldrun closed/crashed mid-pull).
+/// The UI reconciles these against the installed list and offers to resume them.
+#[tauri::command]
+pub async fn list_pending_ollama_pulls() -> Vec<String> {
+    read_pending_pulls()
+}
+
+/// An orphaned partial layer left in Ollama's blob cache by an interrupted pull.
+/// Ollama keys blobs by content digest with no on-disk name link, so a partial
+/// whose manifest was never written can't be mapped back to a model — we can
+/// only surface it (size) and offer to delete it to reclaim space.
+#[derive(serde::Serialize)]
+pub struct PartialBlob {
+    /// Short content digest, e.g. "6e9f90f02bb3".
+    pub digest: String,
+    /// Bytes on disk for the resumable partial layer.
+    pub size: u64,
+    /// Absolute path of the main `-partial` file (passed back to delete it).
+    pub path: String,
+}
+
+/// Ollama blob directories to scan (env override, user home, system service),
+/// de-duplicated and filtered to those that exist.
+fn ollama_blob_dirs() -> Vec<std::path::PathBuf> {
+    let override_dir = std::env::var_os("OLLAMA_MODELS").map(std::path::PathBuf::from);
+    let mut dirs = ollama_model_dir_candidates(
+        crate::paths::OsKind::current(),
+        &crate::paths::home_dir(),
+        override_dir.as_deref(),
+    )
+    .into_iter()
+    .map(|dir| dir.join("blobs"))
+    .collect::<Vec<_>>();
+    if let Some(system) = system_ollama_models_dir() {
+        dirs.push(system.join("blobs"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    dirs.into_iter()
+        .filter(|d| d.is_dir() && seen.insert(d.clone()))
+        .collect()
+}
+
+fn ollama_model_dir_candidates(
+    os: crate::paths::OsKind,
+    home: &std::path::Path,
+    override_dir: Option<&std::path::Path>,
+) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(path) = override_dir.filter(|path| !path.as_os_str().is_empty()) {
+        dirs.push(path.to_path_buf());
+    }
+    dirs.push(home.join(".ollama").join("models"));
+    if os == crate::paths::OsKind::Unix {
+        dirs.extend([
+            std::path::PathBuf::from("/usr/share/ollama/.ollama/models"),
+            std::path::PathBuf::from("/var/lib/ollama/.ollama/models"),
+            std::path::PathBuf::from("/var/lib/ollama/models"),
+        ]);
+    }
+    dirs
+}
+
+/// Orphaned partial download layers sitting in Ollama's blob cache, largest
+/// first. Each is an interrupted download with no recoverable model name.
+#[tauri::command]
+pub async fn list_orphan_partial_blobs() -> Vec<PartialBlob> {
+    let mut out: Vec<PartialBlob> = Vec::new();
+    for dir in ollama_blob_dirs() {
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // The main data file ends exactly in "-partial"; per-chunk metadata
+            // files are "-partial-<N>", so counting only the former lists each
+            // interrupted layer once.
+            if !name.ends_with("-partial") {
+                continue;
+            }
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            let digest = name
+                .strip_suffix("-partial")
+                .unwrap_or(&name)
+                .strip_prefix("sha256-")
+                .unwrap_or(&name)
+                .chars()
+                .take(12)
+                .collect::<String>();
+            out.push(PartialBlob {
+                digest,
+                size,
+                path: entry.path().to_string_lossy().to_string(),
+            });
+        }
+    }
+    out.sort_by(|a, b| b.size.cmp(&a.size));
+    out
+}
+
+/// Delete an orphaned partial layer (the main `-partial` file plus its per-chunk
+/// `-partial-<N>` siblings) to reclaim disk. Validated to a file named `*-partial`
+/// inside a `blobs` directory so it can't be used to remove anything else.
+#[tauri::command]
+pub async fn delete_partial_blob(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    let name = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("invalid path")?
+        .to_string();
+    if !name.ends_with("-partial") {
+        return Err("not a partial blob".into());
+    }
+    let dir = p.parent().ok_or("no parent directory")?;
+    if dir.file_name().and_then(|n| n.to_str()) != Some("blobs") {
+        return Err("not inside a blobs directory".into());
+    }
+    let mut removed = false;
+    let mut last_err: Option<String> = None;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for entry in rd.flatten() {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if fname == name || fname.starts_with(&format!("{name}-")) {
+                match std::fs::remove_file(entry.path()) {
+                    Ok(()) => removed = true,
+                    Err(e) => last_err = Some(e.to_string()),
+                }
+            }
+        }
+    }
+    if removed {
+        Ok(())
+    } else {
+        Err(last_err.unwrap_or_else(|| "nothing to remove".into()))
+    }
+}
+
+/// Forget an interrupted pull (e.g. the user dismisses it, or it finished).
+#[tauri::command]
+pub async fn clear_pending_ollama_pull(model: String) {
+    mark_pending_pull(&model, false);
+}
+
+// ── Pausable pulls ────────────────────────────────────────────────────────
+// Ollama's /api/pull has no native pause, but dropping the connection mid-stream
+// leaves the partial blobs on disk, and a later /api/pull continues from them. We
+// implement "pause" as a cooperative cancel: `pause_ollama_pull` records a model
+// ref, and the streaming loop in `pull_ollama_model` notices it on its next chunk,
+// stops reading, and returns — keeping the pending-pull record so the UI can offer
+// Resume (re-pull) or Delete (drop the partials).
+
+fn paused_pulls() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static S: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Request that an in-flight pull of `model` pause at the next streamed chunk.
+/// The partial download is preserved so it can be resumed later.
+#[tauri::command]
+pub async fn pause_ollama_pull(model: String) {
+    if let Ok(mut set) = paused_pulls().lock() {
+        set.insert(model);
+    }
+}
+
+/// True (consuming the flag) if a pause was requested for `model`.
+fn take_pause_request(model: &str) -> bool {
+    paused_pulls()
+        .lock()
+        .map(|mut set| set.remove(model))
+        .unwrap_or(false)
+}
+
+/// Delete a paused/interrupted download: clear its pending record, remove the
+/// partial blobs it left in Ollama's cache, and delete any committed model of the
+/// same ref. Best-effort — the partial blobs are resolved from the registry
+/// manifest's layer digests, so a missing network leaves them for the orphan-blob
+/// cleanup to reclaim instead. Always clears the pending record so the UI settles.
+#[tauri::command]
+pub async fn delete_ollama_pull(model: String) -> Result<(), String> {
+    mark_pending_pull(&model, false);
+    // Drop any committed manifest/blobs (no-op 404 if the pull never got that far).
+    let body = serde_json::json!({ "model": model }).to_string();
+    let _ = ollama_http("DELETE", "/api/delete", Some(&body));
+    // Remove the partial layers this model's pull was fetching.
+    if let Ok(digests) = registry_layer_digests(&model) {
+        delete_partials_for_digests(&digests);
+    }
+    Ok(())
+}
+
+/// The set of blob digests (`sha256:<hex>`) a model ref is composed of — its
+/// config plus every layer — read from the Ollama registry manifest. Used to map
+/// a paused download back to the specific `-partial` files it created.
+fn registry_layer_digests(model: &str) -> Result<Vec<String>, String> {
+    let v = fetch_registry_manifest(model)?;
+    let mut out: Vec<String> = Vec::new();
+    if let Some(d) = v["config"]["digest"].as_str() {
+        out.push(d.to_string());
+    }
+    if let Some(arr) = v["layers"].as_array() {
+        for l in arr {
+            if let Some(d) = l["digest"].as_str() {
+                out.push(d.to_string());
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Delete the `*-partial` (and per-chunk `*-partial-<N>`) files matching any of
+/// the given `sha256:<hex>` digests, across all known blob directories.
+fn delete_partials_for_digests(digests: &[String]) {
+    // Blob files are named `sha256-<hex>`; the manifest gives `sha256:<hex>`.
+    let stems: std::collections::HashSet<String> =
+        digests.iter().map(|d| d.replace(':', "-")).collect();
+    for dir in ollama_blob_dirs() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Some(rest) = name.strip_suffix("-partial").or_else(|| {
+                // per-chunk metadata file: `<stem>-partial-<N>`
+                name.rsplit_once("-partial-").map(|(head, _)| head)
+            }) else {
+                continue;
+            };
+            if stems.contains(rest) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+/// Load a model into memory now (an empty `/api/generate` warms it) and keep it
+/// resident until explicitly unloaded (`keep_alive: -1`), so the user controls
+/// residency by button rather than relying on first use to trigger the load.
+///
+/// Ollama's warm-up call returns only once the model is fully resident and streams
+/// no load percentage, so progress here is coarse: an `ollama-load-progress` event
+/// (`{ model, status }`, status `loading`→`success`/`error`) is emitted around the
+/// blocking call so any surface (the brain menu, the settings panel) can show a
+/// live "Loading into memory…" indicator for a load started anywhere.
+#[tauri::command]
+pub async fn load_ollama_model(app: tauri::AppHandle, model: String) -> Result<(), String> {
+    use tauri::Emitter;
+
+    let _ = app.emit(
+        "ollama-load-progress",
+        serde_json::json!({ "model": model, "status": "loading" }),
+    );
+    let body = serde_json::json!({"model": model, "keep_alive": -1}).to_string();
+    let result = ollama_http("POST", "/api/generate", Some(&body));
+    let _ = app.emit(
+        "ollama-load-progress",
+        match &result {
+            Ok(_) => serde_json::json!({ "model": model, "status": "success" }),
+            Err(e) => serde_json::json!({ "model": model, "status": "error", "error": e }),
+        },
+    );
+    result?;
+    Ok(())
+}
+
+/// Pull (download or update) a model from the Ollama registry, streaming
+/// download progress to the frontend. Emits `ollama-pull-progress` events
+/// (`{ model, status, completed, total }`) line-by-line as Ollama reports
+/// them so the UI can show a live percentage. Blocks until complete — may
+/// take minutes for large models.
+#[tauri::command]
+pub async fn pull_ollama_model(app: tauri::AppHandle, model: String) -> Result<(), String> {
+    use std::io::{BufRead, BufReader};
+    use tauri::Emitter;
+
+    let body = serde_json::json!({"model": model, "stream": true}).to_string();
+
+    let stream = TcpStream::connect("127.0.0.1:11434").map_err(|_| "not_running".to_string())?;
+    // 10-minute read timeout accommodates large model pulls between chunks.
+    stream
+        .set_read_timeout(Some(Duration::from_secs(600)))
+        .map_err(|e| format!("set timeout: {e}"))?;
+
+    let req = format!(
+        "POST /api/pull HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.as_bytes().len()
+    );
+    let mut writer = stream.try_clone().map_err(|e| format!("clone: {e}"))?;
+    writer
+        .write_all(req.as_bytes())
+        .map_err(|e| format!("write: {e}"))?;
+
+    // Record this as an in-flight pull; a crash/exit now leaves the entry behind
+    // so the next launch can offer to resume it. Removed only on success below.
+    mark_pending_pull(&model, true);
+    // Consume any stale pause flag from a previous run so this fresh pull (e.g. a
+    // resume) isn't cancelled before it starts.
+    take_pause_request(&model);
+
+    let mut reader = BufReader::new(stream);
+
+    // Consume the HTTP status line + headers up to the blank separator,
+    // capturing the status code so a 4xx/5xx can surface as an error.
+    let mut status_code = 200u16;
+    let mut header = String::new();
+    reader
+        .read_line(&mut header)
+        .map_err(|e| format!("read: {e}"))?;
+    if let Some(code) = header
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+    {
+        status_code = code;
+    }
+    loop {
+        let mut h = String::new();
+        let n = reader.read_line(&mut h).map_err(|e| format!("read: {e}"))?;
+        if n == 0 || h == "\r\n" || h == "\n" {
+            break;
+        }
+    }
+
+    // Stream the newline-delimited JSON body, forwarding each progress line.
+    let mut last_err: Option<String> = None;
+    loop {
+        // Cooperative pause: if the user asked to pause this pull, stop reading and
+        // drop the connection. Ollama keeps the partial blobs, and the pending-pull
+        // record is left in place so the UI can offer Resume or Delete.
+        if take_pause_request(&model) {
+            let _ = app.emit(
+                "ollama-pull-progress",
+                serde_json::json!({ "model": model, "status": "paused" }),
+            );
+            return Ok(());
+        }
+        let mut line = String::new();
+        let n = reader
+            .read_line(&mut line)
+            .map_err(|e| format!("read: {e}"))?;
+        if n == 0 {
+            break;
+        }
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
             if let Some(err) = v["error"].as_str() {
-                return Err(err.to_string());
+                last_err = Some(err.to_string());
+                continue;
             }
+            let _ = app.emit(
+                "ollama-pull-progress",
+                serde_json::json!({
+                    "model": model,
+                    "status": v["status"].as_str().unwrap_or_default(),
+                    "completed": v["completed"].as_u64().unwrap_or(0),
+                    "total": v["total"].as_u64().unwrap_or(0),
+                }),
+            );
         }
-        break;
     }
+
+    if let Some(err) = last_err {
+        return Err(friendly_ollama_error(&err));
+    }
+    if status_code >= 400 {
+        return Err(format!("HTTP {status_code}"));
+    }
+    // Completed cleanly — drop it from the interrupted-pull record.
+    mark_pending_pull(&model, false);
     Ok(())
 }
 
@@ -179,6 +960,217 @@ pub async fn delete_ollama_model(model: String) -> Result<(), String> {
     let body = serde_json::json!({"model": model}).to_string();
     ollama_http("DELETE", "/api/delete", Some(&body))?;
     Ok(())
+}
+
+/// Fetch the Ollama registry manifest (config + layers) for a model ref. Shells
+/// out to `curl` (no Rust TLS dep); `model` may be `name`, `name:tag`, or
+/// `namespace/name:tag`, with an absent tag defaulting to `latest`. Shared by the
+/// size hint and the paused-download partial-blob resolver.
+fn fetch_registry_manifest(model: &str) -> Result<serde_json::Value, String> {
+    validate_model_name(model)?;
+
+    let (name, tag) = match model.split_once(':') {
+        Some((n, t)) => (n, t),
+        None => (model, "latest"),
+    };
+    // Bare names live under the implicit `library/` namespace on the registry.
+    let repo = if name.contains('/') {
+        name.to_string()
+    } else {
+        format!("library/{name}")
+    };
+    let url = format!("https://registry.ollama.ai/v2/{repo}/manifests/{tag}");
+
+    // No shell — args are passed directly, and `validate_model_name` already
+    // restricts the characters that reach the URL. `command_no_window` keeps
+    // `curl` from flashing a console window on Windows (Win10/11 ship curl.exe).
+    let output = crate::paths::command_no_window("curl")
+        .args([
+            "-fsSL",
+            "-H",
+            "Accept: application/vnd.docker.distribution.manifest.v2+json",
+            &url,
+        ])
+        .output()
+        .map_err(|e| format!("failed to query registry: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!("registry returned no manifest for {model}"));
+    }
+
+    serde_json::from_slice(&output.stdout).map_err(|e| format!("manifest json: {e}"))
+}
+
+/// Total download size in bytes for an installable model tag, read from the
+/// Ollama registry manifest. Used to show a model's size on hover before the
+/// user commits to a pull. Sums the manifest's config + layer sizes.
+#[tauri::command]
+pub async fn ollama_registry_size(model: String) -> Result<u64, String> {
+    let v = fetch_registry_manifest(&model)?;
+
+    let layers_total: u64 = v["layers"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|l| l["size"].as_u64()).sum())
+        .unwrap_or(0);
+    let config_size = v["config"]["size"].as_u64().unwrap_or(0);
+    let total = layers_total + config_size;
+
+    if total == 0 {
+        return Err(format!("no size info in manifest for {model}"));
+    }
+    Ok(total)
+}
+
+// ── Live registry browse (ollama.com/search) ─────────────────────────────────
+//
+// Ollama exposes no JSON catalog API, but its search page is server-rendered
+// HTML carrying stable `x-test-*` hooks. We fetch it with `curl` (no TLS dep,
+// same as `ollama_registry_size`) and parse those hooks. This surfaces *every*
+// model in the registry — far beyond the curated `list_installable_models` — and
+// supports Ollama's own filters: free-text query, capability filter, sort, and
+// pagination for lazy loading. NB: Ollama provides no country/year metadata, so
+// "recency" comes only from its relative `updated` label and the `newest` sort.
+
+/// One model row parsed from an ollama.com/search results page.
+#[derive(serde::Serialize, Clone, PartialEq, Debug)]
+pub struct RegistryModel {
+    pub name: String,
+    pub description: String,
+    /// Capability badges: e.g. "tools", "vision", "thinking", "embedding", "audio".
+    pub capabilities: Vec<String>,
+    /// Parameter-size tags e.g. ["8b", "70b"] (also "e2b" for Gemma-3n variants).
+    pub sizes: Vec<String>,
+    /// Human pull count as shown, e.g. "65.8K".
+    pub pulls: String,
+    /// Relative update label as shown, e.g. "1 week ago".
+    pub updated: String,
+}
+
+/// Percent-encode a search query for safe inclusion in the URL's query string.
+/// Keeps RFC-3986 unreserved characters; everything else becomes %XX.
+fn percent_encode_query(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push_str(&format!("{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Minimal HTML-entity unescape for the text fragments we extract (names,
+/// descriptions). Covers the entities Ollama's templates actually emit.
+fn html_unescape(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&#x27;", "'")
+        .replace("&nbsp;", " ")
+}
+
+/// Text content right after an attribute marker: find `marker`, then the next
+/// '>', then return text up to the following '<' (unescaped, trimmed).
+fn tag_text_after(card: &str, marker: &str) -> Option<String> {
+    let i = card.find(marker)?;
+    let rest = &card[i + marker.len()..];
+    let gt = rest.find('>')?;
+    let after = &rest[gt + 1..];
+    let lt = after.find('<')?;
+    Some(html_unescape(after[..lt].trim()))
+}
+
+/// All text contents for a marker that repeats within a single card (e.g. the
+/// capability and size badges).
+fn all_tag_texts(card: &str, marker: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while let Some(i) = card[pos..].find(marker) {
+        let start = pos + i + marker.len();
+        let Some(gt) = card[start..].find('>') else {
+            break;
+        };
+        let after = start + gt + 1;
+        if let Some(lt) = card[after..].find('<') {
+            let text = html_unescape(card[after..after + lt].trim());
+            if !text.is_empty() {
+                out.push(text);
+            }
+        }
+        pos = after;
+    }
+    out
+}
+
+/// Parse the ollama.com/search HTML into model rows. Pure + tested: each
+/// `<li x-test-model …>` becomes one `RegistryModel`.
+fn parse_search_html(html: &str) -> Vec<RegistryModel> {
+    // Each result card starts at an `x-test-model` marker; the first split chunk
+    // is the page header before any card, so skip it.
+    html.split("x-test-model")
+        .skip(1)
+        .filter_map(|card| {
+            let name = tag_text_after(card, "x-test-search-response-title")?;
+            if name.is_empty() {
+                return None;
+            }
+            // Description is the first <p> with the max-w-lg class.
+            let description = tag_text_after(card, "class=\"max-w-lg").unwrap_or_default();
+            Some(RegistryModel {
+                name,
+                description,
+                capabilities: all_tag_texts(card, "x-test-capability"),
+                sizes: all_tag_texts(card, "x-test-size"),
+                pulls: tag_text_after(card, "x-test-pull-count").unwrap_or_default(),
+                updated: tag_text_after(card, "x-test-updated").unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+/// Browse the full Ollama registry via its search page. Returns one page
+/// (~20 rows) of results so the frontend can lazy-load; an empty vec means no
+/// more pages. `capability` filters by a single capability ("" = any);
+/// `sort` is "newest" or anything else (popular, the default). `page` is 1-based.
+#[tauri::command]
+pub async fn search_ollama_registry(
+    query: String,
+    capability: String,
+    sort: String,
+    page: u32,
+) -> Result<Vec<RegistryModel>, String> {
+    let page = page.max(1);
+    let mut url = format!(
+        "https://ollama.com/search?q={}&page={page}",
+        percent_encode_query(query.trim())
+    );
+    // Only forward a capability we recognise, so we never inject arbitrary params.
+    const CAPS: [&str; 6] = ["tools", "vision", "thinking", "embedding", "audio", "cloud"];
+    if CAPS.contains(&capability.as_str()) {
+        url.push_str(&format!("&c={capability}"));
+    }
+    if sort == "newest" {
+        url.push_str("&o=newest");
+    }
+
+    // No shell — args passed directly; the URL is built only from a validated
+    // capability/sort and a percent-encoded query. `command_no_window` avoids a
+    // console-window flash on Windows.
+    let output = crate::paths::command_no_window("curl")
+        .args(["-fsSL", &url])
+        .output()
+        .map_err(|e| format!("failed to query registry: {e}"))?;
+
+    if !output.status.success() {
+        return Err("ollama.com search request failed".to_string());
+    }
+
+    let html = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_search_html(&html))
 }
 
 /// Return the built-in catalog of popular installable models.
@@ -366,6 +1358,54 @@ pub async fn list_installable_models() -> Vec<CatalogEntry> {
     ]
 }
 
+/// True when the Ollama server is reachable on its default port. Cheap enough
+/// (200 ms TCP connect) to poll from the UI for a live status indicator.
+#[tauri::command]
+pub async fn ollama_is_running() -> bool {
+    ollama_listening()
+}
+
+/// Three-state health of the local Ollama server for the header status lamp:
+/// - `"stopped"` — server unreachable (lamp red),
+/// - `"idle"` — server up but no model loaded in memory (lamp yellow),
+/// - `"loaded"` — at least one model currently loaded in memory (lamp green).
+///
+/// One round trip: `/api/ps` lists the models resident in memory, and a
+/// successful response also proves the server is reachable, so it doubles as
+/// the running check.
+#[tauri::command]
+pub async fn ollama_status() -> &'static str {
+    match ollama_http("GET", "/api/ps", None) {
+        Err(_) => "stopped",
+        Ok(body) => {
+            let loaded = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v["models"].as_array().map(|a| !a.is_empty()))
+                .unwrap_or(false);
+            if loaded {
+                "loaded"
+            } else {
+                "idle"
+            }
+        }
+    }
+}
+
+/// Total VRAM (bytes) currently in use across all models resident in Ollama's
+/// memory, summed from `/api/ps`'s `size_vram`. Returns `0` when the server is
+/// unreachable or no model is loaded on the GPU, so callers can treat it as a
+/// plain "GPU bytes in use" gauge that degrades to zero rather than erroring.
+pub fn total_vram_in_use() -> u64 {
+    ollama_http("GET", "/api/ps", None)
+        .ok()
+        .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["models"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .map(|m| m["size_vram"].as_u64().unwrap_or(0))
+        .sum()
+}
+
 fn ollama_listening() -> bool {
     TcpStream::connect_timeout(
         &"127.0.0.1:11434".parse().unwrap(),
@@ -386,26 +1426,35 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
         return Ok(());
     }
 
-    // Try the system service first — it runs as the ollama user and sees all
-    // system-wide models (e.g. /usr/share/ollama/.ollama/models).
-    let service_started = std::process::Command::new("systemctl")
-        .args(["start", "ollama"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    // Try the system service first (Linux only) — it runs as the ollama user and
+    // sees all system-wide models (e.g. /usr/share/ollama/.ollama/models).
+    #[cfg(target_os = "linux")]
+    {
+        let service_started = std::process::Command::new("systemctl")
+            .args(["start", "ollama"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
 
-    if service_started {
-        let deadline = Instant::now() + Duration::from_secs(8);
-        if wait_for_ollama(deadline) {
-            return Ok(());
+        if service_started {
+            let deadline = Instant::now() + Duration::from_secs(8);
+            if wait_for_ollama(deadline) {
+                return Ok(());
+            }
         }
     }
 
     // Fall back to spawning a user process, but point it at the system models
-    // directory if it exists so models installed via the system service are visible.
-    let mut cmd = std::process::Command::new("ollama");
+    // directory if it exists so models installed via the system service are
+    // visible. Resolve `ollama` to an absolute path: on Windows the winget/GUI
+    // installer drops `ollama.exe` under %LOCALAPPDATA%\Programs\Ollama, which is
+    // detected by `ollama_is_installed` but is not on this process's PATH.
+    let ollama_bin = crate::paths::resolve_offpath_binary("ollama")
+        .map(std::ffi::OsString::from)
+        .unwrap_or_else(|| "ollama".into());
+    let mut cmd = crate::paths::command_no_window(&ollama_bin);
     cmd.arg("serve")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -414,8 +1463,7 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
         cmd.env("OLLAMA_MODELS", sys_models);
     }
 
-    cmd.spawn()
-        .map_err(|e| format!("failed to start ollama serve: {e}"))?;
+    crate::paths::spawn_reaped(cmd).map_err(|e| format!("failed to start ollama serve: {e}"))?;
 
     let deadline = Instant::now() + Duration::from_secs(8);
     if wait_for_ollama(deadline) {
@@ -438,15 +1486,17 @@ fn wait_for_ollama(deadline: Instant) -> bool {
 /// Returns the path to the system-wide Ollama models directory if it exists
 /// and contains at least one model manifest.
 fn system_ollama_models_dir() -> Option<std::path::PathBuf> {
-    let candidates = [
-        "/usr/share/ollama/.ollama/models",
-        "/var/lib/ollama/.ollama/models",
-        "/var/lib/ollama/models",
-    ];
-    for path in &candidates {
-        let p = std::path::Path::new(path);
-        if p.join("manifests").exists() {
-            return Some(p.to_owned());
+    #[cfg(target_os = "linux")]
+    {
+        for path in [
+            "/usr/share/ollama/.ollama/models",
+            "/var/lib/ollama/.ollama/models",
+            "/var/lib/ollama/models",
+        ] {
+            let p = std::path::Path::new(path);
+            if p.join("manifests").exists() {
+                return Some(p.to_owned());
+            }
         }
     }
     None
@@ -473,29 +1523,331 @@ pub async fn list_ollama_models() -> Result<Vec<String>, String> {
 // ── Local code/text autocomplete (TODO Group M #45) ──────────────────────────
 //
 // DECISION A: completion is LOCAL OLLAMA ONLY and OPT-IN. We reuse `ollama_http`
-// against the same `/api/generate` endpoint as the rest of this module — no
-// remote endpoint is ever contacted. The frontend gates the call behind a
-// per-type `autocomplete` setting (default OFF) and an explicit Ctrl+Space, and
-// only fires after `ensure_ollama_running` succeeds; if Ollama isn't reachable
-// this returns the standard `not_running` error so the UI can fail silently.
+// against the local `/api/chat` endpoint — no remote endpoint is ever contacted.
+// The frontend gates the call behind a per-type `autocomplete` setting (default
+// OFF) and runs it against whichever model is currently loaded in memory; if none
+// is loaded / Ollama isn't reachable this returns `not_running` and the UI shows a
+// "load a local model" hint.
+//
+// We use /api/chat (not /api/generate) with a dedicated system role: a general
+// instruct/chat model like llama3.2 otherwise reads the surrounding text as a
+// *task* and replies "Here is the reformatted version…" instead of continuing it.
 
-/// Build the fill-in-the-middle prompt sent to the model: the text before the
-/// caret (`prefix`) and after it (`suffix`), with a short instruction so a
-/// general instruct model returns only the continuation. Pure + tested.
-fn completion_prompt(prefix: &str, suffix: &str, language: &str) -> String {
-    let lang = if language.is_empty() { "text" } else { language };
-    format!(
-        "You are an autocomplete engine for a code/text editor. Continue the {lang} \
-document at the cursor. Reply with ONLY the text that should be inserted at the \
-cursor — no explanation, no code fences, no repetition of the surrounding text.\n\n\
-<before>\n{prefix}\n</before>\n<after>\n{suffix}\n</after>\n\nInsertion:"
-    )
+/// System message that turns a general instruct/chat model into a fill-in-the-
+/// middle completion engine: it must INSERT between BEFORE and AFTER (not author a
+/// fresh reply). How *much* to insert is left to the per-request TASK hint (see
+/// [`CompletionMode`]) so the same engine serves sentence, block, and whole-scope
+/// completions. Verified against llama3.2:3b. Pure + sent as the chat `system` role.
+const COMPLETION_SYSTEM: &str = "You are a fill-in-the-middle autocomplete engine inside a code/text \
+editor. You receive the text BEFORE the cursor and the text AFTER the cursor. Output ONLY the raw text \
+to INSERT at the cursor so that BEFORE + your insertion + AFTER reads as one correct, natural, continuous \
+piece of text. Continue directly from the end of BEFORE and join smoothly into the start of AFTER. Insert \
+exactly what the TASK asks for and no more. Never repeat, rewrite, or quote any text from BEFORE or AFTER. \
+No preamble, no quotes, no code fences, no explanations, no labels.";
+
+/// How much of a completion to generate (#45 modes). Chosen per file type in
+/// settings and cycled live with Shift+Tab while a suggestion is showing. Drives
+/// both the TASK hint in [`completion_prompt`] and the `num_predict` output cap.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CompletionMode {
+    /// Finish the current word/sentence/line only (default; least intrusive).
+    Sentence,
+    /// Finish the current code block / paragraph (may span several lines).
+    Block,
+    /// Complete the whole enclosing function or scope.
+    Scope,
 }
 
-/// Strip wrapping artefacts a chat model sometimes adds around a raw completion
-/// (leading/trailing code fences). Pure + tested.
+impl CompletionMode {
+    /// Parse the frontend's mode string; anything unknown/absent falls back to the
+    /// conservative `Sentence` mode.
+    fn parse(s: &str) -> Self {
+        match s {
+            "block" => Self::Block,
+            "scope" => Self::Scope,
+            _ => Self::Sentence,
+        }
+    }
+
+    /// Output cap (tokens). Larger modes need more room, but each stays bounded so
+    /// a local model can't run away generating the rest of the file.
+    fn num_predict(self) -> u32 {
+        match self {
+            Self::Sentence => 128,
+            Self::Block => 256,
+            Self::Scope => 512,
+        }
+    }
+}
+
+/// True when the cursor sits in the middle of a sentence — i.e. the last
+/// non-space/tab character of `prefix` is a word/comma rather than a sentence
+/// terminator, a newline, or the start of the document. Used to bias the model
+/// toward finishing the current sentence first. Pure + tested.
+fn is_mid_sentence(prefix: &str) -> bool {
+    match prefix.trim_end_matches([' ', '\t']).chars().last() {
+        None => false,
+        Some(c) => !matches!(c, '.' | '!' | '?' | ':' | ';' | '\n'),
+    }
+}
+
+/// Line-comment token(s) for `language`, used to recognise an "intent comment" the
+/// user wrote to describe the code they want next (e.g. `// new for loop to compute
+/// the sum`). Known code languages map to their comment syntax; prose-ish languages
+/// (markdown / plain text / unknown-empty) return an empty slice so headings like
+/// `# Title` are never mistaken for a code-intent comment; any other named (but
+/// unrecognised) language falls back to the two most common tokens. Pure + tested.
+fn line_comment_tokens(language: &str) -> &'static [&'static str] {
+    match language.to_ascii_lowercase().as_str() {
+        "rust" | "c" | "cpp" | "c++" | "h" | "hpp" | "java" | "javascript" | "js" | "jsx"
+        | "typescript" | "ts" | "tsx" | "go" | "swift" | "kotlin" | "kt" | "scala" | "dart"
+        | "php" | "csharp" | "cs" | "c#" | "objc" | "objectivec" | "groovy" | "rust-objc" => {
+            &["//"]
+        }
+        "python" | "py" | "ruby" | "rb" | "bash" | "sh" | "shell" | "zsh" | "perl" | "pl" | "r"
+        | "yaml" | "yml" | "toml" | "makefile" | "make" | "dockerfile" | "elixir" | "ex"
+        | "nix" => &["#"],
+        "sql" | "lua" | "haskell" | "hs" | "ada" | "elm" => &["--"],
+        "lisp" | "clojure" | "clj" | "scheme" | "racket" | "asm" => &[";"],
+        "tex" | "latex" | "matlab" | "erlang" | "erl" => &["%"],
+        // Prose / unknown-empty: do not treat any line as a code-intent comment.
+        "" | "markdown" | "md" | "mdx" | "text" | "plain" | "txt" | "rst" | "html" | "xml"
+        | "css" => &[],
+        // Some other named code-ish language we don't have a table entry for.
+        _ => &["//", "#"],
+    }
+}
+
+/// If `line` is a single comment line, return its human-readable body (comment
+/// token, any repeated token chars like `///`/`##`, surrounding `/* */`, and
+/// whitespace stripped); otherwise `None`. Pure + tested.
+fn strip_comment_line(line: &str, tokens: &[&str]) -> Option<String> {
+    let t = line.trim();
+    // Single-line block comment `/* … */` (C-family only).
+    if tokens.contains(&"//") && t.starts_with("/*") {
+        let body = t.trim_start_matches("/*").trim_end_matches("*/").trim();
+        return Some(body.to_string());
+    }
+    for tok in tokens {
+        if let Some(rest) = t.strip_prefix(tok) {
+            // Drop extra repeats of the token's first char (`///`, `##`, `--!`).
+            let lead = tok.chars().next().unwrap_or(' ');
+            return Some(rest.trim_start_matches(lead).trim().to_string());
+        }
+    }
+    None
+}
+
+/// Detect an "intent comment" sitting immediately before the caret and return its
+/// combined text, so [`completion_prompt`] can switch from continuing prose to
+/// *implementing the comment as code*. Fires when the caret is on a fresh (blank or
+/// indent-only) line directly below a run of comment lines, or at the end of a
+/// comment line itself; consecutive comment lines above are merged into one
+/// instruction. Returns `None` for non-code languages, when there is no comment, or
+/// when the text doesn't read like an instruction (needs ≥2 words and ≥3 letters,
+/// so a lone `//` or a `// ----` divider never triggers). Pure + tested.
+fn trailing_comment_intent(prefix: &str, language: &str) -> Option<String> {
+    let tokens = line_comment_tokens(language);
+    if tokens.is_empty() {
+        return None;
+    }
+    let lines: Vec<&str> = prefix.split('\n').collect();
+    let n = lines.len();
+    if n == 0 {
+        return None;
+    }
+    // Index of the last comment line of the block to read.
+    let last = if lines[n - 1].trim().is_empty() {
+        // Caret on its own fresh line: the comment block is just above it.
+        if n < 2 {
+            return None;
+        }
+        n - 2
+    } else if strip_comment_line(lines[n - 1], tokens).is_some() {
+        // Caret at the end of a comment line itself.
+        n - 1
+    } else {
+        return None;
+    };
+    // Walk up the consecutive run of comment lines ending at `last`.
+    let mut texts = Vec::new();
+    let mut i = last as isize;
+    while i >= 0 {
+        match strip_comment_line(lines[i as usize], tokens) {
+            Some(t) => texts.push(t),
+            None => break,
+        }
+        i -= 1;
+    }
+    texts.reverse();
+    let intent = texts
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let letters = intent.chars().filter(|c| c.is_alphabetic()).count();
+    if letters >= 3 && intent.split_whitespace().count() >= 2 {
+        Some(intent)
+    } else {
+        None
+    }
+}
+
+/// A reference file the user attached to inform a completion (#45 context files).
+/// Its `content` is included (size-capped) as read-only CONTEXT in the prompt so
+/// the local model can draw on sibling project files when completing the current
+/// one. Deserialized from the frontend's `context` array.
+#[derive(serde::Deserialize)]
+pub struct ContextFile {
+    pub name: String,
+    pub content: String,
+}
+
+/// Per-file and total caps (bytes) on attached context, so a few large files can't
+/// blow past a small local model's context window. Each file is truncated to the
+/// per-file cap; files are included in order until the total cap is reached.
+const MAX_CONTEXT_PER_FILE: usize = 6000;
+const MAX_CONTEXT_TOTAL: usize = 24000;
+
+/// Truncate `s` to at most `max` bytes, backing off to the nearest char boundary
+/// so the result is always valid UTF-8. Pure.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
+/// Build the read-only CONTEXT preamble from attached reference files, size-capped
+/// (see [`MAX_CONTEXT_PER_FILE`]/[`MAX_CONTEXT_TOTAL`]). Each file becomes a labelled
+/// `--- <name> ---` block; empty/whitespace-only files are skipped. Returns an empty
+/// string when there is nothing to include, so [`completion_prompt`] can omit the
+/// section entirely. Pure + tested.
+fn build_context_block(files: &[ContextFile]) -> String {
+    let mut out = String::new();
+    let mut total = 0usize;
+    for f in files {
+        if total >= MAX_CONTEXT_TOTAL {
+            break;
+        }
+        let cap = MAX_CONTEXT_PER_FILE.min(MAX_CONTEXT_TOTAL - total);
+        let body = truncate_chars(f.content.trim(), cap);
+        if body.is_empty() {
+            continue;
+        }
+        total += body.len();
+        out.push_str("--- ");
+        out.push_str(f.name.trim());
+        out.push_str(" ---\n");
+        out.push_str(&body);
+        out.push_str("\n\n");
+    }
+    out
+}
+
+/// Build the user message paired with [`COMPLETION_SYSTEM`]: a per-caret TASK hint
+/// plus the text before the caret (`prefix`) and after it (`suffix`) as labelled
+/// sections, so the model inserts at the cursor rather than rewriting the document.
+/// The TASK is selected by `mode`: `Sentence` keeps the insertion to the current
+/// word/sentence/line (and, when mid-sentence, biases toward finishing it first),
+/// `Block` completes the current block/paragraph, and `Scope` the whole enclosing
+/// function or scope. When `context` is non-empty it is inserted as a read-only
+/// REFERENCE FILES section before BEFORE/AFTER. Pure + tested.
+fn completion_prompt(
+    prefix: &str,
+    suffix: &str,
+    language: &str,
+    mode: CompletionMode,
+    context: &str,
+) -> String {
+    let lang = if language.is_empty() {
+        "text"
+    } else {
+        language
+    };
+    // When the caret sits just after a natural-language comment, switch from
+    // continuing text to *implementing that comment as code* (#45 intent comments).
+    let task: String = if let Some(desc) = trailing_comment_intent(prefix, language) {
+        format!(
+            "TASK: The comment line(s) immediately above the cursor describe the code to write \
+next: \"{desc}\". Output the {lang} code that implements that description, starting on a new line \
+below the comment, matching the surrounding indentation and style, and joining smoothly into AFTER. \
+Write only that code — do not repeat, rewrite, or extend the comment, and add no explanations."
+        )
+    } else {
+        match mode {
+            CompletionMode::Sentence => {
+                if is_mid_sentence(prefix) {
+                    "TASK: The cursor is in the middle of a sentence. Output only what completes the \
+current word and sentence so it joins smoothly into AFTER. Keep it to a single sentence or line; do \
+not begin a new paragraph."
+                } else {
+                    "TASK: Continue from the end of BEFORE with a brief, on-topic insertion that leads \
+into AFTER. Keep it to one sentence or line; do not begin a new paragraph or topic."
+                }
+            }
+            CompletionMode::Block => {
+                "TASK: Continue from the end of BEFORE, completing the current line and the rest of the \
+current code block, statement, or paragraph. You may span several lines, but stop at the end of that \
+block — do not write the remainder of the document."
+            }
+            CompletionMode::Scope => {
+                "TASK: Continue from the end of BEFORE, completing the entire enclosing function, block, \
+or scope — its full body, with balanced brackets and indentation — so it joins into AFTER. Stop at \
+the end of that function or scope; do not continue past it."
+            }
+        }
+        .to_string()
+    };
+    let reference = if context.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "REFERENCE FILES (read-only context from the project — use only to inform the \
+insertion; never output, quote, or repeat them):\n{context}\n"
+        )
+    };
+    format!("Language: {lang}\n{task}\n\n{reference}BEFORE:\n{prefix}\n\nAFTER:\n{suffix}")
+}
+
+/// Strip wrapping artefacts a chat model sometimes adds around a raw completion:
+/// a leading conversational preamble line ("Here is the continuation:") and
+/// leading/trailing code fences. Conservative — a preamble line is dropped only
+/// when it clearly reads as a preface AND ends with ':', so real first lines are
+/// never eaten. Pure + tested.
 fn clean_completion(raw: &str) -> String {
-    let mut s = raw.trim_end_matches('\n').to_string();
+    let mut s = raw.trim_matches('\n').to_string();
+
+    // Defense in depth (the system prompt already forbids it): drop a leading
+    // preamble line if the model added one anyway.
+    if let Some(nl) = s.find('\n') {
+        let first = s[..nl].trim();
+        let lower = first.to_ascii_lowercase();
+        let is_preamble = first.ends_with(':')
+            && [
+                "here is",
+                "here's",
+                "here are",
+                "sure",
+                "certainly",
+                "of course",
+                "the continuation",
+                "continuation",
+                "the reformatted",
+                "the completed",
+            ]
+            .iter()
+            .any(|p| lower.starts_with(p));
+        if is_preamble {
+            s = s[nl + 1..].trim_start_matches('\n').to_string();
+        }
+    }
+
     // Drop a leading ```lang fence and a trailing ``` if the model wrapped it.
     if s.starts_with("```") {
         if let Some(nl) = s.find('\n') {
@@ -508,6 +1860,48 @@ fn clean_completion(raw: &str) -> String {
     s
 }
 
+/// Smallest overlap we bother trimming, in chars — short enough to catch a
+/// repeated word/operator ("fox", "a +") but above incidental 1–2 char matches.
+const MIN_SEAM_OVERLAP: usize = 3;
+
+/// Largest number of leading chars of `b` that are also a suffix of `a` (aligned
+/// on char boundaries); 0 when there is no overlap. Completions are short, so the
+/// quadratic scan is cheap. Pure + tested.
+fn overlap_len(a: &str, b: &str) -> usize {
+    let max = a.len().min(b.len());
+    for k in (1..=max).rev() {
+        if b.is_char_boundary(k) && a.is_char_boundary(a.len() - k) && a[a.len() - k..] == b[..k] {
+            return k;
+        }
+    }
+    0
+}
+
+/// Remove text the model echoed from the surrounding context, so only the genuinely
+/// new insertion remains. Small models often repeat the word/line just before the
+/// cursor (BEFORE "…return " → completion "return a + b") or pre-echo the text just
+/// after it. Trims a leading run of `completion` that repeats the tail of `prefix`
+/// and a trailing run that repeats the head of `suffix`, ignoring whitespace at the
+/// seam. Pure + tested.
+fn trim_context_overlap(prefix: &str, suffix: &str, completion: &str) -> String {
+    // Leading overlap with the end of BEFORE.
+    let head = completion.trim_start();
+    let p = prefix.trim_end();
+    let mut c = match overlap_len(p, head) {
+        n if n >= MIN_SEAM_OVERLAP => head[n..].trim_start(),
+        _ => completion,
+    };
+
+    // Trailing overlap with the start of AFTER.
+    let tail = c.trim_end();
+    let s = suffix.trim_start();
+    if overlap_len(tail, s) >= MIN_SEAM_OVERLAP {
+        let m = overlap_len(tail, s);
+        c = tail[..tail.len() - m].trim_end();
+    }
+    c.to_string()
+}
+
 /// Single-shot local completion: given the text around the caret, ask the local
 /// Ollama `model` for the insertion. Local-only (`ollama_http` talks to
 /// 127.0.0.1:11434); returns `not_running` when Ollama isn't reachable.
@@ -517,22 +1911,194 @@ pub async fn complete_text(
     suffix: String,
     model: String,
     language: String,
+    mode: Option<String>,
+    context: Option<Vec<ContextFile>>,
 ) -> Result<String, String> {
-    let prompt = completion_prompt(&prefix, &suffix, &language);
-    // `stream: false` returns one JSON object with the full `response`. Cap the
-    // output and use a low temperature so completions are short and deterministic.
+    let mode = CompletionMode::parse(mode.as_deref().unwrap_or("sentence"));
+    let context_block = context
+        .as_deref()
+        .map(build_context_block)
+        .unwrap_or_default();
+    let user = completion_prompt(&prefix, &suffix, &language, mode, &context_block);
+    // Implementing a comment needs room for a whole statement/block even in the
+    // conservative Sentence mode, so give intent completions at least the Block cap.
+    let num_predict = if trailing_comment_intent(&prefix, &language).is_some() {
+        mode.num_predict().max(CompletionMode::Block.num_predict())
+    } else {
+        mode.num_predict()
+    };
+    // `/api/chat` with a system role keeps a chat model from treating the text as
+    // a task to rewrite. `stream: false` returns one JSON object; low temperature
+    // + a mode-scaled output cap keep completions tight and deterministic.
     let body = serde_json::json!({
         "model": model,
-        "prompt": prompt,
         "stream": false,
-        "options": { "temperature": 0.1, "num_predict": 128 }
+        "messages": [
+            { "role": "system", "content": COMPLETION_SYSTEM },
+            { "role": "user", "content": user }
+        ],
+        "options": { "temperature": 0.1, "num_predict": num_predict }
     })
     .to_string();
-    let response = ollama_http("POST", "/api/generate", Some(&body))?;
+    let response = ollama_http("POST", "/api/chat", Some(&body))?;
     let v: serde_json::Value =
         serde_json::from_str(&response).map_err(|e| format!("ollama json: {e}"))?;
-    let text = v["response"].as_str().unwrap_or("");
-    Ok(clean_completion(text))
+    let text = v["message"]["content"].as_str().unwrap_or("");
+    let text = clean_completion(text);
+    Ok(trim_context_overlap(&prefix, &suffix, &text))
+}
+
+// ── Local grammar / spelling check (TODO Group M #45 follow-up) ───────────────
+//
+// Like the autocomplete above, this is LOCAL OLLAMA ONLY and OPT-IN: it reuses
+// `ollama_http` against 127.0.0.1's `/api/chat`, never a remote endpoint. The
+// editor sends the document text; the model returns a JSON list of issues, each
+// with the offending substring, a category (spelling/grammar/style), a one-line
+// message, and a suggested fix. The frontend resolves each issue to a character
+// range and underlines it (colour by category). Offsets are NOT asked of the
+// model — LLMs count characters unreliably — so we send the text with 1-based
+// line-number prefixes and the model reports WHICH line each issue is on, which
+// the frontend resolver uses to disambiguate duplicates.
+
+/// One proofreading issue the local model found. `bad` is the exact offending
+/// substring as it appears in the source (so the frontend can locate it); `line`
+/// is its 1-based line in the submitted text, used as a resolution hint.
+#[derive(serde::Serialize, Clone, PartialEq, Debug)]
+pub struct GrammarIssue {
+    /// 1-based line number in the submitted text.
+    pub line: u32,
+    /// The exact offending text as it appears in the source.
+    pub bad: String,
+    /// Suggested replacement ("" when the fix is simply to delete `bad`).
+    pub suggestion: String,
+    /// "spelling" | "grammar" | "style" (anything else is normalised to "grammar").
+    pub category: String,
+    /// Short human-readable explanation of the problem.
+    pub message: String,
+}
+
+/// Largest document (chars) we submit for a grammar check, so a huge file can't
+/// blow past a small local model's context window. Lines beyond the cap are not
+/// checked; because the cap only drops a trailing slice, the 1-based line numbers
+/// of everything before it stay valid for the frontend resolver.
+const MAX_GRAMMAR_CHARS: usize = 12000;
+
+/// System message turning a chat model into a strict proofreader that emits only
+/// machine-readable JSON. Pure + sent as the chat `system` role.
+const GRAMMAR_SYSTEM: &str = "You are a meticulous proofreader inside a text editor. You receive a \
+document whose lines are each prefixed with \"<n>: \" (a 1-based line number then a colon and a space). \
+Find ONLY genuine spelling, grammar, and punctuation mistakes — do not rewrite for style preference, do \
+not flag correct text, and do not invent issues. Respond with ONLY a JSON array (no prose, no code \
+fences) of objects, each exactly: {\"line\": <number>, \"bad\": \"<exact text from the document WITHOUT \
+the line-number prefix>\", \"suggestion\": \"<corrected replacement for bad>\", \"category\": one of \
+\"spelling\", \"grammar\", \"style\", \"message\": \"<short reason>\"}. The \"bad\" string must be copied \
+verbatim from the document so it can be located, and kept as short as possible (the smallest span that \
+contains the error). If there are no mistakes, respond with exactly [].";
+
+/// Per-language preamble appended to the user message so the model ignores markup
+/// it shouldn't proofread (LaTeX commands, Markdown syntax). Pure + tested.
+fn grammar_language_hint(language: &str) -> &'static str {
+    match language {
+        "latex" | "tex" => {
+            "This is a LaTeX document: ignore commands (\\command), math (between $...$ or \\[...\\]), \
+labels, citations, and environment markers — proofread only the human-readable prose.\n"
+        }
+        "markdown" => {
+            "This is Markdown: ignore code spans/blocks, link/image syntax, and formatting markers — \
+proofread only the human-readable prose.\n"
+        }
+        _ => "",
+    }
+}
+
+/// Prefix each line of `text` with its 1-based number and a colon, so the model
+/// can report which line an issue is on. The numbering matches the frontend's
+/// notion of a line (split on '\n'), so the resolver's line hint lines up. Pure +
+/// tested.
+fn number_lines(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + text.len() / 8 + 8);
+    for (i, line) in text.split('\n').enumerate() {
+        out.push_str(&format!("{}: {}\n", i + 1, line));
+    }
+    out
+}
+
+/// Extract the JSON array from a model reply that may carry stray prose or code
+/// fences, then build issues from it. Tolerant: a reply with no array, or a
+/// single malformed object, yields the issues that DID parse (a failed check
+/// shows fewer/no marks rather than erroring). The category is normalised to one
+/// of the three known kinds and entries with an empty `bad` are dropped. Pure +
+/// tested.
+fn parse_grammar_issues(raw: &str) -> Vec<GrammarIssue> {
+    let start = match raw.find('[') {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+    let end = match raw.rfind(']') {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+    if end <= start {
+        return Vec::new();
+    }
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&raw[start..=end]).unwrap_or_default();
+    arr.into_iter()
+        .filter_map(|v| {
+            let bad = v["bad"].as_str().unwrap_or("").to_string();
+            if bad.trim().is_empty() {
+                return None;
+            }
+            let line = v["line"].as_u64().unwrap_or(1).max(1) as u32;
+            let category = match v["category"].as_str().unwrap_or("grammar") {
+                "spelling" => "spelling",
+                "style" => "style",
+                _ => "grammar",
+            }
+            .to_string();
+            Some(GrammarIssue {
+                line,
+                bad,
+                suggestion: v["suggestion"].as_str().unwrap_or("").to_string(),
+                category,
+                message: v["message"].as_str().unwrap_or("").to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Single-shot local grammar/spelling check: send the document `text` to the
+/// local Ollama `model` and return the issues it found. Local-only (`ollama_http`
+/// talks to 127.0.0.1:11434); returns `not_running` when Ollama isn't reachable.
+/// `language` (the file's syntax language, e.g. "latex"/"markdown") tailors the
+/// prompt so markup isn't proofread as prose.
+#[tauri::command]
+pub async fn check_grammar(
+    text: String,
+    model: String,
+    language: String,
+) -> Result<Vec<GrammarIssue>, String> {
+    let truncated = truncate_chars(&text, MAX_GRAMMAR_CHARS);
+    let numbered = number_lines(&truncated);
+    let hint = grammar_language_hint(&language);
+    let user = format!("{hint}Proofread this document:\n\n{numbered}");
+    // `/api/chat` with a system role keeps a chat model from treating the text as
+    // a task; `stream: false` returns one JSON object; temperature 0 + a generous
+    // output cap let it list every issue deterministically.
+    let body = serde_json::json!({
+        "model": model,
+        "stream": false,
+        "messages": [
+            { "role": "system", "content": GRAMMAR_SYSTEM },
+            { "role": "user", "content": user }
+        ],
+        "options": { "temperature": 0.0, "num_predict": 1024 }
+    })
+    .to_string();
+    let response = ollama_http("POST", "/api/chat", Some(&body))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&response).map_err(|e| format!("ollama json: {e}"))?;
+    let content = v["message"]["content"].as_str().unwrap_or("");
+    Ok(parse_grammar_issues(content))
 }
 
 /// Result of preparing a local Ollama agent for vibe.
@@ -611,6 +2177,180 @@ pub async fn ensure_vibe_ollama_model(model: String) -> Result<String, String> {
     Ok(alias)
 }
 
+// ── Local-model coding agents (ollama launch + fallbacks) ─────────────────────
+//
+// Beyond Mistral's `vibe` (see `prepare_local_agent`), the single active local
+// Ollama model can drive other coding agents. The preferred path is Ollama's own
+// `ollama launch <agent> --model <model>` (shipped v0.15): it wires Claude Code,
+// Codex, OpenCode and Droid to the local server — including Claude Code's
+// Anthropic-compatible endpoint, which we can't hand-roll the way vibe gets an
+// OpenAI one. When `ollama launch` is unavailable we fall back to a direct
+// invocation for the agents that natively accept a local Ollama endpoint.
+
+/// A coding agent that can drive the local Ollama model.
+#[derive(Clone, Copy)]
+struct LocalDriver {
+    /// Stable id used by the frontend picker and `prepare_local_launch`.
+    id: &'static str,
+    /// Human-readable label.
+    label: &'static str,
+    /// The agent's own binary name. The driver is only offered when this is
+    /// actually installed — `ollama launch <sub>` still drives the agent's CLI,
+    /// so a missing binary means the tab can't run regardless of `launch`.
+    bin: &'static str,
+    /// `ollama launch <sub> --model <model>` subcommand, when supported.
+    launch_sub: Option<&'static str>,
+    /// Direct fallback when `ollama launch` is unavailable: the binary to spawn
+    /// and its args (with the `{model}` placeholder substituted). `None` means
+    /// the agent can only be wired up by `ollama launch` itself.
+    fallback: Option<(&'static str, &'static [&'static str])>,
+}
+
+/// Registry of local-model coding agents, in picker order. `vibe` is intentionally
+/// absent — it keeps its bespoke per-model VIBE_HOME path in `prepare_local_agent`.
+const LOCAL_DRIVERS: &[LocalDriver] = &[
+    LocalDriver {
+        id: "claude",
+        label: "Claude Code",
+        bin: "claude",
+        launch_sub: Some("claude"),
+        // Claude Code needs an Anthropic-compatible endpoint, which only
+        // `ollama launch` stands up — no reliable hand-rolled fallback.
+        fallback: None,
+    },
+    LocalDriver {
+        id: "codex",
+        label: "Codex",
+        bin: "codex",
+        launch_sub: Some("codex"),
+        // `codex --oss -m <model>` talks to the local Ollama server directly.
+        fallback: Some(("codex", &["--oss", "-m", "{model}"])),
+    },
+    LocalDriver {
+        id: "opencode",
+        label: "OpenCode",
+        bin: "opencode",
+        launch_sub: Some("opencode"),
+        // OpenCode's built-in `ollama` provider; `--model ollama/<model>` selects it.
+        fallback: Some(("opencode", &["--model", "ollama/{model}"])),
+    },
+    LocalDriver {
+        id: "droid",
+        label: "Droid",
+        bin: "droid",
+        launch_sub: Some("droid"),
+        // Droid is configured via ~/.factory/config.json; only `ollama launch`
+        // writes that wiring for us.
+        fallback: None,
+    },
+    LocalDriver {
+        id: "openclaw",
+        label: "OpenClaw",
+        bin: "openclaw",
+        launch_sub: Some("openclaw"),
+        // Launch-only: `ollama launch openclaw` installs OpenClaw if missing and
+        // stands up its gateway against the local Ollama endpoint. There's no
+        // documented standalone flag to point `openclaw` at a local server, so
+        // no hand-rolled fallback.
+        fallback: None,
+    },
+];
+
+/// True when the installed Ollama exposes the `launch` subcommand (v0.15+).
+/// Cheap probe: `ollama launch --help` exits 0 only when the subcommand exists.
+fn ollama_has_launch() -> bool {
+    crate::paths::command_no_window("ollama")
+        .args(["launch", "--help"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Build the fallback launch spec for a driver, substituting `{model}`. Pure +
+/// tested; `prepare_local_launch` uses it only when `ollama launch` is missing.
+fn fallback_spec(driver: &LocalDriver, model: &str) -> Option<LocalLaunchSpec> {
+    driver.fallback.map(|(bin, args)| LocalLaunchSpec {
+        cmd: bin.to_string(),
+        args: args.iter().map(|a| a.replace("{model}", model)).collect(),
+    })
+}
+
+/// One local-model driver plus whether Eldrun currently has a way to launch it.
+#[derive(serde::Serialize)]
+pub struct LocalDriverInfo {
+    pub id: String,
+    pub label: String,
+    /// True when the agent's binary is installed *and* Eldrun has a way to wire
+    /// it to the local model (`ollama launch` supports it, or a direct fallback
+    /// exists). The menu hides drivers that aren't installed or are unreachable.
+    pub available: bool,
+}
+
+/// List the local-model coding agents (Claude Code, Codex, OpenCode, Droid) with
+/// their availability, so the Local Model menu can offer them alongside
+/// Mistral/vibe. Probes `ollama launch` once.
+#[tauri::command]
+pub async fn list_local_drivers() -> Vec<LocalDriverInfo> {
+    let has_launch = ollama_has_launch();
+    LOCAL_DRIVERS
+        .iter()
+        .map(|d| LocalDriverInfo {
+            id: d.id.to_string(),
+            label: d.label.to_string(),
+            // Both must hold: the agent itself is installed, and we have a wiring
+            // path (ollama launch or a direct fallback). A driver whose binary is
+            // missing (e.g. Droid) is no longer offered.
+            available: crate::commands::agents::binary_is_installed(d.bin)
+                && ((d.launch_sub.is_some() && has_launch) || d.fallback.is_some()),
+        })
+        .collect()
+}
+
+/// The command + args to spawn for a local-model agent tab.
+#[derive(serde::Serialize)]
+pub struct LocalLaunchSpec {
+    pub cmd: String,
+    pub args: Vec<String>,
+}
+
+/// Resolve how to drive the local Ollama `model` through `agent` (one of the
+/// [`LOCAL_DRIVERS`] ids). Prefers `ollama launch <agent> --model <model>`; falls
+/// back to a direct invocation when launch is unavailable. Errors when the agent
+/// is unknown, or it is launch-only and `ollama launch` is missing. The model is
+/// validated and passed as a discrete arg (no shell), so it can't inject.
+#[tauri::command]
+pub async fn prepare_local_launch(agent: String, model: String) -> Result<LocalLaunchSpec, String> {
+    validate_model_name(&model)?;
+    let driver = LOCAL_DRIVERS
+        .iter()
+        .find(|d| d.id == agent)
+        .ok_or_else(|| format!("unknown local driver: {agent}"))?;
+
+    if let Some(sub) = driver.launch_sub {
+        if ollama_has_launch() {
+            return Ok(LocalLaunchSpec {
+                cmd: "ollama".to_string(),
+                args: vec![
+                    "launch".to_string(),
+                    sub.to_string(),
+                    "--model".to_string(),
+                    model,
+                ],
+            });
+        }
+    }
+
+    fallback_spec(driver, &model).ok_or_else(|| {
+        format!(
+            "{} can only drive a local model through `ollama launch`, which isn't \
+             available. Update Ollama (v0.15+) to enable it.",
+            driver.label
+        )
+    })
+}
+
 fn sanitize_alias(model: &str) -> String {
     model.replace(':', "-")
 }
@@ -631,9 +2371,7 @@ fn validate_model_name(model: &str) -> Result<(), String> {
         .chars()
         .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/' | '@')))
     {
-        return Err(format!(
-            "invalid character {bad:?} in model name '{model}'"
-        ));
+        return Err(format!("invalid character {bad:?} in model name '{model}'"));
     }
     Ok(())
 }
@@ -724,6 +2462,37 @@ mod tests {
         }
     }
 
+    // ── local-driver registry (ollama launch + fallbacks) ────────────────────
+
+    #[test]
+    fn codex_fallback_substitutes_model_for_oss_mode() {
+        let d = LOCAL_DRIVERS.iter().find(|d| d.id == "codex").unwrap();
+        let spec = fallback_spec(d, "qwen2.5-coder:7b").expect("codex has a fallback");
+        assert_eq!(spec.cmd, "codex");
+        assert_eq!(spec.args, vec!["--oss", "-m", "qwen2.5-coder:7b"]);
+    }
+
+    #[test]
+    fn opencode_fallback_prefixes_the_ollama_provider() {
+        let d = LOCAL_DRIVERS.iter().find(|d| d.id == "opencode").unwrap();
+        let spec = fallback_spec(d, "llama3.2").expect("opencode has a fallback");
+        assert_eq!(spec.cmd, "opencode");
+        assert_eq!(spec.args, vec!["--model", "ollama/llama3.2"]);
+    }
+
+    #[test]
+    fn launch_only_drivers_have_no_fallback() {
+        // Claude Code / Droid need `ollama launch`; there is no hand-rolled spec.
+        for id in ["claude", "droid"] {
+            let d = LOCAL_DRIVERS.iter().find(|d| d.id == id).unwrap();
+            assert!(
+                fallback_spec(d, "any:model").is_none(),
+                "{id} must be launch-only"
+            );
+            assert!(d.launch_sub.is_some(), "{id} must support ollama launch");
+        }
+    }
+
     #[test]
     fn model_block_with_validated_name_has_no_stray_quotes_or_newlines_in_value() {
         // Defense in depth: once validated, the interpolated name can never break
@@ -800,11 +2569,111 @@ mod tests {
         );
     }
 
+    // ── friendly error mapping: broken Ollama runner (#vibe 500) ─────────────
+
+    #[test]
+    fn friendly_ollama_error_detects_missing_runner() {
+        // The exact shape Ollama returns when its llama-server binary is absent —
+        // this is what surfaces through vibe as an "internal server error".
+        let raw = "error starting llama-server: llama-server binary not found \
+            (checked: /usr/local/lib/ollama/llama-server, ...). Run 'cmake -S \
+            llama/server --preset cpu && cmake --build --preset cpu' first";
+        let msg = friendly_ollama_error(raw);
+        assert!(
+            msg.contains("inference runner") && msg.contains("incomplete"),
+            "missing-runner error should be rewritten to an actionable message, got: {msg}"
+        );
+        // It points the user at the reinstall command.
+        assert!(msg.contains(ollama_install_cmd()));
+        // And it no longer leaks the raw cmake/build hint.
+        assert!(!msg.contains("cmake"));
+    }
+
+    #[test]
+    fn friendly_ollama_error_is_case_insensitive() {
+        let msg = friendly_ollama_error("LLAMA-SERVER binary NOT FOUND");
+        assert!(msg.contains("inference runner"));
+    }
+
+    #[test]
+    fn friendly_ollama_error_passes_through_unrelated() {
+        // Errors we don't special-case must be returned verbatim, not swallowed.
+        for raw in [
+            "model 'foo' not found, try pulling it first",
+            "out of memory",
+            "HTTP 500",
+        ] {
+            assert_eq!(friendly_ollama_error(raw), raw);
+        }
+    }
+
+    // ── registry search HTML parsing ─────────────────────────────────────────
+
+    // Trimmed-down but structurally faithful fixture of two ollama.com/search
+    // result cards (same `x-test-*` hooks the live page emits).
+    const SEARCH_FIXTURE: &str = r#"
+      <ul role="list">
+      <li x-test-model class="flex">
+        <a href="/library/glm-5.2">
+          <h2><span x-test-search-response-title>glm-5.2</span></h2>
+          <p class="max-w-lg break-words text-md">GLM-5.2 is Z.ai&#39;s flagship model &amp; more.</p>
+          <span x-test-capability class="...">tools</span>
+          <span x-test-capability class="...">thinking</span>
+          <span x-test-size class="...">8b</span>
+          <span x-test-size class="...">355b</span>
+          <span x-test-pull-count>65.8K</span>
+          <span x-test-updated>1 week ago</span>
+        </a>
+      </li>
+      <li x-test-model class="flex">
+        <a href="/library/nomic-embed-text">
+          <h2><span x-test-search-response-title>nomic-embed-text</span></h2>
+          <p class="max-w-lg break-words text-md">High-quality text embeddings.</p>
+          <span x-test-capability class="...">embedding</span>
+          <span x-test-size class="...">latest</span>
+          <span x-test-pull-count>30M</span>
+          <span x-test-updated>1 year ago</span>
+        </a>
+      </li>
+      </ul>"#;
+
+    #[test]
+    fn parse_search_html_extracts_all_fields() {
+        let models = parse_search_html(SEARCH_FIXTURE);
+        assert_eq!(models.len(), 2);
+
+        let glm = &models[0];
+        assert_eq!(glm.name, "glm-5.2");
+        // HTML entities are unescaped.
+        assert_eq!(glm.description, "GLM-5.2 is Z.ai's flagship model & more.");
+        assert_eq!(glm.capabilities, vec!["tools", "thinking"]);
+        assert_eq!(glm.sizes, vec!["8b", "355b"]);
+        assert_eq!(glm.pulls, "65.8K");
+        assert_eq!(glm.updated, "1 week ago");
+
+        let nomic = &models[1];
+        assert_eq!(nomic.name, "nomic-embed-text");
+        assert_eq!(nomic.capabilities, vec!["embedding"]);
+        assert_eq!(nomic.sizes, vec!["latest"]);
+    }
+
+    #[test]
+    fn parse_search_html_empty_when_no_cards() {
+        assert!(parse_search_html("<html><body>no results</body></html>").is_empty());
+    }
+
+    #[test]
+    fn percent_encode_query_escapes_unsafe_chars() {
+        assert_eq!(percent_encode_query("llama 3.2"), "llama%203.2");
+        assert_eq!(percent_encode_query("a&b=c"), "a%26b%3Dc");
+        assert_eq!(percent_encode_query("qwen2.5-coder"), "qwen2.5-coder");
+    }
+
     // ── completion prompt construction (#45) ──────────────────────────────────
 
     #[test]
     fn completion_prompt_includes_prefix_suffix_and_language() {
-        let p = completion_prompt("let x =", " + 1;", "rust");
+        let p = completion_prompt("let x =", " + 1;", "rust", CompletionMode::Sentence, "");
         assert!(p.contains("let x ="), "prefix must be embedded");
         assert!(p.contains(" + 1;"), "suffix must be embedded");
         assert!(p.contains("rust"), "language must be named");
@@ -814,8 +2683,216 @@ mod tests {
 
     #[test]
     fn completion_prompt_defaults_empty_language_to_text() {
-        let p = completion_prompt("a", "b", "");
-        assert!(p.contains("text document") || p.contains("the text document"));
+        let p = completion_prompt("a", "b", "", CompletionMode::Sentence, "");
+        assert!(
+            p.contains("Language: text"),
+            "empty language defaults to text"
+        );
+    }
+
+    #[test]
+    fn completion_prompt_labels_before_and_after_sections() {
+        // The BEFORE/AFTER framing is what stops a chat model rewriting the doc.
+        let p = completion_prompt("pre", "post", "rust", CompletionMode::Sentence, "");
+        assert!(p.contains("BEFORE:\npre"));
+        assert!(p.contains("AFTER:\npost"));
+        assert!(p.find("BEFORE:").unwrap() < p.find("AFTER:").unwrap());
+    }
+
+    #[test]
+    fn build_context_block_labels_files_and_skips_empty() {
+        let files = vec![
+            ContextFile {
+                name: "util.rs".into(),
+                content: "fn helper() {}".into(),
+            },
+            ContextFile {
+                name: "blank.rs".into(),
+                content: "   \n  ".into(),
+            },
+            ContextFile {
+                name: "types.rs".into(),
+                content: "struct Foo;".into(),
+            },
+        ];
+        let block = build_context_block(&files);
+        assert!(block.contains("--- util.rs ---\nfn helper() {}"));
+        assert!(block.contains("--- types.rs ---\nstruct Foo;"));
+        // Whitespace-only files contribute nothing.
+        assert!(!block.contains("blank.rs"));
+        // No files → empty string, so the prompt omits the section.
+        assert_eq!(build_context_block(&[]), "");
+    }
+
+    #[test]
+    fn build_context_block_caps_total_size() {
+        let big = "x".repeat(20_000);
+        let files = vec![
+            ContextFile {
+                name: "a".into(),
+                content: big.clone(),
+            },
+            ContextFile {
+                name: "b".into(),
+                content: big.clone(),
+            },
+            ContextFile {
+                name: "c".into(),
+                content: big,
+            },
+        ];
+        let block = build_context_block(&files);
+        // Each file is per-file capped and the total is bounded; allow for the
+        // labels/separators on top of the included bytes.
+        assert!(
+            block.len() <= MAX_CONTEXT_TOTAL + 256,
+            "total context stays bounded"
+        );
+        // The first file always makes it in.
+        assert!(block.contains("--- a ---"));
+    }
+
+    #[test]
+    fn truncate_chars_respects_utf8_boundaries() {
+        // Cutting mid-multibyte must back off to a valid boundary, never panic.
+        let s = "a\u{00e9}b"; // 'é' is 2 bytes → byte index 2 splits it
+        assert_eq!(truncate_chars(s, 2), "a");
+        assert_eq!(truncate_chars(s, 100), s);
+    }
+
+    #[test]
+    fn completion_prompt_embeds_reference_files_before_the_cursor_sections() {
+        let ctx = build_context_block(&[ContextFile {
+            name: "lib.rs".into(),
+            content: "pub fn answer() -> i32 { 42 }".into(),
+        }]);
+        let p = completion_prompt("let x = ", "", "rust", CompletionMode::Sentence, &ctx);
+        assert!(p.contains("REFERENCE FILES"));
+        assert!(p.contains("pub fn answer"));
+        // Reference context precedes the BEFORE/AFTER framing.
+        assert!(p.find("REFERENCE FILES").unwrap() < p.find("BEFORE:").unwrap());
+        // With no context the section is omitted entirely.
+        let plain = completion_prompt("let x = ", "", "rust", CompletionMode::Sentence, "");
+        assert!(!plain.contains("REFERENCE FILES"));
+    }
+
+    #[test]
+    fn completion_mode_parse_and_caps_scale_by_mode() {
+        assert_eq!(CompletionMode::parse("block"), CompletionMode::Block);
+        assert_eq!(CompletionMode::parse("scope"), CompletionMode::Scope);
+        // Unknown / absent → the conservative default.
+        assert_eq!(CompletionMode::parse("sentence"), CompletionMode::Sentence);
+        assert_eq!(CompletionMode::parse("bogus"), CompletionMode::Sentence);
+        // Caps grow with scope so bigger modes have room to finish.
+        assert!(
+            CompletionMode::Sentence.num_predict() < CompletionMode::Block.num_predict()
+                && CompletionMode::Block.num_predict() < CompletionMode::Scope.num_predict()
+        );
+    }
+
+    #[test]
+    fn completion_prompt_block_and_scope_drop_the_single_sentence_bias() {
+        // Block/scope allow multi-line output; they must NOT carry the sentence
+        // mode's "do not begin a new paragraph" restriction.
+        let mid = "fn add(a: i32, b: i32) {\n    ";
+        let block = completion_prompt(mid, "\n}", "rust", CompletionMode::Block, "");
+        assert!(block.contains("block"));
+        assert!(!block.contains("middle of a sentence"));
+
+        let scope = completion_prompt(mid, "\n}", "rust", CompletionMode::Scope, "");
+        assert!(scope.contains("function") && scope.contains("scope"));
+        assert!(!scope.contains("middle of a sentence"));
+    }
+
+    #[test]
+    fn trailing_comment_intent_detects_comment_above_a_fresh_line() {
+        // Caret on a fresh indented line directly below a `//` comment.
+        let p = "fn main() {\n    // new for loop to compute the sum\n    ";
+        assert_eq!(
+            trailing_comment_intent(p, "rust").as_deref(),
+            Some("new for loop to compute the sum")
+        );
+        // Caret at the end of the comment line itself (no newline yet).
+        let p2 = "# compute the average of the list";
+        assert_eq!(
+            trailing_comment_intent(p2, "python").as_deref(),
+            Some("compute the average of the list")
+        );
+    }
+
+    #[test]
+    fn trailing_comment_intent_merges_consecutive_comment_lines() {
+        let p = "    // compute the sum of all even numbers\n    /// and return the result\n    ";
+        assert_eq!(
+            trailing_comment_intent(p, "rust").as_deref(),
+            Some("compute the sum of all even numbers and return the result")
+        );
+        // Single-line block comment is recognised in C-family languages.
+        let blk = "/* build the lookup table */\n";
+        assert_eq!(
+            trailing_comment_intent(blk, "typescript").as_deref(),
+            Some("build the lookup table")
+        );
+    }
+
+    #[test]
+    fn trailing_comment_intent_ignores_non_instructions_and_prose() {
+        // Real code on the caret line → not an intent comment.
+        assert_eq!(trailing_comment_intent("let x = 1;\n", "rust"), None);
+        // Dividers / lone tokens don't read as instructions.
+        assert_eq!(trailing_comment_intent("// ----\n", "rust"), None);
+        assert_eq!(trailing_comment_intent("//\n", "rust"), None);
+        // Comment is no longer adjacent to the caret (intervening code line).
+        let gap = "// describe the loop\nlet y = 2;\n";
+        assert_eq!(trailing_comment_intent(gap, "rust"), None);
+        // Markdown headings must never be treated as code-intent comments.
+        assert_eq!(trailing_comment_intent("# My Heading\n", "markdown"), None);
+        // Shebang line is not a natural-language instruction.
+        assert_eq!(trailing_comment_intent("#!/bin/bash\n", "bash"), None);
+    }
+
+    #[test]
+    fn completion_prompt_switches_to_implement_mode_for_intent_comments() {
+        let p = "fn main() {\n    // new for loop to compute the sum\n    ";
+        let prompt = completion_prompt(p, "\n}", "rust", CompletionMode::Sentence, "");
+        // Implements the comment as code rather than continuing prose.
+        assert!(prompt.contains("implements that description"));
+        assert!(prompt.contains("new for loop to compute the sum"));
+        assert!(!prompt.contains("middle of a sentence"));
+        // Without a trailing comment it keeps the ordinary sentence behaviour.
+        let plain = completion_prompt("let x = ", "", "rust", CompletionMode::Sentence, "");
+        assert!(!plain.contains("implements that description"));
+    }
+
+    #[test]
+    fn is_mid_sentence_detects_unfinished_sentences() {
+        // Mid-sentence: ends on a word, comma, or trailing space after a word.
+        assert!(is_mid_sentence("The main advantages are"));
+        assert!(is_mid_sentence("I am writing to "));
+        assert!(is_mid_sentence("a, b,"));
+        // Not mid-sentence: terminator, newline, or empty (start of document).
+        assert!(!is_mid_sentence("Done."));
+        assert!(!is_mid_sentence("Why?"));
+        assert!(!is_mid_sentence("Header:"));
+        assert!(!is_mid_sentence("paragraph end.\n"));
+        assert!(!is_mid_sentence(""));
+    }
+
+    #[test]
+    fn completion_prompt_biases_to_finishing_the_sentence_when_mid_sentence() {
+        let mid = completion_prompt(
+            "I am writing to ",
+            " Best regards",
+            "text",
+            CompletionMode::Sentence,
+            "",
+        );
+        assert!(mid.contains("middle of a sentence"));
+        assert!(mid.contains("complete") || mid.contains("completes"));
+        // At a sentence boundary it switches to the plain-continuation hint.
+        let cont = completion_prompt("First line.\n", "", "text", CompletionMode::Sentence, "");
+        assert!(!cont.contains("middle of a sentence"));
+        assert!(cont.contains("Continue"));
     }
 
     #[test]
@@ -824,6 +2901,138 @@ mod tests {
         assert_eq!(clean_completion("```rust\nfoo()\n```"), "foo()\n");
         // No fence → unchanged (bar a trailing newline trim).
         assert_eq!(clean_completion("plain"), "plain");
+    }
+
+    #[test]
+    fn clean_completion_strips_conversational_preamble() {
+        // The exact failure the user hit: a chat model prefacing the answer.
+        assert_eq!(
+            clean_completion("Here is the reformatted version of the text:\nreturn a + b"),
+            "return a + b",
+        );
+        assert_eq!(clean_completion("Sure, here you go:\nx = 1"), "x = 1");
+        // A real first line that merely ends in ':' is NOT a preamble — keep it.
+        assert_eq!(
+            clean_completion("def foo():\n    return 1"),
+            "def foo():\n    return 1",
+        );
+        // A normal multi-line completion is untouched.
+        assert_eq!(clean_completion("a + b\nc + d"), "a + b\nc + d");
+    }
+
+    #[test]
+    fn trim_context_overlap_drops_echoed_prefix_tail() {
+        // The exact case from llama3.2:3b: BEFORE ends with "return ", model echoes it.
+        assert_eq!(
+            trim_context_overlap("    return ", "\n\nprint(x)", "return a + b"),
+            "a + b",
+        );
+        // Repeated trailing word.
+        assert_eq!(
+            trim_context_overlap("The quick brown fox", " over the dog", "fox jumps"),
+            "jumps",
+        );
+    }
+
+    #[test]
+    fn trim_context_overlap_drops_echoed_suffix_head() {
+        // Model pre-echoes the start of AFTER at the end of its insertion.
+        assert_eq!(
+            trim_context_overlap("a = ", " + 1", "compute() + 1"),
+            "compute()",
+        );
+    }
+
+    #[test]
+    fn trim_context_overlap_keeps_unrelated_completion() {
+        // No overlap → returned unchanged.
+        assert_eq!(
+            trim_context_overlap("I am writing to ", " Best regards", "express my thanks"),
+            "express my thanks",
+        );
+        // A 1–2 char incidental match is below the threshold, so it is NOT trimmed.
+        assert_eq!(
+            trim_context_overlap("foo a", "", "a list of items"),
+            "a list of items"
+        );
+    }
+
+    #[test]
+    fn overlap_len_finds_seam() {
+        assert_eq!(overlap_len("    return", "return a"), 6);
+        assert_eq!(overlap_len("brown fox", "fox jumps"), 3);
+        assert_eq!(overlap_len("hello", "world"), 0);
+    }
+
+    // ── grammar check: line numbering + JSON parsing ──────────────────────────
+
+    #[test]
+    fn number_lines_prefixes_each_line_one_based() {
+        assert_eq!(number_lines("a\nb"), "1: a\n2: b\n");
+        // A trailing newline produces a final (empty) numbered line; harmless.
+        assert_eq!(number_lines("only"), "1: only\n");
+    }
+
+    #[test]
+    fn parse_grammar_issues_reads_a_clean_array() {
+        let raw =
+            r#"[{"line":2,"bad":"teh","suggestion":"the","category":"spelling","message":"typo"}]"#;
+        let issues = parse_grammar_issues(raw);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(
+            issues[0],
+            GrammarIssue {
+                line: 2,
+                bad: "teh".into(),
+                suggestion: "the".into(),
+                category: "spelling".into(),
+                message: "typo".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_grammar_issues_strips_prose_and_fences() {
+        // Models sometimes wrap the array in prose or a ```json fence; we extract
+        // the outermost [...] regardless.
+        let raw = "Sure! Here are the issues:\n```json\n[{\"line\":1,\"bad\":\"alot\",\"suggestion\":\"a lot\",\"category\":\"grammar\",\"message\":\"two words\"}]\n```";
+        let issues = parse_grammar_issues(raw);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].bad, "alot");
+        assert_eq!(issues[0].category, "grammar");
+    }
+
+    #[test]
+    fn parse_grammar_issues_normalises_category_and_drops_empty_bad() {
+        let raw = r#"[
+            {"line":1,"bad":"x","category":"weird","message":"m"},
+            {"line":1,"bad":"   ","category":"spelling","message":"blank"},
+            {"line":3,"bad":"y","category":"style"}
+        ]"#;
+        let issues = parse_grammar_issues(raw);
+        assert_eq!(issues.len(), 2, "blank-bad entry is dropped");
+        // Unknown category → grammar; missing suggestion/message default to "".
+        assert_eq!(issues[0].category, "grammar");
+        assert_eq!(issues[0].suggestion, "");
+        // Known categories pass through.
+        assert_eq!(issues[1].category, "style");
+    }
+
+    #[test]
+    fn parse_grammar_issues_empty_or_no_array() {
+        assert!(parse_grammar_issues("[]").is_empty());
+        assert!(parse_grammar_issues("no issues found").is_empty());
+        assert!(parse_grammar_issues("").is_empty());
+    }
+
+    #[test]
+    fn grammar_language_hint_targets_markup_languages() {
+        assert!(grammar_language_hint("latex").contains("LaTeX"));
+        assert!(grammar_language_hint("tex").contains("LaTeX"));
+        assert!(grammar_language_hint("markdown").contains("Markdown"));
+        // Plain text / code → no special markup hint.
+        assert_eq!(grammar_language_hint("text"), "");
+        assert_eq!(grammar_language_hint("rust"), "");
     }
 
     // ── sanitize_alias turns ':' into '-' ─────────────────────────────────────
@@ -854,6 +3063,20 @@ mod tests {
         // active_model appears exactly once.
         let active_model_count = cfg.matches(&format!("active_model = \"{alias}\"")).count();
         assert_eq!(active_model_count, 1);
+    }
+
+    #[test]
+    fn model_directory_candidates_are_os_specific() {
+        let home = std::path::Path::new("/home/alice");
+        for os in [crate::paths::OsKind::Windows, crate::paths::OsKind::Macos] {
+            let dirs = ollama_model_dir_candidates(os, home, None);
+            assert_eq!(dirs, vec![home.join(".ollama/models")]);
+        }
+        let linux = ollama_model_dir_candidates(crate::paths::OsKind::Unix, home, None);
+        assert!(linux.contains(&home.join(".ollama/models")));
+        assert!(linux.contains(&std::path::PathBuf::from(
+            "/usr/share/ollama/.ollama/models"
+        )));
     }
 
     /// Integration test: only runs when Ollama is reachable and has models.

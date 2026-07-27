@@ -1,0 +1,9 @@
+From: a@example.com
+To: b@example.org
+Subject: unterminated
+Content-Type: multipart/mixed; boundary="B"
+
+--B
+Content-Type: text/plain
+
+the boundary --B never closes

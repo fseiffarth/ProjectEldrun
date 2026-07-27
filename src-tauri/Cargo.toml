@@ -1,7 +1,8 @@
 [package]
 name = "eldrun"
-version = "0.1.0"
+version = "0.1.42"
 edition = "2021"
+license = "MIT OR Apache-2.0"
 
 [lib]
 name = "eldrun_lib"
@@ -17,8 +18,21 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+# Desktop notifications for calendar reminders. The in-app alarm popup
+# (components/calendar/AlarmPopup.tsx) covers the case where Eldrun is focused;
+# this covers the case where it is not — a reminder is worthless if the window
+# has to be open to see it.
+tauri-plugin-notification = "2"
+# Native OS drag-OUT of files (Windows OLE / macOS NSDraggingSession / Linux GTK).
+# WebKitGTK's HTML5 drag-out won't render a drag image or reliably export files
+# to other apps, so the Ctrl-drag file export goes through this plugin instead.
+tauri-plugin-drag = "2"
+# Encode the drag-preview PNG as a base64 data URL for tauri-plugin-drag's icon
+# field (it only accepts `data:image/png;base64,…`, not a file path).
+base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 portable-pty = "0.9.0"
 tokio = { version = "1.52.3", features = ["full"] }
 mime_guess = "2.0.5"
@@ -26,25 +40,187 @@ infer = "0.19.0"
 opener = "0.8.4"
 notify = "8"
 # Read images (e.g. screenshots) off the system clipboard for paste-into-tree.
-arboard = "3"
+# wayland-data-control: without it arboard speaks only X11, so image copy/paste
+# silently no-ops on a Wayland session with no XWayland. It falls back to X11 at
+# runtime when the compositor lacks the protocol, so this is additive.
+arboard = { version = "3", features = ["wayland-data-control"] }
 # Encode the clipboard's raw RGBA image as PNG before writing it to disk.
 png = "0.17"
+calamine = "0.35.0"
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+# Stage host file bytes on disk so `git diff --no-index` can diff the local mirror
+# against the current host copy (SSH-sync host-vs-mirror diff button).
+tempfile = "3"
+# Extract dropped/double-clicked .zip archives in place (deflate covers the vast
+# majority of real-world zips; "stored" entries need no feature).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# Read the `.synctex.gz` a TeX compile emits, so a deck slide can be anchored to
+# the source line that produced its page rather than to a content fingerprint
+# (commands::tex::synctex_page_lines). Already in the tree via `zip`'s deflate
+# feature, so naming it directly costs no new dependency.
+flate2 = "1"
+# Store git-hosting access tokens in the OS credential store (Windows Credential
+# Manager / macOS Keychain / Linux Secret Service) instead of plaintext on disk.
+# The backend deps are target-gated inside the crate, so enabling all three
+# native backends is the standard cross-platform recipe.
+#
+# `linux-native-sync-persistent` adds the **kernel keyutils cache in front of** the
+# Secret Service (which stays the store that survives a reboot). It is here because a
+# Secret Service read is the one credential read that can *block*: on a locked
+# collection it waits on an unlock prompt that may never be answered. With the cache,
+# only the first read of an account per boot is a D-Bus call — every later one is a
+# kernel-keyring lookup that cannot block, cannot prompt, and does not care that the
+# collection is locked. `linux-keyutils` is target-gated to Linux inside the crate, so
+# the Windows/macOS backend selection is untouched. NOTE: keyring 3.6's *builder* for
+# this store hands back a plain secret-service credential (upstream bug), so
+# `remote_credentials` constructs `KeyutilsPersistentCredential` itself rather than
+# going through `keyring::Entry` — enabling the feature alone would be a silent no-op.
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service", "linux-native-sync-persistent", "crypto-rust"] }
+# Native SFTP client for the remote folder browser (TODO #80): drives the SFTP
+# subsystem over a child `ssh -s sftp` process, so browsing parses no `ls` text
+# and never feeds a remote `$SHELL -c` (replaces the injection-prone `ssh ls`
+# path). The project mount/exec paths are unchanged — still sshfs / `ssh -tt`.
+openssh-sftp-client = "0.15.7"
+# `StreamExt::next` to drive the SFTP `ReadDir` stream (already in the dep tree).
+futures-util = "0.3"
+# `BytesMut` buffer type for chunked SFTP reads (git-lockstep streaming transport,
+# #28n Phase 3); matches the `bytes` version openssh-sftp-client already resolves.
+bytes = "1"
+# AC-vs-battery detection for Energy Saver mode (`commands/power.rs`). The
+# maintained fork of the `battery` crate; one API over Linux
+# (`/sys/class/power_supply`), Windows (`GetSystemPowerStatus`), and macOS
+# (IOKit), so it needs no cfg-gating here.
+starship-battery = "0.10"
+
+# ── Mail (see docs/mail_client_plan_b.md) ────────────────────────────────────
+# MIME parsing of untrusted network input. Chosen over hand-rolling because it is
+# 100% safe Rust, continuously fuzzed and MIRI-checked — this is the crate that
+# eats attacker-controlled bytes first, so its memory-safety story is the whole
+# argument.
+mail-parser = "0.11"
+# Outbound MIME construction (plain text + explicitly picked attachments only).
+mail-builder = "0.4"
+# SMTP over rustls. `default-features = false` drops `dkim` (we sign nothing),
+# `digest-md5`/`cram-md5` (weak mechanisms whose mere availability gives a MITM a
+# downgrade target — see plan B §4.5), and swaps the default `aws_lc_rs` provider
+# for `ring`, which needs no cmake on the Windows runner.
+mail-send = { version = "0.6", default-features = false, features = ["builder", "ring", "tls12"] }
+# IMAP. `default-features = false` is load-bearing: the crate's default runtime is
+# async-std, and `runtime-tokio` puts it on the runtime Eldrun already has. The
+# `compress` feature is deliberately NOT enabled — COMPRESS=DEFLATE lets a hostile
+# server hand us a decompression bomb (plan B §3.6).
+async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
+# The one TLS stack for both protocols. rustls (no OpenSSL anywhere in the bundle)
+# with the OS trust store, so a private CA is added by the system administrator
+# rather than by an "ignore certificate" checkbox this client does not have
+# (plan B §4.3).
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std", "logging"] }
+rustls-platform-verifier = "0.7"
+rustls-pki-types = "1"
+# HTML sanitization in the backend, before a single attacker byte reaches the
+# webview (plan B §2.3). html5ever-based, so it parses hostile markup the same way
+# the renderer will rather than pattern-matching it.
+ammonia = "4"
+# Zero password buffers on drop; nothing in this crate's API can be logged.
+zeroize = { version = "1", features = ["derive"] }
+# Punycode/IDNA for the link-safety host comparison (plan B §2.5).
+idna = "1"
+# SHA-256 for the content-addressed blob store (plan B §3.1: attachment payloads
+# are stored under `blobs/<sha256>` with no extension, so a sender-supplied
+# filename never reaches a syscall).
+sha2 = "0.10"
+
+# ── In-app browser (see docs/browser_plan_b.md, docs/browser_plan_c.md) ──────
+# The URL parser the navigation gate runs on. Named directly rather than reached
+# through `tauri::Url` so `services::web_safety` stays AppHandle-free and unit
+# testable, and so there is exactly ONE parser — a second, string-searching
+# implementation of "what host is this" is how `https://example.com@evil.example/`
+# gets read as `example.com`. Already resolved in the tree via `tauri`.
+url = "2"
+# RFC 1918 / ULA / CGNAT / link-local classification for the loopback-and-intranet
+# navigation gate. `IpAddr::is_global()` is still unstable, so this is the stable
+# replacement rather than a convenience. Already in the tree transitively.
+ipnet = "2"
+# Reader mode fetches pages in the BACKEND, so the unsanitized bytes never exist
+# in a webview process (the mail client's structural argument, applied to the web).
+# `default-features = false` drops native-tls (no OpenSSL anywhere in the bundle,
+# same as mail). `rustls-no-provider` is the load-bearing spelling: it takes the
+# crypto provider from the process default that
+# `mail_engine::install_crypto_provider()` already installs, so this crate never
+# compiles a second `CryptoProvider` in — rustls 0.23 PANICS at first use when two
+# are present and none is installed. Roots come from `rustls-native-certs`, i.e.
+# the OS trust store, so a private CA is added by the system administrator rather
+# than by an "ignore certificate" checkbox this browser does not have.
+# Decode a fetched page with the charset the SERVER declared (then the
+# document's own `<meta charset>`), never the renderer's sniffing — the layer
+# whose disagreement with ours would be the bug. Already compiled in via
+# reqwest's `charset` feature, so naming it directly costs no new dependency.
+encoding_rs = "0.8"
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls-no-provider",
+    "http2",
+    "charset",
+    "gzip",
+    "brotli",
+] }
 
 # Linux/Unix: workspace backends + crash signal handling
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "4"
+# The Secret Service client `keyring`'s `sync-secret-service` backend already uses
+# (same crate, same version — this adds no new dependency, only direct access).
+# `keyring` itself exposes no way to ask whether the collection is *locked*, and a
+# locked collection is indistinguishable there from "nothing saved": every read
+# answers `None`. That silently un-saves every credential the user asked us to
+# remember, so `services::remote_credentials` needs the lock state — and the
+# `Unlock` call that fixes it — directly. See `keyring_state` / `unlock_keyring`.
+dbus-secret-service = { version = "4", features = ["crypto-rust"] }
 xcb = { version = "1", features = ["randr"] }
 # Same crate/version wry uses; needed to hook web-process-terminated on the
 # raw WebKitWebView for the webview crash reporter.
 webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }
+# GTK3 (the toolkit WebKitGTK 4.1 renders with). Used to inject an app-level CSS
+# provider that recolors the native scrollbars WebKit draws inside the web
+# content — the page's `scrollbar-color` is ignored on this WebKitGTK build.
+# Same major version wry/webkit2gtk already pull in, so it adds nothing new.
+gtk = "0.18"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61", features = [
     "Win32_Foundation",
+    # Native screen capture (BitBlt the virtual screen → PNG) in `screenshot.rs`.
+    "Win32_Graphics_Gdi",
+    # Interface byte counters for the network pane (`GetIfTable2` + the Ndis
+    # types its rows use) in `commands/network.rs`.
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Storage_FileSystem",
     "Win32_System_Com",
+    # SEH unhandled-exception filter → crash.log line (`install_seh_filter`).
+    # Debug owns the module; Kernel gates EXCEPTION_POINTERS itself and IO gates
+    # the WriteFile the filter logs with.
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_IO",
+    "Win32_System_Kernel",
+    # Per-process CPU/memory sampling + process-tree walk for the project resource
+    # readout (the Windows analogue of Linux's `/proc` parsing in `sysstat.rs`).
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_ProcessStatus",
+    # Named-pipe IPC with the OpenVPN Interactive Service (`PeekNamedPipe`,
+    # `SetNamedPipeHandleState`) so headless VPN connects stay unelevated
+    # (`services/openvpn.rs`).
+    "Win32_System_Pipes",
+    # Whole-system monitor sample (`GetSystemTimes`, `GlobalMemoryStatusEx`,
+    # `GetSystemInfo`, `GetTickCount64`) in `sysstat.rs`.
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

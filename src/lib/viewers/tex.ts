@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { internalViewerFor, type FileEntry, type InternalViewer } from "./fileUtils";
+import { basename, dirname, isAbsolute, normalizePath, resolvePath } from "../paths";
 
 /** Which TeX tools are on PATH; mirrors the backend `TexCapability`. */
 export type TexCapability = {
@@ -32,6 +33,16 @@ export function getTexCapability(): Promise<TexCapability> {
     );
   }
   return texCapPromise;
+}
+
+/** Drop the cached probe and re-query the backend. The one-shot cache above is
+ *  right for a probe that never changes mid-session, but it goes stale the
+ *  moment the user installs a TeX distribution from the "no engine found"
+ *  banner — call this after that install (or from a manual "Recheck") so the
+ *  viewer picks up the newly-detected engine without an app restart. */
+export function refreshTexCapability(): Promise<TexCapability> {
+  texCapPromise = null;
+  return getTexCapability();
 }
 
 /** Last meaningful line of a build log, for a terse error message. */
@@ -84,10 +95,10 @@ export function parseTexErrors(log: string): TexError[] {
  *  (the TeX root's folder) into an absolute path the editor can open. Absolute
  *  paths and `./`-relative paths are both handled. */
 export function resolveTexErrorPath(rootDir: string, file: string): string {
-  if (file.startsWith("/")) return file;
-  const rel = file.replace(/^\.\//, "");
-  const base = rootDir.replace(/\/+$/, "");
-  return base ? `${base}/${rel}` : rel;
+  // Absolute (POSIX `/x`, Windows `C:\x` / UNC) passes through unchanged.
+  if (isAbsolute(file)) return file;
+  const rel = file.replace(/^\.[/\\]+/, "");
+  return rootDir ? resolvePath(rootDir, rel) : rel;
 }
 
 // --- SyncTeX forward/reverse search -----------------------------------------
@@ -207,9 +218,8 @@ export function pickSyncRect(records: SyncRect[], frac: number): SyncRect | null
  *  (deduped). Pure / unit-tested — {@link synctexViewBest} feeds each to
  *  `synctex view -i` until one matches. */
 export function forwardInputCandidates(input: string, rootDir: string): string[] {
-  const dir = rootDir.replace(/\/+$/, "") + "/";
-  const rel = input.startsWith(dir) ? input.slice(dir.length) : null;
-  const base = input.slice(input.lastIndexOf("/") + 1);
+  const rel = forwardRelative(rootDir, input);
+  const base = basename(input);
   // SyncTeX may have stored the path with a `./` prefix (a common engine
   // spelling); try those forms too.
   const out: string[] = [input];
@@ -218,6 +228,18 @@ export function forwardInputCandidates(input: string, rootDir: string): string[]
     out.push(r, `./${r}`);
   }
   return Array.from(new Set(out));
+}
+
+/** `file` expressed relative to directory `dir`, using forward slashes (the
+ *  spelling SyncTeX records on every platform), or null when `file` is not under
+ *  `dir`. Accepts either separator on either argument so it is correct for native
+ *  Windows paths (`C:\proj` + `C:\proj\ch\x.tex` → `ch/x.tex`) as well as POSIX. */
+function forwardRelative(dir: string, file: string): string | null {
+  const trimmed = dir.replace(/[/\\]+$/, "");
+  if (!trimmed) return null;
+  const nDir = trimmed.replace(/\\/g, "/");
+  const nFile = file.replace(/\\/g, "/");
+  return nFile.startsWith(nDir + "/") ? nFile.slice(nDir.length + 1) : null;
 }
 
 /** Resolve the file that should actually be compiled for `path` (a child file
@@ -258,6 +280,56 @@ export function bigPointsToCssRect(
     width: rect.w * scale,
     height: rect.h * scale,
   };
+}
+
+/**
+ * Find every occurrence of `query` in a PDF page's extracted text runs,
+ * returning one entry per match — each a list of big-point boxes ({@link
+ * SyncRect}) covering it. Most matches yield a single box; a match that straddles
+ * text-run boundaries yields one box per run it touches. Case-insensitive unless
+ * `caseSensitive`. The runs are concatenated in reading order exactly as pdf.js
+ * emits them (no inserted separators), so a query matches the text a reader sees;
+ * each run's box is sliced by the matched character span using its uniform
+ * per-character width. An empty query (or no items) yields no matches. Pure —
+ * unit-tested; the caller derives `items` via `getTextContent()` at scale 1, the
+ * same boxes SyncTeX word-refinement uses, so highlights sit on the glyphs.
+ */
+export function pdfPageMatches(
+  items: TextItemBox[],
+  page: number,
+  query: string,
+  caseSensitive: boolean,
+): SyncRect[][] {
+  if (!query) return [];
+  // Concatenate the runs, remembering each run's start offset in the joined text.
+  let text = "";
+  const starts: number[] = [];
+  for (const it of items) {
+    starts.push(text.length);
+    text += it.str;
+  }
+  const hay = caseSensitive ? text : text.toLowerCase();
+  const needle = caseSensitive ? query : query.toLowerCase();
+  const out: SyncRect[][] = [];
+  for (let from = 0; ; ) {
+    const idx = hay.indexOf(needle, from);
+    if (idx < 0) break;
+    const end = idx + needle.length;
+    const rects: SyncRect[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const s = starts[i];
+      const e = s + it.str.length;
+      if (e <= idx || s >= end || it.w <= 0 || it.str.length === 0) continue;
+      const a = Math.max(idx, s) - s; // first matched char within this run
+      const b = Math.min(end, e) - s; // one past the last matched char
+      const charW = it.w / it.str.length;
+      rects.push({ page, x: it.x + a * charW, y: it.y, w: (b - a) * charW, h: it.h });
+    }
+    if (rects.length) out.push(rects);
+    from = end; // non-overlapping, mirroring findMatches
+  }
+  return out;
 }
 
 /** Character offset of the start of (1-based) `line` in `text`. Clamped to the
@@ -702,20 +774,24 @@ export interface ResolvedTexRef {
  * null when no extension can be assumed (a bare `\includegraphics`) or no viewer
  * handles the file type.
  */
-export function resolveTexRef(currentPath: string, target: TexRefTarget): ResolvedTexRef | null {
+export function resolveTexRef(
+  currentPath: string,
+  target: TexRefTarget,
+  disabled?: ReadonlySet<InternalViewer>,
+): ResolvedTexRef | null {
   const def = TEX_REF_COMMANDS[target.command] ?? null;
   const token = target.token.trim();
   if (!token) return null;
 
-  const base = token.slice(token.lastIndexOf("/") + 1);
+  const base = basename(token);
   const dot = base.lastIndexOf(".");
   const hasExt = dot > 0 && dot < base.length - 1;
   const rel = hasExt ? token : def == null ? null : token + def;
   if (rel == null) return null;
 
-  const dir = currentPath.slice(0, currentPath.lastIndexOf("/"));
-  const abs = rel.startsWith("/") ? normalizePath(rel) : normalizePath(`${dir}/${rel}`);
-  const name = abs.slice(abs.lastIndexOf("/") + 1);
+  const dir = dirname(currentPath);
+  const abs = resolvePath(dir, rel);
+  const name = basename(abs);
   const lastDot = name.lastIndexOf(".");
   const extension = lastDot > 0 ? name.slice(lastDot).toLowerCase() : null;
   const entry: FileEntry = {
@@ -726,7 +802,7 @@ export function resolveTexRef(currentPath: string, target: TexRefTarget): Resolv
     extension,
     mime: null,
   };
-  const viewer = internalViewerFor(entry);
+  const viewer = internalViewerFor(entry, disabled);
   if (!viewer) return null;
   return { path: abs, viewer, label: name };
 }
@@ -750,22 +826,24 @@ const GRAPHICS_EXTS = [
 export async function resolveTexRefAsync(
   currentPath: string,
   target: TexRefTarget,
+  disabled?: ReadonlySet<InternalViewer>,
 ): Promise<ResolvedTexRef | null> {
-  const direct = resolveTexRef(currentPath, target);
+  const direct = resolveTexRef(currentPath, target, disabled);
   if (direct) return direct;
   if (target.command !== "includegraphics") return null;
 
   const token = target.token.trim();
   if (!token) return null;
+  // TeX reference tokens are written with forward slashes regardless of OS.
   const slash = token.lastIndexOf("/");
   const sub = slash >= 0 ? token.slice(0, slash) : "";
   const stem = (slash >= 0 ? token.slice(slash + 1) : token).toLowerCase();
   if (!stem) return null;
 
-  const dir = currentPath.slice(0, currentPath.lastIndexOf("/"));
-  const absDir = token.startsWith("/")
+  const dir = dirname(currentPath);
+  const absDir = isAbsolute(token)
     ? normalizePath(sub || "/")
-    : normalizePath(`${dir}/${sub}`);
+    : resolvePath(dir, sub);
 
   let entries: FileEntry[];
   try {
@@ -786,7 +864,7 @@ export async function resolveTexRefAsync(
     if (!best || rank < best.rank) best = { entry: e, rank };
   }
   if (!best) return null;
-  const viewer = internalViewerFor(best.entry);
+  const viewer = internalViewerFor(best.entry, disabled);
   if (!viewer) return null;
   return { path: best.entry.path, viewer, label: best.entry.name };
 }
@@ -978,11 +1056,11 @@ function texCommandTokens(source: string, commands: string[]): string[] {
 /** Resolve a `\input`/`\bibliography` token to an absolute path against the
  *  referencing file's dir, appending `defExt` when it has none. */
 function resolveSibling(fromFile: string, token: string, defExt: string): string {
-  const base = token.slice(token.lastIndexOf("/") + 1);
+  const base = basename(token);
   const hasExt = base.includes(".");
   const rel = hasExt ? token : token + defExt;
-  const dir = fromFile.slice(0, fromFile.lastIndexOf("/")) || "/";
-  return rel.startsWith("/") ? normalizePath(rel) : normalizePath(`${dir}/${rel}`);
+  const dir = dirname(fromFile) || "/";
+  return resolvePath(dir, rel);
 }
 
 const TEX_INPUT_CMDS = ["input", "include", "subfile", "subfileinclude"];
@@ -1003,7 +1081,10 @@ export interface TexCompletions {
  * best-effort: a missing/unreadable file is skipped. Pure parsing is delegated
  * to the tested helpers above.
  */
-export async function gatherTexCompletions(currentPath: string): Promise<TexCompletions> {
+export async function gatherTexCompletions(
+  currentPath: string,
+  projectId: string | null = null,
+): Promise<TexCompletions> {
   const root = await resolveTexRoot(currentPath);
   const seenTex = new Set<string>();
   const queue = [root, currentPath];
@@ -1016,7 +1097,7 @@ export async function gatherTexCompletions(currentPath: string): Promise<TexComp
     seenTex.add(file);
     let text: string;
     try {
-      text = await invoke<string>("read_file_text", { path: file });
+      text = await invoke<string>("read_file_text", { path: file, projectId });
     } catch {
       continue;
     }
@@ -1034,7 +1115,7 @@ export async function gatherTexCompletions(currentPath: string): Promise<TexComp
   for (const bib of bibPaths) {
     let text: string;
     try {
-      text = await invoke<string>("read_file_text", { path: bib });
+      text = await invoke<string>("read_file_text", { path: bib, projectId });
     } catch {
       continue;
     }
@@ -1046,20 +1127,4 @@ export async function gatherTexCompletions(currentPath: string): Promise<TexComp
   }
 
   return { labels: Array.from(new Set(labels)), cites };
-}
-
-/** Collapse `.`/`..` segments in a `/`-separated path, preserving a leading `/`. */
-function normalizePath(p: string): string {
-  const isAbs = p.startsWith("/");
-  const out: string[] = [];
-  for (const seg of p.split("/")) {
-    if (seg === "" || seg === ".") continue;
-    if (seg === "..") {
-      if (out.length && out[out.length - 1] !== "..") out.pop();
-      else if (!isAbs) out.push("..");
-    } else {
-      out.push(seg);
-    }
-  }
-  return (isAbs ? "/" : "") + out.join("/");
 }

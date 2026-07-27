@@ -1,3 +1,5 @@
+import { relativePathWithin } from "../paths";
+
 export interface FileEntry {
   name: string;
   path: string;
@@ -20,6 +22,7 @@ export const STANDARD_PROJECT_FILES = new Set([
   "DOCUMENTATION.md",
   ".gitignore",
   ".claude",
+  ".git",
 ]);
 
 export const INTERNAL_PROJECT_FILES = new Set([
@@ -33,7 +36,49 @@ export type SortKey = "name" | "type" | "size" | "created" | "modified";
 
 /** Which built-in Eldrun viewer can render a file in-tab (drag from the right
  *  panel onto a tab bar). Independent of any external default app. */
-export type InternalViewer = "pdf" | "image" | "markdown" | "text" | "tex";
+export type InternalViewer =
+  | "pdf"
+  | "image"
+  | "markdown"
+  | "text"
+  | "tex"
+  | "table"
+  | "notebook"
+  | "diff"
+  // SSH-sync host-vs-mirror diff. Never auto-selected by extension — only opened
+  // explicitly from a diverged (amber) file's diff button; routed to `DiffView`
+  // in sync mode (backend `sync_diff`).
+  | "syncdiff"
+  // SSH-sync three-way merge (PyCharm-style): local mirror ⇄ editable result ⇄
+  // remote host, with per-block take-left/right. Never auto-selected — only
+  // opened from a diverged (amber) file in the orange list; routed to
+  // `SyncMergeView`. Apply resolves the divergence (writes mirror + force-push).
+  | "syncmerge"
+  | "odt"
+  | "media"
+  | "gif"
+  | "html"
+  | "sqlite"
+  | "yaml"
+  // The native presenter's deck sidecar (`*.eldeck.json`, EXPERIMENTAL — see
+  // `docs/deck_presenter_plan.md`). A deck is JSON, so this must be matched by
+  // FILENAME before the generic `.json` rule; see `naturalViewerFor`.
+  | "eldeck";
+
+// Audio/video formats the webview plays natively via <audio>/<video> from a
+// Blob URL (Dev D). Kept separate from IMAGE_EXTS so the media viewer wins.
+const MEDIA_EXTS = new Set([
+  ".mp3", ".wav", ".ogg", ".oga", ".flac", ".m4a", ".aac", ".opus",
+  ".mp4", ".webm", ".mov", ".mkv", ".m4v", ".ogv",
+]);
+
+// SQLite database files → the table-browser viewer (Dev C). These are binary, so
+// they are deliberately NOT in TEXT_EXTS; the viewer reads them via the backend.
+const SQLITE_EXTS = new Set([".db", ".sqlite", ".sqlite3"]);
+
+// Spreadsheet workbooks the table viewer renders via the calamine backend (Dev
+// G). Binary, so not in TEXT_EXTS.
+const SPREADSHEET_EXTS = new Set([".xlsx", ".xls", ".xlsm"]);
 
 const MARKDOWN_EXTS = new Set([".md", ".markdown", ".mdown", ".mkd", ".mdx"]);
 
@@ -75,10 +120,58 @@ const TEXT_FILENAMES = new Set([
  * dragged onto a tab bar regardless of (and independent of) whatever external
  * app is the system default — see TODO Group K #40.
  */
-export function internalViewerFor(entry: FileEntry): InternalViewer | null {
+export function internalViewerFor(
+  entry: FileEntry,
+  disabled?: ReadonlySet<InternalViewer>,
+): InternalViewer | null {
+  const viewer = naturalViewerFor(entry);
+  // When the user has opted this type out (#48), return null so the file falls
+  // through to the external-app path (commitFileDrop routes it via embedExec) —
+  // unless the type has a native fallback that is itself still enabled. YAML is
+  // the case: turning off its tree is a vote against the *tree*, not against
+  // editing YAML in Eldrun at all, so it drops back to the plain code editor
+  // (which is where .yaml opened before the tree existed).
+  if (viewer && disabled?.has(viewer)) {
+    const fallback = VIEWER_FALLBACK[viewer];
+    return fallback && !disabled.has(fallback) ? fallback : null;
+  }
+  return viewer;
+}
+
+/** Where a type lands when its own viewer is opted out (#48), before the
+ *  external-app path. Only for types whose bytes another native viewer can still
+ *  render honestly. */
+const VIEWER_FALLBACK: Partial<Record<InternalViewer, InternalViewer>> = {
+  yaml: "text",
+  // Opting out the GIF transport UI is not a vote against viewing GIFs in-app:
+  // the plain image viewer still animates them honestly (the webview animates
+  // <img> GIFs natively) — it just offers no frame control.
+  gif: "image",
+  // A deck IS JSON, so opting the presenter out should leave you editing the
+  // sidecar by hand in the tree rather than handing a `.json` to an external app.
+  eldeck: "yaml",
+};
+
+/** A presentation deck sidecar: `<name>.eldeck.json`, case-insensitive. Exported
+ *  so the deck viewer and its "new presentation" flow name the file exactly one
+ *  way. `.eldeck.json` alone (an empty stem) is deliberately NOT a deck. */
+export const DECK_SUFFIX = ".eldeck.json";
+const DECK_SUFFIX_RE = /.+\.eldeck\.json$/i;
+
+/** Whether `name` (or a path ending in one) is a deck sidecar. */
+export function isDeckFile(name: string): boolean {
+  return DECK_SUFFIX_RE.test(name);
+}
+
+/** The viewer a file *type* maps to, ignoring any user opt-out. */
+function naturalViewerFor(entry: FileEntry): InternalViewer | null {
   if (entry.is_dir) return null;
   const ext = (entry.extension ?? "").toLowerCase();
   if (ext === ".pdf") return "pdf";
+  // .gif gets the dedicated animated-GIF viewer (frame transport: pause, step,
+  // scrub — #gifviewer). It is also in IMAGE_EXTS, so this early return must
+  // win — exactly like .tex/.csv below.
+  if (ext === ".gif") return "gif";
   if (IMAGE_EXTS.has(ext)) return "image";
   if (MARKDOWN_EXTS.has(ext)) return "markdown";
   // .tex gets the dedicated LaTeX viewer (compile to a PDF tab when a TeX engine
@@ -86,15 +179,71 @@ export function internalViewerFor(entry: FileEntry): InternalViewer | null {
   // plain text via the generic TEXT_EXTS check below. This early return must win
   // even though .tex is also in TEXT_EXTS.
   if (ext === ".tex") return "tex";
+  // .csv/.tsv get the table viewer, .ipynb the notebook viewer, .diff/.patch the
+  // diff viewer. .csv/.tsv/.diff/.patch are also in TEXT_EXTS, so these specific
+  // returns must win — exactly like .tex above. .ipynb is intentionally NOT in
+  // TEXT_EXTS so that, when the notebook viewer is opted out (#48), it opens
+  // externally rather than as raw JSON.
+  if (ext === ".csv" || ext === ".tsv") return "table";
+  if (ext === ".ipynb") return "notebook";
+  if (ext === ".diff" || ext === ".patch") return "diff";
+  // .odt gets the lightweight OpenDocument Text viewer: it unzips the archive and
+  // renders content.xml to a readable HTML subset (headings/lists/tables/images).
+  // The faithful path stays "Open externally"; opting the viewer out (#48) routes
+  // it there. The remaining office/spreadsheet formats are still deferred below.
+  if (ext === ".odt") return "odt";
+  // Audio/video → the native media player (Dev D).
+  if (MEDIA_EXTS.has(ext)) return "media";
+  // SQLite databases → the table-browser viewer (Dev C).
+  if (SQLITE_EXTS.has(ext)) return "sqlite";
+  // Spreadsheets → the CSV/TSV table viewer, which loads them via the backend
+  // (Dev G). Retires the .xlsx part of the deferred #51 office gap.
+  if (SPREADSHEET_EXTS.has(ext)) return "table";
+  // .html/.htm/.svg get the rendered-preview viewer with a Preview/Source toggle
+  // (Dev E). These are also in TEXT_EXTS, so this specific return must win — like
+  // .tex above. Opting it out (#48) falls back to the plain text editor.
+  if (ext === ".html" || ext === ".htm" || ext === ".svg") return "html";
+  // .yaml/.yml/.json get the structured tree editor with a Tree/Source toggle
+  // (#yaml). JSON is YAML's flow syntax — the same tree renders it, written back
+  // in the stricter dialect — so the two share a viewer rather than duplicating
+  // one. All three are also in TEXT_EXTS, so this specific return must win, like
+  // .tex above. Opting it out (#48) falls back to the plain code editor, not the
+  // external app (see VIEWER_FALLBACK).
+  // A presentation deck (`talk.eldeck.json`) is matched on the FILENAME, not the
+  // extension, and must win over the `.json` rule below. `entry.extension` is only
+  // the last dotted component — the backend builds it with `Path::extension()` —
+  // so a deck arrives here claiming to be a plain `.json` and would otherwise open
+  // as a YAML tree. Opting the viewer out lands it there deliberately instead (see
+  // VIEWER_FALLBACK); the experimental gate is applied at the dispatch site, not
+  // here, so a deck still resolves to a viewer for drag-to-tab either way.
+  if (DECK_SUFFIX_RE.test(entry.name)) return "eldeck";
+  if (ext === ".yaml" || ext === ".yml" || ext === ".json") return "yaml";
   if (ext && TEXT_EXTS.has(ext)) return "text";
   if (!ext && TEXT_FILENAMES.has(entry.name.toLowerCase())) return "text";
-  // DEFERRED (#51, DECISION B): OpenDocument / spreadsheet formats (.odt/.xlsx,
-  // and the sibling office formats) do NOT get a native in-app renderer for now.
-  // Rendering them faithfully needs a heavy dependency (e.g. calamine + a table
-  // renderer) that isn't worth it yet, so we return null here and let them fall
-  // through to the existing external-app path (the "Open externally" affordance).
-  // Revisit if/when a lightweight Tauri-side renderer becomes available.
+  // DEFERRED (#51, DECISION B): the remaining OpenDocument / spreadsheet formats
+  // (.ods/.xlsx/.docx and siblings) do NOT get a native in-app renderer yet —
+  // faithful rendering needs a heavy dependency (e.g. calamine + a table/layout
+  // renderer). We return null and let them fall through to the external-app path
+  // (the "Open externally" affordance). Revisit per-format as lightweight
+  // renderers land (.odt already has one above).
   return null;
+}
+
+/**
+ * The set of native viewers the user has opted out of (#48), derived from
+ * `settings.viewer_prefs[id].enabled === false`. Absent/true means enabled, so
+ * an empty/missing prefs map yields an empty set (all viewers on). Pass the
+ * result to `internalViewerFor` at file-open sites to honour the opt-out.
+ */
+export function disabledViewers(
+  viewerPrefs?: Record<string, { enabled?: boolean }>,
+): Set<InternalViewer> {
+  const out = new Set<InternalViewer>();
+  if (!viewerPrefs) return out;
+  for (const t of VIEWER_PREF_TYPES) {
+    if (viewerPrefs[t.id]?.enabled === false) out.add(t.id);
+  }
+  return out;
 }
 
 /**
@@ -104,7 +253,7 @@ export function internalViewerFor(entry: FileEntry): InternalViewer | null {
  * viewer" binaries.
  */
 export const DEFERRED_OFFICE_EXTS = new Set([
-  ".odt", ".ods", ".odp", ".xlsx", ".xls", ".docx", ".doc", ".pptx", ".ppt",
+  ".ods", ".odp", ".docx", ".doc", ".pptx", ".ppt",
 ]);
 
 /** True when a file is a deferred office/spreadsheet type (#51). */
@@ -132,7 +281,7 @@ export const VIEWER_PREF_TYPES: ViewerTypeMeta[] = [
   {
     id: "text",
     label: "Text / code",
-    extensions: [".txt", ".json", ".py", ".rs", ".ts", ".svg", ".bib", "…"],
+    extensions: [".txt", ".toml", ".py", ".rs", ".ts", ".svg", ".bib", "…"],
     autocomplete: true,
   },
   {
@@ -148,12 +297,72 @@ export const VIEWER_PREF_TYPES: ViewerTypeMeta[] = [
     autocomplete: true,
   },
   {
+    id: "yaml",
+    label: "YAML / JSON tree",
+    extensions: [".yaml", ".yml", ".json"],
+    autocomplete: true,
+  },
+  {
     id: "image",
     label: "Images",
-    extensions: [".png", ".jpg", ".gif", ".webp", "…"],
+    extensions: [".png", ".jpg", ".bmp", ".webp", "…"],
+    autocomplete: false,
+  },
+  {
+    id: "gif",
+    label: "Animated GIF",
+    extensions: [".gif"],
     autocomplete: false,
   },
   { id: "pdf", label: "PDF", extensions: [".pdf"], autocomplete: false },
+  {
+    id: "table",
+    label: "Table / spreadsheet",
+    extensions: [".csv", ".tsv", ".xlsx", ".xls"],
+    autocomplete: false,
+  },
+  {
+    id: "notebook",
+    label: "Jupyter notebook",
+    extensions: [".ipynb"],
+    autocomplete: false,
+  },
+  {
+    id: "diff",
+    label: "Diff / patch",
+    extensions: [".diff", ".patch"],
+    autocomplete: false,
+  },
+  {
+    id: "odt",
+    label: "OpenDocument Text",
+    extensions: [".odt"],
+    autocomplete: false,
+  },
+  {
+    id: "media",
+    label: "Audio / video",
+    extensions: [".mp3", ".mp4", ".webm", ".wav", "…"],
+    autocomplete: false,
+  },
+  {
+    id: "html",
+    label: "HTML / SVG preview",
+    extensions: [".html", ".htm", ".svg"],
+    autocomplete: false,
+  },
+  {
+    id: "sqlite",
+    label: "SQLite database",
+    extensions: [".db", ".sqlite", ".sqlite3"],
+    autocomplete: false,
+  },
+  {
+    id: "eldeck",
+    label: "Presentation (deck)",
+    extensions: [".eldeck.json"],
+    autocomplete: false,
+  },
 ];
 
 export function joinRel(base: string, name: string): string {
@@ -167,10 +376,48 @@ export function parentRel(path: string): string {
 }
 
 export function relFromAbs(projectDir: string, absPath: string): string {
-  const root = projectDir.replace(/\/+$/, "");
-  if (absPath === root) return "";
-  if (!absPath.startsWith(`${root}/`)) return "";
-  return absPath.slice(root.length + 1);
+  return relativePathWithin(projectDir, absPath) ?? "";
+}
+
+// ── File-tree multi-selection (pure logic, unit-tested) ──────────────────────
+// Selection is a set of entry *absolute paths*; `ordered` is the flat list of
+// visible rows in on-screen order (regular, then scaffold, then gitignored),
+// which is what a shift-range spans.
+
+/** The contiguous slice of `ordered` between `anchor` and `target` (inclusive),
+ *  order-independent. If either endpoint isn't in `ordered`, falls back to just
+ *  `target`. */
+export function rangeSelect(ordered: string[], anchor: string, target: string): string[] {
+  const a = ordered.indexOf(anchor);
+  const b = ordered.indexOf(target);
+  if (a === -1 || b === -1) return [target];
+  const [lo, hi] = a <= b ? [a, b] : [b, a];
+  return ordered.slice(lo, hi + 1);
+}
+
+/** Next selection + anchor after a click on `path`, given the current selection,
+ *  the visible order, and the modifier keys:
+ *   - shift (with an anchor)  → replace with the anchor→path range.
+ *   - toggle (ctrl/cmd)       → flip `path`; anchor becomes `path`.
+ *   - plain                   → select only `path`; anchor becomes `path`.
+ *  Shift without a prior anchor behaves like a plain click. */
+export function nextSelection(
+  cur: ReadonlySet<string>,
+  ordered: string[],
+  anchor: string | null,
+  path: string,
+  mods: { shift: boolean; toggle: boolean },
+): { selected: Set<string>; anchor: string } {
+  if (mods.shift && anchor) {
+    return { selected: new Set(rangeSelect(ordered, anchor, path)), anchor };
+  }
+  if (mods.toggle) {
+    const selected = new Set(cur);
+    if (selected.has(path)) selected.delete(path);
+    else selected.add(path);
+    return { selected, anchor: path };
+  }
+  return { selected: new Set([path]), anchor: path };
 }
 
 export function visibleEntries(
@@ -225,51 +472,6 @@ export function visibleEntries(
     .sort((a, b) => compareEntries(a, b, sortKey, descending));
 }
 
-/**
- * Dotfiles that `visibleEntries` filters out of the inline tree (the `showHidden`
- * step), surfaced so the panel can gather them into a collapsed "hidden" section.
- *
- * Returns the entries hidden *solely* by the dotfile rule — items removed by the
- * other filters (internal, hiddenEndings, hiddenPaths) stay fully hidden, and
- * `.gitignore`, scaffold/standard files, and explicitly-shown paths are excluded
- * because they already render inline or in the scaffold section. When
- * `showHidden` is on, dotfiles appear inline already, so the bucket is empty.
- */
-export function hiddenEntries(
-  entries: FileEntry[],
-  options: {
-    showHidden: boolean;
-    sortKey?: SortKey;
-    descending?: boolean;
-    hiddenEndings?: string[];
-    relPath?: string;
-    hiddenPaths?: string[];
-    shownPaths?: string[];
-  },
-): FileEntry[] {
-  if (options.showHidden) return [];
-  const sortKey = options.sortKey ?? "name";
-  const descending = options.descending ?? false;
-  const relPath = (options.relPath ?? "").replace(/^\/+|\/+$/g, "");
-  const hiddenEndings = (options.hiddenEndings ?? [])
-    .map((ending) => ending.trim().toLowerCase())
-    .filter(Boolean);
-  const hiddenPaths = new Set((options.hiddenPaths ?? []).map(normalizeRulePath));
-  const shownPaths = new Set((options.shownPaths ?? []).map(normalizeRulePath));
-
-  return entries
-    .filter((entry) => {
-      if (!entry.name.startsWith(".") || entry.name === ".gitignore") return false;
-      if (INTERNAL_PROJECT_FILES.has(entry.name) || STANDARD_PROJECT_FILES.has(entry.name)) return false;
-      const entryRelPath = normalizeRulePath(relPath ? `${relPath}/${entry.name}` : entry.name);
-      if (shownPaths.has(entryRelPath)) return false; // already shown inline
-      if (hiddenPaths.has(entryRelPath)) return false; // user chose to fully hide
-      if (hiddenEndings.some((ending) => entry.name.toLowerCase().endsWith(ending))) return false;
-      return true;
-    })
-    .sort((a, b) => compareEntries(a, b, sortKey, descending));
-}
-
 function normalizeRulePath(path: string): string {
   return path.trim().replace(/^\/+|\/+$/g, "").toLowerCase();
 }
@@ -306,6 +508,7 @@ export function fileIcon(ext: string | null): string {
     case ".png":
     case ".jpg":
     case ".jpeg":
+    case ".gif":
     case ".svg": return "🖼";
     case ".sh": return "⚙";
     default: return "📄";

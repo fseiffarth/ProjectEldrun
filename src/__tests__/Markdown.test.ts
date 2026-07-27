@@ -110,4 +110,27 @@ describe("renderMarkdown", () => {
   it("gives headings slug ids for in-document anchors", () => {
     expect(renderMarkdown("## Hello World")).toContain('<h2 id="hello-world">');
   });
+
+  it("emits remote and data images directly", () => {
+    expect(renderMarkdown("![badge](https://img.shields.io/x.svg)")).toContain(
+      '<img src="https://img.shields.io/x.svg" alt="badge" />',
+    );
+    expect(renderMarkdown("![d](data:image/png;base64,AAAA)")).toContain(
+      '<img src="data:image/png;base64,AAAA" alt="d" />',
+    );
+  });
+
+  it("tags local images for the viewer to resolve from disk", () => {
+    for (const src of ["images/logo.png", "./docs/logo.png", "../a/b.png", "/abs/y.png"]) {
+      const html = renderMarkdown(`![logo](${src})`);
+      expect(html).toContain(`<img class="md-img-local" data-md-src="${src}" alt="logo" />`);
+    }
+    // The title clause is stripped from the resolved path.
+    expect(renderMarkdown('![logo](./l.png "a title")')).toContain('data-md-src="./l.png"');
+  });
+
+  it("rejects images with an unsafe scheme", () => {
+    const html = renderMarkdown("![x](javascript:alert(1))");
+    expect(html).not.toContain("<img");
+  });
 });

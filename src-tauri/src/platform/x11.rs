@@ -195,6 +195,36 @@ impl WorkspaceBackend for X11Backend {
         self.parkable.lock().unwrap().main_window_id = Some(window_id);
     }
 
+    fn position_window(&self, window_id: u64, x: i32, y: i32) -> Result<(), String> {
+        let wid =
+            window_from_u64(window_id).ok_or_else(|| format!("invalid x11 window id {window_id}"))?;
+        // Geometry only — root-window pixels map to whichever monitor contains
+        // (x, y), so no monitor enumeration is needed. Do NOT touch
+        // _NET_WM_DESKTOP here: this is placement, not workspace parking.
+        // Best-effort re-apply: an app can force its own geometry right after
+        // mapping, so re-issue a few times. Never a hard error — positioning a
+        // foreign app is inherently best-effort.
+        let mut last_err = None;
+        for attempt in 0..3 {
+            if attempt > 0 {
+                thread::sleep(Duration::from_millis(40));
+            }
+            last_err = self
+                .conn
+                .send_and_check_request(&x::ConfigureWindow {
+                    window: wid,
+                    value_list: &[x::ConfigWindow::X(x), x::ConfigWindow::Y(y)],
+                })
+                .map_err(|e| e.to_string())
+                .and_then(|()| self.conn.flush().map_err(|e| e.to_string()))
+                .err();
+        }
+        match last_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
     fn cleanup(&self) -> Result<(), String> {
         let mut cleaned_up = self.cleaned_up.lock().unwrap();
         if *cleaned_up {
@@ -554,6 +584,98 @@ pub fn find_window_for_title(target: &str, attempts: usize) -> Option<u64> {
             }
         }
         thread::sleep(Duration::from_millis(100));
+    }
+    None
+}
+
+/// The topmost (front-most) mapped client window under the X11 pointer, by its
+/// X11 id, or `None` if the pointer is over no client (bare root) or the query
+/// fails. Used to decide whether a detached subwindow is actually at the front
+/// at a drop point: an occluded popout (covered by the main window or another
+/// app) must NOT capture a file drop dragged "onto" it (#42).
+///
+/// Walks `_NET_CLIENT_LIST_STACKING` top-to-bottom (it is stored bottom-to-top),
+/// skipping non-viewable windows and windows on another desktop, and returns the
+/// first whose root-space geometry contains the pointer. Uses the pointer's
+/// *current* position (the release point), so no logical/physical px conversion
+/// is needed — everything stays in X11 physical coords.
+pub fn frontmost_window_under_pointer() -> Option<u64> {
+    let (conn, screen_num) = xcb::Connection::connect(None).ok()?;
+    let root = root_window(&conn, screen_num);
+
+    let ptr = conn
+        .wait_for_reply(conn.send_request(&x::QueryPointer { window: root }))
+        .ok()?;
+    let (px, py) = (ptr.root_x() as i32, ptr.root_y() as i32);
+
+    let stacking_atom = intern_atom(&conn, b"_NET_CLIENT_LIST_STACKING").ok()?;
+    let net_current_desktop = intern_atom(&conn, b"_NET_CURRENT_DESKTOP").ok()?;
+    let net_wm_desktop = intern_atom(&conn, b"_NET_WM_DESKTOP").ok()?;
+    let cur_desktop = get_cardinal(&conn, screen_num, net_current_desktop);
+
+    let cookie = conn.send_request(&x::GetProperty {
+        delete: false,
+        window: root,
+        property: stacking_atom,
+        r#type: x::ATOM_WINDOW,
+        long_offset: 0,
+        long_length: 1024,
+    });
+    let reply = conn.wait_for_reply(cookie).ok()?;
+    let windows = reply.value::<Window>();
+
+    for &wid in windows.iter().rev() {
+        // Skip windows that aren't actually on screen.
+        let viewable = conn
+            .wait_for_reply(conn.send_request(&x::GetWindowAttributes { window: wid }))
+            .map(|a| a.map_state() == x::MapState::Viewable)
+            .unwrap_or(false);
+        if !viewable {
+            continue;
+        }
+        // Skip windows on a different desktop (a parked popout, another ws).
+        // `0xFFFF_FFFF` means "all desktops" (sticky) and always qualifies.
+        if let Some(cur) = cur_desktop {
+            let desktop = conn
+                .wait_for_reply(conn.send_request(&x::GetProperty {
+                    delete: false,
+                    window: wid,
+                    property: net_wm_desktop,
+                    r#type: x::ATOM_CARDINAL,
+                    long_offset: 0,
+                    long_length: 1,
+                }))
+                .ok()
+                .and_then(|r| r.value::<u32>().first().copied());
+            if let Some(d) = desktop {
+                if d != cur && d != 0xFFFF_FFFF {
+                    continue;
+                }
+            }
+        }
+        // Root-space geometry: TranslateCoordinates handles WM reparenting, so the
+        // origin is correct even though the window sits inside a frame.
+        let geo = match conn
+            .wait_for_reply(conn.send_request(&x::GetGeometry {
+                drawable: x::Drawable::Window(wid),
+            })) {
+            Ok(g) => g,
+            Err(_) => continue,
+        };
+        let trans = match conn.wait_for_reply(conn.send_request(&x::TranslateCoordinates {
+            src_window: wid,
+            dst_window: root,
+            src_x: 0,
+            src_y: 0,
+        })) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let (ox, oy) = (trans.dst_x() as i32, trans.dst_y() as i32);
+        let (w, h) = (geo.width() as i32, geo.height() as i32);
+        if px >= ox && px < ox + w && py >= oy && py < oy + h {
+            return Some(wid.resource_id() as u64);
+        }
     }
     None
 }

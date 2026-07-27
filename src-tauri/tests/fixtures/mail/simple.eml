@@ -1,0 +1,8 @@
+From: Sender <sender@example.com>
+To: receiver@example.org
+Subject: Hello there
+Date: Mon, 20 Jul 2026 09:00:00 +0000
+Message-ID: <s1@example.com>
+Content-Type: text/plain; charset=utf-8
+
+This is a plain body.

@@ -25,33 +25,55 @@ vi.mock("@tauri-apps/api/window", () => ({
     // AppShell installs a WebKitGTK onResized→DOM-resize bridge; the mock must
     // provide it (returns an unlisten) or the effect throws at mount.
     onResized: vi.fn().mockResolvedValue(() => {}),
+    onScaleChanged: vi.fn().mockResolvedValue(() => {}),
   }),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(null) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ message: vi.fn().mockResolvedValue(undefined) }));
 
 // Paths below are relative to this test file (src/__tests__/), matching the
 // resolved module IDs that AppShell uses (src/stores/ and src/components/layout/).
-vi.mock("../stores/projects", () => ({
-  useProjectsStore: vi.fn((sel: (s: object) => unknown) =>
-    sel({
-      load: vi.fn(),
-      loaded: true,
-      activeId: null,
-      switchToast: null,
-      clearSwitchToast: vi.fn(),
-      projects: [],
-    }),
-  ),
-  // AppShell subscribes to runtime-switch events on mount; provide a no-op.
-  listenProjectRuntimeSwitched: vi.fn().mockResolvedValue(() => {}),
-}));
-vi.mock("../stores/settings", () => ({
-  useSettingsStore: vi.fn((sel: (s: object) => unknown) =>
-    sel({ load: vi.fn() }),
-  ),
-}));
+vi.mock("../stores/projects", () => {
+  const state = {
+    load: vi.fn(),
+    loaded: true,
+    activeId: null,
+    switchToast: null,
+    clearSwitchToast: vi.fn(),
+    projects: [],
+  };
+  return {
+    // The close handler reads the store imperatively (getState) to flush the
+    // active scope's tab layout, so the mock must carry it alongside the hook.
+    useProjectsStore: Object.assign(
+      vi.fn((sel: (s: object) => unknown) => sel(state)),
+      { getState: () => state },
+    ),
+    // AppShell subscribes to runtime-switch events on mount; provide a no-op.
+    listenProjectRuntimeSwitched: vi.fn().mockResolvedValue(() => {}),
+  };
+});
+vi.mock("../stores/settings", () => {
+  // The auto-reconnect sweep reads settings imperatively (getState) to skip
+  // HPC-tagged machines, so the mock must carry getState alongside the hook.
+  // It also awaits whenSettingsLoaded before the machine sweep; the mock store
+  // never loads, so resolve that immediately and let the `machines_enabled`
+  // gate stop the sweep — an unmocked export throws out of an unawaited
+  // promise, i.e. an unhandled error this test can neither see nor catch.
+  // `loaded` stays false on purpose: the other launch-time hosts (the stats
+  // recap) gate on it, and flipping it would run them against this same
+  // deliberately-minimal mock.
+  const state = { load: vi.fn(), settings: null, loaded: false };
+  return {
+    useSettingsStore: Object.assign(
+      vi.fn((sel: (s: object) => unknown) => sel(state)),
+      { getState: () => state },
+    ),
+    whenSettingsLoaded: () => Promise.resolve(),
+  };
+});
 // AppShell loads boxes once projects are loaded; provide a no-op so the effect
 // doesn't reach into the (mocked) projects store's setState.
 vi.mock("../stores/boxes", () => ({
@@ -75,12 +97,16 @@ vi.mock("../components/layout/GlobalAppBar", () => ({ GlobalAppBar: () => null }
 vi.mock("../hooks/useKeyboard", () => ({ useKeyboard: vi.fn() }));
 
 import { AppShell } from "../components/layout/AppShell";
+import { invoke } from "@tauri-apps/api/core";
+import { message } from "@tauri-apps/plugin-dialog";
 
 describe("AppShell close handler", () => {
   beforeEach(() => {
     shared.flush.mockClear();
     shared.destroy.mockClear();
     shared.handler = null;
+    (invoke as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue(null);
+    (message as ReturnType<typeof vi.fn>).mockClear();
   });
 
   it("prevents default, flushes timer, then destroys the window", async () => {
@@ -109,6 +135,27 @@ describe("AppShell close handler", () => {
       await shared.handler!({ preventDefault: vi.fn() });
     });
 
+    expect(shared.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("warns but still destroys the window when the VPN teardown is declined", async () => {
+    // A dismissed pkexec prompt makes `openvpn_disconnect_all_on_quit` reject —
+    // the quit must warn, not abort (the backend already recorded the decline so
+    // RunEvent::Exit won't re-prompt with the window gone).
+    (invoke as ReturnType<typeof vi.fn>).mockImplementation((cmd: string) =>
+      cmd === "openvpn_disconnect_all_on_quit"
+        ? Promise.reject(new Error("openvpn teardown was not authorized"))
+        : Promise.resolve(null),
+    );
+
+    render(<AppShell />);
+    expect(shared.handler).not.toBeNull();
+
+    await act(async () => {
+      await shared.handler!({ preventDefault: vi.fn() });
+    });
+
+    expect(message).toHaveBeenCalledOnce();
     expect(shared.destroy).toHaveBeenCalledOnce();
   });
 });

@@ -1,0 +1,15 @@
+From: a@example.com
+To: b@example.org
+Subject: rtl
+Content-Type: multipart/mixed; boundary="B"
+
+--B
+Content-Type: text/plain
+
+see attached
+--B
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename*=UTF-8''invoice%E2%80%AEgnp.exe
+
+MZ
+--B--

@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import type { ProjectBox, ProjectEntry } from "../../types";
 import { useTabsStore } from "../../stores/tabs";
 import { boxScopeId } from "../../stores/boxes";
-import { PILL_DRAG_TYPE } from "./ProjectPill";
+import { useT } from "../../lib/i18n";
 
 interface ContextMenuPos {
   x: number;
@@ -16,14 +16,17 @@ interface Props {
   members: ProjectEntry[];
   /** Click the pill → open the box scope (like opening a project). */
   onOpen: () => void;
-  /** A project pill was dropped on the box → assign it to this box. */
-  onAssign: (projectId: string) => void;
   /** Click a member in the dropdown → switch to that project. */
   onSelectMember: (projectId: string) => void;
   /** Remove a member from the box (ungroup it). */
   onRemoveMember: (projectId: string) => void;
   onRename: (name: string) => void;
   onDelete: () => void;
+  /** A project pill's pointer-drag (see ProjectPill/stores/pillDrag) is
+   *  currently hovering this box — the same highlight the old native
+   *  `dragOver` gave, just driven by the shared drag state instead of a
+   *  native `dragover` event. */
+  forcedDragOver?: boolean;
 }
 
 /**
@@ -32,20 +35,21 @@ interface Props {
  * `ProjectPill` but differs in its hover affordance — instead of an info popup it
  * opens a dropdown LISTING the member projects (click one to switch to it).
  * Clicking the pill opens the box scope; dropping a project pill on it assigns
- * that project to the box (same `PILL_DRAG_TYPE` as pill reorder). Right-click
- * exposes Open / Rename / Delete.
+ * that project to the box (pointer-driven, see ProjectPill's `startPillDrag`,
+ * hit-tested against this pill's `data-box-id`). Right-click exposes Open /
+ * Rename / Delete.
  */
 export function BoxPill({
   box,
   members,
   onOpen,
-  onAssign,
   onSelectMember,
   onRemoveMember,
   onRename,
   onDelete,
+  forcedDragOver,
 }: Props) {
-  const [dragOver, setDragOver] = useState(false);
+  const t = useT();
   const [menuOpen, setMenuOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -126,28 +130,11 @@ export function BoxPill({
     <>
       <div
         ref={pillRef}
-        className={`project-pill is-box${active ? " active" : ""}${dragOver ? " drag-over" : ""}`}
+        data-box-id={box.id}
+        className={`project-pill is-box${active ? " active" : ""}${forcedDragOver ? " drag-over" : ""}`}
         onMouseEnter={openMenu}
         onMouseLeave={scheduleClose}
         onContextMenu={handleContextMenu}
-        onDragOver={(e) => {
-          if (!e.dataTransfer.types.includes(PILL_DRAG_TYPE)) return;
-          // Claim the drop so the underlying pills-row handler (ungroup) never
-          // fires for a drop on the box pill.
-          e.preventDefault();
-          e.stopPropagation();
-          e.dataTransfer.dropEffect = "move";
-          if (!dragOver) setDragOver(true);
-        }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={(e) => {
-          if (!e.dataTransfer.types.includes(PILL_DRAG_TYPE)) return;
-          e.preventDefault();
-          e.stopPropagation();
-          setDragOver(false);
-          const fromId = e.dataTransfer.getData(PILL_DRAG_TYPE);
-          if (fromId) onAssign(fromId);
-        }}
       >
         {renaming ? (
           <input
@@ -165,12 +152,15 @@ export function BoxPill({
             }}
           />
         ) : (
-          <button className="pill-main" onClick={onOpen} title={`${box.name} (box) — click to open`}>
+          <button className="pill-main" onClick={onOpen} title={t("boxPill.clickToOpenTitle", { name: box.name })}>
             <span className="pill-folder-icon" aria-hidden>
               ▣
             </span>
             <span className="project-pill-label">{box.name}</span>
-            <span className="project-box-member-count" title={`${members.length} member(s)`}>
+            <span
+              className="project-box-member-count"
+              title={t(members.length === 1 ? "boxPill.memberCountOne" : "boxPill.memberCountMany", { count: members.length })}
+            >
               {members.length}
             </span>
           </button>
@@ -188,22 +178,9 @@ export function BoxPill({
             onMouseEnter={openMenu}
             onMouseLeave={scheduleClose}
             onContextMenu={(e) => e.stopPropagation()}
-            onDragOver={(e) => {
-              if (!e.dataTransfer.types.includes(PILL_DRAG_TYPE)) return;
-              e.preventDefault();
-              e.stopPropagation();
-              e.dataTransfer.dropEffect = "move";
-            }}
-            onDrop={(e) => {
-              if (!e.dataTransfer.types.includes(PILL_DRAG_TYPE)) return;
-              e.preventDefault();
-              e.stopPropagation();
-              const fromId = e.dataTransfer.getData(PILL_DRAG_TYPE);
-              if (fromId) onAssign(fromId);
-            }}
           >
             {members.length === 0 ? (
-              <div className="project-box-dropdown-hint">No members</div>
+              <div className="project-box-dropdown-hint">{t("boxPill.noMembers")}</div>
             ) : (
               members.map((m) => (
                 <div className="project-box-member-row" key={m.id}>
@@ -214,7 +191,7 @@ export function BoxPill({
                       setMenuOpen(false);
                       onSelectMember(m.id);
                     }}
-                    title={`Switch to ${m.name}`}
+                    title={t("boxPill.switchToTitle", { name: m.name })}
                   >
                     <span className="pill-folder-icon" aria-hidden>
                       📁
@@ -225,7 +202,7 @@ export function BoxPill({
                     type="button"
                     className="project-box-member-remove"
                     onClick={() => onRemoveMember(m.id)}
-                    title="Remove from box"
+                    title={t("boxPill.removeFromBox")}
                   >
                     ×
                   </button>
@@ -249,7 +226,7 @@ export function BoxPill({
                 onOpen();
               }}
             >
-              Open box
+              {t("boxPill.openBox")}
             </button>
             <button
               onClick={() => {
@@ -258,7 +235,7 @@ export function BoxPill({
                 setRenaming(true);
               }}
             >
-              Rename
+              {t("common.rename")}
             </button>
             <button
               className="danger"
@@ -267,7 +244,7 @@ export function BoxPill({
                 onDelete();
               }}
             >
-              Delete box
+              {t("boxPill.deleteBox")}
             </button>
           </div>,
           document.body,

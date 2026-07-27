@@ -1,13 +1,16 @@
 /**
- * Tests for the code-editor text-size control:
- *  - the persisted per-type `viewer_prefs[type].font_size` drives the editor's
- *    --code-font-size / --code-line-height CSS variables (so the gutter and
- *    overlay layers scale together);
- *  - the A+/A− buttons (and Ctrl +/−) persist a clamped new size via
- *    updateSettings, merging the whole viewer_prefs map.
+ * Tests for the code-editor text-size control (#48):
+ *  - the effective size drives the editor's --code-font-size / --code-line-height
+ *    CSS variables (so the gutter and overlay layers scale together);
+ *  - zoom is TAB-LOCAL: A+/A− (and Ctrl +/−) persist the new size on the tab's
+ *    `viewerState.fontSize` — NOT the global per-type `viewer_prefs` — so zooming
+ *    one tab never resizes other viewers of the same type, and the size survives
+ *    an Eldrun restart (re-seeded from the persisted viewerState);
+ *  - until the tab is zoomed it tracks the per-type `viewer_prefs[type].font_size`
+ *    default reactively.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, act, waitFor, fireEvent, cleanup } from "@testing-library/react";
 
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
@@ -15,8 +18,9 @@ vi.mock("../stores/windows", () => ({
   useWindowsStore: { getState: () => ({ openFile: () => Promise.resolve() }) },
 }));
 
-// A settings-store mock exposing BOTH the selector call form (used during render)
-// and `.getState()` (used by the inc/dec callbacks to read+merge viewer_prefs).
+// Settings-store mock exposing the per-type `viewer_prefs` defaults (selector +
+// getState). `updateSettings` is spied so the tests can assert it is NOT touched
+// by the per-tab zoom anymore.
 const { mockUpdate, prefsRef } = vi.hoisted(() => ({
   mockUpdate: vi.fn(),
   prefsRef: { current: {} as Record<string, { font_size?: number }> },
@@ -31,7 +35,33 @@ vi.mock("../stores/settings", () => {
   return { useSettingsStore: hook };
 });
 
+// Tabs-store mock backing the per-tab viewerState. `setViewerState` records the
+// patch AND merges it into the tab so a re-render (a "restart") re-seeds the
+// persisted size. Real exports (findGroupOfTab/getDetachedViewerState/…) are kept
+// so the rest of FileViewerPane still resolves.
+type Tab = { key: string; kind?: string; viewerState?: Record<string, unknown> };
+const { mockSetViewerState, tabsRef } = vi.hoisted(() => ({
+  mockSetViewerState: vi.fn(),
+  tabsRef: { current: [] as Tab[] },
+}));
+vi.mock("../stores/tabs", async (importActual) => {
+  const actual = await importActual<Record<string, unknown>>();
+  const state = () => ({
+    tabs: tabsRef.current,
+    setActive: vi.fn(),
+    setViewerState: (key: string, patch: Record<string, unknown>) => {
+      mockSetViewerState(key, patch);
+      const t = tabsRef.current.find((x) => x.key === key);
+      if (t) t.viewerState = { ...t.viewerState, ...patch };
+    },
+  });
+  const hook = (sel?: (s: unknown) => unknown) => (sel ? sel(state()) : state());
+  (hook as unknown as { getState: typeof state }).getState = state;
+  return { ...actual, useTabsStore: hook };
+});
+
 const SOURCE = "hello\nworld\n";
+const TAB_KEY = "t1";
 
 function setup() {
   mockInvoke.mockImplementation((cmd: string) => {
@@ -45,7 +75,7 @@ async function renderTextView() {
   vi.resetModules();
   const { FileViewerPane } = await import("../components/embed/FileViewerPane");
   await act(async () => {
-    render(<FileViewerPane viewer="text" path="/p/notes.txt" projectId="proj" />);
+    render(<FileViewerPane viewer="text" path="/p/notes.txt" projectId="proj" tabKey={TAB_KEY} />);
   });
 }
 
@@ -53,7 +83,7 @@ async function renderMarkdownView() {
   vi.resetModules();
   const { FileViewerPane } = await import("../components/embed/FileViewerPane");
   await act(async () => {
-    render(<FileViewerPane viewer="markdown" path="/p/notes.md" projectId="proj" />);
+    render(<FileViewerPane viewer="markdown" path="/p/notes.md" projectId="proj" tabKey={TAB_KEY} />);
   });
 }
 
@@ -61,10 +91,11 @@ describe("editor text-size control", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     prefsRef.current = {};
+    tabsRef.current = [{ key: TAB_KEY, kind: "embed", viewerState: {} }];
     setup();
   });
 
-  it("applies the persisted font_size as the editor CSS variables", async () => {
+  it("applies the persisted per-type font_size as the editor CSS variables", async () => {
     prefsRef.current = { text: { font_size: 16 } };
     await renderTextView();
     await waitFor(() =>
@@ -78,7 +109,7 @@ describe("editor text-size control", () => {
     expect(screen.getByRole("button", { name: "Reset text size" }).textContent).toBe("16");
   });
 
-  it("persists a larger size when A+ is clicked", async () => {
+  it("persists a larger size on THIS tab (not global settings) when A+ is clicked", async () => {
     await renderTextView();
     await waitFor(() =>
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(SOURCE),
@@ -86,22 +117,61 @@ describe("editor text-size control", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Increase text size" }));
     });
-    expect(mockUpdate).toHaveBeenCalledWith({ viewer_prefs: { text: { font_size: 13 } } });
+    // Written to the tab's viewerState — not the global per-type viewer_prefs.
+    expect(mockSetViewerState).toHaveBeenCalledWith(TAB_KEY, { fontSize: 13 });
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Reset text size" }).textContent).toBe("13");
   });
 
-  it("shrinks on Ctrl+− from the editor", async () => {
-    prefsRef.current = { text: { font_size: 14 } };
+  it("shrinks on Ctrl+− from the editor and persists on the tab", async () => {
+    tabsRef.current[0].viewerState = { fontSize: 14 };
     await renderTextView();
     const textarea = (await screen.findByRole("textbox")) as HTMLTextAreaElement;
     await waitFor(() => expect(textarea.value).toBe(SOURCE));
     await act(async () => {
       fireEvent.keyDown(textarea, { key: "-", ctrlKey: true });
     });
-    expect(mockUpdate).toHaveBeenCalledWith({ viewer_prefs: { text: { font_size: 13 } } });
+    expect(mockSetViewerState).toHaveBeenCalledWith(TAB_KEY, { fontSize: 13 });
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("restores the persisted tab size across an Eldrun restart", async () => {
+    // First session: zoom this tab up to 13, which persists on its viewerState.
+    await renderTextView();
+    await waitFor(() =>
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(SOURCE),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Increase text size" }));
+    });
+    expect(tabsRef.current[0].viewerState).toMatchObject({ fontSize: 13 });
+    // Restart: tear down this session, then remount. The tab (and its
+    // viewerState) survives; the viewer re-seeds the size from it.
+    cleanup();
+    await renderTextView();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Reset text size" }).textContent).toBe("13"),
+    );
+  });
+
+  it("Reset clears the tab override, falling back to the per-type default", async () => {
+    prefsRef.current = { text: { font_size: 20 } };
+    tabsRef.current[0].viewerState = { fontSize: 10 };
+    await renderTextView();
+    await waitFor(() =>
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(SOURCE),
+    );
+    expect(screen.getByRole("button", { name: "Reset text size" }).textContent).toBe("10");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Reset text size" }));
+    });
+    // Override cleared → falls back to the per-type default (20).
+    expect(mockSetViewerState).toHaveBeenCalledWith(TAB_KEY, { fontSize: undefined });
+    expect(screen.getByRole("button", { name: "Reset text size" }).textContent).toBe("20");
   });
 
   it("clamps at the minimum size", async () => {
-    prefsRef.current = { text: { font_size: 8 } };
+    tabsRef.current[0].viewerState = { fontSize: 8 };
     await renderTextView();
     await waitFor(() =>
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(SOURCE),
@@ -110,13 +180,14 @@ describe("editor text-size control", () => {
     expect(dec.disabled).toBe(true);
   });
 
-  it("offers the control in the markdown viewer and persists under the markdown key", async () => {
+  it("offers the control in the markdown viewer and persists on the tab", async () => {
     await renderMarkdownView();
     // The preview renders the markdown body; the size control sits in the header.
     await waitFor(() => expect(document.querySelector(".markdown-body")).not.toBeNull());
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Increase text size" }));
     });
-    expect(mockUpdate).toHaveBeenCalledWith({ viewer_prefs: { markdown: { font_size: 13 } } });
+    expect(mockSetViewerState).toHaveBeenCalledWith(TAB_KEY, { fontSize: 13 });
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 });

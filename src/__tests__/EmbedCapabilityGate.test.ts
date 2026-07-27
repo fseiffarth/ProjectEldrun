@@ -131,6 +131,9 @@ describe("commitFileDrop — dragged out of the window (detachBounds)", () => {
       "mousepad",
       "p",
       "file_drag_out",
+      // The external app is placed at the drop rectangle's origin, so it lands
+      // on the monitor the file was actually dragged onto.
+      { x: bounds.x, y: bounds.y },
     );
     // No standalone Eldrun window was spawned for it.
     expect(useTabsStore.getState().detachedGroupsByScope["p"] ?? []).toHaveLength(0);

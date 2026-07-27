@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
-use crate::schema::time_log::TimeLogEntry;
-use crate::storage;
+use crate::schema::time_log;
 
 pub const APP_TIMER_ID: &str = "__eldrun__";
 
@@ -11,7 +10,7 @@ pub fn timer_flush_app(secs: f64) {
     if secs <= 0.0 {
         return;
     }
-    flush_secs(APP_TIMER_ID, secs);
+    time_log::record_secs(APP_TIMER_ID, secs);
 }
 
 /// Flush elapsed project session seconds into the time log.
@@ -20,41 +19,23 @@ pub fn timer_flush_project(project_id: String, secs: f64) {
     if secs <= 0.0 || project_id.is_empty() {
         return;
     }
-    flush_secs(&project_id, secs);
+    time_log::record_secs(&project_id, secs);
 }
 
 /// Returns total seconds per date for the given project_id (or global if empty).
 /// Result: { "YYYY-MM-DD" -> total_seconds }
 #[tauri::command]
 pub fn get_project_activity(project_id: String) -> HashMap<String, f64> {
-    let path = storage::state_dir().join("time_log.json");
-    if !path.exists() {
-        return HashMap::new();
-    }
-    let log: crate::schema::time_log::TimeLog =
-        storage::read_json(&path).unwrap_or_default();
-    let mut result: HashMap<String, f64> = HashMap::new();
-    for entry in log {
-        if project_id.is_empty() || entry.project_id == project_id {
-            *result.entry(entry.date).or_insert(0.0) += entry.duration_s;
-        }
-    }
-    result
+    time_log::load_summary_migrating().activity_for(&project_id)
 }
 
-fn flush_secs(project_id: &str, secs: f64) {
-    let path = storage::state_dir().join("time_log.json");
-    let mut log: crate::schema::time_log::TimeLog = if path.exists() {
-        storage::read_json(&path).unwrap_or_default()
-    } else {
-        vec![]
-    };
-    log.push(TimeLogEntry {
-        project_id: project_id.to_string(),
-        date: storage::today_utc(),
-        start_iso: storage::iso_now(),
-        duration_s: secs,
-        extra: HashMap::new(),
-    });
-    let _ = storage::write_json(&path, &log);
+/// The whole time summary, unfolded: `{ "YYYY-MM-DD" -> { project_id -> secs } }`.
+///
+/// The usage recap needs *every* project's time for a period ("work spent per
+/// project"), which through [`get_project_activity`] would mean one call — and one
+/// full read of the summary file — per project. This hands back the map the store
+/// already holds, in a single read.
+#[tauri::command]
+pub fn get_time_activity_all() -> HashMap<String, HashMap<String, f64>> {
+    time_log::load_summary_migrating().days
 }

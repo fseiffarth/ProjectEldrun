@@ -4,9 +4,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use eldrun_lib::commands::projects::{
-    create_project, get_projects, import_project, load_project, set_project_description,
-    CreateProjectRequest, ImportProjectRequest,
+    archive_project, create_project, delete_archived_project, get_projects, import_project,
+    list_archived_projects, load_project, restore_archived_project, set_project_auto_connect,
+    set_project_description, set_project_sandbox, set_project_sandbox_spec, CreateProjectRequest,
+    ImportProjectRequest,
 };
+use eldrun_lib::schema::project::{RemoteSpec, SandboxSpec};
 use tempfile::{Builder, TempDir};
 
 const SCAFFOLDS: &[(&str, &str)] = &[
@@ -17,7 +20,7 @@ const SCAFFOLDS: &[(&str, &str)] = &[
     ("ROADMAP.md", "# Roadmap\n"),
     ("STATUS.md", "# Status\n"),
     ("README.md", "# Project\n"),
-    (".gitignore", "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\n"),
+    (".gitignore", "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\nproject.json\n"),
     (".claude/settings.json", r#"{"permissions":{"allow":[],"deny":[]}}"#),
 ];
 
@@ -37,28 +40,47 @@ fn test_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Every env var the backend resolves user-state locations from. `HOME` feeds
+/// `paths::home_dir`/`storage::state_dir` on Unix; on Windows `home_dir` reads
+/// `USERPROFILE` (then `HOMEDRIVE`/`HOMEPATH`) and `state_dir` reads `APPDATA` —
+/// overriding only `HOME` there sent every test write into the REAL
+/// `~\eldrun\projects` and `%APPDATA%\eldrun\projects.json` (junk projects in
+/// the user's live store). All of them must point into the temp home.
+const HOME_ENV_KEYS: &[&str] = &["HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA"];
+
 struct HomeGuard {
-    old_home: Option<std::ffi::OsString>,
+    old: Vec<(&'static str, Option<std::ffi::OsString>)>,
 }
 
 impl HomeGuard {
     fn set(home: &Path) -> Self {
-        let old_home = env::var_os("HOME");
-        // HOME is mutated only while holding the test lock.
+        // Env is mutated only while holding the test lock.
+        let old = HOME_ENV_KEYS
+            .iter()
+            .map(|&key| (key, env::var_os(key)))
+            .collect();
         unsafe {
             env::set_var("HOME", home);
+            env::set_var("USERPROFILE", home);
+            // Neutralize the HOMEDRIVE/HOMEPATH fallback rather than try to
+            // split a temp path into drive+path.
+            env::remove_var("HOMEDRIVE");
+            env::remove_var("HOMEPATH");
+            env::set_var("APPDATA", home.join("AppData").join("Roaming"));
         }
-        Self { old_home }
+        Self { old }
     }
 }
 
 impl Drop for HomeGuard {
     fn drop(&mut self) {
-        // Restore the caller's HOME as soon as the scoped test ends.
+        // Restore the caller's env as soon as the scoped test ends.
         unsafe {
-            match &self.old_home {
-                Some(home) => env::set_var("HOME", home),
-                None => env::remove_var("HOME"),
+            for (key, value) in &self.old {
+                match value {
+                    Some(v) => env::set_var(key, v),
+                    None => env::remove_var(key),
+                }
             }
         }
     }
@@ -147,7 +169,9 @@ fn create_project_preserves_existing_scaffolds() {
             directory: target.path().to_string_lossy().to_string(),
             description: Some("Create description".to_string()),
             git_type: None,
+            skip_scaffold: false,
             remote: None,
+            mirror_parent: None,
         };
 
         let entry = create_project(req).expect("create project");
@@ -170,6 +194,156 @@ fn create_project_preserves_existing_scaffolds() {
     });
 }
 
+/// A new **git-backed** remote project starts with lockstep ON, so the git-tracked
+/// tree is kept in step semantically (commits/refs) from the first launch instead
+/// of waiting for the user to find the toggle. This is the same default
+/// `extend_project_to_remote` applies, and it is safe for the same reason: the host
+/// root was just created empty, so the first pass can only seed one direction.
+///
+/// The companion half of the default is that byte-sync stays opt-in per path (no
+/// marker ⇒ `is_auto` false), which is what leaves gitignored host-side data — the
+/// experiment output a remote project exists to produce — where it is.
+#[test]
+fn create_remote_project_enables_lockstep_when_git_backed() {
+    with_isolated_home("remote-lockstep-home", |_| {
+        let mirror_parent = tempdir_in_test_projects("remote-ls-mirror");
+        let req = CreateProjectRequest {
+            name: "remote-git-project".to_string(),
+            directory: String::new(),
+            description: None,
+            git_type: Some("local".to_string()),
+            skip_scaffold: false,
+            remote: Some(RemoteSpec {
+                user: Some("alice".to_string()),
+                host: "nonexistent.invalid".to_string(),
+                port: None,
+                remote_path: "/home/alice/work".to_string(),
+                openvpn: None,
+                auto_connect: None,
+                key_auth: None,
+                persist_sessions: None,
+                label: None,
+                extra: Default::default(),
+            }),
+            mirror_parent: Some(mirror_parent.path().to_string_lossy().to_string()),
+        };
+
+        let entry = create_project(req).expect("create remote git project");
+        let state = eldrun_lib::services::git_peer::load_state(&entry.id);
+        assert!(
+            state.enabled,
+            "a git-backed remote project should start with lockstep enabled"
+        );
+    });
+}
+
+/// The gate is the mirror actually being a repo, not the `git_type` tag: a
+/// `none` project has no history to seed a pairing from, so lockstep stays off
+/// (its default) rather than being enabled over an empty non-repo.
+#[test]
+fn create_remote_project_leaves_lockstep_off_without_git() {
+    with_isolated_home("remote-nolockstep-home", |_| {
+        let mirror_parent = tempdir_in_test_projects("remote-nols-mirror");
+        let req = CreateProjectRequest {
+            name: "remote-plain-project".to_string(),
+            directory: String::new(),
+            description: None,
+            git_type: Some("none".to_string()),
+            skip_scaffold: false,
+            remote: Some(RemoteSpec {
+                user: Some("alice".to_string()),
+                host: "nonexistent.invalid".to_string(),
+                port: None,
+                remote_path: "/home/alice/work".to_string(),
+                openvpn: None,
+                auto_connect: None,
+                key_auth: None,
+                persist_sessions: None,
+                label: None,
+                extra: Default::default(),
+            }),
+            mirror_parent: Some(mirror_parent.path().to_string_lossy().to_string()),
+        };
+
+        let entry = create_project(req).expect("create remote non-git project");
+        let state = eldrun_lib::services::git_peer::load_state(&entry.id);
+        assert!(
+            !state.enabled,
+            "a non-git remote project has nothing to keep in step; lockstep stays off"
+        );
+    });
+}
+
+#[test]
+fn create_remote_project_scaffolds_the_local_mirror() {
+    with_isolated_home("remote-home", |_| {
+        // Where the local mirror twin (working copy) should land. The host is a
+        // reserved `.invalid` name so the best-effort remote `mkdir -p` fails fast
+        // (NXDOMAIN) without touching the network — scaffolding the mirror must
+        // happen regardless, since bytes only reach the host on a manual push.
+        let mirror_parent = tempdir_in_test_projects("remote-mirror");
+
+        let req = CreateProjectRequest {
+            name: "remote-project".to_string(),
+            directory: String::new(),
+            description: Some("Remote description".to_string()),
+            git_type: Some("none".to_string()),
+            skip_scaffold: false,
+            remote: Some(RemoteSpec {
+                user: Some("alice".to_string()),
+                host: "nonexistent.invalid".to_string(),
+                port: None,
+                remote_path: "/home/alice/work".to_string(),
+                openvpn: None,
+                auto_connect: None,
+                key_auth: None,
+                persist_sessions: None,
+                label: None,
+                extra: Default::default(),
+            }),
+            mirror_parent: Some(mirror_parent.path().to_string_lossy().to_string()),
+        };
+
+        let entry = create_project(req).expect("create remote project");
+        assert!(
+            entry.extra.contains_key("remote"),
+            "entry should carry a remote spec"
+        );
+
+        // The scaffold lives in the local mirror, not the (project.json-only)
+        // state directory the entry's local_file points at.
+        let mirror = entry
+            .extra
+            .get("mirror")
+            .and_then(|v| v.as_str())
+            .expect("remote entry carries a mirror path");
+        let mirror_dir = Path::new(mirror);
+        for (name, default_content) in SCAFFOLDS {
+            // `.gitignore` is a git-axis artifact: a `git_type: "none"` project
+            // never gets one written, so it must be absent from the mirror.
+            if *name == ".gitignore" {
+                assert!(
+                    !mirror_dir.join(name).exists(),
+                    "git_type none must not scaffold a .gitignore"
+                );
+                continue;
+            }
+            let path = mirror_dir.join(name);
+            assert!(path.exists(), "missing mirror scaffold: {name}");
+            let actual = fs::read_to_string(&path).expect("read mirror scaffold");
+            assert_eq!(&actual, default_content, "unexpected contents for {name}");
+        }
+
+        // git_type "none" means no repo was initialized in the mirror.
+        assert!(
+            !mirror_dir.join(".git").exists(),
+            "git_type none must not init a mirror repo"
+        );
+
+        assert_project_registered(&PathBuf::from(&entry.local_file), "remote-project");
+    });
+}
+
 #[test]
 fn import_project_copy_creates_missing_scaffolds_without_overwriting_existing_ones() {
     with_isolated_home("copy-home", |_| {
@@ -186,6 +360,7 @@ fn import_project_copy_creates_missing_scaffolds_without_overwriting_existing_on
             manual_validation_confirmed: Some(true),
             skip_scaffold: false,
             remote: None,
+            mirror_parent: None,
         };
 
         let entry = import_project(req).expect("import copy");
@@ -227,6 +402,7 @@ fn import_project_move_creates_missing_scaffolds_without_overwriting_existing_on
             manual_validation_confirmed: Some(true),
             skip_scaffold: false,
             remote: None,
+            mirror_parent: None,
         };
 
         let entry = import_project(req).expect("import move");
@@ -263,6 +439,7 @@ fn import_project_keep_creates_missing_scaffolds_in_place_without_overwriting_ex
             manual_validation_confirmed: None,
             skip_scaffold: false,
             remote: None,
+            mirror_parent: None,
         };
 
         let entry = import_project(req).expect("import keep");
@@ -301,6 +478,7 @@ fn import_project_skip_scaffold_does_not_add_missing_scaffold_files() {
             manual_validation_confirmed: None,
             skip_scaffold: true,
             remote: None,
+            mirror_parent: None,
         };
 
         let entry = import_project(req).expect("import skip-scaffold");
@@ -335,7 +513,9 @@ fn set_project_description_writes_both_projects_json_and_project_json() {
             directory: target.path().to_string_lossy().to_string(),
             description: Some("original".to_string()),
             git_type: None,
+            skip_scaffold: false,
             remote: None,
+            mirror_parent: None,
         })
         .expect("create project");
 
@@ -364,5 +544,262 @@ fn set_project_description_writes_both_projects_json_and_project_json() {
         assert!(found.extra.get("description").is_none());
         let project = load_project(entry.local_file.clone()).expect("load project");
         assert!(project.description.is_none());
+    });
+}
+
+// ── Archive (delete → restorable) ──────────────────────────────────────────
+
+fn new_local_project(name: &str, target: &Path) -> eldrun_lib::schema::projects::ProjectEntry {
+    seed_project(target, name);
+    create_project(CreateProjectRequest {
+        name: name.to_string(),
+        directory: target.to_string_lossy().to_string(),
+        description: None,
+        git_type: None,
+        skip_scaffold: false,
+        remote: None,
+        mirror_parent: None,
+    })
+    .expect("create project")
+}
+
+#[test]
+fn archive_and_restore_local_project_roundtrip() {
+    with_isolated_home("archive-home", |_| {
+        let target = tempdir_in_test_projects("archive-target");
+        let entry = new_local_project("arch-project", target.path());
+        let id = entry.id.clone();
+        let dir = target.path().to_path_buf();
+        assert!(dir.join("project.json").exists());
+
+        // Archive: the on-disk dir moves out and the pill drops from the list.
+        archive_project(id.clone(), "2026-07-01T00:00:00+00:00".to_string()).expect("archive");
+        assert!(
+            !dir.join("project.json").exists(),
+            "original project dir should have moved into the archive"
+        );
+        assert!(
+            get_projects().unwrap().iter().all(|p| p.id != id),
+            "archived project must be gone from projects.json"
+        );
+        let archived = list_archived_projects().expect("list archived");
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].id, id);
+        assert_eq!(archived[0].name, "arch-project");
+        assert!(!archived[0].remote);
+
+        // Restore: comes back inactive, the folder + files return, archive empties.
+        let restored = restore_archived_project(id.clone()).expect("restore");
+        assert_eq!(restored.status, "inactive");
+        assert_eq!(restored.id, id);
+        assert!(get_projects().unwrap().iter().any(|p| p.id == id));
+        assert!(list_archived_projects().unwrap().is_empty());
+        let restored_dir = PathBuf::from(&restored.local_file)
+            .parent()
+            .expect("restored project file parent")
+            .to_path_buf();
+        assert!(restored_dir.join("notes.txt").exists());
+        assert!(restored_dir.join("nested/info.txt").exists());
+    });
+}
+
+#[test]
+fn permanent_delete_removes_archived_project() {
+    with_isolated_home("archive-del-home", |_| {
+        let target = tempdir_in_test_projects("archive-del-target");
+        let entry = new_local_project("del-project", target.path());
+        let id = entry.id.clone();
+
+        archive_project(id.clone(), "2026-07-01T00:00:00+00:00".to_string()).expect("archive");
+        assert_eq!(list_archived_projects().unwrap().len(), 1);
+
+        delete_archived_project(id.clone()).expect("delete forever");
+        assert!(
+            list_archived_projects().unwrap().is_empty(),
+            "archive must be empty after permanent delete"
+        );
+        // Restoring a permanently-deleted project is an error (nothing to read).
+        assert!(restore_archived_project(id).is_err());
+    });
+}
+
+/// Project containers, Phase 0: the toggle must be **spec-preserving** —
+/// re-enabling used to write `SandboxSpec::default()`, wiping hand-tuned
+/// `image`/`memory`/`network`/…. Only `enabled` flips now; the knobs survive a
+/// disable/enable round-trip in BOTH stores. And the *first* enable
+/// auto-detects an in-repo `Dockerfile` as the container source (Phase 4).
+#[test]
+fn set_project_sandbox_preserves_spec_and_detects_dockerfile() {
+    with_isolated_home("sandbox-home", |_| {
+        let target = tempdir_in_test_projects("sandbox-target");
+        let entry = new_local_project("sandbox-project", target.path());
+        let id = entry.id.clone();
+
+        // The project carries a root Dockerfile → the first enable adopts it.
+        fs::write(target.path().join("Dockerfile"), "FROM debian:stable\n").expect("dockerfile");
+        let spec = set_project_sandbox(id.clone(), true).expect("enable");
+        assert!(spec.enabled);
+        assert_eq!(spec.dockerfile.as_deref(), Some("Dockerfile"));
+
+        // Hand-tune the knobs, then flip the toggle off and back on: every
+        // field must survive; only `enabled` may change.
+        let tuned = SandboxSpec {
+            enabled: true,
+            image: None,
+            dockerfile: Some("Dockerfile".to_string()),
+            pids_limit: Some(256),
+            memory: Some("4g".to_string()),
+            cpus: None,
+            network: Some("none".to_string()),
+            readonly_rootfs: true,
+            extra: Default::default(),
+        };
+        set_project_sandbox_spec(id.clone(), tuned).expect("store tuned spec");
+
+        let off = set_project_sandbox(id.clone(), false).expect("disable");
+        assert!(!off.enabled);
+        assert_eq!(off.memory.as_deref(), Some("4g"), "disable must not wipe the spec");
+
+        let on = set_project_sandbox(id.clone(), true).expect("re-enable");
+        assert!(on.enabled);
+        assert_eq!(on.pids_limit, Some(256));
+        assert_eq!(on.memory.as_deref(), Some("4g"));
+        assert_eq!(on.network.as_deref(), Some("none"));
+        assert!(on.readonly_rootfs);
+        assert_eq!(on.dockerfile.as_deref(), Some("Dockerfile"));
+
+        // Both stores carry the tuned spec: the projects.json mirror (what the
+        // spawn path reads) and the project's own project.json.
+        let entry = get_projects()
+            .expect("list")
+            .into_iter()
+            .find(|p| p.id == id)
+            .expect("entry");
+        let mirrored: SandboxSpec = serde_json::from_value(
+            entry.extra.get("sandbox").cloned().expect("sandbox mirrored"),
+        )
+        .expect("parse mirrored spec");
+        assert!(mirrored.enabled && mirrored.readonly_rootfs);
+        assert_eq!(mirrored.pids_limit, Some(256));
+
+        let project: eldrun_lib::schema::project::Project = serde_json::from_str(
+            &fs::read_to_string(&entry.local_file).expect("read project.json"),
+        )
+        .expect("parse project.json");
+        let stored = project.sandbox.expect("project.json carries the spec");
+        assert!(stored.enabled && stored.readonly_rootfs);
+        assert_eq!(stored.network.as_deref(), Some("none"));
+    });
+}
+
+/// Legacy specs (predating the `dockerfile` field) parse unchanged, and a spec
+/// carrying it round-trips.
+#[test]
+fn sandbox_spec_roundtrips_and_reads_legacy_shape() {
+    let legacy: SandboxSpec =
+        serde_json::from_str(r#"{"enabled":true,"image":"img:1","memory":"2g"}"#)
+            .expect("legacy spec parses");
+    assert!(legacy.enabled);
+    assert_eq!(legacy.image.as_deref(), Some("img:1"));
+    assert_eq!(legacy.dockerfile, None);
+
+    let spec = SandboxSpec {
+        enabled: true,
+        dockerfile: Some("docker/Dockerfile.dev".to_string()),
+        ..Default::default()
+    };
+    let back: SandboxSpec =
+        serde_json::from_str(&serde_json::to_string(&spec).expect("serialize")).expect("parse");
+    assert_eq!(back.dockerfile.as_deref(), Some("docker/Dockerfile.dev"));
+}
+
+#[test]
+fn archive_rejects_traversal_ids_and_missing_projects() {
+    with_isolated_home("archive-guard-home", |_| {
+        assert!(archive_project("../evil".to_string(), "x".to_string()).is_err());
+        assert!(archive_project("no-such-id".to_string(), "x".to_string()).is_err());
+    });
+}
+
+/// The auto-connect opt-in has to survive a restart, and it is read from
+/// `projects.json` (the always-local source of truth for a remote project, whose
+/// own `project.json` may live behind the host) — so both copies must carry it, and
+/// clearing it must *remove* the field rather than store `false`, so an opted-out
+/// project is byte-identical to one that never opted in.
+#[test]
+fn set_project_auto_connect_writes_both_copies_and_clears() {
+    with_isolated_home("auto-connect-home", |_| {
+        let mirror_parent = tempdir_in_test_projects("auto-connect-mirror");
+        let entry = create_project(CreateProjectRequest {
+            name: "auto-connect".to_string(),
+            directory: String::new(),
+            description: None,
+            git_type: Some("none".to_string()),
+            skip_scaffold: true,
+            remote: Some(RemoteSpec {
+                user: Some("alice".to_string()),
+                host: "nonexistent.invalid".to_string(),
+                port: None,
+                remote_path: "/home/alice/work".to_string(),
+                openvpn: None,
+                auto_connect: None,
+                key_auth: None,
+                persist_sessions: None,
+                label: None,
+                extra: Default::default(),
+            }),
+            mirror_parent: Some(mirror_parent.path().to_string_lossy().to_string()),
+        })
+        .expect("create remote project");
+
+        // Reads `auto_connect` off the entry's flattened `remote` in projects.json.
+        let registered = |id: &str| -> Option<bool> {
+            get_projects()
+                .expect("get projects")
+                .into_iter()
+                .find(|p| p.id == id)?
+                .extra
+                .get("remote")?
+                .get("auto_connect")?
+                .as_bool()
+        };
+        let on_disk = |local_file: &str| -> Option<bool> {
+            load_project(local_file.to_string())
+                .expect("load project.json")
+                .remote?
+                .auto_connect
+        };
+
+        assert_eq!(registered(&entry.id), None, "starts opted out");
+
+        assert!(set_project_auto_connect(entry.id.clone(), true).expect("opt in"));
+        assert_eq!(registered(&entry.id), Some(true));
+        assert_eq!(on_disk(&entry.local_file), Some(true));
+
+        assert!(!set_project_auto_connect(entry.id.clone(), false).expect("opt out"));
+        assert_eq!(registered(&entry.id), None, "cleared, not stored as false");
+        assert_eq!(on_disk(&entry.local_file), None);
+    });
+}
+
+/// A local project has no SSH connection to automate, so the opt-in must be
+/// refused rather than silently written into a spec that doesn't exist.
+#[test]
+fn set_project_auto_connect_rejects_local_and_unknown_projects() {
+    with_isolated_home("auto-connect-local-home", |_| {
+        let target = tempdir_in_test_projects("auto-connect-local");
+        let entry = create_project(CreateProjectRequest {
+            name: "local-project".to_string(),
+            directory: target.path().to_string_lossy().to_string(),
+            description: None,
+            git_type: Some("none".to_string()),
+            skip_scaffold: true,
+            remote: None,
+            mirror_parent: None,
+        })
+        .expect("create local project");
+
+        assert!(set_project_auto_connect(entry.id, true).is_err());
+        assert!(set_project_auto_connect("no-such-id".to_string(), true).is_err());
     });
 }

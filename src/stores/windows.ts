@@ -23,6 +23,10 @@ interface WindowsStore {
     handler?: string,
     projectId?: string | null,
     origin?: string,
+    // Physical desktop coordinates to place the launched window at (X11 only,
+    // best-effort). Used to open an external app on the screen a file was
+    // dropped onto. Omitted → the WM places the window.
+    position?: { x: number; y: number },
   ) => Promise<TrackedWindow>;
 }
 
@@ -52,12 +56,14 @@ export const useWindowsStore = create<WindowsStore>((set) => ({
     set((s) => ({ windows: s.windows.filter((w) => w.id !== id) }));
   },
 
-  openFile: async (path, handler, projectId, origin) => {
+  openFile: async (path, handler, projectId, origin, position) => {
     const win = await invoke<TrackedWindow>("open_file", {
       path,
       handler: handler ?? null,
       projectId: projectId ?? null,
       origin: origin ?? null,
+      x: position?.x ?? null,
+      y: position?.y ?? null,
     });
     set((s) => ({ windows: [...s.windows, win] }));
     return win;

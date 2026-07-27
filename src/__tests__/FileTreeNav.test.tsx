@@ -1,7 +1,8 @@
 /**
  * Render tests for the right-panel file tree navigation:
- * - #2 (Group D.1): a file's `.file-name` span carries a native `title` with the
- *   full name so long names are readable on hover (CSS ellipsis aside).
+ * - #2 (Group D.1): a file's full name is readable on hover via the existing
+ *   custom `.file-tooltip` popup (not a native `title` attribute — that used
+ *   to render as an unthemed OS tooltip instead of the app's own hover UI).
  * - #3 (Group D.1): entering a subfolder renders a breadcrumb (↑, ⌂ root crumb,
  *   and a crumb per path segment); clicking the root crumb navigates back.
  */
@@ -55,6 +56,7 @@ function setupInvoke() {
       );
     }
     if (cmd === "git_status") return Promise.resolve({ staged: 0, unstaged: 0, untracked: 0, has_remote: false, is_repo: false });
+    if (cmd === "git_unpushed_commits") return Promise.resolve([]);
     if (cmd === "git_file_statuses") return Promise.resolve({});
     if (cmd === "load_project") return Promise.resolve({});
     if (cmd === "list_project_endings") return Promise.resolve([]);
@@ -72,16 +74,31 @@ describe("file tree navigation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setupInvoke();
-    mockUseProjectsStore.mockReturnValue(
-      { projects: [ACTIVE_PROJECT], activeId: "proj-1" } as ReturnType<typeof useProjectsStore>,
-    );
+    // Apply the selector like real zustand: FileTree subscribes with selectors
+    // (e.g. `(s) => !!s.projects.find(...)?.remote`), so the mock must run the
+    // selector against the state — returning the whole state object would make
+    // those boolean selectors truthy (a non-empty object) and mis-flag the local
+    // test project as remote.
+    const state = {
+      projects: [ACTIVE_PROJECT],
+      activeId: "proj-1",
+      rightPanelFolderByProject: {},
+      setRightPanelFolder: vi.fn(),
+    } as unknown as ReturnType<typeof useProjectsStore>;
+    mockUseProjectsStore.mockImplementation(((selector?: (s: typeof state) => unknown) =>
+      selector ? selector(state) : state) as typeof useProjectsStore);
   });
 
-  it("#2 shows the full file name in a title attribute", async () => {
+  it("#2 shows the full file name in the hover tooltip, not a title attribute", async () => {
     await renderPanel();
     const nameSpan = await screen.findByText(LONG_NAME);
     expect(nameSpan.classList.contains("file-name")).toBe(true);
-    expect(nameSpan.getAttribute("title")).toBe(LONG_NAME);
+    expect(nameSpan.getAttribute("title")).toBeNull();
+
+    const row = nameSpan.closest(".file-entry");
+    expect(row).toBeTruthy();
+    fireEvent.mouseEnter(row!);
+    expect(await screen.findByText(LONG_NAME, { selector: ".file-tooltip-name" })).toBeTruthy();
   });
 
   it("#3 builds a breadcrumb on entering a subfolder and the root crumb goes back", async () => {
@@ -107,13 +124,37 @@ describe("file tree navigation", () => {
     expect(document.querySelector(".file-tree-breadcrumb")).toBeNull();
   });
 
+  it("seeds relPath from the saved folder so a mount never flashes root", () => {
+    // Store remembers `proj-1` was last browsing the `sub` folder.
+    const state = {
+      projects: [ACTIVE_PROJECT],
+      activeId: "proj-1",
+      rightPanelFolderByProject: { "proj-1": "sub" },
+      setRightPanelFolder: vi.fn(),
+    } as unknown as ReturnType<typeof useProjectsStore>;
+    mockUseProjectsStore.mockImplementation(((selector?: (s: typeof state) => unknown) =>
+      selector ? selector(state) : state) as typeof useProjectsStore);
+
+    // Synchronous render (no awaited flush): the async `load("sub")` has NOT
+    // resolved yet, so `relPath` reflects only its initial value. With the fix it
+    // is seeded from `initialRelPath="sub"`, so the breadcrumb (driven by
+    // `relPath`, not the entry listing) is on screen on the first commit. The old
+    // `useState("")` would render root here and only reach `sub` after the load
+    // resolved — the "flash root" this test guards against.
+    render(<RightPanel open={true} />);
+    expect(document.querySelector(".file-tree-breadcrumb")).not.toBeNull();
+    expect(document.querySelector(".file-tree-crumb[title='Project root']")).toBeTruthy();
+  });
+
   it("#1 'New File' from the context menu prompts and calls create_file", async () => {
     const user = userEvent.setup();
     const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("created.ts");
     await renderPanel();
 
-    // Right-click an entry to open the shared context menu, then choose New File.
-    fireEvent.contextMenu(await screen.findByText("sub"));
+    // Right-click the file-tree background to open the root context menu (New
+    // File / New Folder live there, not on the per-entry menu), then choose New File.
+    await screen.findByText("sub");
+    fireEvent.contextMenu(document.querySelector(".file-tree")!);
     await user.click(await screen.findByText("New File"));
 
     expect(promptSpy).toHaveBeenCalled();

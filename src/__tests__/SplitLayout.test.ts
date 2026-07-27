@@ -402,14 +402,14 @@ describe("tabs store — split layout", () => {
       useTabsStore.getState().loadFromLayout(
         [
           { key: "a1", label: "claude", cmd: "claude", cwd: "/x", kind: "agent" },
-          { key: "a2", label: "gemini", cmd: "gemini", cwd: "/x", kind: "agent", sessionId: "g" },
+          { key: "a2", label: "aider", cmd: "aider", cwd: "/x", kind: "agent", sessionId: "g" },
         ],
         "/proj",
         "p",
       );
       const tabs = useTabsStore.getState().tabs;
       expect(tabs[0].args).toEqual([]); // claude, no sessionId
-      expect(tabs[1].args).toEqual([]); // gemini not in RESUMABLE_AGENTS
+      expect(tabs[1].args).toEqual([]); // aider not in RESUMABLE_AGENTS
     });
   });
 

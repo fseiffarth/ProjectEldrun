@@ -1,0 +1,7 @@
+From: first@example.com
+From: second@evil.example
+To: b@example.org
+Subject: two senders
+Content-Type: text/plain
+
+body

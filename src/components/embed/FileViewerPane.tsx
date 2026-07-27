@@ -1,12 +1,19 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
-import * as pdfjs from "pdfjs-dist";
-import type { PDFDocumentProxy } from "pdfjs-dist";
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useWindowsStore } from "../../stores/windows";
-import { findGroupOfTab, useTabsStore, type ViewerState } from "../../stores/tabs";
+import {
+  findGroupOfTab,
+  getDetachedViewerState,
+  useTabsStore,
+  type ViewerState,
+} from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
+import { useExperimental } from "../../lib/experimental";
+import { useProjectsStore } from "../../stores/projects";
+import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useRemoteMachinesStore } from "../../stores/remoteMachines";
+import { RemotePaneHold } from "../projects/RemotePaneHold";
 import { useLinkRoutingStore } from "../../stores/linkRouting";
 import {
   useEditorJumpStore,
@@ -15,18 +22,113 @@ import {
   unregisterEditor,
 } from "../../stores/editorJump";
 import { usePdfSyncStore } from "../../stores/pdfSync";
+import { useScrollSync } from "../../stores/scrollSync";
 import { parseDetachedParam } from "../../stores/detached";
 import { Dropdown } from "../common/Dropdown";
+import { CompareView } from "./CompareView";
+import { PresentationOverlay } from "./PresentationOverlay";
+import { usePresentationStore } from "../../stores/presentation";
 import { renderMarkdown } from "../../lib/viewers/markdown";
-import { highlight, languageForPath } from "../../lib/viewers/highlight";
-import { internalViewerFor, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
+import { enrichMarkdownDom } from "../../lib/viewers/markdownEnrich";
+import { highlight, languageForPath, escapeHtml } from "../../lib/viewers/highlight";
+import { useOllamaStatus } from "../../lib/ollamaStatus";
+import {
+  printDocument,
+  printHtmlBody,
+  MARKDOWN_PRINT_CSS,
+  TEXT_PRINT_CSS,
+  IMAGE_PRINT_CSS,
+} from "../../lib/viewers/print";
+import {
+  formatJsonText,
+  isInProcessJson,
+  formatLangForPath,
+  validationLangForPath,
+  previewKindForPath,
+  buildPreviewDoc,
+  type PreviewKind,
+} from "../../lib/viewers/format";
+import {
+  toggleInline,
+  cycleHeading,
+  toggleLinePrefix,
+  makeLink,
+  generateToc,
+  type EditResult,
+} from "../../lib/viewers/markdownEdit";
+import { internalViewerFor, disabledViewers, relFromAbs, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
+import {
+  isPythonPath,
+  isPythonMainScript,
+  pythonLinkRanges,
+  remapBreakpoints,
+  resolvePythonDefinition,
+  snapBreakpointLine,
+} from "../../lib/viewers/python";
+import { debugPythonFile, runCwd, runPythonFile, placeForFocused } from "../../lib/pythonRun";
+import { RunHostPicker } from "../tabs/TabLocalityBadges";
+import {
+  isSlurmScript,
+  parseSbatchDirectives,
+  directiveValue,
+  spliceDirective,
+  slurmAvailable,
+  submitSlurmJob,
+  openInteractiveJob,
+  COMMON_SBATCH_KEYS,
+  type SlurmInfo,
+  type InteractiveResources,
+} from "../../lib/slurm";
+import { FileDropContext } from "../files/fileDropContext";
+import { UntestedTag } from "../common/UntestedTag";
+import { FileSourceSwitch } from "../files/ProjectFilesPane";
+import {
+  basename,
+  dirname,
+  fromFileUri,
+  isPathWithin,
+  normalizePath,
+  resolvePath,
+  toFileUri,
+} from "../../lib/paths";
+import { IS_MAC, IS_WINDOWS } from "../../lib/platform";
+import { runInstallInTab } from "../../lib/installCommand";
+import {
+  resolveProjectDirectory,
+  resolveLocalMirror,
+  type AutocompleteMode,
+  type GrammarIssue,
+} from "../../types";
+import { useSyncStore } from "../../stores/sync";
+import { ContextFilePicker } from "./ContextFilePicker";
+import { useFileSourcesStore } from "../../stores/fileSources";
+import {
+  FileScopeContext,
+  useFileScope,
+  fileSource,
+  type FileSource,
+  readFileText,
+  readFileBytes,
+  writeFileText,
+  fileMtime,
+  describeFileError,
+} from "./fileAccess";
+import { TableView } from "./TableView";
+import { NotebookView } from "./NotebookView";
+import { DiffView } from "./DiffView";
+import { SyncMergeView } from "./SyncMergeView";
+import { OdtView } from "./OdtView";
+import { MediaView } from "./MediaView";
+import { GifView } from "./GifView";
+import { SqliteView } from "./SqliteView";
+import { ImageAnnotator } from "./ImageAnnotator";
 import {
   type TexCapability,
   type TexCompileResult,
-  type SyncRect,
   type TexCompletions,
   type TexComplContext,
   getTexCapability,
+  refreshTexCapability,
   lastLogLine,
   type TexError,
   parseTexErrors,
@@ -37,20 +139,21 @@ import {
   gatherTexCompletions,
   resolveTexRefAsync,
   texRefRanges,
-  synctexEdit,
   synctexViewBest,
   pickSyncRect,
   sourceColumnFraction,
   resolveTexRoot,
-  pdfPointToBigPoints,
-  bigPointsToCssRect,
   lineStartOffset,
   offsetToLineCol,
   phraseAt,
-  refineToWord,
-  type TextItemBox,
-  type CaretPhrase,
 } from "../../lib/viewers/tex";
+import { PdfView } from "./pdf/PdfViewer";
+import { DeckView } from "./deck/DeckView";
+import { YamlTree } from "./YamlTree";
+import { YamlGrid } from "./YamlGrid";
+import { isTreePath, isJsonPath } from "../../lib/viewers/yaml";
+import { hasCards } from "../../lib/viewers/yamlGrid";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 /**
  * Persisted reader-position plumbing for an in-app viewer. Snapshots the tab's
@@ -60,12 +163,24 @@ import {
  * project.json by CenterPanel's debounced saveLayout, so the position survives an
  * Eldrun restart. A no-op when `tabKey` is absent (e.g. tests).
  */
-function useViewerState(tabKey: string | undefined) {
-  const [initial] = useState<ViewerState | undefined>(() =>
-    tabKey
-      ? useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState
-      : undefined,
+/**
+ * A tab's persisted `ViewerState` seed, read once. Normally from `useTabsStore`
+ * (the main window owns the layout store); in a DETACHED window that store has
+ * no entry for the tab — its tabs render from a Tauri seed into local React
+ * state, not the store — so fall back to the detached seed registry. Without
+ * this fallback a detached editor loses per-tab scroll/zoom and the #45
+ * autocomplete/grammar toggles, silently reverting to the per-type defaults.
+ */
+function seedViewerState(tabKey: string | undefined): ViewerState | undefined {
+  if (!tabKey) return undefined;
+  return (
+    useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState ??
+    getDetachedViewerState(tabKey)
   );
+}
+
+export function useViewerState(tabKey: string | undefined) {
+  const [initial] = useState<ViewerState | undefined>(() => seedViewerState(tabKey));
   const persist = useCallback(
     (patch: ViewerState) => {
       if (tabKey) useTabsStore.getState().setViewerState(tabKey, patch);
@@ -79,21 +194,17 @@ function useViewerState(tabKey: string | undefined) {
 
 // The modifier that opens a recognised file link (Ctrl/Cmd+Click). Shown verbatim
 // in the hover hint, so it must read as the key the user actually presses.
-const OPEN_MODIFIER = /Mac|iPhone|iPad/i.test(
-  (typeof navigator !== "undefined" && (navigator.platform || navigator.userAgent)) || "",
-)
-  ? "⌘"
-  : "Ctrl";
-const OPEN_LINK_HINT = `${OPEN_MODIFIER}+Click to open`;
+const OPEN_MODIFIER = IS_MAC ? "⌘" : "Ctrl";
 
 /** A small floating "{Ctrl}+Click to open" hint, anchored just above a hovered
  *  file link (#49). `at` is viewport coordinates of the link's top-left, or null
  *  to hide. Purely informational: pointer-events:none so it never blocks a click. */
 function LinkOpenHint({ at }: { at: { left: number; top: number } | null }) {
+  const t = useT();
   if (!at) return null;
   return (
     <div className="link-open-hint" role="tooltip" style={{ left: at.left, top: at.top }}>
-      {OPEN_LINK_HINT}
+      {t("fileViewer.linkOpenHint", { modifier: OPEN_MODIFIER })}
     </div>
   );
 }
@@ -116,7 +227,7 @@ export function zoomOffset(
 /** A URI-list / DownloadURL dataTransfer payload for dragging a file out of the
  *  app as an OS-level drop source (#53). Mirrors FileTree's `file://` encoding. */
 function pathToFileUri(path: string): string {
-  return `file://${path.split("/").map(encodeURIComponent).join("/")}`;
+  return toFileUri(path);
 }
 
 /**
@@ -135,7 +246,7 @@ export function onImageDragStart(
   const dt = e.dataTransfer;
   if (!dt) return;
   const uri = pathToFileUri(path);
-  const name = path.slice(path.lastIndexOf("/") + 1);
+  const name = basename(path);
   dt.setData("text/uri-list", uri);
   dt.setData("text/plain", uri);
   // DownloadURL = "<mime>:<filename>:<absolute url>". An empty mime lets the OS
@@ -143,10 +254,6 @@ export function onImageDragStart(
   dt.setData("DownloadURL", `:${name}:${uri}`);
   dt.effectAllowed = "copy";
 }
-
-// pdf.js renders pages on a worker; point it at the bundled worker asset. Vite
-// emits a hashed URL that resolves in both dev and the packaged Tauri build.
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 interface Props {
   /** Which built-in viewer to render with. */
@@ -162,6 +269,10 @@ interface Props {
    *  parent `.center-pane` already hides inactive panes via display:none — but
    *  accepted for call-site parity with the other pane components. */
   visible?: boolean;
+  /** The subwindow (group) id hosting this pane, for proportional scroll-linking
+   *  between two side-by-side viewer subwindows (see stores/scrollSync). Null/
+   *  absent when the pane isn't in a syncable group; the sync hooks then no-op. */
+  groupId?: string | null;
 }
 
 /**
@@ -174,6 +285,12 @@ interface Props {
  *                  to disk (Python, Rust, JSON, config files, …).
  *   - "markdown" → rendered HTML via renderMarkdown, with an Edit/Preview toggle
  *                  that lets you edit the source and save it back to disk.
+ *   - "yaml"     → YAML **and JSON** (which is YAML's flow syntax): the same
+ *                  editor with a Tree/Source toggle, where the tree is an editable
+ *                  structure view (rename a key, retype a value, add a key or a
+ *                  list item, reorder, delete). It splices the file's own text, so
+ *                  comments and layout survive, each collection keeps the style it
+ *                  is written in (block or flow), and both modes share one draft.
  *   - "image"    → the bytes wrapped in a Blob URL, shown in a zoomable/pannable
  *                  <img> (wheel to zoom at cursor, drag to pan, Fit / 1:1).
  *   - "pdf"      → rendered with pdf.js into a scrolling stack of page canvases
@@ -185,29 +302,356 @@ interface Props {
  *                  PATH; it degrades to exactly the "text" editor otherwise.
  * An "Open externally" button is always offered as a fallback.
  */
-export function FileViewerPane({ viewer, path, projectId, tabKey }: Props) {
-  const fileName = path.split("/").filter(Boolean).pop() ?? path;
+export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Props) {
+  const fileName = basename(path) || path;
+
+  // The native presenter is experimental; with the flag off a deck opens as the
+  // JSON it physically is. Read up here because the dispatch below sits after an
+  // early return, and a hook cannot.
+  const deckOn = useExperimental("deck_presenter");
+
+  // A talk in progress withdraws this pane's marker/laser overlay — see the note
+  // at the render below, and `stores/presentation` for why it is a store.
+  const presenting = usePresentationStore((s) => s.presenting > 0);
+
+  // Resolve whether these bytes are remote-native (host SFTP) or the local
+  // mirror, and publish it to the tab strip so the Remote/Local badge rides on
+  // this tab itself instead of costing a whole viewer header row (see the
+  // fileSources store). Only remote (SSH) projects yield anything but "none";
+  // the query is cheap (no file read) and re-runs when the path/scope changes.
+  // The published entry is dropped when the viewer unmounts (tab closed).
+  // `null` = not resolved yet; used by the disconnected-gate below to hold
+  // rather than flash a red read error before we know the source.
+  const [source, setSource] = useState<FileSource | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fileSource(path, projectId)
+      .then((s) => {
+        if (cancelled) return;
+        setSource(s);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setSource("none");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [path, projectId]);
+
+  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+
+  // A viewer tab is opened against one fixed absolute path (mirror OR host). For
+  // a remote project this manual override lets the SAME tab show the other side
+  // instead — same rel path, root swapped — without touching the tab's
+  // persisted path. Session-only: resets to "no override" when the tab is
+  // retargeted to a different file, so `effectiveSource` falls back to the file's
+  // OWN resolved side (`source`, from `fileSource(path)`) — i.e. the side the
+  // path already points at. That is the load-bearing default: `openFileEntry`
+  // hands the viewer a *host* path when the tree that opened it was on Remote and
+  // a *mirror* path when it was on Local, so trusting the path is what makes
+  // "opened from a Remote listing ⇒ shown over SFTP" hold. Seeding instead from a
+  // shared per-project pref (the old behaviour) let a stale/other-surface value
+  // silently rewrite a host path back to the mirror — the Files-tab / subwindow
+  // sidebar use an *independent* source that never writes that pref, so a file
+  // opened there on Remote was read locally. `null` = follow the path.
+  const [sideOverride, setSideOverride] = useState<"local" | "remote" | null>(null);
+  useEffect(() => {
+    setSideOverride(null);
+  }, [path, projectId]);
+  const rel = useMemo(() => autoSyncRel(project, path), [project, path]);
+  const mirrorRoot = useMemo(() => localMirrorRootFor(project), [project]);
+  const effectiveSource: FileSource = sideOverride ?? source ?? "none";
+  const effectivePath = useMemo(() => {
+    if (!project?.remote || !rel) return path;
+    if (effectiveSource === "remote") return resolvePath(project.remote.remote_path, rel);
+    if (effectiveSource === "local" && mirrorRoot) return resolvePath(mirrorRoot, rel);
+    return path;
+  }, [project, rel, effectiveSource, mirrorRoot, path]);
+
+  useEffect(() => {
+    if (tabKey) useFileSourcesStore.getState().setSource(tabKey, effectiveSource);
+    return () => {
+      if (tabKey) useFileSourcesStore.getState().clearSource(tabKey);
+    };
+  }, [tabKey, effectiveSource]);
+
+  // Disconnected remote project: reading a remote-native (SFTP) file would block
+  // on the dead pool and each nested viewer would flash its own red read error.
+  // Instead show the SAME "Not connected" placeholder the remote shell uses, so
+  // the message is unified across terminal and file tabs. Local-mirror files
+  // (source "local") and local projects ("none") work offline and render as
+  // usual; while the source is still unknown on a disconnected remote we hold.
+  // Gated on the EFFECTIVE side, not the tab's opened side, so flipping the
+  // switch to Remote while offline surfaces the same Connect prompt a
+  // remote-native tab would — the toggle itself stays put (matches
+  // ProjectFilesPane's `useFileSource`).
+  const sshState = useRemoteStatusStore((s) => (projectId ? s.byProject[projectId]?.ssh : undefined));
+  const openRemoteMachines = useRemoteMachinesStore((s) => s.open);
+  const remoteDisconnected = !!project?.remote && sshState !== "connected";
+
+  // Does this file exist on the host? A local-only file (never synced) has no
+  // host counterpart, so flipping the Local/Remote switch to Remote would only
+  // strand the viewer on an SFTP read error — disable that segment instead. Only
+  // knowable on a live pool; disconnected / not-yet-probed leaves it enabled (the
+  // disconnected gate above owns that case). One cheap SFTP stat per remote tab.
+  const [remoteMissing, setRemoteMissing] = useState(false);
+  const remoteRoot = project?.remote?.remote_path;
+  useEffect(() => {
+    setRemoteMissing(false);
+    if (!remoteRoot || !rel || sshState !== "connected") return;
+    let cancelled = false;
+    fileMtime(resolvePath(remoteRoot, rel), projectId)
+      .then(() => { if (!cancelled) setRemoteMissing(false); })
+      .catch(() => { if (!cancelled) setRemoteMissing(true); });
+    return () => { cancelled = true; };
+  }, [remoteRoot, rel, sshState, projectId]);
+  // Mirror the Local/Remote switch out to the tab strip so its file-source badge
+  // is a clickable toggle (not just a glyph): switching applies only when this
+  // remote project's file has a counterpart on the other side (`rel`). Cleared
+  // when it doesn't, and on unmount. Owns no state — `setSideOverride` stays here.
+  useEffect(() => {
+    if (!tabKey) return;
+    const store = useFileSourcesStore.getState();
+    if (project?.remote && rel) {
+      store.setControls(tabKey, {
+        current: effectiveSource === "remote" ? "remote" : "local",
+        set: setSideOverride,
+        remoteDisabled: remoteMissing,
+      });
+    } else {
+      store.clearControls(tabKey);
+    }
+    return () => {
+      if (tabKey) useFileSourcesStore.getState().clearControls(tabKey);
+    };
+  }, [tabKey, project?.remote, rel, effectiveSource, remoteMissing]);
+
+  if (remoteDisconnected && effectiveSource !== "local" && effectiveSource !== "none") {
+    return (
+      <RemotePaneHold
+        host={project?.remote?.host ?? ""}
+        onConnect={() => { if (projectId) openRemoteMachines(projectId); }}
+      />
+    );
+  }
 
   const openExternally = () => {
     useWindowsStore
       .getState()
-      .openFile(path, undefined, projectId, "right_file_tree")
+      .openFile(effectivePath, undefined, projectId, "right_file_tree")
       .catch((e) => console.error(e));
   };
 
-  if (viewer === "image") {
-    return <ImageView path={path} fileName={fileName} onOpenExternally={openExternally} tabKey={tabKey} />;
+  // Pick the concrete viewer, then publish this pane's owning project as the file
+  // scope so every nested viewer/hook confines its file commands to this project
+  // (and its box siblings) regardless of which project is globally current.
+  // Every viewer below reads `effectivePath` — the tab's own opened path unless
+  // the Local/Remote switch has retargeted it to the same rel path's other root
+  // — EXCEPT "diff"/"syncdiff", which already compare both sides directly and
+  // whose single `path` prop means something else in that mode.
+  let view: React.ReactNode;
+  if (viewer === "gif") {
+    // Animated GIFs get the frame-transport viewer (#gifviewer); the plain
+    // image viewer remains its opt-out fallback (VIEWER_FALLBACK).
+    view = <GifView path={effectivePath} fileName={fileName} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "image") {
+    view = <ImageView path={effectivePath} fileName={fileName} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "pdf") {
+    view = <PdfView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
+  } else if (viewer === "markdown") {
+    view = <MarkdownView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
+  } else if (viewer === "tex") {
+    view = <TexView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "table") {
+    view = <TableView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "notebook") {
+    view = <NotebookView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "diff") {
+    view = <DiffView path={path} projectId={projectId} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "syncdiff") {
+    view = <DiffView path={path} projectId={projectId} mode="sync" onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "syncmerge") {
+    view = <SyncMergeView path={path} projectId={projectId} tabKey={tabKey} />;
+  } else if (viewer === "odt") {
+    view = <OdtView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "media") {
+    view = <MediaView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "html") {
+    // HTML is now the editable base editor with a sandboxed live preview, keyed
+    // to its own per-type prefs.
+    view = <TextView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} type="html" groupId={groupId} />;
+  } else if (viewer === "eldeck") {
+    // The presenter is experimental. Gated HERE rather than in `naturalViewerFor`
+    // so a deck still resolves to a viewer for drag-to-tab and the hover card; with
+    // the flag off it opens as what it physically is — JSON — in the structure tree.
+    view = deckOn ? (
+      <DeckView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />
+    ) : (
+      <TextView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} type="yaml" groupId={groupId} />
+    );
+  } else if (viewer === "sqlite") {
+    view = <SqliteView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "yaml") {
+    // YAML is the same base editor, with the structure tree as its "preview" half
+    // (#yaml) and its own per-type prefs.
+    view = <TextView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} type="yaml" groupId={groupId} />;
+  } else {
+    view = <TextView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
   }
-  if (viewer === "pdf") {
-    return <PdfView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  const sourceSwitch =
+    project?.remote && rel
+      ? {
+          current: (effectiveSource === "remote" ? "remote" : "local") as "local" | "remote",
+          onChange: setSideOverride,
+          remoteDisabled: remoteMissing,
+        }
+      : null;
+  return (
+    <FileScopeContext.Provider value={projectId}>
+      <ViewerHeaderInfoContext.Provider value={{ path: effectivePath, projectId, sourceSwitch }}>
+        {/* A single relative host so the marker/laser presentation overlay can
+            sit over ANY viewer without each one wiring it in (see
+            PresentationOverlay). `.presentation-host` is height:100% so the
+            existing `.file-viewer` (also 100%) fills it unchanged.
+
+            Withdrawn while a deck presenter is on screen: the presenter renders
+            through a portal *over* this pane and mounts its own overlay, so this
+            one is invisible and inert — but its window-level Escape listener is
+            not, and a second handler competing for Escape mid-talk is exactly
+            what made holstering the laser end the talk (TODO V #98). */}
+        <div className="presentation-host">
+          {view}
+          {!presenting && <PresentationOverlay />}
+        </div>
+      </ViewerHeaderInfoContext.Provider>
+    </FileScopeContext.Provider>
+  );
+}
+
+/** The file identity a `ViewerHeader` needs to offer file-scoped actions (the
+ *  auto-sync toggle, the Local/Remote source switch) without every sub-viewer
+ *  threading these props through. Set by `FileViewerPane`; `null` outside a
+ *  viewer pane. `sourceSwitch` is `null` unless the open file resolves to a rel
+ *  path under a remote project's mirror or host root (i.e. the other side could
+ *  exist too). */
+const ViewerHeaderInfoContext = createContext<{
+  path: string;
+  projectId: string | null;
+  sourceSwitch?: {
+    current: "local" | "remote";
+    onChange: (s: "local" | "remote") => void;
+    remoteDisabled?: boolean;
+  } | null;
+} | null>(null);
+
+/** A remote project's local-mirror root, or `null` for a local project / one
+ *  with no resolvable mirror. Shared by `autoSyncRel` and the Local/Remote
+ *  switch's path-building — both need the exact same root. */
+function localMirrorRootFor(
+  project: ReturnType<typeof useProjectsStore.getState>["projects"][number] | undefined,
+): string | null {
+  if (!project?.remote) return null;
+  const projectDir = resolveProjectDirectory(project);
+  return resolveLocalMirror(project) ?? (projectDir ? `${projectDir}/mirror` : null);
+}
+
+/**
+ * Resolve `absPath` to the project-relative path the sync backend keys on, for a
+ * REMOTE project only (auto-sync doesn't apply to local projects). Handles both a
+ * local-mirror file (under the mirror root) and a remote-native file (under the
+ * host `remote_path`). Returns `null` when the project isn't remote or the path
+ * lies outside both roots (so the toggle simply hides).
+ */
+function autoSyncRel(
+  project: ReturnType<typeof useProjectsStore.getState>["projects"][number] | undefined,
+  absPath: string,
+): string | null {
+  if (!project?.remote) return null;
+  const mirrorRoot = localMirrorRootFor(project);
+  if (mirrorRoot) {
+    const r = relFromAbs(mirrorRoot, absPath);
+    if (r) return r;
   }
-  if (viewer === "markdown") {
-    return <MarkdownView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
-  }
-  if (viewer === "tex") {
-    return <TexView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
-  }
-  return <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  const r2 = relFromAbs(project.remote.remote_path, absPath);
+  return r2 || null;
+}
+
+/**
+ * Auto-sync indicator + toggle for the viewer header. Shown only for a file that
+ * belongs to a remote project (either its mirror copy or its host copy). Reflects
+ * and flips `SyncEntry::auto_sync` via the sync store; disabled while the remote is
+ * disconnected (the backend engine can't act until reconnected).
+ */
+function AutoSyncHeaderToggle({ path, projectId }: { path: string; projectId: string | null }) {
+  const t = useT();
+  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+  const rel = useMemo(() => autoSyncRel(project, path), [project, path]);
+  const auto = useSyncStore((s) =>
+    projectId && rel ? !!s.byProject[projectId]?.[rel]?.auto : false,
+  );
+  const setAuto = useSyncStore((s) => s.setAuto);
+  const sshState = useRemoteStatusStore((s) => (projectId ? s.byProject[projectId]?.ssh : undefined));
+  if (!project?.remote || !rel || !projectId) return null;
+  const connected = sshState === "connected";
+  return (
+    <button
+      type="button"
+      className={`file-viewer-autosync${auto ? " on" : ""}`}
+      title={
+        !connected
+          ? t("fileViewer.autoSyncConnectFirst")
+          : auto
+            ? t("fileViewer.autoSyncOnHint")
+            : t("fileTree.autoSyncFile")
+      }
+      aria-label={auto ? t("fileViewer.stopAutoSyncFile") : t("fileTree.autoSyncFile")}
+      aria-pressed={auto}
+      disabled={!connected}
+      onClick={() => void setAuto(projectId, [rel], !auto, false)}
+    >
+      ⟳
+    </button>
+  );
+}
+
+/**
+ * "Resolve divergence" button for the viewer header, shown only when the open
+ * file is currently **diverged (amber)** for a remote project. Opens the exact
+ * same three-way merge resolver (`syncmerge` → `SyncMergeView`/`CompareView`) the
+ * orange list opens, so the user can reconcile local mirror ⇄ host from the file
+ * they are already looking at instead of hunting it down in the Orange view.
+ *
+ * The resolver keys on the **mirror-side** path (`mirrorRoot/rel`), exactly as the
+ * orange list builds it, regardless of which side this viewer is currently showing.
+ */
+function SyncResolveHeaderButton({ path, projectId }: { path: string; projectId: string | null }) {
+  const t = useT();
+  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+  const rel = useMemo(() => autoSyncRel(project, path), [project, path]);
+  const mirrorRoot = useMemo(() => localMirrorRootFor(project), [project]);
+  const amber = useSyncStore((s) =>
+    projectId && rel ? s.byProject[projectId]?.[rel]?.state === "amber" : false,
+  );
+  if (!project?.remote || !rel || !projectId || !mirrorRoot || !amber) return null;
+  const mirrorPath = resolvePath(mirrorRoot, rel);
+  return (
+    <button
+      type="button"
+      className="file-viewer-resolve"
+      title={t("fileViewer.resolveDivergenceTitle")}
+      aria-label={t("fileViewer.resolveDivergence")}
+      onClick={() =>
+        openLinkedFile(undefined, dirname(mirrorPath), {
+          path: mirrorPath,
+          viewer: "syncmerge",
+          label: basename(mirrorPath),
+        })
+      }
+    >
+      ±
+    </button>
+  );
 }
 
 /**
@@ -265,28 +709,47 @@ export function openLinkedFile(
 }
 
 /** Resolve a markdown local-file href (relative/absolute/`file:`) to an absolute
- *  POSIX path, against the directory of the markdown file `mdPath`. Drops any
- *  `?query`/`#fragment` and percent-decoding, and normalises `.`/`..` segments.
- *  Returns null for an empty target. */
+ *  path against the directory of the markdown file `mdPath`. Drops any
+ *  `?query`/`#fragment`, percent-decodes, and normalises `.`/`..` segments. The
+ *  result keeps `mdPath`'s separator style, so it is correct on Windows (native
+ *  backslashes + drive letter) as well as Unix. Returns null for an empty target. */
 function resolveLocalHref(mdPath: string, href: string): string | null {
-  let h = href.trim().replace(/^file:\/\//i, "").replace(/[?#].*$/, "");
+  let h = href.trim().replace(/[?#].*$/, "");
   if (!h) return null;
-  try { h = decodeURIComponent(h); } catch { /* keep the raw href */ }
-  const dir = mdPath.slice(0, mdPath.lastIndexOf("/"));
-  const combined = h.startsWith("/") ? h : `${dir}/${h}`;
-  const stack: string[] = [];
-  for (const part of combined.split("/")) {
-    if (part === "" || part === ".") continue;
-    if (part === "..") stack.pop();
-    else stack.push(part);
+  if (/^file:\/\//i.test(h)) {
+    const decoded = fromFileUri(h);
+    return decoded ? normalizePath(decoded) : null;
   }
-  return "/" + stack.join("/");
+  try { h = decodeURIComponent(h); } catch { /* keep the raw href */ }
+  return resolvePath(dirname(mdPath), h);
+}
+
+/** MIME type for inlining a local image into the markdown preview as a Blob URL.
+ *  Raster formats render even from a typeless blob (the webview content-sniffs
+ *  the magic bytes), but SVG is XML text the browser will NOT sniff as an image —
+ *  an `<img>` only renders it when the blob is explicitly `image/svg+xml`. That's
+ *  why an SVG in a doc (e.g. README's "At a glance" map) showed blank. We set the
+ *  type for every known extension so all inlined images carry a correct MIME. */
+function imageMimeForPath(p: string): string {
+  const ext = p.slice(p.lastIndexOf(".")).toLowerCase();
+  switch (ext) {
+    case ".svg": return "image/svg+xml";
+    case ".png": return "image/png";
+    case ".jpg":
+    case ".jpeg": return "image/jpeg";
+    case ".gif": return "image/gif";
+    case ".webp": return "image/webp";
+    case ".avif": return "image/avif";
+    case ".bmp": return "image/bmp";
+    case ".ico": return "image/x-icon";
+    default: return "";
+  }
 }
 
 /** The built-in viewer for a bare path (no FileEntry handy), used to route a
  *  SyncTeX source target. Defaults to the plain text editor (e.g. `.sty`). */
-function viewerForPath(path: string): InternalViewer {
-  const name = path.slice(path.lastIndexOf("/") + 1);
+export function viewerForPath(path: string): InternalViewer {
+  const name = basename(path);
   const dot = name.lastIndexOf(".");
   const ext = dot >= 0 ? name.slice(dot).toLowerCase() : null;
   const entry: FileEntry = {
@@ -323,8 +786,8 @@ function isMainWindow(): boolean {
 /** Open/re-activate the source tab in THIS window and post the editor jump to its
  *  local editorJump store. The local half of {@link jumpToSource}. */
 function applySourceJump(input: string, line: number, column: number) {
-  const dir = input.slice(0, input.lastIndexOf("/")) || "/";
-  const label = input.slice(input.lastIndexOf("/") + 1);
+  const dir = dirname(input) || "/";
+  const label = basename(input);
   openLinkedFile(undefined, dir, { path: input, viewer: viewerForPath(input), label });
   useEditorJumpStore.getState().requestJump(input, line, column);
 }
@@ -389,7 +852,7 @@ export async function listenSourceJump(): Promise<() => void> {
   }
 }
 
-function ViewerHeader({
+export function ViewerHeader({
   onOpenExternally,
   children,
 }: {
@@ -397,16 +860,31 @@ function ViewerHeader({
   children?: React.ReactNode;
 }) {
   // No filename label: the tab already shows it. The spacer keeps the controls
-  // and the open-externally icon pushed to the trailing edge as before.
+  // and the open-externally icon pushed to the trailing edge. The remote/local
+  // source badge no longer lives here — it rides on the tab itself (see
+  // TabBar's tab-source badge), so it costs no header row. The auto-sync toggle
+  // and the Local/Remote source switch (both remote projects only) ride in from
+  // context so no sub-viewer has to pass them.
+  const t = useT();
+  const info = useContext(ViewerHeaderInfoContext);
   return (
     <div className="file-viewer-header">
       <div className="file-viewer-header-spacer" aria-hidden="true" />
       {children}
+      {info?.sourceSwitch && (
+        <FileSourceSwitch
+          source={info.sourceSwitch.current}
+          onChange={info.sourceSwitch.onChange}
+          remoteDisabled={info.sourceSwitch.remoteDisabled}
+        />
+      )}
+      {info && <SyncResolveHeaderButton path={info.path} projectId={info.projectId} />}
+      {info && <AutoSyncHeaderToggle path={info.path} projectId={info.projectId} />}
       <button
         className="file-viewer-open-external"
         onClick={onOpenExternally}
-        title="Open in external app"
-        aria-label="Open in external app"
+        title={t("pdfViewer.openExternalTitle")}
+        aria-label={t("pdfViewer.openExternalTitle")}
       >
         ↗
       </button>
@@ -418,6 +896,15 @@ function ViewerHeader({
 
 /** Edit-history state: a stack of past values, the present value, and a redo
  *  stack of future values. Pure so it can be unit-tested without React. */
+/** Imperative editing surface exposed by {@link CodeEditor} via `editorApiRef`,
+ *  letting a toolbar transform the live value+selection. */
+export interface EditorApi {
+  /** Run `fn` over the current value and selection `[start, end)`, commit the
+   *  result through the editor's normal edit path, and restore the returned
+   *  selection. */
+  applyEdit: (fn: (value: string, start: number, end: number) => EditResult) => void;
+}
+
 export interface EditHistory {
   past: string[];
   present: string;
@@ -479,6 +966,33 @@ export function editHistoryReducer(state: EditHistory, action: EditAction): Edit
 // Coalesce keystrokes within this window into a single undo step.
 const COALESCE_MS = 400;
 
+// #45 automatic autocomplete: idle time after the last keystroke before a
+// suggestion is requested for the focused editor. Long enough not to fire on
+// every keystroke, short enough to feel responsive.
+const AUTO_AC_DEBOUNCE_MS = 600;
+
+// #45 follow-up grammar check: idle time after the last keystroke before the
+// whole draft is re-checked. Longer than the autocomplete debounce — a full-
+// document check is heavier, and grammar marks needn't track every keystroke.
+const GRAMMAR_DEBOUNCE_MS = 2500;
+
+// #45 completion-length modes. Cycle order for the live Shift+Tab toggle (while
+// a ghost suggestion is showing) and human labels for the status line / settings
+// dropdown. Kept in sync with the Rust `CompletionMode`.
+const AC_MODES: AutocompleteMode[] = ["sentence", "block", "scope"];
+/** Next mode in the cycle (wraps), for the live Shift+Tab toggle. */
+function nextAcMode(m: AutocompleteMode): AutocompleteMode {
+  return AC_MODES[(AC_MODES.indexOf(m) + 1) % AC_MODES.length];
+}
+/** Human label for a completion-length mode, shared by the live status line and
+ *  the settings dropdown. A pure helper (not a component), so it takes `t` as an
+ *  explicit parameter — mirrors `TableView.tsx`'s `delimiterLabel`. */
+function acModeLabel(m: AutocompleteMode, t: ReturnType<typeof useT>): string {
+  if (m === "sentence") return t("projectSettings.sentence");
+  if (m === "block") return t("projectSettings.block");
+  return t("projectSettings.scope");
+}
+
 /** React wrapper over `editHistoryReducer` exposing `value`, a coalescing
  *  `setValue`, `undo`/`redo` (+ availability), and `reset`. */
 function useEditHistory(initial: string) {
@@ -513,27 +1027,28 @@ function useEditHistory(initial: string) {
   };
 }
 
-// Poll interval for the diff-aware auto-reload (#43) and the autosave debounce
-// (#47), both ~1.5s.
+// Poll interval for the diff-aware auto-reload (#43), ~1.5s.
 const RELOAD_POLL_MS = 1500;
-const AUTOSAVE_DEBOUNCE_MS = 1500;
 
 /**
- * Editable-file state shared by the code and markdown editors: loads `path`,
- * keeps a `draft` against the last-known-on-disk `baseline` (so "dirty" is just
- * draft !== baseline), and writes the draft back via write_file_text — re-seeding
- * the baseline on success so the dirty flag clears without re-reading the file.
+ * Editable-file state shared by the editable viewers — the code and markdown
+ * editors, and the table viewer, whose cell edits are splices into this same
+ * text draft (see `lib/viewers/table.ts`): loads `path`, keeps a `draft` against
+ * the last-known-on-disk `baseline` (so "dirty" is just draft !== baseline), and
+ * writes the draft back via write_file_text — re-seeding the baseline on success
+ * so the dirty flag clears without re-reading the file.
  *
  * Adds (Group M):
  *  - #46 undo/redo: the draft is backed by `useEditHistory`; `undo`/`redo` are
  *    surfaced for keybindings + toolbar buttons.
- *  - #47 autosave: when `settings.autosave` is on, a dirty buffer is saved after
- *    a debounce.
+ *  - #47 autosave: when `settings.autosave` is on, a dirty buffer is saved on
+ *    every change (each keystroke).
  *  - #43 diff-aware reload: polls `file_mtime`; when the file changes on disk it
  *    silently re-reads into a clean buffer, or surfaces a non-destructive banner
  *    when the buffer is dirty (Reload / Keep mine) — never clobbering edits.
  */
-function useEditableFile(path: string) {
+export function useEditableFile(path: string) {
+  const scope = useFileScope();
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [baseline, setBaseline] = useState<string | null>(null);
@@ -577,17 +1092,17 @@ function useEditableFile(path: string) {
     setBaseline(null);
     setExternalChange(false);
     lastMtime.current = null;
-    invoke<string>("read_file_text", { path })
+    readFileText(path, scope)
       .then((text) => {
         if (cancelled) return;
         seedFromDisk(text);
       })
-      .catch((e) => { if (!cancelled) setError(String(e)); });
-    invoke<number>("file_mtime", { path })
+      .catch((e) => { if (!cancelled) setError(describeFileError(e)); });
+    fileMtime(path, scope)
       .then((m) => { if (!cancelled) lastMtime.current = m; })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [path, seedFromDisk]);
+  }, [path, scope, seedFromDisk]);
 
   const loaded = content != null;
   const isDirty = loaded && baseline != null && draft !== baseline;
@@ -600,13 +1115,13 @@ function useEditableFile(path: string) {
     setSaveError(null);
     try {
       const toSave = draftRef.current;
-      await invoke("write_file_text", { path, content: toSave });
+      await writeFileText(path, toSave, scope);
       setBaseline(toSave);
       setExternalChange(false);
       // Our own write advances mtime; refresh so the poller doesn't see it as an
       // external change.
       try {
-        lastMtime.current = await invoke<number>("file_mtime", { path });
+        lastMtime.current = await fileMtime(path, scope);
       } catch {
         /* mtime refresh is best-effort */
       }
@@ -615,13 +1130,13 @@ function useEditableFile(path: string) {
     } finally {
       setSaving(false);
     }
-  }, [saving, path]);
+  }, [saving, path, scope]);
 
-  // #47 autosave: debounce-save a dirty buffer when the setting is on.
+  // #47 autosave: when the setting is on, write the buffer to disk on every
+  // change — each keystroke as well as the moment autosave is toggled on with
+  // unsaved edits. `save()` no-ops when the buffer is clean or already saving.
   useEffect(() => {
-    if (!autosave || !isDirty) return;
-    const id = setTimeout(() => { void save(); }, AUTOSAVE_DEBOUNCE_MS);
-    return () => clearTimeout(id);
+    if (autosave && isDirty) void save();
   }, [autosave, isDirty, draft, save]);
 
   // #43 diff-aware reload: poll mtime; on an external advance, re-read into a
@@ -630,7 +1145,7 @@ function useEditableFile(path: string) {
     if (!loaded) return;
     let cancelled = false;
     const id = setInterval(() => {
-      invoke<number>("file_mtime", { path })
+      fileMtime(path, scope)
         .then((m) => {
           if (cancelled || lastMtime.current == null) return;
           if (m <= lastMtime.current) return;
@@ -641,22 +1156,22 @@ function useEditableFile(path: string) {
             return;
           }
           // Clean buffer → silently re-read + reseed baseline/draft.
-          invoke<string>("read_file_text", { path })
+          readFileText(path, scope)
             .then((text) => { if (!cancelled) seedFromDisk(text); })
             .catch(() => {});
         })
         .catch(() => {});
     }, RELOAD_POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
-  }, [path, loaded, seedFromDisk]);
+  }, [path, scope, loaded, seedFromDisk]);
 
   // Banner actions (#43): take the disk version, or keep mine (dismiss banner +
   // adopt current mtime so the next external change re-triggers).
   const reloadFromDisk = useCallback(() => {
-    invoke<string>("read_file_text", { path })
+    readFileText(path, scope)
       .then((text) => seedFromDisk(text))
       .catch((e) => setSaveError(String(e)));
-  }, [path, seedFromDisk]);
+  }, [path, scope, seedFromDisk]);
   const keepMine = useCallback(() => setExternalChange(false), []);
 
   return {
@@ -667,18 +1182,19 @@ function useEditableFile(path: string) {
 }
 
 /** The non-destructive external-change banner (#43). */
-function ExternalChangeBanner({
+export function ExternalChangeBanner({
   onReload,
   onKeep,
 }: {
   onReload: () => void;
   onKeep: () => void;
 }) {
+  const t = useT();
   return (
     <div className="file-viewer-reload-banner" role="alert">
-      <span>This file changed on disk and you have unsaved edits.</span>
-      <button className="file-viewer-reload-btn" onClick={onReload}>Reload</button>
-      <button className="file-viewer-reload-btn" onClick={onKeep}>Keep mine</button>
+      <span>{t("fileViewer.externalChangeMsg")}</span>
+      <button className="file-viewer-reload-btn" onClick={onReload}>{t("common.reload")}</button>
+      <button className="file-viewer-reload-btn" onClick={onKeep}>{t("fileViewer.keepMine")}</button>
     </div>
   );
 }
@@ -687,7 +1203,7 @@ const INDENT = "    "; // 4 spaces — what Tab inserts and Shift+Tab strips.
 
 /** Apply Tab / Shift+Tab indentation to a code textarea, preserving selection.
  *  Returns the next value + selection, or null to let the key fall through. */
-function applyIndent(
+export function applyIndent(
   el: HTMLTextAreaElement,
   outdent: boolean,
 ): { value: string; selStart: number; selEnd: number } | null {
@@ -744,11 +1260,59 @@ function applyIndent(
  * so the indent/scroll/save behaviour stays identical between them. Renders the
  * load/error states itself; the caller wires it to a `useEditableFile` instance.
  */
-function escapeHtmlText(s: string): string {
+export function escapeHtmlText(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+/**
+ * Read-only sibling of `useEditableFile` for the table/notebook/diff viewers
+ * (none of which edit on disk). Loads the file once via `read_file_text` and
+ * polls `file_mtime`, silently re-reading when the file changes underneath — the
+ * same load/refresh path `useEditableFile` uses, minus all the draft/undo/save
+ * machinery. Returns the raw text (or null while loading) and an error string.
+ */
+export function useReadonlyFile(path: string) {
+  const scope = useFileScope();
+  const [content, setContent] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const lastMtime = useRef<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setContent(null);
+    setError(null);
+    lastMtime.current = null;
+    readFileText(path, scope)
+      .then((text) => { if (!cancelled) setContent(text); })
+      .catch((e) => { if (!cancelled) setError(describeFileError(e)); });
+    fileMtime(path, scope)
+      .then((m) => { if (!cancelled) lastMtime.current = m; })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [path, scope]);
+
+  // Diff-aware reload: poll mtime and silently re-read on an external advance.
+  useEffect(() => {
+    if (content == null) return;
+    let cancelled = false;
+    const id = setInterval(() => {
+      fileMtime(path, scope)
+        .then((m) => {
+          if (cancelled || lastMtime.current == null || m <= lastMtime.current) return;
+          lastMtime.current = m;
+          readFileText(path, scope)
+            .then((text) => { if (!cancelled) setContent(text); })
+            .catch(() => {});
+        })
+        .catch(() => {});
+    }, RELOAD_POLL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [path, scope, content]);
+
+  return { content, error, loaded: content != null };
 }
 
 /**
@@ -831,6 +1395,23 @@ export function decorateSearchRanges(
  * zero-width in `next`, so there is nothing to paint).
  */
 export function diffRange(prev: string, next: string): { start: number; end: number } | null {
+  const span = editSpan(prev, next);
+  return span && span.endNext > span.start ? { start: span.start, end: span.endNext } : null;
+}
+
+/**
+ * The full span of an edit between `prev` and `next`: `start` is the common
+ * prefix length, `endPrev`/`endNext` are where the differing run ends in each
+ * string (so `prev.slice(start, endPrev)` was replaced by `next.slice(start,
+ * endNext)`). Unlike `diffRange` this is reported for deletions too (where
+ * `endNext === start`), since the change-tint trail must still re-map older
+ * ranges through a deletion. Returns `null` only for equal strings. Pure —
+ * exported for tests.
+ */
+export function editSpan(
+  prev: string,
+  next: string,
+): { start: number; endPrev: number; endNext: number } | null {
   if (prev === next) return null;
   const max = Math.min(prev.length, next.length);
   let start = 0;
@@ -841,27 +1422,225 @@ export function diffRange(prev: string, next: string): { start: number; end: num
     endPrev--;
     endNext--;
   }
-  return endNext > start ? { start, end: endNext } : null;
+  return { start, endPrev, endNext };
+}
+
+/** How many recent edit runs the change-tint trail keeps (and how many colour
+ *  tiers `themes.css` defines, `.tier-0` … `.tier-(N-1)`). */
+export const CHANGE_TIERS = 18;
+/** Idle delay before the trail retires its oldest run, in ms — once typing stops
+ *  the trail fades a tier at a time over CHANGE_TIERS × this. */
+const CHANGE_DECAY_MS = 1800;
+
+/** How long a red strike-through ghost of just-deleted text lingers before it
+ *  fades out and is dropped, in ms. Must match the `fv-delete-fade` animation
+ *  duration in `themes.css` — the CSS drives the visual fade, this drives the
+ *  state cleanup, and they retire the ghost together. */
+export const DELETE_GHOST_MS = 2600;
+
+/** A run of text that was just removed from the draft, kept around briefly so it
+ *  can be shown struck-through in red at the spot it vanished from before fading
+ *  out. `pos` is the anchor in *current* draft coordinates (re-mapped through
+ *  later edits like a change range); `text` is the removed characters; `born` is
+ *  the `Date.now()` clock the fade animation is offset against so it keeps
+ *  elapsing correctly even as the overlay is rebuilt on each keystroke. */
+export interface DeleteGhost {
+  id: number;
+  pos: number;
+  text: string;
+  born: number;
 }
 
 /**
- * Build the transparent last-change overlay: the single `{start, end}` range is
- * wrapped in `<span class="file-viewer-change-mark">` so only it paints a tint,
- * the rest emitted plain. SECURITY: every run is HTML-escaped — mirrors
- * `decorateSearchRanges`.
+ * Build the transparent deletion overlay: the removed text of each ghost is
+ * *injected* back into the source at its anchor, wrapped in
+ * `<span class="file-viewer-delete-mark">`, so it paints a red strike-through
+ * (over an opaque background that masks the live text it now overlays) right
+ * where it was deleted. The surrounding source is emitted plain/transparent —
+ * like the autocomplete ghost, this layer intentionally reflows: only the
+ * injected marks are meant to show. Each mark's `animation-delay` is set to the
+ * negative elapsed time so its fade resumes at the right point across rebuilds.
+ * SECURITY: every run (source and injected text) is HTML-escaped.
  */
-export function decorateChangeRange(
+export function decorateDeleteRanges(
   source: string,
-  range: { start: number; end: number },
+  ghosts: DeleteGhost[],
+  now: number,
 ): string {
-  const start = Math.max(0, Math.min(range.start, source.length));
-  const end = Math.max(start, Math.min(range.end, source.length));
-  if (end <= start) return escapeHtmlText(source);
-  return (
-    escapeHtmlText(source.slice(0, start)) +
-    `<span class="file-viewer-change-mark">${escapeHtmlText(source.slice(start, end))}</span>` +
-    escapeHtmlText(source.slice(end))
-  );
+  const sorted = ghosts
+    .map((g) => ({ ...g, pos: Math.max(0, Math.min(g.pos, source.length)) }))
+    .sort((a, b) => a.pos - b.pos || a.born - b.born);
+  let out = "";
+  let pos = 0;
+  for (const g of sorted) {
+    out += escapeHtmlText(source.slice(pos, g.pos));
+    pos = g.pos;
+    const elapsed = Math.max(0, now - g.born);
+    out += `<span class="file-viewer-delete-mark" style="animation-delay:-${elapsed}ms">${escapeHtmlText(
+      g.text,
+    )}</span>`;
+  }
+  out += escapeHtmlText(source.slice(pos));
+  return out;
+}
+
+/** The text a deletion ghost should strike through for a removed run: the run
+ *  with surrounding whitespace trimmed off, or null when it was whitespace-only
+ *  (nothing visible to cross out — a lingering space-only strike would just read
+ *  as invisible text). Pure — exported for tests. */
+export function deletionGhostText(removed: string): string | null {
+  const trimmed = removed.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/** One run of recently typed text in the change-tint trail. `tier` is its age:
+ *  0 is the newest edit, higher tiers are progressively older (and fainter). */
+export interface ChangeRange {
+  start: number;
+  end: number;
+  tier: number;
+}
+
+/**
+ * Re-map an existing change range through a new edit so it keeps pointing at the
+ * same characters: untouched if it sits entirely before the edit, shifted by the
+ * length delta if entirely after, and dropped (returns `null`) if it overlaps the
+ * edited region (its text was overwritten). Pure — exported for tests.
+ */
+export function remapChangeRange(
+  range: { start: number; end: number },
+  span: { start: number; endPrev: number; endNext: number },
+): { start: number; end: number } | null {
+  const delta = span.endNext - span.endPrev;
+  if (range.end <= span.start) return range;
+  if (range.start >= span.endPrev) {
+    return { start: range.start + delta, end: range.end + delta };
+  }
+  return null;
+}
+
+/**
+ * Build the transparent change-tint overlay: each recent edit range is wrapped in
+ * `<span class="file-viewer-change-mark tier-N">` so it paints its age-graded
+ * tint (tier 0 newest), the rest emitted plain. Ranges must be non-overlapping;
+ * they are sorted left-to-right here. SECURITY: every run is HTML-escaped —
+ * mirrors `decorateSearchRanges`.
+ */
+export function decorateChangeRanges(
+  source: string,
+  ranges: ChangeRange[],
+): string {
+  const clamped = ranges
+    .map((r) => ({
+      start: Math.max(0, Math.min(r.start, source.length)),
+      end: Math.max(0, Math.min(r.end, source.length)),
+      tier: r.tier,
+    }))
+    .filter((r) => r.end > r.start)
+    .sort((a, b) => a.start - b.start);
+  if (clamped.length === 0) return escapeHtmlText(source);
+  let out = "";
+  let pos = 0;
+  for (const r of clamped) {
+    if (r.start < pos) continue; // defensive: skip any residual overlap
+    out += escapeHtmlText(source.slice(pos, r.start));
+    out += `<span class="file-viewer-change-mark tier-${r.tier}">${escapeHtmlText(
+      source.slice(r.start, r.end),
+    )}</span>`;
+    pos = r.end;
+  }
+  out += escapeHtmlText(source.slice(pos));
+  return out;
+}
+
+/** A grammar issue resolved to a concrete `{start, end}` character range in the
+ *  current draft, carrying its originating issue for the tooltip / apply-fix. */
+export interface GrammarRange {
+  start: number;
+  end: number;
+  issue: GrammarIssue;
+}
+
+/**
+ * Resolve each model-reported grammar issue to a character range in `text`. The
+ * model reports the offending substring `bad` plus its 1-based `line`; we search
+ * that line first (so duplicates of a word map to the right occurrence), then
+ * fall back to the whole document, so a small edit since the check doesn't drop
+ * every mark. Issues resolve in order with a per-line cursor, so several errors
+ * on one line each map to their own occurrence. Unlocatable issues are skipped;
+ * the result is sorted by start with overlaps pruned so the decorator's
+ * left-to-right walk stays clean. Pure — exported for tests.
+ */
+export function resolveGrammarRanges(text: string, issues: GrammarIssue[]): GrammarRange[] {
+  if (issues.length === 0) return [];
+  // 0-based offset where each 1-based line begins (lineStarts[n-1] = line n).
+  const lineStarts: number[] = [0];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "\n") lineStarts.push(i + 1);
+  }
+  // Per-line search cursor so repeated errors on a line advance past each other.
+  const lineCursor = new Map<number, number>();
+  const out: GrammarRange[] = [];
+  for (const issue of issues) {
+    const bad = issue.bad;
+    if (!bad) continue;
+    let start = -1;
+    const li = issue.line - 1;
+    if (li >= 0 && li < lineStarts.length) {
+      const lineStart = lineStarts[li];
+      const lineEnd = li + 1 < lineStarts.length ? lineStarts[li + 1] : text.length;
+      const from = Math.max(lineStart, lineCursor.get(li) ?? lineStart);
+      const idx = text.indexOf(bad, from);
+      if (idx >= 0 && idx < lineEnd) {
+        start = idx;
+        lineCursor.set(li, idx + bad.length);
+      }
+    }
+    if (start < 0) {
+      // The reported line drifted since the check — locate it anywhere.
+      const idx = text.indexOf(bad);
+      if (idx >= 0) start = idx;
+    }
+    if (start < 0) continue;
+    out.push({ start, end: start + bad.length, issue });
+  }
+  out.sort((a, b) => a.start - b.start);
+  const pruned: GrammarRange[] = [];
+  let lastEnd = -1;
+  for (const r of out) {
+    if (r.start < lastEnd) continue; // drop overlaps
+    pruned.push(r);
+    lastEnd = r.end;
+  }
+  return pruned;
+}
+
+/**
+ * Build the transparent grammar overlay: each range is wrapped in a
+ * `<span class="file-viewer-grammar-mark cat-<category>" data-gi="<i>">` so it
+ * paints a coloured wavy underline (colour by category) while the surrounding
+ * text stays plain/transparent. The `data-gi` index ties a span back to its
+ * `ranges` entry for hover hit-testing. SECURITY: every run of source text is
+ * HTML-escaped before output — mirrors `decorateSearchRanges`.
+ */
+export function decorateGrammarRanges(source: string, ranges: GrammarRange[]): string {
+  if (ranges.length === 0) return escapeHtmlText(source);
+  let out = "";
+  let pos = 0;
+  ranges.forEach((r, i) => {
+    if (r.start < pos || r.start >= r.end) return; // skip overlaps / empties
+    out += escapeHtmlText(source.slice(pos, r.start));
+    const cat =
+      r.issue.category === "spelling" || r.issue.category === "style"
+        ? r.issue.category
+        : "grammar";
+    out += `<span class="file-viewer-grammar-mark cat-${cat}" data-gi="${i}">${escapeHtmlText(
+      source.slice(r.start, r.end),
+    )}</span>`;
+    pos = r.end;
+  });
+  out += escapeHtmlText(source.slice(pos));
+  return out;
 }
 
 /**
@@ -919,7 +1698,7 @@ function useDevicePixelRatio(): number {
  * grid, so the per-line advance is identical and nothing accumulates. A no-op at
  * an integer dpr (e.g. 1.0 or 2.0), where the drift never appeared.
  */
-function snapToDevicePx(cssPx: number, dpr: number): number {
+export function snapToDevicePx(cssPx: number, dpr: number): number {
   return Math.round(cssPx * dpr) / dpr;
 }
 
@@ -1005,6 +1784,7 @@ function CodeEditor({
   undo,
   redo,
   autocomplete,
+  grammarCheck,
   texCompletions,
   fontSize,
   lineHeight,
@@ -1016,8 +1796,14 @@ function CodeEditor({
   onGotoApplied,
   onCaretChange,
   caretApiRef,
+  editorApiRef,
+  showBlame,
+  blame,
+  breakpoints,
+  onToggleBreakpoint,
   initialScrollTop,
   onScrollPersist,
+  groupId,
 }: {
   error: string | null;
   draft: string;
@@ -1044,14 +1830,27 @@ function CodeEditor({
    *  no caret event fired this session — `onCaretChange`/its snapshot can be a
    *  stale 0 (e.g. the editor was never focused, or a WebKitGTK blur reset it). */
   caretApiRef?: React.MutableRefObject<(() => number | null) | null>;
+  /** When set, receives an imperative editing API so a toolbar (the Markdown
+   *  viewer's bold/italic/heading/… controls) can transform the current
+   *  value+selection; edits commit through the normal path so undo/redo and the
+   *  syntax overlay stay consistent. Cleared on unmount. */
+  editorApiRef?: React.MutableRefObject<EditorApi | null>;
   /** When set, returns the source ranges to decorate as clickable file links
    *  (#49). Currently the LaTeX viewer's `\input{…}`/`\includegraphics{…}` args. */
   linkRanges?: (source: string) => { start: number; end: number }[];
   /** Undo/redo handlers (#46) — wired to Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y. */
   undo?: () => void;
   redo?: () => void;
-  /** Opt-in local autocomplete config (#45). Disabled when undefined/off. */
-  autocomplete?: { enabled: boolean; model: string };
+  /** Opt-in local autocomplete config (#45). Disabled when undefined/off.
+   *  `preferred` is the user's active local model (🧠 menu); the completion runs
+   *  against whichever model is *currently loaded* in Ollama memory at trigger
+   *  time, preferring `preferred` when it is among the loaded set. */
+  autocomplete?: { enabled: boolean; preferred?: string; mode?: AutocompleteMode };
+  /** Opt-in local grammar/spelling check (#45 follow-up). When enabled, the whole
+   *  draft is checked against the currently-loaded local model after an idle
+   *  pause; issues are underlined (colour by category) with a hover tooltip and
+   *  one-click fix. `preferred` is the user's active local model (🧠 menu). */
+  grammarCheck?: { enabled: boolean; preferred?: string };
   /** Opt-in `\ref`/`\cite` key completion (LaTeX viewer only). When supplied, a
    *  dropdown of `\label` keys (refs) or `.bib` entry keys (cites) appears while
    *  typing inside a recognised command's braces; Enter/Tab accepts. */
@@ -1067,6 +1866,19 @@ function CodeEditor({
    *  (used by the LaTeX viewer, whose prose lines run wide). The highlight/link/
    *  ghost overlays wrap in lockstep via the `is-wrapped` class. */
   wrap?: boolean;
+  /** Git-blame overlay (#blame). When `showBlame` is set, a per-line blame column
+   *  is painted in the gutter (scroll-locked with the line numbers) and the
+   *  caret's line gets a faint inline attribution; hovering a blame cell shows a
+   *  hovercard. `blame` maps 1-based line numbers to their attribution. */
+  showBlame?: boolean;
+  blame?: Map<number, BlameLine>;
+  /** Debug breakpoints (#py), as 1-based line numbers. When `onToggleBreakpoint`
+   *  is wired the gutter becomes interactive: each line number is a click target
+   *  that toggles a breakpoint, and a breakpointed line paints a red dot. Only the
+   *  Python editor supplies these; every other file type gets the inert,
+   *  aria-hidden gutter it had before. */
+  breakpoints?: ReadonlySet<number>;
+  onToggleBreakpoint?: (line: number) => void;
   /** Persisted vertical scroll (px) to restore once the file loads, so reopening
    *  it (or an Eldrun restart) lands the reader where they left off (#viewerpos).
    *  Applied once on first load; user scrolling thereafter reports via
@@ -1075,13 +1887,24 @@ function CodeEditor({
   /** Called (throttled) with the textarea's `scrollTop` as the reader scrolls, so
    *  the position can be persisted. */
   onScrollPersist?: (scrollTop: number) => void;
+  /** When set, the subwindow (group) id hosting this editor, so its scroll is
+   *  proportionally linked to a side-by-side viewer subwindow (scrollSync). */
+  groupId?: string | null;
 }) {
+  const t = useT();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Proportional scroll-link to a paired subwindow (no-op unless linked).
+  const reportScrollSync = useScrollSync(groupId, textareaRef);
   const gutterInnerRef = useRef<HTMLDivElement>(null);
+  const blameInnerRef = useRef<HTMLDivElement>(null);
+  const blameInlineRef = useRef<HTMLDivElement>(null);
   const highlightRef = useRef<HTMLPreElement>(null);
   const linkLayerRef = useRef<HTMLPreElement>(null);
   const searchLayerRef = useRef<HTMLPreElement>(null);
   const changeLayerRef = useRef<HTMLPreElement>(null);
+  const deleteLayerRef = useRef<HTMLPreElement>(null);
+  const grammarLayerRef = useRef<HTMLPreElement>(null);
+  const ghostRef = useRef<HTMLPreElement>(null);
   const measureRef = useRef<HTMLPreElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
   // Link affordances over a recognised link (#49), only when `onFollowLink` is
@@ -1095,6 +1918,10 @@ function CodeEditor({
   // Last pointer position, so pressing/releasing the modifier while already
   // hovering a link (no mouse move) can still update the cursor.
   const lastMouse = useRef<{ x: number; y: number } | null>(null);
+
+  // Ctrl/Cmd+wheel resizes the font. Bound non-passively (see useNonPassiveWheel)
+  // so it never falls through to native scrolling.
+  const wheelRef = useNonPassiveWheel((e) => onCtrlWheelFont(e, incFont, decFont));
 
   // Resolve the link affordances for the screen point `x,y`. The link layer is
   // scroll-synced to sit exactly over the textarea text, so its `.file-link` span
@@ -1123,7 +1950,75 @@ function CodeEditor({
 
   // #45 autocomplete: a pending ghost-text suggestion + the caret it applies at.
   const [suggestion, setSuggestion] = useState<{ text: string; at: number } | null>(null);
+  // A short status shown to the user when a completion is in flight, returns
+  // nothing, or can't run (e.g. no local model loaded) — otherwise the feature
+  // fails silently and reads as broken. A trailing "…" marks a transient
+  // in-flight message; final messages auto-dismiss (see the effect below).
+  const [acStatus, setAcStatus] = useState<string | null>(null);
   const acAbort = useRef<AbortController | null>(null);
+  // #45 live completion-length mode: starts from the per-type default and is
+  // cycled in-editor with Shift+Tab while a suggestion is showing. Re-seeded if
+  // the per-type default changes (e.g. the user picks a new default in settings).
+  const [acMode, setAcMode] = useState<AutocompleteMode>(autocomplete?.mode ?? "sentence");
+  useEffect(() => {
+    setAcMode(autocomplete?.mode ?? "sentence");
+  }, [autocomplete?.mode]);
+
+  // Auto-dismiss a finished autocomplete status after a few seconds; keep the
+  // in-flight "…" message until the request resolves.
+  useEffect(() => {
+    if (!acStatus || acStatus.endsWith("…")) return;
+    const id = window.setTimeout(() => setAcStatus(null), 4000);
+    return () => window.clearTimeout(id);
+  }, [acStatus]);
+
+  // #45 context files: extra project files the user attaches as read-only context
+  // for completion. Per-editor (not persisted); each entry caches the file's text
+  // at attach time so requests don't re-read disk on every keystroke. `acPicker`
+  // toggles the QuickOpen-style file picker.
+  const [contextFiles, setContextFiles] = useState<
+    { rel: string; path: string; content: string }[]
+  >([]);
+  const [acPicker, setAcPicker] = useState(false);
+  const scope = useFileScope();
+
+  // Resolve the project the edited file belongs to (the longest project directory
+  // that is a prefix of `path`), falling back to the active project — so the
+  // context-file picker lists the right project even in a detached window.
+  const acProjectDir = useMemo(() => {
+    const { projects, activeId } = useProjectsStore.getState();
+    let best = "";
+    for (const p of projects) {
+      const dir = resolveProjectDirectory(p);
+      if (dir && isPathWithin(path, dir) && dir.length > best.length) {
+        best = dir;
+      }
+    }
+    if (best) return best;
+    const active = projects.find((p) => p.id === activeId);
+    return active ? resolveProjectDirectory(active) : "";
+  }, [path]);
+
+  const addContextFile = useCallback(
+    async (rel: string) => {
+      if (!acProjectDir) return;
+      const abs = `${acProjectDir}/${rel}`;
+      if (contextFiles.some((f) => f.path === abs)) return; // already attached
+      try {
+        const content = await readFileText(abs, scope);
+        setContextFiles((prev) =>
+          prev.some((f) => f.path === abs) ? prev : [...prev, { rel, path: abs, content }],
+        );
+      } catch {
+        /* unreadable file: silently skip */
+      }
+    },
+    [acProjectDir, contextFiles, scope],
+  );
+
+  const removeContextFile = useCallback((abs: string) => {
+    setContextFiles((prev) => prev.filter((f) => f.path !== abs));
+  }, []);
 
   // \ref/\cite key completion (LaTeX viewer): the open dropdown's context, the
   // filtered items, the highlighted index, and the screen anchor. A caret tick
@@ -1142,7 +2037,7 @@ function CodeEditor({
   // accepted (else null). If the very next keystroke is closing punctuation, the
   // space is removed so it reads "\cite{x}." rather than "\cite{x} .".
   const autoSpace = useRef<number | null>(null);
-  const bumpCaret = useCallback(() => setCaretTick((t) => t + 1), []);
+  const bumpCaret = useCallback(() => setCaretTick((n) => n + 1), []);
 
   // Snap the line-height to whole device pixels so the textarea caret and the
   // highlight <pre> share a vertical grid and don't drift apart over a long file
@@ -1171,6 +2066,15 @@ function CodeEditor({
   // appears — and the caret drifts from the coloured glyphs over wrapped lines.
   // Constraining the overlays to this width makes every layer wrap identically.
   const [wrapWidth, setWrapWidth] = useState<number | null>(null);
+  // Last `clientWidth` the textarea was re-broken at. A vertical scrollbar
+  // appearing/disappearing as the document grows past the editor height changes
+  // clientWidth WITHOUT changing the border box, so the ResizeObserver below
+  // never fires and the textarea keeps its stale wrapping (WebKitGTK won't
+  // re-break on its own — see the nudge there). The overlay <pre>s, sized to the
+  // fresh clientWidth each keystroke, then wrap at a different width, so the
+  // coloured glyphs and the last-change tint drift down a row. Tracking the
+  // width here lets the wrap layout effect nudge a re-break when it shifts.
+  const prevClientWidth = useRef<number | null>(null);
 
   // Syntax-highlighted HTML rendered in a <pre> layer behind a transparent
   // textarea, so the file colours by type while staying fully editable. `null`
@@ -1208,9 +2112,31 @@ function CodeEditor({
     if (gutterInnerRef.current) {
       gutterInnerRef.current.style.transform = `translateY(${-scrollTop}px)`;
     }
+    // Blame column + current-line inline hint scroll-lock vertically with the
+    // numbers (they never shift horizontally, so translateY only).
+    if (blameInnerRef.current) {
+      blameInnerRef.current.style.transform = `translateY(${-scrollTop}px)`;
+    }
+    if (blameInlineRef.current) {
+      blameInlineRef.current.style.transform = `translateY(${-scrollTop}px)`;
+    }
     const transform = `translate(${-scrollLeft}px, ${-scrollTop}px)`;
-    for (const ref of [highlightRef, linkLayerRef, searchLayerRef, changeLayerRef]) {
+    for (const ref of [
+      highlightRef,
+      linkLayerRef,
+      searchLayerRef,
+      changeLayerRef,
+      deleteLayerRef,
+      grammarLayerRef,
+    ]) {
       if (ref.current) ref.current.style.transform = transform;
+    }
+    // The ghost layer keeps the inset/overflow:hidden model (it masks the layers
+    // beneath with an opaque background, so it can't be sized to its own content
+    // like the transform-synced layers); scroll it programmatically instead.
+    if (ghostRef.current) {
+      ghostRef.current.scrollTop = scrollTop;
+      ghostRef.current.scrollLeft = scrollLeft;
     }
   }, []);
 
@@ -1235,6 +2161,7 @@ function CodeEditor({
   const persistTimer = useRef<number | null>(null);
   const onScroll = () => {
     syncScroll();
+    reportScrollSync();
     if (!onScrollPersist || !restoredScroll.current) return;
     const ta = textareaRef.current;
     if (!ta) return;
@@ -1283,6 +2210,58 @@ function CodeEditor({
     const m = matches[current];
     return m ? offsetToLineCol(draft, m.start).line : 0;
   }, [matches, current, draft]);
+
+  // ── Git blame overlay (#blame) ─────────────────────────────────────────────
+  // When `showBlame` is set, the gutter grows a per-line blame column (its own
+  // inner, scroll-synced with the numbers), the caret's line gets a faint inline
+  // attribution, and hovering a blame cell shows a hovercard. All read-only —
+  // nothing here touches the editable textarea/highlight/save path.
+  const [caretLine, setCaretLine] = useState(1);
+  const [blameTip, setBlameTip] = useState<{ left: number; top: number; line: number } | null>(null);
+  const effectiveLineHeight = lineHeight ?? Math.round((fontSize ?? 12) * 1.5);
+
+  // Top offset (px, before scroll) of a 1-based line's first row. Mirrors the
+  // gutter/editor 10px top padding and the wrap-mode measured `lineHeights`.
+  const lineTop = useCallback(
+    (line: number) => {
+      let top = 10; // `.file-viewer-highlight/-editor` padding-top
+      const idx = Math.max(0, line - 1);
+      if (wrap && lineHeights.length) {
+        for (let i = 0; i < idx && i < lineHeights.length; i++) top += lineHeights[i];
+      } else {
+        top += idx * effectiveLineHeight;
+      }
+      return top;
+    },
+    [wrap, lineHeights, effectiveLineHeight],
+  );
+
+  const caretBlame = showBlame ? blame?.get(caretLine) : undefined;
+
+  // Age-tint a blame cell: newer commits are more saturated, decaying with age
+  // so the column reads as a heat-map of recent activity. No tint for
+  // uncommitted/unknown lines.
+  const blameTint = useCallback((b: BlameLine | undefined): string | undefined => {
+    if (!b || isUncommitted(b) || !b.author_time) return undefined;
+    const ageDays = Math.max(0, (Date.now() / 1000 - b.author_time) / 86400);
+    const a = 0.16 * Math.exp(-ageDays / 180);
+    if (a < 0.01) return undefined;
+    return `rgba(120, 150, 220, ${a.toFixed(3)})`;
+  }, []);
+
+  const onBlameMove = useCallback(
+    (e: React.MouseEvent) => {
+      const cell = (e.target as HTMLElement).closest<HTMLElement>(".file-viewer-blame-line");
+      const line = cell ? Number(cell.dataset.line) : 0;
+      const b = line ? blame?.get(line) : undefined;
+      if (!cell || !b || isUncommitted(b)) {
+        setBlameTip(null);
+        return;
+      }
+      setBlameTip({ left: e.clientX, top: e.clientY, line });
+    },
+    [blame],
+  );
 
   // Keep the current index in range as the draft (and so the match set) changes.
   useEffect(() => {
@@ -1346,33 +2325,292 @@ function CodeEditor({
   const draftRef = useRef(draft);
   draftRef.current = draft;
 
-  // Last-change marker: tint the run of text most recently inserted/edited. Every
-  // edit flows through `edit`, which diffs old→new and records the range;
-  // `lastEditRef` holds the value we set so the effect can tell our own edits from
-  // a draft change by another path (disk reload, undo/redo) and drop a now-stale
-  // range. Reloads go through the parent's `reset`, never `edit`, so they never
-  // light the marker.
-  const [lastChange, setLastChange] = useState<{ start: number; end: number } | null>(null);
+  // Change-tint trail: tint recently typed runs with a sequential new→old colour
+  // gradient that fades as typing continues. Every edit flows through `edit`,
+  // which diffs old→new: the new run becomes tier 0 (newest), existing runs are
+  // re-mapped through the edit so they keep tracking their characters and are
+  // pushed one tier older; anything past CHANGE_TIERS or overwritten by the edit
+  // drops off. `lastEditRef` lets the effect tell our own edits from a draft
+  // change by another path (disk reload, undo/redo) and clear a now-stale trail.
+  // Reloads go through the parent's `reset`, never `edit`, so they never light the
+  // trail. A short idle decay retires the oldest run on a timer so the trail
+  // fades away after typing stops. The whole feature is gated on the (default-ON)
+  // `change_tint` setting.
+  const changeTint = useSettingsStore((s) => s.settings?.change_tint !== false);
+  const changeTintRef = useRef(changeTint);
+  changeTintRef.current = changeTint;
+  const [changes, setChanges] = useState<ChangeRange[]>([]);
+  // Red strike-through ghosts of just-deleted text (mirrors the green change
+  // trail on the removal side). Each is retired on its own timer after
+  // DELETE_GHOST_MS; `deleteIdRef` mints ids and `deleteTimersRef` tracks the
+  // pending timeouts so they can be cleared on unmount / trail reset.
+  const [deletes, setDeletes] = useState<DeleteGhost[]>([]);
+  const deleteIdRef = useRef(0);
+  const deleteTimersRef = useRef<number[]>([]);
+  const clearDeleteTimers = useCallback(() => {
+    deleteTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    deleteTimersRef.current = [];
+  }, []);
+  const scheduleDeleteRemoval = useCallback((id: number) => {
+    const timer = window.setTimeout(() => {
+      setDeletes((prev) => prev.filter((g) => g.id !== id));
+    }, DELETE_GHOST_MS);
+    deleteTimersRef.current.push(timer);
+  }, []);
+  useEffect(() => () => clearDeleteTimers(), [clearDeleteTimers]);
   const lastEditRef = useRef<string | null>(null);
   const edit = useCallback(
     (next: string) => {
       if (next !== draftRef.current) {
-        setLastChange(diffRange(draftRef.current, next));
+        if (changeTintRef.current) {
+          const span = editSpan(draftRef.current, next);
+          if (span) {
+            setChanges((prev) => {
+              const remapped = prev
+                .map((r) => remapChangeRange(r, span))
+                .filter((r): r is { start: number; end: number } => r != null);
+              const merged =
+                span.endNext > span.start
+                  ? [{ start: span.start, end: span.endNext }, ...remapped]
+                  : remapped;
+              // newest-first → re-index so tier === age (0 = newest).
+              return merged.slice(0, CHANGE_TIERS).map((r, i) => ({ ...r, tier: i }));
+            });
+            // Removed text (if any) becomes a red strike-through ghost anchored
+            // where it vanished; existing ghosts are re-mapped through this edit
+            // (dropped if their anchor sat inside the edited run) so they keep
+            // pointing at the right spot.
+            const removed = deletionGhostText(draftRef.current.slice(span.start, span.endPrev));
+            const ghost: DeleteGhost | null =
+              removed !== null
+                ? { id: deleteIdRef.current++, pos: span.endNext, text: removed, born: Date.now() }
+                : null;
+            if (ghost) scheduleDeleteRemoval(ghost.id);
+            setDeletes((prev) => {
+              const remapped = prev
+                .map((g) => {
+                  const r = remapChangeRange({ start: g.pos, end: g.pos }, span);
+                  return r ? { ...g, pos: r.start } : null;
+                })
+                .filter((g): g is DeleteGhost => g != null);
+              return ghost ? [...remapped, ghost] : remapped;
+            });
+          }
+        }
         lastEditRef.current = next;
       }
       setDraft(next);
     },
-    [setDraft],
+    [setDraft, scheduleDeleteRemoval],
   );
+  // Drop a stale trail when the draft changes by some path other than our own
+  // `edit` (disk reload, undo/redo), and clear it when the feature is turned off.
   useEffect(() => {
     if (lastEditRef.current !== null && draft !== lastEditRef.current) {
-      setLastChange(null);
+      setChanges([]);
+      setDeletes([]);
+      clearDeleteTimers();
       lastEditRef.current = null;
     }
-  }, [draft]);
+  }, [draft, clearDeleteTimers]);
+  useEffect(() => {
+    if (!changeTint) {
+      setChanges([]);
+      setDeletes([]);
+      clearDeleteTimers();
+    }
+  }, [changeTint, clearDeleteTimers]);
+  // Idle decay: each keystroke resets this timer (re-runs on every `changes`
+  // update), so while typing the trail stays; once typing stops it retires the
+  // oldest run every CHANGE_DECAY_MS until the trail is gone.
+  useEffect(() => {
+    if (changes.length === 0) return;
+    const id = window.setTimeout(() => {
+      setChanges((prev) => prev.slice(0, -1).map((r, i) => ({ ...r, tier: i })));
+    }, CHANGE_DECAY_MS);
+    return () => window.clearTimeout(id);
+  }, [changes]);
   const changeHtml = useMemo(
-    () => (loaded && lastChange ? decorateChangeRange(draft, lastChange) : null),
-    [loaded, draft, lastChange],
+    () => (loaded && changeTint && changes.length ? decorateChangeRanges(draft, changes) : null),
+    [loaded, draft, changes, changeTint],
+  );
+  // Companion overlay for the red deletion ghosts. `Date.now()` here stamps each
+  // mark's fade offset; it re-evaluates on every draft/deletes change (i.e. every
+  // keystroke), which is exactly when the layer is rebuilt.
+  const deleteHtml = useMemo(
+    () => (loaded && changeTint && deletes.length ? decorateDeleteRanges(draft, deletes, Date.now()) : null),
+    [loaded, draft, deletes, changeTint],
+  );
+
+  // ── #45 follow-up: local-model grammar/spelling check ──────────────────────
+  // The whole draft is checked against the currently-loaded local model after an
+  // idle pause; the returned issues are resolved to ranges against the live draft
+  // (so they self-heal across small edits) and underlined, colour by category. A
+  // short status mirrors the autocomplete one. Disabled unless `grammarCheck`.
+  const [grammarIssues, setGrammarIssues] = useState<GrammarIssue[]>([]);
+  const [grammarStatus, setGrammarStatus] = useState<string | null>(null);
+  const [grammarTip, setGrammarTip] = useState<
+    { left: number; top: number; range: GrammarRange } | null
+  >(null);
+  const grammarAbort = useRef<AbortController | null>(null);
+  // The exact draft text last submitted, so an idle re-check is skipped when the
+  // document hasn't changed since the previous check.
+  const lastCheckedText = useRef<string | null>(null);
+  // Close the hover tooltip on a short delay, so the pointer can travel from the
+  // underlined mark up into the tooltip (to click Apply) without it vanishing.
+  const grammarTipTimer = useRef<number | null>(null);
+  const cancelGrammarTipClose = useCallback(() => {
+    if (grammarTipTimer.current != null) {
+      window.clearTimeout(grammarTipTimer.current);
+      grammarTipTimer.current = null;
+    }
+  }, []);
+  const scheduleGrammarTipClose = useCallback(() => {
+    cancelGrammarTipClose();
+    grammarTipTimer.current = window.setTimeout(() => setGrammarTip(null), 250);
+  }, [cancelGrammarTipClose]);
+  useEffect(() => () => cancelGrammarTipClose(), [cancelGrammarTipClose]);
+
+  const grammarRanges = useMemo(
+    () => (loaded && grammarIssues.length ? resolveGrammarRanges(draft, grammarIssues) : []),
+    [loaded, draft, grammarIssues],
+  );
+  const grammarHtml = useMemo(
+    () => (grammarRanges.length ? decorateGrammarRanges(draft, grammarRanges) : null),
+    [draft, grammarRanges],
+  );
+
+  // Re-apply the scroll transform whenever an overlay layer's presence changes.
+  // syncScroll only runs on scroll events and the one-shot restore, but the
+  // change/delete trails (and the search layer) mount lazily — only once there's
+  // an edit or an active find. A layer that first mounts while the textarea is
+  // already scrolled starts at translate(0,0), i.e. `scrollTop` px too low, and
+  // stays out of register until the next scroll. Syncing on mount pins it to the
+  // current offset immediately. useLayoutEffect so it lands before paint.
+  useLayoutEffect(() => {
+    syncScroll();
+  }, [
+    loaded,
+    highlighted,
+    linkHtml,
+    searchHtml,
+    changeHtml,
+    deleteHtml,
+    grammarHtml,
+    syncScroll,
+  ]);
+
+  // Auto-dismiss a finished grammar status; keep an in-flight "…" message.
+  useEffect(() => {
+    if (!grammarStatus || grammarStatus.endsWith("…")) return;
+    const id = window.setTimeout(() => setGrammarStatus(null), 4000);
+    return () => window.clearTimeout(id);
+  }, [grammarStatus]);
+
+  const runGrammarCheck = useCallback(async () => {
+    if (!grammarCheck?.enabled) return;
+    const text = draftRef.current;
+    if (!text.trim()) {
+      setGrammarIssues([]);
+      return;
+    }
+    lastCheckedText.current = text;
+    grammarAbort.current?.abort();
+    const ctl = new AbortController();
+    grammarAbort.current = ctl;
+    setGrammarStatus("Checking grammar…");
+    try {
+      // Resolve the currently-loaded model the same way autocomplete does, so the
+      // check runs against whatever is resident in Ollama at trigger time.
+      const detailed = await invoke<{ name: string; running: boolean }[]>(
+        "list_ollama_models_detailed",
+      );
+      if (ctl.signal.aborted) return;
+      const running = detailed.filter((m) => m.running).map((m) => m.name);
+      const model =
+        grammarCheck.preferred && running.includes(grammarCheck.preferred)
+          ? grammarCheck.preferred
+          : running[0] ?? "";
+      if (!model) {
+        setGrammarStatus("Grammar check unavailable — load a local model (🧠 menu) to enable it.");
+        return;
+      }
+      const issues = await invoke<GrammarIssue[]>("check_grammar", {
+        text,
+        model,
+        language: lang === "plain" ? "" : lang,
+      });
+      if (ctl.signal.aborted) return;
+      setGrammarIssues(issues);
+      setGrammarStatus(issues.length ? `${issues.length} issue${issues.length === 1 ? "" : "s"}` : "No issues");
+    } catch (e) {
+      if (ctl.signal.aborted) return;
+      setGrammarStatus(
+        String(e).includes("not_running")
+          ? "Grammar check unavailable — load a local model (🧠 menu) to enable it."
+          : "Grammar check failed — see the local model.",
+      );
+    }
+    // Primitive deps (the config object's identity changes every render) so the
+    // idle-check timer isn't reset by unrelated re-renders.
+  }, [grammarCheck?.enabled, grammarCheck?.preferred, lang]);
+
+  // Idle re-check: when enabled, run a short while after the user stops typing,
+  // skipping when the draft is unchanged from the last check. Clears stale marks
+  // immediately when the feature is turned off.
+  useEffect(() => {
+    if (!grammarCheck?.enabled || !loaded) {
+      setGrammarIssues([]);
+      setGrammarTip(null);
+      lastCheckedText.current = null;
+      return;
+    }
+    if (draft === lastCheckedText.current) return;
+    const id = window.setTimeout(() => void runGrammarCheck(), GRAMMAR_DEBOUNCE_MS);
+    return () => window.clearTimeout(id);
+  }, [grammarCheck?.enabled, loaded, draft, runGrammarCheck]);
+
+  // Keep the grammar overlay aligned after it mounts/changes.
+  useEffect(() => {
+    if (grammarHtml) syncScroll();
+  }, [grammarHtml, syncScroll]);
+
+  // Apply a single issue's suggested fix: replace its resolved range with the
+  // suggestion and drop the issue so its mark clears (the rest re-resolve against
+  // the new draft). Leaves the caret after the inserted text.
+  const applyGrammarFix = useCallback(
+    (range: GrammarRange) => {
+      const repl = range.issue.suggestion;
+      edit(applyReplacements(draftRef.current, [{ start: range.start, end: range.end }], repl));
+      setGrammarIssues((prev) => prev.filter((i) => i !== range.issue));
+      setGrammarTip(null);
+      const caret = range.start + repl.length;
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (el) el.selectionStart = el.selectionEnd = caret;
+      });
+    },
+    [edit],
+  );
+
+  // Hit-test the grammar overlay at a screen point, returning the range under the
+  // cursor (its span carries `data-gi`, an index into `grammarRanges`). Mirrors
+  // the link-layer hit-test: the layer is scroll-synced over the textarea text, so
+  // its span rects are the on-screen marks.
+  const grammarHitAt = useCallback(
+    (x: number, y: number): GrammarRange | null => {
+      const layer = grammarLayerRef.current;
+      if (!layer) return null;
+      for (const span of layer.querySelectorAll<HTMLElement>(".file-viewer-grammar-mark")) {
+        const r = span.getBoundingClientRect();
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+          const gi = Number(span.dataset.gi);
+          return grammarRanges[gi] ?? null;
+        }
+      }
+      return null;
+    },
+    [grammarRanges],
   );
 
   // Replace the current match (#67). We re-place the textarea selection on the
@@ -1456,12 +2694,23 @@ function CodeEditor({
     const ta = textareaRef.current;
     if (!ta || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => {
+      // WebKitGTK quirk: a soft-wrap textarea re-breaks its lines when its box
+      // shrinks but NOT when it grows, so after the editor widens the text stays
+      // wrapped at the old, narrower width and leaves blank space on the right.
+      // Nudge it to re-lay-out at the new width by toggling its wrap off→on within
+      // a single synchronous reflow (no paint between, so no flicker; the value —
+      // and thus caret/selection — is untouched).
+      if (wrap) {
+        ta.style.whiteSpace = "pre";
+        void ta.offsetWidth;
+        ta.style.whiteSpace = "";
+      }
       syncScroll();
       bumpMeasure();
     });
     ro.observe(ta);
     return () => ro.disconnect();
-  }, [syncScroll, loaded]);
+  }, [syncScroll, loaded, wrap]);
 
   // Measure each logical line's wrapped height (wrap mode only) so the gutter
   // cells line up with the editor. Runs before paint to avoid a flash of
@@ -1470,13 +2719,27 @@ function CodeEditor({
   useLayoutEffect(() => {
     if (!wrap || !loaded) {
       setWrapWidth(null);
+      prevClientWidth.current = null;
       return;
     }
     const measure = measureRef.current;
     const ta = textareaRef.current;
     if (!measure || !ta) return;
-    setWrapWidth(ta.clientWidth);
-    measure.style.width = `${ta.clientWidth}px`;
+    const cw = ta.clientWidth;
+    // If the content width changed since the last measure — most often a vertical
+    // scrollbar toggling as the doc crosses the editor height, which the
+    // ResizeObserver can't see — force the textarea to re-break to the new width
+    // with the same whiteSpace nudge used on resize (synchronous, pre-paint, so
+    // no flicker and the value/caret are untouched). Keeps its wrapping in lockstep
+    // with the overlay layers pinned to `cw`, so the last-change tint stays put.
+    if (prevClientWidth.current !== cw) {
+      prevClientWidth.current = cw;
+      ta.style.whiteSpace = "pre";
+      void ta.offsetWidth;
+      ta.style.whiteSpace = "";
+    }
+    setWrapWidth(cw);
+    measure.style.width = `${cw}px`;
     const next = Array.from(
       measure.children,
       (c) => (c as HTMLElement).offsetHeight,
@@ -1500,11 +2763,21 @@ function CodeEditor({
   // the textarea is actually focused so a blur-time reset is ignored.
   const emitCaret = useCallback(() => {
     const el = textareaRef.current;
-    if (el && document.activeElement === el && onCaretChange) {
-      onCaretChange(el.selectionStart);
+    if (el) {
+      if (document.activeElement === el && onCaretChange) onCaretChange(el.selectionStart);
+      // Track the caret's line for the blame inline hint (cheap; only read).
+      setCaretLine(offsetToLineCol(el.value, el.selectionStart).line);
     }
     bumpCaret();
   }, [onCaretChange, bumpCaret]);
+
+  // Re-apply the scroll transform to the blame layers whenever they (re)mount or
+  // the caret line changes: a freshly-mounted node starts at translateY(0), so
+  // without this the column/inline hint would sit un-scrolled until the next
+  // scroll event. syncScroll reads the live textarea scrollTop.
+  useEffect(() => {
+    if (showBlame) syncScroll();
+  }, [showBlame, caretLine, blame, syncScroll]);
 
   // Publish a live caret getter so the viewer can read the *current* cursor at
   // compile time rather than relying on the last-reported snapshot. The Compile
@@ -1519,6 +2792,38 @@ function CodeEditor({
       caretApiRef.current = null;
     };
   }, [caretApiRef]);
+
+  // Imperative editing API for a toolbar (the Markdown viewer). `applyEdit` runs
+  // a pure transform on the current value+selection and commits it through
+  // `edit`; the requested selection is stashed and restored by the layout effect
+  // below once React has re-rendered the textarea with the new value.
+  const pendingSelRef = useRef<{ start: number; end: number } | null>(null);
+  useEffect(() => {
+    if (!editorApiRef) return;
+    editorApiRef.current = {
+      applyEdit: (fn) => {
+        const el = textareaRef.current;
+        const start = el?.selectionStart ?? draftRef.current.length;
+        const end = el?.selectionEnd ?? start;
+        const res = fn(draftRef.current, start, end);
+        pendingSelRef.current = { start: res.selStart, end: res.selEnd };
+        el?.focus();
+        edit(res.value);
+      },
+    };
+    return () => {
+      editorApiRef.current = null;
+    };
+  }, [editorApiRef, edit]);
+  useLayoutEffect(() => {
+    const sel = pendingSelRef.current;
+    if (!sel) return;
+    pendingSelRef.current = null;
+    const el = textareaRef.current;
+    if (!el) return;
+    el.selectionStart = sel.start;
+    el.selectionEnd = sel.end;
+  }, [draft]);
 
   // SyncTeX reverse search: on a new `gotoLine` nonce, place the caret at the
   // target line/column and scroll it to roughly the middle of the view. SyncTeX
@@ -1550,35 +2855,108 @@ function CodeEditor({
     acAbort.current?.abort();
     acAbort.current = null;
     setSuggestion(null);
+    setAcStatus(null);
   }, []);
 
   // #45: request a completion at the caret. Privacy-gated by the caller (only
-  // wired when the per-type setting is on); also ensures Ollama is up first and
-  // fails silently otherwise.
-  const requestCompletion = useCallback(async () => {
+  // wired when the per-type setting is on). Completion runs against whichever
+  // local model is CURRENTLY LOADED in Ollama memory (the running set from
+  // /api/ps), preferring the user's active model when it is loaded.
+  //
+  // Two modes:
+  //  - manual (Ctrl+Space): surfaces a message when nothing is loaded / it fails,
+  //    so the user gets feedback rather than silence.
+  //  - auto (debounced as you type): only runs for the focused editor with a
+  //    collapsed caret and enough context, and stays SILENT on the unavailable/
+  //    error paths so typing isn't spammed with toasts. There is no remote
+  //    fallback either way (local-only by design, DECISION A).
+  const requestCompletion = useCallback(async (opts?: { auto?: boolean; mode?: AutocompleteMode }) => {
+    const auto = opts?.auto === true;
+    // Explicit override (from the live cycle key) wins over the current mode,
+    // since setState hasn't flushed yet when the key handler calls through.
+    const mode = opts?.mode ?? acMode;
     const el = textareaRef.current;
-    if (!el || !autocomplete?.enabled || !autocomplete.model) return;
+    if (!el || !autocomplete?.enabled) return;
+    // Auto mode: only the focused editor, only at a collapsed caret, and only
+    // with a little context to complete from — otherwise skip the round trip.
+    if (auto) {
+      if (document.activeElement !== el) return;
+      if (el.selectionStart !== el.selectionEnd) return;
+    }
     const caret = el.selectionStart;
     const prefix = draft.slice(0, caret);
     const suffix = draft.slice(caret);
+    if (auto && prefix.replace(/\s+/g, "").length < 3) return;
     acAbort.current?.abort();
     const ctl = new AbortController();
     acAbort.current = ctl;
+    setSuggestion(null);
+    setAcStatus(t("fileViewer.autocompleteStatus", { mode: acModeLabel(mode, t) }));
     try {
-      await invoke("ensure_ollama_running");
+      // Resolve the currently-loaded model at trigger time (it may have been
+      // unloaded since the editor mounted). `list_ollama_models_detailed`
+      // doubles as the running-check; "not_running" means Ollama is down.
+      const detailed = await invoke<{ name: string; running: boolean }[]>(
+        "list_ollama_models_detailed",
+      );
       if (ctl.signal.aborted) return;
+      const loaded = detailed.filter((m) => m.running).map((m) => m.name);
+      const model =
+        autocomplete.preferred && loaded.includes(autocomplete.preferred)
+          ? autocomplete.preferred
+          : loaded[0] ?? "";
+      if (!model) {
+        setAcStatus(auto ? null : t("fileViewer.autocompleteUnavailable"));
+        return;
+      }
       const text = await invoke<string>("complete_text", {
         prefix,
         suffix,
-        model: autocomplete.model,
+        model,
         language: lang === "plain" ? "" : lang,
+        mode,
+        context: contextFiles.length
+          ? contextFiles.map((f) => ({ name: f.rel, content: f.content }))
+          : undefined,
       });
       if (ctl.signal.aborted) return;
-      if (text) setSuggestion({ text, at: caret });
-    } catch {
-      // Ollama not running / errored → fail silently (no remote fallback).
+      if (text) {
+        setSuggestion({ text, at: caret });
+        setAcStatus(null);
+      } else {
+        setAcStatus(auto ? null : t("fileViewer.noSuggestion"));
+      }
+    } catch (e) {
+      if (ctl.signal.aborted) return;
+      if (auto) {
+        setAcStatus(null);
+        return;
+      }
+      setAcStatus(
+        String(e).includes("not_running")
+          ? t("fileViewer.autocompleteUnavailable")
+          : t("fileViewer.autocompleteFailed"),
+      );
     }
-  }, [autocomplete, draft, lang]);
+  }, [autocomplete, draft, lang, acMode, contextFiles]);
+
+  // #45 automatic suggestions: when the per-type toggle is on, request a
+  // completion a short while after the user stops typing. Re-runs on each draft
+  // change; the cleanup clears the prior timer, so only an idle pause fires it.
+  // Skipped while a suggestion is already showing or the \ref/\cite dropdown is
+  // open. The focus/caret/context guards live in `requestCompletion`.
+  useEffect(() => {
+    if (!autocomplete?.enabled || !loaded) return;
+    if (suggestion || compl) return;
+    const id = window.setTimeout(() => void requestCompletion({ auto: true }), AUTO_AC_DEBOUNCE_MS);
+    return () => window.clearTimeout(id);
+  }, [autocomplete?.enabled, loaded, draft, suggestion, compl, requestCompletion]);
+
+  // The ghost mounts fresh (scrollTop 0) each time a suggestion appears; align it
+  // to the editor's current scroll so the inserted preview lands at the caret.
+  useEffect(() => {
+    if (suggestion) syncScroll();
+  }, [suggestion, syncScroll]);
 
   const acceptSuggestion = useCallback(() => {
     const el = textareaRef.current;
@@ -1588,6 +2966,28 @@ function CodeEditor({
     edit(next);
     const caret = at + suggestion.text.length;
     setSuggestion(null);
+    requestAnimationFrame(() => {
+      el.selectionStart = el.selectionEnd = caret;
+    });
+  }, [suggestion, draft, edit]);
+
+  // #45 partial accept (→ Right arrow): insert only the next "word" of the pending
+  // suggestion and keep the remainder ghosted, so the user can walk a long
+  // suggestion in word-sized steps. A word = any leading whitespace (including a
+  // newline + indentation) plus the following run of non-space characters.
+  const acceptWord = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el || !suggestion) return;
+    const { text, at } = suggestion;
+    const m = text.match(/^\s*\S+/);
+    const take = m ? m[0].length : text.length;
+    const chunk = text.slice(0, take);
+    const rest = text.slice(take);
+    const next = draft.slice(0, at) + chunk + draft.slice(at);
+    edit(next);
+    const caret = at + chunk.length;
+    // Keep the rest ghosted at the new caret; clear once it's fully consumed.
+    setSuggestion(rest ? { text: rest, at: caret } : null);
     requestAnimationFrame(() => {
       el.selectionStart = el.selectionEnd = caret;
     });
@@ -1757,7 +3157,12 @@ function CodeEditor({
       }
     }
 
-    // #45: Ctrl+Space requests a suggestion; Tab accepts; Esc dismisses.
+    // #45: Ctrl+Space requests a suggestion. While a ghost suggestion is showing:
+    //  - Tab accepts the whole suggestion,
+    //  - Shift+Tab toggles the completion-length mode (Sentence → Block → Scope)
+    //    and re-requests in it,
+    //  - → (Right) accepts only the next word (repeat to walk word-by-word),
+    //  - Esc dismisses.
     if ((e.ctrlKey || e.metaKey) && e.key === " ") {
       e.preventDefault();
       void requestCompletion();
@@ -1766,7 +3171,22 @@ function CodeEditor({
     if (suggestion) {
       if (e.key === "Tab") {
         e.preventDefault();
-        acceptSuggestion();
+        if (e.shiftKey) {
+          // Toggle to the next mode and re-request, so the ghost switches to that
+          // mode's completion in place.
+          const m = nextAcMode(acMode);
+          setAcMode(m);
+          void requestCompletion({ mode: m });
+        } else {
+          acceptSuggestion();
+        }
+        return;
+      }
+      // Plain Right arrow accepts the next word; modified Right (select/word-move)
+      // falls through and dismisses so native navigation still works.
+      if (e.key === "ArrowRight" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        acceptWord();
         return;
       }
       if (e.key === "Escape") {
@@ -1840,17 +3260,28 @@ function CodeEditor({
   const onMouseMove = (e: React.MouseEvent<HTMLTextAreaElement>) => {
     lastMouse.current = { x: e.clientX, y: e.clientY };
     updateLinkHover(e.clientX, e.clientY, e.ctrlKey || e.metaKey);
+    // Grammar tooltip: open it over a hovered mark, else schedule a close so the
+    // pointer can still reach the open tooltip's Apply button.
+    if (grammarRanges.length) {
+      const hit = grammarHitAt(e.clientX, e.clientY);
+      if (hit) {
+        cancelGrammarTipClose();
+        setGrammarTip({ left: e.clientX, top: e.clientY, range: hit });
+      } else if (grammarTip) {
+        scheduleGrammarTipClose();
+      }
+    }
   };
 
   if (error != null) return <div className="file-viewer-error">{error}</div>;
-  if (!loaded) return <div className="file-viewer-loading">Loading…</div>;
+  if (!loaded) return <div className="file-viewer-loading">{t("common.loading")}</div>;
 
-  // Ghost text: render the draft up to the caret (transparent) then the
-  // suggestion (dimmed) so it sits inline where it would be inserted.
-  const ghost =
-    suggestion != null
-      ? draft.slice(0, suggestion.at) + suggestion.text
-      : null;
+  // Ghost text: while a suggestion is pending, render the WHOLE projected
+  // document — prefix + suggestion + the existing suffix shifted past it — over
+  // an opaque background that masks the real layers beneath. This pushes the
+  // text after the caret aside (horizontally and, for multi-line suggestions,
+  // downward) instead of painting the proposal on top of it.
+  const hasGhost = suggestion != null;
 
   // In wrap mode, pin every overlay <pre> to the textarea's content width so
   // they wrap line-for-line with it (see wrapWidth). A no-op otherwise.
@@ -1860,7 +3291,7 @@ function CodeEditor({
   return (
     <div
       className="file-viewer-code"
-      onWheel={(e) => onCtrlWheelFont(e, incFont, decFont)}
+      ref={wheelRef}
       onKeyDown={onContainerKeyDown}
       style={
         fontSize
@@ -1874,25 +3305,106 @@ function CodeEditor({
           : undefined
       }
     >
+      {/* Git-blame column (#blame). Sits left of the numbers, shares their cell
+          heights (incl. wrap-mode `lineHeights`) and is scroll-locked via its own
+          inner transform. Each cell shows the last author + relative date;
+          uncommitted/unknown lines get a muted dot. Age-tinted like a heat-map. */}
+      {showBlame && (
+        <div
+          className="file-viewer-blame-gutter"
+          aria-hidden="true"
+          onMouseMove={onBlameMove}
+          onMouseLeave={() => setBlameTip(null)}
+        >
+          <div className="file-viewer-blame-inner" ref={blameInnerRef}>
+            {Array.from({ length: lineCount }, (_, i) => {
+              const b = blame?.get(i + 1);
+              const h = wrap ? lineHeights[i] : undefined;
+              const known = b != null && !isUncommitted(b);
+              const style: React.CSSProperties = {};
+              if (h != null) style.height = h;
+              const tint = blameTint(b);
+              if (tint) style.background = tint;
+              return (
+                <div
+                  key={i}
+                  className={`file-viewer-blame-line${known ? "" : " uncommitted"}${
+                    i + 1 === caretLine ? " current" : ""
+                  }`}
+                  data-line={i + 1}
+                  style={style}
+                >
+                  {known ? (
+                    <>
+                      <span className="fv-blame-author">{authorAbbrev(b!.author)}</span>
+                      <span className="fv-blame-date">{blameRelDate(b!.author_time)}</span>
+                    </>
+                  ) : (
+                    <span className="fv-blame-none">·</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {/* Line-number gutter. Fixed-height rows normally; in wrap mode (the LaTeX
           viewer) a logical line can span several visual rows, so each cell is
           sized to its measured wrapped height (`lineHeights`). Lines holding a
-          search match are marked, the current match brightest (#67). */}
-      <div className="file-viewer-gutter" aria-hidden="true">
+          search match are marked, the current match brightest (#67).
+
+          When `onToggleBreakpoint` is wired (the Python editor, #py) the cells
+          become real buttons that set/clear a debug breakpoint, so the gutter
+          stops being decoration and the whole column drops its `aria-hidden` —
+          hiding a control from the accessibility tree would make the feature
+          unreachable without a mouse. */}
+      <div className="file-viewer-gutter" aria-hidden={onToggleBreakpoint ? undefined : "true"}>
         <div className="file-viewer-gutter-inner" ref={gutterInnerRef}>
           {Array.from({ length: lineCount }, (_, i) => {
             const n = i + 1;
             const h = wrap ? lineHeights[i] : undefined;
+            const broken = breakpoints?.has(n) ?? false;
             const cls =
-              n === currentMatchLine
+              (n === currentMatchLine
                 ? "file-viewer-gutter-line current-match"
                 : matchLineSet.has(n)
                   ? "file-viewer-gutter-line has-match"
-                  : "file-viewer-gutter-line";
+                  : "file-viewer-gutter-line") +
+              (onToggleBreakpoint ? " is-breakable" : "") +
+              (broken ? " has-breakpoint" : "");
+            const style = h != null ? { height: h } : undefined;
+
+            if (!onToggleBreakpoint) {
+              return (
+                <div key={i} className={cls} style={style}>
+                  {n}
+                </div>
+              );
+            }
             return (
-              <div key={i} className={cls} style={h != null ? { height: h } : undefined}>
+              <button
+                key={i}
+                type="button"
+                className={cls}
+                style={style}
+                // Keep the caret where it is: clicking the gutter sets a
+                // breakpoint, it does not move the cursor or steal focus.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => onToggleBreakpoint(n)}
+                title={
+                  broken
+                    ? t("fileViewer.removeBreakpoint", { line: n })
+                    : t("fileViewer.addBreakpoint", { line: n })
+                }
+                aria-pressed={broken}
+                aria-label={
+                  broken
+                    ? t("fileViewer.removeBreakpoint", { line: n })
+                    : t("fileViewer.addBreakpoint", { line: n })
+                }
+              >
                 {n}
-              </div>
+              </button>
             );
           })}
         </div>
@@ -1900,7 +3412,7 @@ function CodeEditor({
       <div
         className={`file-viewer-code-area${highlighted != null ? " highlighted" : ""}${
           linkHover ? " link-hover" : ""
-        }${wrap ? " is-wrapped" : ""}`}
+        }${wrap ? " is-wrapped" : ""}${hasGhost ? " has-suggestion" : ""}`}
       >
         {/* Hidden full-width mirror used only to measure each logical line's
             wrapped height for the gutter (wrap mode). Sized to the textarea's
@@ -1939,6 +3451,15 @@ function CodeEditor({
             dangerouslySetInnerHTML={{ __html: searchHtml + "\n" }}
           />
         )}
+        {grammarHtml != null && (
+          <pre
+            ref={grammarLayerRef}
+            className="file-viewer-grammar-layer"
+            aria-hidden="true"
+            style={overlayWidthStyle}
+            dangerouslySetInnerHTML={{ __html: grammarHtml + "\n" }}
+          />
+        )}
         {linkHtml != null && (
           <pre
             ref={linkLayerRef}
@@ -1948,10 +3469,25 @@ function CodeEditor({
             dangerouslySetInnerHTML={{ __html: linkHtml + "\n" }}
           />
         )}
-        {ghost != null && (
-          <pre className="file-viewer-ghost" aria-hidden="true" style={overlayWidthStyle}>
-            <span className="file-viewer-ghost-hidden">{draft.slice(0, suggestion!.at)}</span>
+        {deleteHtml != null && (
+          <pre
+            ref={deleteLayerRef}
+            className="file-viewer-delete-layer"
+            aria-hidden="true"
+            style={overlayWidthStyle}
+            dangerouslySetInnerHTML={{ __html: deleteHtml + "\n" }}
+          />
+        )}
+        {hasGhost && (
+          <pre
+            ref={ghostRef}
+            className="file-viewer-ghost"
+            aria-hidden="true"
+            style={overlayWidthStyle}
+          >
+            {draft.slice(0, suggestion!.at)}
             <span className="file-viewer-ghost-text">{suggestion!.text}</span>
+            {draft.slice(suggestion!.at)}
           </pre>
         )}
         <textarea
@@ -1965,13 +3501,120 @@ function CodeEditor({
           onKeyUp={(e) => { if (!(e.ctrlKey || e.metaKey)) setLinkHover(false); emitCaret(); }}
           onBlur={() => { setLinkHover(false); setLinkTip(null); dismissSuggestion(); setCompl(null); }}
           onMouseMove={onMouseMove}
-          onMouseLeave={() => { setLinkHover(false); setLinkTip(null); }}
+          onMouseLeave={() => { setLinkHover(false); setLinkTip(null); scheduleGrammarTipClose(); }}
           onClick={onClick}
           onSelect={emitCaret}
           onScroll={onScroll}
         />
+        {/* Current-line blame hint (#blame): a faint, right-aligned annotation on
+            the caret's line. Absolutely positioned at the line's top offset and
+            scroll-locked with the blame column. */}
+        {showBlame && caretBlame && !isUncommitted(caretBlame) && (
+          <div
+            ref={blameInlineRef}
+            className="file-viewer-blame-inline"
+            aria-hidden="true"
+            style={{ top: lineTop(caretLine), lineHeight: `${effectiveLineHeight}px` }}
+          >
+            {caretBlame.author} · {blameRelDate(caretBlame.author_time)} · {caretBlame.summary}
+          </div>
+        )}
       </div>
       {onFollowLink && <LinkOpenHint at={linkTip} />}
+      {acStatus && (
+        <div className="file-viewer-ac-status" role="status">
+          {/* A trailing "…" marks an in-flight request — show a spinner. */}
+          {acStatus.endsWith("…") && (
+            <span className="file-viewer-ac-spinner" aria-hidden="true" />
+          )}
+          {acStatus}
+        </div>
+      )}
+      {grammarStatus && (
+        <div className="file-viewer-grammar-status" role="status">
+          {grammarStatus.endsWith("…") && (
+            <span className="file-viewer-ac-spinner" aria-hidden="true" />
+          )}
+          {grammarStatus}
+        </div>
+      )}
+      {grammarTip && (
+        <div
+          className={`file-viewer-grammar-tip cat-${grammarTip.range.issue.category}`}
+          style={{ left: grammarTip.left, top: grammarTip.top }}
+          role="tooltip"
+          onMouseEnter={cancelGrammarTipClose}
+          onMouseLeave={scheduleGrammarTipClose}
+        >
+          <div className="file-viewer-grammar-tip-cat">{grammarTip.range.issue.category}</div>
+          {grammarTip.range.issue.message && (
+            <div className="file-viewer-grammar-tip-msg">{grammarTip.range.issue.message}</div>
+          )}
+          {grammarTip.range.issue.suggestion && (
+            <button
+              type="button"
+              className="file-viewer-grammar-tip-fix"
+              // mousedown keeps the textarea from stealing focus before the click.
+              onMouseDown={(e) => { e.preventDefault(); applyGrammarFix(grammarTip.range); }}
+            >
+              {t("fileViewer.grammarFix")} <span className="file-viewer-grammar-tip-sugg">{grammarTip.range.issue.suggestion}</span>
+            </button>
+          )}
+        </div>
+      )}
+      {/* Blame hovercard (#blame): full attribution for the hovered gutter cell. */}
+      {blameTip && (() => {
+        const b = blame?.get(blameTip.line);
+        if (!b || isUncommitted(b)) return null;
+        return (
+          <div
+            className="file-viewer-blame-tip"
+            style={{ left: blameTip.left, top: blameTip.top }}
+            role="tooltip"
+          >
+            <div className="file-viewer-blame-tip-head">
+              <span className="file-viewer-blame-tip-hash">{b.short}</span>
+              <span className="file-viewer-blame-tip-author">{b.author}</span>
+            </div>
+            <div className="file-viewer-blame-tip-date">{t("fileViewer.blameAgo", { time: blameRelDate(b.author_time) })}</div>
+            <div className="file-viewer-blame-tip-summary">{b.summary}</div>
+          </div>
+        );
+      })()}
+      {/* #45 context files: a button to attach project files plus chips for the
+          attached ones, shown only when autocomplete is enabled for this type. */}
+      {autocomplete?.enabled && (
+        <div className="file-viewer-ac-context">
+          <button
+            type="button"
+            className="file-viewer-ac-context-add"
+            onClick={() => setAcPicker(true)}
+            title={t("fileViewer.addContextTitle")}
+          >
+            {t("fileViewer.addContext")}{contextFiles.length ? ` (${contextFiles.length})` : ""}
+          </button>
+          {contextFiles.map((f) => (
+            <span key={f.path} className="file-viewer-ac-context-chip" title={f.rel}>
+              {f.rel.split("/").pop()}
+              <button
+                type="button"
+                aria-label={t("fileViewer.removeFromContext", { file: f.rel })}
+                onClick={() => removeContextFile(f.path)}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {acPicker && (
+        <ContextFilePicker
+          projectDir={acProjectDir}
+          attached={contextFiles.map((f) => f.rel)}
+          onPick={(rel) => void addContextFile(rel)}
+          onClose={() => setAcPicker(false)}
+        />
+      )}
       {compl && (
         <ul
           className={`file-viewer-tex-compl${compl.ctx.kind === "cite" ? " is-cite" : ""}`}
@@ -2004,8 +3647,8 @@ function CodeEditor({
               className={`file-viewer-find-toggle${replaceOpen ? " active" : ""}`}
               onClick={() => setReplaceOpen((v) => !v)}
               aria-pressed={replaceOpen}
-              aria-label={replaceOpen ? "Hide replace" : "Show replace"}
-              title={replaceOpen ? "Hide replace" : "Show replace (Ctrl+R)"}
+              aria-label={replaceOpen ? t("fileViewer.hideReplace") : t("fileViewer.showReplace")}
+              title={replaceOpen ? t("fileViewer.hideReplace") : t("fileViewer.showReplaceTitle")}
             >
               {replaceOpen ? "▾" : "▸"}
             </button>
@@ -2014,8 +3657,8 @@ function CodeEditor({
               className="file-viewer-find-input"
               type="text"
               value={query}
-              placeholder="Find"
-              aria-label="Find"
+              placeholder={t("pdfViewer.findLabel")}
+              aria-label={t("pdfViewer.findLabel")}
               spellCheck={false}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={onFindKeyDown}
@@ -2027,8 +3670,8 @@ function CodeEditor({
               className={`file-viewer-find-btn${caseSensitive ? " active" : ""}`}
               onClick={() => setCaseSensitive((v) => !v)}
               aria-pressed={caseSensitive}
-              title="Match case"
-              aria-label="Match case"
+              title={t("pdfViewer.matchCaseTitle")}
+              aria-label={t("pdfViewer.matchCaseTitle")}
             >
               Aa
             </button>
@@ -2036,8 +3679,8 @@ function CodeEditor({
               className="file-viewer-find-btn"
               onClick={() => goToMatch(-1)}
               disabled={matches.length === 0}
-              title="Previous match (Shift+Enter)"
-              aria-label="Previous match"
+              title={t("pdfViewer.prevMatchTitle")}
+              aria-label={t("pdfViewer.prevMatchLabel")}
             >
               ↑
             </button>
@@ -2045,16 +3688,16 @@ function CodeEditor({
               className="file-viewer-find-btn"
               onClick={() => goToMatch(1)}
               disabled={matches.length === 0}
-              title="Next match (Enter)"
-              aria-label="Next match"
+              title={t("pdfViewer.nextMatchTitle")}
+              aria-label={t("pdfViewer.nextMatchLabel")}
             >
               ↓
             </button>
             <button
               className="file-viewer-find-btn"
               onClick={closeFind}
-              title="Close (Esc)"
-              aria-label="Close find"
+              title={t("pdfViewer.closeFindTitle")}
+              aria-label={t("pdfViewer.closeFindLabel")}
             >
               ✕
             </button>
@@ -2066,8 +3709,8 @@ function CodeEditor({
                 className="file-viewer-find-input"
                 type="text"
                 value={replaceWith}
-                placeholder="Replace"
-                aria-label="Replace with"
+                placeholder={t("fileViewer.replacePlaceholder")}
+                aria-label={t("fileViewer.replaceWithLabel")}
                 spellCheck={false}
                 onChange={(e) => setReplaceWith(e.target.value)}
                 onKeyDown={onReplaceKeyDown}
@@ -2076,19 +3719,19 @@ function CodeEditor({
                 className="file-viewer-find-btn file-viewer-replace-btn"
                 onClick={replaceCurrent}
                 disabled={matches.length === 0}
-                title="Replace current match (Enter)"
-                aria-label="Replace"
+                title={t("fileViewer.replaceCurrentTitle")}
+                aria-label={t("fileViewer.replaceLabel")}
               >
-                Replace
+                {t("fileViewer.replaceLabel")}
               </button>
               <button
                 className="file-viewer-find-btn file-viewer-replace-btn"
                 onClick={replaceAll}
                 disabled={matches.length === 0}
-                title="Replace all matches (Ctrl+Enter)"
-                aria-label="Replace all"
+                title={t("fileViewer.replaceAllTitle")}
+                aria-label={t("fileViewer.replaceAllLabel")}
               >
-                All
+                {t("fileViewer.replaceAllBtn")}
               </button>
             </div>
           )}
@@ -2103,7 +3746,7 @@ function CodeEditor({
  * than text: a spinner while saving, a filled disk with a dot when there are
  * unsaved edits, and a check when clean. `aria-label="Save"` keeps it findable.
  */
-function SaveButton({
+export function SaveButton({
   isDirty,
   saving,
   save,
@@ -2112,6 +3755,7 @@ function SaveButton({
   saving: boolean;
   save: () => void;
 }) {
+  const t = useT();
   const icon = saving ? (
     <span className="file-viewer-save-spinner" aria-hidden="true" />
   ) : isDirty ? (
@@ -2124,16 +3768,43 @@ function SaveButton({
       className={`file-viewer-save${isDirty ? " is-dirty" : ""}${saving ? " is-saving" : ""}`}
       onClick={save}
       disabled={!isDirty || saving}
-      aria-label="Save"
-      title={saving ? "Saving…" : isDirty ? "Save (Ctrl+S)" : "No unsaved changes"}
+      aria-label={t("common.save")}
+      title={saving ? t("common.saving") : isDirty ? t("fileViewer.saveWithShortcut") : t("fileViewer.noUnsavedChanges")}
     >
       {icon}
     </button>
   );
 }
 
+/** Print button shared by every content viewer. Renders the viewer's content to
+ *  a clean paginated document and hands it to the platform print dialog (which
+ *  offers "Save as PDF") — see `lib/viewers/print`. `busy` covers async sources
+ *  like the PDF viewer, which rasterises its pages before printing. */
+function PrintButton({
+  onPrint,
+  busy = false,
+  disabled = false,
+}: {
+  onPrint: () => void;
+  busy?: boolean;
+  disabled?: boolean;
+}) {
+  const t = useT();
+  return (
+    <button
+      className={`file-viewer-print${busy ? " is-busy" : ""}`}
+      onClick={onPrint}
+      disabled={disabled || busy}
+      title={busy ? t("pdfViewer.preparing") : t("pdfViewer.printLabel")}
+      aria-label={t("pdfViewer.printLabel")}
+    >
+      {busy ? <span className="file-viewer-save-spinner" aria-hidden="true" /> : "🖨"}
+    </button>
+  );
+}
+
 /** Undo/redo toolbar buttons shared by the editable viewers (#46). */
-function UndoRedoButtons({
+export function UndoRedoButtons({
   undo,
   redo,
   canUndo,
@@ -2144,14 +3815,15 @@ function UndoRedoButtons({
   canUndo: boolean;
   canRedo: boolean;
 }) {
+  const t = useT();
   return (
-    <div className="file-viewer-history" role="group" aria-label="Edit history">
+    <div className="file-viewer-history" role="group" aria-label={t("fileViewer.editHistory")}>
       <button
         className="file-viewer-history-btn"
         onClick={undo}
         disabled={!canUndo}
-        aria-label="Undo"
-        title="Undo (Ctrl+Z)"
+        aria-label={t("common.undo")}
+        title={t("fileViewer.undoShortcut")}
       >
         ↶
       </button>
@@ -2159,11 +3831,260 @@ function UndoRedoButtons({
         className="file-viewer-history-btn"
         onClick={redo}
         disabled={!canRedo}
-        aria-label="Redo"
-        title="Redo (Ctrl+Shift+Z)"
+        aria-label={t("common.redo")}
+        title={t("fileViewer.redoShortcut")}
       >
         ↷
       </button>
+    </div>
+  );
+}
+
+// ── Per-format extras: format, validation, preview, markup toolbar ───────────
+
+/**
+ * "Format document" support for the editable text viewers. JSON is prettified
+ * in-process; every other recognised type shells out to an external formatter
+ * (prettier/black/rustfmt/gofmt) via the backend, which is probed once per path
+ * so the button can disable itself when no tool is installed. A formatted result
+ * is written back through `setDraft`, so it lands as one undo step.
+ */
+function useFormatter(path: string, draft: string, setDraft: (v: string) => void) {
+  const t = useT();
+  const lang = useMemo(() => formatLangForPath(path), [path]);
+  const inProcess = useMemo(() => isInProcessJson(path), [path]);
+  const enabled = inProcess || lang != null;
+  // JSON (in-process) is always available; an external formatter is probed.
+  const [available, setAvailable] = useState(inProcess);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+
+  useEffect(() => {
+    if (!lang) {
+      setAvailable(inProcess);
+      return;
+    }
+    let cancelled = false;
+    invoke<boolean>("formatter_available", { lang, path })
+      .then((ok) => { if (!cancelled) setAvailable(inProcess || ok); })
+      .catch(() => { if (!cancelled) setAvailable(inProcess); });
+    return () => { cancelled = true; };
+  }, [lang, path, inProcess]);
+
+  // Auto-dismiss a finished status after a few seconds.
+  useEffect(() => {
+    if (!status) return;
+    const id = window.setTimeout(() => setStatus(null), 6000);
+    return () => window.clearTimeout(id);
+  }, [status]);
+
+  const run = useCallback(async () => {
+    if (busy) return;
+    const text = draftRef.current;
+    setStatus(null);
+    if (inProcess) {
+      const res = formatJsonText(text);
+      if (res.ok) {
+        if (res.text !== text) setDraft(res.text);
+      } else {
+        setStatus(t("fileViewer.cantFormat", { error: res.error }));
+      }
+      return;
+    }
+    if (!lang) return;
+    setBusy(true);
+    try {
+      const out = await invoke<string>("format_source", { text, lang, path });
+      if (out !== text) setDraft(out);
+    } catch (e) {
+      const msg = String(e);
+      if (msg.startsWith("formatter-unavailable")) {
+        setAvailable(false);
+        setStatus(t("fileViewer.noFormatterInstalled"));
+      } else {
+        setStatus(msg.length > 240 ? `${msg.slice(0, 240)}…` : msg);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, inProcess, lang, path, setDraft, t]);
+
+  return { enabled, available, busy, status, run };
+}
+
+/** "Format" toolbar button; disabled when no formatter is available or while a
+ *  format is in flight. Keeps editor focus so the document stays the target. */
+function FormatButton({
+  available,
+  busy,
+  run,
+}: {
+  available: boolean;
+  busy: boolean;
+  run: () => void;
+}) {
+  const t = useT();
+  return (
+    <button
+      className="file-viewer-format-btn"
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={run}
+      disabled={!available || busy}
+      title={available ? t("fileViewer.formatDocument") : t("fileViewer.noFormatterFound")}
+      aria-label={t("fileViewer.formatDocument")}
+    >
+      {busy ? <span className="file-viewer-save-spinner" aria-hidden="true" /> : t("fileViewer.formatBtn")}
+    </button>
+  );
+}
+
+interface SyntaxIssue {
+  line: number;
+  column: number;
+  message: string;
+}
+
+/** Debounced backend syntax check for JSON/YAML; returns the first parse error
+ *  (or null when valid / not a checked type). Re-runs as the draft changes. */
+function useSyntaxCheck(path: string, draft: string, loaded: boolean): SyntaxIssue | null {
+  const lang = useMemo(() => validationLangForPath(path), [path]);
+  const [issue, setIssue] = useState<SyntaxIssue | null>(null);
+  useEffect(() => {
+    if (!lang || !loaded) {
+      setIssue(null);
+      return;
+    }
+    let cancelled = false;
+    const id = window.setTimeout(() => {
+      invoke<SyntaxIssue | null>("check_syntax", { text: draft, lang })
+        .then((r) => { if (!cancelled) setIssue(r ?? null); })
+        .catch(() => { if (!cancelled) setIssue(null); });
+    }, 500);
+    return () => { cancelled = true; window.clearTimeout(id); };
+  }, [lang, draft, loaded]);
+  return lang ? issue : null;
+}
+
+/** Inline parse-error banner for JSON/YAML, with a jump to the offending line. */
+function ValidationBanner({
+  issue,
+  onJump,
+}: {
+  issue: SyntaxIssue | null;
+  onJump: (line: number, column: number) => void;
+}) {
+  const t = useT();
+  if (!issue) return null;
+  const where = issue.line
+    ? ` (line ${issue.line}${issue.column ? `, col ${issue.column}` : ""})`
+    : "";
+  return (
+    <div className="file-viewer-validation" role="alert">
+      <span className="file-viewer-validation-dot" aria-hidden="true" />
+      <span className="file-viewer-validation-msg">
+        {issue.message}
+        {where}
+      </span>
+      {issue.line > 0 && (
+        <button
+          className="file-viewer-validation-jump"
+          onClick={() => onJump(issue.line, issue.column)}
+        >
+          {t("fileViewer.goToLine")}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Reusable Preview/Edit (Source) segmented toggle, styled like the existing
+ *  markdown mode buttons. */
+function ModeToggle<T extends string>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: string }[];
+}) {
+  return (
+    <div className="file-viewer-modes">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          className={`file-viewer-mode${value === o.value ? " active" : ""}`}
+          aria-pressed={value === o.value}
+          onClick={() => onChange(o.value)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Rendered-preview pane for HTML/SVG/CSS — a fully sandboxed (`sandbox=""`,
+ *  no scripts) iframe so even a hostile file is inert. CSS is applied to a small
+ *  sample document; HTML/SVG render their own source. */
+function RenderedPreview({
+  kind,
+  content,
+  fileName,
+}: {
+  kind: PreviewKind;
+  content: string;
+  fileName: string;
+}) {
+  const t = useT();
+  const doc = useMemo(() => buildPreviewDoc(kind, content), [kind, content]);
+  return (
+    <iframe
+      // sandbox="" is intentional and load-bearing: the most restrictive
+      // sandbox, so no script in the file can run.
+      sandbox=""
+      srcDoc={doc}
+      title={t("fileViewer.previewOf", { file: fileName })}
+      className="file-viewer-html-frame"
+      style={{ width: "100%", height: "100%", border: "none", background: "#fff" }}
+    />
+  );
+}
+
+/** Markdown editing toolbar (#md-toolbar): inline/structural formatting plus a
+ *  generated table of contents, applied through the editor's imperative API so
+ *  each action is one undo step. Buttons `preventDefault` on mousedown so the
+ *  editor keeps its selection as the action's target. */
+function MarkdownToolbar({ api }: { api: React.MutableRefObject<EditorApi | null> }) {
+  const t = useT();
+  const act = (fn: (v: string, s: number, e: number) => EditResult) => () =>
+    api.current?.applyEdit(fn);
+  const btn = (label: React.ReactNode, title: string, fn: (v: string, s: number, e: number) => EditResult) => (
+    <button
+      className="file-viewer-md-btn"
+      title={title}
+      aria-label={title}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={act(fn)}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div className="file-viewer-md-toolbar" role="group" aria-label={t("fileViewer.formattingGroup")}>
+      {btn(<b>B</b>, t("fileViewer.mdBold"), (v, s, e) => toggleInline(v, s, e, "**"))}
+      {btn(<i>I</i>, t("fileViewer.mdItalic"), (v, s, e) => toggleInline(v, s, e, "_"))}
+      {btn(<span style={{ fontFamily: "var(--font-mono, monospace)" }}>{"<>"}</span>, t("fileViewer.mdInlineCode"), (v, s, e) => toggleInline(v, s, e, "`"))}
+      {btn("H", t("fileViewer.mdCycleHeading"), (v, s) => cycleHeading(v, s))}
+      {btn("🔗", t("fileViewer.mdLink"), (v, s, e) => makeLink(v, s, e))}
+      {btn("•", t("fileViewer.mdBulletedList"), (v, s, e) => toggleLinePrefix(v, s, e, "- "))}
+      {btn("TOC", t("fileViewer.mdInsertToc"), (v, s, e) => {
+        const toc = generateToc(v);
+        const ins = toc ? `${toc}\n` : "";
+        return { value: v.slice(0, s) + ins + v.slice(e), selStart: s, selEnd: s + ins.length };
+      })}
     </div>
   );
 }
@@ -2173,15 +4094,174 @@ function useViewerPref(type: InternalViewer) {
   return useSettingsStore((s) => s.settings?.viewer_prefs?.[type]);
 }
 
-/** The model used for local autocomplete (#45). Reuses the global agent command
- *  when it is an Ollama model name; falls back to a small coder model. We don't
- *  add a separate setting — the per-type `autocomplete` toggle is the gate. */
-function useAutocompleteConfig(type: InternalViewer): { enabled: boolean; model: string } {
+/** What {@link useTabAiPrefs} returns: the effective autocomplete/grammar config
+ *  for the editor, plus the current control state + setters for the in-tab UI. */
+export interface TabAiPrefs {
+  ac: { enabled: boolean; preferred?: string; mode: AutocompleteMode };
+  gc: { enabled: boolean; preferred?: string };
+  autocomplete: boolean;
+  grammar: boolean;
+  mode: AutocompleteMode;
+  toggleAutocomplete: () => void;
+  toggleGrammar: () => void;
+  setMode: (m: AutocompleteMode) => void;
+}
+
+/**
+ * Tab-local AI-assist prefs (#45). Each editor tab gets its OWN autocomplete
+ * on/off, completion-length mode, and grammar on/off, overriding the per-type
+ * `viewer_prefs` default for that tab only. The override is seeded once from the
+ * tab's persisted `viewerState` and written back there (like scroll/zoom), so it
+ * survives reopening the file and an Eldrun restart. Until the user touches a
+ * control, the value tracks the per-type setting reactively; once toggled, that
+ * tab pins its own value. The `preferred` model for each task is its 🧠-menu tag
+ * (`ollama_roles.autocomplete` / `.grammar`), falling back to `ollama_model`.
+ */
+function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiPrefs {
   const pref = useViewerPref(type);
-  const model = useSettingsStore(
-    (s) => (s.settings?.autocomplete_model as string | undefined) ?? "qwen2.5-coder:1.5b",
+  // Per-task model preference (🧠 menu role chips): autocomplete and grammar can
+  // each pin a different loaded model, falling back to the default `ollama_model`
+  // when that task has no explicit assignment. Resolved against the resident set
+  // at trigger time (see the request paths above).
+  const defaultModel = useSettingsStore((s) => s.settings?.ollama_model as string | undefined);
+  const acRole = useSettingsStore((s) => s.settings?.ollama_roles?.autocomplete as string | undefined);
+  const gcRole = useSettingsStore((s) => s.settings?.ollama_roles?.grammar as string | undefined);
+  const acPreferred = acRole ?? defaultModel;
+  const gcPreferred = gcRole ?? defaultModel;
+  const defAutocomplete = pref?.autocomplete === true;
+  const defGrammar = pref?.grammar_check === true;
+  const defMode: AutocompleteMode = AC_MODES.includes(pref?.autocomplete_mode as AutocompleteMode)
+    ? (pref!.autocomplete_mode as AutocompleteMode)
+    : "sentence";
+
+  // Seed the tab-local override once from the persisted viewerState. `undefined`
+  // for a field means "no override yet" → fall through to the per-type default.
+  const [override, setOverride] = useState<{
+    autocomplete?: boolean;
+    grammar?: boolean;
+    mode?: AutocompleteMode;
+  }>(() => {
+    const vs = seedViewerState(tabKey);
+    return { autocomplete: vs?.autocomplete, grammar: vs?.grammarCheck, mode: vs?.autocompleteMode };
+  });
+
+  const persist = useCallback(
+    (patch: ViewerState) => {
+      if (tabKey) useTabsStore.getState().setViewerState(tabKey, patch);
+    },
+    [tabKey],
   );
-  return { enabled: pref?.autocomplete === true, model };
+
+  const autocomplete = override.autocomplete ?? defAutocomplete;
+  const grammar = override.grammar ?? defGrammar;
+  const mode = override.mode ?? defMode;
+
+  const toggleAutocomplete = useCallback(() => {
+    setOverride((o) => {
+      const next = !(o.autocomplete ?? defAutocomplete);
+      persist({ autocomplete: next });
+      return { ...o, autocomplete: next };
+    });
+  }, [persist, defAutocomplete]);
+  const toggleGrammar = useCallback(() => {
+    setOverride((o) => {
+      const next = !(o.grammar ?? defGrammar);
+      persist({ grammarCheck: next });
+      return { ...o, grammar: next };
+    });
+  }, [persist, defGrammar]);
+  const setMode = useCallback(
+    (m: AutocompleteMode) => {
+      persist({ autocompleteMode: m });
+      setOverride((o) => ({ ...o, mode: m }));
+    },
+    [persist],
+  );
+
+  return {
+    ac: { enabled: autocomplete, preferred: acPreferred, mode },
+    gc: { enabled: grammar, preferred: gcPreferred },
+    autocomplete,
+    grammar,
+    mode,
+    toggleAutocomplete,
+    toggleGrammar,
+    setMode,
+  };
+}
+
+/**
+ * Whether at least one local (Ollama) model is currently loaded into memory.
+ * Both AI-assist features the controls expose (autocomplete + grammar) run only
+ * against a resident model, so the controls hide themselves entirely when none
+ * is loaded. Mirrors the lamp logic in `LocalModelMenu`: `ollama_status` is
+ * `"loaded"` iff `/api/ps` reports a resident model.
+ *
+ * Rides the app-wide shared poller (`lib/ollamaStatus`) rather than owning a
+ * timer. This hook runs **per editable viewer tab**, so a private 5s interval
+ * made the `/api/ps` request rate a function of how many tabs happened to be
+ * open — asking the same machine-wide question N times over. One timer now
+ * serves every surface, and they all flip on the same observation.
+ */
+function useLocalModelLoaded(): boolean {
+  return useOllamaStatus() === "loaded";
+}
+
+/**
+ * In-tab AI-assist controls for the editable viewers (#45): an Autocomplete
+ * on/off toggle with a length-mode picker (Sentence/Block/Scope), and a Grammar
+ * on/off toggle. Both are local-only (Ollama). The state is tab-local (see
+ * {@link useTabAiPrefs}) — toggling here affects only this tab. Rendered in the
+ * viewer header next to the font/undo/save controls. Hidden entirely while no
+ * local model is loaded into memory, since neither feature can run then.
+ */
+function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
+  const t = useT();
+  const modelLoaded = useLocalModelLoaded();
+  if (!modelLoaded) return null;
+  return (
+    <div className="file-viewer-ai-controls" role="group" aria-label={t("fileViewer.aiAssistGroup")}>
+      <button
+        type="button"
+        className={`file-viewer-ai-btn${ai.autocomplete ? " active" : ""}`}
+        onClick={ai.toggleAutocomplete}
+        aria-pressed={ai.autocomplete}
+        title={
+          ai.autocomplete
+            ? t("fileViewer.autocompleteOnHint")
+            : t("fileViewer.autocompleteOffHint")
+        }
+      >
+        {t("fileViewer.autocompleteLabel")}
+      </button>
+      {ai.autocomplete && (
+        <Dropdown
+          className="file-viewer-ai-mode"
+          value={ai.mode}
+          title={t("fileViewer.completionLengthTitle")}
+          onChange={(v) => ai.setMode(v as AutocompleteMode)}
+          options={[
+            { value: "sentence", label: t("projectSettings.sentence") },
+            { value: "block", label: t("projectSettings.block") },
+            { value: "scope", label: t("projectSettings.scope") },
+          ]}
+        />
+      )}
+      <button
+        type="button"
+        className={`file-viewer-ai-btn${ai.grammar ? " active" : ""}`}
+        onClick={ai.toggleGrammar}
+        aria-pressed={ai.grammar}
+        title={
+          ai.grammar
+            ? t("fileViewer.grammarOnHint")
+            : t("fileViewer.grammarOffHint")
+        }
+      >
+        {t("fileViewer.grammarLabel")}
+      </button>
+    </div>
+  );
 }
 
 // Code-editor font sizing. The default matches the .file-viewer-code CSS metrics
@@ -2197,9 +4277,12 @@ export const clampFontSize = (n: number) =>
 /** Shared Ctrl/Cmd+wheel handler for the text viewers (code + markdown): scroll
  *  up grows, down shrinks the font, mirroring the browser zoom gesture and the
  *  Ctrl +/− keyboard shortcuts. A plain wheel (no modifier) falls through to
- *  native scrolling. */
+ *  native scrolling. Typed structurally so both native and synthetic wheel
+ *  events satisfy it. */
 function onCtrlWheelFont(
-  e: React.WheelEvent,
+  e: Pick<WheelEvent, "ctrlKey" | "metaKey" | "deltaY"> & {
+    preventDefault(): void;
+  },
   inc?: () => void,
   dec?: () => void,
 ) {
@@ -2209,38 +4292,71 @@ function onCtrlWheelFont(
   else if (e.deltaY > 0) dec?.();
 }
 
-/**
- * Per-type editor font size (text-size +/− control). Reads the persisted
- * `viewer_prefs[type].font_size`, clamps it, and exposes inc/dec/reset that write
- * the new size back through `updateSettings` — merging the whole viewer_prefs map
- * the same way the settings panel does, so it round-trips to settings.json.
- */
-function useEditorFontSize(type: InternalViewer) {
-  const pref = useViewerPref(type);
-  const fontSize = clampFontSize(pref?.font_size ?? EDITOR_FONT_DEFAULT);
+/** Bind `handler` as a NON-passive `wheel` listener through the returned callback
+ *  ref. React registers its synthetic `onWheel` passively at the document root,
+ *  so `preventDefault()` inside a React `onWheel` is ignored: a Ctrl+wheel zoom
+ *  can't stop the element from scrolling, so it scrolls to its limit and only
+ *  then does the zoom visibly "take". Attaching the listener ourselves with
+ *  `{ passive: false }` lets `preventDefault()` cancel the scroll, so Ctrl+wheel
+ *  zooms immediately and never scrolls. The callback ref re-binds cleanly across
+ *  mount/unmount (e.g. conditionally-rendered viewports). */
+export function useNonPassiveWheel(handler: (e: WheelEvent) => void) {
+  const cb = useRef(handler);
+  cb.current = handler;
+  const detach = useRef<(() => void) | null>(null);
+  return useCallback((el: HTMLElement | null) => {
+    detach.current?.();
+    detach.current = null;
+    if (el) {
+      const listener = (e: WheelEvent) => cb.current(e);
+      el.addEventListener("wheel", listener, { passive: false });
+      detach.current = () => el.removeEventListener("wheel", listener);
+    }
+  }, []);
+}
 
-  const setFontSize = useCallback(
-    (next: number) => {
-      const size = clampFontSize(next);
-      const all = useSettingsStore.getState().settings?.viewer_prefs ?? {};
-      const cur = all[type] ?? {};
-      if (cur.font_size === size) return;
-      void useSettingsStore.getState().updateSettings({
-        viewer_prefs: { ...all, [type]: { ...cur, font_size: size } },
-      });
+/**
+ * Per-TAB editor font size (text-size +/− control, #48). The zoom is tab-local:
+ * changing it resizes only this viewer tab, not every other tab of the same
+ * type. The size is seeded once from the tab's persisted `viewerState.fontSize`
+ * and written back there (like scroll/zoom), so it survives reopening the file
+ * and an Eldrun restart. Until the user zooms this tab it tracks the per-type
+ * `viewer_prefs[type].font_size` default reactively; once zoomed, the tab pins
+ * its own size. `reset` clears the override, dropping back to that default.
+ */
+function useEditorFontSize(tabKey: string | undefined, type: InternalViewer) {
+  const pref = useViewerPref(type);
+  const typeDefault = clampFontSize(pref?.font_size ?? EDITOR_FONT_DEFAULT);
+
+  // Tab-local override, seeded once from the persisted viewerState. `undefined`
+  // means "no override yet" → fall through to the per-type default above.
+  const [override, setOverride] = useState<number | undefined>(
+    () => seedViewerState(tabKey)?.fontSize,
+  );
+  const fontSize = clampFontSize(override ?? typeDefault);
+
+  const persist = useCallback(
+    (size: number | undefined) => {
+      setOverride(size);
+      if (tabKey) useTabsStore.getState().setViewerState(tabKey, { fontSize: size });
     },
-    [type],
+    [tabKey],
+  );
+  const setFontSize = useCallback(
+    (next: number) => persist(clampFontSize(next)),
+    [persist],
   );
 
   return {
     fontSize,
     lineHeight: Math.round(fontSize * EDITOR_LINE_RATIO),
-    // True once the user has set a size — lets surfaces with their own default
-    // (the markdown preview) leave it alone until then.
-    isCustom: pref?.font_size != null,
+    // True once this tab has set its own size — lets surfaces with their own
+    // default (the markdown preview) leave it alone until then.
+    isCustom: override != null,
     inc: useCallback(() => setFontSize(fontSize + 1), [setFontSize, fontSize]),
     dec: useCallback(() => setFontSize(fontSize - 1), [setFontSize, fontSize]),
-    reset: useCallback(() => setFontSize(EDITOR_FONT_DEFAULT), [setFontSize]),
+    // Clear the tab override so it falls back to the per-type default.
+    reset: useCallback(() => persist(undefined), [persist]),
   };
 }
 
@@ -2257,22 +4373,23 @@ function FontSizeControls({
   dec: () => void;
   reset: () => void;
 }) {
+  const t = useT();
   return (
-    <div className="file-viewer-zoom file-viewer-fontsize" role="group" aria-label="Text size">
+    <div className="file-viewer-zoom file-viewer-fontsize" role="group" aria-label={t("fileViewer.textSizeGroup")}>
       <button
         className="file-viewer-zoom-btn"
         onClick={dec}
         disabled={fontSize <= EDITOR_FONT_MIN}
-        title="Decrease text size (Ctrl+−)"
-        aria-label="Decrease text size"
+        title={t("fileViewer.decreaseTextSize")}
+        aria-label={t("fileViewer.decreaseTextSizeLabel")}
       >
         A−
       </button>
       <button
         className="file-viewer-zoom-level file-viewer-fontsize-level"
         onClick={reset}
-        title="Reset text size (Ctrl+0)"
-        aria-label="Reset text size"
+        title={t("fileViewer.resetTextSize")}
+        aria-label={t("fileViewer.resetTextSizeLabel")}
       >
         {fontSize}
       </button>
@@ -2280,8 +4397,8 @@ function FontSizeControls({
         className="file-viewer-zoom-btn"
         onClick={inc}
         disabled={fontSize >= EDITOR_FONT_MAX}
-        title="Increase text size (Ctrl++)"
-        aria-label="Increase text size"
+        title={t("fileViewer.increaseTextSize")}
+        aria-label={t("fileViewer.increaseTextSizeLabel")}
       >
         A+
       </button>
@@ -2313,58 +4430,1014 @@ function useEditorJump(path: string) {
   };
 }
 
+/** One source line's git-blame attribution; mirrors the Rust `GitBlameLine`
+ *  (snake_case, read verbatim). */
+interface BlameLine {
+  line_no: number;
+  hash: string;
+  short: string;
+  author: string;
+  author_time: number;
+  summary: string;
+}
+
+/** True for git's working-tree "Not Committed Yet" pseudo-commit (all-zeros or
+ *  empty sha) — those lines get no attribution / hovercard. */
+function isUncommitted(b: BlameLine): boolean {
+  return b.hash === "" || /^0+$/.test(b.hash);
+}
+
+/** Compact relative age ("now", "3d", "2mo", "5y") from a unix epoch (seconds). */
+function blameRelDate(epochSecs: number): string {
+  if (!epochSecs) return "";
+  const secs = Math.max(0, Date.now() / 1000 - epochSecs);
+  const day = 86400;
+  if (secs < 60) return "now";
+  if (secs < 3600) return `${Math.floor(secs / 60)}m`;
+  if (secs < day) return `${Math.floor(secs / 3600)}h`;
+  if (secs < day * 30) return `${Math.floor(secs / day)}d`;
+  if (secs < day * 365) return `${Math.floor(secs / (day * 30))}mo`;
+  return `${Math.floor(secs / (day * 365))}y`;
+}
+
+/** Shorten an author for the narrow gutter ("Ada Lovelace" → "A. Lovelace"). */
+function authorAbbrev(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length < 2 || !parts[0]) return name;
+  return `${parts[0][0]}. ${parts[parts.length - 1]}`;
+}
+
+/** Fetches per-line git blame for `path` when `enabled`, keyed by 1-based line
+ *  number. Resolves the owning project directory exactly like the autocomplete
+ *  path (longest project dir that prefixes `path`, falling back to the active
+ *  project) and calls the backend `git_blame` — which dispatches local vs remote
+ *  (SSH) transparently. A non-repo dir, a disconnected remote, or any error
+ *  yields an empty map (blame just shows nothing); it never throws. */
+function useBlame(path: string, enabled: boolean): Map<number, BlameLine> {
+  const [byLine, setByLine] = useState<Map<number, BlameLine>>(() => new Map());
+  useEffect(() => {
+    if (!enabled) {
+      setByLine(new Map());
+      return;
+    }
+    const { projects, activeId } = useProjectsStore.getState();
+    let projectDir = "";
+    for (const p of projects) {
+      const dir = resolveProjectDirectory(p);
+      if (dir && isPathWithin(path, dir) && dir.length > projectDir.length) projectDir = dir;
+    }
+    if (!projectDir) {
+      const active = projects.find((p) => p.id === activeId);
+      projectDir = active ? resolveProjectDirectory(active) : "";
+    }
+    if (!projectDir) {
+      setByLine(new Map());
+      return;
+    }
+    const relPath = relFromAbs(projectDir, path);
+    let cancelled = false;
+    invoke<BlameLine[]>("git_blame", { projectDir, relPath })
+      .then((lines) => {
+        if (cancelled) return;
+        const map = new Map<number, BlameLine>();
+        for (const l of lines) map.set(l.line_no, l);
+        setByLine(map);
+      })
+      .catch(() => {
+        if (!cancelled) setByLine(new Map());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [path, enabled]);
+  return byLine;
+}
+
+/** "Blame" toolbar toggle. When active the code editor paints a per-line blame
+ *  column in the gutter plus a faint current-line inline annotation. */
+function BlameButton({ active, toggle }: { active: boolean; toggle: () => void }) {
+  const t = useT();
+  return (
+    <button
+      className={`file-viewer-format-btn file-viewer-blame-btn${active ? " active" : ""}`}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={toggle}
+      title={active ? t("fileViewer.blameHideTitle") : t("fileViewer.blameShowTitle")}
+      aria-label={t("fileViewer.blameToggleLabel")}
+      aria-pressed={active}
+    >
+      {t("fileViewer.blameBtn")}
+    </button>
+  );
+}
+
+/**
+ * The editor's debug breakpoints (#py) — the gutter's red dots.
+ *
+ * Two things make this more than a `Set<number>`:
+ *
+ *  - **They must survive edits.** A breakpoint names a line, so typing a new
+ *    import at the top of the file silently re-points every dot below it at the
+ *    wrong statement. Each draft change is therefore diffed against the previous
+ *    one and the lines are remapped (`remapBreakpoints`).
+ *  - **They must be settable only where pdb can break.** Clicking a blank line or
+ *    a comment snaps down to the next executable line rather than setting a
+ *    breakpoint pdb would reject at startup (`snapBreakpointLine`).
+ *
+ * They persist in the tab's `ViewerState`, so they survive closing the file and
+ * an Eldrun restart — the same plumbing (and the same `project.json` write) as the
+ * reader's scroll position.
+ */
+function useBreakpoints(
+  enabled: boolean,
+  draft: string,
+  loaded: boolean,
+  viewPos: ReturnType<typeof useViewerState>,
+) {
+  const [lines, setLines] = useState<number[]>(() =>
+    enabled ? (viewPos.initial?.breakpoints ?? []) : [],
+  );
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+
+  // The draft the current lines were resolved against. Seeded on first load: the
+  // editor's ""→content transition is not an edit, and diffing across it would
+  // look like "every line was replaced" and drop every restored breakpoint.
+  const prevDraft = useRef<string | null>(null);
+  useEffect(() => {
+    if (!enabled || !loaded) return;
+    const before = prevDraft.current;
+    prevDraft.current = draft;
+    if (before === null || before === draft) return;
+    setLines((cur) => {
+      if (cur.length === 0) return cur;
+      const next = remapBreakpoints(before, draft, cur);
+      // Keep the identity stable when nothing moved, so the gutter doesn't
+      // re-render on every keystroke.
+      return next.length === cur.length && next.every((l, i) => l === cur[i]) ? cur : next;
+    });
+  }, [enabled, loaded, draft]);
+
+  // Persist on change only — never on mount, which would rewrite the tab with the
+  // value we just read out of it.
+  const persistedKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    const key = lines.join(",");
+    if (persistedKey.current === null) {
+      persistedKey.current = key;
+      return;
+    }
+    if (persistedKey.current === key) return;
+    persistedKey.current = key;
+    viewPos.persist({ breakpoints: lines });
+  }, [enabled, lines, viewPos]);
+
+  const toggle = useCallback((line: number) => {
+    setLines((cur) => {
+      if (cur.includes(line)) return cur.filter((l) => l !== line);
+      const snapped = snapBreakpointLine(draftRef.current, line);
+      if (snapped == null) return cur; // nothing executable below — no-op
+      if (cur.includes(snapped)) return cur.filter((l) => l !== snapped);
+      return [...cur, snapped].sort((a, b) => a - b);
+    });
+  }, []);
+
+  const set = useMemo(() => new Set(lines), [lines]);
+  return { lines, set, toggle };
+}
+
+/** Run / Debug (#py). Run executes the file in a fresh terminal tab; Debug does
+ *  the same under `pdb`, pre-loaded with the gutter's breakpoints.
+ *
+ *  Right-clicking Run opens a small popover to type **arguments** (`sys.argv`) —
+ *  appended to the command line and reused by every subsequent Run/Debug, so a
+ *  plain left-click re-runs with them (the tooltip shows what they are). */
+function RunDebugButtons({
+  breakpointCount,
+  busy,
+  showDebug,
+  args,
+  setArgs,
+  onRun,
+  onDebug,
+}: {
+  breakpointCount: number;
+  busy: boolean;
+  /** Debug (pdb + breakpoint gutter) is behind the experimental gate; Run isn't. */
+  showDebug: boolean;
+  /** The current argument string, and its setter (right-click popover edits it). */
+  args: string;
+  setArgs: (v: string) => void;
+  onRun: () => void;
+  onDebug: () => void;
+}) {
+  const t = useT();
+  const [argsOpen, setArgsOpen] = useState(false);
+  // Hovering the Run/Debug buttons shows the saved args in an in-DOM popover — the
+  // native `title` tooltip is unreliable under WebKitGTK, so it can't be the only
+  // place the args are shown.
+  const [hovering, setHovering] = useState(false);
+  // Local draft so typing doesn't rebuild the run command on every keystroke; it
+  // is committed to the shared `args` on Run or when the popover closes.
+  const [draft, setDraft] = useState(args);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const open = useCallback(() => {
+    setDraft(args);
+    setArgsOpen(true);
+  }, [args]);
+  const commit = useCallback(() => {
+    setArgs(draft.trim());
+    setArgsOpen(false);
+  }, [draft, setArgs]);
+
+  // Focus the field when the popover opens, and close it on an outside click or Esc.
+  useEffect(() => {
+    if (!argsOpen) return;
+    inputRef.current?.focus();
+    inputRef.current?.select();
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) commit();
+    };
+    document.addEventListener("mousedown", onDown, true);
+    return () => document.removeEventListener("mousedown", onDown, true);
+  }, [argsOpen, commit]);
+
+  return (
+    <div
+      className="file-viewer-run-controls"
+      ref={wrapRef}
+      onMouseEnter={() => setHovering(true)}
+      onMouseLeave={() => setHovering(false)}
+    >
+      <button
+        className="file-viewer-format-btn"
+        // Right-click opens the args popover. We act on mousedown, not the
+        // contextmenu event: preventing the button's default focus-steal (needed
+        // to keep the editor caret) suppresses `contextmenu` under WebKitGTK, so
+        // that event never arrives. Left-click still runs via onClick.
+        onMouseDown={(e) => {
+          e.preventDefault();
+          if (e.button === 2) open();
+        }}
+        onClick={onRun}
+        onContextMenu={(e) => e.preventDefault()}
+        disabled={busy}
+        title={`${t("fileViewer.runFileTitle")}\n${t("fileViewer.rightClickArgs")}`}
+        aria-label={t("fileViewer.runFileLabel")}
+      >
+        ▶ {t("fileViewer.runLabel")}{args ? " *" : ""}
+      </button>
+      {showDebug && (
+      <button
+        className="file-viewer-format-btn"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          if (e.button === 2) open();
+        }}
+        onClick={onDebug}
+        onContextMenu={(e) => e.preventDefault()}
+        disabled={busy}
+        title={
+          (breakpointCount > 0
+            ? t(
+                breakpointCount === 1 ? "fileViewer.debugPdbLinesOne" : "fileViewer.debugPdbLinesMany",
+                { count: breakpointCount },
+              )
+            : t("fileViewer.debugPdbFirstLine")) +
+          `\n${t("fileViewer.rightClickArgs")}`
+        }
+        aria-label={t("fileViewer.debugFileLabel")}
+      >
+        🐞 {t("fileViewer.debugLabel")}
+      </button>
+      )}
+      {/* Saved-args hover hint. Shown only while hovering, only when args are set,
+          and never over the editor popover (which shows them already). */}
+      {hovering && args && !argsOpen && (
+        <div className="file-viewer-run-argshint" role="tooltip">
+          <span className="file-viewer-run-argshint-label">{t("fileViewer.argsHintLabel")}</span>
+          <span className="file-viewer-run-argshint-val">{args}</span>
+        </div>
+      )}
+      {argsOpen && (
+        <div className="file-viewer-run-args" role="dialog" aria-label={t("fileViewer.runArgumentsDialog")}>
+          <label className="file-viewer-run-args-label">{t("fileViewer.argsFieldLabel")}</label>
+          <input
+            ref={inputRef}
+            className="file-viewer-run-args-input"
+            value={draft}
+            spellCheck={false}
+            placeholder="--epochs 5 data.csv"
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                setArgs(draft.trim());
+                setArgsOpen(false);
+                onRun();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setArgsOpen(false);
+              }
+            }}
+          />
+          <div className="file-viewer-run-args-row">
+            <button
+              type="button"
+              className="file-viewer-format-btn"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                setArgs(draft.trim());
+                setArgsOpen(false);
+                onRun();
+              }}
+            >
+              ▶ {t("fileViewer.runLabel")}
+            </button>
+            <button
+              type="button"
+              className="file-viewer-format-btn"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                setDraft("");
+                setArgs("");
+              }}
+              disabled={!draft}
+              title={t("fileViewer.clearArgsTitle")}
+            >
+              {t("fileViewer.clearArgsBtn")}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Human labels for the `#SBATCH` keys the directive form surfaces. Mirrors
+ *  `HpcPipelineWizard.tsx`'s `SBATCH_LABEL_KEYS` (same field set, same keys). */
+const SBATCH_FIELD_LABEL_KEYS: Record<string, TranslationKey> = {
+  "job-name": "hpcWizard.sbatchJobName",
+  account: "hpcWizard.sbatchAccount",
+  partition: "hpcWizard.sbatchPartition",
+  time: "hpcWizard.sbatchTime",
+  nodes: "hpcWizard.sbatchNodes",
+  ntasks: "hpcWizard.sbatchTasks",
+  "cpus-per-task": "hpcWizard.sbatchCpusPerTask",
+  mem: "hpcWizard.sbatchMemory",
+  gres: "hpcWizard.sbatchGres",
+  output: "hpcWizard.sbatchOutput",
+};
+
+/** Placeholder hints per key, so an empty field still teaches the format. */
+const SBATCH_FIELD_HINTS: Record<string, string> = {
+  "job-name": "myjob",
+  account: "your-group",
+  partition: "gpu",
+  time: "01:00:00",
+  nodes: "1",
+  ntasks: "1",
+  "cpus-per-task": "4",
+  mem: "8G",
+  gres: "gpu:1",
+  output: "slurm-%j.out",
+};
+
+/**
+ * The SLURM control bar (HPC), shown beside the Python Run bar for a `#SBATCH`
+ * script on a host that has SLURM. **Submit job** submits it and opens a log tab;
+ * **Variables** toggles the `#SBATCH` directive form (render rows, edit text — each
+ * edit splices the draft, an ordinary undoable change); **Interactive session…**
+ * opens a resource mini-form that launches an `srun --pty` shell on a compute node.
+ * Carries an `UntestedTag` until QA'd on a real cluster.
+ */
+function SlurmBar({
+  busy,
+  fields,
+  onField,
+  onSubmit,
+  onInteractive,
+}: {
+  busy: boolean;
+  fields: { key: string; value: string }[];
+  onField: (key: string, value: string) => void;
+  onSubmit: () => void;
+  onInteractive: (res: InteractiveResources) => void;
+}) {
+  const t = useT();
+  const [varsOpen, setVarsOpen] = useState(false);
+  const [interOpen, setInterOpen] = useState(false);
+  // Per-field typed drafts, so a splice (and its undo step) happens on commit
+  // (blur/Enter), not on every keystroke.
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [inter, setInter] = useState<InteractiveResources>({
+    time: "01:00:00",
+    cpus: "4",
+    mem: "8G",
+    gpus: "",
+    partition: "",
+    account: "",
+  });
+
+  const valueFor = (key: string) =>
+    edits[key] ?? directiveValue(fields, key);
+  const commit = (key: string) => {
+    const v = edits[key];
+    if (v === undefined) return;
+    onField(key, v);
+  };
+
+  return (
+    <div className="file-viewer-run-controls">
+      <button
+        className="file-viewer-format-btn"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={onSubmit}
+        disabled={busy}
+        title={t("fileViewer.submitSlurmTitle")}
+        aria-label={t("fileViewer.submitSlurmLabel")}
+      >
+        ⏫ {t("fileViewer.submitJobLabel")}
+      </button>
+      <button
+        className={`file-viewer-format-btn${varsOpen ? " active" : ""}`}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => { setVarsOpen((v) => !v); setInterOpen(false); }}
+        title={t("fileViewer.editSbatchTitle")}
+        aria-pressed={varsOpen}
+      >
+        {t("fileViewer.variablesBtn")}
+      </button>
+      <button
+        className={`file-viewer-format-btn${interOpen ? " active" : ""}`}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => { setInterOpen((v) => !v); setVarsOpen(false); }}
+        title={t("fileViewer.openInteractiveTitle")}
+        aria-pressed={interOpen}
+      >
+        ⚡ {t("fileViewer.interactiveSessionLabel")}
+      </button>
+      <UntestedTag />
+
+      {varsOpen && (
+        <div className="file-viewer-run-args" role="dialog" aria-label={t("fileViewer.sbatchVariablesDialog")}>
+          <label className="file-viewer-run-args-label">{t("fileViewer.sbatchDirectivesLabel")}</label>
+          <div className="slurm-directive-grid">
+            {COMMON_SBATCH_KEYS.map((key) => (
+              <label key={key} className="slurm-directive-field">
+                <span className="slurm-directive-key">
+                  {SBATCH_FIELD_LABEL_KEYS[key] ? t(SBATCH_FIELD_LABEL_KEYS[key]) : key}
+                </span>
+                <input
+                  className="file-viewer-run-args-input"
+                  value={valueFor(key)}
+                  spellCheck={false}
+                  placeholder={SBATCH_FIELD_HINTS[key] ?? ""}
+                  onChange={(e) => setEdits((m) => ({ ...m, [key]: e.target.value }))}
+                  onBlur={() => commit(key)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      commit(key);
+                    }
+                  }}
+                />
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {interOpen && (
+        <div className="file-viewer-run-args" role="dialog" aria-label={t("fileViewer.interactiveSessionDialog")}>
+          <label className="file-viewer-run-args-label">{t("fileViewer.interactiveSessionFieldLabel")}</label>
+          <div className="slurm-directive-grid">
+            {([
+              ["account", "hpcWizard.sbatchAccount", "your-group"],
+              ["partition", "hpcWizard.sbatchPartition", "gpu"],
+              ["time", "hpcWizard.sbatchTime", "01:00:00"],
+              ["cpus", "hpcWizard.sbatchCpusPerTask", "4"],
+              ["mem", "hpcWizard.sbatchMemory", "8G"],
+              ["gpus", "fileViewer.sbatchGpus", "1"],
+            ] as const).map(([k, labelKey, hint]) => (
+              <label key={k} className="slurm-directive-field">
+                <span className="slurm-directive-key">{t(labelKey)}</span>
+                <input
+                  className="file-viewer-run-args-input"
+                  value={inter[k] ?? ""}
+                  spellCheck={false}
+                  placeholder={hint}
+                  onChange={(e) => setInter((s) => ({ ...s, [k]: e.target.value }))}
+                />
+              </label>
+            ))}
+          </div>
+          <div className="file-viewer-run-args-row">
+            <button
+              type="button"
+              className="file-viewer-format-btn"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => { setInterOpen(false); onInteractive(inter); }}
+            >
+              ⚡ {t("fileViewer.startLabel")}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** "Compare" toolbar toggle. When active the editor body is replaced by the
+ *  three-column compare/merge view (old commit ⇄ live content ⇄ editable result). */
+function CompareButton({ active, toggle }: { active: boolean; toggle: () => void }) {
+  const t = useT();
+  return (
+    <button
+      className={`file-viewer-format-btn file-viewer-compare-btn${active ? " active" : ""}`}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={toggle}
+      title={active ? t("fileViewer.compareCloseTitle") : t("fileViewer.compareOpenTitle")}
+      aria-label={t("fileViewer.compareToggleLabel")}
+      aria-pressed={active}
+    >
+      {t("fileViewer.compareBtn")}
+    </button>
+  );
+}
+
+/**
+ * The capability-driven base editor for every text/source file. Beyond the
+ * shared code editor (highlight, line numbers, Tab indent, undo/redo, save,
+ * autocomplete) it derives per-format extras from the path:
+ *   - a "Format" button for prettifiable types (JSON in-process; CSS/HTML/JS/
+ *     YAML/Python/Rust/Go via a backend formatter when the tool is installed),
+ *   - an inline JSON/YAML validation banner with jump-to-line,
+ *   - a Preview ⇄ Edit toggle with a sandboxed rendered preview for HTML, SVG,
+ *     and CSS (CSS applied to a sample document).
+ * `type` keys the per-type prefs (font size / autocomplete); it is "text" for
+ * the generic editor and "html" for HTML files so their settings stay distinct.
+ */
 function TextView({
   path,
   onOpenExternally,
   tabKey,
+  type = "text",
+  groupId,
 }: {
   path: string;
   onOpenExternally: () => void;
   tabKey?: string;
+  type?: InternalViewer;
+  groupId?: string | null;
 }) {
+  const t = useT();
   const {
     error, draft, setDraft, loaded, isDirty, saving, saveError, save,
     undo, redo, canUndo, canRedo, externalChange, reloadFromDisk, keepMine,
   } = useEditableFile(path);
-  const ac = useAutocompleteConfig("text");
-  const font = useEditorFontSize("text");
+  const ai = useTabAiPrefs(tabKey, type);
+  const ac = ai.ac;
+  const gc = ai.gc;
+  const font = useEditorFontSize(tabKey, type);
   const jump = useEditorJump(path);
+  const [showBlame, setShowBlame] = useState(false);
+  const blame = useBlame(path, showBlame);
+  const [compareOpen, setCompareOpen] = useState(false);
   const viewPos = useViewerState(tabKey);
+  // Live scroll offsets for the two views this pane toggles between: the Source
+  // code editor (`scrollTop`) and the YAML Tree (`yamlScrollTop`). Held in refs,
+  // not only persisted, because the pane stays mounted across the Tree↔Source
+  // toggle but each inner view REMOUNTS — and would otherwise seed from
+  // `viewPos.initial` (the stale open-time snapshot) and jump there. The ref
+  // carries the live position so a switch back lands where the view was left.
+  const srcScroll = useRef(viewPos.initial?.scrollTop ?? 0);
+  const yamlScroll = useRef(viewPos.initial?.yamlScrollTop ?? 0);
   const persistScroll = useCallback(
-    (scrollTop: number) => viewPos.persist({ scrollTop }),
+    (scrollTop: number) => {
+      srcScroll.current = scrollTop;
+      viewPos.persist({ scrollTop });
+    },
     [viewPos],
   );
+
+  // ── Python (#py): run/debug + breakpoints + go-to-definition ──────────────
+  // Run is available only for a "main" script — one with a module-level
+  // `if __name__ == "__main__":` guard — not for every importable .py module,
+  // which has nothing useful to execute. Debug (pdb) and the breakpoint gutter
+  // that only exists to feed it sit behind the experimental `python_run_debug`
+  // flag — off by default, on in debug mode (`lib/experimental.ts`).
+  // Go-to-definition is deliberately NOT gated: it reads, it never runs anything.
+  const isPy = useMemo(() => isPythonPath(path), [path]);
+  const pyDebugEnabled = useExperimental("python_run_debug");
+  const isMainScript = useMemo(
+    () => isPy && loaded && isPythonMainScript(draft),
+    [isPy, loaded, draft],
+  );
+  const pyRun = isMainScript;
+  const pyDebug = isMainScript && pyDebugEnabled;
+  const projectId = useFileScope();
+  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+  const projectDir = project ? resolveProjectDirectory(project) : "";
+  const bp = useBreakpoints(pyDebug, draft, loaded, viewPos);
+  const [launching, setLaunching] = useState(false);
+  // Arguments typed into the Run button's right-click popover, appended to the
+  // command line (see pythonRun.buildRunCommand). Kept PER FILE (keyed by absolute
+  // path in global settings), not per tab, so every viewer of the same script
+  // shares one set of args — edit them in one tab and the others follow live,
+  // because both read this same store selector — and so they survive closing the
+  // viewer and an Eldrun restart, and show in the Run button's hover tooltip.
+  const pyArgs = useSettingsStore((s) => s.settings?.python_run_args?.[path] ?? "");
+  const setPyArgs = useCallback(
+    (v: string) => {
+      void useSettingsStore.getState().setPythonRunArgs(path, v);
+    },
+    [path],
+  );
+  // Non-null inside a detached popout → the run terminal must stream into THIS
+  // window, not the main tab store (see placeForFocused).
+  const fileDrop = useContext(FileDropContext);
+
+  // The tab runs in the project's own scope, not whichever project happens to be
+  // active — a viewer keeps working after you switch projects (see FileScopeContext),
+  // and its Run button must not fire a terminal into a different project's layout.
+  const scope = projectId ?? "root";
+  const cwd = runCwd(projectDir, path);
+
+  const launch = useCallback(
+    async (go: () => Promise<void>) => {
+      setLaunching(true);
+      try {
+        await go();
+      } finally {
+        setLaunching(false);
+      }
+    },
+    [],
+  );
+
+  // Open the run/debug terminal in the focused subwindow of this project — where
+  // the user is looking — rather than beside this tab's group.
+  const onRun = useCallback(
+    () =>
+      void launch(() =>
+        runPythonFile({
+          file: path,
+          projectDir: cwd,
+          scope,
+          projectId,
+          args: pyArgs,
+          place: placeForFocused(fileDrop),
+        }),
+      ),
+    [launch, path, cwd, scope, projectId, pyArgs, fileDrop],
+  );
+  const onDebug = useCallback(
+    () =>
+      void launch(() =>
+        debugPythonFile({
+          file: path,
+          projectDir: cwd,
+          scope,
+          projectId,
+          breakpoints: bp.lines,
+          args: pyArgs,
+          place: placeForFocused(fileDrop),
+        }),
+      ),
+    [launch, path, cwd, scope, projectId, bp.lines, pyArgs, fileDrop],
+  );
+
+  // ── SLURM (HPC): submit / interactive on a batch script ───────────────────
+  // A `.slurm`-style file (one carrying a `#SBATCH` directive) gets a submit bar
+  // beside the Python one — but only when the project's host actually has SLURM
+  // (`slurm_available`), so the affordance never appears off-HPC. Everything here
+  // rides the same terminal-tab machinery Run uses (`lib/slurm.ts`).
+  const isSlurm = useMemo(() => loaded && isSlurmScript(draft), [loaded, draft]);
+  const [slurmInfo, setSlurmInfo] = useState<SlurmInfo | null>(null);
+  useEffect(() => {
+    if (!isSlurm || !projectDir) {
+      setSlurmInfo(null);
+      return;
+    }
+    let cancelled = false;
+    slurmAvailable(projectDir)
+      .then((info) => { if (!cancelled) setSlurmInfo(info); })
+      .catch(() => { if (!cancelled) setSlurmInfo(null); });
+    return () => { cancelled = true; };
+  }, [isSlurm, projectDir]);
+  const showSlurm = isSlurm && !!slurmInfo?.available;
+  const isRemoteProject = !!project?.remote;
+
+  const onSlurmSubmit = useCallback(
+    () =>
+      void launch(async () => {
+        if (!projectId) return;
+        await submitSlurmJob({
+          file: path,
+          projectDir,
+          cwd,
+          projectId,
+          scope,
+          isRemote: isRemoteProject,
+          place: placeForFocused(fileDrop),
+        });
+      }),
+    [launch, path, projectDir, cwd, projectId, scope, isRemoteProject, fileDrop],
+  );
+  const onSlurmInteractive = useCallback(
+    (res: InteractiveResources) => {
+      openInteractiveJob({
+        scope,
+        cwd,
+        res,
+        hostId: "primary",
+        isRemote: isRemoteProject,
+        place: placeForFocused(fileDrop),
+      });
+    },
+    [scope, cwd, isRemoteProject, fileDrop],
+  );
+
+  // Ctrl/Cmd+Click a name to open its `def`/`class` — in this file or in the
+  // module it was imported from. `jumpToSource` handles both: it re-uses an open
+  // editor when there is one (including the same file, and across a detached
+  // window) and otherwise opens the target in this tab's subwindow.
+  const followPython = useCallback(
+    async (caret: number) => {
+      const loc = await resolvePythonDefinition(draft, caret, path, projectDir, async (p) => {
+        try {
+          return await readFileText(p, projectId);
+        } catch {
+          return null; // doesn't exist / unreadable — just not this candidate
+        }
+      });
+      if (loc) jumpToSource(loc.path, loc.line, loc.column);
+    },
+    [draft, path, projectDir, projectId],
+  );
+
+  const fmt = useFormatter(path, draft, setDraft);
+  const issue = useSyntaxCheck(path, draft, loaded);
+  const previewKind = useMemo(() => previewKindForPath(path), [path]);
+  // #yaml: for YAML and JSON the "preview" is an editable structure tree rather
+  // than a rendered document — it writes back into this very draft (see YamlTree),
+  // which is what lets Tree and Source be two views on one text and keeps
+  // save/undo/format/validation working across both without either mode knowing
+  // about the other. JSON is YAML's flow syntax, so it is the same tree, written
+  // back in the stricter dialect (`strict`).
+  const isYaml = useMemo(() => isTreePath(path), [path]);
+  const jsonStrict = useMemo(() => isJsonPath(path), [path]);
+  // #yaml-grid: the CARD view for structured YAML/JSON — a recursive grid of nested
+  // cards, editing the same draft by splice (see YamlGrid). Offered only when the
+  // file actually nests a collection worth carding, so the Cards toggle appears
+  // exactly where it does something (the tree's honesty rule).
+  const gridAvailable = useMemo(
+    () => (isYaml && loaded ? hasCards(draft, jsonStrict) : false),
+    [isYaml, loaded, draft, jsonStrict],
+  );
+  // YAML/JSON opens in the TREE view by default ("preview"); HTML/SVG in preview; CSS
+  // in the editor. The card view stays available (via the toggle, when the file nests
+  // something to card) but is no longer the default — it still needs work.
+  const [mode, setMode] = useState<"preview" | "grid" | "edit">(
+    isYaml ? "preview" : previewKind === "html" || previewKind === "svg" ? "preview" : "edit",
+  );
+  // A flat file (or a card edit that removes all nesting) has no card view — retire
+  // the mode rather than strand it on a toggle with no button, dropping to the tree.
+  useEffect(() => {
+    if (mode === "grid" && !gridAvailable && loaded) setMode("preview");
+  }, [mode, gridAvailable, loaded]);
+  const fileName = basename(path);
+  const jumpToLine = useCallback(
+    (line: number, column: number) =>
+      useEditorJumpStore.getState().requestJump(path, line, column),
+    [path],
+  );
+
+  const showEditor = (!previewKind && !isYaml) || mode === "edit";
+  const wheelRef = useNonPassiveWheel((e) => {
+    onCtrlWheelFont(e, font.inc, font.dec);
+  });
+
+  // The Tree (and preview) scrolls `.file-viewer-body` itself; the Source editor
+  // scrolls its own inner viewport instead (see CodeEditor). Keep a ref to the
+  // body alongside the wheel-font ref so the tree's scroll can be persisted and
+  // restored on the switch back from Source.
+  const bodyEl = useRef<HTMLDivElement | null>(null);
+  const bodyRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      bodyEl.current = el;
+      wheelRef(el);
+    },
+    [wheelRef],
+  );
+  // Only the TREE persists/restores the body's scroll (the grid scrolls its own
+  // inner table container, the editor its own viewport).
+  const treeScrolls = isYaml && mode === "preview";
+  const showGrid = isYaml && mode === "grid" && gridAvailable;
+  const scrollRaf = useRef<number | null>(null);
+  const onBodyScroll = useCallback(() => {
+    if (!treeScrolls) return;
+    const el = bodyEl.current;
+    if (!el) return;
+    yamlScroll.current = el.scrollTop;
+    // Coalesce the store write to one per frame — a flick of the wheel must not
+    // churn the tabs array (and its debounced disk save) every scroll event.
+    if (scrollRaf.current == null) {
+      scrollRaf.current = requestAnimationFrame(() => {
+        scrollRaf.current = null;
+        viewPos.persist({ yamlScrollTop: yamlScroll.current });
+      });
+    }
+  }, [treeScrolls, viewPos]);
+  useEffect(
+    () => () => {
+      if (scrollRaf.current != null) cancelAnimationFrame(scrollRaf.current);
+    },
+    [],
+  );
+  // Restore the tree's scroll when it (re)mounts — on load, and on switching back
+  // from Source. Layout effect so it lands before paint, with no visible jump.
+  useLayoutEffect(() => {
+    if (treeScrolls && loaded && bodyEl.current) {
+      bodyEl.current.scrollTop = yamlScroll.current;
+    }
+  }, [treeScrolls, loaded]);
+
+  // Print: HTML/SVG/CSS print their rendered preview document; plain text and
+  // source print as a wrapped monospace block.
+  const handlePrint = useCallback(() => {
+    if (previewKind) {
+      void printDocument(buildPreviewDoc(previewKind, draft));
+      return;
+    }
+    void printHtmlBody(
+      `<pre class="print-pre">${escapeHtml(draft)}</pre>`,
+      TEXT_PRINT_CSS,
+      fileName,
+    );
+  }, [previewKind, draft, fileName]);
 
   return (
     <div className="file-viewer">
       <ViewerHeader onOpenExternally={onOpenExternally}>
+        {(previewKind || isYaml) && (
+          <ModeToggle
+            value={mode}
+            onChange={setMode}
+            options={[
+              { value: "preview", label: isYaml ? t("fileViewer.modeTree") : t("fileViewer.modePreview") },
+              // The card view leads no longer — Tree is the default. It is still
+              // offered, but only for a file with nesting to card (the tree's
+              // honesty rule).
+              ...(gridAvailable ? [{ value: "grid" as const, label: t("fileViewer.modeCards") }] : []),
+              {
+                value: "edit",
+                label: isYaml || previewKind === "svg" ? t("fileViewer.modeSource") : t("fileViewer.modeEdit"),
+              },
+            ]}
+          />
+        )}
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
-        <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
+        {/* Which machine a Run/Debug lands on — shown right next to the Run button
+            so the choice is co-located with running, and keyed by THIS viewer's
+            `projectId`, the exact scope `onRun` reads the preference back under (a
+            picker in the file panel is keyed by the *active* project, which can
+            differ from the viewed file's project → the choice would be dropped and
+            the run would fall back to the primary). Only for a remote project with
+            extra worker machines; a lone-primary project has no machine to pick. */}
+        {showEditor && pyRun && isRemoteProject && projectId &&
+          (project?.compute_hosts?.length ?? 0) > 0 && (
+            <RunHostPicker
+              projectId={projectId}
+              primaryHost={project?.remote?.label || project?.remote?.host}
+              computeHosts={project?.compute_hosts}
+            />
+          )}
+        {showEditor && pyRun && (
+          <RunDebugButtons
+            breakpointCount={bp.lines.length}
+            busy={launching}
+            showDebug={pyDebug}
+            args={pyArgs}
+            setArgs={setPyArgs}
+            onRun={onRun}
+            onDebug={onDebug}
+          />
+        )}
+        {showEditor && showSlurm && (
+          <SlurmBar
+            busy={launching}
+            fields={parseSbatchDirectives(draft)}
+            onField={(key, value) => setDraft(spliceDirective(draft, key, value))}
+            onSubmit={onSlurmSubmit}
+            onInteractive={onSlurmInteractive}
+          />
+        )}
+        {showEditor && <EditorAiControls ai={ai} />}
+        {showEditor && fmt.enabled && (
+          <FormatButton available={fmt.available} busy={fmt.busy} run={() => void fmt.run()} />
+        )}
+        {showEditor && (
+          <BlameButton active={showBlame} toggle={() => setShowBlame((v) => !v)} />
+        )}
+        {showEditor && (
+          <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
+        )}
+        {/* The YAML tree edits the text, so its edits are ordinary undo steps —
+            the buttons stay live in Tree mode, unlike a read-only preview. */}
+        {(showEditor || isYaml) && (
+          <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
+        )}
+        <PrintButton onPrint={handlePrint} disabled={!loaded} />
         <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
       </ViewerHeader>
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
       {saveError && <div className="file-viewer-error">{saveError}</div>}
-      <div className="file-viewer-body file-viewer-code-body">
-        <CodeEditor
-          path={path}
-          error={error}
-          draft={draft}
-          setDraft={setDraft}
-          loaded={loaded}
-          save={() => void save()}
-          undo={undo}
-          redo={redo}
-          autocomplete={ac}
-          fontSize={font.fontSize}
-          lineHeight={font.lineHeight}
-          incFont={font.inc}
-          decFont={font.dec}
-          resetFont={font.reset}
-          gotoLine={jump.gotoLine}
-          onGotoApplied={jump.onGotoApplied}
-          initialScrollTop={viewPos.initial?.scrollTop}
-          onScrollPersist={persistScroll}
-        />
+      {fmt.status && <div className="file-viewer-status-line">{fmt.status}</div>}
+      {(showEditor || isYaml) && <ValidationBanner issue={issue} onJump={jumpToLine} />}
+      <div
+        className={`file-viewer-body${showEditor ? " file-viewer-code-body" : ""}`}
+        ref={bodyRef}
+        onScroll={onBodyScroll}
+      >
+        {!showEditor && (previewKind || isYaml) ? (
+          error != null ? (
+            <div className="file-viewer-error">{error}</div>
+          ) : !loaded ? (
+            <div className="file-viewer-loading">{t("common.loading")}</div>
+          ) : showGrid ? (
+            // The grid edits the same draft by splice, just like the tree — a cell
+            // edit is dirty, undoable and saveable exactly like a typed one.
+            <YamlGrid
+              text={draft}
+              onChange={setDraft}
+              tabKey={tabKey}
+              fontSize={font.isCustom ? font.fontSize : undefined}
+              strict={jsonStrict}
+            />
+          ) : isYaml ? (
+            // The tree edits the draft in place — the same draft Source shows and
+            // Ctrl+S writes, so an edit made here is dirty, undoable and saveable
+            // exactly like a typed one.
+            <YamlTree
+              text={draft}
+              onChange={setDraft}
+              tabKey={tabKey}
+              fontSize={font.isCustom ? font.fontSize : undefined}
+              strict={jsonStrict}
+            />
+          ) : (
+            // Preview reflects the live draft, so it tracks unsaved edits.
+            <RenderedPreview kind={previewKind!} content={draft} fileName={fileName} />
+          )
+        ) : compareOpen ? (
+          <CompareView
+            path={path}
+            rightText={draft}
+            onApply={(merged) => {
+              setDraft(merged);
+              setCompareOpen(false);
+            }}
+            onClose={() => setCompareOpen(false)}
+          />
+        ) : (
+          <CodeEditor
+            path={path}
+            error={error}
+            draft={draft}
+            setDraft={setDraft}
+            loaded={loaded}
+            save={() => void save()}
+            undo={undo}
+            redo={redo}
+            autocomplete={ac}
+            grammarCheck={gc}
+            fontSize={font.fontSize}
+            lineHeight={font.lineHeight}
+            incFont={font.inc}
+            decFont={font.dec}
+            resetFont={font.reset}
+            wrap
+            gotoLine={jump.gotoLine}
+            onGotoApplied={jump.onGotoApplied}
+            showBlame={showBlame}
+            blame={blame}
+            breakpoints={pyDebug ? bp.set : undefined}
+            onToggleBreakpoint={pyDebug ? bp.toggle : undefined}
+            onFollowLink={isPy ? followPython : undefined}
+            linkRanges={isPy ? pythonLinkRanges : undefined}
+            // The LIVE offset (not `viewPos.initial`), so re-showing Source after
+            // a trip through Tree restores where the editor was, not the stale
+            // open-time snapshot.
+            initialScrollTop={srcScroll.current}
+            onScrollPersist={persistScroll}
+            groupId={groupId}
+          />
+        )}
       </div>
     </div>
   );
@@ -2374,24 +5447,114 @@ function MarkdownView({
   path,
   onOpenExternally,
   tabKey,
+  groupId,
 }: {
   path: string;
   onOpenExternally: () => void;
   tabKey?: string;
+  groupId?: string | null;
 }) {
+  const t = useT();
   const {
     error, draft, setDraft, loaded, isDirty, saving, saveError, save,
     undo, redo, canUndo, canRedo, externalChange, reloadFromDisk, keepMine,
   } = useEditableFile(path);
+  const scope = useFileScope();
   const [mode, setMode] = useState<"preview" | "edit">("preview");
-  const font = useEditorFontSize("markdown");
+  const [compareOpen, setCompareOpen] = useState(false);
+  const font = useEditorFontSize(tabKey, "markdown");
+  const wheelRef = useNonPassiveWheel((e) => onCtrlWheelFont(e, font.inc, font.dec));
+  // Proportional scroll-link (preview mode only — edit mode links via CodeEditor's
+  // textarea). `.file-viewer-body` is the overflow:auto scroller for the preview.
+  const bodyScrollRef = useRef<HTMLDivElement | null>(null);
+  const setBodyRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      wheelRef(el);
+      bodyScrollRef.current = el;
+    },
+    [wheelRef],
+  );
+  const ai = useTabAiPrefs(tabKey, "markdown");
+  const ac = ai.ac;
+  const gc = ai.gc;
+  const fmt = useFormatter(path, draft, setDraft);
+  // Imperative editor handle the formatting toolbar drives (bold/italic/TOC/…).
+  const editorApi = useRef<EditorApi | null>(null);
+  const viewPos = useViewerState(tabKey);
+  const persistScroll = useCallback(
+    (scrollTop: number) => viewPos.persist({ scrollTop }),
+    [viewPos],
+  );
   // Preview always reflects the live draft, so toggling shows unsaved edits.
   const html = useMemo(() => (loaded ? renderMarkdown(draft) : ""), [loaded, draft]);
+  // Register the preview scroller only while in preview mode, so it never fights
+  // CodeEditor for the same group id (edit mode links via the textarea instead).
+  const reportPreviewSync = useScrollSync(mode === "preview" ? groupId : null, bodyScrollRef);
+
+  // After the preview HTML is committed to the DOM, run the mermaid/KaTeX
+  // enrichment pass (Dev A): it finds the mermaid code blocks and math
+  // placeholders renderMarkdown emitted and renders them in place. Re-runs
+  // whenever the rendered HTML changes or we switch back to preview mode.
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (mode !== "preview") return;
+    const el = previewRef.current;
+    if (!el) return;
+    void enrichMarkdownDom(el);
+  }, [html, mode]);
 
   // #49/#50: local-file links in the rendered preview open in-app on
   // Ctrl/Cmd+Click (matching the LaTeX editor). A hover hint advertises the
   // shortcut. `linkTip` anchors that hint above the hovered link.
   const [linkTip, setLinkTip] = useState<{ left: number; top: number } | null>(null);
+
+  // #50: inline local images in the preview. The renderer tags relative/absolute
+  // image paths as <img.md-img-local data-md-src="…"> (no `src`, since the webview
+  // can't load them from the app origin); resolve each against the markdown file's
+  // directory, read the bytes, and swap in a Blob URL. URLs are revoked when the
+  // rendered html changes or on unmount. Shares `previewRef` with the enrichment
+  // pass above — both target the same rendered-preview container.
+  useEffect(() => {
+    if (mode !== "preview") return;
+    const root = previewRef.current;
+    if (!root) return;
+    const imgs = Array.from(
+      root.querySelectorAll<HTMLImageElement>("img.md-img-local[data-md-src]"),
+    );
+    if (!imgs.length) return;
+    let cancelled = false;
+    const urls: string[] = [];
+    for (const img of imgs) {
+      const target = resolveLocalHref(path, img.getAttribute("data-md-src") ?? "");
+      if (!target) continue;
+      readFileBytes(target, scope)
+        .then((bytes) => {
+          if (cancelled) return;
+          const objectUrl = URL.createObjectURL(
+            new Blob([new Uint8Array(bytes)], { type: imageMimeForPath(target) }),
+          );
+          urls.push(objectUrl);
+          img.src = objectUrl;
+        })
+        .catch(() => { /* missing/unreadable file: leave the alt text showing */ });
+    }
+    return () => {
+      cancelled = true;
+      for (const u of urls) URL.revokeObjectURL(u);
+    };
+  }, [html, mode, path, scope]);
+
+  // Print the rendered Markdown. Prefer the live preview DOM (it carries the
+  // enriched mermaid/KaTeX output and inlined local images); fall back to a fresh
+  // render of the current draft when Edit mode has the preview unmounted.
+  const handlePrint = useCallback(() => {
+    const inner = previewRef.current?.innerHTML || html || renderMarkdown(draft);
+    void printHtmlBody(
+      `<div class="markdown-body">${inner}</div>`,
+      MARKDOWN_PRINT_CSS,
+      basename(path),
+    );
+  }, [html, draft, path]);
 
   const onPreviewMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const a = (e.target as HTMLElement).closest?.("a.file-link") as HTMLElement | null;
@@ -2413,47 +5576,14 @@ function MarkdownView({
       if (!(e.ctrlKey || e.metaKey)) return;
       const target = resolveLocalHref(path, a.getAttribute("href") ?? "");
       if (!target) return;
-      openLinkedFile(tabKey, path.slice(0, path.lastIndexOf("/")), {
+      openLinkedFile(tabKey, dirname(path), {
         path: target,
         viewer: viewerForPath(target),
-        label: target.slice(target.lastIndexOf("/") + 1),
+        label: basename(target),
       });
     },
     [path, tabKey],
   );
-
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
-      e.preventDefault();
-      void save();
-      return;
-    }
-    // #46 undo/redo for the plain markdown editor textarea.
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
-      e.preventDefault();
-      if (e.shiftKey) redo();
-      else undo();
-      return;
-    }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
-      e.preventDefault();
-      redo();
-      return;
-    }
-    // Text size: Ctrl/Cmd with "+"/"=" grows, "-" shrinks, "0" resets.
-    if (e.ctrlKey || e.metaKey) {
-      if (e.key === "+" || e.key === "=") {
-        e.preventDefault();
-        font.inc();
-      } else if (e.key === "-" || e.key === "_") {
-        e.preventDefault();
-        font.dec();
-      } else if (e.key === "0") {
-        e.preventDefault();
-        font.reset();
-      }
-    }
-  };
 
   return (
     <div className="file-viewer">
@@ -2464,43 +5594,84 @@ function MarkdownView({
             aria-pressed={mode === "preview"}
             onClick={() => setMode("preview")}
           >
-            Preview
+            {t("fileViewer.modePreview")}
           </button>
           <button
             className={`file-viewer-mode${mode === "edit" ? " active" : ""}`}
             aria-pressed={mode === "edit"}
             onClick={() => setMode("edit")}
           >
-            Edit
+            {t("fileViewer.modeEdit")}
           </button>
         </div>
+        {mode === "edit" && <MarkdownToolbar api={editorApi} />}
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
+        {mode === "edit" && <EditorAiControls ai={ai} />}
+        {mode === "edit" && fmt.enabled && (
+          <FormatButton available={fmt.available} busy={fmt.busy} run={() => void fmt.run()} />
+        )}
+        {mode === "edit" && (
+          <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
+        )}
         {mode === "edit" && (
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
         )}
+        <PrintButton onPrint={handlePrint} disabled={!loaded} />
         <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
       </ViewerHeader>
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
       {saveError && <div className="file-viewer-error">{saveError}</div>}
+      {mode === "edit" && fmt.status && (
+        <div className="file-viewer-status-line">{fmt.status}</div>
+      )}
       <div
-        className="file-viewer-body"
-        onWheel={(e) => onCtrlWheelFont(e, font.inc, font.dec)}
+        className={`file-viewer-body${mode === "edit" ? " file-viewer-code-body" : ""}`}
+        ref={setBodyRef}
+        onScroll={reportPreviewSync}
       >
-        {error != null ? (
+        {mode === "edit" && compareOpen ? (
+          <CompareView
+            path={path}
+            rightText={draft}
+            onApply={(merged) => {
+              setDraft(merged);
+              setCompareOpen(false);
+            }}
+            onClose={() => setCompareOpen(false)}
+          />
+        ) : mode === "edit" ? (
+          // The shared code editor gives markdown the same Tab/undo/save behaviour
+          // as the text/tex viewers — and local autocomplete (#45). `wrap` so prose
+          // soft-wraps. It renders its own load/error states.
+          <CodeEditor
+            path={path}
+            error={error}
+            draft={draft}
+            setDraft={setDraft}
+            loaded={loaded}
+            save={() => void save()}
+            undo={undo}
+            redo={redo}
+            autocomplete={ac}
+            grammarCheck={gc}
+            fontSize={font.fontSize}
+            lineHeight={font.lineHeight}
+            incFont={font.inc}
+            decFont={font.dec}
+            resetFont={font.reset}
+            wrap
+            editorApiRef={editorApi}
+            initialScrollTop={viewPos.initial?.scrollTop}
+            onScrollPersist={persistScroll}
+            groupId={groupId}
+          />
+        ) : error != null ? (
           <div className="file-viewer-error">{error}</div>
         ) : !loaded ? (
-          <div className="file-viewer-loading">Loading…</div>
-        ) : mode === "edit" ? (
-          <textarea
-            className="file-viewer-editor"
-            value={draft}
-            spellCheck={false}
-            style={{ fontSize: `${font.fontSize}px`, lineHeight: `${font.lineHeight}px` }}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={onKeyDown}
-          />
+          <div className="file-viewer-loading">{t("common.loading")}</div>
         ) : (
           <div
+            ref={previewRef}
             className="markdown-body"
             // Leave the preview at its CSS default until the user sets a size,
             // then drive the base font-size so headings (em-based) scale with it.
@@ -2524,6 +5695,7 @@ function MarkdownView({
  *  URL only once the new bytes are ready (no flash to a loading state); the old
  *  URL is revoked then, and the last URL is revoked on unmount. */
 function useBlobUrl(path: string, type: string) {
+  const scope = useFileScope();
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const urlRef = useRef<string | null>(null);
@@ -2544,7 +5716,7 @@ function useBlobUrl(path: string, type: string) {
   // once its replacement is ready.
   useEffect(() => {
     let cancelled = false;
-    invoke<number[]>("read_file_bytes", { path })
+    readFileBytes(path, scope)
       .then((bytes) => {
         if (cancelled) return;
         const blob = new Blob([new Uint8Array(bytes)], type ? { type } : undefined);
@@ -2554,9 +5726,9 @@ function useBlobUrl(path: string, type: string) {
         setUrl(objectUrl);
         if (prev) URL.revokeObjectURL(prev);
       })
-      .catch((e) => { if (!cancelled) setError(String(e)); });
+      .catch((e) => { if (!cancelled) setError(describeFileError(e)); });
     return () => { cancelled = true; };
-  }, [path, type, diskVersion]);
+  }, [path, type, diskVersion, scope]);
 
   // Revoke the last live URL on unmount.
   useEffect(
@@ -2572,11 +5744,11 @@ function useBlobUrl(path: string, type: string) {
   // Poll mtime; on an external advance, bump diskVersion to re-read fresh bytes.
   useEffect(() => {
     let cancelled = false;
-    invoke<number>("file_mtime", { path })
+    fileMtime(path, scope)
       .then((m) => { if (!cancelled) lastMtime.current = m; })
       .catch(() => {});
     const id = setInterval(() => {
-      invoke<number>("file_mtime", { path })
+      fileMtime(path, scope)
         .then((m) => {
           if (cancelled || lastMtime.current == null || m <= lastMtime.current) return;
           lastMtime.current = m;
@@ -2585,612 +5757,11 @@ function useBlobUrl(path: string, type: string) {
         .catch(() => {});
     }, RELOAD_POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
-  }, [path]);
+  }, [path, scope]);
 
   return { url, error };
 }
 
-const PDF_MIN_SCALE = 0.1;
-const PDF_MAX_SCALE = 8;
-const PDF_ZOOM_STEP = 1.2;
-const clampPdfScale = (s: number) => Math.min(PDF_MAX_SCALE, Math.max(PDF_MIN_SCALE, s));
-
-/** One PDF page rendered to a canvas at `scale` (× devicePixelRatio for
- *  crispness). Re-renders when the page or scale changes; cancels an in-flight
- *  render on cleanup so rapid zooming doesn't paint stale frames. */
-function PdfPageCanvas({
-  doc,
-  pageNumber,
-  scale,
-  cssSize,
-  onSyncClick,
-  syncArmed,
-  highlight,
-}: {
-  doc: PDFDocumentProxy;
-  pageNumber: number;
-  scale: number;
-  /** This page's intrinsic (scale-1) CSS dimensions, if known. Used to RESERVE
-   *  the canvas's on-screen size immediately — before its async render fills
-   *  pixels — so the page stack reaches its true scroll height right away. Without
-   *  this the canvas defaults to ~150px until rendered, so the container height
-   *  grows page-by-page and a deep restored scroll position is unreachable until
-   *  every page above it has rendered (#viewerpos PDF restore). */
-  cssSize?: { w: number; h: number };
-  /** SyncTeX reverse search: a click maps to big points on this page. */
-  onSyncClick?: (page: number, xBp: number, yBp: number) => void;
-  /** True while Ctrl/⌘ is held, so the page shows the reverse-search cursor. */
-  syncArmed?: boolean;
-  /** SyncTeX forward search: when this page is the target, the box (big points)
-   *  to scroll into view and flash. `nonce` re-triggers a repeat reveal.
-   *  `phrase`, when set, narrows the box to the clicked word via the page's text
-   *  content (using the surrounding words to disambiguate). */
-  highlight?: { rect: SyncRect; nonce: number; phrase?: CaretPhrase } | null;
-}) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const boxRef = useRef<HTMLDivElement>(null);
-  // A SyncTeX box narrowed to the clicked word (when `highlight.phrase` is set and
-  // found in this page's text), else null → the original line box is used.
-  const [refined, setRefined] = useState<SyncRect | null>(null);
-  // A transient marker at the point the user reverse-search-clicked (CSS px within
-  // the page wrapper), giving the jump visible feedback on the PDF side; it
-  // auto-clears after ~2s. `nonce` re-triggers the fade for a repeat click on the
-  // same spot. See `onClick`.
-  const [clickMark, setClickMark] = useState<{ left: number; top: number; nonce: number } | null>(null);
-  const clickTimer = useRef<number | null>(null);
-  useEffect(() => () => { if (clickTimer.current != null) window.clearTimeout(clickTimer.current); }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    let task: { cancel: () => void; promise: Promise<void> } | null = null;
-    (async () => {
-      const page = await doc.getPage(pageNumber);
-      if (cancelled) return;
-      const dpr = window.devicePixelRatio || 1;
-      const viewport = page.getViewport({ scale: scale * dpr });
-      const canvas = canvasRef.current;
-      const ctx = canvas?.getContext("2d");
-      if (!canvas || !ctx) return;
-      canvas.width = Math.floor(viewport.width);
-      canvas.height = Math.floor(viewport.height);
-      canvas.style.width = `${viewport.width / dpr}px`;
-      canvas.style.height = `${viewport.height / dpr}px`;
-      task = page.render({ canvasContext: ctx, viewport });
-      try {
-        await task.promise;
-      } catch {
-        /* render cancelled by a newer scale — ignore */
-      }
-    })();
-    return () => {
-      cancelled = true;
-      task?.cancel();
-    };
-  }, [doc, pageNumber, scale]);
-
-  // Narrow the SyncTeX line box to the clicked word: pull this page's text runs
-  // (big points, top-left origin, at viewport scale 1) and find the word nearest
-  // the line box. Best-effort — on no match (or no word) the original box stands.
-  useEffect(() => {
-    setRefined(null);
-    const phrase = highlight?.phrase;
-    if (!highlight || !phrase) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const page = await doc.getPage(pageNumber);
-        const viewport = page.getViewport({ scale: 1 });
-        const content = await page.getTextContent();
-        if (cancelled) return;
-        const items: TextItemBox[] = [];
-        for (const it of content.items) {
-          // Skip marked-content markers (no `str`/`transform`).
-          if (!("str" in it) || typeof it.str !== "string" || !it.str) continue;
-          const tx = pdfjs.Util.transform(viewport.transform, it.transform);
-          const em = Math.hypot(tx[2], tx[3]); // scaled font size (em) in big points
-          // `tx[5]` is the text baseline. A full-em box above it rides high over
-          // the glyphs and clips descenders; box the ascender→descender band
-          // instead (≈0.8 em up, ≈0.2 em down) so the marker hugs the word.
-          const ascent = em * 0.8;
-          const descent = em * 0.2;
-          items.push({ str: it.str, x: tx[4], y: tx[5] - ascent, w: it.width, h: ascent + descent });
-        }
-        const r = refineToWord(highlight.rect, phrase, items);
-        if (!cancelled && r) setRefined(r);
-      } catch {
-        /* fall back to the synctex box */
-      }
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [highlight?.nonce]);
-
-  // Scroll a forward-search target into view on a new nonce. Center the
-  // highlight *box*, not the whole page — on a tall page the target line can sit
-  // far from page-center, which is what made the jump feel imprecise.
-  useEffect(() => {
-    if (!highlight) return;
-    (boxRef.current ?? wrapRef.current)?.scrollIntoView({ block: "center", inline: "nearest" });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [highlight?.nonce]);
-
-  const onClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    // Reverse search is a Ctrl/⌘-click affordance; plain clicks stay free for
-    // text selection in the PDF.
-    if (!onSyncClick || !(e.ctrlKey || e.metaKey)) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const { x, y } = pdfPointToBigPoints(rect, e.clientX, e.clientY, scale);
-    // Mark the clicked point so the source-jump has feedback on the PDF side; the
-    // canvas sits flush at the wrapper's top-left, so canvas-local offsets are
-    // wrapper-local. Clear any prior marker's timer and fade out after ~2s.
-    setClickMark((m) => ({
-      left: e.clientX - rect.left,
-      top: e.clientY - rect.top,
-      nonce: (m?.nonce ?? 0) + 1,
-    }));
-    if (clickTimer.current != null) window.clearTimeout(clickTimer.current);
-    clickTimer.current = window.setTimeout(() => setClickMark(null), 2000);
-    onSyncClick(pageNumber, x, y);
-  };
-
-  const box = highlight ? bigPointsToCssRect(refined ?? highlight.rect, scale) : null;
-
-  return (
-    <div className="file-viewer-pdf-page-wrap" ref={wrapRef}>
-      <canvas
-        ref={canvasRef}
-        className={`file-viewer-pdf-page${onSyncClick && syncArmed ? " is-syncable" : ""}`}
-        // Reserve the page's true size up-front (the async render sets the same
-        // values once pixels are ready), so the stack's scroll height is correct
-        // immediately and a restored scroll position is reachable on the first
-        // ResizeObserver tick rather than only after every page has rendered.
-        style={cssSize ? { width: cssSize.w * scale, height: cssSize.h * scale } : undefined}
-        onClick={onClick}
-      />
-      {box && (
-        <div
-          key={highlight!.nonce}
-          ref={boxRef}
-          className="file-viewer-pdf-sync-highlight"
-          style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
-        />
-      )}
-      {clickMark && (
-        <div
-          key={`click-${clickMark.nonce}`}
-          className="file-viewer-pdf-click-mark"
-          style={{ left: clickMark.left, top: clickMark.top }}
-        />
-      )}
-    </div>
-  );
-}
-
-/**
- * Reusable pdf.js-backed PDF view: a zoom toolbar over a scrolling stack of page
- * canvases. Unlike the old native `<iframe>`, every surface here is ours, so the
- * surround and (via the global scrollbar rules) the scrollbar follow the app
- * theme — giving a dark viewer in dark themes while the pages stay as authored.
- *
- * The bytes at `path` can change under us — e.g. the LaTeX viewer recompiles the
- * PDF this tab is showing — so we poll `file_mtime` and reload when it advances,
- * the PDF counterpart to the editors' diff-aware reload (#43).
- */
-function PdfCanvas({
-  path,
-  onOpenExternally,
-  tabKey,
-}: {
-  path: string;
-  /** When set, an "Open externally" button is shown at the end of the toolbar.
-   *  Used by the standalone PDF tab, which has no separate header row. */
-  onOpenExternally?: () => void;
-  /** This viewer tab's key, for #viewerpos scroll/zoom persistence. */
-  tabKey?: string;
-}) {
-  const viewPos = useViewerState(tabKey);
-  const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  // Restore the saved zoom if there is one; otherwise the load effect fits the
-  // page width. `1.2` is only the pre-load placeholder.
-  const [scale, setScale] = useState(viewPos.initial?.scale ?? 1.2);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
-  // True once the first document load has run, so only that load restores the
-  // session-persisted scroll/zoom (#viewerpos); later reloads behave as before.
-  const didInitialLoad = useRef(false);
-  // After a Ctrl+wheel zoom changes `scale`, the page canvases re-render to the
-  // new size asynchronously. We stash the scroll target that keeps the cursor's
-  // document point fixed and apply it once the content has actually resized.
-  const pendingScroll = useRef<{ top: number; left: number } | null>(null);
-  // Bumped whenever the file's mtime advances on disk, forcing a byte reload.
-  const [diskVersion, setDiskVersion] = useState(0);
-  const lastMtime = useRef<number | null>(null);
-  // The path the currently-loaded document came from. A reload that keeps the
-  // same path (a recompile bumped `diskVersion`) should preserve the reader's
-  // scroll position; switching to a different file should not.
-  const loadedPath = useRef<string | null>(null);
-  // Scroll target to restore after a same-path reload (a recompile). The page
-  // canvases re-render asynchronously, so the content grows over several frames;
-  // the ResizeObserver below re-applies this until the position is reachable.
-  const restoreScroll = useRef<{ top: number; left: number } | null>(null);
-  // True when the document about to load is a same-path reload (a recompile
-  // rewrote this PDF). The fit effect reads it to keep the reader's current zoom
-  // instead of snapping back to fit-width. Set at load-start so it reflects the
-  // load that produced the current `doc`, regardless of effect timing.
-  const reloadKeepZoom = useRef(false);
-  // True when a `.synctex(.gz)` sits beside the PDF, enabling reverse search.
-  const [syncable, setSyncable] = useState(false);
-  // True while Ctrl/⌘ is held: reverse-search clicks fire and pages show the
-  // crosshair cursor only then, leaving plain clicks free for text selection.
-  const [syncArmed, setSyncArmed] = useState(false);
-  useEffect(() => {
-    if (!syncable) return;
-    const sync = (e: KeyboardEvent | MouseEvent) =>
-      setSyncArmed(e.ctrlKey || e.metaKey);
-    const clear = () => setSyncArmed(false);
-    window.addEventListener("keydown", sync);
-    window.addEventListener("keyup", sync);
-    window.addEventListener("mousemove", sync);
-    window.addEventListener("blur", clear);
-    return () => {
-      window.removeEventListener("keydown", sync);
-      window.removeEventListener("keyup", sync);
-      window.removeEventListener("mousemove", sync);
-      window.removeEventListener("blur", clear);
-    };
-  }, [syncable]);
-
-  // SyncTeX forward search: a pending reveal/highlight request for this PDF.
-  // Copied into local state so we can consume the store request immediately
-  // (avoiding a re-fire) while keeping the highlight mounted to animate.
-  const reveal = usePdfSyncStore((s) => s.byPath[path] ?? null);
-  const consumeReveal = usePdfSyncStore((s) => s.consume);
-  const [highlight, setHighlight] = useState<{ rect: SyncRect; nonce: number; phrase?: CaretPhrase } | null>(null);
-  useEffect(() => {
-    if (!reveal) return;
-    setHighlight({ rect: reveal.rect, nonce: reveal.nonce, phrase: reveal.phrase });
-    consumeReveal(path);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reveal?.nonce]);
-
-  // Probe for SyncTeX data beside the PDF; re-checked after each disk change
-  // (a recompile may have just written it).
-  useEffect(() => {
-    let cancelled = false;
-    const base = path.replace(/\.pdf$/i, "");
-    const exists = (p: string) =>
-      invoke<number>("file_mtime", { path: p }).then(() => true).catch(() => false);
-    void Promise.all([exists(`${base}.synctex.gz`), exists(`${base}.synctex`)]).then(
-      ([gz, raw]) => { if (!cancelled) setSyncable(gz || raw); },
-    );
-    return () => { cancelled = true; };
-  }, [path, diskVersion]);
-
-  // Reverse search: a click on a page → which source line produced it → jump.
-  const onSyncClick = useCallback(
-    async (page: number, x: number, y: number) => {
-      const src = await synctexEdit(path, page, x, y);
-      if (src) jumpToSource(src.input, src.line, src.column);
-    },
-    [path],
-  );
-
-  // Poll mtime; on an advance (e.g. a recompile wrote a new PDF), bump
-  // diskVersion so the load effect re-reads the fresh bytes (#43-style).
-  useEffect(() => {
-    lastMtime.current = null;
-    let cancelled = false;
-    invoke<number>("file_mtime", { path })
-      .then((m) => { if (!cancelled) lastMtime.current = m; })
-      .catch(() => {});
-    const id = setInterval(() => {
-      invoke<number>("file_mtime", { path })
-        .then((m) => {
-          if (cancelled || lastMtime.current == null || m <= lastMtime.current) return;
-          lastMtime.current = m;
-          setDiskVersion((v) => v + 1);
-        })
-        .catch(() => {});
-    }, RELOAD_POLL_MS);
-    return () => { cancelled = true; clearInterval(id); };
-  }, [path]);
-
-  // Load (and reload on path / disk change) the document. pdf.js detaches the
-  // backing buffer, so each load gets a fresh Uint8Array; the prior document is
-  // destroyed on cleanup to free worker memory.
-  useEffect(() => {
-    let cancelled = false;
-    let loaded: PDFDocumentProxy | null = null;
-    // Same-path reload (a recompile): remember where the reader was so we can
-    // restore it once the fresh pages have laid out, instead of jumping to the
-    // top. A genuine file switch starts fresh. On the FIRST load, instead restore
-    // the position persisted from a prior session (#viewerpos) so an Eldrun
-    // restart reopens the PDF where the reader left it.
-    const el = scrollRef.current;
-    let firstRestore: { top: number; left: number } | null = null;
-    if (!didInitialLoad.current) {
-      didInitialLoad.current = true;
-      const init = viewPos.initial;
-      if (init && ((init.scrollTop ?? 0) > 0 || (init.scrollLeft ?? 0) > 0)) {
-        firstRestore = { top: init.scrollTop ?? 0, left: init.scrollLeft ?? 0 };
-      }
-    }
-    const samePathReload = loadedPath.current === path;
-    restoreScroll.current =
-      firstRestore ??
-      (samePathReload && el
-        ? { top: el.scrollTop, left: el.scrollLeft }
-        : null);
-    reloadKeepZoom.current = samePathReload;
-    loadedPath.current = path;
-    setDoc(null);
-    setError(null);
-    (async () => {
-      try {
-        const bytes = await invoke<number[]>("read_file_bytes", { path });
-        if (cancelled) return;
-        loaded = await pdfjs.getDocument({ data: new Uint8Array(bytes) }).promise;
-        if (cancelled) {
-          loaded.destroy();
-          loaded = null;
-          return;
-        }
-        setDoc(loaded);
-      } catch (e) {
-        if (!cancelled) setError(String(e));
-      }
-    })();
-    // Safety net: stop trying to restore after the pages have had time to lay
-    // out, so a target the reloaded PDF can't reach never re-applies later
-    // (e.g. fighting a subsequent zoom).
-    const restoreDeadline = restoreScroll.current
-      ? setTimeout(() => { restoreScroll.current = null; }, 2000)
-      : null;
-    return () => {
-      cancelled = true;
-      loaded?.destroy();
-      if (restoreDeadline) clearTimeout(restoreDeadline);
-    };
-  }, [path, diskVersion]);
-
-  // Intrinsic (scale-1) CSS dimensions of every page, computed once per document
-  // load. Lets each PdfPageCanvas reserve its true size before rendering so the
-  // page stack reaches its full scroll height immediately — without it the
-  // restored scroll position (#viewerpos) is unreachable until every page above
-  // it has finished rendering, which on a slow startup loses the position to the
-  // restore deadline. getPage()/getViewport() read only page metadata (no
-  // rasterisation), so this is cheap relative to actually rendering the pages.
-  const [pageSizes, setPageSizes] = useState<{ w: number; h: number }[] | null>(null);
-  useEffect(() => {
-    if (!doc) {
-      setPageSizes(null);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const sizes = await Promise.all(
-          Array.from({ length: doc.numPages }, async (_, i) => {
-            const page = await doc.getPage(i + 1);
-            const vp = page.getViewport({ scale: 1 });
-            return { w: vp.width, h: vp.height };
-          }),
-        );
-        if (!cancelled) setPageSizes(sizes);
-      } catch {
-        /* leave heights unreserved — restore falls back to the old behaviour */
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [doc]);
-
-  // Fit the first page to the viewport width when a document loads.
-  const fitWidth = useCallback(async (d: PDFDocumentProxy) => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const page = await d.getPage(1);
-    const vp = page.getViewport({ scale: 1 });
-    const avail = el.clientWidth - 24; // leave room for page margins
-    if (avail > 0 && vp.width > 0) setScale(clampPdfScale(avail / vp.width));
-  }, []);
-
-  // Fit to width when a document loads — UNLESS this is the first load and a zoom
-  // was persisted from a prior session, in which case honour the saved scale
-  // (already seeded into `scale`). A same-path reload (a recompile rewrote this
-  // PDF) keeps the reader's current zoom rather than snapping back to fit-width;
-  // only a genuine switch to a different file refits.
-  const didInitialFit = useRef(false);
-  useEffect(() => {
-    if (!doc) return;
-    if (!didInitialFit.current) {
-      didInitialFit.current = true;
-      if (viewPos.initial?.scale != null) return;
-    } else if (reloadKeepZoom.current) {
-      return;
-    }
-    void fitWidth(doc);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc, fitWidth]);
-
-  // #viewerpos: persist the zoom whenever it changes (only once a document is up,
-  // so the pre-load placeholder scale is never written). setViewerState dedups,
-  // so re-persisting an unchanged scale is a no-op.
-  useEffect(() => {
-    if (doc) viewPos.persist({ scale });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scale, doc]);
-
-  // #viewerpos: persist the scroll position as the reader scrolls (throttled,
-  // trailing-edge). Ignored while a programmatic restore is still settling so we
-  // don't overwrite the saved target with an intermediate frame.
-  const scrollPersistTimer = useRef<number | null>(null);
-  const onScrollPersist = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el || restoreScroll.current) return;
-    const top = el.scrollTop;
-    const left = el.scrollLeft;
-    if (scrollPersistTimer.current != null) window.clearTimeout(scrollPersistTimer.current);
-    scrollPersistTimer.current = window.setTimeout(
-      () => viewPos.persist({ scrollTop: top, scrollLeft: left }),
-      200,
-    );
-  }, [viewPos]);
-  useEffect(
-    () => () => {
-      if (scrollPersistTimer.current != null) window.clearTimeout(scrollPersistTimer.current);
-    },
-    [],
-  );
-
-  // Ctrl/Cmd+wheel zooms the page stack toward the cursor (a plain wheel keeps
-  // native scrolling). Because the canvases resize asynchronously, we only
-  // compute the cursor-anchored scroll target here and let the ResizeObserver
-  // below apply it once the content has grown/shrunk.
-  const onWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    if (!(e.ctrlKey || e.metaKey)) return;
-    e.preventDefault();
-    const el = scrollRef.current;
-    if (!el) return;
-    // A user zoom takes over; abandon any in-flight recompile scroll restore.
-    restoreScroll.current = null;
-    const rect = el.getBoundingClientRect();
-    const cursorX = e.clientX - rect.left;
-    const cursorY = e.clientY - rect.top;
-    setScale((prev) => {
-      const factor = e.deltaY < 0 ? PDF_ZOOM_STEP : 1 / PDF_ZOOM_STEP;
-      const next = clampPdfScale(prev * factor);
-      if (next === prev) return prev;
-      const eff = next / prev;
-      pendingScroll.current = {
-        top: (el.scrollTop + cursorY) * eff - cursorY,
-        left: (el.scrollLeft + cursorX) * eff - cursorX,
-      };
-      return next;
-    });
-  }, []);
-
-  // Apply a pending cursor-anchored scroll target once the page content has
-  // resized after a zoom (the observer fires when the canvases repaint).
-  useEffect(() => {
-    const content = contentRef.current;
-    const el = scrollRef.current;
-    if (!content || !el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => {
-      // Cursor-anchored zoom target: apply once, the moment the canvases resize.
-      const target = pendingScroll.current;
-      if (target) {
-        pendingScroll.current = null;
-        el.scrollTop = target.top;
-        el.scrollLeft = target.left;
-      }
-      // Recompile reload: the page stack grows over several frames as canvases
-      // render, so keep re-applying the saved position until it's reached, then
-      // stop. A target the new (shorter) document can't hold is dropped by the
-      // bounded fallback timer in the load effect.
-      const restore = restoreScroll.current;
-      if (restore) {
-        el.scrollTop = restore.top;
-        el.scrollLeft = restore.left;
-        if (el.scrollTop >= restore.top - 1) restoreScroll.current = null;
-      }
-    });
-    ro.observe(content);
-    return () => ro.disconnect();
-  }, [doc]);
-
-  return (
-    <div className="file-viewer-pdf-host">
-      <div className="file-viewer-pdf-toolbar" role="group" aria-label="PDF zoom controls">
-        <button
-          className="file-viewer-zoom-btn"
-          onClick={() => setScale((s) => clampPdfScale(s / PDF_ZOOM_STEP))}
-          disabled={!doc || scale <= PDF_MIN_SCALE}
-          title="Zoom out"
-          aria-label="Zoom out"
-        >
-          −
-        </button>
-        <span className="file-viewer-zoom-level">{Math.round(scale * 100)}%</span>
-        <button
-          className="file-viewer-zoom-btn"
-          onClick={() => setScale((s) => clampPdfScale(s * PDF_ZOOM_STEP))}
-          disabled={!doc || scale >= PDF_MAX_SCALE}
-          title="Zoom in"
-          aria-label="Zoom in"
-        >
-          +
-        </button>
-        <button
-          className="file-viewer-zoom-btn file-viewer-zoom-text"
-          onClick={() => doc && void fitWidth(doc)}
-          disabled={!doc}
-          title="Fit page width"
-        >
-          Fit width
-        </button>
-        {onOpenExternally && (
-          <button
-            className="file-viewer-open-external file-viewer-pdf-external"
-            onClick={onOpenExternally}
-            title="Open in external app"
-            aria-label="Open in external app"
-          >
-            ↗
-          </button>
-        )}
-      </div>
-      <div
-        className="file-viewer-pdf-scroll"
-        ref={scrollRef}
-        onWheel={onWheel}
-        onScroll={onScrollPersist}
-      >
-        {error != null ? (
-          <div className="file-viewer-error">{error}</div>
-        ) : !doc ? (
-          <div className="file-viewer-loading">Loading…</div>
-        ) : (
-          <div className="file-viewer-pdf-pages" ref={contentRef}>
-            {Array.from({ length: doc.numPages }, (_, i) => (
-              <PdfPageCanvas
-                key={i}
-                doc={doc}
-                pageNumber={i + 1}
-                scale={scale}
-                cssSize={pageSizes?.[i]}
-                onSyncClick={syncable ? onSyncClick : undefined}
-                syncArmed={syncArmed}
-                highlight={highlight && highlight.rect.page === i + 1 ? highlight : null}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function PdfView({
-  path,
-  onOpenExternally,
-  tabKey,
-}: {
-  path: string;
-  onOpenExternally: () => void;
-  tabKey?: string;
-}) {
-  // No ViewerHeader: the tab already shows the file name, so a filename row would
-  // be redundant. The "Open externally" action lives in the PdfCanvas toolbar.
-  return (
-    <div className="file-viewer">
-      <div className="file-viewer-body">
-        <PdfCanvas path={path} onOpenExternally={onOpenExternally} tabKey={tabKey} />
-      </div>
-    </div>
-  );
-}
 
 /**
  * The in-tab LaTeX viewer. It always offers the same editable code editor as the
@@ -3209,6 +5780,17 @@ function PdfView({
  *   - The engine selector only appears when more than one engine is on PATH;
  *     otherwise the backend default is used (`engine: null`).
  */
+
+/** OS-appropriate command to install a LaTeX/TeX distribution, used by the
+ *  one-click "Install LaTeX" prompt shown when no TeX engine is on PATH. These
+ *  are best-effort defaults the user can edit in the spawned terminal: MiKTeX on
+ *  Windows, MacTeX on macOS (Homebrew), TeX Live on Linux (Debian/Ubuntu apt). */
+const TEX_INSTALL_CMD = IS_WINDOWS
+  ? "winget install --id MiKTeX.MiKTeX -e"
+  : IS_MAC
+    ? "brew install --cask mactex-no-gui"
+    : "sudo apt-get install -y texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended latexmk";
+
 function TexView({
   path,
   onOpenExternally,
@@ -3219,17 +5801,33 @@ function TexView({
   /** This viewer tab's key, for #50 same-subwindow link routing. */
   tabKey?: string;
 }) {
+  const t = useT();
+  const texInstallLabel = IS_WINDOWS ? t("fileViewer.texInstallMiktex") : t("fileViewer.texInstallLatex");
   const {
     error, draft, setDraft, loaded, isDirty, saving, saveError, save,
     undo, redo, canUndo, canRedo, externalChange, reloadFromDisk, keepMine,
   } = useEditableFile(path);
-  const ac = useAutocompleteConfig("tex");
-  const font = useEditorFontSize("tex");
+  const scope = useFileScope();
+  const ai = useTabAiPrefs(tabKey, "tex");
+  const ac = ai.ac;
+  const gc = ai.gc;
+  const [compareOpen, setCompareOpen] = useState(false);
+  const font = useEditorFontSize(tabKey, "tex");
   const viewPos = useViewerState(tabKey);
   const persistScroll = useCallback(
     (scrollTop: number) => viewPos.persist({ scrollTop }),
     [viewPos],
   );
+
+  // Print the .tex source as a wrapped monospace block. (The compiled PDF, once
+  // built, opens in the PDF viewer and prints from there.)
+  const handlePrint = useCallback(() => {
+    void printHtmlBody(
+      `<pre class="print-pre">${escapeHtml(draft)}</pre>`,
+      TEXT_PRINT_CSS,
+      basename(path),
+    );
+  }, [draft, path]);
 
   // null while still probing; the editor renders regardless so there is no flash.
   const [cap, setCap] = useState<TexCapability | null>(null);
@@ -3247,9 +5845,12 @@ function TexView({
     async (caret: number): Promise<boolean> => {
       const target = findTexRefAt(draft, caret);
       if (!target) return false;
-      const resolved = await resolveTexRefAsync(path, target);
+      const disabled = disabledViewers(
+        useSettingsStore.getState().settings?.viewer_prefs,
+      );
+      const resolved = await resolveTexRefAsync(path, target, disabled);
       if (!resolved) return false;
-      const dir = path.slice(0, path.lastIndexOf("/")) || "/";
+      const dir = dirname(path) || "/";
       openLinkedFile(tabKey, dir, resolved);
       return true;
     },
@@ -3290,11 +5891,11 @@ function TexView({
   const [gathered, setGathered] = useState<TexCompletions>({ labels: [], cites: [] });
   useEffect(() => {
     let cancelled = false;
-    gatherTexCompletions(path)
+    gatherTexCompletions(path, scope)
       .then((c) => { if (!cancelled) setGathered(c); })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [path, pdfVersion]);
+  }, [path, scope, pdfVersion]);
   const completions = useMemo<TexCompletions>(
     () => ({
       labels: Array.from(new Set([...parseTexLabels(draft), ...gathered.labels])),
@@ -3332,9 +5933,9 @@ function TexView({
     return () => { cancelled = true; };
   }, [path]);
   const isChild = root !== path;
-  const rootName = root.slice(root.lastIndexOf("/") + 1);
+  const rootName = basename(root);
   // Directory the build runs in — error paths in the log are relative to it.
-  const rootDir = root.slice(0, root.lastIndexOf("/")) || "/";
+  const rootDir = dirname(root) || "/";
 
   // Open the compiled PDF as its own tab (it is a real file), reusing the embed
   // viewer. openLinkedFile dedupes against an already-open PDF tab for the same
@@ -3342,8 +5943,8 @@ function TexView({
   // so a reused tab reloads the freshly compiled bytes on its own.
   const openPdf = useCallback(
     (pdf: string) => {
-      const name = pdf.slice(pdf.lastIndexOf("/") + 1);
-      const dir = path.slice(0, path.lastIndexOf("/")) || "/";
+      const name = basename(pdf);
+      const dir = dirname(path) || "/";
       openLinkedFile(tabKey, dir, { path: pdf, viewer: "pdf", label: name });
     },
     [path, tabKey],
@@ -3425,7 +6026,7 @@ function TexView({
         const parsed = parseTexErrors(res.log);
         setErrors(parsed);
         const detail = parsed[0]?.message || lastLogLine(res.log);
-        setCompileError(detail || "Compilation failed.");
+        setCompileError(detail || t("fileViewer.compilationFailed"));
         return;
       }
       setCompileError(null);
@@ -3452,7 +6053,7 @@ function TexView({
     } finally {
       setCompiling(false);
     }
-  }, [compiling, save, path, engine, outDir, extraFlags, openPdf]);
+  }, [compiling, save, path, engine, outDir, extraFlags, openPdf, t]);
 
   // Auto-dismiss the forward-search miss notice a few seconds after it appears.
   useEffect(() => {
@@ -3467,38 +6068,80 @@ function TexView({
       <div className="file-viewer">
         <ViewerHeader onOpenExternally={onOpenExternally}>
           <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
+          <EditorAiControls ai={ai} />
+          <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
+          <PrintButton onPrint={handlePrint} disabled={!loaded} />
           <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
         </ViewerHeader>
         {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
         {saveError && <div className="file-viewer-error">{saveError}</div>}
+        {cap && !cap.available && (
+          <div className="tex-install-banner" role="note">
+            <span className="tex-install-banner-text">
+              {t("fileViewer.noTexEngine")}
+            </span>
+            <code className="ollama-install-cmd">{TEX_INSTALL_CMD}</code>
+            <button
+              type="button"
+              className="ollama-action-btn primary"
+              title={t("projectDialog.runInTerminalTitle")}
+              onClick={() =>
+                runInstallInTab(texInstallLabel, TEX_INSTALL_CMD, IS_WINDOWS ? "default" : "bash")
+              }
+            >
+              {t("ollama.runInTerminal")}
+            </button>
+            <button
+              type="button"
+              className="ollama-action-btn"
+              title={t("fileViewer.recheckAfterInstallTitle")}
+              onClick={() => void refreshTexCapability().then(setCap)}
+            >
+              {t("common.recheck")}
+            </button>
+          </div>
+        )}
         <div className="file-viewer-body file-viewer-code-body">
-          <CodeEditor
-            path={path}
-            error={error}
-            draft={draft}
-            setDraft={setDraft}
-            loaded={loaded}
-            save={() => void save()}
-            onFollowLink={onEditorFollow}
-            linkRanges={linkRanges}
-            undo={undo}
-            redo={redo}
-            autocomplete={ac}
-            texCompletions={completions}
-            fontSize={font.fontSize}
-            lineHeight={font.lineHeight}
-            incFont={font.inc}
-            decFont={font.dec}
-            resetFont={font.reset}
-            gotoLine={jump.gotoLine}
-            onGotoApplied={jump.onGotoApplied}
-            onCaretChange={onCaret}
-            caretApiRef={caretApiRef}
-            initialScrollTop={viewPos.initial?.scrollTop}
-            onScrollPersist={persistScroll}
-            wrap
-          />
+          {compareOpen ? (
+            <CompareView
+              path={path}
+              rightText={draft}
+              onApply={(merged) => {
+                setDraft(merged);
+                setCompareOpen(false);
+              }}
+              onClose={() => setCompareOpen(false)}
+            />
+          ) : (
+            <CodeEditor
+              path={path}
+              error={error}
+              draft={draft}
+              setDraft={setDraft}
+              loaded={loaded}
+              save={() => void save()}
+              onFollowLink={onEditorFollow}
+              linkRanges={linkRanges}
+              undo={undo}
+              redo={redo}
+              autocomplete={ac}
+              grammarCheck={gc}
+              texCompletions={completions}
+              fontSize={font.fontSize}
+              lineHeight={font.lineHeight}
+              incFont={font.inc}
+              decFont={font.dec}
+              resetFont={font.reset}
+              gotoLine={jump.gotoLine}
+              onGotoApplied={jump.onGotoApplied}
+              onCaretChange={onCaret}
+              caretApiRef={caretApiRef}
+              initialScrollTop={viewPos.initial?.scrollTop}
+              onScrollPersist={persistScroll}
+              wrap
+            />
+          )}
         </div>
       </div>
     );
@@ -3519,23 +6162,27 @@ function TexView({
           disabled={compiling}
           title={
             isChild
-              ? `Save and compile ${rootName} (parent of this file)`
-              : "Save and compile to PDF"
+              ? t("fileViewer.saveAndCompileNamed", { name: rootName })
+              : t("fileViewer.saveAndCompile")
           }
         >
-          {compiling ? "Compiling…" : isChild ? `Compile ${rootName} ▸` : "Compile ▸"}
+          {compiling
+            ? t("fileViewer.compiling")
+            : isChild
+              ? t("fileViewer.compileNamed", { name: rootName })
+              : t("fileViewer.compileBtn")}
         </button>
         {cap.engines.length > 1 && (
           <Dropdown
             className="file-viewer-tex-engine"
-            title="LaTeX engine"
+            title={t("fileViewer.latexEngineTitle")}
             value={engine}
             onChange={setEngine}
             disabled={compiling}
             options={[
               // "" lets the backend pick; label it with the engine it would use
               // (the first installed one, matching the backend's default order).
-              { value: "", label: `${cap.engines[0]} (default)` },
+              { value: "", label: t("fileViewer.engineDefault", { engine: cap.engines[0] }) },
               ...cap.engines.map((eng) => ({ value: eng, label: eng })),
             ]}
           />
@@ -3545,41 +6192,44 @@ function TexView({
           className={`file-viewer-tex-options-toggle${showOptions ? " active" : ""}`}
           onClick={() => setShowOptions((v) => !v)}
           aria-pressed={showOptions}
-          title="Compiler options (output folder, extra flags)"
+          title={t("fileViewer.compilerOptionsTitle")}
         >
-          Options ⚙
+          {t("fileViewer.optionsBtn")}
         </button>
         {pdfVersion > 0 && pdfPath && (
           <button
             className="file-viewer-tex-open-pdf"
             onClick={() => openPdf(pdfPath)}
-            title="Open the compiled PDF in its own tab"
+            title={t("fileViewer.openCompiledPdfTitle")}
           >
-            Open PDF ↗
+            {t("fileViewer.openPdfBtn")}
           </button>
         )}
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
+        <EditorAiControls ai={ai} />
+        <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
         <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
+        <PrintButton onPrint={handlePrint} disabled={!loaded} />
         <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
       </ViewerHeader>
       {compiling && (
-        <div className="file-viewer-tex-progress" role="progressbar" aria-label="Compiling">
+        <div className="file-viewer-tex-progress" role="progressbar" aria-label={t("fileViewer.compilingLabel")}>
           <div className="file-viewer-tex-progress-bar" />
         </div>
       )}
       {showOptions && (
-        <div className="file-viewer-tex-options" role="group" aria-label="Compiler options">
+        <div className="file-viewer-tex-options" role="group" aria-label={t("fileViewer.compilerOptionsGroup")}>
           <label className="file-viewer-tex-option">
-            <span>Output folder</span>
+            <span>{t("fileViewer.outputFolderLabel")}</span>
             <input
               type="text"
               value={outDir}
-              placeholder="(beside source)"
+              placeholder={t("fileViewer.outputFolderPlaceholder")}
               onChange={(e) => setOutDir(e.target.value)}
             />
           </label>
           <label className="file-viewer-tex-option">
-            <span>Extra flags</span>
+            <span>{t("fileViewer.extraFlagsLabel")}</span>
             <input
               type="text"
               value={extraFlags}
@@ -3588,24 +6238,21 @@ function TexView({
             />
           </label>
           <p className="file-viewer-tex-options-note">
-            Shell-escape / <code>\write18</code> flags are always stripped — Eldrun
-            never enables them.
+            {t("fileViewer.shellEscapeNotePre")} <code>\write18</code> {t("fileViewer.shellEscapeNotePost")}
           </p>
         </div>
       )}
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
       {syncMiss && (
         <div className="file-viewer-tex-sync-miss" role="status">
-          Compiled — couldn't locate the cursor in the PDF (no SyncTeX match), so
-          its position was kept. Put the caret in body text and recompile to jump.
+          {t("fileViewer.syncMissMsg")}
         </div>
       )}
       {shellEscape && (
         <div className="file-viewer-tex-shell-warning" role="alert">
-          ⚠ This compile ran with LaTeX shell-escape (<code>\write18</code>) active —
-          the document was able to execute shell commands. Eldrun never enables it,
-          so a system <code>texmf.cnf</code> or <code>latexmkrc</code> turned it on.
-          Only compile <code>.tex</code> files you trust.
+          {t("fileViewer.shellEscapeWarnPre")}<code>\write18</code>{t("fileViewer.shellEscapeWarnMid")}{" "}
+          <code>texmf.cnf</code> {t("fileViewer.shellEscapeWarnOr")} <code>latexmkrc</code>{" "}
+          {t("fileViewer.shellEscapeWarnPost")} <code>.tex</code> {t("fileViewer.shellEscapeWarnEnd")}
         </div>
       )}
       {saveError && <div className="file-viewer-error">{saveError}</div>}
@@ -3618,7 +6265,7 @@ function TexView({
                 <li key={`${err.file}:${err.line}:${i}`}>
                   <button
                     className="file-viewer-tex-error-jump"
-                    title={`Jump to ${err.file}:${err.line}`}
+                    title={t("fileViewer.jumpToLocation", { location: `${err.file}:${err.line}` })}
                     onClick={() =>
                       jumpToSource(
                         resolveTexErrorPath(rootDir, err.file),
@@ -3641,51 +6288,66 @@ function TexView({
               className="file-viewer-tex-log-toggle"
               onClick={() => setShowLog((s) => !s)}
             >
-              {showLog ? "Hide log" : "Show full log"}
+              {showLog ? t("fileViewer.hideLog") : t("fileViewer.showFullLog")}
             </button>
           )}
           {showLog && log && <pre className="file-viewer-tex-log">{log}</pre>}
         </div>
       )}
       <div className="file-viewer-body file-viewer-code-body">
-        <CodeEditor
-          path={path}
-          error={error}
-          draft={draft}
-          setDraft={setDraft}
-          loaded={loaded}
-          // Ctrl+S in the LaTeX viewer saves and recompiles (compile() persists
-          // pending edits first), so the PDF preview tracks the source.
-          save={() => void compile()}
-          onFollowLink={onEditorFollow}
-          linkRanges={linkRanges}
-          undo={undo}
-          redo={redo}
-          autocomplete={ac}
-          texCompletions={completions}
-          fontSize={font.fontSize}
-          lineHeight={font.lineHeight}
-          incFont={font.inc}
-          decFont={font.dec}
-          resetFont={font.reset}
-          gotoLine={jump.gotoLine}
-          onGotoApplied={jump.onGotoApplied}
-          onCaretChange={onCaret}
-          caretApiRef={caretApiRef}
-          initialScrollTop={viewPos.initial?.scrollTop}
-          onScrollPersist={persistScroll}
-          wrap
-        />
+        {compareOpen ? (
+          <CompareView
+            path={path}
+            rightText={draft}
+            onApply={(merged) => {
+              setDraft(merged);
+              setCompareOpen(false);
+            }}
+            onClose={() => setCompareOpen(false)}
+          />
+        ) : (
+          <CodeEditor
+            path={path}
+            error={error}
+            draft={draft}
+            setDraft={setDraft}
+            loaded={loaded}
+            // Ctrl+S in the LaTeX viewer saves and recompiles (compile() persists
+            // pending edits first), so the PDF preview tracks the source.
+            save={() => void compile()}
+            onFollowLink={onEditorFollow}
+            linkRanges={linkRanges}
+            undo={undo}
+            redo={redo}
+            autocomplete={ac}
+            grammarCheck={gc}
+            texCompletions={completions}
+            fontSize={font.fontSize}
+            lineHeight={font.lineHeight}
+            incFont={font.inc}
+            decFont={font.dec}
+            resetFont={font.reset}
+            gotoLine={jump.gotoLine}
+            onGotoApplied={jump.onGotoApplied}
+            onCaretChange={onCaret}
+            caretApiRef={caretApiRef}
+            initialScrollTop={viewPos.initial?.scrollTop}
+            onScrollPersist={persistScroll}
+            wrap
+          />
+        )}
       </div>
     </div>
   );
 }
 
-const MIN_SCALE = 0.05;
-const MAX_SCALE = 40;
-const ZOOM_STEP = 1.2;
+// Exported so GifView shares the exact zoom behavior (steps, bounds) with the
+// image viewer.
+export const MIN_SCALE = 0.05;
+export const MAX_SCALE = 40;
+export const ZOOM_STEP = 1.2;
 
-const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
+export const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
 
 /**
  * Zoomable/pannable image viewer. The image is drawn at its natural pixel size
@@ -3711,8 +6373,23 @@ function ImageView({
   onOpenExternally: () => void;
   tabKey?: string;
 }) {
+  const t = useT();
   const viewPos = useViewerState(tabKey);
   const { url, error } = useBlobUrl(path, "");
+  // Print the image, fit to the page. The blob URL resolves in the print iframe
+  // because a srcdoc iframe shares this document's origin.
+  const handlePrint = useCallback(() => {
+    if (!url) return;
+    void printHtmlBody(
+      `<div class="print-page"><img src="${url}" alt="${escapeHtml(fileName)}"></div>`,
+      IMAGE_PRINT_CSS,
+      fileName,
+    );
+  }, [url, fileName]);
+  // #annotate (Dev F): when true, an editing overlay covers the viewer letting the
+  // user draw on the image and save the result. Gated to raster images we can
+  // re-encode to PNG.
+  const [annotating, setAnnotating] = useState(false);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   // Natural (intrinsic) image size in pixels, set on load. The ref mirrors it so
   // an on-disk reload (#68) can tell a same-size content update from a new image.
@@ -3819,14 +6496,26 @@ function ImageView({
     return () => ro.disconnect();
   }, [fit]);
 
-  const onWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+  // Wheel zooms toward the cursor. Bound non-passively (see useNonPassiveWheel)
+  // so `preventDefault()` cancels the native scroll instead of the viewport
+  // scrolling to its limit before the zoom takes.
+  const wheelRef = useNonPassiveWheel((e) => {
     if (!natural) return;
     e.preventDefault();
     const rect = viewportRef.current?.getBoundingClientRect();
     const anchor = rect ? { x: e.clientX - rect.left, y: e.clientY - rect.top } : undefined;
     const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
     zoomTo(scale * factor, anchor);
-  };
+  });
+  // Feed the same node to both the object ref (used for measuring/panning) and
+  // the non-passive wheel binding.
+  const setViewport = useCallback(
+    (el: HTMLDivElement | null) => {
+      viewportRef.current = el;
+      wheelRef(el);
+    },
+    [wheelRef],
+  );
 
   // Pointer-drag panning.
   const dragRef = useRef<{ id: number; startX: number; startY: number; ox: number; oy: number } | null>(null);
@@ -3868,23 +6557,23 @@ function ImageView({
   return (
     <div className="file-viewer">
       <ViewerHeader onOpenExternally={onOpenExternally}>
-        <div className="file-viewer-zoom" role="group" aria-label="Zoom controls">
+        <div className="file-viewer-zoom" role="group" aria-label={t("imageZoom.controlsLabel")}>
           <button
             className="file-viewer-zoom-btn"
             onClick={() => zoomTo(scale / ZOOM_STEP)}
             disabled={!natural || scale <= MIN_SCALE}
-            title="Zoom out"
-            aria-label="Zoom out"
+            title={t("imageZoom.zoomOutTitle")}
+            aria-label={t("imageZoom.zoomOutTitle")}
           >
             −
           </button>
-          <span className="file-viewer-zoom-level" title="Current zoom">{percent}%</span>
+          <span className="file-viewer-zoom-level" title={t("imageZoom.currentZoomTitle")}>{percent}%</span>
           <button
             className="file-viewer-zoom-btn"
             onClick={() => zoomTo(scale * ZOOM_STEP)}
             disabled={!natural || scale >= MAX_SCALE}
-            title="Zoom in"
-            aria-label="Zoom in"
+            title={t("imageZoom.zoomInTitle")}
+            aria-label={t("imageZoom.zoomInTitle")}
           >
             +
           </button>
@@ -3892,30 +6581,46 @@ function ImageView({
             className="file-viewer-zoom-btn file-viewer-zoom-text"
             onClick={() => fit()}
             disabled={!natural}
-            title="Fit to window"
+            title={t("imageZoom.fitTitle")}
           >
-            Fit
+            {t("imageZoom.fit")}
           </button>
           <button
             className="file-viewer-zoom-btn file-viewer-zoom-text"
             onClick={() => zoomTo(1)}
             disabled={!natural}
-            title="Actual size (100%)"
+            title={t("imageZoom.actualSizeTitle")}
           >
             1:1
           </button>
+          <button
+            className="file-viewer-zoom-btn file-viewer-zoom-text"
+            onClick={() => setAnnotating(true)}
+            disabled={!url}
+            title={t("fileViewer.annotateTitle")}
+          >
+            {t("fileViewer.annotateBtn")}
+          </button>
         </div>
+        <PrintButton onPrint={handlePrint} disabled={!url} />
       </ViewerHeader>
       <div className="file-viewer-body file-viewer-image-body">
+        {annotating && url != null && (
+          <ImageAnnotator
+            src={url}
+            path={path}
+            fileName={fileName}
+            onClose={() => setAnnotating(false)}
+          />
+        )}
         {error != null ? (
           <div className="file-viewer-error">{error}</div>
         ) : url == null ? (
-          <div className="file-viewer-loading">Loading…</div>
+          <div className="file-viewer-loading">{t("common.loading")}</div>
         ) : (
           <div
-            ref={viewportRef}
+            ref={setViewport}
             className={`file-viewer-image-viewport${dragging ? " dragging" : ""}`}
-            onWheel={onWheel}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={endDrag}

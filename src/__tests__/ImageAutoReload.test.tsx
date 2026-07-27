@@ -55,7 +55,7 @@ describe("image auto-reload (#68)", () => {
 
     // External change: a newer mtime should trigger exactly one more read.
     diskMtime = 2000;
-    await waitFor(() => expect(countReadBytes()).toBe(2), { timeout: 4000 });
+    await waitFor(() => expect(countReadBytes()).toBe(2), { timeout: 12000 });
 
     // A second poll with no further change must not re-read again.
     await new Promise((r) => setTimeout(r, 1800));

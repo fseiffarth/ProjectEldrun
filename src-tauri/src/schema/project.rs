@@ -68,9 +68,16 @@ pub struct TabEntry {
     pub extra: HashMap<String, Value>,
 }
 
-/// Remote (SSH) location metadata. A project is "remote" iff this is present.
-/// The project's `directory` then points at the local sshfs mountpoint while
-/// the bytes live on `host:remote_path`.
+/// Remote (SSH) location metadata. A project is "remote" iff this is present;
+/// the explicit "is this project remote?" resolver is
+/// `services::remote::remote_target_for` (replacing the old infer-from-mountpoint
+/// signal). The bytes live on `host:remote_path`.
+///
+/// In the mount-free remote model (`docs/mountfree_remote_plan.md`) the project's
+/// `directory` is **not** a real local path for a remote project — file, git, and
+/// terminal commands resolve `host:remote_path` directly over SSH/SFTP, never the
+/// local fs. (During the sshfs→SFTP transition `directory` may still hold a legacy
+/// mountpoint; it is ignored for fs purposes once a phase routes that op remote.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteSpec {
     /// SSH user, e.g. "alice"
@@ -88,17 +95,153 @@ pub struct RemoteSpec {
     /// before the sshfs mount / ssh sessions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub openvpn: Option<OpenVpnSpec>,
+    /// Opt-in: connect this project automatically (launch + activation) instead of
+    /// waiting for the user to bring it up from the pill's connection lamp. Only
+    /// offered when the connection can complete with no prompt — a saved SSH
+    /// password, or `key_auth` below. The auto-connect never prompts: if it can't
+    /// authenticate silently it stops with a red lamp.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_connect: Option<bool>,
+    /// Recorded (not user-set): the last successful connect to `host` used no
+    /// password at all, so it authenticated via key/agent. This is the only way to
+    /// know a host is passwordless without connecting, and it is what makes
+    /// auto-connect available to key-auth projects (which have nothing in the
+    /// keychain to check). Written by `remote_connect`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_auth: Option<bool>,
+    /// Run this project's remote shell/script tabs inside a **tmux** session on
+    /// the host (TODO #85), so a long run survives an SSH drop, a laptop sleep, or
+    /// Eldrun quitting — the session keeps running and the tab reattaches on
+    /// reconnect/relaunch. **Default ON** for a remote project: `None` and
+    /// `Some(true)` both mean enabled; only an explicit `Some(false)` opts out (the
+    /// pill's toggle). Agent tabs are excluded regardless — they resume via their
+    /// own session. The frontend reads this to set each spawn's `tmux_session`
+    /// name; the backend wraps in `ssh_exec::wrap_pty_options`. Mirrored into the
+    /// `projects.json` entry's `extra["remote"]`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persist_sessions: Option<bool>,
+    /// Display name for this machine, e.g. "gpu-2"; falls back to `host`. Shown
+    /// wherever a project's hosts are listed side by side (the System Monitor's
+    /// source picker, the pill's connection lamps, `hostsForProject`) so a host is
+    /// identifiable by more than its raw address. Distinct from the *project*
+    /// name: this labels the machine `host` reaches, not the project itself — the
+    /// primary (`Project.remote.label`) and every `ComputeHost` (flattened into
+    /// its `spec`, so the JSON key stays the same one worker labels already used)
+    /// share this one field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
 
-/// Optional OpenVPN tunnel for reaching a remote project's host. Only the
-/// client config path is persisted; the password is prompted each time the
-/// tunnel is brought up and is never written to disk.
+fn default_true() -> bool {
+    true
+}
+
+/// An additional SSH machine a project runs experiments on (`docs/multi_host_remote_plan.md`).
+/// Its code is kept in one-way sync from the canonical source (the local mirror);
+/// its files are read-only (edits forbidden). It never owns git/sync/mirror state
+/// of its own — the primary [`RemoteSpec`] (`Project.remote`) does. `id` is stable
+/// (referenced by tab locations + the pool key + the fan-out state); `label` is the
+/// pill/tab display name. Reusing `RemoteSpec` verbatim (flattened) means every
+/// existing execution helper (`ssh_exec`, `sftp`, monitor/disk/gpu/python) works
+/// unchanged — they already take `&RemoteSpec`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComputeHost {
+    /// Stable id, e.g. "h1"; the primary is the implicit "primary".
+    pub id: String,
+    /// Keep this worker's tracked tree synced to the source HEAD (default true).
+    /// Ignored when [`shared_fs`](Self::shared_fs) is set (there is no copy to sync).
+    #[serde(default = "default_true")]
+    pub sync_code: bool,
+    /// Pull this worker's experiment OUTPUTS back on demand only, never
+    /// automatically (default false — outputs stay on the worker).
+    #[serde(default)]
+    pub pull_outputs: bool,
+    /// This machine reaches the project over a **shared filesystem**: it already
+    /// sees the primary's project folder at `spec.remote_path`, so Eldrun copies
+    /// **no** code to it and **never runs git on it** — shells just `cd` into the
+    /// shared tree and run there (`docs/multi_host_remote_plan.md`, shared-fs mode).
+    /// Mutually exclusive with the whole one-way sync path: when set, connect does
+    /// no bootstrap, commits do no fan-out, and "Sync code"/"Pull outputs" are
+    /// meaningless (the folder *is* the primary's, kept in step by the primary's
+    /// own sync). Default false — a machine is a synced-copy worker unless it opts
+    /// into sharing.
+    #[serde(default)]
+    pub shared_fs: bool,
+    /// user/host/port/remote_path/openvpn/auto_connect/key_auth.
+    #[serde(flatten)]
+    pub spec: RemoteSpec,
+}
+
+impl ComputeHost {
+    /// The display label for this worker (its `spec.label`, or the bare host).
+    pub fn display_label(&self) -> &str {
+        self.spec.label.as_deref().unwrap_or(&self.spec.host)
+    }
+}
+
+/// Optional OpenVPN tunnel for reaching a remote project's host. The client
+/// config path and (for `auth-user-pass` configs) the auth username are
+/// persisted; the password/passphrase is prompted each time the tunnel is
+/// brought up and is never written to disk (unless the user opts into the OS
+/// keychain via "Save password").
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenVpnSpec {
     /// Absolute path to the local `.ovpn` client config file.
     pub config: String,
+    /// Auth username for configs that use `auth-user-pass` (server-side
+    /// username+password auth). Persisted (it is not a secret, like the SSH
+    /// `user`); the matching password is still prompted/keychained separately and
+    /// never written here. `None` for configs that don't need a username (e.g.
+    /// certificate-only or encrypted-key-passphrase configs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// Per-project container config (TODO #38). When present and `enabled`, every
+/// terminal/agent tab of this project execs into ONE session-lived,
+/// capability-dropped Docker container (`eldrun-<id>`) that mounts only the
+/// project directory plus the minimal agent auth/state paths (see
+/// `services::sandbox`), so a process inside cannot reach unrelated host files.
+/// Absent (the default) = tabs run on the host exactly as before. Local
+/// projects only. (Serde key stays `sandbox` so projects that enabled the old
+/// per-tab agent sandbox upgrade in place — no migration.)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SandboxSpec {
+    /// Whether this project's tabs run inside the container.
+    pub enabled: bool,
+    /// Optional image override; falls back to the built-in default image when
+    /// absent (and is ignored while `dockerfile` is set).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// In-repo Dockerfile (path relative to the project dir); when set, `up`
+    /// builds `eldrun-<id>:latest` from it instead of pulling/expecting `image`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dockerfile: Option<String>,
+    /// Max number of processes inside the container (`--pids-limit`). Guards
+    /// against a fork-bombing agent. Falls back to a generous built-in default
+    /// when absent (see `services::sandbox`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pids_limit: Option<u32>,
+    /// Optional hard memory cap (`--memory`, e.g. "4g"). Absent = unlimited, so
+    /// heavy in-container builds are not OOM-killed unless the user opts in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<String>,
+    /// Optional CPU cap (`--cpus`, e.g. "2"). Absent = unlimited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<String>,
+    /// Optional docker network (`--network`, e.g. "none" for no egress, or a
+    /// custom allowlist network). Absent = the default bridge (full egress).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    /// Run the container with a read-only root filesystem (`--read-only` +
+    /// `--tmpfs /tmp`). Off by default because it breaks agents that write
+    /// outside the mounted dirs (e.g. `~/.cache`); opt-in hardening.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub readonly_rootfs: bool,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -117,6 +260,18 @@ pub struct Project {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_type: Option<String>,
+    /// Per-project git-hosting profile URL (e.g. `https://github.com/me`) that
+    /// overrides the global `settings.git_profile_url` for this project's push /
+    /// publish. Non-secret, so it lives here; the matching token is kept in the
+    /// OS keyring (see `services::git_credentials`), never in this file (which is
+    /// inside the project's committed git tree).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_profile_url: Option<String>,
+    /// Hosting provider this project was published to (`"github"` / `"gitlab"`),
+    /// recorded at publish time so the UI can label the pill and pick the right
+    /// CLI. Absent until the project is published to a remote.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,6 +311,85 @@ pub struct Project {
     pub open_tab_sessions: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteSpec>,
+    /// Extra SSH machines this project runs experiments on (`docs/multi_host_remote_plan.md`).
+    /// The primary is still `remote`; these are one-way, read-only "workers". Mirrored
+    /// into the `projects.json` entry's `extra["compute_hosts"]`. Migration-free
+    /// (`#[serde(default)]` → `[]` for existing projects).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compute_hosts: Vec<ComputeHost>,
+    /// For a remote (SSH) project, the local mirror root — the paired local
+    /// working copy synced from the host. Chosen at import (defaults to a
+    /// `<name>` subfolder of the top-level `eldrun/projects-ssh/` root) and relocatable via the
+    /// pill's "Show on disk" when the mirror has been deleted. Absent for local
+    /// projects and for remote projects predating configurable mirrors, which
+    /// fall back to the default under the state dir. Mirrored into the
+    /// `projects.json` entry's `extra["mirror"]`, which `remote_sync::mirror_dir`
+    /// reads as the always-local source of truth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mirror: Option<String>,
+    /// Docker sandbox config for agent tabs. Absent = run agents on the host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<SandboxSpec>,
+    /// The interpreter the code viewer's Run/Debug buttons use for this project
+    /// (#87). Absent = **auto-detect** (see `commands::python`), which is what the
+    /// overwhelming majority of projects want; this pins it for the ones auto-detect
+    /// cannot see — a conda env, a Poetry venv outside the tree, a second venv.
+    /// Stored as the command/path verbatim (relative paths resolve against the
+    /// project root, which is the run tab's cwd). Mirrored into the `projects.json`
+    /// entry's `extra["python_interpreter"]`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub python_interpreter: Option<String>,
+    /// Which machine shells launched from this project run on — the choice made in
+    /// the `RunHostPicker`, persisted so it survives a relaunch (a Run/Debug or a
+    /// new shell tab lands on it instead of the primary). A `TabLocation` string:
+    /// `"local"` (the mirror), `"remote"` (the primary host), or `"host:<id>"` (a
+    /// worker). Absent = the shell default (the primary). Mirrored into the
+    /// `projects.json` entry's `extra["run_host"]`, which is what the frontend
+    /// seeds its live preference store from on load.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_host: Option<String>,
+    /// The HPC **workspace** this project's tree lives in, plus the small anchor
+    /// folder kept in the user's cluster home (`docs/hpc_workspace_plan.md`).
+    /// Recorded because **none of it can be re-derived once the workspace
+    /// expires**: the tooling's recovery path (`ws_restore`) is keyed by the
+    /// workspace *name*, and the host tree that would have told you which one it
+    /// was is exactly what got deleted. Mirrored into the `projects.json` entry's
+    /// `extra["hpc"]`. Absent for every project that isn't in a workspace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hpc: Option<HpcInfo>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+}
+
+/// What a project remembers about its HPC workspace and home anchor. Every field
+/// is optional: a project may have a workspace but no anchor (or the reverse,
+/// after a workspace expired and was released), and a site's tooling may not
+/// report a filesystem name.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HpcInfo {
+    /// The workspace id (`ws_allocate <id>`) — the handle `ws_extend`/`ws_release`
+    /// /`ws_restore` take, and the only one that survives the directory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// Its absolute path on the host at the time it was recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_path: Option<String>,
+    /// The workspace filesystem (`-F`), which `ws_extend` must be given again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filesystem: Option<String>,
+    /// The per-project folder in the user's cluster home (logs + workspace link +
+    /// the append-only record). Outside the project root, so nothing syncs it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor_dir: Option<String>,
+    /// The same folder as the `$HOME`-relative path it was created from. Kept
+    /// beside the absolute one because re-anchoring (a move to another workspace)
+    /// must pass the *rel* back — deriving it by chopping segments off
+    /// `anchor_dir` guesses wrong the moment the user picks a path that isn't two
+    /// segments deep.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor_rel: Option<String>,
+    /// `<anchor_dir>/logs` — where `#SBATCH --output` points, and the fallback
+    /// `slurm_job_out` uses for a job `scontrol` has already forgotten.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logs_dir: Option<String>,
 }

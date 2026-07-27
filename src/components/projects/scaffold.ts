@@ -9,6 +9,48 @@ export interface ScaffoldPreviewItem {
   kind: string;
 }
 
+export interface ScaffoldRepairReport {
+  createdFiles: string[];
+  gitignoreLinesAdded: string[];
+  gitInitialized: boolean;
+}
+
+export interface ProjectScaffoldRepair {
+  projectId: string;
+  name: string;
+  targetDir: string;
+  report: ScaffoldRepairReport;
+}
+
+export function scaffoldRepairIsEmpty(report: ScaffoldRepairReport) {
+  return (
+    report.createdFiles.length === 0 &&
+    report.gitignoreLinesAdded.length === 0 &&
+    !report.gitInitialized
+  );
+}
+
+/** Human-readable one-line summary of what a repair report changed. */
+export function summarizeScaffoldRepair(report: ScaffoldRepairReport): string {
+  const parts: string[] = [];
+  if (report.createdFiles.length > 0) {
+    parts.push(`added ${report.createdFiles.join(", ")}`);
+  }
+  if (report.gitignoreLinesAdded.length > 0) {
+    parts.push(`.gitignore +${report.gitignoreLinesAdded.join(", ")}`);
+  }
+  if (report.gitInitialized) {
+    parts.push("git init");
+  }
+  return parts.length > 0 ? parts.join("; ") : "already up to date";
+}
+
+/** Same summary, prefixed with the project name — for a toast/log covering
+ *  multiple projects at once. */
+export function describeScaffoldRepair(repair: ProjectScaffoldRepair): string {
+  return `${repair.name}: ${summarizeScaffoldRepair(repair.report)}`;
+}
+
 export const SCAFFOLD_FILL_OPTIONS = [
   { value: "none", label: "No filling" },
   { value: "manual", label: "Manual" },
@@ -126,6 +168,69 @@ export function parseSshAddress(raw: string): ParsedSshAddress | null {
   const host = rest.trim();
   if (!host) return null;
   return { user, host, port };
+}
+
+/**
+ * Frontend twin of the backend's clone-URL whitelist (`validate_clone_url` in
+ * `commands/git.rs`): https/http, `ssh://`, `git://`, or the scp-like
+ * `[user@]host:path`. It gates the Import button so a typo is caught before a
+ * `git clone` is spawned — the backend re-validates regardless, since that is
+ * where a hostile URL (`ext::<command>` runs the command) would actually bite.
+ */
+export function isCloneUrl(raw: string): boolean {
+  const url = raw.trim();
+  if (!url) return false;
+
+  const schemeEnd = url.toLowerCase().indexOf("://");
+  if (schemeEnd >= 0) {
+    return ["https", "http", "ssh", "git"].includes(url.slice(0, schemeEnd).toLowerCase());
+  }
+
+  const colon = url.indexOf(":");
+  if (colon < 0) return false;
+  const host = url.slice(0, colon);
+  const path = url.slice(colon + 1);
+  return (
+    host !== "" &&
+    !host.includes("/") &&
+    !host.startsWith("-") &&
+    path !== "" &&
+    !path.startsWith(":")
+  );
+}
+
+/**
+ * The repository's own name from a clone URL — last path segment, minus a
+ * trailing `.git`. Used to pre-fill the project name so the common case needs no
+ * typing. Returns "" when nothing name-like can be read out.
+ */
+export function repoNameFromCloneUrl(raw: string): string {
+  const url = raw.trim().replace(/[/]+$/, "");
+  if (!url) return "";
+  const last = url.split(/[/:]/).pop() ?? "";
+  return last.replace(/\.git$/i, "");
+}
+
+/**
+ * The hosting provider a clone URL's host names itself as ("github"/"gitlab"),
+ * or "" when it doesn't — a self-hosted instance usually doesn't, and the fork
+ * import then needs the user to say which it is (forking goes through the
+ * provider's own CLI, so guessing wrong picks the wrong binary and API).
+ * Frontend twin of `provider_from_host` in `commands/git_fork.rs`.
+ */
+export function providerFromCloneUrl(raw: string): "github" | "gitlab" | "" {
+  const url = raw.trim();
+  if (!url) return "";
+  const schemeEnd = url.toLowerCase().indexOf("://");
+  const afterScheme = schemeEnd >= 0 ? url.slice(schemeEnd + 3) : url;
+  // Authority = everything before the first `/` (URL form) or `:` (scp-like),
+  // minus any userinfo and port.
+  const authority = afterScheme.split(/[/:]/)[0] ?? "";
+  const host = (authority.split("@").pop() ?? "").toLowerCase();
+  if (!host) return "";
+  if (host.includes("github")) return "github";
+  if (host.includes("gitlab")) return "gitlab";
+  return "";
 }
 
 /** Join a remote directory path with a child segment using POSIX separators. */

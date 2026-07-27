@@ -20,10 +20,6 @@ pub struct GlobalAppEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub terminal_command: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_management: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub debug: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_profile_url: Option<String>,
@@ -31,12 +27,67 @@ pub struct Settings {
     pub git_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color_scheme: Option<String>,
+    /// UI language for Eldrun's interface (`en`/`de`/`es`/`fr`/`it`). Frontend
+    /// logic only (`lib/i18n`); the backend just round-trips the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// Global UI zoom factor for the whole interface (helps on high-DPI/4K
+    /// monitors). `1.0` (or unset) is 100% — the current default look. Applied
+    /// frontend-side as a CSS `zoom`; the backend only round-trips the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_zoom: Option<f32>,
+    /// Calendar: first column of the week — `0` = Sunday (default), `1` = Monday.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_week_start: Option<u8>,
+    /// Calendar: the view a fresh calendar tab opens on
+    /// (`day`/`week`/`multiweek`/`month`/`agenda`/`tasks`). Frontend logic only —
+    /// the backend just round-trips the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_default_view: Option<String>,
+    /// Calendar: 24-hour clock instead of AM/PM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_time_format_24h: Option<bool>,
+    /// Calendar: first/last hour the day and week grids scroll to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_day_start_hour: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_day_end_hour: Option<u8>,
+    /// Calendar: minutes-before reminder pre-filled on a new event. `0` = none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_default_reminder_minutes: Option<i64>,
+    /// Mail: the experimental gate for the embedded mail client
+    /// (`src/lib/experimental.ts` — unset falls back to debug mode, so a flag
+    /// still moving is invisible to someone *using* Eldrun and on by default
+    /// for someone building it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_client: Option<bool>,
+    /// Mail: which account a fresh mail tab opens on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_default_account: Option<String>,
+    /// Mail: minutes between background checks (Phase 2; the backend does not
+    /// poll yet, so this is stored and honoured by the frontend only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_check_interval_min: Option<u32>,
+    /// Mail: whether to offer remote images at all. **Default false** — loading
+    /// them tells the sender the message was opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_show_remote_images: Option<bool>,
+    /// Mail: OS notification on new inbox mail (default on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_notify_new: Option<bool>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_host: Option<String>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_model: Option<String>,
+    /// Per-task local-model assignments set from the 🧠 menu's role chips. Maps a
+    /// task key (`"autocomplete"`, `"grammar"`, `"tabs"`) to the model name that
+    /// serves it, so several loaded models can run different jobs in parallel.
+    /// Optional + flat so older settings files round-trip cleanly; a task absent
+    /// here falls back to `ollama_model`. Frontend logic only — persisted here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ollama_roles: Option<HashMap<String, String>>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_autostart: Option<bool>,
@@ -46,6 +97,216 @@ pub struct Settings {
     /// as a detached background process instead of opening a terminal tab.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_scripts_in_background: Option<bool>,
+    /// When true (the default), `claude` agent tabs are spawned with
+    /// `--remote-control` so the session can be monitored/steered from the Claude
+    /// app/web. Only Claude supports the flag; other agents ignore it. Default ON.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_remote_control: Option<bool>,
+    /// When true (the default), the usage recap opens by itself on the first
+    /// launch of each day. Turning it off leaves the recap reachable from
+    /// Settings — it stops the popup, it does not stop the counting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_stats_recap: Option<bool>,
+    /// UTC date ("YYYY-MM-DD") the recap was last auto-shown, so it opens once a
+    /// day rather than on every window. Written by the recap host itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_stats_last_shown: Option<String>,
+    /// EXPERIMENTAL, default OFF. When true, agent tabs whose agent supports it
+    /// (currently only Claude) show a Plan/Auto badge that switches the tab's
+    /// authority mode — `--permission-mode plan` vs `acceptEdits`. Switching
+    /// respawns the agent (the mode is a launch flag), which is only safe because
+    /// the backend resumes the conversation; see `services::agent_session`. Purely
+    /// a frontend gate: the flag reaches the backend inside `opts.args` like any
+    /// other launch arg, so nothing in the spawn path reads this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_mode_toggle: Option<bool>,
+    /// EXPERIMENTAL, default OFF. When true, a Python file in the native code
+    /// viewer gets the Run/Debug buttons and the breakpoint gutter (#87). Purely a
+    /// frontend gate, and off by default because Run *executes the file*: the
+    /// button is one click from an editor, so it is opt-in rather than something a
+    /// user discovers by mis-clicking. Go-to-definition is not gated — it reads,
+    /// it never runs anything. Nothing in the backend reads this: Run/Debug open an
+    /// ordinary terminal tab, which reaches `pty_spawn` like any other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python_run_debug: Option<bool>,
+    /// EXPERIMENTAL, default OFF. The native presenter ("deck",
+    /// `docs/deck_presenter_plan.md`): editable object layers over a base PDF, kept in
+    /// a `*.eldeck.json` sidecar, plus the animate mode and the fullscreen presenter.
+    /// Purely a frontend gate — a deck is an ordinary text file the existing fs
+    /// commands read and write, and its PDF export is built in the webview by pdf-lib,
+    /// so nothing in the backend reads this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deck_presenter: Option<bool>,
+    /// EXPERIMENTAL, default OFF. The in-app browser (TODO J #61,
+    /// `docs/browser_plan_{a,b,c}.md`): a JS-free reader tab plus a separate
+    /// hardened live-page window. Read via `web_browser()`, which applies the
+    /// same unset-means-debug rule every other experimental flag follows.
+    ///
+    /// It is declared here rather than left to ride in `extra` for the reason
+    /// every other flag is: a field that only exists in the catch-all cannot be
+    /// read by `Settings::experimental()`, so the backend could never gate on it
+    /// even if it wanted to, and a typo in the key would round-trip silently
+    /// instead of failing to compile.
+    ///
+    /// **What the gate does and does not do.** Like `mail_client` and
+    /// `deck_presenter`, it hides the *entry points* — the two add-tab menu
+    /// entries — and never a pane already on screen: an open or restored browser
+    /// tab keeps rendering, because a flag flip must not blank a surface the
+    /// user is looking at. The commands are therefore deliberately NOT refused
+    /// when it is off (that would break exactly that restored tab), which is the
+    /// same posture the mail commands take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_browser: Option<bool>,
+    /// Browser: where a fresh browser tab opens. Empty/unset is the built-in
+    /// start page, **not** a remote request — a home page that fires on every
+    /// new tab is an outbound request nobody asked for. Frontend logic only; the
+    /// backend round-trips it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_home_url: Option<String>,
+    /// Browser: what the address bar does with text that is not a web address —
+    /// `%s` is replaced by the percent-encoded input. Clearable, in which case
+    /// such text is refused rather than sent to a third party.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_search_template: Option<String>,
+    /// Browser: where a clicked link opens (`external` / `in_app` / `ask`,
+    /// TODO J #33). Default `external` — the user's real browser holds their
+    /// sign-ins, their extensions and their password manager.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_link_target: Option<String>,
+    /// Browser: a restored tab loads its page at launch instead of showing the
+    /// resume card. **Default false** — restoring N tabs would otherwise be N
+    /// automatic outbound requests before the user has looked at the screen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_restore_navigate: Option<bool>,
+    /// Browser: whether the hardened **live-page window** may be opened at all.
+    ///
+    /// **Default false, and deliberately not an `experimental()` flag** — unlike
+    /// every other opt-in here, unset must mean *off in a debug build too*. That
+    /// is the whole point: a debug build is what the author runs all day, and
+    /// this is the one browser surface whose central security claim does not
+    /// hold.
+    ///
+    /// Reader mode carries no such switch because it needs none: it runs no
+    /// JavaScript, owns no webview, and its bytes are sanitized in Rust before
+    /// the frontend sees them. A live page is the opposite on every count, and
+    /// two of its holes cannot be closed from app code at all — a page can reach
+    /// a loopback service by way of any hostname that resolves there (wildcard
+    /// DNS resolvers make this free), and `ws://` reaches one regardless because
+    /// a WebSocket is not a navigation and has no CORS. Both are disclosed in
+    /// `services::browser_engine`'s module header. On a developer's machine the
+    /// things listening on loopback are model servers, notebooks, dev servers
+    /// and dashboards, which is why this is a separate, explicit switch rather
+    /// than a line item inside `web_browser`.
+    ///
+    /// Read via `browser_live_pages()`; `commands::browser::browser_open_live`
+    /// refuses without it, and `browser_capabilities` reports it so the frontend
+    /// hides the control rather than offering one that errors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_live_pages: Option<bool>,
+    /// Persistent LOCAL (tmux) sessions (TODO #85): when true (the default on Unix),
+    /// a local project's shell/script tabs run inside a tmux session on the machine,
+    /// so a long run survives an Eldrun crash and the tab reattaches on restart.
+    /// `None`/`Some(true)` = on; `Some(false)` = off. No effect on Windows (no tmux):
+    /// `services::tmux_local` no-ops there. Read via `persist_local_sessions()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persist_local_sessions: Option<bool>,
+    /// When true (the default), remote SSH/OpenVPN connections are made headlessly
+    /// in the background, with Eldrun handling the password transiently (sshpass /
+    /// askpass). When false, those connections are launched as interactive
+    /// terminal tabs in the Eldrun **root** scope so the password is typed directly
+    /// into the live terminal and Eldrun never handles it at all. Default ON
+    /// (headless) so existing behaviour is preserved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connections_headless: Option<bool>,
+    /// Hosts marked **careful**: "this machine is shared and policed, so keep
+    /// Eldrun's background load off it." An HPC login node is the case it exists
+    /// for — CPU there is watched, its `$HOME` usually sits on a parallel
+    /// filesystem whose metadata server a recursive `du` hammers, and its account
+    /// database is a shared directory service.
+    ///
+    /// Keyed by canonical SSH target ([`crate::services::ssh_common::target_key`],
+    /// i.e. `user@host:port`) rather than by any host id, because **one physical
+    /// login node is simultaneously several records**: a project's primary
+    /// `remote`, a `compute_hosts` worker on another project, and a project-free
+    /// global machine — three tables, three ids, one machine. A per-record `bool`
+    /// would be three values free to disagree about the same host; the SSH target
+    /// is the identity `lib/machineSync`'s `sameTarget` already treats as the
+    /// bridge between them, so it is the identity used here too.
+    ///
+    /// The stored value is the user's **explicit** answer. A target *absent* from
+    /// the map has not been answered and is treated as **careful** — the default
+    /// for every remote machine, since Eldrun cannot tell whose machine a host is
+    /// and the two wrong guesses do not cost the same. Which is why this is a map
+    /// to `bool` and not a set of careful hosts: an explicit `false` ("this one is
+    /// mine") has to be distinguishable from an unanswered host, or the careful
+    /// default would keep turning itself back on.
+    ///
+    /// Deliberately **not** named for HPC. A departmental shared box wants the
+    /// same treatment, and a compute node held through SLURM — HPC by any
+    /// definition — does not: you own it outright for the length of the job, and
+    /// there monitoring is useful rather than rude.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub careful_hosts: Option<HashMap<String, bool>>,
+    /// The machines the user has tagged **HPC** — a shared cluster login node,
+    /// ticked on the login form and shown on the machine's row in the Machines
+    /// menu (`src/lib/hpcHost.ts`). Same SSH-target key as [`Self::careful_hosts`],
+    /// for the same reason.
+    ///
+    /// Where `careful_hosts` says how much Eldrun may *look at*, this says what
+    /// Eldrun may *do*, and it is a strictly stronger statement: a tagged host is
+    /// careful whatever `careful_hosts` says (the monitor's Detailed switch cannot
+    /// override it), and four further behaviours turn off — the disk-usage scan
+    /// and giant-folder census (a recursive `du` over a parallel filesystem's
+    /// metadata server), the auto byte-sync and git-lockstep poll loops, silent
+    /// auto-connect at launch, and unannounced compute in a login-node shell.
+    /// Each of those is something a site's usage rules name, and none of them can
+    /// be inferred from the host — `sbatch` on `PATH` says a machine *has* a
+    /// scheduler, not that its operators mind. Only the user knows that, so only
+    /// the user sets this.
+    ///
+    /// A set, not a map: unlike careful mode there is no default to distinguish an
+    /// answer from, so an absent target simply isn't tagged. Stored as a map to
+    /// `bool` anyway so an untagging writes `false` rather than having to delete a
+    /// key from a settings blob the frontend saves whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hpc_hosts: Option<HashMap<String, bool>>,
+    /// Path of the stored `.ovpn` config Eldrun brings up **on launch**, with no
+    /// project behind it. Unset (the default) = no tunnel is started by itself.
+    ///
+    /// One config, not a list: a tunnel reroutes the whole machine, so arming two
+    /// would be arming them to fight over the routing. The frontend re-checks at
+    /// launch that the connect can still be made without a prompt and stays down if
+    /// it can't (see `lib/vpnAutoConnect.ts`); the backend only round-trips this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vpn_auto_connect: Option<String>,
+    /// The `.ovpn` configs the user asked Eldrun to **remember the credentials of**
+    /// (the VPN menu's "Save login credentials"). No secret lives here — the secrets
+    /// are in the OS keychain; this is only the *intent*, and it exists because the
+    /// keychain cannot always be asked.
+    ///
+    /// A locked Secret Service collection answers every read like an empty one, so
+    /// "is a credential saved for this config?" is unanswerable exactly when it
+    /// matters most: at launch, before anything has unlocked the keyring. Without
+    /// this list the toggle would show *off* over a saved credential and a connect
+    /// would drop to the password prompt rather than offering to unlock. Reconciled
+    /// against the keychain whenever it *is* readable, so it cannot drift for long.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vpn_saved_configs: Option<Vec<String>>,
+    /// Energy-saver mode: "off" | "battery" (default) | "always". When active
+    /// (mode "always", or "battery" while discharging) Eldrun pauses the blob
+    /// auto-spin, collapses idle animations, and widens always-on UI timers.
+    /// Read entirely on the frontend; kept here only so it round-trips.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_saver: Option<String>,
+    /// Header resource-monitor row toggles. Each defaults ON when unset so the
+    /// pill shows CPU/RAM/GPU by default; flip one off to hide that row. Shown in
+    /// every build (independent of `debug`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_cpu_usage: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_ram_usage: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_gpu_usage: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global_apps: Option<HashMap<String, GlobalAppEntry>>,
     /// Minimum subwindow (split pane) width in px a divider drag may shrink a
@@ -61,6 +322,11 @@ pub struct Settings {
     /// counterpart for external changes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autosave: Option<bool>,
+    /// When true (the default), the in-app text/TeX editors tint recently typed
+    /// runs with a sequential new→old colour trail that fades as typing
+    /// continues. Defaults ON; only an explicit `false` disables it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_tint: Option<bool>,
     /// Per-file-type native-viewer preferences (#48), keyed by a type id derived
     /// from `fileUtils` (e.g. "tex", "text", "markdown"). Holds the opt-in
     /// autocomplete toggle (#45). Optional + flat so older settings files
@@ -73,8 +339,46 @@ pub struct Settings {
     /// fall back to the built-in defaults in the frontend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keyboard_shortcuts: Option<HashMap<String, ChordDescriptor>>,
+    /// Download *source* folders scanned by the right-panel Downloads section
+    /// (fast-copy of freshly downloaded files into a project). A machine-wide
+    /// list, read-only — Eldrun never changes any browser's download path.
+    /// Unset/empty → the frontend falls back to the user's `~/Downloads`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_sources: Option<Vec<String>>,
+    /// Where the MAIN window was when Eldrun last ran, so it reopens on the same
+    /// monitor in the same place. Unset (fresh install, or a saved rect no live
+    /// monitor can host) → the window opens as `tauri.conf.json` configures it:
+    /// maximized, wherever the WM puts it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_state: Option<WindowState>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+}
+
+/// Last-known geometry of the MAIN window, in PHYSICAL desktop pixels — the
+/// canonical cross-window coordinate space (see `src/lib/coords.ts`). Tauri's
+/// `outerPosition`/`outerSize`/`set_position`/`set_size` are all physical; only a
+/// *builder*'s `.position()`/`.inner_size()` are logical, which is the trap
+/// `commands::subwindow::detached_position` exists to document.
+///
+/// `x`/`y`/`w`/`h` is the *restore* (non-maximized) rect: it is refreshed only
+/// while the window is floating. Storing the maximized rect here instead would
+/// recreate the bug `WindowControls.tsx` works around — a window whose only known
+/// "normal" size is the whole monitor, so un-maximizing appears to do nothing and
+/// KWin's edge-snap stays suppressed.
+///
+/// There is deliberately no `fullscreen` field. Linux must never enter fullscreen
+/// (a `_NET_WM_STATE_FULLSCREEN` window is unmovable under KWin — see the note in
+/// `lib.rs`'s setup), and macOS is unconditionally fullscreen. Persisting the flag
+/// could only ever strand the window.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct WindowState {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    #[serde(default)]
+    pub maximized: bool,
 }
 
 /// One entry in `settings["keyboard_shortcuts"]` (Group L / #62). A serializable
@@ -101,10 +405,24 @@ fn is_false(b: &bool) -> bool {
 /// One per-type entry in `settings["viewer_prefs"]` (#48).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ViewerPref {
+    /// Whether this native viewer is used at all. Absent/true renders the type
+    /// in-app; false opts it out so its files open in the external default app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
     /// Whether Ctrl+Space local autocomplete is enabled for this type (#45).
     /// Defaults OFF (privacy: no model call unless explicitly turned on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autocomplete: Option<bool>,
+    /// Default completion-length mode for this type (#45 modes): `"sentence"`
+    /// (default), `"block"`, or `"scope"`. Cycled live in-editor with Shift+Tab
+    /// while a suggestion is showing; this is just the starting mode. Absent →
+    /// `"sentence"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autocomplete_mode: Option<String>,
+    /// Whether the local-model grammar/spelling check is enabled for this type.
+    /// Like `autocomplete`, defaults OFF (no model call unless explicitly on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grammar_check: Option<bool>,
     /// Editor font size in px for this type's in-app code editor. Adjusted from
     /// the viewer's A−/A+ controls (or Ctrl +/−/0). Unset falls back to the
     /// frontend default (12px).
@@ -117,7 +435,153 @@ impl Settings {
         self.color_scheme.as_deref().unwrap_or("fancy_dark")
     }
 
-    pub fn workspace_management(&self) -> bool {
-        self.workspace_management.unwrap_or(false)
+    /// Whether Claude agent tabs should be spawned with `--remote-control`.
+    /// Defaults ON when unset so existing settings files opt in automatically.
+    pub fn agent_remote_control(&self) -> bool {
+        self.agent_remote_control.unwrap_or(true)
+    }
+
+    /// Whether the usage recap auto-opens once a day. Defaults ON when unset, so
+    /// an existing install gets the recap without having to find the toggle.
+    pub fn daily_stats_recap(&self) -> bool {
+        self.daily_stats_recap.unwrap_or(true)
+    }
+
+    /// The rule every experimental flag follows (mirrors `src/lib/experimental.ts`):
+    /// unset means **debug mode decides**, so someone building Eldrun gets each new
+    /// experiment without re-ticking a list, and everyone else gets none of them. An
+    /// explicit value always wins, in both directions — otherwise "turn this off"
+    /// would silently fail for exactly the people most likely to hit a broken one.
+    fn experimental(&self, flag: Option<bool>) -> bool {
+        flag.unwrap_or_else(|| self.debug.unwrap_or(false))
+    }
+
+    /// Whether the experimental per-tab Plan/Auto agent-mode badge is offered.
+    /// Switching a mode restarts the agent, so nobody outside debug mode gets that
+    /// behaviour without asking for it.
+    pub fn agent_mode_toggle(&self) -> bool {
+        self.experimental(self.agent_mode_toggle)
+    }
+
+    /// Whether the experimental Python Run/Debug buttons and breakpoint gutter are
+    /// offered in the code viewer. Run *executes the file*, so outside debug mode it
+    /// is opt-in.
+    pub fn python_run_debug(&self) -> bool {
+        self.experimental(self.python_run_debug)
+    }
+
+    /// Whether the experimental native presenter ("deck") is offered — the
+    /// `*.eldeck.json` viewer and its fullscreen presenter. Off outside debug mode
+    /// while the surface is still moving.
+    pub fn deck_presenter(&self) -> bool {
+        self.experimental(self.deck_presenter)
+    }
+
+    /// Whether the experimental in-app browser is offered (TODO J #61). Off
+    /// outside debug mode while the surface is still moving. It gates the add-tab
+    /// entry points only — see the field's doc for why the commands themselves
+    /// stay reachable.
+    pub fn web_browser(&self) -> bool {
+        self.experimental(self.web_browser)
+    }
+
+    /// Whether the browser's hardened live-page window may be opened.
+    ///
+    /// `unwrap_or(false)`, **not** `experimental()`: unset means off everywhere,
+    /// including a debug build. See the field's doc for why this one surface is
+    /// held to a stricter default than the flag that enables the browser itself.
+    pub fn browser_live_pages(&self) -> bool {
+        self.browser_live_pages.unwrap_or(false)
+    }
+
+    /// Whether LOCAL shell/script tabs are wrapped in a persistent tmux session
+    /// (TODO #85). Default ON when unset; only an explicit `Some(false)` opts out.
+    /// The caller still gates on `tmux_local::tmux_available()` (no tmux / Windows →
+    /// no wrap regardless), so this is a preference, not a guarantee.
+    pub fn persist_local_sessions(&self) -> bool {
+        self.persist_local_sessions.unwrap_or(true)
+    }
+
+    /// Whether remote SSH/OpenVPN connections are made headlessly (Eldrun handles
+    /// the password) rather than as interactive root-terminal tabs. Defaults ON
+    /// (headless) when unset so existing behaviour is preserved.
+    pub fn connections_headless(&self) -> bool {
+        self.connections_headless.unwrap_or(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+
+    /// The experimental rule, backend side (the frontend twin lives in
+    /// `src/__tests__/Experimental.test.ts`): unset defers to debug mode, and an
+    /// explicit value wins in BOTH directions.
+    #[test]
+    fn experimental_flags_default_to_debug_mode() {
+        let off = Settings::default();
+        assert!(!off.python_run_debug());
+        assert!(!off.agent_mode_toggle());
+        assert!(!off.deck_presenter());
+        assert!(!off.web_browser());
+
+        let debug = Settings {
+            debug: Some(true),
+            ..Default::default()
+        };
+        assert!(debug.python_run_debug());
+        assert!(debug.agent_mode_toggle());
+        assert!(debug.deck_presenter());
+        assert!(debug.web_browser());
+
+        let debug_but_off = Settings {
+            debug: Some(true),
+            python_run_debug: Some(false),
+            ..Default::default()
+        };
+        assert!(!debug_but_off.python_run_debug());
+
+        let opted_in = Settings {
+            python_run_debug: Some(true),
+            ..Default::default()
+        };
+        assert!(opted_in.python_run_debug());
+    }
+
+    /// The browser's settings must be **named fields**, not `extra` passengers.
+    /// A key that only exists in the `#[serde(flatten)]` catch-all round-trips
+    /// perfectly and is invisible to `Settings::experimental()` and to every
+    /// typed reader — so the backend could never gate on it, and a misspelling
+    /// would be a silent no-op rather than a compile error. This test fails if
+    /// one is ever removed from the struct and left to ride in `extra`.
+    #[test]
+    fn the_browser_settings_are_real_fields_and_not_extra_passengers() {
+        let json = r#"{
+            "web_browser": true,
+            "browser_home_url": "https://example.com/",
+            "browser_search_template": "https://example.invalid/?q=%s",
+            "browser_link_target": "in_app",
+            "browser_restore_navigate": true
+        }"#;
+        let s: Settings = serde_json::from_str(json).expect("settings parse");
+        assert_eq!(s.web_browser, Some(true));
+        assert_eq!(s.browser_home_url.as_deref(), Some("https://example.com/"));
+        assert_eq!(
+            s.browser_search_template.as_deref(),
+            Some("https://example.invalid/?q=%s")
+        );
+        assert_eq!(s.browser_link_target.as_deref(), Some("in_app"));
+        assert_eq!(s.browser_restore_navigate, Some(true));
+        assert!(
+            s.extra.is_empty(),
+            "a browser setting fell through to `extra`: {:?}",
+            s.extra.keys().collect::<Vec<_>>()
+        );
+        assert!(s.web_browser());
+
+        // And it survives a round trip, so an older file's keys are not dropped.
+        let back: Settings =
+            serde_json::from_str(&serde_json::to_string(&s).unwrap()).expect("round trip");
+        assert_eq!(back.browser_link_target.as_deref(), Some("in_app"));
     }
 }

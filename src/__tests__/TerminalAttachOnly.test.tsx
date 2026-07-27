@@ -38,9 +38,16 @@ vi.mock("@xterm/xterm", () => ({
     write() {}
     onData() {}
     onResize() {}
+    onBell() {}
+    onTitleChange() {}
+    onSelectionChange() {}
+    buffer = { active: { length: 0, getLine: () => null } };
+    attachCustomKeyEventHandler() {}
+    getSelection() { return ""; }
     focus() {}
     dispose() {}
     options = {};
+    parser = { registerOscHandler: () => ({ dispose() {} }) };
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({

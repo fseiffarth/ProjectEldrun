@@ -1,12 +1,218 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
+import { type AgentMode, supportsAgentMode, withAgentMode } from "../components/tabs/agentModes";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
+import type { AutocompleteMode } from "../types";
+import { forgetPty } from "../lib/promptCount";
+import { METRIC, agentMetricLeaf, sub } from "../lib/usageMetrics";
 import { useLinkRoutingStore } from "./linkRouting";
+import { bumpUsage } from "./usage";
+import { newTmuxSessionName } from "../lib/tmuxSession";
+import { useRunHostPrefStore } from "./runHostPref";
+import { experimentalEnabled } from "../lib/experimental";
+import { useSettingsStore } from "./settings";
 
-export type TabKind = "agent" | "local_agent" | "shell" | "files" | "embed";
+/** A shell tab gets a stable persisted tmux session name at creation (TODO #85),
+ *  so a persistent remote run reattaches after a relaunch instead of forking a
+ *  second session. Non-shell tabs, and shell tabs that already carry one (or an
+ *  explicit attach), are left untouched. */
+function withTmuxSession(
+  tab: Omit<TabEntry, "key">,
+  scope: string,
+): Omit<TabEntry, "key"> {
+  if (tab.kind === "shell" && !tab.tmuxSession && !tab.tmuxAttach) {
+    return { ...tab, tmuxSession: newTmuxSessionName(scope) };
+  }
+  return tab;
+}
+
+/** A new SHELL tab launched from a project inherits that project's run-host
+ *  preference (the machine chosen in the `RunHostPicker`) as its `location`, so
+ *  "pick machine X ⇒ ALL shells run on X" — the "+" → Shell tab, not just a
+ *  Python/script Run. Scoped tightly: only a `shell` tab, only when it did NOT
+ *  already pin a `location` (a script/tmux/SLURM/git-resolve tab sets its own and
+ *  must keep it), and only when the owning scope has a stored preference (a local
+ *  project, the root scope, and a box scope have none → unchanged). Baked in at
+ *  creation because `effectiveTabLocation`'s per-kind default has no project
+ *  context to consult the preference. */
+function withRunHostDefault(
+  scope: string,
+  tab: Omit<TabEntry, "key">,
+): Omit<TabEntry, "key"> {
+  if (tab.kind !== "shell" || tab.location !== undefined) return tab;
+  const pref = useRunHostPrefStore.getState().byProject[scope];
+  return pref ? { ...tab, location: pref } : tab;
+}
+
+export type TabKind =
+  | "agent"
+  | "local_agent"
+  | "shell"
+  | "files"
+  | "projectfiles"
+  | "embed"
+  | "projects3d"
+  | "network"
+  | "monitor"
+  | "diskusage"
+  | "calendar"
+  | "mail"
+  | "browser";
+
+/**
+ * SSH-sync Phase 0 — a PTY tab's locality on a REMOTE (SSH) project: does it run
+ * locally (in the project's local mirror) or on the host over `ssh -tt`? Only
+ * meaningful for `agent`/`shell` tabs (see {@link isLocatableKind}); `local_agent`
+ * is always local and non-PTY kinds have no locality. On a LOCAL project the axis
+ * is inert (everything is local — the backend gates the ssh-wrap on remoteness).
+ * Plan: docs/ssh_sync_plan.md.
+ */
+export type TabLocation = "local" | "remote" | `host:${string}`;
+
+/** The backend host id a tab location runs on: `"primary"` for the primary remote
+ *  (`"remote"`), the worker id for a `host:<id>` location, or `null` for `"local"`
+ *  (`docs/multi_host_remote_plan.md` §4.1). Pass to PTY spawn / lamp reads. */
+export function remoteHostIdOf(loc: TabLocation | undefined): string | null {
+  if (loc === "remote") return "primary";
+  if (loc && loc.startsWith("host:")) return loc.slice("host:".length);
+  return null; // "local" or unset
+}
+
+/** Whether a tab location runs on a remote host (primary or a worker) rather than
+ *  the local mirror. */
+export function isRemoteLocation(loc: TabLocation | undefined): boolean {
+  return remoteHostIdOf(loc) !== null;
+}
+
+/** The minimal shape of a worker machine (`ComputeHost`) the locality UI reads —
+ *  structural so `tabs.ts` need not import the full project types. */
+export interface LocalityHost {
+  id: string;
+  label?: string;
+  host: string;
+  sync_code?: boolean;
+  shared_fs?: boolean;
+}
+
+/** Human-readable name of the machine a tab location runs on — the ONE place the
+ *  tab badge, its locality menu, and the hover card agree on wording
+ *  (`docs/multi_host_remote_plan.md`). `"local"` → the mirror; `"remote"` → the
+ *  primary host (named when known); `host:<id>` → the worker's label/host/id. */
+export function localityHostLabel(
+  loc: TabLocation | undefined,
+  opts: { primaryHost?: string; computeHosts?: LocalityHost[] } = {},
+): string {
+  const hostId = remoteHostIdOf(loc);
+  if (hostId === null) return "Local (mirror)";
+  if (hostId === "primary") {
+    return opts.primaryHost ? `Primary (${opts.primaryHost})` : "Primary";
+  }
+  const w = opts.computeHosts?.find((h) => h.id === hostId);
+  return w?.label || w?.host || hostId;
+}
+
+/** Whether a worker machine can actually RUN a shell/agent tab: it must hold the
+ *  code — either it shares the primary's filesystem (`shared_fs`) or it keeps a
+ *  synced copy (`sync_code`, default on). A worker with neither has no tree to run
+ *  in; sync always stays with the primary, so such a worker is offered disabled.
+ *  The primary (`"primary"`/`undefined`) and the local mirror are always runnable. */
+export function workerRunnable(h: LocalityHost): boolean {
+  return !!h.shared_fs || h.sync_code !== false;
+}
 
 export const FILES_TAB_CMD = "__eldrun_files__";
+
+/**
+ * Sentinel `cmd` for the "Files (Project)" tab: the SAME file view the right
+ * panel shows (`ProjectFilesPane` → `FileTree`), hosted in a tab — git markers,
+ * drag-to-open/move, OS import/export, the remote sync overlay. Distinct from
+ * `FILES_TAB_CMD`, which is the separate two-pane `FileBrowser` explorer; both
+ * are offered, they are different tools.
+ */
+export const PROJECT_FILES_TAB_CMD = "__eldrun_project_files__";
+
+/**
+ * Sentinel `cmd` for the 3D project-blob tab (root scope only): a navigable 3D
+ * cloud of every project (active + inactive) and box. Carries no PTY — like the
+ * files tab it's a pure-frontend pane, identified by this command so cmdToKind
+ * can recover its kind from a bare command string.
+ */
+export const BLOB_TAB_CMD = "__eldrun_blob__";
+
+/** Sentinel command for the read-only local/SSH host traffic dashboard. */
+export const NETWORK_TAB_CMD = "__eldrun_network__";
+
+/**
+ * Sentinel `cmd` for the native htop-like system monitor tab: a read-only,
+ * whole-machine process/CPU/memory view. Carries no PTY — like the network pane
+ * it's identified by this command so cmdToKind can recover its kind on restore.
+ */
+export const MONITOR_TAB_CMD = "__eldrun_monitor__";
+
+/**
+ * Sentinel `cmd` for the native disk usage analyzer tab: a baobab-like rings/
+ * treemap view of what is filling a folder. Carries no PTY — like the monitor pane
+ * it is identified by this command so cmdToKind can recover its kind on restore.
+ */
+export const DISKUSAGE_TAB_CMD = "__eldrun_diskusage__";
+
+/**
+ * Sentinel `cmd` for the native calendar tab: a local, self-contained month-grid
+ * event calendar, offered in every scope (root and each project). The event store
+ * is global — one `calendar.json`, one zustand store — so every calendar tab shows
+ * the same events regardless of the project it was opened from, and edits in one
+ * are seen live by the others. Carries no PTY — like the files pane it's identified
+ * by this command so cmdToKind can recover its kind.
+ */
+export const CALENDAR_TAB_CMD = "__eldrun_calendar__";
+
+/**
+ * Sentinel `cmd` for the embedded mail tab: an IMAP/SMTP client whose store is
+ * global — one `~/.local/share/eldrun/mail/`, one zustand store — so a mail tab
+ * opened from any scope shows the same mailbox and the tab is a singleton per
+ * scope. Carries no PTY: like the calendar pane it owns no process at all, which
+ * is exactly why it is identified by this command (so `cmdToKind` recovers its
+ * kind from a bare persisted `cmd`) and why it must never enter the spawn/kill/
+ * activity paths (`isPtyTabKind` deliberately does NOT list it).
+ *
+ * A restored mail tab renders from the local index and **never connects on its
+ * own** — it shows a "Check mail" button. Reaching a server on a launch path is
+ * the one thing a mail client must not do: an unreachable IMAP host hangs for the
+ * whole TCP timeout, and nothing about a window being reopened is consent to dial
+ * out (see `docs/mail_client_plan_a.md` §2, rule 5).
+ */
+export const MAIL_TAB_CMD = "__eldrun_mail__";
+
+/**
+ * Sentinel `cmd` for an in-app browser tab (TODO group J #61).
+ *
+ * Four properties, each of which is why this constant exists rather than a
+ * `kind` check scattered around:
+ *
+ *  - **It carries no PTY.** Like the calendar and mail panes it owns no process
+ *    at all, which is exactly why it is identified by this command (so
+ *    `cmdToKind` recovers its kind from a bare persisted `cmd`) and why
+ *    `isPtyTabKind` deliberately does NOT list it.
+ *  - **It is not a singleton.** Each tab holds its own page, so it *stacks*
+ *    (`addTab`) the way `diskusage` does rather than focusing an existing one
+ *    (`ensureTab`, which mail and the calendar use because their store is
+ *    global and a second tab would show the same thing). Two browser tabs never
+ *    show the same thing.
+ *  - **It is never locatable.** `browser` is absent from `isLocatableKind`, so
+ *    the locality badge, the run-host preference and the tmux persistence
+ *    helpers can never claim it. The browser is always local: it does not run
+ *    on a project's SSH host and does not tunnel through it — which is also why
+ *    a *disconnected* remote project's browser tab still works, unlike every
+ *    file/git surface in that project.
+ *  - **A restored one does not navigate.** It comes back on its resume card,
+ *    holding the persisted URL behind a Load button. Restoring six browser tabs
+ *    would otherwise be six automatic outbound requests to whatever the user
+ *    last had open, before they have looked at the screen — the same rule mail
+ *    states ("nothing about a window being reopened is consent to dial out")
+ *    and the same bargain diskusage already makes about not replaying its scan.
+ */
+export const BROWSER_TAB_CMD = "__eldrun_browser__";
 
 /**
  * Synthetic group id for the empty-state placeholder subwindow (rendered by
@@ -28,6 +234,87 @@ export interface ViewerState {
   scale?: number;
   offsetX?: number;
   offsetY?: number;
+  // Tab-local editor text size (#48). When set it overrides the per-type
+  // `viewer_prefs[type].font_size` default for THIS tab only, so zooming one
+  // text/markdown/TeX tab no longer resizes every other viewer of that type;
+  // absent means the tab tracks the per-type default. Survives reopen/restart.
+  fontSize?: number;
+  // Tab-local AI-assist overrides (#45). When set, they override the per-type
+  // `viewer_prefs` default for THIS tab only; when absent the editor falls back
+  // to the per-type setting. Toggled from the in-tab AI-assist controls.
+  autocomplete?: boolean;
+  autocompleteMode?: AutocompleteMode;
+  grammarCheck?: boolean;
+  // Debug breakpoints (#py), as 1-based line numbers into the file. Persisted per
+  // tab like the reader's scroll position, so the dots survive closing the file
+  // and an Eldrun restart. Remapped as the draft is edited (see useBreakpoints);
+  // what is stored is always resolved against the file as last seen.
+  breakpoints?: number[];
+  // Collapsed nodes of the YAML tree (#yaml), as node ids (document + path). Like
+  // the scroll position, folding a big config stays folded across a reopen and a
+  // restart. Ids are re-derived from the file on every parse, so an id that no
+  // longer resolves is simply inert.
+  yamlCollapsed?: string[];
+  // The YAML TREE's scroll position (#yaml). Kept apart from `scrollTop` (the
+  // Source editor's) because Tree and Source are two views of one file with
+  // unrelated pixel heights — one scroll offset can't serve both — so switching
+  // Tree↔Source restores each side where it was.
+  yamlScrollTop?: number;
+  // Collapsed cards of the YAML card grid (#yaml-grid), as node ids — the card
+  // view's twin of `yamlCollapsed`, kept apart so folding a card and folding a tree
+  // row don't clobber each other. Ids are re-derived on every parse, so a stale one
+  // is inert.
+  gridCollapsed?: string[];
+  // The focused ("main") card of the YAML card grid (#yaml-grid), as its node id,
+  // for the drill navigation: the grid shows that card's level (its siblings, it
+  // highlighted) and its children below. Absent/unmatched = the top overview.
+  // Re-derived on every parse, so a stale id is inert (falls back to overview).
+  gridFocus?: string;
+  // The table viewer's column separator (#40), as the literal character. Absent
+  // means "auto" — sniffed from the content on every open. It is persisted only
+  // when the reader *overrides* the guess, because that is the case the sniffer
+  // got wrong: re-sniffing would just talk them back out of it on the next open.
+  delimiter?: string;
+  // The table viewer's hidden columns (#40), as indices into the parsed row. They
+  // are only meaningful for the separator that produced them — a different one
+  // cuts the row into different columns — so the viewer drops them when the
+  // delimiter changes rather than hiding whatever now sits at those indices.
+  hiddenColumns?: number[];
+  // The table viewer's drag-resized column widths (#40), keyed by parsed-column
+  // index → total pixel width (padding included). Absent for a column means it
+  // keeps its measured `ch` width. Like `hiddenColumns` the indices only mean
+  // anything under the separator that produced them, so a delimiter change drops
+  // the overrides rather than re-applying them to whatever the new cut lands on.
+  columnWidths?: Record<number, number>;
+  // The deck editor's slide-overview rail width (px), user-resizable via a drag
+  // handle. Like the table's column widths, only ever written on an explicit
+  // resize — the default is computed, not persisted, so a deck opened for the
+  // first time (or by an older build with no field) gets the current default
+  // rather than a stale one baked into the file.
+  deckRailWidth?: number;
+}
+
+// Detached windows render their tabs from a Tauri-event SEED into local React
+// state; those tabs never enter `useTabsStore` (the main window owns the layout
+// store — see DetachedApp/jumpToSource). Viewer hooks seed their per-tab state
+// (scroll/zoom + the #45 autocomplete/grammar overrides) from
+// `useTabsStore`, so in a detached window that probe misses and the editor falls
+// back to the per-type default — e.g. a per-tab autocomplete toggle silently
+// reverts to off. This per-window registry lets those hooks recover a detached
+// tab's seeded `viewerState` by key. Populated by DetachedApp from each seed;
+// lives only in the detached window's heap (no-op/empty in the main window).
+const detachedViewerState = new Map<string, ViewerState>();
+
+/** Register (or clear, when `vs` is undefined) a detached tab's seeded
+ *  `viewerState` so viewer hooks can read it when `useTabsStore` has no entry. */
+export function setDetachedViewerState(key: string, vs: ViewerState | undefined): void {
+  if (vs) detachedViewerState.set(key, vs);
+  else detachedViewerState.delete(key);
+}
+
+/** A detached tab's seeded `viewerState`, or undefined. See {@link setDetachedViewerState}. */
+export function getDetachedViewerState(key: string): ViewerState | undefined {
+  return detachedViewerState.get(key);
 }
 
 /**
@@ -56,6 +343,26 @@ export interface TabEntry {
   // `--session-id <uuid>`), the UUID Eldrun minted and launched the agent with.
   // Surfaced on tab hover and intended to later drive session resume.
   sessionId?: string;
+  // This tab's work is **not** worth outliving it: never tmux-wrapped, however
+  // persist-enabled its project is (`lib/tmuxSession`'s `shouldPersistTab`). Set
+  // by the SLURM log tab on an HPC-tagged host — a `tail -F` left running under a
+  // tmux daemon on a shared login node after Eldrun quits is exactly the standing
+  // presence the tag forbids, and the tail is one click away in the Jobs view.
+  // A real run (`srun --pty`, a training job) is untouched: it is the case tmux
+  // persistence exists for. Persisted with the tab, so a restored log tab does
+  // not quietly regain a session on the next launch.
+  ephemeral?: boolean;
+  // For a custom agent (see CustomAgent) whose spec carries a "continue last
+  // session" flag: the resume args this tab respawns with after a restart. Its
+  // presence is what makes such a tab restart-resumable without the cmd being in
+  // the static RESUMABLE_AGENTS map (see isResumableAgentTab / loadFromLayout).
+  // Persisted, since args are rebuilt from scratch on restore.
+  resumeArgs?: string[];
+  // Absolute path of the script this terminal tab was launched to run (Python
+  // Run/Debug, or a foreground shell-script run). Lets the activity store pulse
+  // the file's run button while the tab is producing output. Busy-gated on read,
+  // so a restored non-busy run tab never falsely lights up.
+  runFile?: string;
   // For "embed" tabs (a file dragged from the FileTree onto a tab bar): the
   // absolute path of the embedded file and the resolved executable that opens
   // it. Phase 1 opens the file externally; Phase 2 will reparent the app's
@@ -72,6 +379,46 @@ export interface TabEntry {
   // the file (or restarting) restores the position instead of jumping to the top
   // (see ViewerState). Written by the viewer panes, persisted in project.json.
   viewerState?: ViewerState;
+  // SSH-sync Phase 0: for `agent`/`shell` tabs on a remote project, whether this
+  // tab runs locally (in the mirror) or on the host. Absent → the per-kind
+  // default (agents local, shells remote — see effectiveTabLocation). Inert on a
+  // local project. Persisted so the choice survives a restart.
+  location?: TabLocation;
+  // The tab's agent authority mode — the planner/doer split ("plan" proposes,
+  // "auto" auto-accepts edits). Only meaningful for agents in the capability
+  // table (Claude and Gemini; see components/tabs/agentModes.ts) and only
+  // surfaced when the experimental `agent_mode_toggle` setting is on. Absent →
+  // no mode flag is passed and the agent runs in its own default (ask each
+  // time), which is the behaviour of every tab predating this feature. The mode
+  // rides in `args` as the agent's mode flag (`--permission-mode`/`--approval-mode
+  // <x>`); this field is the durable record of it, since `args` are rebuilt from
+  // scratch on restore (loadFromLayout).
+  agentMode?: AgentMode;
+  // For "projectfiles" tabs: the project-relative folder the tree is browsed
+  // into. Persisted, so "Open in new tab" on a folder (and the tab's own
+  // navigation) survive a restart instead of coming back at the project root.
+  folder?: string;
+  // For "browser" tabs (#61): the tab's COMMITTED address — the last top-level
+  // URL that actually loaded, the analogue of `folder?` on a projectfiles tab.
+  // Never the in-flight address-bar text. It is the ONLY thing a browser tab
+  // persists: no history, no scroll, no form state, no zoom, no cookies. A URL
+  // string is inert, human-readable and reviewable in a diff; a serialized
+  // session blob written into `project.json` (a control file that lives inside
+  // the project tree) is none of those.
+  url?: string;
+  // Persistent remote sessions (TODO #85): the STABLE tmux session name this shell
+  // tab spawns-or-attaches on the host. Minted once at creation and persisted,
+  // because the tab's PTY id (scope:key) is regenerated on restore — so the name
+  // must live on the tab to survive a relaunch and let the tab REATTACH rather than
+  // start a second session. Passed to the backend as `tmux_session` when the tab
+  // actually runs persistently (a remote shell tab of a persist-enabled project);
+  // inert otherwise. See `lib/tmuxSession.ts`, `shouldPersistTab`.
+  tmuxSession?: string;
+  // When set, this shell tab **attaches** to an existing named tmux session on the
+  // host (opened from the Sessions view onto a running, possibly hand-started
+  // session) instead of spawning a fresh one. Persisted so it reattaches across a
+  // restart. Passed as `tmux_attach`, which takes precedence over `tmuxSession`.
+  tmuxAttach?: string;
 }
 
 export type SplitDir = "row" | "column";
@@ -91,6 +438,20 @@ export interface GroupNode {
   id: string;
   tabKeys: string[]; // order shown in this subwindow's tab bar
   activeKey: string | null; // active tab within this group
+  // Per-subwindow right file viewer: when true this group renders a docked
+  // file-viewer column (the shared ProjectFilesView, hosted by
+  // SubwindowFilesSidebar) on its right edge — in the main window and in a
+  // detached popout alike. Persisted with the layout tree so it survives a
+  // restart, and carried through detach/attach so a popped-out subwindow keeps
+  // its viewer.
+  filesOpen?: boolean;
+  // The sidebar column's width in px (unset → the component default).
+  filesWidth?: number;
+  // The browsed folder (project-relative) the docked viewer last showed, so the
+  // subwindow reopens where it was left. Lives on the node — like the open flag
+  // and width — so it persists with the layout, travels with a detach, and is
+  // freed when the group (subwindow) is dropped.
+  filesFolder?: string;
 }
 
 export type LayoutNode = SplitNode | GroupNode;
@@ -117,12 +478,37 @@ export interface WindowBounds {
  * arbitrary split subtree), keeping the re-attach merge math simple.
  */
 export interface DetachedGroup {
-  id: string; // the detached group node's id
-  subtree: GroupNode;
+  id: string; // the detached popout's identity (window/registry label key)
+  // The popout's layout. Usually a single GroupNode, but can be a SplitNode once
+  // the user splits panes inside the popout (multi-pane popouts). The root node's
+  // id need NOT equal `id` — `id` identifies the OS window, the subtree is its
+  // content.
+  subtree: LayoutNode;
   label: string; // backend window/registry label
   // Last-known OS geometry of the popout, streamed back by the window. Persisted
   // (via the saved tree) so the popout reopens at the same place/size on restart.
   bounds?: WindowBounds;
+  // The popout's OWN UI zoom (per-window, not the global/main-window `ui_zoom`),
+  // streamed back over DETACHED_ZOOM. Persisted (via the saved tree) and shipped
+  // in the popout's seed so it reopens at the zoom it was left at. Undefined = 100%.
+  zoom?: number;
+}
+
+/**
+ * A tab group that has been HIDDEN from the in-window layout tree. Mechanically
+ * this is "detach minus the OS window": the group's node leaves
+ * `layoutByScope[scope]` while its tab PAYLOADS stay in `tabsByScope` (so PTYs
+ * never unmount — `CenterPanel`'s flat pane layer keeps them mounted but
+ * `display:none`, since no live layout node references their keys). The user
+ * brings it back from the right-panel Hidden list (`unhideGroup`). Unlike a
+ * detached popout there is no OS window and thus no `bounds`/`label` handoff.
+ */
+export interface HiddenGroup {
+  id: string; // the hidden group's identity (the original group's id)
+  // The hidden subtree. Usually a single GroupNode, but can be a SplitNode when
+  // a multi-pane split was hidden whole.
+  subtree: LayoutNode;
+  label: string; // debug/label tag, mirrors DetachedGroup.label
 }
 
 /**
@@ -130,13 +516,29 @@ export interface DetachedGroup {
  * `detached.ts`) so `tabs.ts` stays free of a circular import; `detached.ts`'s
  * `DetachedEdit` is structurally identical.
  */
+export type DropEdge = "left" | "right" | "top" | "bottom" | "center";
+
 export type DetachedEditPayload =
   | { kind: "activate"; key: string }
   | { kind: "rename"; key: string; label: string }
+  // Multi-host: change where a locatable tab runs; applied to the payload here so
+  // the main window's flat pane layer (which owns the popout's PTY) respawns it.
+  | { kind: "setLocation"; key: string; location: TabLocation }
   | { kind: "close"; key: string }
-  | { kind: "reorder"; tabKeys: string[] };
-
-export type DropEdge = "left" | "right" | "top" | "bottom" | "center";
+  | { kind: "reorder"; tabKeys: string[] }
+  // Multi-pane popouts: split `key` out into a new pane at `edge` of
+  // `targetGroupId` (a group within the popout's subtree).
+  | { kind: "split"; key: string; targetGroupId: string; edge: DropEdge }
+  // Multi-pane popouts: resize the divider between children `dividerIndex`/
+  // `dividerIndex+1` of the split `splitId` within the popout's subtree.
+  | { kind: "resize"; splitId: string; dividerIndex: number; fraction: number }
+  // Multi-pane popouts: move `key` into `targetGroupId` (at `index`, else append),
+  // merging it across the popout's groups (collapses an emptied source pane).
+  | { kind: "move"; key: string; targetGroupId: string; index?: number }
+  // Toggle/resize a popout group's docked file-viewer column (the per-subwindow
+  // right file viewer), or record the folder it browsed to. Applied to the group
+  // node inside the popout's subtree.
+  | { kind: "files"; groupId: string; open?: boolean; width?: number; folder?: string };
 
 /** Flat tab shape as persisted in project.json's `tab_layout`. */
 export interface SavedTabEntry {
@@ -157,11 +559,48 @@ export interface SavedTabEntry {
   viewer?: InternalViewer;
   // Persisted reader position (scroll/zoom/pan) for in-app viewer embeds.
   viewerState?: ViewerState;
+  // SSH-sync Phase 0: persisted per-tab local/remote locality (see TabEntry).
+  location?: TabLocation;
+  // Persisted planner/doer mode (see TabEntry.agentMode). Re-applied to the
+  // launch args on restore, so a tab comes back in the mode it was left in.
+  agentMode?: AgentMode;
+  // Persisted browsed folder of a "projectfiles" tab (see TabEntry.folder).
+  folder?: string;
+  // Persisted committed address of a "browser" tab (see TabEntry.url). This one
+  // field is the WHOLE of a browser tab's persistence, and a restored tab does
+  // not navigate to it by itself — it comes back on its resume card.
+  url?: string;
+  // Persisted resume args of a restart-resumable custom agent (see
+  // TabEntry.resumeArgs). Re-applied as the launch args on restore.
+  resumeArgs?: string[];
+  // Persisted stable tmux session name for a shell tab (see TabEntry.tmuxSession).
+  tmuxSession?: string;
+  // Persisted tmux session this shell tab attaches to (see TabEntry.tmuxAttach).
+  tmuxAttach?: string;
+  // Persisted "never tmux-wrap this tab" marker (see TabEntry.ephemeral).
+  ephemeral?: boolean;
 }
 
 /** Serialized layout tree as persisted in project.json's `tab_groups`. */
 export type SavedLayoutTree =
-  | { type: "split"; dir: SplitDir; children: SavedLayoutTree[]; sizes: number[] }
+  | {
+      type: "split";
+      dir: SplitDir;
+      children: SavedLayoutTree[];
+      sizes: number[];
+      // #42: a MULTI-PANE popout's content is a split, so the detached tag can sit
+      // on a split node too — restore re-opens the whole split subtree as one
+      // floating popout (see withDetachedDocked / deserializeTree / detachGroup).
+      detached?: boolean;
+      bounds?: WindowBounds;
+      // A detached popout's own per-window zoom (see DetachedGroup.zoom).
+      zoom?: number;
+      // When true, this split subtree was HIDDEN (parked out of the tiled layout).
+      // Persisted as a docked node so its tabs survive, but tagged so restore
+      // routes it back into `hiddenGroupsByScope` instead of the live tree.
+      // See withHiddenDocked / deserializeTree / loadFromLayout.
+      hidden?: boolean;
+    }
   | {
       type: "group";
       tabKeys: string[];
@@ -172,6 +611,15 @@ export type SavedLayoutTree =
       // at `bounds` instead of docking it. See withDetachedDocked / loadFromLayout.
       detached?: boolean;
       bounds?: WindowBounds;
+      // A detached popout's own per-window zoom (see DetachedGroup.zoom).
+      zoom?: number;
+      // When true, this group was HIDDEN (see the split variant's note). Restore
+      // moves it into `hiddenGroupsByScope` rather than docking it live.
+      hidden?: boolean;
+      // Per-subwindow right file viewer (see GroupNode.filesOpen/filesWidth).
+      filesOpen?: boolean;
+      filesWidth?: number;
+      filesFolder?: string;
     };
 
 /**
@@ -199,6 +647,12 @@ interface TabsStore {
   // Their tab payloads still live in `tabsByScope[scope]`; only their layout
   // node has left `layoutByScope[scope]`.
   detachedGroupsByScope: Record<string, DetachedGroup[]>;
+  // Per-scope groups the user has HIDDEN (parked out of the tiled layout while
+  // keeping their tabs/PTYs alive — detach minus the OS window). Like the
+  // detached map, the payloads stay in `tabsByScope[scope]`; only the layout
+  // node lives here. Surfaced by the right-panel Hidden list; restored via
+  // `unhideGroup`. Persists across restart via the SavedLayoutTree `hidden` tag.
+  hiddenGroupsByScope: Record<string, HiddenGroup[]>;
   // #42: per-scope groups that were detached when the scope was last saved and
   // must be re-opened as floating popouts once the scope's layout is live and its
   // panes (PTYs) have mounted. Populated by loadFromLayout, drained by
@@ -225,12 +679,51 @@ interface TabsStore {
   setGroupActive: (groupId: string, key: string) => void;
 
   // tab lifecycle
-  addTab: (tab: Omit<TabEntry, "key">) => TabEntry; // into focused group
+  // `seeded` marks a tab Eldrun opened by itself rather than one the user asked
+  // for (the root scope's default 3D-blob tab). Such a tab must not be counted as
+  // a tab the user opened — see `countTabOpen`.
+  addTab: (tab: Omit<TabEntry, "key">, opts?: { seeded?: boolean }) => TabEntry; // into focused group
+  // Add a tab into a SPECIFIC scope's focused group, regardless of which scope is
+  // currently active. Used to surface remote SSH/OpenVPN connections in the root
+  // scope without disturbing the active project. When `scope` is the current
+  // scope this behaves exactly like `addTab`; otherwise the tab is written into
+  // that scope's maps only (the user sees it after switching to it).
+  addTabToScope: (scope: string, tab: Omit<TabEntry, "key">) => TabEntry;
   ensureTab: (
     tab: Omit<TabEntry, "key">,
     matches: (tab: TabEntry) => boolean,
   ) => TabEntry;
   renameTab: (key: string, label: string) => void;
+  // Rewrite the embedPath (and label) of every in-app "embed" tab in the CURRENT
+  // scope whose file was renamed/moved on disk — an exact match (`embedPath ===
+  // oldAbs`) or, for a directory rename/move, any tab UNDER it (`embedPath`
+  // starts with `oldAbs + "/"`, prefix-swapped to `newAbs`). Payload-only (keys
+  // unchanged), so the main CenterPanel re-renders from the store and the updated
+  // payloads are what a subsequent reseed ships to any detached popout. On an
+  // exact match the label is refreshed to the new basename only when it still
+  // equals the old basename (so a user-renamed tab keeps its label). No-op when
+  // nothing matches. Delete/rename tab-sync lives in components/files/fileTabSync.
+  /**
+   * Re-point a project's tabs after it is detached from its SSH host, moving every cwd
+   * out of the old remote-project state dir and into the promoted mirror.
+   *
+   * This is not cosmetic; without it a detach silently breaks every agent tab. While a
+   * project is remote its `directory` is the **state dir**
+   * (`~/.local/share/eldrun/remote-projects/<id>/`), and `loadFromLayout` stores exactly
+   * that as each tab's `cwd` (agents unconditionally, others via `t.cwd || defaultCwd`).
+   * Nothing noticed, because `localTabCwd` overrode it at render time to the real mirror —
+   * an override gated on `isRemoteProject`. Detach flips that to false, the override stops
+   * firing, and every tab falls back to the stored cwd it never should have had: the state
+   * dir. Agents then launch inside `~/.local/share/eldrun/remote-projects/<id>/` — a
+   * directory that detach has just emptied — so Claude asks for permissions there and
+   * `--resume` finds no session, because Claude keys its history by cwd and the whole
+   * conversation lives under the mirror's path instead.
+   *
+   * Host-located tabs are converted to local too: their cwd is a path on a machine this
+   * project is no longer attached to.
+   */
+  detachScopeFromRemote: (scope: string, oldDir: string, newDir: string) => void;
+  retargetTabs: (oldAbs: string, newAbs: string) => void;
   removeTab: (key: string) => void; // drop; collapse empty groups/splits
   closeGroup: (groupId: string) => void; // close a whole subwindow; siblings resize
   // Close EVERY tab/subwindow in a scope (defaults to the current scope),
@@ -239,10 +732,32 @@ interface TabsStore {
   // explicitly at the call site if the scope isn't the active project.
   closeAllTabs: (scope?: string) => void;
   updateTabEnv: (key: string, env: Record<string, string>) => void;
+  // Persistent sessions (TODO #85): rename a tab's tmux session name after the
+  // Sessions view renamed the host session, so the persisted name still matches
+  // and the tab reattaches to the renamed session on restart. Updates whichever
+  // field the tab uses (`tmuxAttach` for an attach tab, else `tmuxSession`).
+  // Scope-explicit (the Sessions view may act on a non-active project).
+  setTabTmuxName: (scope: string, key: string, name: string) => void;
+  // SSH-sync Phase 0: set a tab's local/remote locality (agent/shell tabs on a
+  // remote project). No-op when unchanged. The CenterPanel's localOnly/cwd
+  // computation reads the result so the next mount spawns on the chosen side.
+  setTabLocation: (key: string, location: TabLocation) => void;
+  // Set an agent tab's planner/doer mode. Rewrites the tab's launch args, which
+  // respawns its PTY (TerminalView's spawn effect keys on the args) — the agent
+  // comes back on the same conversation via the backend's resume rewrite. No-op
+  // when unchanged, or for an agent with no mode support.
+  setAgentMode: (key: string, mode: AgentMode) => void;
   // Merge a patch into an embed tab's persisted viewer position (scroll/zoom/
   // pan). The viewer panes call this as the reader scrolls/zooms; the debounced
   // saveLayout effect then flushes it to project.json (see ViewerState).
   setViewerState: (key: string, patch: ViewerState) => void;
+  // Record the folder a "projectfiles" tab is browsed into, so it reopens there
+  // (see TabEntry.folder). No-op when unchanged.
+  setTabFolder: (key: string, folder: string) => void;
+  // Record the address a "browser" tab COMMITTED to — the page that actually
+  // loaded, never the in-flight address-bar text (see TabEntry.url). No-op when
+  // unchanged, so re-loading the same page doesn't churn the layout save.
+  setTabUrl: (key: string, url: string) => void;
 
   // arrangement
   reorderInGroup: (groupId: string, from: number, to: number) => void;
@@ -258,6 +773,23 @@ interface TabsStore {
     edge: DropEdge,
   ) => TabEntry | null;
   resizeSplit: (splitId: string, dividerIndex: number, fraction: number) => void;
+  // Merge two adjacent subwindows into one (double-click the divider between
+  // them): append every tab of `sourceGroupId` onto `targetGroupId`, then let
+  // `writeScope`'s collapse pass drop the emptied source and unwrap the split.
+  // PTYs are preserved (tabs move, not close); the survivor keeps its activeKey.
+  // No-op if either group is missing or they are the same group.
+  mergeGroups: (targetGroupId: string, sourceGroupId: string) => void;
+
+  // Per-subwindow right file viewer: open/close a group's docked file-viewer
+  // column, and persist its width. Both write the flag onto the group NODE
+  // (GroupNode.filesOpen/filesWidth), so the sidebar persists with the layout
+  // tree and travels with a detach. No-ops if the group isn't in the current
+  // scope's live layout (popout-side toggles arrive via applyDetachedEdit).
+  setGroupFiles: (groupId: string, open: boolean) => void;
+  setGroupFilesWidth: (groupId: string, width: number) => void;
+  // Persist the folder the group's docked viewer last browsed to (see
+  // GroupNode.filesFolder). Same node-write path as the flag/width.
+  setGroupFilesFolder: (groupId: string, folder: string) => void;
 
   // #42: detach / re-attach a subwindow (group) to/from its own OS window.
   // `detachGroup` removes the group from the in-window tree, records it in
@@ -270,7 +802,14 @@ interface TabsStore {
   // group's label, or null if refused / not found.
   detachGroup: (
     groupId: string,
-    opts?: { skipBackend?: boolean; bounds?: WindowBounds; allowLastGroup?: boolean },
+    opts?: {
+      skipBackend?: boolean;
+      bounds?: WindowBounds;
+      allowLastGroup?: boolean;
+      // Restart respawn only: the popout's persisted per-window zoom, recorded on
+      // the fresh detached entry so its seed restores it (see RespawnTarget.zoom).
+      zoom?: number;
+    },
   ) => string | null;
   // Drag-a-tab-to-another-monitor: pop a SINGLE existing tab out of the in-window
   // layout into its own fresh detached OS window at `bounds` (screen px). Unlike
@@ -292,6 +831,22 @@ interface TabsStore {
     detachedId: string,
     opts?: { targetGroupId?: string; edge?: DropEdge; skipBackend?: boolean },
   ) => void;
+  // Hide a subwindow (group) from the tiled layout without killing it: strips its
+  // node from `layoutByScope`, keeps its tab payloads in `tabsByScope` (PTYs stay
+  // mounted-but-hidden), and parks the subtree in `hiddenGroupsByScope`. Unlike
+  // `detachGroup` it allows hiding the LAST group (the scope then shows the
+  // +-placeholder) and spawns no OS window. No-op if the group isn't found.
+  hideGroup: (groupId: string) => void;
+  // Restore a hidden group into the live layout (the reverse of `hideGroup`,
+  // modeled on `attachGroup`): regenerates the subtree's ids, injects it as a new
+  // pane (or as the root if the layout emptied), drops the hidden record, and
+  // focuses it. `opts.activeKey` restores it focused on a specific tab (tab-chip
+  // click in the Hidden list). No-op if the hidden entry is gone.
+  unhideGroup: (hiddenId: string, opts?: { activeKey?: string }) => void;
+  // Permanently close a hidden group: drops the hidden record AND its tab
+  // payloads from `tabsByScope` (killing the PTYs, mirroring `closeGroup`). Used
+  // by the ✕ on a Hidden-list row. No-op if the hidden entry is gone.
+  closeHiddenGroup: (hiddenId: string) => void;
   // #42: dock a SINGLE tab out of a popout back into a scope's layout (the
   // per-tab analog of attachGroup, used when one tab — not the whole group — is
   // dragged onto the main window). Inserts the tab at `targetGroupId`/`edge`
@@ -306,6 +861,87 @@ interface TabsStore {
     tabKey: string,
     opts?: { targetGroupId?: string; edge?: DropEdge; skipBackend?: boolean },
   ) => void;
+  // #42: dock ONE PANE (an inner group) of a MULTI-pane popout back into a
+  // scope's layout — the per-pane analog of attachDetachedTab, fired when a
+  // pane's bar grip is dragged onto the main window. Moves the pane's tabs as
+  // one group into the layout at `targetGroupId`/`edge` (center merges, an edge
+  // splits, default lands as its own pane) and removes the group node from the
+  // popout's subtree, leaving the sibling panes floating. If the pane is the
+  // popout's ONLY group this IS a whole-popout dock and delegates to
+  // attachGroup / dropDetachedGroup (which also close the OS window). The tab
+  // payloads already live in `tabsByScope`, so they survive the move. No-op if
+  // the popout or pane is gone.
+  attachDetachedPane: (
+    scope: string,
+    detachedGroupId: string,
+    paneId: string,
+    opts?: { targetGroupId?: string; edge?: DropEdge; skipBackend?: boolean },
+  ) => void;
+  // #42: pop ONE PANE (an inner group) of a MULTI-pane popout into its OWN brand
+  // new detached OS window — the per-pane analog of detachTabToNewWindow, fired
+  // when a pane's bar grip is dragged and released in FREE SPACE. Removes the
+  // group node from the source popout's subtree and records a fresh detached
+  // entry holding just that group at `bounds`, then spawns its OS window. The
+  // tab payloads stay in `tabsByScope` (shared). Refuses (returns null) when the
+  // popout/pane is gone OR the pane is the popout's only group — the popout
+  // already IS that pane's window. Returns the new window label.
+  detachPaneToNewWindow: (
+    scope: string,
+    fromGroupId: string,
+    paneId: string,
+    bounds: WindowBounds,
+  ) => string | null;
+  // #42: pop a SINGLE tab OUT of an existing detached popout into its OWN brand
+  // new detached OS window (the popout analog of TabBar's `popToNewWindow`),
+  // fired when a tab dragged out of a popout is released in FREE SPACE — outside
+  // both the main window and the popout. Removes `tabKey` from the source
+  // popout's subtree and records a fresh single-tab detached entry at `bounds`,
+  // then spawns its OS window. The tab payload stays in `tabsByScope[scope]`
+  // (shared), so the new popout self-seeds and the PTY never dies. No-ops
+  // (returns null) when the source/tab is gone OR when removing the tab would
+  // empty the source popout — a lone-tab popout dragged whole is already its own
+  // window, so re-detaching it would be needless churn. Returns the new label.
+  detachTabToNewWindow: (
+    scope: string,
+    fromGroupId: string,
+    tabKey: string,
+    bounds: WindowBounds,
+  ) => string | null;
+  // #42 (main → detached): dock a SINGLE existing in-window tab INTO an already
+  // open detached popout's group — the inverse of `attachDetachedTab`, fired when
+  // a tab dragged out of the main window is released over a popout (so no new OS
+  // window opens). Removes the tab from its source group in `scope`'s in-window
+  // layout (its payload STAYS in `tabsByScope`, so the PTY never dies: the main
+  // keeps the pane mounted-but-hidden and the popout re-attaches to it), appends
+  // it to the detached group's subtree, and activates it there. The caller
+  // re-seeds the popout so the new tab renders. No-op if the tab or detached
+  // group is gone.
+  dockTabIntoDetached: (
+    scope: string,
+    detachedGroupId: string,
+    tabKey: string,
+    // #42: where inside the popout to place the tab — a specific pane resolved
+    // from the cursor (a body edge splits, center/a bar slot merges into that
+    // group). Omitted → append to the popout's first pane (legacy behaviour).
+    target?: DetachedDockTarget,
+  ) => void;
+  // #42 (detached → detached): move a SINGLE tab from one open popout INTO another
+  // open popout of the SAME scope — fired when a tab dragged out of popout A is
+  // released over popout B. Removes `tabKey` from the source popout's subtree
+  // (dropping the source record + closing its OS window when it empties, mirroring
+  // `attachDetachedTab`) and places it into the destination popout's subtree at
+  // `target`. The payload STAYS in `tabsByScope` (shared), so the PTY the MAIN
+  // window owns never dies and both popouts re-attach to it after the re-seed.
+  // No-op if either popout is gone, the tab is absent from the source, or it is
+  // already in the destination.
+  moveTabBetweenDetached: (
+    scope: string,
+    fromGroupId: string,
+    toGroupId: string,
+    tabKey: string,
+    target?: DetachedDockTarget,
+    opts?: { skipBackend?: boolean },
+  ) => void;
   // #42: apply an edit streamed back from a detached window to the main store's
   // record of that detached group (its subtree node + tab payloads). Keeps the
   // main window — the single persistence owner — in sync with the detached one.
@@ -313,6 +949,43 @@ interface TabsStore {
     scope: string,
     groupId: string,
     edit: DetachedEditPayload,
+  ) => void;
+  // #42: create a NEW tab inside a detached popout, from its own "+" menu. The
+  // main window mints the key + owns the PTY, so this appends the payload to
+  // `tabsByScope[scope]` (spawning its pane in the main window's flat pane layer)
+  // and inserts the key into `targetGroupId` within the popout's subtree,
+  // activating it. Returns the minted key (or null if the popout/group is gone),
+  // so the caller can re-seed the popout to render + attach to the new tab.
+  addDetachedTab: (
+    scope: string,
+    detachedGroupId: string,
+    tab: Omit<TabEntry, "key">,
+    targetGroupId: string,
+  ) => string | null;
+  // Like `addDetachedTab`, but the new tab carves a NEW pane at `edge` of
+  // `targetGroupId` within the popout's subtree instead of appending to it — a
+  // file dropped on a body edge inside a detached popout. Mints the key + owns
+  // the PTY (main window), so it returns the minted key (or null if the popout /
+  // group is gone) for the caller's re-seed. `edge` must be a side, never
+  // "center" (that appends → use `addDetachedTab`).
+  addDetachedTabSplit: (
+    scope: string,
+    detachedGroupId: string,
+    tab: Omit<TabEntry, "key">,
+    targetGroupId: string,
+    edge: DropEdge,
+  ) => string | null;
+  // Multi-pane popouts: split a tab inside a detached popout's own subtree,
+  // carving a new pane at `edge` of `targetGroupId` (a group WITHIN the
+  // popout's subtree). Mirrors `splitWithTab` but mutates
+  // `detachedGroupsByScope[scope][i].subtree` instead of the in-window layout.
+  // The caller re-seeds the popout so it re-renders the new split.
+  splitDetachedGroup: (
+    scope: string,
+    detachedGroupId: string,
+    key: string,
+    targetGroupId: string,
+    edge: DropEdge,
   ) => void;
   // #42: dock-back for a group whose scope is NOT active. We re-inject the
   // detached subtree into that scope's STORED layout (`layoutByScope[scope]`,
@@ -329,9 +1002,21 @@ interface TabsStore {
   // gone — persist the scope afterwards (persistScope) so disk agrees and they
   // don't restore on next launch. Closes the OS window via `attach_subwindow`.
   closeDetachedGroup: (scope: string, groupId: string) => void;
+  // #42: hide a popout into the right-panel "Hidden subwindows" list instead of
+  // docking it live or closing it — the detached twin of `hideGroup`. Moves the
+  // popout's subtree from `detachedGroupsByScope` into `hiddenGroupsByScope[scope]`
+  // (its tab payloads never left `tabsByScope`, so the flat pane layer keeps their
+  // PTYs mounted through the move) and closes the OS window via `attach_subwindow`.
+  // Restored/closed from the Hidden list exactly like a hidden main-window
+  // subwindow (`unhideGroup`/`closeHiddenGroup`), which docks it back into the
+  // tiled layout. No-op if the detached entry is gone.
+  hideDetachedGroup: (scope: string, groupId: string) => void;
   // #42: record a popout's latest OS geometry (streamed back from the window) so
   // it persists and the popout reopens where the user left it after a restart.
   setDetachedBounds: (scope: string, groupId: string, bounds: WindowBounds) => void;
+  // Record a popout's latest per-window zoom (streamed back over DETACHED_ZOOM)
+  // so it persists and the popout reopens at that zoom after a restart.
+  setDetachedZoom: (scope: string, groupId: string, zoom: number) => void;
   // #42: return and clear the scope's pending respawn targets (groups that were
   // detached at save time). Caller re-opens each via detachGroup once its pane
   // has mounted. Returns [] when there is nothing to respawn.
@@ -362,6 +1047,22 @@ interface TabsStore {
   saveLayout: (localFile: string) => Promise<void>;
 }
 
+/**
+ * Count a tab open for the usage recap.
+ *
+ * Deliberately here rather than at the backend's `pty_spawn`: that fires again
+ * for every resumable agent tab respawned on relaunch, so counting there would
+ * report a fresh "agent tab opened" each morning for tabs opened days ago.
+ * `loadFromLayout` builds restored tabs directly and never calls `addTab`, so
+ * these entry points see only tabs a person actually opened — with one exception,
+ * the root scope's auto-seeded 3D-blob tab, which opts out via `{ seeded: true }`.
+ */
+function countTabOpen(scope: string, tab: TabEntry) {
+  bumpUsage(scope, METRIC.TAB_OPENED);
+  const agent = agentMetricLeaf(tab);
+  if (agent) bumpUsage(scope, sub(agent.prefix, agent.leaf));
+}
+
 let _keyCounter = 0;
 function nextKey(prefix: string) {
   return `${prefix}-${++_keyCounter}`;
@@ -386,6 +1087,40 @@ export function findGroup(node: LayoutNode | null, id: string): GroupNode | null
     if (found) return found;
   }
   return null;
+}
+
+/** Find a SPLIT node by id anywhere in the tree (#42: a multi-pane popout's root
+ *  is a split, so its respawn detaches the whole split subtree by this id). */
+export function findSplit(node: LayoutNode | null, id: string): SplitNode | null {
+  if (!node || node.type !== "split") return null;
+  if (node.id === id) return node;
+  for (const child of node.children) {
+    const found = findSplit(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Remove the subtree rooted at `id` (a group OR split) from `node`, collapsing
+ *  single-child splits that result. Returns the remaining tree (null if it
+ *  empties). Used to pop a whole multi-pane popout out of the in-window layout. */
+export function removeNodeById(node: LayoutNode | null, id: string): LayoutNode | null {
+  if (!node) return null;
+  if (node.id === id) return null;
+  if (node.type === "group") return node;
+  const kept: LayoutNode[] = [];
+  const sizes: number[] = [];
+  node.children.forEach((child, i) => {
+    const r = removeNodeById(child, id);
+    if (r) {
+      kept.push(r);
+      sizes.push(node.sizes[i] ?? 1);
+    }
+  });
+  if (kept.length === 0) return null;
+  if (kept.length === 1) return kept[0];
+  const total = sizes.reduce((a, b) => a + b, 0) || 1;
+  return { ...node, children: kept, sizes: sizes.map((s) => s / total) };
 }
 
 /** Find the group that currently holds `key` (and the key's index in it). */
@@ -413,8 +1148,140 @@ export function allGroups(node: LayoutNode | null): GroupNode[] {
 }
 
 /** Flat list of all tab keys, in stable left-to-right tree order. */
-function orderedTabKeys(node: LayoutNode | null): string[] {
+export function orderedTabKeys(node: LayoutNode | null): string[] {
   return allGroups(node).flatMap((g) => g.tabKeys);
+}
+
+/** Remove a tab key from whichever group holds it within a subtree, collapsing
+ *  an emptied group / lone-child split. Returns the new (possibly null) subtree;
+ *  returns the input unchanged if the key isn't present. Used by the detached
+ *  subtree mutators, which (post-split) operate on a LayoutNode, not a single
+ *  group. */
+export function removeKeyFromTree(node: LayoutNode, key: string): LayoutNode | null {
+  const found = findGroupOfTab(node, key);
+  if (!found) return node;
+  const removed = mapGroup(node, found.group.id, (g) => {
+    const tabKeys = g.tabKeys.filter((k) => k !== key);
+    return {
+      ...g,
+      tabKeys,
+      activeKey: g.activeKey === key ? (tabKeys[0] ?? null) : g.activeKey,
+    };
+  });
+  return collapse(removed);
+}
+
+/** Append a tab key to a subtree's FIRST group (depth-first) and activate it
+ *  there. Mirrors the single-group append for a tree subtree. */
+function appendKeyToTree(node: LayoutNode, key: string): LayoutNode {
+  const g = firstGroup(node);
+  return mapGroup(node, g.id, (grp) => ({
+    ...grp,
+    tabKeys: [...grp.tabKeys, key],
+    activeKey: key,
+  }));
+}
+
+/**
+ * #42: where to place a NEW key inside a detached popout's subtree when docking a
+ * tab/file INTO it from another window. `edge` carves a new pane at that side of
+ * the target group (center merges into it); `index` inserts into the target
+ * group's bar at that slot. Mirrors the within-popout drop semantics.
+ */
+export type DetachedDockTarget =
+  | { groupId: string; edge: DropEdge }
+  | { groupId: string; index: number };
+
+/** Place a NEW key into a subtree at `target` (or the first group when no target,
+ *  matching the legacy append). A non-center edge splits off a new pane beside the
+ *  target group; center / a bar slot inserts into the target group. Falls back to
+ *  an append when the target group is gone. Pure; activates the key. */
+function placeKeyInTree(
+  node: LayoutNode,
+  key: string,
+  target?: DetachedDockTarget,
+): LayoutNode {
+  if (!target || !findGroup(node, target.groupId)) return appendKeyToTree(node, key);
+  if ("index" in target) {
+    return mapGroup(node, target.groupId, (g) => {
+      const at = Math.min(Math.max(target.index, 0), g.tabKeys.length);
+      const tabKeys = [...g.tabKeys];
+      tabKeys.splice(at, 0, key);
+      return { ...g, tabKeys, activeKey: key };
+    });
+  }
+  if (target.edge === "center") {
+    return mapGroup(node, target.groupId, (g) => ({
+      ...g,
+      tabKeys: [...g.tabKeys, key],
+      activeKey: key,
+    }));
+  }
+  const newGroup: GroupNode = { type: "group", id: nextGroupId(), tabKeys: [key], activeKey: key };
+  const dir: SplitDir = target.edge === "left" || target.edge === "right" ? "row" : "column";
+  const before = target.edge === "left" || target.edge === "top";
+  return insertAdjacent(node, target.groupId, newGroup, dir, before);
+}
+
+/** Move `key` out of its current group into `targetGroupId` at `index` (append
+ *  when `index` is undefined), activating it there. Collapses the source group /
+ *  lone-child split if the move empties it — so dragging a split pane's only tab
+ *  onto the other pane's bar merges the two panes back into one. Pure; used by a
+ *  detached popout to merge a tab across its own groups. Returns the input
+ *  unchanged when the key isn't present, or null if removal empties the tree
+ *  (can't happen for a cross-group move, which always leaves the target).
+ *  No-ops (returns the input) when the target is the key's own group — that case
+ *  is a within-group reorder, handled elsewhere. */
+export function moveKeyInTree(
+  node: LayoutNode,
+  key: string,
+  targetGroupId: string,
+  index?: number,
+): LayoutNode | null {
+  const source = findGroupOfTab(node, key);
+  if (!source) return node;
+  if (source.group.id === targetGroupId) return node;
+  const cleaned = removeKeyFromTree(node, key);
+  if (!cleaned) return null;
+  // The target survives the removal (it's non-empty); bail if it somehow doesn't.
+  if (!findGroup(cleaned, targetGroupId)) return node;
+  return mapGroup(cleaned, targetGroupId, (g) => {
+    const tabKeys = [...g.tabKeys];
+    const at = index == null ? tabKeys.length : Math.min(Math.max(index, 0), tabKeys.length);
+    tabKeys.splice(at, 0, key);
+    return { ...g, tabKeys, activeKey: key };
+  });
+}
+
+/** Split `key` out of its group into a new pane at `edge` of `targetGroupId`,
+ *  within `node`. Pure; mirrors `splitWithTab`'s algorithm but on an arbitrary
+ *  subtree so the in-window layout AND a detached popout's subtree share it.
+ *  Returns the new subtree, or null if the split is a no-op / invalid. */
+export function splitSubtree(
+  node: LayoutNode,
+  key: string,
+  targetGroupId: string,
+  edge: DropEdge,
+): LayoutNode | null {
+  if (edge === "center") return null; // center merges, it isn't a split
+  const source = findGroupOfTab(node, key);
+  const target = findGroup(node, targetGroupId);
+  if (!source || !target) return null;
+  // Dropping a group's only tab onto its own edge would remove then re-add it.
+  if (source.group.id === targetGroupId && source.group.tabKeys.length === 1) {
+    return null;
+  }
+  const cleaned = removeKeyFromTree(node, key);
+  if (!cleaned || !findGroup(cleaned, targetGroupId)) return null;
+  const newGroup: GroupNode = {
+    type: "group",
+    id: nextGroupId(),
+    tabKeys: [key],
+    activeKey: key,
+  };
+  const dir: SplitDir = edge === "left" || edge === "right" ? "row" : "column";
+  const before = edge === "left" || edge === "top";
+  return insertAdjacent(cleaned, targetGroupId, newGroup, dir, before);
 }
 
 export type NavDirection = "left" | "right" | "up" | "down";
@@ -566,7 +1433,9 @@ function pruneCollapseCollect(
 function insertAdjacent(
   root: LayoutNode,
   targetId: string,
-  newGroup: GroupNode,
+  // The node to inject beside the target. Usually a fresh GroupNode, but may be
+  // a whole SplitNode (e.g. re-attaching a multi-pane detached popout's subtree).
+  newGroup: LayoutNode,
   dir: SplitDir,
   before: boolean,
 ): LayoutNode {
@@ -627,8 +1496,9 @@ function makeSplit(dir: SplitDir, children: LayoutNode[]): SplitNode {
   };
 }
 
-/** Apply a resize to the divider between child i and i+1 of `splitId`. */
-function applyResize(
+/** Apply a resize to the divider between child i and i+1 of `splitId`. Exported
+ *  so a detached popout's subtree can be resized through the same pure path. */
+export function applyResize(
   node: LayoutNode,
   splitId: string,
   dividerIndex: number,
@@ -734,7 +1604,16 @@ function currentScopeState(s: TabsStore) {
 export function serializeTree(node: LayoutNode | null): SavedLayoutTree | null {
   if (!node) return null;
   if (node.type === "group") {
-    return { type: "group", tabKeys: [...node.tabKeys], activeKey: node.activeKey };
+    return {
+      type: "group",
+      tabKeys: [...node.tabKeys],
+      activeKey: node.activeKey,
+      // Persist the per-subwindow file viewer (open flag + width + browsed
+      // folder) so it comes back on restart.
+      ...(node.filesOpen ? { filesOpen: true } : {}),
+      ...(node.filesWidth != null ? { filesWidth: node.filesWidth } : {}),
+      ...(node.filesFolder ? { filesFolder: node.filesFolder } : {}),
+    };
   }
   return {
     type: "split",
@@ -750,6 +1629,9 @@ export function serializeTree(node: LayoutNode | null): SavedLayoutTree | null {
 export interface RespawnTarget {
   id: string; // the FRESH group id minted during deserialize
   bounds?: WindowBounds;
+  // The popout's persisted per-window zoom (see DetachedGroup.zoom), carried so
+  // the respawn re-detaches it at the zoom it was left at. Undefined = 100%.
+  zoom?: number;
 }
 
 /**
@@ -760,11 +1642,16 @@ export interface RespawnTarget {
  * is pushed onto `detachedOut` so the caller can re-open it as a floating popout
  * after the layout is live (loadFromLayout). The node is still built into the
  * tree (docked) so its tabs mount and spawn their PTYs before the re-detach.
+ *
+ * A `hidden`-tagged node works the same way but pushes its fresh id onto
+ * `hiddenOut`; the caller then strips it from the built tree into
+ * `hiddenGroupsByScope` (see loadFromLayout).
  */
 function deserializeTree(
   saved: SavedLayoutTree,
   keyMap: Map<string, string>,
   detachedOut?: RespawnTarget[],
+  hiddenOut?: string[],
 ): LayoutNode | null {
   if (saved.type === "group") {
     const tabKeys = saved.tabKeys
@@ -777,15 +1664,37 @@ function deserializeTree(
       null;
     const id = nextGroupId();
     if (saved.detached && detachedOut) {
-      detachedOut.push({ id, bounds: saved.bounds });
+      detachedOut.push({ id, bounds: saved.bounds, zoom: saved.zoom });
     }
-    return { type: "group", id, tabKeys, activeKey };
+    if (saved.hidden && hiddenOut) {
+      hiddenOut.push(id);
+    }
+    return {
+      type: "group",
+      id,
+      tabKeys,
+      activeKey,
+      ...(saved.filesOpen ? { filesOpen: true } : {}),
+      ...(saved.filesWidth != null ? { filesWidth: saved.filesWidth } : {}),
+      ...(saved.filesFolder ? { filesFolder: saved.filesFolder } : {}),
+    };
   }
   const children = saved.children
-    .map((c) => deserializeTree(c, keyMap, detachedOut))
+    .map((c) => deserializeTree(c, keyMap, detachedOut, hiddenOut))
     .filter((c): c is LayoutNode => c != null);
   if (children.length === 0) return null;
-  if (children.length === 1) return children[0];
+  if (children.length === 1) {
+    // Collapsed to a single child. If this split was a detached (multi-pane)
+    // popout, the survivor inherits the respawn so the popout still re-opens.
+    if (saved.detached && detachedOut) {
+      detachedOut.push({ id: children[0].id, bounds: saved.bounds, zoom: saved.zoom });
+    }
+    // Likewise inherit a hidden tag so the survivor is parked, not docked live.
+    if (saved.hidden && hiddenOut) {
+      hiddenOut.push(children[0].id);
+    }
+    return children[0];
+  }
   // Align sizes to surviving children where possible, else even split.
   let sizes: number[];
   if (saved.sizes.length === children.length) {
@@ -794,7 +1703,18 @@ function deserializeTree(
   } else {
     sizes = children.map(() => 1 / children.length);
   }
-  return { type: "split", id: nextSplitId(), dir: saved.dir, children, sizes };
+  const id = nextSplitId();
+  // #42: a tagged split is a multi-pane popout — collect ONE respawn target for
+  // the whole subtree (its children aren't individually tagged) so the respawn
+  // path re-detaches the entire split as a single floating window.
+  if (saved.detached && detachedOut) {
+    detachedOut.push({ id, bounds: saved.bounds, zoom: saved.zoom });
+  }
+  // A hidden split is parked whole by its root id (same one-target logic).
+  if (saved.hidden && hiddenOut) {
+    hiddenOut.push(id);
+  }
+  return { type: "split", id, dir: saved.dir, children, sizes };
 }
 
 // ── Store ────────────────────────────────────────────────────────────────────
@@ -805,6 +1725,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   layoutByScope: {},
   focusedGroupByScope: {},
   detachedGroupsByScope: {},
+  hiddenGroupsByScope: {},
   pendingRespawnByScope: {},
   tabs: [],
   layout: null,
@@ -871,10 +1792,14 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
-  addTab: (tab) => {
+  addTab: (tab, opts) => {
     const key = nextKey(tab.kind);
     // Spread first so a stray `key` on the payload can't shadow the minted one.
-    const entry: TabEntry = { ...tab, key };
+    const entry: TabEntry = {
+      ...withTmuxSession(withRunHostDefault(get().scope, tab), get().scope),
+      key,
+    };
+    if (!opts?.seeded) countTabOpen(get().scope, entry);
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
       const nextTabs = [...tabs, entry];
@@ -904,6 +1829,45 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     return entry;
   },
 
+  addTabToScope: (scope, tab) => {
+    const key = nextKey(tab.kind);
+    const entry: TabEntry = {
+      ...withTmuxSession(withRunHostDefault(scope, tab), scope),
+      key,
+      scope,
+    };
+    countTabOpen(scope, entry);
+    set((s) => {
+      const tabs = s.tabsByScope[scope] ?? [];
+      const layout = s.layoutByScope[scope] ?? null;
+      const focusedGroupId = s.focusedGroupByScope[scope] ?? null;
+      const nextTabs = [...tabs, entry];
+
+      // No layout yet → create a root group containing this tab.
+      if (!layout) {
+        const root: GroupNode = {
+          type: "group",
+          id: nextGroupId(),
+          tabKeys: [key],
+          activeKey: key,
+        };
+        return writeScope(s, scope, nextTabs, root, root.id);
+      }
+
+      // Add into that scope's focused group (fall back to its first group).
+      const target =
+        (focusedGroupId && findGroup(layout, focusedGroupId)) ||
+        allGroups(layout)[0];
+      const next = mapGroup(layout, target.id, (g) => ({
+        ...g,
+        tabKeys: [...g.tabKeys, key],
+        activeKey: key,
+      }));
+      return writeScope(s, scope, nextTabs, next, target.id);
+    });
+    return entry;
+  },
+
   ensureTab: (tab, matches) => {
     const existing = get().tabs.find(matches);
     if (existing) {
@@ -925,9 +1889,72 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
+  detachScopeFromRemote: (scope, oldDir, newDir) => {
+    set((s) => {
+      const tabs = s.tabsByScope[scope] ?? [];
+      if (!tabs.length || !oldDir || !newDir || oldDir === newDir) return {};
+      let changed = false;
+      const nextTabs = tabs.map((t) => {
+        const wasRemoteLoc = t.location === "remote";
+        const underOld = t.cwd === oldDir || t.cwd.startsWith(`${oldDir}/`);
+        if (!wasRemoteLoc && !underOld) return t;
+        changed = true;
+        return {
+          ...t,
+          // A tab that ran ON THE HOST has a cwd in the host's filesystem, which means
+          // nothing here — it can only land in the promoted mirror root.
+          cwd: underOld ? `${newDir}${t.cwd.slice(oldDir.length)}` : newDir,
+          // …and it must stop claiming to run on a host this project no longer has.
+          location: wasRemoteLoc ? undefined : t.location,
+        };
+      });
+      if (!changed) return {};
+      const layout = s.layoutByScope[scope] ?? null;
+      const focused = s.focusedGroupByScope[scope] ?? null;
+      return writeScope(s, scope, nextTabs, layout, focused);
+    });
+  },
+
+  retargetTabs: (oldAbs, newAbs) => {
+    set((s) => {
+      const scope = s.scope;
+      const tabs = s.tabsByScope[scope] ?? [];
+      const oldBase = oldAbs.slice(oldAbs.lastIndexOf("/") + 1);
+      const newBase = newAbs.slice(newAbs.lastIndexOf("/") + 1);
+      let changed = false;
+      const nextTabs = tabs.map((t) => {
+        if (t.kind !== "embed" || !t.embedPath) return t;
+        if (t.embedPath === oldAbs) {
+          changed = true;
+          // Refresh the label to the new basename only when it still shows the
+          // old one — don't clobber a tab the user renamed.
+          const label = t.label === oldBase ? newBase : t.label;
+          return { ...t, embedPath: newAbs, label };
+        }
+        if (t.embedPath.startsWith(`${oldAbs}/`)) {
+          // A tab under a renamed/moved directory: prefix-swap, keep the label.
+          changed = true;
+          return { ...t, embedPath: `${newAbs}${t.embedPath.slice(oldAbs.length)}` };
+        }
+        return t;
+      });
+      if (!changed) return {};
+      const patch: Partial<TabsStore> = {
+        tabsByScope: { ...s.tabsByScope, [scope]: nextTabs },
+      };
+      // Keep the flat mirror in sync so the active scope's CenterPanel re-renders.
+      patch.tabs = nextTabs;
+      return patch;
+    });
+  },
+
   removeTab: (key) => {
     // Discard any session-only link routes that pointed FROM this tab (#50).
     useLinkRoutingStore.getState().purgeForTab(key);
+    bumpUsage(get().scope, METRIC.TAB_CLOSED);
+    // The PTY is gone; drop its half-typed-prompt state so a recycled id can
+    // never inherit it.
+    forgetPty(`${get().scope}:${key}`);
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
       const nextTabs = tabs.filter((t) => t.key !== key);
@@ -998,6 +2025,72 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
+  setTabTmuxName: (scope, key, name) => {
+    set((s) => {
+      const tabs = s.tabsByScope[scope] ?? [];
+      const nextTabs = tabs.map((t) =>
+        t.key === key
+          ? t.tmuxAttach
+            ? { ...t, tmuxAttach: name }
+            : { ...t, tmuxSession: name }
+          : t,
+      );
+      const patch: Partial<TabsStore> = {
+        tabsByScope: { ...s.tabsByScope, [scope]: nextTabs },
+      };
+      if (s.scope === scope) patch.tabs = nextTabs;
+      return patch;
+    });
+  },
+
+  setTabLocation: (key, location) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      let changed = false;
+      const nextTabs = tabs.map((t) => {
+        if (t.key !== key || t.location === location) return t;
+        changed = true;
+        return { ...t, location };
+      });
+      // No-op (stable array) when the value is unchanged, so an idle re-toggle
+      // doesn't churn the tabs array / wake the saveLayout debounce.
+      if (!changed) return {};
+      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+    });
+  },
+
+  setAgentMode: (key, mode) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      let changed = false;
+      const nextTabs = tabs.map((t) => {
+        if (t.key !== key || t.agentMode === mode) return t;
+        const prev = t.args ?? [];
+        const args = withAgentMode(t.cmd, prev, mode);
+        // withAgentMode hands back the very same array for an agent with no mode
+        // support — don't record a mode we didn't actually pass.
+        if (args === prev) return t;
+        changed = true;
+        return {
+          ...t,
+          agentMode: mode,
+          // The args change is what respawns the PTY (TerminalView keys its
+          // spawn effect on them).
+          args,
+          // The respawn replays `initialInput` — for Claude that is the
+          // `/rename <project>` launch command. Typing it again into a session
+          // we are *resuming* would be junk, so retire it once the tab has
+          // launched at least once.
+          initialInput: undefined,
+        };
+      });
+      // Stable array when nothing changed, so an idle re-toggle doesn't churn
+      // the tabs array / wake the saveLayout debounce.
+      if (!changed) return {};
+      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+    });
+  },
+
   setViewerState: (key, patch) => {
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
@@ -1009,16 +2102,49 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const cur = tab.viewerState ?? {};
       if (
         cur.scrollTop === merged.scrollTop &&
+        cur.yamlScrollTop === merged.yamlScrollTop &&
         cur.scrollLeft === merged.scrollLeft &&
         cur.scale === merged.scale &&
         cur.offsetX === merged.offsetX &&
-        cur.offsetY === merged.offsetY
+        cur.offsetY === merged.offsetY &&
+        cur.fontSize === merged.fontSize &&
+        cur.autocomplete === merged.autocomplete &&
+        cur.autocompleteMode === merged.autocompleteMode &&
+        cur.grammarCheck === merged.grammarCheck &&
+        // New array ref on every change, so this term is false exactly when a card
+        // was folded/unfolded — which is what lets a collapse-only patch through the
+        // guard (it touches none of the scalar fields above).
+        cur.gridCollapsed === merged.gridCollapsed
       ) {
         return {};
       }
       const nextTabs = tabs.map((t) =>
         t.key === key ? { ...t, viewerState: merged } : t,
       );
+      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+    });
+  },
+
+  setTabFolder: (key, folder) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const tab = tabs.find((t) => t.key === key);
+      // No-op when unchanged, so re-listing the same folder doesn't churn the
+      // tabs array and wake the saveLayout debounce for nothing.
+      if (!tab || (tab.folder ?? "") === folder) return {};
+      const nextTabs = tabs.map((t) => (t.key === key ? { ...t, folder } : t));
+      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+    });
+  },
+
+  setTabUrl: (key, url) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const tab = tabs.find((t) => t.key === key);
+      // Same no-op rule setTabFolder follows: reloading the same page must not
+      // churn the tabs array and wake the saveLayout debounce for nothing.
+      if (!tab || (tab.url ?? "") === url) return {};
+      const nextTabs = tabs.map((t) => (t.key === key ? { ...t, url } : t));
       return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
     });
   },
@@ -1087,6 +2213,30 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
+  mergeGroups: (targetGroupId, sourceGroupId) => {
+    set((s) => {
+      const { tabs, layout } = currentScopeState(s);
+      if (!layout || targetGroupId === sourceGroupId) return {};
+      const target = findGroup(layout, targetGroupId);
+      const source = findGroup(layout, sourceGroupId);
+      if (!target || !source) return {};
+      const moved = source.tabKeys;
+      // Append source's tabs onto the target (survivor keeps its own activeKey),
+      // then empty the source so collapse drops it and unwraps the split.
+      let next = mapGroup(layout, targetGroupId, (g) => ({
+        ...g,
+        tabKeys: [...g.tabKeys, ...moved],
+        activeKey: g.activeKey ?? moved[0] ?? null,
+      }));
+      next = mapGroup(next, sourceGroupId, (g) => ({
+        ...g,
+        tabKeys: [],
+        activeKey: null,
+      }));
+      return writeScope(s, s.scope, tabs, next, targetGroupId);
+    });
+  },
+
   splitWithTab: (key, targetGroupId, edge) => {
     if (edge === "center") {
       get().moveTab(key, targetGroupId);
@@ -1140,7 +2290,11 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   splitWithNewTab: (tab, targetGroupId, edge) => {
     const key = nextKey(tab.kind);
     // Spread first so a stray `key` on the payload can't shadow the minted one.
-    const entry: TabEntry = { ...tab, key };
+    // Mint a persistent tmux session name like addTab/addTabToScope, so a shell
+    // tab created by a split-drag (or a Python run placed via one) is persistence-
+    // eligible — otherwise it silently skips the tmux wrap (idempotent: no-op for a
+    // tab that already carries a session or is a non-shell kind).
+    const entry: TabEntry = { ...withTmuxSession(tab, get().scope), key };
     let created = false;
     set((s) => {
       const { tabs, layout } = currentScopeState(s);
@@ -1185,44 +2339,85 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
+  setGroupFiles: (groupId, open) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      if (!layout || !findGroup(layout, groupId)) return {};
+      const next = mapGroup(layout, groupId, (g) => ({ ...g, filesOpen: open }));
+      return writeScope(s, s.scope, tabs, next, focusedGroupId);
+    });
+  },
+
+  setGroupFilesWidth: (groupId, width) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      if (!layout || !findGroup(layout, groupId)) return {};
+      const next = mapGroup(layout, groupId, (g) => ({ ...g, filesWidth: width }));
+      return writeScope(s, s.scope, tabs, next, focusedGroupId);
+    });
+  },
+
+  setGroupFilesFolder: (groupId, folder) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const g = layout && findGroup(layout, groupId);
+      // No-op when unchanged, so re-listing the same folder doesn't churn the
+      // layout and wake the saveLayout debounce for nothing (mirrors setTabFolder).
+      if (!g || (g.filesFolder ?? "") === folder) return {};
+      const next = mapGroup(layout, groupId, (grp) => ({ ...grp, filesFolder: folder }));
+      return writeScope(s, s.scope, tabs, next, focusedGroupId);
+    });
+  },
+
   detachGroup: (groupId, opts) => {
     const scope = get().scope;
     const layout = get().layoutByScope[scope] ?? null;
+    // The id is usually a GROUP (live drag-out), but on restart respawn it can be
+    // a SPLIT node — a multi-pane popout re-detached as one whole subtree (#42).
     const group = findGroup(layout, groupId);
-    if (!group) return null;
+    const split = group ? null : findSplit(layout, groupId);
+    if (!group && !split) return null;
     // Refuse to detach the only group: the in-window layout must keep a body —
     // except on restart respawn (`allowLastGroup`), where the popout legitimately
     // becomes the scope's only window and the main center is left empty.
     if (!opts?.allowLastGroup && allGroups(layout).length <= 1) return null;
 
     const label = `detached-${scope}-${groupId}`;
-    // Snapshot the group's subtree (it is a single GroupNode in v1).
-    const subtree: GroupNode = {
-      type: "group",
-      id: group.id,
-      tabKeys: [...group.tabKeys],
-      activeKey: group.activeKey,
-    };
+    // Snapshot the popout's subtree: a single GroupNode, or the whole split node
+    // (multi-pane popout) verbatim — its ids are reused as the popout's content.
+    const subtree: LayoutNode = group
+      // Spread so per-group extras (the files sidebar's open flag + width)
+      // travel with the subtree.
+      ? { ...group, tabKeys: [...group.tabKeys] }
+      : (split as SplitNode);
+    // Group ids that leave the in-window layout (one for a group, several for a
+    // split) — used to drop focus if it pointed into the detached subtree.
+    const detachedGroupIds = new Set(allGroups(subtree).map((g) => g.id));
 
     set((s) => {
       const tabs = s.tabsByScope[scope] ?? [];
       const focus = s.focusedGroupByScope[scope] ?? null;
-      // Empty the detached group's node, then collapse via writeScope WITHOUT
-      // dropping its tab payloads (they stay in tabsByScope — the detached
-      // window renders them). Mirrors closeGroup's node-empty step, but keeps
-      // the payloads (closeGroup drops them).
-      const emptied = layout
-        ? mapGroup(layout, groupId, (g) => ({ ...g, tabKeys: [], activeKey: null }))
-        : null;
-      // Re-pick focus off the detached group onto a surviving one.
-      const nextFocus = focus === groupId ? null : focus;
-      const base = writeScope(s, scope, tabs, emptied, nextFocus);
+      // Remove the detached subtree from the in-window layout WITHOUT dropping its
+      // tab payloads (they stay in tabsByScope — the detached window renders them).
+      // A group is emptied in place (collapse drops it); a split subtree is pruned
+      // out whole. Mirrors closeGroup's node-empty step, but keeps the payloads.
+      const stripped = !layout
+        ? null
+        : group
+          ? mapGroup(layout, groupId, (g) => ({ ...g, tabKeys: [], activeKey: null }))
+          : removeNodeById(layout, groupId);
+      // Re-pick focus off the detached subtree onto a surviving group.
+      const nextFocus = focus && detachedGroupIds.has(focus) ? null : focus;
+      const base = writeScope(s, scope, tabs, stripped, nextFocus);
       const existing = s.detachedGroupsByScope[scope] ?? [];
       return {
         ...base,
         detachedGroupsByScope: {
           ...s.detachedGroupsByScope,
-          [scope]: [...existing, { id: groupId, subtree, label, bounds: opts?.bounds }],
+          [scope]: [
+            ...existing,
+            { id: groupId, subtree, label, bounds: opts?.bounds, zoom: opts?.zoom },
+          ],
         },
       };
     });
@@ -1307,8 +2502,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     const label = `detached-${scope}-${groupId}`;
     // Spread first so a stray `key` on the payload can't shadow the minted one;
     // stamp the owning scope (writeScope isn't on this path since the layout is
-    // untouched, so do its scope-stamp here).
-    const entry: TabEntry = { ...tab, key, scope };
+    // untouched, so do its scope-stamp here). Mint the tmux session name too, so a
+    // shell tab detached straight into its own popout stays persistence-eligible.
+    const entry: TabEntry = { ...withTmuxSession(tab, scope), key, scope };
     const subtree: GroupNode = {
       type: "group",
       id: groupId,
@@ -1352,8 +2548,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const tabs = s.tabsByScope[scope] ?? [];
       let layout = s.layoutByScope[scope] ?? null;
       // Regenerate the subtree's ids so a docked-then-redetached group never
-      // collides with a live node id.
-      const fresh = regenIds(entry.subtree) as GroupNode;
+      // collides with a live node id. The subtree may be a split (multi-pane
+      // popout), so keep it a LayoutNode.
+      const fresh = regenIds(entry.subtree);
       if (!layout) {
         // The in-window tree emptied while detached → install as the root.
         layout = fresh;
@@ -1365,23 +2562,26 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           layout = fresh;
         } else {
           const edge = opts?.edge ?? "right";
-          if (edge === "center") {
-            // Merge the detached tabs into the target group.
+          if (edge === "center" && fresh.type === "group") {
+            // Merge a single-group popout's tabs into the target group.
             layout = mapGroup(layout, target.id, (g) => ({
               ...g,
               tabKeys: [...g.tabKeys, ...fresh.tabKeys],
               activeKey: fresh.activeKey ?? g.activeKey,
             }));
           } else {
+            // Split popout (or a non-center edge): inject the whole subtree
+            // adjacent to the target as its own pane(s).
+            const e = edge === "center" ? "right" : edge;
             const dir: SplitDir =
-              edge === "left" || edge === "right" ? "row" : "column";
-            const before = edge === "left" || edge === "top";
+              e === "left" || e === "right" ? "row" : "column";
+            const before = e === "left" || e === "top";
             layout = insertAdjacent(layout, target.id, fresh, dir, before);
           }
         }
       }
       const remaining = entries.filter((d) => d.id !== detachedId);
-      const base = writeScope(s, scope, tabs, layout, fresh.id);
+      const base = writeScope(s, scope, tabs, layout, firstGroup(fresh).id);
       return {
         ...base,
         detachedGroupsByScope: {
@@ -1396,14 +2596,125 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     }
   },
 
+  hideGroup: (groupId) => {
+    const scope = get().scope;
+    const layout = get().layoutByScope[scope] ?? null;
+    // Mirror detachGroup's node resolution: usually a GROUP, but can be a SPLIT
+    // node (a multi-pane subtree hidden whole).
+    const group = findGroup(layout, groupId);
+    const split = group ? null : findSplit(layout, groupId);
+    if (!group && !split) return;
+    // Unlike detachGroup we DO allow hiding the only group: hiding everything
+    // leaves the scope empty (the +-placeholder), a valid resting state.
+
+    const label = `hidden-${scope}-${groupId}`;
+    const subtree: LayoutNode = group
+      // Spread so per-group extras (the files sidebar's open flag + width)
+      // travel with the subtree.
+      ? { ...group, tabKeys: [...group.tabKeys] }
+      : (split as SplitNode);
+    const hiddenGroupIds = new Set(allGroups(subtree).map((g) => g.id));
+
+    set((s) => {
+      const tabs = s.tabsByScope[scope] ?? [];
+      const focus = s.focusedGroupByScope[scope] ?? null;
+      // Strip the hidden subtree from the live layout WITHOUT dropping its tab
+      // payloads (they stay in tabsByScope so the flat pane layer keeps their
+      // PTYs mounted, just display:none). Mirrors detachGroup minus the OS window.
+      const stripped = !layout
+        ? null
+        : group
+          ? mapGroup(layout, groupId, (g) => ({ ...g, tabKeys: [], activeKey: null }))
+          : removeNodeById(layout, groupId);
+      const nextFocus = focus && hiddenGroupIds.has(focus) ? null : focus;
+      const base = writeScope(s, scope, tabs, stripped, nextFocus);
+      const existing = s.hiddenGroupsByScope[scope] ?? [];
+      return {
+        ...base,
+        hiddenGroupsByScope: {
+          ...s.hiddenGroupsByScope,
+          [scope]: [...existing, { id: groupId, subtree, label }],
+        },
+      };
+    });
+  },
+
+  unhideGroup: (hiddenId, opts) => {
+    const scope = get().scope;
+    const entries = get().hiddenGroupsByScope[scope] ?? [];
+    const entry = entries.find((h) => h.id === hiddenId);
+    if (!entry) return;
+
+    set((s) => {
+      const tabs = s.tabsByScope[scope] ?? [];
+      let layout = s.layoutByScope[scope] ?? null;
+      // Regenerate ids so a hidden-then-restored group never collides with a live
+      // node id (mirrors attachGroup). regenIds rewrites GROUP ids but keeps tab
+      // KEYS, so an activeKey maps straight through.
+      let fresh = regenIds(entry.subtree);
+      if (opts?.activeKey) {
+        const target = findGroupOfTab(fresh, opts.activeKey);
+        if (target) {
+          fresh = mapGroup(fresh, target.group.id, (g) => ({ ...g, activeKey: opts.activeKey! }));
+        }
+      }
+      if (!layout) {
+        // The tree emptied while hidden → install the restored subtree as root.
+        layout = fresh;
+      } else {
+        const target = allGroups(layout)[0];
+        if (!target) {
+          layout = fresh;
+        } else {
+          // Inject the whole subtree as a new pane to the right of the first group.
+          layout = insertAdjacent(layout, target.id, fresh, "row", false);
+        }
+      }
+      const remaining = entries.filter((h) => h.id !== hiddenId);
+      const base = writeScope(s, scope, tabs, layout, firstGroup(fresh).id);
+      return {
+        ...base,
+        hiddenGroupsByScope: {
+          ...s.hiddenGroupsByScope,
+          [scope]: remaining,
+        },
+      };
+    });
+  },
+
+  closeHiddenGroup: (hiddenId) => {
+    set((s) => {
+      const scope = s.scope;
+      const entries = s.hiddenGroupsByScope[scope] ?? [];
+      const entry = entries.find((h) => h.id === hiddenId);
+      if (!entry) return {};
+      // Kill the hidden group's tabs for good: drop their payloads (the flat pane
+      // layer then unmounts each pane → pty_kill) and purge their link routes,
+      // mirroring closeGroup. The subtree may be a split, so collect every key.
+      const removing = new Set(orderedTabKeys(entry.subtree));
+      const purge = useLinkRoutingStore.getState().purgeForTab;
+      removing.forEach((k) => purge(k));
+      const nextTabs = (s.tabsByScope[scope] ?? []).filter((t) => !removing.has(t.key));
+      const remaining = entries.filter((h) => h.id !== hiddenId);
+      const { layout, focusedGroupId } = currentScopeState(s);
+      const base = writeScope(s, scope, nextTabs, layout, focusedGroupId);
+      return {
+        ...base,
+        hiddenGroupsByScope: {
+          ...s.hiddenGroupsByScope,
+          [scope]: remaining,
+        },
+      };
+    });
+  },
+
   attachDetachedTab: (scope, detachedGroupId, tabKey, opts) => {
     const entries = get().detachedGroupsByScope[scope] ?? [];
     const entry = entries.find((d) => d.id === detachedGroupId);
-    if (!entry || !entry.subtree.tabKeys.includes(tabKey)) return;
+    if (!entry || !orderedTabKeys(entry.subtree).includes(tabKey)) return;
 
-    // The detached group is emptied by this tab leaving → close the popout.
-    const remainingKeys = entry.subtree.tabKeys.filter((k) => k !== tabKey);
-    const willEmpty = remainingKeys.length === 0;
+    // The detached popout is emptied by this tab leaving → close the window.
+    const willEmpty = orderedTabKeys(entry.subtree).filter((k) => k !== tabKey).length === 0;
 
     set((s) => {
       // 1. Insert the tab into the destination layout (the docked-into scope's,
@@ -1449,21 +2760,11 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       //    it leaves the popout empty.
       const nextEntries = willEmpty
         ? entries.filter((d) => d.id !== detachedGroupId)
-        : entries.map((d) =>
-            d.id === detachedGroupId
-              ? {
-                  ...d,
-                  subtree: {
-                    ...d.subtree,
-                    tabKeys: remainingKeys,
-                    activeKey:
-                      d.subtree.activeKey === tabKey
-                        ? (remainingKeys[0] ?? null)
-                        : d.subtree.activeKey,
-                  },
-                }
-              : d,
-          );
+        : entries.map((d) => {
+            if (d.id !== detachedGroupId) return d;
+            const sub = removeKeyFromTree(d.subtree, tabKey);
+            return sub ? { ...d, subtree: sub } : d;
+          });
 
       // 3. Commit the layout (writeScope keeps the payload + updates the live
       //    mirrors for the active scope; it's a no-op on the mirrors otherwise),
@@ -1484,6 +2785,264 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     }
   },
 
+  attachDetachedPane: (scope, detachedGroupId, paneId, opts) => {
+    const entries = get().detachedGroupsByScope[scope] ?? [];
+    const entry = entries.find((d) => d.id === detachedGroupId);
+    if (!entry) return;
+    const pane = findGroup(entry.subtree, paneId);
+    if (!pane) return;
+
+    // The pane is the popout's only group → this IS a whole-popout dock; the
+    // whole-group paths also close the OS window.
+    const remaining = removeNodeById(entry.subtree, paneId);
+    if (!remaining) {
+      if (get().scope === scope) get().attachGroup(detachedGroupId, opts);
+      else get().dropDetachedGroup(scope, detachedGroupId);
+      return;
+    }
+
+    set((s) => {
+      // 1. Inject the pane into the destination layout as one group (fresh id so
+      //    it can never collide with a live node id). Its tab payloads already
+      //    live in tabsByScope[scope]; only the keys move.
+      let layout = s.layoutByScope[scope] ?? null;
+      const fresh: GroupNode = {
+        type: "group",
+        id: nextGroupId(),
+        tabKeys: [...pane.tabKeys],
+        activeKey: pane.activeKey ?? pane.tabKeys[0] ?? null,
+      };
+      let destId = fresh.id;
+      if (!layout) {
+        layout = fresh; // empty scope → the pane becomes the root group.
+      } else {
+        const target =
+          (opts?.targetGroupId && findGroup(layout, opts.targetGroupId)) ||
+          allGroups(layout)[0];
+        if (!target) {
+          layout = fresh;
+        } else if (opts?.edge === "center") {
+          // Merge the pane's tabs into the target group.
+          layout = mapGroup(layout, target.id, (g) => ({
+            ...g,
+            tabKeys: [...g.tabKeys, ...pane.tabKeys],
+            activeKey: pane.activeKey ?? g.activeKey,
+          }));
+          destId = target.id;
+        } else {
+          // Default (no resolved target): land as its own pane on the right —
+          // a pane is a subwindow, so it keeps being one (mirrors attachGroup).
+          const edge = opts?.edge ?? "right";
+          const dir: SplitDir = edge === "left" || edge === "right" ? "row" : "column";
+          const before = edge === "left" || edge === "top";
+          layout = insertAdjacent(layout, target.id, fresh, dir, before);
+        }
+      }
+
+      // 2. Drop the pane's group node from the popout's subtree — the sibling
+      //    panes stay floating in the popout.
+      const nextEntries = (s.detachedGroupsByScope[scope] ?? []).map((d) =>
+        d.id === detachedGroupId ? { ...d, subtree: remaining } : d,
+      );
+
+      const tabs = s.tabsByScope[scope] ?? [];
+      const base = writeScope(s, scope, tabs, layout, destId);
+      return {
+        ...base,
+        detachedGroupsByScope: {
+          ...s.detachedGroupsByScope,
+          [scope]: nextEntries,
+        },
+      };
+    });
+  },
+
+  detachTabToNewWindow: (scope, fromGroupId, tabKey, bounds) => {
+    const entries = get().detachedGroupsByScope[scope] ?? [];
+    const src = entries.find((d) => d.id === fromGroupId);
+    // The source popout (and the tab within it) must still exist.
+    if (!src || !orderedTabKeys(src.subtree).includes(tabKey)) return null;
+    // A lone-tab popout dragged whole is already its own window — re-detaching it
+    // would empty the source and churn for nothing, so refuse that case.
+    const remaining = removeKeyFromTree(src.subtree, tabKey);
+    if (!remaining || orderedTabKeys(remaining).length === 0) return null;
+
+    const groupId = nextGroupId();
+    const label = `detached-${scope}-${groupId}`;
+    // The popped tab becomes the sole member of a fresh single-tab group; its
+    // payload stays in tabsByScope (shared), so the new popout self-seeds and the
+    // PTY never unmounts (mirrors `detachTab`).
+    const subtree: GroupNode = {
+      type: "group",
+      id: groupId,
+      tabKeys: [tabKey],
+      activeKey: tabKey,
+    };
+
+    set((s) => {
+      const existing = s.detachedGroupsByScope[scope] ?? [];
+      // One atomic update: strip the tab from the source popout's subtree AND
+      // append the new detached entry. The payload in `tabsByScope` is untouched.
+      const nextEntries = existing.map((d) =>
+        d.id === fromGroupId ? { ...d, subtree: remaining } : d,
+      );
+      return {
+        detachedGroupsByScope: {
+          ...s.detachedGroupsByScope,
+          [scope]: [...nextEntries, { id: groupId, subtree, label, bounds }],
+        },
+      };
+    });
+
+    invoke("detach_subwindow", {
+      projectId: scope,
+      groupId,
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.w,
+      height: bounds.h,
+    }).catch(() => {});
+    return label;
+  },
+
+  detachPaneToNewWindow: (scope, fromGroupId, paneId, bounds) => {
+    const entries = get().detachedGroupsByScope[scope] ?? [];
+    const src = entries.find((d) => d.id === fromGroupId);
+    if (!src) return null;
+    const pane = findGroup(src.subtree, paneId);
+    if (!pane) return null;
+    // A lone-pane popout dragged by its grip is already its own window —
+    // re-detaching it would empty the source and churn for nothing.
+    const remaining = removeNodeById(src.subtree, paneId);
+    if (!remaining) return null;
+
+    const groupId = nextGroupId();
+    const label = `detached-${scope}-${groupId}`;
+    // The pane becomes the whole subtree of a fresh popout; its tab payloads
+    // stay in tabsByScope (shared), so the new popout self-seeds and the PTYs
+    // never unmount (mirrors detachTabToNewWindow).
+    const subtree: GroupNode = {
+      type: "group",
+      id: groupId,
+      tabKeys: [...pane.tabKeys],
+      activeKey: pane.activeKey ?? pane.tabKeys[0] ?? null,
+    };
+
+    set((s) => {
+      const existing = s.detachedGroupsByScope[scope] ?? [];
+      // One atomic update: strip the pane from the source popout's subtree AND
+      // append the new detached entry. The payloads in `tabsByScope` are untouched.
+      const nextEntries = existing.map((d) =>
+        d.id === fromGroupId ? { ...d, subtree: remaining } : d,
+      );
+      return {
+        detachedGroupsByScope: {
+          ...s.detachedGroupsByScope,
+          [scope]: [...nextEntries, { id: groupId, subtree, label, bounds }],
+        },
+      };
+    });
+
+    invoke("detach_subwindow", {
+      projectId: scope,
+      groupId,
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.w,
+      height: bounds.h,
+    }).catch(() => {});
+    return label;
+  },
+
+  dockTabIntoDetached: (scope, detachedGroupId, tabKey, target) => {
+    const entries = get().detachedGroupsByScope[scope] ?? [];
+    const entry = entries.find((d) => d.id === detachedGroupId);
+    // Reject a no-op: the tab must exist in this scope and not already be in the
+    // target popout.
+    if (!entry || orderedTabKeys(entry.subtree).includes(tabKey)) return;
+
+    set((s) => {
+      const tabs = s.tabsByScope[scope] ?? [];
+      if (!tabs.some((t) => t.key === tabKey)) return {};
+      const layout = s.layoutByScope[scope] ?? null;
+      const focus = s.focusedGroupByScope[scope] ?? null;
+      // 1. Drop the tab from its source in-window group (its payload stays in
+      //    `tabs`, so writeScope keeps it and the pane stays mounted-but-hidden).
+      //    An emptied source group/layout is fine — the main center falls back to
+      //    the placeholder, exactly like `detachTab`.
+      const found = findGroupOfTab(layout, tabKey);
+      const stripped =
+        found && layout
+          ? mapGroup(layout, found.group.id, (g) => {
+              const tabKeys = g.tabKeys.filter((k) => k !== tabKey);
+              const activeKey =
+                g.activeKey === tabKey
+                  ? (tabKeys[Math.min(found.index, tabKeys.length - 1)] ?? null)
+                  : g.activeKey;
+              return { ...g, tabKeys, activeKey };
+            })
+          : layout;
+      const base = writeScope(s, scope, tabs, stripped, focus);
+      // 2. Place the tab in the detached group's subtree at the resolved pane
+      //    target (a body edge splits, center/a slot merges) + activate it there.
+      //    No target → append to the first pane (legacy single-pane behaviour).
+      const nextEntries = (s.detachedGroupsByScope[scope] ?? []).map((d) =>
+        d.id === detachedGroupId
+          ? { ...d, subtree: placeKeyInTree(d.subtree, tabKey, target) }
+          : d,
+      );
+      return {
+        ...base,
+        detachedGroupsByScope: {
+          ...s.detachedGroupsByScope,
+          [scope]: nextEntries,
+        },
+      };
+    });
+  },
+
+  moveTabBetweenDetached: (scope, fromGroupId, toGroupId, tabKey, target, opts) => {
+    // A tab can't move onto itself, and both endpoints must exist.
+    if (fromGroupId === toGroupId) return;
+    const entries = get().detachedGroupsByScope[scope] ?? [];
+    const from = entries.find((d) => d.id === fromGroupId);
+    const to = entries.find((d) => d.id === toGroupId);
+    if (!from || !to) return;
+    // The tab must live in the source and NOT already in the destination.
+    if (!orderedTabKeys(from.subtree).includes(tabKey)) return;
+    if (orderedTabKeys(to.subtree).includes(tabKey)) return;
+    // The source popout is emptied by this tab leaving → close its OS window.
+    const willEmpty =
+      orderedTabKeys(from.subtree).filter((k) => k !== tabKey).length === 0;
+
+    set((s) => {
+      const list = s.detachedGroupsByScope[scope] ?? [];
+      // One atomic pass: place the key in the destination subtree and strip it
+      // from the source. The payload in `tabsByScope` is untouched (shared PTY).
+      let next = list.map((d) => {
+        if (d.id === toGroupId) {
+          return { ...d, subtree: placeKeyInTree(d.subtree, tabKey, target) };
+        }
+        if (d.id === fromGroupId) {
+          const sub = removeKeyFromTree(d.subtree, tabKey);
+          return sub ? { ...d, subtree: sub } : d;
+        }
+        return d;
+      });
+      // Drop the source record entirely when the tab leaving emptied it.
+      if (willEmpty) next = next.filter((d) => d.id !== fromGroupId);
+      return {
+        detachedGroupsByScope: { ...s.detachedGroupsByScope, [scope]: next },
+      };
+    });
+
+    // Close the emptied source popout's OS window (frees the registry slot). The
+    // destination window is re-seeded by the caller so the moved tab renders.
+    if (willEmpty && !opts?.skipBackend) {
+      invoke("attach_subwindow", { registryId: from.label }).catch(() => {});
+    }
+  },
+
   applyDetachedEdit: (scope, groupId, edit) => {
     set((s) => {
       const entries = s.detachedGroupsByScope[scope] ?? [];
@@ -1491,14 +3050,18 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       if (idx < 0) return {};
       const entry = entries[idx];
       const sub = entry.subtree;
-      let nextSub: GroupNode = sub;
+      // A subtree may be a split (multi-pane popout); each edit targets the group
+      // that owns `edit.key` (or, for reorder, the group whose tabs it permutes).
+      let nextSub: LayoutNode | null = sub;
       let nextTabs = s.tabsByScope[scope] ?? null;
       switch (edit.kind) {
-        case "activate":
-          if (sub.tabKeys.includes(edit.key)) {
-            nextSub = { ...sub, activeKey: edit.key };
+        case "activate": {
+          const g = findGroupOfTab(sub, edit.key);
+          if (g) {
+            nextSub = mapGroup(sub, g.group.id, (grp) => ({ ...grp, activeKey: edit.key }));
           }
           break;
+        }
         case "rename": {
           const label = edit.label.trim();
           if (label && nextTabs) {
@@ -1508,28 +3071,68 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           }
           break;
         }
+        case "setLocation": {
+          // Locality lives on the payload; the popout's pane is owned by THIS
+          // (main) window's flat pane layer, so updating it here respawns that
+          // pane on the chosen host (same path as the main-window locality badge).
+          if (nextTabs) {
+            nextTabs = nextTabs.map((t) =>
+              t.key === edit.key && t.location !== edit.location
+                ? { ...t, location: edit.location }
+                : t,
+            );
+          }
+          break;
+        }
         case "close": {
-          const tabKeys = sub.tabKeys.filter((k) => k !== edit.key);
-          const activeKey =
-            sub.activeKey === edit.key ? (tabKeys[0] ?? null) : sub.activeKey;
-          nextSub = { ...sub, tabKeys, activeKey };
+          nextSub = removeKeyFromTree(sub, edit.key);
           // Drop the closed tab's payload (its pane in the detached window
           // unmounted; the PTY is killed there by the spawning pane's lifetime).
           if (nextTabs) nextTabs = nextTabs.filter((t) => t.key !== edit.key);
           break;
         }
         case "reorder": {
-          const owned = new Set(sub.tabKeys);
-          const tabKeys = edit.tabKeys.filter((k) => owned.has(k));
-          if (tabKeys.length === sub.tabKeys.length) {
-            nextSub = { ...sub, tabKeys };
+          // Find the group whose tab set the reordered list permutes, then
+          // reapply that order to it.
+          const want = new Set(edit.tabKeys);
+          const g = allGroups(sub).find(
+            (grp) =>
+              grp.tabKeys.length === edit.tabKeys.length &&
+              grp.tabKeys.every((k) => want.has(k)),
+          );
+          if (g) {
+            nextSub = mapGroup(sub, g.id, (grp) => ({ ...grp, tabKeys: edit.tabKeys }));
           }
           break;
         }
+        case "split":
+          // A pane split inside the popout: split the subtree, or no-op if the
+          // split is invalid (keeps the popout unchanged).
+          nextSub = splitSubtree(sub, edit.key, edit.targetGroupId, edit.edge) ?? sub;
+          break;
+        case "resize":
+          // A divider drag inside a multi-pane popout: adjust the targeted
+          // split's child fractions.
+          nextSub = applyResize(sub, edit.splitId, edit.dividerIndex, edit.fraction);
+          break;
+        case "move":
+          // Merge a tab across the popout's groups: null (removal emptied the
+          // tree — impossible for a cross-group move) leaves the popout unchanged.
+          nextSub = moveKeyInTree(sub, edit.key, edit.targetGroupId, edit.index) ?? sub;
+          break;
+        case "files":
+          // The popout toggled/resized a group's docked file-viewer column.
+          nextSub = mapGroup(sub, edit.groupId, (grp) => ({
+            ...grp,
+            ...(edit.open != null ? { filesOpen: edit.open } : {}),
+            ...(edit.width != null ? { filesWidth: edit.width } : {}),
+            ...(edit.folder != null ? { filesFolder: edit.folder } : {}),
+          }));
+          break;
       }
       const nextEntries = [...entries];
-      // If the detached group emptied, remove it entirely.
-      if (nextSub.tabKeys.length === 0) {
+      // If the detached popout emptied, remove it entirely.
+      if (!nextSub || orderedTabKeys(nextSub).length === 0) {
         nextEntries.splice(idx, 1);
       } else {
         nextEntries[idx] = { ...entry, subtree: nextSub };
@@ -1545,6 +3148,106 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
+  addDetachedTab: (scope, detachedGroupId, tab, targetGroupId) => {
+    const key = nextKey(tab.kind);
+    // Spread first so a stray `key` on the payload can't shadow the minted one;
+    // stamp the owning scope (this path never touches the in-window layout, so it
+    // does writeScope's scope-stamp itself). Mint the tmux session name like the
+    // in-window adds, so a Python/shell run STREAMED into a detached popout (its
+    // Run button places the tab here, not via addTabToScope) is persistence-
+    // eligible instead of silently skipping the tmux wrap.
+    const entry: TabEntry = { ...withTmuxSession(tab, scope), key, scope };
+    let created: string | null = null;
+    set((s) => {
+      const entries = s.detachedGroupsByScope[scope] ?? [];
+      const idx = entries.findIndex((d) => d.id === detachedGroupId);
+      if (idx < 0) return {};
+      const rec = entries[idx];
+      // Land the tab in the requested pane; fall back to the popout's first group
+      // (a single-pane popout, or a stale target id).
+      const target = findGroup(rec.subtree, targetGroupId) ?? allGroups(rec.subtree)[0];
+      if (!target) return {};
+      const nextSub = mapGroup(rec.subtree, target.id, (g) => ({
+        ...g,
+        tabKeys: [...g.tabKeys, key],
+        activeKey: key,
+      }));
+      const nextEntries = [...entries];
+      nextEntries[idx] = { ...rec, subtree: nextSub };
+      // Append the payload so the MAIN window's pane layer mounts + owns the PTY;
+      // the detached window attaches to it after the re-seed.
+      const nextTabs = [...(s.tabsByScope[scope] ?? []), entry];
+      created = key;
+      return {
+        tabsByScope: { ...s.tabsByScope, [scope]: nextTabs },
+        // Mirror the current-scope convenience copy (writeScope normally does
+        // this, but this path leaves the in-window layout untouched and skips it).
+        ...(s.scope === scope ? { tabs: nextTabs } : {}),
+        detachedGroupsByScope: {
+          ...s.detachedGroupsByScope,
+          [scope]: nextEntries,
+        },
+      };
+    });
+    return created;
+  },
+
+  addDetachedTabSplit: (scope, detachedGroupId, tab, targetGroupId, edge) => {
+    const key = nextKey(tab.kind);
+    // Spread first so a stray `key` can't shadow the minted one; stamp the scope
+    // (this path never touches the in-window layout, so no writeScope to do it).
+    // Mint the tmux session name too (see addDetachedTab) so a shell tab streamed
+    // into a popout via a split-drop is persistence-eligible.
+    const entry: TabEntry = { ...withTmuxSession(tab, scope), key, scope };
+    let created: string | null = null;
+    set((s) => {
+      const entries = s.detachedGroupsByScope[scope] ?? [];
+      const idx = entries.findIndex((d) => d.id === detachedGroupId);
+      if (idx < 0) return {};
+      const rec = entries[idx];
+      // Carve a new pane holding the tab at `edge` of the target group, leaving
+      // the target's own tabs untouched — mirrors `splitWithNewTab`'s edge
+      // branch, but on the popout's subtree. A stale target id → no split.
+      if (!findGroup(rec.subtree, targetGroupId)) return {};
+      const newGroup: GroupNode = {
+        type: "group",
+        id: nextGroupId(),
+        tabKeys: [key],
+        activeKey: key,
+      };
+      const dir: SplitDir = edge === "left" || edge === "right" ? "row" : "column";
+      const before = edge === "left" || edge === "top";
+      const nextSub = insertAdjacent(rec.subtree, targetGroupId, newGroup, dir, before);
+      const nextEntries = [...entries];
+      nextEntries[idx] = { ...rec, subtree: nextSub };
+      // Append the payload so the MAIN window's pane layer mounts + owns the PTY;
+      // the detached window attaches to it after the re-seed.
+      const nextTabs = [...(s.tabsByScope[scope] ?? []), entry];
+      created = key;
+      return {
+        tabsByScope: { ...s.tabsByScope, [scope]: nextTabs },
+        ...(s.scope === scope ? { tabs: nextTabs } : {}),
+        detachedGroupsByScope: { ...s.detachedGroupsByScope, [scope]: nextEntries },
+      };
+    });
+    return created;
+  },
+
+  splitDetachedGroup: (scope, detachedGroupId, key, targetGroupId, edge) => {
+    set((s) => {
+      const entries = s.detachedGroupsByScope[scope] ?? [];
+      const idx = entries.findIndex((d) => d.id === detachedGroupId);
+      if (idx < 0) return {};
+      const nextSub = splitSubtree(entries[idx].subtree, key, targetGroupId, edge);
+      if (!nextSub) return {};
+      const nextEntries = [...entries];
+      nextEntries[idx] = { ...entries[idx], subtree: nextSub };
+      return {
+        detachedGroupsByScope: { ...s.detachedGroupsByScope, [scope]: nextEntries },
+      };
+    });
+  },
+
   dropDetachedGroup: (scope, groupId) => {
     const entries = get().detachedGroupsByScope[scope] ?? [];
     const entry = entries.find((d) => d.id === groupId);
@@ -1556,7 +3259,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       );
       // Re-inject the subtree into the inactive scope's STORED layout so its
       // tabs are referenced by a layout node (and thus persist) on next save.
-      const fresh = regenIds(entry.subtree) as GroupNode;
+      const fresh = regenIds(entry.subtree);
       const stored = s.layoutByScope[scope] ?? null;
       let nextLayout: LayoutNode;
       if (!stored) {
@@ -1577,12 +3280,45 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     invoke("attach_subwindow", { registryId: entry.label }).catch(() => {});
   },
 
+  hideDetachedGroup: (scope, groupId) => {
+    const entries = get().detachedGroupsByScope[scope] ?? [];
+    const entry = entries.find((d) => d.id === groupId);
+    if (!entry) return;
+
+    set((s) => {
+      const remaining = (s.detachedGroupsByScope[scope] ?? []).filter(
+        (d) => d.id !== groupId,
+      );
+      const existing = s.hiddenGroupsByScope[scope] ?? [];
+      // The popout's tab payloads never left `tabsByScope`, so the flat pane
+      // layer keeps their PTYs mounted through the move — only the subtree
+      // changes home, from the detached record to the hidden one. Ids are kept
+      // as-is (like `hideGroup`); `unhideGroup` regenerates them on restore to
+      // avoid colliding with a live node. Mirror the flat tab list is untouched
+      // (no tab payload changes here).
+      return {
+        detachedGroupsByScope: { ...s.detachedGroupsByScope, [scope]: remaining },
+        hiddenGroupsByScope: {
+          ...s.hiddenGroupsByScope,
+          [scope]: [
+            ...existing,
+            { id: entry.id, subtree: entry.subtree, label: entry.label },
+          ],
+        },
+      };
+    });
+
+    // Close the detached OS window + drop the backend registry entry (best-effort;
+    // the popout also destroys its own window). Mirrors dropDetachedGroup.
+    invoke("attach_subwindow", { registryId: entry.label }).catch(() => {});
+  },
+
   closeDetachedGroup: (scope, groupId) => {
     const entries = get().detachedGroupsByScope[scope] ?? [];
     const entry = entries.find((d) => d.id === groupId);
     if (!entry) return;
 
-    const keys = entry.subtree.tabKeys;
+    const keys = orderedTabKeys(entry.subtree);
     const byKey = new Map((get().tabsByScope[scope] ?? []).map((t) => [t.key, t] as const));
     // Tear down each tab BEFORE the store mutation: discard its session-only
     // link routes (#50) and kill its PTY. Files/embed tabs have no PTY; terminal
@@ -1593,7 +3329,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     for (const key of keys) {
       purge(key);
       const tab = byKey.get(key);
-      if (tab && tab.kind !== "files" && tab.kind !== "embed") {
+      if (tab && isPtyTabKind(tab.kind)) {
         invoke("pty_kill", { id: `${scope}:${key}` }).catch(() => {});
       }
     }
@@ -1641,6 +3377,21 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
+  setDetachedZoom: (scope, groupId, zoom) => {
+    set((s) => {
+      const entries = s.detachedGroupsByScope[scope];
+      if (!entries) return {};
+      let changed = false;
+      const next = entries.map((d) => {
+        if (d.id !== groupId || d.zoom === zoom) return d;
+        changed = true;
+        return { ...d, zoom };
+      });
+      if (!changed) return {};
+      return { detachedGroupsByScope: { ...s.detachedGroupsByScope, [scope]: next } };
+    });
+  },
+
   consumePendingRespawn: (scope) => {
     const pending = get().pendingRespawnByScope[scope] ?? [];
     if (pending.length === 0) return [];
@@ -1673,9 +3424,14 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     );
     // #42: re-dock detached groups into the persisted tree (detach is
     // session-only; a restart restores them docked), merge BEFORE pruning so
-    // dropped tabs prune out consistently.
+    // dropped tabs prune out consistently. Hidden groups are folded in the same
+    // way but tagged `hidden` so they restore still-hidden (not docked live).
     const detached = s.detachedGroupsByScope[scope];
-    const merged = withDetachedDocked(serializeTree(layout), detached);
+    const hidden = s.hiddenGroupsByScope[scope];
+    const merged = withHiddenDocked(
+      withDetachedDocked(serializeTree(layout), detached),
+      hidden,
+    );
     const tabGroups = pruneSavedTree(merged, keepKeys);
     return { tabs, tabGroups, activeTabIndex };
   },
@@ -1697,11 +3453,55 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // Resumable agent tabs (Claude with a sessionId) respawn with their
       // resume flag so the prior conversation comes back; everyone else starts
       // fresh with no args.
-      const tabShape = { kind, cmd: t.cmd, sessionId: t.sessionId };
-      const args =
+      const tabShape = {
+        kind,
+        cmd: t.cmd,
+        sessionId: t.sessionId,
+        resumeArgs: t.resumeArgs,
+      };
+      // A built-in looks its cmd up in the static table; only a custom agent
+      // falls back to the resume flag carried on the tab.
+      //
+      // The table is preferred **whenever it has an entry**, rather than letting a
+      // persisted `resumeArgs` win: the layout this is read from lives inside the
+      // project tree, i.e. inside a container's writable mount and inside any
+      // cloned repo, so a persisted arg vector is attacker-controlled. It used to
+      // be handed to `pty_spawn` verbatim, which turned "write a file in my
+      // project" into "choose the argv of a host-bound agent CLI". For a built-in
+      // the table produces the same args anyway, so preferring it costs nothing.
+      // A custom agent's flag is re-derived from `settings.json` by the backend
+      // sanitizer (`terminal_service::sanitize_tab_layout`) before it reaches here.
+      const base =
         isResumableAgentTab(tabShape) && t.sessionId
-          ? RESUMABLE_AGENTS[t.cmd](t.sessionId)
+          ? t.cmd in RESUMABLE_AGENTS
+            ? RESUMABLE_AGENTS[t.cmd](t.sessionId)
+            : (t.resumeArgs ?? [])
           : [];
+      // Args are rebuilt from scratch here, so a persisted planner/doer mode has
+      // to be re-applied onto them or the tab would silently come back in the
+      // agent's default mode — half the point of the toggle is that the split
+      // survives a restart.
+      //
+      // A mode-capable agent tab with NO persisted `agentMode` fails **closed**:
+      // it comes back in Plan. Absence used to mean "no mode flag", i.e. the
+      // agent's own default permissions, and the layout this field is read from
+      // lives inside the project tree — so deleting `"agentMode":"plan"` from a
+      // tab entry silently promoted a planner into a doer on the next restart.
+      // Plan is the safe direction, and the only tabs it changes are ones that
+      // predate the field (one toggle to correct).
+      //
+      // Gated on the mode feature actually being available, for the reason the
+      // gate exists at all: with `agent_mode_toggle` off there is no UI to leave
+      // Plan mode — and no tab was ever *in* Plan mode either, so there is nothing
+      // for the default to protect. Failing closed into a mode the user cannot
+      // exit would be a worse bargain than the hole it closes.
+      const modeFeatureLive = experimentalEnabled(
+        useSettingsStore.getState().settings,
+        "agent_mode_toggle",
+      );
+      const restoredMode =
+        t.agentMode ?? (modeFeatureLive && supportsAgentMode(t.cmd) ? "plan" : undefined);
+      const args = restoredMode ? withAgentMode(t.cmd, base, restoredMode) : base;
       return {
         key: freshKey,
         label: t.label,
@@ -1711,12 +3511,39 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         cwd: isAgent && defaultCwd ? defaultCwd : t.cwd || defaultCwd,
         kind,
         sessionId: t.sessionId,
+        // A restart-resumable custom agent keeps its resume flag (already folded
+        // into `base`/`args` above) so a *second* restart resumes it again.
+        resumeArgs: t.resumeArgs,
         // Restored file embed tabs (kind === "embed") carry their durable path
         // and how to open it so the pane rebuilds exactly.
         embedPath: t.embedPath,
         embedExec: t.embedExec,
         viewer: t.viewer,
         viewerState: t.viewerState,
+        // SSH-sync Phase 0: restore the persisted per-tab locality.
+        location: t.location,
+        // Restore the planner/doer mode (already folded into `args` above).
+        agentMode: restoredMode,
+        // A "projectfiles" tab reopens on the folder it was browsed into.
+        folder: t.folder,
+        // A "browser" tab reopens holding the address it was last on — on its
+        // resume card, NOT navigated (see BROWSER_TAB_CMD / isRestorableKind).
+        url: t.url,
+        // Persistent sessions (TODO #85): keep the stable session name so the
+        // reattach targets the SAME host session after a relaunch. Mint one for a
+        // shell tab persisted before this feature existed (it then reattaches on
+        // every subsequent restart).
+        tmuxSession:
+          t.tmuxSession ??
+          (kind === "shell" && !t.tmuxAttach
+            ? newTmuxSessionName(targetScope ?? get().scope)
+            : undefined),
+        // A Sessions-view attach tab reattaches to its tmux session on restart.
+        tmuxAttach: t.tmuxAttach,
+        // Restore the no-tmux marker BEFORE anything reads it: the minted name
+        // above is harmless on such a tab precisely because `shouldPersistTab`
+        // refuses to use it.
+        ephemeral: t.ephemeral,
       };
     });
 
@@ -1726,8 +3553,12 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // re-open them as floating popouts once their panes have mounted.
     let root: LayoutNode | null = null;
     const respawn: RespawnTarget[] = [];
+    // Fresh ids of groups/splits tagged `hidden` in the saved tree. They are
+    // built into the tree (so their tabs mint payloads/PTYs) then stripped out
+    // into `hiddenGroupsByScope` below, so they restore parked, not docked.
+    const hiddenIds: string[] = [];
     if (groups) {
-      root = deserializeTree(groups, keyMap, respawn);
+      root = deserializeTree(groups, keyMap, respawn, hiddenIds);
     }
     if (!root && tabs.length > 0) {
       root = {
@@ -1754,12 +3585,34 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       }
     }
     root = collapse(root);
+
+    // Extract hidden-tagged subtrees out of the live tree into parked
+    // HiddenGroups (the restore-time mirror of `hideGroup`). Snapshot every node
+    // first (ids are stable across sibling strips), then remove them so the tabs
+    // stay in `tabsByScope` (payloads/PTYs mounted, hidden) but leave the layout.
+    const hiddenGroups: HiddenGroup[] = [];
+    for (const id of hiddenIds) {
+      const g = findGroup(root, id);
+      const sp = g ? null : findSplit(root, id);
+      if (!g && !sp) continue;
+      const subtree: LayoutNode = g
+        ? { type: "group", id: g.id, tabKeys: [...g.tabKeys], activeKey: g.activeKey }
+        : (sp as SplitNode);
+      hiddenGroups.push({ id, subtree, label: `hidden-${targetScope ?? get().scope}-${id}` });
+    }
+    for (const h of hiddenGroups) {
+      root = removeNodeById(root, h.id);
+    }
+
     const focus = allGroups(root)[0]?.id ?? null;
 
-    // Only respawn targets still present in the (possibly pruned/healed) tree:
-    // a detached group whose tabs were all dropped on restore won't exist.
-    const liveIds = new Set(allGroups(root).map((g) => g.id));
-    const pending = respawn.filter((r) => liveIds.has(r.id));
+    // Only respawn targets still present in the (possibly pruned/healed) tree: a
+    // detached popout whose tabs were all dropped on restore won't exist. A target
+    // id may be a GROUP (single-pane popout) or a SPLIT (multi-pane popout), so
+    // check both — `allGroups` alone would drop every split target.
+    const pending = respawn.filter(
+      (r) => findGroup(root, r.id) != null || findSplit(root, r.id) != null,
+    );
 
     set((s) => {
       // Use the explicitly requested scope when provided; this prevents a race
@@ -1773,6 +3626,10 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           pending.length > 0
             ? { ...s.pendingRespawnByScope, [scope]: pending }
             : s.pendingRespawnByScope,
+        hiddenGroupsByScope:
+          hiddenGroups.length > 0
+            ? { ...s.hiddenGroupsByScope, [scope]: hiddenGroups }
+            : s.hiddenGroupsByScope,
       };
     });
   },
@@ -1780,6 +3637,26 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   persistScope: async (scope, localFile) => {
     const layout = get().layoutByScope[scope] ?? null;
     const scopeTabs = get().tabsByScope[scope] ?? [];
+    // Whether an EMPTY layout may erase what's on disk. Saving empty is destructive —
+    // it drops `tab_layout`/`tab_groups` AND overwrites the `.eldrun` session mirror,
+    // taking a resumable agent tab's `sessionId` (the only handle on its conversation)
+    // with them. So it must mean "the user closed every tab", and only two things here
+    // can distinguish that from a caller with nothing loaded:
+    //
+    //   hydrated            — the scope has been restored from disk this session. An
+    //                         ABSENT key is a scope we know nothing about; its emptiness
+    //                         is ignorance, not intent. (A scope whose restore found no
+    //                         restorable tabs never creates the key — see CenterPanel.)
+    //   scopeTabs.length    — the scope really holds zero tabs. A scope holding tabs that
+    //                         all get filtered out below (non-restorable, or belonging to
+    //                         another scope) yields an empty list that looks identical to
+    //                         a close-all and is nothing of the sort — that is how
+    //                         a live project's four tabs were erased on detach.
+    //
+    // Anything else: the backend keeps what it has. Worst case we persist a layout one
+    // save late; the alternative loses conversations.
+    const hydrated = Object.prototype.hasOwnProperty.call(get().tabsByScope, scope);
+    const allowClear = hydrated && scopeTabs.length === 0;
     // Order the flat tab union by the tree's stable left-to-right order so the
     // persisted `tabs` array and `groups` tree agree.
     const keyOrder = orderedTabKeys(layout);
@@ -1791,7 +3668,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     for (const t of scopeTabs) {
       if (!keyOrder.includes(t.key)) ordered.push(t);
     }
-    // Shell/files tabs, resumable agent tabs (Claude with a sessionId), and
+    // Shell/files/network tabs, resumable agent tabs (Claude with a sessionId), and
     // in-app file-viewer embeds are persisted; other agent/embed tabs (including
     // external-app embeds) are dropped here and the saved tree is pruned to
     // match. See isRestorableTab. Defense-in-depth (#55): also drop any tab not
@@ -1820,6 +3697,33 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         embedExec: t.embedExec,
         viewer: t.viewer,
         viewerState: t.viewerState,
+        // SSH-sync Phase 0: persist the per-tab locality.
+        location: t.location,
+        // Persist the planner/doer mode so the tab comes back in it (the args
+        // that carry it are NOT persisted — they're rebuilt in loadFromLayout).
+        agentMode: t.agentMode,
+        // Persist a "projectfiles" tab's browsed folder.
+        folder: t.folder,
+        // Persist a "browser" tab's COMMITTED address (#61). This is the whole
+        // of a browser tab's persistence, and without this line it never reached
+        // disk at all: `loadFromLayout` reads `t.url`, `snapshotScopeForSwitch`
+        // carries live TabEntries through a project switch unchanged (so the
+        // in-memory round trip looked fine), but THIS is the only path to
+        // `project.json` — so a real relaunch brought the tab back with no
+        // address and an empty start page instead of its resume card.
+        url: t.url,
+        // Persist a restart-resumable custom agent's resume flag (the args that
+        // carry it are rebuilt in loadFromLayout, like agentMode).
+        resumeArgs: t.resumeArgs,
+        // Persist the stable tmux session name + any attach target, so a persistent
+        // remote shell tab REATTACHES to the same host session after a relaunch.
+        tmuxSession: t.tmuxSession,
+        tmuxAttach: t.tmuxAttach,
+        // Persist the no-tmux marker. Without it a restored SLURM log tab is an
+        // ordinary shell tab again, gets a freshly minted session name, and leaves
+        // the `tail -F` daemon on the login node the flag exists to prevent — and
+        // a relaunch after a crash is exactly when that would happen.
+        ephemeral: t.ephemeral,
       }));
       // #42: re-dock detached groups into the persisted tree so disk reflects a
       // restart-as-docked layout (their tabs are already in the flat list above
@@ -1833,19 +3737,34 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         tabs: tabLayout,
         groups,
         sessions,
+        allowClear,
       });
     } catch {
       // tab layout is non-critical
     }
   },
 
+  /**
+   * Persist the CURRENT scope into `localFile`.
+   *
+   * Prefer `persistScope(scope, localFile)`. This overload pairs the store's live
+   * `scope` with a `localFile` the caller supplies, and those are two independently
+   * tracked values: whenever they drift, this writes one project's tabs into another
+   * project's file — or, once the per-scope filter has dropped every foreign tab, an
+   * empty layout, which used to erase the target's tabs outright. That is exactly how
+   * a live project lost four of them on detach (which swaps `local_file` under the store).
+   * The backend now refuses an unvouched empty save, so this can no longer destroy
+   * anything, but the mismatch is still wrong at the source. No production caller
+   * remains — CenterPanel passes its scope explicitly, and `detached.ts` derives
+   * `localFile` FROM the scope. Kept for the tests that drive it directly.
+   */
   saveLayout: async (localFile) => {
     await get().persistScope(get().scope, localFile);
   },
 }));
 
 /** Replace the group `groupId` via `fn`, returning a new tree (structural). */
-function mapGroup(
+export function mapGroup(
   node: LayoutNode,
   groupId: string,
   fn: (g: GroupNode) => GroupNode,
@@ -1859,17 +3778,40 @@ function mapGroup(
   };
 }
 
+// Commands that launch an AI coding agent (mirrors TabBar's AGENT_ITEMS and the
+// backend agent registry in commands::agents). Used to classify a tab by its cmd.
+const AGENT_CMDS = new Set([
+  "claude",
+  "codex",
+  "gemini",
+  "vibe",
+  "aider",
+  "opencode",
+  "cursor-agent",
+  "copilot",
+  "grok",
+  "qwen",
+  "openclaw",
+]);
+
 export function cmdToKind(cmd: string): TabKind {
   if (cmd === FILES_TAB_CMD) return "files";
-  if (cmd === "claude" || cmd === "codex" || cmd === "gemini" || cmd === "vibe")
-    return "agent";
+  if (cmd === PROJECT_FILES_TAB_CMD) return "projectfiles";
+  if (cmd === BLOB_TAB_CMD) return "projects3d";
+  if (cmd === NETWORK_TAB_CMD) return "network";
+  if (cmd === MONITOR_TAB_CMD) return "monitor";
+  if (cmd === DISKUSAGE_TAB_CMD) return "diskusage";
+  if (cmd === CALENDAR_TAB_CMD) return "calendar";
+  if (cmd === MAIL_TAB_CMD) return "mail";
+  if (cmd === BROWSER_TAB_CMD) return "browser";
+  if (AGENT_CMDS.has(cmd)) return "agent";
   return "shell";
 }
 
 /**
- * Whether a tab KIND alone survives a restart. Shell/files tabs are restorable
- * by kind; agent / local-agent and embed tabs are not, because the kind alone
- * carries no session to resume. Prefer the tab-level `isRestorableTab` at call
+ * Whether a tab KIND alone survives a restart. Shell/files/network tabs are
+ * restorable by kind; agent / local-agent and embed tabs are not, because the
+ * kind alone carries no session to resume. Prefer the tab-level `isRestorableTab` at call
  * sites that have the full tab — a resumable agent tab (Claude with a sessionId)
  * IS restorable even though its kind is not. This kind-only check stays for the
  * places that only have a `TabKind`.
@@ -1880,14 +3822,51 @@ export function cmdToKind(cmd: string): TabKind {
  * not here.
  */
 export function isRestorableKind(kind: TabKind): boolean {
-  return kind === "shell" || kind === "files";
+  return (
+    kind === "shell" ||
+    kind === "files" ||
+    kind === "projectfiles" ||
+    kind === "network" ||
+    kind === "monitor" ||
+    // The tab comes back, but on its home screen — a scan is far too expensive to
+    // replay on every launch, so the pane never auto-rescans.
+    kind === "diskusage" ||
+    kind === "calendar" ||
+    // Mail has no live process and no session to lose — it re-renders from its
+    // own global store — so it belongs in the always-restore set. What it must
+    // NOT do is sync on restore: the restored tab shows a "Check mail" button
+    // and reaches the network only when clicked (MAIL_TAB_CMD's note).
+    kind === "mail" ||
+    // The browser tab comes back, on its resume card — it NEVER re-navigates by
+    // itself. Same shape as diskusage above (the tab returns, the expensive work
+    // does not replay) and the same rule mail states about dialling out: the
+    // persisted URL is rendered as text behind a Load button, and only a click
+    // makes a request. See BROWSER_TAB_CMD.
+    kind === "browser"
+  );
+}
+
+/** Whether a tab owns a backend PTY. Pure frontend panes must never be sent
+ * through terminal spawn/kill/activity paths merely because they are not files. */
+export function isPtyTabKind(kind: TabKind): boolean {
+  return kind === "agent" || kind === "local_agent" || kind === "shell";
 }
 
 /**
  * Agents whose prior session can be resumed, mapping `cmd` → the launch args to
- * relaunch with that session. Claude (`--resume <id>`) and Codex (`codex resume`,
- * args injected by the backend) are wired; Gemini/Vibe stay excluded until their
- * resume path is confirmed (39d).
+ * relaunch with that session. Two resume styles are wired:
+ *
+ *  - id-based: Claude (`--resume <id>`) and Codex (`codex resume`, args injected
+ *    by the backend) resume a *specific* captured session.
+ *  - cwd "continue last": Qwen, OpenCode, Copilot, Cursor, Grok, Gemini and
+ *    Mistral/vibe have no caller-supplied launch id, so Eldrun re-launches with
+ *    their "continue the most recent session" flag. Because each agent tab
+ *    launches in the project directory, that most-recent session IS the tab's
+ *    prior conversation. These ignore the minted id (it only satisfies the
+ *    persistence gate below and is set as ELDRUN_TAB_UID). Caveat: two tabs of
+ *    the same agent in one project both resume that project's single latest
+ *    session, so they can't be told apart on restore. Aider stays excluded — it
+ *    has no per-session resume (only `--restore-chat-history`).
  */
 export const RESUMABLE_AGENTS: Record<string, (id: string) => string[]> = {
   // Claude: `--resume <launch-id>`; the backend upgrades the id to the live one
@@ -1898,6 +3877,20 @@ export const RESUMABLE_AGENTS: Record<string, (id: string) => string[]> = {
   // reads the hook-recorded live id and injects `codex resume <live-id>` at spawn
   // (terminal::resolve_codex_session).
   codex: () => [],
+  // cwd "continue last session" — no captured id needed (see note above).
+  qwen: () => ["--continue"],
+  opencode: () => ["--continue"],
+  copilot: () => ["--continue"],
+  "cursor-agent": () => ["--continue"],
+  grok: () => ["--session", "latest"],
+  // Gemini's `--resume` takes "latest" (or an index), not a uuid, so it can only
+  // continue the project's most-recent session — not the specific one its launch
+  // `--session-id <uuid>` minted. That makes it continue-last like the others.
+  gemini: () => ["--resume", "latest"],
+  // Mistral/vibe: `-c/--continue` resumes the most recent saved session. (Its
+  // `--resume [id]` with no id would open an interactive picker, which hangs a
+  // restore — so `--continue` is the non-interactive path.)
+  vibe: () => ["--continue"],
 };
 
 /**
@@ -1906,12 +3899,14 @@ export const RESUMABLE_AGENTS: Record<string, (id: string) => string[]> = {
  * restart (their conversation is resumed); other agent tabs are still dropped.
  */
 export function isResumableAgentTab(
-  tab: { kind: TabKind; cmd: string; sessionId?: string },
+  tab: { kind: TabKind; cmd: string; sessionId?: string; resumeArgs?: string[] },
 ): boolean {
   return (
     (tab.kind === "agent" || tab.kind === "local_agent") &&
     !!tab.sessionId &&
-    tab.cmd in RESUMABLE_AGENTS
+    // Built-in resumable (cmd in the static table) OR a custom agent whose spec
+    // supplied a "continue last session" flag (carried on the tab as resumeArgs).
+    (tab.cmd in RESUMABLE_AGENTS || !!tab.resumeArgs?.length)
   );
 }
 
@@ -1975,24 +3970,105 @@ export function pruneSavedTree(
       tabKeys,
       activeKey,
       ...(tree.detached ? { detached: true, bounds: tree.bounds } : {}),
+      // Carry the hidden tag through pruning so a hidden group stays parked on
+      // restore rather than docking live (mirrors the detached tag).
+      ...(tree.hidden ? { hidden: true } : {}),
+      // Carry the per-subwindow file viewer through pruning (same rationale).
+      ...(tree.filesOpen ? { filesOpen: true } : {}),
+      ...(tree.filesWidth != null ? { filesWidth: tree.filesWidth } : {}),
+      ...(tree.filesFolder ? { filesFolder: tree.filesFolder } : {}),
     };
   }
   const kept = tree.children
     .map((c, i) => ({ child: pruneSavedTree(c, keep), size: tree.sizes[i] ?? 1 }))
     .filter((e): e is { child: SavedLayoutTree; size: number } => e.child != null);
   if (kept.length === 0) return null;
-  if (kept.length === 1) return kept[0].child;
+  // #42: carry a multi-pane popout's detached tag + bounds through pruning, just
+  // like the group branch — else the split would persist as a plain docked node
+  // and the popout would restore inside the main panel.
+  const tag = tree.detached
+    ? { detached: true as const, bounds: tree.bounds }
+    : tree.hidden
+      ? { hidden: true as const }
+      : {};
+  if (kept.length === 1) {
+    // Collapsed to a single surviving child: it inherits the popout's detached
+    // tag (so it respawns floating) or the hidden tag (so it stays parked).
+    return tree.detached || tree.hidden ? { ...kept[0].child, ...tag } : kept[0].child;
+  }
   const total = kept.reduce((a, e) => a + e.size, 0) || 1;
   return {
     type: "split",
     dir: tree.dir,
     children: kept.map((e) => e.child),
     sizes: kept.map((e) => e.size / total),
+    ...tag,
   };
 }
 
 export function isLocalAgentKind(kind: TabKind): kind is "local_agent" {
   return kind === "local_agent";
+}
+
+/**
+ * SSH-sync Phase 0: whether a tab kind has a user-toggleable local/remote
+ * locality. Only `agent` and `shell` tabs run a PTY that can sit on either side;
+ * `local_agent` is fixed-local and the non-PTY kinds
+ * (files/embed/projects3d/network)
+ * have no locality.
+ */
+export function isLocatableKind(kind: TabKind): boolean {
+  return kind === "agent" || kind === "shell";
+}
+
+/**
+ * SSH-sync Phase 0: the default locality for a kind on a remote project (product
+ * decision 1): **agents default LOCAL** (cwd = the local mirror), **shells
+ * default REMOTE** (run remote scripts on the host). `local_agent` and the
+ * non-PTY kinds resolve local. See docs/ssh_sync_plan.md.
+ */
+export function defaultLocationForKind(kind: TabKind): TabLocation {
+  return kind === "shell" ? "remote" : "local";
+}
+
+/**
+ * SSH-sync Phase 0: a tab's effective locality — its explicit `location`, or the
+ * per-kind default when unset. `local_agent` is always local regardless of any
+ * stored value. Consumed by CenterPanel/DetachedCenterPanel to decide `localOnly`
+ * and resolve the local `cwd` (mirror root) for a local-on-remote tab.
+ */
+export function effectiveTabLocation(
+  tab: { kind: TabKind; location?: TabLocation },
+): TabLocation {
+  if (isLocalAgentKind(tab.kind)) return "local";
+  return tab.location ?? defaultLocationForKind(tab.kind);
+}
+
+/**
+ * SSH-sync Phase 1: the local working directory a PTY tab should run in when it
+ * runs LOCALLY on a REMOTE project. A local-on-remote tab can't cwd into the
+ * remote tree, so it runs in the project's local **mirror** — the synced twin.
+ * This is the value shown in the tab title (and the path the disconnected file
+ * browser lists); the backend resolves the same path authoritatively at spawn
+ * (and guarantees it exists).
+ *
+ * The mirror can be relocated to a custom folder ("Move project…"), so prefer the
+ * project's persisted override (`opts.mirror`, from resolveLocalMirror) when set;
+ * fall back to the default `<state dir>/mirror` for legacy projects with none.
+ * Returns `fallback` (the tab's own cwd) unchanged for a local project or a tab
+ * that runs on the host (remote locality).
+ */
+export function localTabCwd(
+  tab: { kind: TabKind; location?: TabLocation },
+  opts: { isRemoteProject: boolean; projectDirectory: string; fallback: string; mirror?: string | null },
+): string {
+  if (!opts.isRemoteProject || effectiveTabLocation(tab) !== "local") {
+    return opts.fallback;
+  }
+  const override = opts.mirror?.trim();
+  if (override) return override.replace(/[/\\]+$/, "");
+  if (!opts.projectDirectory) return opts.fallback;
+  return `${opts.projectDirectory.replace(/[/\\]+$/, "")}/mirror`;
 }
 
 /**
@@ -2016,9 +4092,11 @@ export function withDetachedDocked(
   for (const d of detached ?? []) {
     const t = serializeTree(d.subtree);
     if (!t) continue;
-    // v1 detaches a single GroupNode, so the serialized subtree is a group; tag
-    // it so restore knows to respawn the popout instead of docking it.
-    docked.push(t.type === "group" ? { ...t, detached: true, bounds: d.bounds } : t);
+    // Tag the popout's root (a single GroupNode, or a SplitNode for a multi-pane
+    // popout) so restore respawns the WHOLE subtree as one floating window rather
+    // than docking it into the main panel. `detachGroup` re-detaches either shape
+    // by the tagged node's id (see deserializeTree → pendingRespawn).
+    docked.push({ ...t, detached: true, bounds: d.bounds, zoom: d.zoom });
   }
   if (docked.length === 0) return inWindow;
   const all = inWindow ? [inWindow, ...docked] : docked;
@@ -2033,7 +4111,39 @@ export function withDetachedDocked(
 
 /** #42: the tab keys held by a scope's detached groups (for owned-keys unions). */
 export function detachedTabKeys(detached: DetachedGroup[] | undefined): string[] {
-  return (detached ?? []).flatMap((d) => d.subtree.tabKeys);
+  return (detached ?? []).flatMap((d) => orderedTabKeys(d.subtree));
+}
+
+/**
+ * Fold a scope's HIDDEN groups back into its serialized tree, each tagged
+ * `hidden: true`, so a restart persists them (their tabs survive) and restore
+ * re-parks them into `hiddenGroupsByScope` rather than docking them live. Mirrors
+ * `withDetachedDocked`, minus bounds (a hidden group has no OS window).
+ */
+export function withHiddenDocked(
+  inWindow: SavedLayoutTree | null,
+  hidden: HiddenGroup[] | undefined,
+): SavedLayoutTree | null {
+  const docked: SavedLayoutTree[] = [];
+  for (const h of hidden ?? []) {
+    const t = serializeTree(h.subtree);
+    if (!t) continue;
+    docked.push({ ...t, hidden: true });
+  }
+  if (docked.length === 0) return inWindow;
+  const all = inWindow ? [inWindow, ...docked] : docked;
+  if (all.length === 1) return all[0];
+  return {
+    type: "split",
+    dir: "row",
+    children: all,
+    sizes: all.map(() => 1 / all.length),
+  };
+}
+
+/** The tab keys held by a scope's hidden groups (for owned-keys unions). */
+export function hiddenTabKeys(hidden: HiddenGroup[] | undefined): string[] {
+  return (hidden ?? []).flatMap((h) => orderedTabKeys(h.subtree));
 }
 
 // Re-export the id regeneration helper so consumers / tests that build trees
@@ -2056,7 +4166,7 @@ export function isDetachedPtyId(id: string): boolean {
   const scope = id.slice(0, idx);
   const tabKey = id.slice(idx + 1);
   const groups = useTabsStore.getState().detachedGroupsByScope[scope] ?? [];
-  return groups.some((g) => g.subtree.tabKeys.includes(tabKey));
+  return groups.some((g) => orderedTabKeys(g.subtree).includes(tabKey));
 }
 
 // ── Fine-grained per-group selectors (Eff #3/#4/#7 + Struct #3) ───────────────

@@ -229,7 +229,7 @@ fn save_and_load_tab_layout_roundtrip() {
         },
     ];
 
-    terminal_service::save_tab_layout(&local_file_str, &tabs, None, None).unwrap();
+    terminal_service::save_tab_layout(&local_file_str, &tabs, None, None, true).unwrap();
     let loaded = terminal_service::load_tab_layout(&local_file_str);
 
     assert_eq!(loaded.len(), 2);
@@ -269,7 +269,7 @@ fn save_tab_layout_round_trips_agent_session_id() {
         },
     ];
 
-    terminal_service::save_tab_layout(&local_file_str, &tabs, None, None).unwrap();
+    terminal_service::save_tab_layout(&local_file_str, &tabs, None, None, true).unwrap();
     let loaded = terminal_service::load_tab_layout(&local_file_str);
 
     assert_eq!(loaded.len(), 2);
@@ -313,7 +313,7 @@ fn save_tab_layout_preserves_other_project_fields() {
         session_id: None,
         extra: Default::default(),
     }];
-    terminal_service::save_tab_layout(&local_file_str, &tabs, None, None).unwrap();
+    terminal_service::save_tab_layout(&local_file_str, &tabs, None, None, true).unwrap();
 
     let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
     assert_eq!(reloaded.id, "preserve-me");
@@ -336,7 +336,7 @@ fn save_tab_layout_persists_open_session_uuids() {
     let sessions = serde_json::json!([
         { "sessionId": "11111111-1111-4111-8111-111111111111", "cmd": "claude", "label": "Claude" }
     ]);
-    terminal_service::save_tab_layout(&path_str, &[], None, Some(sessions.clone())).unwrap();
+    terminal_service::save_tab_layout(&path_str, &[], None, Some(sessions.clone()), true).unwrap();
 
     let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
     assert_eq!(reloaded.open_tab_sessions, Some(sessions));
@@ -347,7 +347,7 @@ fn save_tab_layout_persists_open_session_uuids() {
     let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
     assert!(reloaded.open_tab_sessions.is_some());
 
-    terminal_service::save_tab_layout(&path_str, &[], None, Some(serde_json::json!([]))).unwrap();
+    terminal_service::save_tab_layout(&path_str, &[], None, Some(serde_json::json!([])), true).unwrap();
     let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
     assert_eq!(reloaded.open_tab_sessions, None);
 }
@@ -372,9 +372,8 @@ fn load_open_apps_returns_empty_when_none_saved() {
     assert!(loaded.is_empty());
 }
 
-#[test]
-fn save_empty_tabs_clears_layout_field() {
-    let tmp = TempDir::new().unwrap();
+/// A project holding one saved tab, for the two empty-save tests below.
+fn project_with_one_tab(tmp: &TempDir) -> String {
     let project = Project {
         id: "p".to_string(),
         name: "P".to_string(),
@@ -384,18 +383,63 @@ fn save_empty_tabs_clears_layout_field() {
             label: "Old".to_string(),
             cmd: "bash".to_string(),
             cwd: "/tmp".to_string(),
-            session_id: None,
+            session_id: Some("11111111-1111-4111-8111-111111111111".to_string()),
             extra: Default::default(),
         }]),
         ..Default::default()
     };
-    let local_file = write_project_json(tmp.path(), &project);
-    let path_str = local_file.to_string_lossy().to_string();
+    write_project_json(tmp.path(), &project)
+        .to_string_lossy()
+        .to_string()
+}
 
-    terminal_service::save_tab_layout(&path_str, &[], None, None).unwrap();
+#[test]
+fn save_empty_tabs_clears_layout_field_when_clearing_is_allowed() {
+    let tmp = TempDir::new().unwrap();
+    let path_str = project_with_one_tab(&tmp);
+
+    // The user really did close every tab.
+    terminal_service::save_tab_layout(&path_str, &[], None, None, true).unwrap();
 
     let loaded = terminal_service::load_tab_layout(&path_str);
     assert!(loaded.is_empty());
+}
+
+/// The DemoProj regression: an empty layout arriving from a caller that cannot
+/// vouch for it must NOT erase the saved one.
+///
+/// Detach swaps a project's `local_file` (remote state dir → promoted mirror) while
+/// the tab store's scope has not caught up; the debounced autosave then persists the
+/// wrong scope's tabs into that file, the per-scope filter drops every one of them as
+/// foreign, and what arrives is `[]` — indistinguishable from a close-all, and fatal.
+/// It took `tab_layout`, `tab_groups` and the `.eldrun` session mirror in one call,
+/// and with them the `sessionId`s that were the only handle on three live Claude
+/// conversations. Empty now clears only when the caller says it means one.
+#[test]
+fn save_empty_tabs_preserves_layout_when_clearing_is_not_allowed() {
+    let tmp = TempDir::new().unwrap();
+    let path_str = project_with_one_tab(&tmp);
+
+    terminal_service::save_tab_layout(&path_str, &[], None, None, false).unwrap();
+
+    let loaded = terminal_service::load_tab_layout(&path_str);
+    assert_eq!(loaded.len(), 1, "an unvouched empty save must not erase tabs");
+    assert_eq!(loaded[0].key, "old");
+    assert_eq!(
+        loaded[0].session_id.as_deref(),
+        Some("11111111-1111-4111-8111-111111111111"),
+        "the agent's session id is the handle on its conversation"
+    );
+
+    // …and it must not have emptied the `.eldrun` mirror either — that file WINS on
+    // load, so clobbering it would lose the tabs even with project.json intact.
+    let sessions_dir = terminal_service::eldrun_sessions_dir(&path_str).unwrap();
+    let mirror = sessions_dir.join("terminals.json");
+    if mirror.exists() {
+        let session: eldrun_lib::schema::session::TerminalSession =
+            eldrun_lib::storage::read_json(&mirror).unwrap();
+        assert_eq!(session.tab_layout.len(), 1);
+    }
 }
 
 // ── terminal_service: .eldrun/sessions/ ───────────────────────────────────

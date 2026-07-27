@@ -10,7 +10,7 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::Serialize;
 
@@ -79,16 +79,10 @@ pub struct SyncRect {
     pub h: f64,
 }
 
-/// True if `bin` resolves on `PATH`.
+/// True if `bin` resolves on `PATH`. Uses the shared cross-platform probe so the
+/// TeX toolchain is detected on Windows too (where `which` does not exist).
 fn on_path(bin: &str) -> bool {
-    Command::new("which")
-        .arg(bin)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    crate::paths::binary_on_path(bin)
 }
 
 /// Probe `PATH` for the TeX toolchain. Cheap enough to call on demand.
@@ -117,20 +111,84 @@ struct RunOut {
     text: String,
 }
 
+/// How long a single TeX/bibtex invocation may run before it is killed.
+///
+/// `compile_tex` is a **synchronous** command, so a run that never returns holds
+/// a Tauri worker thread for the rest of the session and the frontend has no way
+/// to abort it — the deck editor and the TeX viewer both just sit on a spinner.
+/// `-interaction=nonstopmode` already rules out the classic prompt-for-input
+/// hang; what is left is a genuinely pathological document (a runaway macro, a
+/// `\loop` with no exit), and for that a ceiling is the only defence. Ten minutes
+/// is far beyond any healthy build, including a first run that is downloading
+/// packages on MiKTeX.
+const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Run `bin args…` with `dir` as the working directory, capturing stdout+stderr.
+/// Spawned via `command_no_window` so MiKTeX's console tools (engine, `bibtex`,
+/// `synctex`) don't flash a console window per invocation on Windows.
+///
+/// Killed after {@link RUN_TIMEOUT}. The output is read on a worker thread rather
+/// than with `output()` so the wait can time out at all: `output()` blocks until
+/// the pipes close, which a wedged child never does.
 fn run_in<S: AsRef<std::ffi::OsStr>>(dir: &Path, bin: &str, args: &[S]) -> Result<RunOut, String> {
-    let out = Command::new(bin)
+    let mut child = crate::paths::command_no_window(bin)
         .args(args)
         .current_dir(dir)
         .stdin(Stdio::null())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("run {bin}: {e}"))?;
-    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-    text.push_str(&String::from_utf8_lossy(&out.stderr));
-    Ok(RunOut {
-        ok: out.status.success(),
-        text,
-    })
+
+    // Drain both pipes on their own threads. A child that fills a pipe buffer
+    // deadlocks if nobody is reading, which would make the timeout fire on
+    // perfectly healthy builds with a lot of log output.
+    let mut out_pipe = child.stdout.take();
+    let mut err_pipe = child.stderr.take();
+    let out_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = out_pipe.as_mut() {
+            let _ = std::io::Read::read_to_end(p, &mut buf);
+        }
+        buf
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = err_pipe.as_mut() {
+            let _ = std::io::Read::read_to_end(p, &mut buf);
+        }
+        buf
+    });
+
+    let deadline = std::time::Instant::now() + RUN_TIMEOUT;
+    let status = loop {
+        match child.try_wait().map_err(|e| format!("wait {bin}: {e}"))? {
+            Some(s) => break Some(s),
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    };
+
+    let mut text = String::from_utf8_lossy(&out_reader.join().unwrap_or_default()).into_owned();
+    text.push_str(&String::from_utf8_lossy(&err_reader.join().unwrap_or_default()));
+
+    match status {
+        Some(s) => Ok(RunOut {
+            ok: s.success(),
+            text,
+        }),
+        None => {
+            text.push_str(&format!(
+                "\n! Eldrun stopped {bin} after {} seconds — the build appears to be stuck.\n",
+                RUN_TIMEOUT.as_secs()
+            ));
+            Ok(RunOut { ok: false, text })
+        }
+    }
 }
 
 /// True when the `.aux` references a bibliography (so a `bibtex` pass is wanted).
@@ -249,8 +307,28 @@ fn log_shows_shell_escape(log: &str) -> bool {
     })
 }
 
+/// Compile a `.tex`.
+///
+/// **`async` and off the UI thread, deliberately.** A *synchronous* Tauri command
+/// runs on the main thread (see the note at `commands/credentials.rs`), so this
+/// used to freeze the entire window for the duration of `latexmk` — which the
+/// {@link RUN_TIMEOUT} above bounds at ten minutes. Every deck TeX-figure add,
+/// every Recompile and every starter-deck generation paid that (TODO V #105).
+/// `spawn_blocking` keeps the body's blocking process I/O legal on the async
+/// runtime while the webview stays live.
 #[tauri::command]
-pub fn compile_tex(
+pub async fn compile_tex(
+    path: String,
+    engine: Option<String>,
+    out_dir: Option<String>,
+    extra_flags: Option<Vec<String>>,
+) -> Result<TexCompileResult, String> {
+    tauri::async_runtime::spawn_blocking(move || compile_tex_blocking(path, engine, out_dir, extra_flags))
+        .await
+        .map_err(|e| format!("compile task failed: {e}"))?
+}
+
+fn compile_tex_blocking(
     path: String,
     engine: Option<String>,
     out_dir: Option<String>,
@@ -385,6 +463,287 @@ pub fn compile_tex(
         shell_escape: log_shows_shell_escape(&log),
         log: tail(&log),
     })
+}
+
+// ── Font discovery ───────────────────────────────────────────────────────────
+//
+// The deck's type picker (TODO V #120). A Beamer plate is typeset in Computer
+// Modern / Latin Modern, so with the standard-14 faces alone *every* layer
+// caption sat in Helvetica on top of it — and a non-Latin talk was impossible,
+// since those faces are WinAnsi-encoded.
+//
+// Deliberately a plain directory walk rather than fontconfig: the picker needs a
+// **file path**, because the frontend embeds the bytes (the same bytes it
+// measures with — see `deck/fonts.ts`), and `fc-list` is one more optional tool
+// to depend on for a list this can produce itself.
+
+/// One font file the deck can embed.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct FontFile {
+    /// Absolute path — the key the frontend measures and embeds by.
+    pub path: String,
+    /// A human label: the file stem with separators normalised.
+    pub name: String,
+}
+
+/// Font-file extensions pdf-lib's fontkit can actually embed. `.pfb`/`.otc` and
+/// bitmap formats are excluded rather than offered and then failing at export.
+const FONT_EXTS: &[&str] = &["ttf", "otf", "ttc", "woff", "woff2"];
+
+/// Directories to walk, per platform. A user directory first so a font the user
+/// installed themselves outranks a system copy of the same family in the list.
+fn font_dirs() -> Vec<std::path::PathBuf> {
+    let mut out: Vec<std::path::PathBuf> = Vec::new();
+    // The crate's own resolver, not a new dependency — it already encodes the
+    // per-OS rules (and the tests' overrides) every other path here goes through.
+    let home = crate::paths::home_dir();
+    #[cfg(target_os = "linux")]
+    {
+        out.push(home.join(".local/share/fonts"));
+        out.push(home.join(".fonts"));
+    }
+    #[cfg(target_os = "macos")]
+    out.push(home.join("Library/Fonts"));
+    #[cfg(target_os = "windows")]
+    out.push(home.join("AppData/Local/Microsoft/Windows/Fonts"));
+    let _ = &home;
+    #[cfg(target_os = "linux")]
+    {
+        out.push("/usr/share/fonts".into());
+        out.push("/usr/local/share/fonts".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        out.push("/Library/Fonts".into());
+        out.push("/System/Library/Fonts".into());
+    }
+    #[cfg(target_os = "windows")]
+    out.push("C:\\Windows\\Fonts".into());
+    out
+}
+
+/// Turn a font file's stem into something a picker can show: `LiberationSerif-BoldItalic`
+/// → `Liberation Serif Bold Italic`.
+pub fn font_display_name(stem: &str) -> String {
+    let spaced = stem.replace(['-', '_'], " ");
+    let mut out = String::with_capacity(spaced.len() + 4);
+    let mut prev_lower = false;
+    for ch in spaced.chars() {
+        // Split camel case, but never inside a run of capitals (an acronym).
+        if prev_lower && ch.is_uppercase() {
+            out.push(' ');
+        }
+        prev_lower = ch.is_lowercase() || ch.is_ascii_digit();
+        out.push(ch);
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn collect_fonts(dir: &Path, depth: u32, out: &mut Vec<FontFile>) {
+    // Font trees are shallow (`/usr/share/fonts/truetype/<family>/`), and an
+    // unbounded walk of a symlinked home directory is how a "list the fonts" call
+    // turns into a filesystem scan.
+    if depth > 3 || out.len() > 4000 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // `metadata` follows symlinks; a font directory that links to itself
+        // would otherwise recurse until the depth cap, needlessly.
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            collect_fonts(&path, depth + 1, out);
+            continue;
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        if !FONT_EXTS.contains(&ext.as_str()) {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        out.push(FontFile {
+            name: font_display_name(stem),
+            path: path.to_string_lossy().into_owned(),
+        });
+    }
+}
+
+/// Every embeddable font file on this machine, deduplicated by path and sorted
+/// by display name. Never an error: a missing directory is simply one fewer
+/// place to look.
+#[tauri::command]
+pub async fn list_fonts() -> Result<Vec<FontFile>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let mut out: Vec<FontFile> = Vec::new();
+        for dir in font_dirs() {
+            collect_fonts(&dir, 0, &mut out);
+        }
+        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then(a.path.cmp(&b.path)));
+        out.dedup_by(|a, b| a.path == b.path);
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("font scan failed: {e}"))?
+}
+
+// ── SyncTeX: which source lines produced each page ───────────────────────────
+//
+// This is the producer half of the deck's slide anchoring (`sidecar.ts`'s
+// `reconcile`, TODO V #100). The sidecar has always documented a `line` anchor as
+// "strictly better than any content heuristic" — it survives inserting, deleting
+// and reordering frames exactly as well as the author's own mental model — and
+// has always *consumed* one. Nothing ever wrote it, so the mechanism did not
+// exist at runtime and every deck fell back to fingerprinting.
+//
+// It is answered by reading the `.synctex.gz` the compile already emits
+// (`-synctex=1` is passed unconditionally) rather than by shelling out to
+// `synctex edit` once per page: a 200-page plate would be 200 process spawns for
+// one reconcile.
+
+/// The source lines SyncTeX attributes to one page of a compiled PDF.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PageLines {
+    /// 1-based, as the PDF numbers it.
+    pub page: u32,
+    /// Distinct contributing lines of the **main** input file, ascending.
+    pub lines: Vec<u32>,
+}
+
+/// Parse a decompressed SyncTeX file into per-page line sets.
+///
+/// The format is one record per line. `{N` opens page N and `}N` closes it;
+/// inside, a box/glyph/kern/glue record is `<type><tag>,<line>[,<column>]:<geometry>`
+/// where `<tag>` names an input file declared in the preamble as
+/// `Input:<tag>:<path>`. Closing records (`]`, `)`) carry no tag.
+///
+/// `want_tag` restricts the harvest to one input file. That restriction is
+/// load-bearing rather than an optimisation: line numbers from two different
+/// files are not comparable, so mixing them would produce an anchor that silently
+/// means nothing. A deck whose frames live in an `\input`ed file simply records no
+/// line and falls back to the fingerprint, which is the honest outcome.
+pub fn parse_synctex_pages(text: &str, want_tag: Option<u32>) -> Vec<PageLines> {
+    let mut out: Vec<PageLines> = Vec::new();
+    let mut page: Option<u32> = None;
+    let mut lines: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+
+    let flush = |page: &mut Option<u32>,
+                     lines: &mut std::collections::BTreeSet<u32>,
+                     out: &mut Vec<PageLines>| {
+        if let Some(p) = page.take() {
+            out.push(PageLines { page: p, lines: lines.iter().copied().collect() });
+            lines.clear();
+        }
+    };
+
+    for raw in text.lines() {
+        let l = raw.trim_end();
+        let Some(c) = l.chars().next() else { continue };
+        match c {
+            '{' => {
+                if let Ok(p) = l[1..].trim().parse::<u32>() {
+                    flush(&mut page, &mut lines, &mut out);
+                    page = Some(p);
+                }
+            }
+            '}' => flush(&mut page, &mut lines, &mut out),
+            // Box open/close-with-content, void boxes, and the glyph/kern/glue
+            // records. `]` and `)` are the closers and carry no tag, so they are
+            // not listed.
+            '[' | '(' | 'v' | 'h' | 'x' | 'k' | 'g' | '$' | 'r' => {
+                if page.is_some() {
+                    if let Some((tag, line)) = parse_record_tag_line(&l[1..]) {
+                        if want_tag.is_none_or(|w| w == tag) && line > 0 {
+                            lines.insert(line);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    flush(&mut page, &mut lines, &mut out);
+    out.sort_by_key(|p| p.page);
+    out
+}
+
+/// `"1,23:0,0:..."` → `(1, 23)`. Returns None for anything not shaped like a
+/// record body, which is how the postamble's `Count:`-style lines are skipped
+/// without enumerating them.
+fn parse_record_tag_line(body: &str) -> Option<(u32, u32)> {
+    let head = body.split(':').next()?;
+    let mut parts = head.split(',');
+    let tag = parts.next()?.trim().parse::<u32>().ok()?;
+    let line = parts.next()?.trim().parse::<u32>().ok()?;
+    Some((tag, line))
+}
+
+/// Find the `Input:` tag whose path has file stem `stem`, i.e. the document's own
+/// main source rather than one of its includes or a package.
+pub fn main_input_tag(text: &str, stem: &str) -> Option<u32> {
+    for raw in text.lines() {
+        let l = raw.trim();
+        let Some(rest) = l.strip_prefix("Input:") else {
+            // The Input block is contiguous and precedes the content; once past
+            // it there is nothing left to find, and scanning a 40 MB body for a
+            // prefix that cannot appear is pure cost.
+            if l.starts_with("Content:") {
+                return None;
+            }
+            continue;
+        };
+        let mut it = rest.splitn(2, ':');
+        let tag = it.next()?.trim().parse::<u32>().ok();
+        let path = it.next().unwrap_or("").trim();
+        if let (Some(tag), Some(s)) = (tag, Path::new(path).file_stem().and_then(|s| s.to_str())) {
+            if s == stem {
+                return Some(tag);
+            }
+        }
+    }
+    None
+}
+
+/// Read the SyncTeX map beside `pdf` and report the source lines behind each page.
+///
+/// Returns an empty vector — never an error — when there is no map: a deck whose
+/// plate was imported, or compiled by something that did not emit one, is an
+/// ordinary case that falls back to content fingerprinting. Only a map that
+/// exists and cannot be read is an error worth surfacing.
+#[tauri::command]
+pub async fn synctex_page_lines(pdf: String) -> Result<Vec<PageLines>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let pdf_path = Path::new(&pdf);
+        let stem = match pdf_path.file_stem().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None => return Ok(Vec::new()),
+        };
+        let dir = pdf_path.parent().unwrap_or_else(|| Path::new("."));
+
+        let gz = dir.join(format!("{stem}.synctex.gz"));
+        let plain = dir.join(format!("{stem}.synctex"));
+        let text = if gz.exists() {
+            let bytes = fs::read(&gz).map_err(|e| format!("read {}: {e}", gz.display()))?;
+            let mut out = String::new();
+            use std::io::Read;
+            flate2::read::GzDecoder::new(&bytes[..])
+                .read_to_string(&mut out)
+                .map_err(|e| format!("decompress {}: {e}", gz.display()))?;
+            out
+        } else if plain.exists() {
+            fs::read_to_string(&plain).map_err(|e| format!("read {}: {e}", plain.display()))?
+        } else {
+            return Ok(Vec::new());
+        };
+
+        let tag = main_input_tag(&text, &stem);
+        Ok(parse_synctex_pages(&text, tag))
+    })
+    .await
+    .map_err(|e| format!("synctex task failed: {e}"))?
 }
 
 // ── SyncTeX forward/reverse search ───────────────────────────────────────────
@@ -743,6 +1102,114 @@ pub fn resolve_tex_root(path: String) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    /// A SyncTeX body shaped like the real thing: a preamble of `Input:` files,
+    /// then two pages, the second of which is a Beamer overlay of the first — the
+    /// case the whole line anchor exists for, since both come from the same frame
+    /// and are therefore attributed to the same source lines.
+    const SYNCTEX: &str = "\
+SyncTeX Version:1
+Input:1:/talks/main.tex
+Input:2:/usr/share/texmf/beamer.sty
+Content:
+{1
+[1,12:0,0:100,50,0
+(1,14:10,10:80,20,0
+h1,15:10,10:80,10,0
+)
+x2,99:5,5
+]
+}1
+{2
+[1,12:0,0:100,50,0
+h1,15:10,10:80,10,0
+h1,18:10,30:80,10,0
+]
+}2
+Postamble:
+Count:2
+";
+
+    #[test]
+    fn font_names_are_readable_in_a_picker() {
+        assert_eq!(font_display_name("LiberationSerif-BoldItalic"), "Liberation Serif Bold Italic");
+        assert_eq!(font_display_name("DejaVuSans"), "Deja Vu Sans");
+        assert_eq!(font_display_name("lmroman10-regular"), "lmroman10 regular");
+        // A run of capitals is an acronym, not words: don't shatter it.
+        assert_eq!(font_display_name("NIMBUSSans"), "NIMBUSSans");
+        assert_eq!(font_display_name("Some__Font  Name"), "Some Font Name");
+    }
+
+    #[test]
+    fn only_embeddable_font_formats_are_offered() {
+        // A format fontkit cannot embed must not reach the picker: offering it
+        // and failing at export is the worst of both.
+        let dir = std::env::temp_dir().join(format!("eldrun-fonts-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("nested")).unwrap();
+        for name in ["Good.ttf", "Also.OTF", "Bitmap.pcf", "Notes.txt"] {
+            fs::write(dir.join(name), b"x").unwrap();
+        }
+        fs::write(dir.join("nested/Deep.woff2"), b"x").unwrap();
+
+        let mut out = Vec::new();
+        collect_fonts(&dir, 0, &mut out);
+        let mut names: Vec<&str> = out.iter().map(|f| f.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["Also", "Deep", "Good"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_font_directory_is_not_an_error() {
+        let mut out = Vec::new();
+        collect_fonts(Path::new("/definitely/not/here"), 0, &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn synctex_pages_harvest_the_main_file_s_lines() {
+        let tag = main_input_tag(SYNCTEX, "main");
+        assert_eq!(tag, Some(1));
+        let pages = parse_synctex_pages(SYNCTEX, tag);
+        assert_eq!(
+            pages,
+            vec![
+                PageLines { page: 1, lines: vec![12, 14, 15] },
+                PageLines { page: 2, lines: vec![12, 15, 18] },
+            ]
+        );
+        // The package's own tag is excluded: line numbers from two files are not
+        // comparable, so mixing them would be an anchor that means nothing.
+        assert!(!pages[0].lines.contains(&99));
+    }
+
+    #[test]
+    fn overlay_pages_share_a_first_line() {
+        // Both pages of the frame report 12 as their lowest line. That is not a
+        // bug to fix here — it is the fact `reconcile` matches *within* the group
+        // for, so the k-th slide on line L takes the k-th page L produced.
+        let pages = parse_synctex_pages(SYNCTEX, Some(1));
+        assert_eq!(pages[0].lines.first(), Some(&12));
+        assert_eq!(pages[1].lines.first(), Some(&12));
+    }
+
+    #[test]
+    fn a_map_with_no_matching_input_yields_no_lines() {
+        // A deck whose frames live in an `\input`ed file records nothing rather
+        // than an anchor built from another file's line numbering.
+        assert_eq!(main_input_tag(SYNCTEX, "chapter"), None);
+        let pages = parse_synctex_pages(SYNCTEX, Some(7));
+        assert_eq!(pages.len(), 2);
+        assert!(pages.iter().all(|p| p.lines.is_empty()));
+    }
+
+    #[test]
+    fn postamble_lines_are_not_mistaken_for_records() {
+        // `Count:2` sits outside any page and must not become line data.
+        let pages = parse_synctex_pages(SYNCTEX, None);
+        assert_eq!(pages.len(), 2);
+    }
+
     #[test]
     fn latexmk_flag_maps_engines() {
         assert_eq!(latexmk_flag(Some("lualatex")), "-pdflua");
@@ -873,7 +1340,10 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let txt = dir.join("notes.txt");
         fs::write(&txt, "hi").unwrap();
-        let err = compile_tex(txt.to_string_lossy().into_owned(), None, None, None).unwrap_err();
+        // The blocking body, not the async command wrapper: the rejection is the
+        // body's, and testing it here keeps this a plain synchronous test.
+        let err =
+            compile_tex_blocking(txt.to_string_lossy().into_owned(), None, None, None).unwrap_err();
         assert!(err.contains("not a .tex file"), "got: {err}");
         let _ = fs::remove_dir_all(&dir);
     }

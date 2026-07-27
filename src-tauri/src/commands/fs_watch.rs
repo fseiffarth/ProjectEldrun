@@ -10,10 +10,18 @@
 //! unwatches it.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use notify::{recommended_watcher, RecursiveMode, Watcher};
 use tauri::{AppHandle, Emitter, State};
+
+/// How long to coalesce a burst of raw `notify` events into a single
+/// `fs-change` emit. A single write (or a `git status` touching `.git/*` while
+/// the repo root is watched) fires many raw events back-to-back; without this
+/// the frontend would receive a storm of `fs-change` events.
+const DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// Currently-watched canonical directory and its live watcher. `None` when
 /// nothing is being watched (panel closed / unmounted).
@@ -29,6 +37,13 @@ pub fn watch_dir(
     state: State<'_, FsWatchState>,
     path: String,
 ) -> Result<(), String> {
+    // Mount-free remote (Phase 2): inotify cannot see a remote (SFTP) tree, and a
+    // remote project's watched dir is its non-fs mountpoint root. No-op so the
+    // remote file tree just relies on manual refresh; the frontend already skips
+    // watching for remote projects, this is belt-and-suspenders.
+    if crate::services::remote::remote_target_for_dir(&path).is_some() {
+        return Ok(());
+    }
     let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
 
     let mut guard = state.lock().unwrap();
@@ -39,10 +54,39 @@ pub fn watch_dir(
     }
 
     let emit_path = canonical.to_string_lossy().to_string();
+    // Trailing-edge debounce: each raw event bumps a shared generation, and ONE
+    // long-lived thread waits out `DEBOUNCE` and emits only if no newer event
+    // arrived meanwhile. A burst of raw events thus collapses into a single
+    // `fs-change`.
+    //
+    // The generation counter used to be paired with a `std::thread::spawn` *per
+    // raw event*. That is fine at a handful of events and pathological at a burst:
+    // an unpacking install or a recursive size walk in the watched directory turns
+    // into thousands of thread spawns a second, each one only to sleep 200ms and
+    // find itself outdated. One parked thread does the same job at a fixed cost.
+    let generation = Arc::new(AtomicU64::new(0));
+    let (tx, rx) = std::sync::mpsc::channel::<u64>();
+    {
+        let generation = Arc::clone(&generation);
+        std::thread::spawn(move || {
+            // Ends when the watcher (and with it the sender) is dropped.
+            while let Ok(seen) = rx.recv() {
+                std::thread::sleep(DEBOUNCE);
+                // Only the last event of a burst still matches — the rest have been
+                // superseded, and their queued messages are drained by this same
+                // check on the next iterations.
+                if generation.load(Ordering::SeqCst) == seen {
+                    let _ = app.emit("fs-change", &emit_path);
+                }
+            }
+        });
+    }
     let mut watcher = recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if res.is_ok() {
-            let _ = app.emit("fs-change", &emit_path);
+        if res.is_err() {
+            return;
         }
+        let my_gen = generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = tx.send(my_gen);
     })
     .map_err(|e| e.to_string())?;
 

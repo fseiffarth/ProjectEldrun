@@ -84,13 +84,9 @@ pub fn switch(
         save_previous_sessions(local_file, previous_project_id, snapshot);
     }
 
-    // 2b. If the next project is remote, ensure its sshfs mount is up before we
-    //     read any of its files. Best-effort + non-panicking: a mount failure is
-    //     logged and the switch proceeds (the file tree / PTY will simply see an
-    //     empty mountpoint rather than crashing the switch).
-    if let (Some(next_id), Some(local_file)) = (project_id, next_local_file) {
-        ensure_remote_mounted(next_id, local_file);
-    }
+    // 2b. Remote projects are SSH/SFTP-native (no mount): the pooled connection
+    //     is opened by the frontend on activation (`remote_connect`), and file
+    //     browse / I-O / git dispatch over SFTP/SSH. Nothing to mount here.
 
     // 3. Load the next project's session data (terminal, apps, file tabs).
     //    This is the only part the frontend waits on, so it runs before the
@@ -124,7 +120,26 @@ pub fn switch(
     //    Acquire WindowRegistry before WorkspaceState (lock order).
     {
         let prev_wids = {
-            let wins = win_registry.lock().unwrap();
+            // `mut` is only exercised on Windows/macOS (the cfg'd re-resolve
+            // below); other targets bind it immutably.
+            #[cfg_attr(
+                not(any(target_os = "windows", target_os = "macos")),
+                allow(unused_mut)
+            )]
+            let mut wins = win_registry.lock().unwrap();
+            // Windows/macOS: re-resolve any project-owned window whose id was never
+            // captured at launch time (the visible top-level often belongs to a
+            // CHILD of the spawned pid). Runs while holding ONLY the registry lock,
+            // before the WorkspaceState lock below — lock order preserved. The
+            // back-populated ids make this hide AND the switch-back show (step 8)
+            // work through the existing id-based primitives. No-op on Linux,
+            // where launch-time `_NET_WM_PID` resolution already fills the id.
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            window_service::resolve_missing_window_ids(
+                &mut wins.windows,
+                previous_project_id,
+                |pid| crate::commands::apps::resolve_window_id_for_pid(pid),
+            );
             window_service::project_window_ids(&wins.windows, previous_project_id)
         };
         let ws = workspace.lock().unwrap();
@@ -143,6 +158,23 @@ pub fn switch(
         };
         for label in &prev_labels {
             if let Some(win) = app.get_webview_window(label) {
+                // Capture the popout's real on-screen geometry (PHYSICAL px, so
+                // it is scale-invariant and re-applies onto the SAME monitor)
+                // BEFORE hiding it. hide()/show() lets the WM re-place the window
+                // — typically onto the primary monitor — so switch-back must put
+                // it back explicitly (step 8b), or a multi-monitor popout lands on
+                // the wrong screen (#42).
+                if let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) {
+                    win_registry.lock().unwrap().detached_bounds.insert(
+                        label.clone(),
+                        crate::commands::apps::DetachedBounds {
+                            x: pos.x,
+                            y: pos.y,
+                            w: size.width,
+                            h: size.height,
+                        },
+                    );
+                }
                 let _ = win.hide();
             }
         }
@@ -185,6 +217,31 @@ pub fn switch(
             if let Some(win) = app.get_webview_window(label) {
                 let _ = win.unminimize();
                 let _ = win.show();
+                // Put the popout back where it was before it was parked: the
+                // show() above lets the WM move it (often onto the wrong
+                // monitor), so re-apply the geometry captured at hide-time (step
+                // 5b), validated against the currently-connected monitors so an
+                // unplugged display can't strand it off-screen. Size before
+                // position so a resize can't shift the placement. PHYSICAL px →
+                // correct monitor regardless of per-monitor scaling (#42).
+                let saved = win_registry.lock().unwrap().detached_bounds.get(label).copied();
+                if let Some(b) = saved {
+                    let monitors = window_service::monitor_rects(&win);
+                    let fitted = crate::services::window_state::resolve_detached_geometry(
+                        crate::schema::settings::WindowState {
+                            x: b.x,
+                            y: b.y,
+                            w: b.w,
+                            h: b.h,
+                            maximized: false,
+                        },
+                        &monitors,
+                    );
+                    if let Some(g) = fitted {
+                        let _ = win.set_size(tauri::PhysicalSize::new(g.w, g.h));
+                        let _ = win.set_position(tauri::PhysicalPosition::new(g.x, g.y));
+                    }
+                }
             }
         }
     }
@@ -195,6 +252,37 @@ pub fn switch(
         window_service::project_tracked_ids(&wins.windows, project_id)
     };
 
+    // 10. Project containers (#38): tear down the container of the project
+    //     being left — unless tabs are still live inside it (a background
+    //     agent keeps its container until they finish or the app exits) — and
+    //     warm up the next project's. On its own thread, not merely off the
+    //     UI thread: `up()` can build an image (minutes) and must never delay
+    //     the switch; the spawn-path `up()` stays the fallback for tabs
+    //     opened before the warm-up completes, and sandbox's lifecycle lock
+    //     serializes rapid switches. Best-effort by design.
+    {
+        use tauri::Manager;
+        let registry = app
+            .state::<crate::commands::terminal::RegistryState>()
+            .inner()
+            .clone();
+        let prev = previous_project_id.map(String::from);
+        let next = project_id.map(String::from);
+        std::thread::spawn(move || {
+            if let Some(prev) = prev {
+                let live = registry.lock().unwrap().any_live_for_scope(&prev);
+                if !live {
+                    crate::services::sandbox::down_for_project(&prev);
+                }
+            }
+            if let Some(next) = next {
+                if let Err(e) = crate::services::sandbox::up_for_project(&next) {
+                    eprintln!("sandbox: container for '{next}': {e}");
+                }
+            }
+        });
+    }
+
     Ok(ProjectRuntimeSwitchedPayload {
         opened_window_ids,
         ..payload
@@ -202,24 +290,6 @@ pub fn switch(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
-
-/// Best-effort sshfs mount for a remote project on switch. Loads the project's
-/// `project.json` from `local_file`; if it carries a `remote` spec, mount it (a
-/// no-op when already mounted). Local projects and load/mount failures are
-/// silently tolerated — this must never panic or abort the switch.
-fn ensure_remote_mounted(project_id: &str, local_file: &str) {
-    let project: crate::schema::project::Project =
-        match storage::read_json(std::path::Path::new(local_file)) {
-            Ok(p) => p,
-            Err(_) => return, // unreadable project.json → nothing to mount
-        };
-    let Some(remote) = project.remote.as_ref() else {
-        return; // local project
-    };
-    if let Err(e) = crate::services::ssh_mount::mount(remote, project_id) {
-        eprintln!("ProjectRuntime: mount remote project '{project_id}': {e}");
-    }
-}
 
 /// Persist file-tab, layout, and state snapshots for the project being left.
 fn save_previous_sessions(

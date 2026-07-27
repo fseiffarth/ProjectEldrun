@@ -65,7 +65,9 @@ Last reviewed: 2026-06-06
   take minutes for large models.
 - Starting the system Ollama service depends on local user permissions; Eldrun
   falls back to a user `ollama serve` process when needed.
-- Open-app restore is best-effort relaunch; window geometry is not restored.
+- Open-app restore is best-effort relaunch; the geometry of *externally launched
+  app* windows is not restored. Eldrun's own main window does reopen on the
+  monitor, at the position/size, and in the maximized state it was last closed in.
 - Download routing browser preference edits assume the browser is not running.
 
 ## Time Log

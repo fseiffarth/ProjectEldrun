@@ -64,4 +64,19 @@ describe("resolveTexErrorPath", () => {
   it("strips a trailing slash on the build dir", () => {
     expect(resolveTexErrorPath("/home/u/proj/", "./doc.tex")).toBe("/home/u/proj/doc.tex");
   });
+
+  it("resolves against a native Windows build dir, joining with backslashes", () => {
+    expect(resolveTexErrorPath("C:\\Users\\u\\proj", ".\\doc.tex")).toBe(
+      "C:\\Users\\u\\proj\\doc.tex",
+    );
+    expect(resolveTexErrorPath("C:\\Users\\u\\proj", "chapters/intro.tex")).toBe(
+      "C:\\Users\\u\\proj\\chapters\\intro.tex",
+    );
+  });
+
+  it("passes a Windows absolute path through unchanged", () => {
+    expect(resolveTexErrorPath("C:\\Users\\u\\proj", "C:\\texmf\\x.sty")).toBe(
+      "C:\\texmf\\x.sty",
+    );
+  });
 });

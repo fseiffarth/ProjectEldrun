@@ -61,7 +61,7 @@ only `src-tauri/` changes need a rebuild/restart.
 | Feature | Done | Partial | Issue | Notes |
 |---------|:----:|:-------:|:-----:|-------|
 | SSH hardening (#28c) | | | | two **Critical**: remote cmd injection in `ssh_list_dir`/`ssh_default_dir`; remote `--resume` ordering bug |
-| Agent resume generalization (#39d) | | | | Gemini + Vibe still dropped |
+| Agent resume generalization (#39d) | ✅ | | | Claude/Codex resume-by-id; Gemini (`--resume latest`) + Mistral/vibe (`--continue`) via continue-last |
 | KDE Wayland backend (#18) | | | | show/hide are explicit no-ops (KWin scripting pending) |
 | Windows backend | | | | stub (`platform/windows.rs`) |
 | Boxes phases 3–4 (#41) | | | | merged file tree + relation graph deferred |

@@ -5,6 +5,11 @@
  * Clicking the pill opens the box; clicking a member switches to that project;
  * dropping a pill on the box assigns it (and does NOT reorder, S3). An orphaned
  * box_id (no matching box) renders the pill inline (S1).
+ *
+ * The pill drag is pointer-driven (see ProjectPill's `startPillDrag`), not
+ * native HTML5 DnD — jsdom gives every element a zero-sized rect, so the drag's
+ * hit-testing is driven by stubbing `getBoundingClientRect`, the same approach
+ * `PageStrip.test.tsx`/`DragDropSplit.test.tsx` take for their pointer drags.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, act, fireEvent } from "@testing-library/react";
@@ -16,6 +21,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn().mockResolvedValue(nu
 import { ProjectSwitcher } from "../components/layout/ProjectSwitcher";
 import { useProjectsStore } from "../stores/projects";
 import { useBoxesStore } from "../stores/boxes";
+import { usePillDragStore } from "../stores/pillDrag";
 
 function proj(id: string, position: number, boxId?: string): ProjectEntry {
   return {
@@ -32,19 +38,49 @@ function box(id: string, members: string[], position = 5): ProjectBox {
   return { id, name: id, member_ids: members, position };
 }
 
-function dt(projectId: string) {
-  const data: Record<string, string> = { "application/x-eldrun-project": projectId };
-  return {
-    types: ["application/x-eldrun-project"],
-    getData: (t: string) => data[t] ?? "",
-    setData: (t: string, v: string) => {
-      data[t] = v;
-    },
-    dropEffect: "none",
-  };
+/** Give an element a fixed layout rect, since jsdom's is always zero-sized. */
+function layOut(
+  el: HTMLElement,
+  r: { left: number; right: number; top: number; bottom: number },
+) {
+  vi.spyOn(el, "getBoundingClientRect").mockReturnValue({
+    left: r.left,
+    right: r.right,
+    top: r.top,
+    bottom: r.bottom,
+    width: r.right - r.left,
+    height: r.bottom - r.top,
+    x: r.left,
+    y: r.top,
+    toJSON: () => ({}),
+  } as DOMRect);
+}
+
+/** Dispatch a pointer event the way the existing drag tests do (`PageStrip`,
+ *  `DragDropSplit`): jsdom's PointerEvent doesn't carry the fields the pointer
+ *  gesture reads, so a plain Event is decorated with them. */
+function pointer(
+  type: string,
+  x: number,
+  y: number,
+  target: EventTarget,
+  opts: { altKey?: boolean } = {},
+) {
+  const ev = new Event(type, { bubbles: true, cancelable: true });
+  Object.assign(ev, { clientX: x, clientY: y, button: 0, pointerId: 1, altKey: !!opts.altKey });
+  act(() => {
+    target.dispatchEvent(ev);
+  });
+}
+
+function findPill(container: HTMLElement, name: string): HTMLElement {
+  return [...container.querySelectorAll(".project-pill:not(.is-box)")].find(
+    (el) => el.querySelector(".project-pill-label")?.textContent === name,
+  ) as HTMLElement;
 }
 
 beforeEach(() => {
+  usePillDragStore.getState().end();
   useProjectsStore.setState({ projects: [], activeId: null, loaded: true });
   useBoxesStore.setState({ boxes: [], loaded: true });
 });
@@ -177,11 +213,14 @@ describe("box pill rendering", () => {
 
     const container = await renderSwitcher();
     const boxPill = container.querySelector(".project-pill.is-box") as HTMLElement;
-    const dataTransfer = dt("p2");
+    const p2Pill = findPill(container, "p2");
+    layOut(p2Pill, { left: 0, right: 50, top: 0, bottom: 40 });
+    layOut(boxPill, { left: 100, right: 160, top: 0, bottom: 40 });
 
     await act(async () => {
-      fireEvent.dragOver(boxPill, { dataTransfer });
-      fireEvent.drop(boxPill, { dataTransfer });
+      pointer("pointerdown", 10, 10, p2Pill);
+      pointer("pointermove", 130, 10, window);
+      pointer("pointerup", 130, 10, window);
     });
 
     expect(assignToBox).toHaveBeenCalledWith("p2", "boxA");
@@ -202,16 +241,15 @@ describe("box pill rendering", () => {
     });
 
     const container = await renderSwitcher();
-    const p2Pill = [...container.querySelectorAll(".project-pill")].find(
-      (el) => el.querySelector(".project-pill-label")?.textContent === "p2",
-    ) as HTMLElement;
-    expect(p2Pill).toBeTruthy();
+    const p1Pill = findPill(container, "p1");
+    const p2Pill = findPill(container, "p2");
+    layOut(p1Pill, { left: 0, right: 50, top: 0, bottom: 40 });
+    layOut(p2Pill, { left: 100, right: 150, top: 0, bottom: 40 });
 
     await act(async () => {
-      const event = new Event("drop", { bubbles: true, cancelable: true });
-      Object.defineProperty(event, "dataTransfer", { value: dt("p1") });
-      Object.defineProperty(event, "altKey", { value: true });
-      fireEvent(p2Pill, event);
+      pointer("pointerdown", 10, 10, p1Pill);
+      pointer("pointermove", 120, 10, window, { altKey: true });
+      pointer("pointerup", 120, 10, window, { altKey: true });
     });
 
     expect(createBox).toHaveBeenCalledWith("New Box");
@@ -232,35 +270,55 @@ describe("box pill rendering", () => {
     });
 
     const container = await renderSwitcher();
-    const p2Pill = [...container.querySelectorAll(".project-pill")].find(
-      (el) => el.querySelector(".project-pill-label")?.textContent === "p2",
-    ) as HTMLElement;
+    const p1Pill = findPill(container, "p1");
+    const p2Pill = findPill(container, "p2");
+    layOut(p1Pill, { left: 0, right: 50, top: 0, bottom: 40 });
+    layOut(p2Pill, { left: 100, right: 150, top: 0, bottom: 40 });
 
     await act(async () => {
-      fireEvent.drop(p2Pill, { dataTransfer: dt("p1") });
+      pointer("pointerdown", 10, 10, p1Pill);
+      // Past p2's midpoint (125): with only these two pills, p1 landing
+      // "after" p2 is the only real move available (it's already right
+      // before p2), so the cursor must clear the midpoint to signal it.
+      pointer("pointermove", 140, 10, window);
+      pointer("pointerup", 140, 10, window);
     });
 
     expect(reorderProjects).toHaveBeenCalledWith("p1", "p2");
     expect(createBox).not.toHaveBeenCalled();
   });
 
-  it("dropping a pill on the ungrouped strip calls assignToBox(id, null)", async () => {
-    const assignToBox = vi.fn().mockResolvedValue(undefined);
-    useBoxesStore.setState({ boxes: [box("boxA", ["p1"])], assignToBox });
+  it("dropping into the gap between two OTHER pills lands there, not one further right", async () => {
+    // Regression: landing "before OTHERS[k]" by targeting OTHERS[k] directly
+    // is only correct when OTHERS[k] sat to the LEFT of the dragged pill's
+    // start position; when it sat to the right, `onReorder` lands the pill
+    // AFTER that target, one slot further than intended — the reported bug.
+    const reorderProjects = vi.fn().mockResolvedValue(undefined);
+    useBoxesStore.setState({ boxes: [] });
     useProjectsStore.setState({
-      projects: [proj("p1", 10, "boxA"), proj("p2", 20)],
+      projects: [proj("p1", 10), proj("p2", 20), proj("p3", 30)],
       activeId: null,
       loaded: true,
+      reorderProjects,
     });
 
     const container = await renderSwitcher();
-    const strip = container.querySelector(".project-pills-scroll") as HTMLElement;
+    const p1Pill = findPill(container, "p1");
+    const p2Pill = findPill(container, "p2");
+    const p3Pill = findPill(container, "p3");
+    layOut(p1Pill, { left: 0, right: 50, top: 0, bottom: 40 });
+    layOut(p2Pill, { left: 100, right: 150, top: 0, bottom: 40 });
+    layOut(p3Pill, { left: 200, right: 250, top: 0, bottom: 40 });
 
     await act(async () => {
-      fireEvent.dragOver(strip, { dataTransfer: dt("p1") });
-      fireEvent.drop(strip, { dataTransfer: dt("p1") });
+      pointer("pointerdown", 10, 10, p1Pill);
+      // Past p2's midpoint (125) but well before p3's (225) — the gap
+      // between p2 and p3, not "onto" either.
+      pointer("pointermove", 180, 10, window);
+      pointer("pointerup", 180, 10, window);
     });
 
-    expect(assignToBox).toHaveBeenCalledWith("p1", null);
+    // p1 lands between p2 and p3 — i.e. immediately AFTER p2 — not after p3.
+    expect(reorderProjects).toHaveBeenCalledWith("p1", "p2");
   });
 });

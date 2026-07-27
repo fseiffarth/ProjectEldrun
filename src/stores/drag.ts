@@ -26,6 +26,14 @@ export interface EmbedCap {
  *             subwindow holding it (overGroup/edge, like tab drags). Capability
  *             is resolved at release time (embed vs external), not a drop gate.
  */
+/** One file in a multi-file FileTree drag. `viewer` is the built-in viewer that
+ *  should render it (resolved at drag start), else undefined → external embed. */
+export interface FileDragItem {
+  path: string;
+  name: string;
+  viewer?: InternalViewer;
+}
+
 export interface TabDrag {
   kind: "tab" | "file" | "link" | "detached";
   key: string; // the dragged tab's key (tab drags); "" for file/link/detached drags
@@ -46,6 +54,12 @@ export interface TabDrag {
   // When set, drop opens the file in the named built-in viewer (pdf/image/
   // markdown/text/tex) rather than the external embed path. See commitFileDrop.
   viewer?: InternalViewer;
+  // Multi-file drag (dragging a selection from the FileTree). When present with
+  // length > 1, commitFileDrop repeats each drop branch per file (one embed tab
+  // each), and drag-to-move relocates every one. `filePath`/`fileName`/`viewer`
+  // still describe the primary (first) file so single-file consumers keep
+  // working; a length-1 array is equivalent to a plain single-file drag.
+  files?: FileDragItem[];
   // Prefetched capability for this file (null while the query is in flight).
   embedCap?: EmbedCap | null;
   // ── Link-drag payload (kind === "link") ───────────────────────────────────
@@ -67,6 +81,10 @@ export interface TabDrag {
   // popout. The host then docks just this tab into the main layout via
   // attachDetachedTab instead of re-attaching the whole group.
   detachedTabKey?: string;
+  // #42: set when ONE PANE (inner group) of a MULTI-pane popout is being dragged
+  // by its bar grip. The host then docks just this pane via attachDetachedPane —
+  // never the whole popout, so its sibling panes stay floating.
+  detachedPaneId?: string;
   // ── Content thumbnail (tab drags) ─────────────────────────────────────────
   // A clone of the dragged tab's live pane DOM, captured once at drag start, so
   // the floating ghost can preview the tab's CONTENT (not just its label). The
@@ -98,6 +116,7 @@ interface DragStore {
       fileName: string;
       fileExec?: string;
       viewer?: InternalViewer;
+      files?: FileDragItem[];
     },
   ) => void;
   startLinkDrag: (
@@ -112,6 +131,7 @@ interface DragStore {
       detachedScope: string;
       detachedGroupId: string;
       detachedTabKey?: string;
+      detachedPaneId?: string;
     },
   ) => void;
   setEmbedCap: (cap: EmbedCap | null) => void;
@@ -152,6 +172,7 @@ export const useDragStore = create<DragStore>((set) => ({
         fileName: d.fileName,
         fileExec: d.fileExec,
         viewer: d.viewer,
+        files: d.files,
         embedCap: null,
       },
     }),
@@ -190,6 +211,7 @@ export const useDragStore = create<DragStore>((set) => ({
         detachedScope: d.detachedScope,
         detachedGroupId: d.detachedGroupId,
         detachedTabKey: d.detachedTabKey,
+        detachedPaneId: d.detachedPaneId,
       },
     }),
   setEmbedCap: (cap) =>

@@ -25,6 +25,30 @@ where
     Ok(())
 }
 
+/// Serialize and write a JSON file **atomically**: the bytes land in a temp file
+/// beside the target and are then `rename`d over it, so a reader (or a crash)
+/// never observes a half-written file.
+///
+/// [`write_json`] truncates in place, which is fine for a store with one writer
+/// that rewrites it rarely. Prefer this for a store written from several places
+/// (see `schema::usage_stats`, fed by both the frontend flush and the file
+/// watcher). Same rename trick as `services::agent_session::write_live_session_in`.
+pub fn write_json_atomic<T>(path: &Path, value: &T) -> Result<(), Box<dyn std::error::Error>>
+where
+    T: serde::Serialize,
+{
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(value)?;
+    // The temp file must sit on the same filesystem as the target for `rename`
+    // to be atomic, so it goes in the target's own directory rather than /tmp.
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, json)?;
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
 /// State directory for Eldrun's JSON files.
 ///
 /// Linux: `~/.local/share/eldrun/` — matches the Python app's hard-coded path
@@ -69,6 +93,14 @@ fn now_secs() -> u64 {
 pub fn today_utc() -> String {
     let (y, m, d, ..) = epoch_to_utc(now_secs());
     format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Current UTC hour as "YYYY-MM-DDTHH" — a sortable stamp whose first ten
+/// characters are exactly [`today_utc`], so an hour bucket always folds into the
+/// right day bucket.
+pub fn hour_utc() -> String {
+    let (y, m, d, h, ..) = epoch_to_utc(now_secs());
+    format!("{y:04}-{m:02}-{d:02}T{h:02}")
 }
 
 /// Current timestamp as ISO-8601 UTC string (seconds precision).
@@ -138,6 +170,31 @@ mod tests {
     #[test]
     fn today_utc_is_deterministic_within_same_day() {
         assert_eq!(today_utc(), today_utc());
+    }
+
+    // ── hour_utc ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn hour_utc_has_hour_stamp_format() {
+        let s = hour_utc();
+        assert_eq!(s.len(), 13, "expected YYYY-MM-DDTHH, got {s}");
+        let (date, hour) = s.split_once('T').expect("T separator");
+        assert_eq!(date.len(), 10);
+        let h: u32 = hour.parse().expect("hour numeric");
+        assert!(h <= 23, "hour range: {h}");
+    }
+
+    #[test]
+    fn hour_utc_is_prefixed_by_today_utc() {
+        // net_usage derives the day bucket from the hour stamp's first ten
+        // chars, so a divergence here would silently misfile every byte.
+        let hour = hour_utc();
+        let today = today_utc();
+        assert_eq!(
+            &hour[..10],
+            today,
+            "hour_utc must carry today_utc's date: hour={hour} today={today}"
+        );
     }
 
     // ── iso_now ────────────────────────────────────────────────────────────
@@ -342,5 +399,43 @@ mod tests {
         write_json(&path, &vec!["second", "third"]).unwrap();
         let back: Vec<String> = read_json(&path).unwrap();
         assert_eq!(back, vec!["second", "third"]);
+    }
+
+    // ── write_json_atomic ─────────────────────────────────────────────────
+
+    #[test]
+    fn write_json_atomic_roundtrips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("atomic.json");
+        write_json_atomic(&path, &vec![7u32, 8, 9]).unwrap();
+        let back: Vec<u32> = read_json(&path).unwrap();
+        assert_eq!(back, vec![7, 8, 9]);
+    }
+
+    #[test]
+    fn write_json_atomic_creates_parent_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("deep/nested/atomic.json");
+        write_json_atomic(&path, &vec![1u32]).unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn write_json_atomic_overwrites_and_leaves_no_temp_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("data.json");
+        write_json_atomic(&path, &vec!["first"]).unwrap();
+        write_json_atomic(&path, &vec!["second"]).unwrap();
+        let back: Vec<String> = read_json(&path).unwrap();
+        assert_eq!(back, vec!["second"]);
+        // The rename must have consumed the temp file; a leftover would
+        // accumulate one stale sibling per write.
+        let strays: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(strays.is_empty(), "temp files left behind: {strays:?}");
     }
 }

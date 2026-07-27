@@ -1,0 +1,14 @@
+From: a@example.com
+To: b@example.org
+Subject: alternative
+Content-Type: multipart/alternative; boundary="B"
+
+--B
+Content-Type: text/plain; charset=utf-8
+
+
+--B
+Content-Type: text/html; charset=utf-8
+
+<html><body><script>alert(1)</script><p>hi</p></body></html>
+--B--

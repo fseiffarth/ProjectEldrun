@@ -1,0 +1,34 @@
+{
+  "app": {
+    "windows": [
+      {
+        "title": "Eldrun",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "dragDropEnabled": false,
+        "decorations": true,
+        "transparent": false,
+        "fullscreen": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ]
+  },
+  "bundle": {
+    "targets": ["dmg", "app"],
+    "category": "DeveloperTool",
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "entitlements": "entitlements.plist",
+      "hardenedRuntime": true,
+      "dmg": {
+        "appPosition": { "x": 180, "y": 170 },
+        "applicationFolderPosition": { "x": 480, "y": 170 },
+        "windowSize": { "width": 660, "height": 400 }
+      }
+    }
+  }
+}

@@ -234,7 +234,7 @@ Contents:
   `@dnd-kit/sortable`. Hovering a pill shows a tooltip with the project path,
   status, and today's active time (from `get_time_today`). Clicking switches to
   the project; the × button closes it. The pill's menu also exposes **Publish to
-  GitHub** (see below).
+  GitHub / GitLab** (see below).
 - **Box pills** — `BoxPill.tsx` renders a project box as a single project-style
   pill (`.project-pill.is-box`) with a member-count badge. Dropping a project
   pill onto a box (same `PILL_DRAG_TYPE` as pill reorder) assigns it to the box;
@@ -245,14 +245,20 @@ Contents:
 - **+ button** — opens an add-project menu with "New project" and "Import
   project" sub-options.
 
-**Publish to GitHub.** `publishProject` (`stores/projects.ts`) invokes
-`github_publish` (`commands/github.rs`), which runs `gh repo create <name>
---<visibility> --source=. --remote=origin --push` via the system `gh` CLI. For a
-work-remote (SSH) project the `gh` call runs over `ssh` on the host where the
-repo lives (`BatchMode`, validated argv, single-quoted remote path). On success
-it records the new push target — `git_type` becomes `remote-public` or
-`remote-private` in both `projects.json` and the project's `project.json` — and
-returns `gh`'s stdout (the repo URL). Requires `gh` installed and authenticated
+**Publish to GitHub / GitLab.** `publishProject` (`stores/projects.ts`) invokes
+`publish_project` (`commands/git_publish.rs`) with a `provider` (`github` /
+`gitlab`) and `visibility`. For GitHub it runs `gh repo create <name>
+--<visibility> --source=. --remote=origin --push`; for GitLab it runs `glab repo
+create <name> --<visibility> --remoteName origin` followed by an explicit `git
+push -u origin HEAD` (since `glab` has no `--source/--push`), authenticating the
+push with the effective token via an ephemeral inline git credential helper. For a
+work-remote (SSH) project the CLI call runs over `ssh` on the host where the repo
+lives (`BatchMode`, validated argv, single-quoted remote path), relying on that
+host's own `gh`/`glab` auth. On success it records the new push target —
+`git_type` becomes `remote-public` or `remote-private`, and `git_provider` the
+chosen provider, in both `projects.json` and the project's `project.json` — and
+returns the CLI's stdout (the repo URL). Requires the chosen provider's CLI (`gh`
+or `glab`) installed and authenticated, or a token under Settings → Git hosting
 (locally, or on the remote host for remote projects).
 
 Settings dialog covers: default agent command, theme (Dark/Bright/Fancy
@@ -598,8 +604,19 @@ session and removed.
 
 ### Startup
 
-1. `AppShell` mounts; loads settings and projects from the backend.
-2. `getCurrentWindow().setFullscreen(true)` is called after the window is ready.
+1. The main window is created hidden (`"visible": false` in `tauri.conf.json`).
+   The backend's `restore_main_window` (`lib.rs`) reapplies the geometry saved in
+   `settings.window_state` — monitor, position, size, maximized — then shows it,
+   so the window never visibly jumps between monitors. If nothing is saved, or the
+   saved rect no longer fits any connected monitor (an unplugged external display),
+   it falls back to opening maximized wherever the WM puts it. Which rect is
+   placeable is decided by `services::window_state::resolve_startup_geometry`.
+2. `AppShell` mounts; loads settings and projects from the backend. On macOS only,
+   `getCurrentWindow().setFullscreen(true)` is called after the window is ready
+   (Linux must never enter fullscreen: a `_NET_WM_STATE_FULLSCREEN` window is
+   unmovable under KWin). It then listens for window moves/resizes and writes the
+   geometry back to `settings.window_state` on a 300 ms debounce, plus once more on
+   close.
 3. Projects marked `current` or `active` appear as project-switcher pills.
 4. The project marked `current` is the initial active scope; if none, root.
 5. Workspace management (if enabled) allocates desktops for visible projects.
@@ -739,15 +756,18 @@ test skips itself when no local Ollama server or model is available.
   layout on restart rather than respawning as separate OS windows.
 - Project-box scopes are session-only: a box's tabs are dropped on project switch
   / restart. Renaming a box does not move its already-created folder.
-- `github_publish` requires the `gh` CLI installed and authenticated (on the
-  remote host for work-remote projects); it does not manage GitHub auth itself.
+- `publish_project` requires the chosen provider's CLI — `gh` (GitHub) or `glab`
+  (GitLab) — installed and authenticated (on the remote host for work-remote
+  projects); it does not manage provider auth itself beyond an optional token.
 - Ollama model installation and update depend on network access to the Ollama
   registry and may take minutes for large models.
 - `ensure_ollama_running` can start a system service only when the current user
   has permission to do so; otherwise it falls back to a user `ollama serve`
   process.
-- Open-app restore uses a best-effort relaunch model; window geometry and focus
-  order are not restored.
+- Open-app restore uses a best-effort relaunch model; the geometry and focus
+  order of *externally launched app* windows are not restored. (Eldrun's own main
+  window does restore its monitor, position, size, and maximized state — see
+  Startup below.)
 - Network status depends on reaching Cloudflare DNS; may show offline on
   networks that block direct TCP/53.
 - Download routing browser preference edits assume the browser is not running.

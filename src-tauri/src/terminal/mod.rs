@@ -48,6 +48,44 @@ pub struct PtyOptions {
     /// (e.g. Ollama `local_agent` tabs that depend on local `VIBE_HOME`).
     #[serde(default)]
     pub local_only: bool,
+    /// When true, run this (agent) tab inside a Docker sandbox that mounts only
+    /// the project directory. Set by the frontend only for `kind:"agent"` tabs
+    /// of a project whose sandbox toggle is enabled. See `services::sandbox`.
+    #[serde(default)]
+    pub sandbox: bool,
+    /// The owning project's id, set by the frontend for tabs that belong to a
+    /// project scope (not the root scope). It makes remoteness **explicit**: the
+    /// ssh-wrap spawn path resolves the project's `RemoteSpec` from this id (via
+    /// `services::remote::remote_target_for`) instead of sniffing whether `cwd`
+    /// lives under the sshfs mounts root. `None` for root/connection terminals
+    /// (and any spawn path not yet updated), where the cwd-sniffing fallback
+    /// still applies. Harmless for local projects — they resolve to no remote.
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// Which of the project's remote hosts this tab runs on
+    /// (`docs/multi_host_remote_plan.md`): `None`/`"primary"` = the primary remote
+    /// (`Project.remote`), any other id = an extra "worker" host from
+    /// `compute_hosts`. Set by the frontend from the tab's `host:<id>` location.
+    /// Ignored for a local project (resolves to no remote).
+    #[serde(default)]
+    pub remote_host_id: Option<String>,
+    /// Persistent remote session (TODO #85): the **stable tmux session name** to
+    /// spawn-or-attach on the host, wrapping the spawn in `tmux new-session -A` so
+    /// the run survives an SSH drop / laptop sleep / Eldrun relaunch. The frontend
+    /// mints it once per shell tab and **persists it** (`TabEntry.tmuxSession`), so
+    /// it is stable across a relaunch even though the tab's PTY id (`scope:key`) is
+    /// regenerated on restore — that stability is what makes reattach work. Set
+    /// only for remote shell/script tabs of a persist-enabled project (agent tabs
+    /// are excluded — they resume via their own session). `None`/local → no wrap.
+    #[serde(default)]
+    pub tmux_session: Option<String>,
+    /// Attach this tab to an **existing named** tmux session on the host instead
+    /// of spawning a fresh one (TODO #85): set when a tab is opened from the
+    /// Sessions view onto a running (possibly hand-started) session, and persisted
+    /// so the tab reattaches to that same session across a restart. Takes
+    /// precedence over `tmux_session` when set. No-op for a local project.
+    #[serde(default)]
+    pub tmux_attach: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,11 +117,89 @@ struct PtyEntry {
 
 /// Invalidate the cached process tree used for CPU sampling. Called whenever a
 /// PTY is spawned or dies so the next `sysstat::descendant_pids` rebuilds rather
-/// than reusing a stale walk. No-op off Linux (sysstat is Linux-only).
+/// than reusing a stale walk. `sysstat` is cross-platform (Linux/Windows sample,
+/// other OSes return zero), so this is a plain atomic bump everywhere.
 fn invalidate_proc_tree_cache() {
-    #[cfg(target_os = "linux")]
     crate::sysstat::invalidate_descendant_cache();
 }
+
+/// How aggressively [`reap_child_subtree`] signals a doomed process subtree.
+enum ReapMode {
+    /// SIGTERM now, then SIGKILL any survivors after a short grace period on a
+    /// detached thread. Used on tab close / respawn, where the app stays alive
+    /// long enough to deliver the escalation.
+    Graceful,
+    /// SIGKILL immediately. Used at app exit, where a delayed escalation thread
+    /// would be torn down with the process before it could fire.
+    Immediate,
+}
+
+/// Best-effort abort of a PTY child's **entire process subtree**.
+///
+/// `portable_pty`'s [`Child::kill`] signals only the shell leader; anything it
+/// spawned (a dev server, a build, a training run) is otherwise orphaned and
+/// keeps running after its tab — or the whole app — is gone. So we walk the
+/// subtree rooted at the leader and signal every pid. The walk must happen
+/// *before* the leader is killed: once it dies its children reparent to init and
+/// the tree rooted at its pid is no longer reachable.
+///
+/// The leader pid is included in the returned set; re-signalling a leader the
+/// caller also `Child::kill`s is a harmless no-op (a dead pid yields ESRCH).
+fn reap_child_subtree(leader_pid: u32, mode: ReapMode) {
+    // Force a fresh process-tree walk rather than reusing a cached CPU sample
+    // that may predate a just-spawned child.
+    crate::sysstat::invalidate_descendant_cache();
+    let subtree = crate::sysstat::descendant_pids(&[leader_pid]);
+    reap_pids(subtree, mode);
+}
+
+/// Signal a set of pids best-effort. Every pid came from a live process walk
+/// moments earlier, so a stale one is expected and ignored (ESRCH on Unix, a
+/// failed `OpenProcess` on Windows).
+#[cfg(unix)]
+fn reap_pids(pids: Vec<u32>, mode: ReapMode) {
+    if pids.is_empty() {
+        return;
+    }
+    // SAFETY: `libc::kill` takes no pointers and a real signal number; a stale
+    // pid returns ESRCH, which we ignore.
+    let signal = |pids: &[u32], sig: libc::c_int| unsafe {
+        for &pid in pids {
+            libc::kill(pid as libc::pid_t, sig);
+        }
+    };
+    match mode {
+        ReapMode::Immediate => signal(&pids, libc::SIGKILL),
+        ReapMode::Graceful => {
+            signal(&pids, libc::SIGTERM);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(2));
+                signal(&pids, libc::SIGKILL);
+            });
+        }
+    }
+}
+
+/// Windows has no SIGTERM/SIGKILL split — `TerminateProcess` is the only per-pid
+/// primitive — so both modes reap immediately.
+#[cfg(windows)]
+fn reap_pids(pids: Vec<u32>, _mode: ReapMode) {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    for pid in pids {
+        // SAFETY: the handle is closed before the next iteration; a failed open
+        // (the pid already exited) is ignored.
+        unsafe {
+            if let Ok(handle) = OpenProcess(PROCESS_TERMINATE, false, pid) {
+                let _ = TerminateProcess(handle, 1);
+                let _ = CloseHandle(handle);
+            }
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn reap_pids(_pids: Vec<u32>, _mode: ReapMode) {}
 
 // ── PtyRegistry ───────────────────────────────────────────────────────────
 
@@ -112,6 +228,12 @@ impl PtyRegistry {
         let crash_times = match self.entries.remove(&id) {
             Some(mut old) => {
                 old.dead.store(true, Ordering::SeqCst);
+                // A respawn under the same id replaces the old child; reap its
+                // whole subtree, not just the leader, so a process it spawned
+                // does not survive the tab it belonged to.
+                if let Some(pid) = old.child.process_id() {
+                    reap_child_subtree(pid, ReapMode::Graceful);
+                }
                 let _ = old.child.kill();
                 old.crash_times
             }
@@ -142,10 +264,63 @@ impl PtyRegistry {
     pub fn kill(&mut self, id: &str) {
         if let Some(mut e) = self.entries.remove(id) {
             e.dead.store(true, Ordering::SeqCst);
+            // Abort the child's whole process subtree, not just the shell leader.
+            // `child.kill()` below reaps only the leader, so a long-running
+            // descendant (a dev server, a build, a training run) started in the
+            // tab would otherwise be orphaned and keep running after the tab
+            // closes. Gather the subtree first — it is unreachable once the
+            // leader dies and its children reparent to init.
+            if let Some(pid) = e.child.process_id() {
+                reap_child_subtree(pid, ReapMode::Graceful);
+            }
             let _ = e.child.kill();
             // The tree shrank; drop the cached descendant-pid set.
             invalidate_proc_tree_cache();
+            // The tab is gone for good, so stop watching for its Codex session.
+            crate::services::codex_bind::untrack_now(id);
+            // Containerized tab: killing the child above only killed the
+            // `docker exec` CLIENT — TERM the process inside the container too
+            // (best-effort, no-op for tabs that never containerized).
+            crate::services::sandbox::kill_tab_process(id);
         }
+    }
+
+    /// Abort every live PTY and its process subtree. Called once at app exit so
+    /// no terminal's inner process (a dev server, a build, a training run)
+    /// outlives Eldrun — dropping the registry alone kills only the shell
+    /// leaders and orphans everything they spawned. Uses [`ReapMode::Immediate`]
+    /// because a delayed escalation thread would die with the exiting process.
+    pub fn kill_all(&mut self) {
+        // One process-tree walk over all leaders (their subtrees include the
+        // leader pids themselves, which `child.kill()` below re-kills harmlessly).
+        let leaders: Vec<u32> = self
+            .entries
+            .values()
+            .filter_map(|e| e.child.process_id())
+            .collect();
+        crate::sysstat::invalidate_descendant_cache();
+        let subtree = crate::sysstat::descendant_pids(&leaders);
+
+        for (id, mut e) in self.entries.drain() {
+            e.dead.store(true, Ordering::SeqCst);
+            let _ = e.child.kill();
+            // Containerized tab: also TERM the in-container process (the docker
+            // exec client we just killed is not it).
+            crate::services::sandbox::kill_tab_process(&id);
+        }
+        reap_pids(subtree, ReapMode::Immediate);
+        invalidate_proc_tree_cache();
+    }
+
+    /// True when any live (not-yet-dead) PTY belongs to `scope`. PTY ids are
+    /// `<scope>:<tab-key>` (CenterPanel), so a prefix match is authoritative.
+    /// Used by the project-container teardown to keep a deactivated project's
+    /// container alive while background tabs still run inside it.
+    pub fn any_live_for_scope(&self, scope: &str) -> bool {
+        let prefix = format!("{scope}:");
+        self.entries
+            .iter()
+            .any(|(id, e)| id.starts_with(&prefix) && !e.dead.load(Ordering::SeqCst))
     }
 
     /// OS process id of the child for `id`, if it is still tracked.
@@ -188,10 +363,19 @@ pub fn spawn_pty(
 
     let pty_system = NativePtySystem::default();
 
+    // Never open a zero-size PTY. A 0-col/0-row size can slip in if the caller
+    // spawns before xterm has measured a layout box; Unix ptys tolerate it but
+    // Windows ConPTY accepts it silently and then emits no output, which shows up
+    // as a black, dead agent tab. Clamp to a sane default so the child always has
+    // a usable window — the frontend re-sends the real size via `pty_resize` as
+    // soon as the pane is fitted.
+    let cols = if opts.cols == 0 { 80 } else { opts.cols };
+    let rows = if opts.rows == 0 { 24 } else { opts.rows };
+
     let pair = pty_system
         .openpty(PtySize {
-            rows: opts.rows,
-            cols: opts.cols,
+            rows,
+            cols,
             pixel_width: 0,
             pixel_height: 0,
         })
@@ -244,6 +428,11 @@ pub fn spawn_pty(
     });
 
     let id = opts.id.clone();
+    // Token for this *particular* spawn's Codex session tracking (None for any
+    // tab the binder isn't following). A re-spawn under the same id replaces the
+    // tracking and mints a new token, so the old process exiting below can only
+    // ever tear down its own.
+    let bind_seq = crate::services::codex_bind::current_seq(&opts.id);
     tokio::spawn(async move {
         let mut batch: Vec<u8> = Vec::with_capacity(BATCH_MAX_BYTES);
         let mut last_emit = Instant::now();
@@ -295,6 +484,10 @@ pub fn spawn_pty(
         // The child exited on its own; its subtree is gone, so the next CPU
         // sample must rebuild rather than count dead pids.
         invalidate_proc_tree_cache();
+        // Codex quit by itself (`/exit`, crash) — stop watching for its session.
+        if let Some(seq) = bind_seq {
+            crate::services::codex_bind::untrack(&id, seq);
+        }
         let _ = app.emit("terminal-exit", TerminalExit { id, code: None });
     });
 
@@ -339,15 +532,57 @@ pub fn default_shell() -> String {
 
 // ── Command builder ────────────────────────────────────────────────────────
 
+/// Wrap a resolved absolute executable path into a `CommandBuilder`. A `.exe`
+/// (or a Unix binary) runs directly; a `.cmd`/`.bat` shim (npm-style) needs
+/// `cmd.exe /c` and a `.ps1` needs PowerShell, since `CreateProcess` can't exec
+/// those directly inside the PTY.
+fn command_for_resolved(path: std::path::PathBuf) -> CommandBuilder {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("cmd") | Some("bat") => {
+            let mut c = CommandBuilder::new("cmd.exe");
+            c.arg("/c");
+            c.arg(path);
+            c
+        }
+        Some("ps1") => {
+            let mut c = CommandBuilder::new("powershell.exe");
+            c.arg("-NoProfile");
+            c.arg("-ExecutionPolicy");
+            c.arg("Bypass");
+            c.arg("-File");
+            c.arg(path);
+            c
+        }
+        _ => CommandBuilder::new(path),
+    }
+}
+
 fn build_command(opts: &PtyOptions) -> CommandBuilder {
     let cmd_str = if opts.cmd.is_empty() { default_shell() } else { opts.cmd.clone() };
-    let mut cmd = CommandBuilder::new(&cmd_str);
+    // A bare tool name (e.g. "vibe"/"ollama") that Eldrun detected as installed
+    // may still not be launchable on Windows: winget/uv/npm install into per-user
+    // dirs (%LOCALAPPDATA%\Programs, %USERPROFILE%\.local\bin, %APPDATA%\npm, …)
+    // that the PATH this process inherited often omits. Resolve to an absolute
+    // path so the spawn finds it. No-op when the name already resolves on PATH or
+    // carries a path — so ssh/docker-wrapped tabs (cmd "ssh"/"docker", both on
+    // PATH) keep their remote/in-container binary names, which live in `args`.
+    let mut cmd = match crate::paths::resolve_offpath_binary(&cmd_str) {
+        Some(resolved) => command_for_resolved(resolved),
+        None => CommandBuilder::new(&cmd_str),
+    };
     for arg in &opts.args {
         cmd.arg(arg);
     }
     cmd.cwd(&opts.cwd);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    if let Some(path) = crate::paths::effective_path() {
+        cmd.env("PATH", path);
+    }
     for (k, v) in &opts.env {
         cmd.env(k, v);
     }
@@ -401,5 +636,71 @@ mod tests {
         drop(reg);
 
         registry.lock().unwrap().kill("test");
+    }
+
+    /// Closing a tab must abort the process **inside** it, not just the shell
+    /// leader: a `sh` whose child is a long-running `sleep` must leave no live
+    /// `sleep` behind once the PTY is killed.
+    #[test]
+    fn kill_reaps_the_child_subtree() {
+        // This test invalidates and repopulates the process-tree cache in its
+        // poll loop below, which is exactly the global state sysstat's
+        // cache-mechanics tests seed synthetic entries into. Share their lock so
+        // the two never interleave.
+        let _cache_guard = crate::sysstat::lock_cache_for_test();
+        let pty_system = NativePtySystem::default();
+        let pair = pty_system
+            .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+            .expect("openpty");
+
+        // The trailing `; true` defeats the shell's exec-optimization so `sleep`
+        // is a genuine *child* of `sh` (the leader), not the leader itself.
+        let mut cmd = CommandBuilder::new("sh");
+        cmd.arg("-c");
+        cmd.arg("sleep 300; true");
+        let child = pair.slave.spawn_command(cmd).expect("spawn sh");
+        let leader = child.process_id().expect("leader pid");
+        let writer = pair.master.take_writer().expect("take writer");
+        let master = pair.master;
+
+        let registry = Arc::new(Mutex::new(PtyRegistry::default()));
+        let dead = Arc::new(AtomicBool::new(false));
+        registry
+            .lock()
+            .unwrap()
+            .insert("test".to_string(), master, writer, child, dead);
+
+        // SAFETY: kill(pid, 0) probes existence without signalling; no pointers.
+        let alive = |pid: u32| unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+
+        // Wait for the `sleep` child to appear as a descendant of the leader.
+        let mut sleep_pid = None;
+        for _ in 0..100 {
+            crate::sysstat::invalidate_descendant_cache();
+            if let Some(&pid) = crate::sysstat::descendant_pids(&[leader])
+                .iter()
+                .find(|&&p| p != leader)
+            {
+                sleep_pid = Some(pid);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let sleep_pid = sleep_pid.expect("sleep child should have spawned");
+        assert!(alive(sleep_pid), "sleep child should be running before kill");
+
+        registry.lock().unwrap().kill("test");
+
+        // The graceful SIGTERM terminates `sleep` (default disposition); init
+        // then reaps the reparented zombie. Poll until the pid is truly gone.
+        let mut gone = false;
+        for _ in 0..250 {
+            if !alive(sleep_pid) {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(gone, "the inner process must be aborted when the tab is closed");
     }
 }

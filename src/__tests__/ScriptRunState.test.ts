@@ -19,12 +19,14 @@ describe("activity store script-run state", () => {
 
   it("marks a script running and spawns it detached with run_id = path", () => {
     invoke.mockResolvedValue(null);
-    useActivityStore.getState().runScript("/proj/build.sh", "/proj");
+    useActivityStore.getState().runScript("/proj/build.sh", "/proj", "p1");
     expect(useActivityStore.getState().runningScripts.has("/proj/build.sh")).toBe(true);
+    // `projectId` scopes the backend's path confinement; absent → null (current project).
     expect(invoke).toHaveBeenCalledWith("run_script_detached", {
       scriptPath: "/proj/build.sh",
       cwd: "/proj",
       runId: "/proj/build.sh",
+      projectId: "p1",
     });
   });
 

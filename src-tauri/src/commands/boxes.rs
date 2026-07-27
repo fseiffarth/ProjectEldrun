@@ -129,8 +129,10 @@ links to the project root and its `{agent_file}`:\n\n"
     } else {
         for (name, dir) in members {
             let root = dir.to_string_lossy();
-            let doc = dir.join(agent_file);
-            let doc = doc.to_string_lossy();
+            // Build the doc link with a literal `/` rather than `Path::join`, so the
+            // generated markdown is identical on every host OS (on Windows `join`
+            // would splice in a `\`, producing a malformed link URL).
+            let doc = format!("{}/{agent_file}", root.trim_end_matches(['/', '\\']));
             out.push_str(&format!(
                 "- **{name}** — root: `{root}` · [`{agent_file}`]({doc})\n"
             ));

@@ -16,6 +16,24 @@ import { act, render, cleanup } from "@testing-library/react";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve(undefined)) }));
 
+// CenterPanel installs detached-drag listeners and reads the window origin on
+// mount; none of that is exercised here, so stub the Tauri window/event APIs.
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(() => Promise.resolve(() => {})),
+  emit: vi.fn(() => Promise.resolve()),
+}));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    scaleFactor: () => Promise.resolve(1),
+    innerPosition: () => Promise.resolve({ toLogical: () => ({ x: 0, y: 0 }) }),
+    onMoved: () => Promise.resolve(() => {}),
+    onResized: () => Promise.resolve(() => {}),
+  }),
+  // A drag starts a 16ms cursor-position poll (coords.startCursorPoll); the mock
+  // must export it or the polling timer throws a synchronous (uncatchable) error.
+  cursorPosition: () => Promise.resolve({ x: 0, y: 0 }),
+}));
+
 // The pane contents are irrelevant to the drop pipeline and pull in xterm.js /
 // FUSE-ish browser APIs jsdom lacks. Stub them with inert markers.
 vi.mock("../components/terminal/TerminalView", () => ({

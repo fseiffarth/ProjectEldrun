@@ -1,10 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectBox, ProjectEntry } from "../../types";
+import { formatRemoteTarget, resolveLocalMirror } from "../../types";
 import { projectDirectory } from "./scaffold";
+import { useT } from "../../lib/i18n";
 
 type SearchRow =
   | { kind: "project"; project: ProjectEntry }
   | { kind: "box"; box: ProjectBox };
+
+/** Location line(s) shown under a project's name — and the text the query is
+ *  matched against. A remote (SSH) project lives in two places at once, so both
+ *  its host target and its paired local mirror are listed; its `directory` is
+ *  only an internal state dir and is never shown. */
+function searchPaths(project: ProjectEntry): { label?: string; path: string }[] {
+  if (project.remote) {
+    const mirror = resolveLocalMirror(project);
+    return [
+      { label: "remote", path: formatRemoteTarget(project.remote) },
+      ...(mirror ? [{ label: "local", path: mirror }] : []),
+    ];
+  }
+  const dir = projectDirectory(project);
+  return dir ? [{ path: dir }] : [];
+}
 
 /**
  * The inactive-project / box search box and its results popover. Owns its own
@@ -22,6 +40,7 @@ export function ProjectSearch({
   onActivateProject: (projectId: string) => void;
   onOpenBox: (boxId: string) => void;
 }) {
+  const t = useT();
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLDivElement>(null);
 
@@ -36,7 +55,11 @@ export function ProjectSearch({
       .map((box) => ({ kind: "box", box }));
     const projectRows: SearchRow[] = projects
       .filter((p) => p.status === "inactive")
-      .filter((p) => p.name.toLowerCase().includes(q) || projectDirectory(p).toLowerCase().includes(q))
+      .filter(
+        (p) =>
+          p.name.toLowerCase().includes(q) ||
+          searchPaths(p).some((loc) => loc.path.toLowerCase().includes(q)),
+      )
       .sort((a, b) => a.position - b.position)
       .map((project) => ({ kind: "project", project }));
     return [...boxRows, ...projectRows];
@@ -66,7 +89,7 @@ export function ProjectSearch({
       <input
         className="project-search-entry"
         type="search"
-        placeholder="Search inactive..."
+        placeholder={t("projectSearch.placeholder")}
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onKeyDown={(e) => {
@@ -82,7 +105,7 @@ export function ProjectSearch({
       {query.trim() && (
         <div className="project-search-popover">
           {results.length === 0 ? (
-            <div className="project-search-empty">No projects</div>
+            <div className="project-search-empty">{t("projectSearch.noProjects")}</div>
           ) : (
             results.map((row) =>
               row.kind === "box" ? (
@@ -95,8 +118,9 @@ export function ProjectSearch({
                     <span className="project-box-badge" aria-hidden>▣</span> {row.box.name}
                   </span>
                   <small>
-                    Box · {row.box.member_ids.length} member
-                    {row.box.member_ids.length === 1 ? "" : "s"}
+                    {t(row.box.member_ids.length === 1 ? "projectSearch.boxMemberOne" : "projectSearch.boxMemberMany", {
+                      count: row.box.member_ids.length,
+                    })}
                   </small>
                 </button>
               ) : (
@@ -106,9 +130,14 @@ export function ProjectSearch({
                   onClick={() => activateSearchResult(row)}
                 >
                   <span>{row.project.name}</span>
-                  {projectDirectory(row.project) && (
-                    <small>{projectDirectory(row.project)}</small>
-                  )}
+                  {searchPaths(row.project).map((loc) => (
+                    <small key={loc.label ?? "dir"} title={loc.path}>
+                      {loc.label && (
+                        <span className="project-search-path-label">{loc.label}</span>
+                      )}
+                      <span className="project-search-path">{loc.path}</span>
+                    </small>
+                  ))}
                 </button>
               ),
             )

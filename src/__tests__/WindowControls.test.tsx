@@ -5,14 +5,23 @@ import { WindowControls } from "../components/header/WindowControls";
 
 const mockMinimize = vi.fn().mockResolvedValue(undefined);
 const mockToggleMaximize = vi.fn().mockResolvedValue(undefined);
+const mockMaximize = vi.fn().mockResolvedValue(undefined);
+const mockUnmaximize = vi.fn().mockResolvedValue(undefined);
+const mockIsMaximized = vi.fn().mockResolvedValue(false);
 const mockClose = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     minimize: mockMinimize,
     toggleMaximize: mockToggleMaximize,
+    maximize: mockMaximize,
+    unmaximize: mockUnmaximize,
+    isMaximized: mockIsMaximized,
     close: mockClose,
   }),
+  currentMonitor: vi.fn().mockResolvedValue(null),
+  LogicalSize: class {},
+  LogicalPosition: class {},
 }));
 
 describe("WindowControls", () => {
@@ -24,10 +33,12 @@ describe("WindowControls", () => {
     expect(mockMinimize).toHaveBeenCalledOnce();
   });
 
-  it("maximize button calls win.toggleMaximize()", async () => {
+  it("maximize button maximizes when the window is not maximized", async () => {
+    mockIsMaximized.mockResolvedValue(false);
     render(<WindowControls />);
     await userEvent.click(screen.getByTitle("Maximize"));
-    expect(mockToggleMaximize).toHaveBeenCalledOnce();
+    expect(mockMaximize).toHaveBeenCalledOnce();
+    expect(mockUnmaximize).not.toHaveBeenCalled();
   });
 
   it("close button calls win.close()", async () => {
