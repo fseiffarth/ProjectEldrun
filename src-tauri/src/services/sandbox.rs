@@ -1895,20 +1895,20 @@ mod tests {
         let dir = claude.to_string_lossy().into_owned();
         let mounts = narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED);
 
-        let mounted: Vec<&str> = mounts
+        // Compare whole mount strings rather than picking the entry name back
+        // out of them. `dir` comes from `temp_dir()`, so on Windows it carries a
+        // drive-letter colon and `\` separators — `split(':')` would read "C"
+        // and `rsplit('/')` would never match. Building the expectation with the
+        // same `{p}:{p}` shape also asserts the identical-path property (the one
+        // agent resume depends on) by construction.
+        let expected: Vec<String> = [".credentials.json", "projects"]
             .iter()
-            .map(|m| m.split(':').next().unwrap())
-            .map(|src| src.rsplit('/').next().unwrap())
+            .map(|n| format!("{dir}/{n}:{dir}/{n}"))
             .collect();
-        assert_eq!(mounted, vec![".credentials.json", "projects"]);
-        // Identical-path mounts (the property agent resume depends on).
-        for m in &mounts {
-            let (src, dst) = m.split_once(':').unwrap();
-            assert_eq!(src, dst);
-        }
+        assert_eq!(mounts, expected);
         // `settings.json` is deliberately absent here — `staged_config_mounts`
         // owns that destination with a writable per-project copy.
-        assert!(!mounted.contains(&"settings.json"));
+        assert!(!mounts.iter().any(|m| m.contains("settings.json")));
         // Stable across calls, so the spec fingerprint doesn't flap.
         assert_eq!(narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED), mounts);
         // A dir that isn't there mounts nothing (never auto-created).

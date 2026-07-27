@@ -725,11 +725,16 @@ mod tests {
         let src = include_str!("browser.rs");
         let mut starts: Vec<usize> = Vec::new();
         let mut offset = 0usize;
-        for line in src.lines() {
+        // `split_inclusive` keeps each line terminator, so the running offset is
+        // exact for both LF and CRLF. `lines()` + `len() + 1` assumed a 1-byte
+        // terminator and drifted one byte per line on a CRLF checkout (Windows),
+        // eventually slicing into the middle of a multi-byte char in a comment.
+        for chunk in src.split_inclusive('\n') {
+            let line = chunk.trim_end_matches('\n').trim_end_matches('\r');
             if line.trim() == concat!("#[tauri", "::command]") {
                 starts.push(offset + line.len());
             }
-            offset += line.len() + 1;
+            offset += chunk.len();
         }
 
         let mut checked = 0usize;
