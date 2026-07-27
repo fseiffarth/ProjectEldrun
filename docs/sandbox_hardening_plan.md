@@ -165,8 +165,9 @@ read and write **every** project's conversation history — a confidentiality br
 on its own, and the enabler for the `live_sessions` lateral-movement trick that
 the per-project mount only half-closes.
 
-Claude keys transcripts by **encoded cwd**, not by Eldrun project: this repo's
-transcripts live in `~/.claude/projects/-home-florian-eldrun-projects-projecteldrun/`,
+Claude keys transcripts by **encoded cwd**, not by Eldrun project: a repo at
+`/home/user/eldrun/projects/myproject` has its transcripts under
+`~/.claude/projects/-home-user-eldrun-projects-myproject/`,
 i.e. `/` → `-` with a leading `-`.
 
 **The cost is the point:** that encoding is undocumented and belongs to another
