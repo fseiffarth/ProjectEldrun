@@ -6,6 +6,7 @@ import { useSettingsStore } from "./settings";
 interface PowerState {
   on_battery: boolean;
   supported: boolean;
+  percentage: number | null;
 }
 
 /** How often we re-read the AC/battery state. A generous interval: the only
@@ -18,6 +19,9 @@ interface PowerStore {
   onBattery: boolean;
   /** False when the backend could not read power state at all (fail open to AC). */
   supported: boolean;
+  /** Average state-of-charge across all present batteries, 0-100. `null` when
+   *  unsupported or no batteries are present (a desktop). */
+  percentage: number | null;
   /** Whether the poll loop has produced at least one reading. */
   ready: boolean;
   /** Begin polling; returns a stop function that clears the interval. Idempotent
@@ -29,17 +33,23 @@ interface PowerStore {
 export const usePowerStore = create<PowerStore>((set) => ({
   onBattery: false,
   supported: false,
+  percentage: null,
   ready: false,
 
   start: () => {
     const poll = async () => {
       try {
         const s = await invoke<PowerState>("get_power_state");
-        set({ onBattery: s.on_battery, supported: s.supported, ready: true });
+        set({
+          onBattery: s.on_battery,
+          supported: s.supported,
+          percentage: s.percentage,
+          ready: true,
+        });
       } catch {
         // Treat a failed query as on-AC (fail open) so Energy Saver never
         // sticks the app in a throttled state because of a transient error.
-        set({ onBattery: false, supported: false, ready: true });
+        set({ onBattery: false, supported: false, percentage: null, ready: true });
       }
     };
     void poll();

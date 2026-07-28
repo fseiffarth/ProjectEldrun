@@ -16,28 +16,86 @@
 //!   under the directory the caller opened it on, which `commands::mail`
 //!   resolves as `storage::state_dir().join("mail")` and nowhere else.
 //!
-//! Deliberately **not** encrypted in v1 (plan B §5.2): the threat encryption
-//! addresses is offline access to the disk, against which FileVault/BitLocker/
-//! LUKS is the correct and complete answer — and the key would have to live in
-//! the OS keychain, where Eldrun has a documented hazard (a locked collection
-//! reads identically to an empty one). Making the whole mailbox unreadable when
-//! the keychain is locked is a strictly worse failure than an unencrypted cache
-//! on a session the user already unlocked. What we do instead is `0700`/`0600`
-//! and a "delete local mail" action.
+//! # Encryption at rest (`docs/mail_encryption_plan.md` Phase 2)
+//!
+//! Optional, and opened through [`MailStore::open_with_keys`]. When keys are
+//! present every *sensitive value* is a [`mail_crypt`] envelope; when they are
+//! absent this file behaves exactly as it did before, which is what keeps the
+//! unencrypted path (and every test below) honest rather than a second
+//! implementation.
+//!
+//! The earlier version of this comment argued encryption was not worth it,
+//! because FileVault/BitLocker/LUKS answers the stolen-laptop case and a locked
+//! keychain would make the mailbox unreadable. The first half is still true and
+//! is stated plainly in the UI — the marginal value here is **backups, copies,
+//! sync services and multi-user machines**, where FDE is not in play. The second
+//! half was the real objection and it is answered structurally: an unreachable
+//! key is a *degrade*, not a refusal. `commands::mail` opens an ephemeral store
+//! ([`MailStore::open_ephemeral`]) whose key dies with the process — sync works,
+//! the mailbox reads, nothing persists — instead of showing an empty window.
+//!
+//! Three properties are worth knowing before changing anything here:
+//!
+//! - **Values are sealed, not the file.** So the WAL and the freelist can only
+//!   ever hold ciphertext; there is no window where SQLite writes plaintext. The
+//!   one exception is a store that already existed in cleartext, which is why
+//!   [`MailStore::seal_existing`] ends in `VACUUM INTO` a *new* file rather than
+//!   an in-place `UPDATE`.
+//! - **Structural columns stay cleartext** (`id`, `account_id`, `folder_id`,
+//!   `uid`, `date`, `seen`, `flagged`, `size`, `priority`, blob references, every
+//!   index), because they are what paging, ordering and unread counts run on.
+//!   The metadata that therefore remains readable on disk — message counts,
+//!   folder structure, arrival dates, sizes, read/starred flags — is stated in
+//!   the UI rather than buried here. Anyone who needs *that* hidden needs FDE,
+//!   which hides filenames too. One item deserves naming precisely, because it
+//!   is sharper than "folder structure" sounds: a folder id is an **unkeyed**
+//!   `sha256(path)[..8]` (`commands::mail::folder_id_for`), so a wordlist
+//!   recovers which folders exist. Keying it would mean re-deriving every
+//!   message id — which is also every AAD row key — so it is a stated cost
+//!   rather than an oversight; `tests::encrypted` pins it.
+//! - **A sealed column cannot carry a `UNIQUE`.** Randomized AEAD means two
+//!   seals of one folder path differ, so the constraint would stop deduplicating
+//!   and every sync would insert the folder again. `folders.path_key` and
+//!   `mail_remote_allow.addr_key` are keyed digests (`mail_crypt::name_digest`)
+//!   that carry the constraint in cleartext beside the sealed value. They leak
+//!   equality and only equality — which is precisely what declaring the
+//!   constraint already asserts.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::types::Value as SqlValue;
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use sha2::{Digest, Sha256};
 
 use crate::schema::mail::{
     MailAttachmentMeta, MailDraft, MailFlag, MailFolder, MailFolderKind, MailHeader,
-    MailHeaderPage, StagedAttachment,
+    MailHeaderPage, MailPriority, MailPriorityCounts, MailSort, StagedAttachment,
 };
+use crate::services::mail_crypt::{self, MailKeys};
 
 /// Forward-only schema version, recorded in `meta`.
-const SCHEMA_VERSION: i64 = 1;
+///
+/// **2** added the keyed `UNIQUE` stand-ins (`folders.path_key`,
+/// `mail_remote_allow.addr_key`). It is a shape change rather than an additive
+/// column, so it rebuilds those two tables — see [`MailStore::migrate`].
+const SCHEMA_VERSION: i64 = 2;
+
+/// How many rows a search over an **encrypted** store will open before it stops
+/// and says so.
+///
+/// `LIKE` cannot run over ciphertext, and a blind index — a deterministic
+/// per-token fingerprint — was rejected outright: it leaks word frequency and
+/// answers "does this mailbox contain word X", which is most of what the
+/// encryption was for. What is left is decrypt-on-scan, which is fast
+/// (XChaCha20 runs on the order of a GB/s, so this bound is milliseconds) but
+/// not free, so it is bounded. When the bound is hit the page reports
+/// `scanned`, and the UI says *"searched the most recent N messages"* — the one
+/// thing a search must never do is silently truncate and look complete.
+const MAX_SEARCH_SCAN: usize = 50_000;
+
+/// The `meta` key set once the store's existing plaintext has been sealed.
+const META_ENCRYPTED: &str = "encrypted";
 
 /// Bodies larger than this are content-addressed into `blobs/` instead of
 /// living in the row.
@@ -46,34 +104,198 @@ pub const INLINE_BODY_LIMIT: usize = 256 * 1024;
 pub struct MailStore {
     dir: PathBuf,
     conn: Mutex<Connection>,
+    /// `None` means the store is unencrypted — every column holds the value the
+    /// caller passed. Not a degraded mode: it is what an install that never
+    /// turned encryption on looks like, and it is the path every test below
+    /// exercises.
+    keys: Option<Arc<MailKeys>>,
+    /// Held only by [`MailStore::open_ephemeral`], and only so it is deleted
+    /// when the store is dropped.
+    _scratch: Option<tempfile::TempDir>,
 }
 
 impl std::fmt::Debug for MailStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MailStore").field("dir", &self.dir).finish()
+        f.debug_struct("MailStore")
+            .field("dir", &self.dir)
+            .field("encrypted", &self.keys.is_some())
+            .finish()
     }
 }
 
 impl MailStore {
-    /// Open (creating if needed) the store rooted at `dir`.
+    /// Open (creating if needed) an **unencrypted** store rooted at `dir`.
     pub fn open(dir: &Path) -> Result<Self, String> {
+        Self::open_with_keys(dir, None)
+    }
+
+    /// Open the store rooted at `dir`, sealing every sensitive value under
+    /// `keys` when they are given.
+    ///
+    /// Opening an existing cleartext store *with* keys performs the one-way
+    /// migration in [`MailStore::seal_existing`], which is idempotent and
+    /// therefore restartable: interrupting it half-way leaves a store where some
+    /// values are sealed and some are not, and the next open finishes the job.
+    pub fn open_with_keys(dir: &Path, keys: Option<Arc<MailKeys>>) -> Result<Self, String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("could not create the mail store: {e}"))?;
         harden(dir, 0o700);
         let db = dir.join("mail.db");
         let conn = Connection::open(&db).map_err(|e| e.to_string())?;
         harden(&db, 0o600);
-        conn.pragma_update(None, "journal_mode", "WAL").ok();
-        conn.pragma_update(None, "foreign_keys", "ON").ok();
-        let store = MailStore {
+        configure(&conn);
+        let mut store = MailStore {
             dir: dir.to_path_buf(),
             conn: Mutex::new(conn),
+            keys,
+            _scratch: None,
+        };
+        store.migrate()?;
+        if store.seal_existing()? {
+            store.vacuum_into_place()?;
+        }
+        Ok(store)
+    }
+
+    /// A store that lives and dies with the process.
+    ///
+    /// This is the **degrade path**, not a test fixture: it is what
+    /// `commands::mail` opens when the store key cannot be reached — a locked
+    /// Secret Service collection, most often, which reads identically to
+    /// "nothing saved" and which this codebase has already been bitten by once.
+    /// The alternative is a mailbox that will not open at all, and a mail client
+    /// that refuses to show mail because a keyring prompt went unanswered is a
+    /// worse outcome than one that forgets what it downloaded.
+    ///
+    /// The database is `:memory:`, so the index never touches disk. Blob
+    /// payloads have to land *somewhere* — they can be tens of megabytes — so
+    /// they go into a temp directory that is removed on drop, sealed under a
+    /// **freshly generated master key that exists only in this process**. A
+    /// crash that skips the cleanup therefore leaves bytes nobody can ever read,
+    /// rather than plaintext attachments in `/tmp`.
+    pub fn open_ephemeral() -> Result<Self, String> {
+        let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
+        harden(scratch.path(), 0o700);
+        let keys = Arc::new(MailKeys::derive(mail_crypt::Key::random()?));
+        let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
+        configure(&conn);
+        let store = MailStore {
+            dir: scratch.path().to_path_buf(),
+            conn: Mutex::new(conn),
+            keys: Some(keys),
+            _scratch: Some(scratch),
         };
         store.migrate()?;
         Ok(store)
     }
 
+    /// Whether values in this store are sealed.
+    pub fn is_encrypted(&self) -> bool {
+        self.keys.is_some()
+    }
+
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    // ── Sealing one value ───────────────────────────────────────────────────
+
+    /// A value bound for a sealed column: a `BLOB` envelope when the store has
+    /// keys, the plain `TEXT` otherwise.
+    ///
+    /// SQLite's dynamic typing is what makes this work without two schemas —
+    /// `subject BLOB` and `subject TEXT` coexist in one column, which is also
+    /// what makes [`MailStore::seal_existing`] restartable row by row.
+    fn seal_text(&self, account_id: &str, table: &str, column: &str, row: &str, value: &str) -> SqlValue {
+        match &self.keys {
+            Some(k) => SqlValue::Blob(mail_crypt::seal(
+                &k.field,
+                &mail_crypt::field_aad(account_id, table, column, row),
+                value.as_bytes(),
+            )),
+            None => SqlValue::Text(value.to_string()),
+        }
+    }
+
+    /// The nullable form. `NULL` stays `NULL` — sealing it would turn "no cached
+    /// HTML part" into "an empty one", which the body cache distinguishes.
+    fn seal_opt_text(
+        &self,
+        account_id: &str,
+        table: &str,
+        column: &str,
+        row: &str,
+        value: Option<&str>,
+    ) -> SqlValue {
+        match value {
+            Some(v) => self.seal_text(account_id, table, column, row, v),
+            None => SqlValue::Null,
+        }
+    }
+
+    /// Read a possibly-sealed column.
+    ///
+    /// `None` means **the value was there and could not be opened** — a wrong
+    /// key, or bytes that were altered on disk. It is deliberately distinct from
+    /// `Some("")`: callers turn it into a per-message "damaged" marker rather
+    /// than into empty content, because a subject line that silently reads as
+    /// blank is an attacker's best case.
+    fn open_text(
+        &self,
+        r: &Row<'_>,
+        idx: usize,
+        account_id: &str,
+        table: &str,
+        column: &str,
+        row: &str,
+    ) -> rusqlite::Result<Option<String>> {
+        use rusqlite::types::ValueRef;
+        Ok(match r.get_ref(idx)? {
+            ValueRef::Null => Some(String::new()),
+            ValueRef::Text(t) => Some(String::from_utf8_lossy(t).into_owned()),
+            ValueRef::Blob(b) => match &self.keys {
+                Some(k) => mail_crypt::open(
+                    &k.field,
+                    &mail_crypt::field_aad(account_id, table, column, row),
+                    b,
+                )
+                .ok()
+                .map(|p| String::from_utf8_lossy(&p).into_owned()),
+                // A blob in a store with no keys is a store that *was* encrypted
+                // and is now being opened without them. Nothing to do but say so.
+                None => None,
+            },
+            other => Some(other.as_str().unwrap_or_default().to_string()),
+        })
+    }
+
+    /// The nullable form: `Ok(None)` for a genuine SQL `NULL`, `Ok(Some(None))`
+    /// for a value that would not open.
+    #[allow(clippy::type_complexity)]
+    fn open_opt_text(
+        &self,
+        r: &Row<'_>,
+        idx: usize,
+        account_id: &str,
+        table: &str,
+        column: &str,
+        row: &str,
+    ) -> rusqlite::Result<Option<Option<String>>> {
+        use rusqlite::types::ValueRef;
+        if matches!(r.get_ref(idx)?, ValueRef::Null) {
+            return Ok(None);
+        }
+        Ok(Some(self.open_text(r, idx, account_id, table, column, row)?))
+    }
+
+    /// The cleartext stand-in a sealed column's `UNIQUE` moves onto.
+    fn digest_of(&self, namespace: &str, value: &str) -> String {
+        match &self.keys {
+            Some(k) => mail_crypt::name_digest(&k.name, namespace, value),
+            // Unencrypted stores keep the readable value as its own key, so the
+            // constraint means exactly what it always did and no migration is
+            // needed to turn encryption on later.
+            None => value.to_string(),
+        }
     }
 
     pub fn blobs_dir(&self) -> PathBuf {
@@ -96,12 +318,16 @@ impl MailStore {
             CREATE TABLE IF NOT EXISTS folders (
                 id         TEXT PRIMARY KEY,
                 account_id TEXT NOT NULL,
+                -- The cleartext key the UNIQUE moved onto when `path` became
+                -- sealable. `mail_crypt::name_digest` in an encrypted store,
+                -- the path itself in a plain one.
+                path_key   TEXT NOT NULL,
                 path       TEXT NOT NULL,
                 name       TEXT NOT NULL,
                 kind       TEXT NOT NULL,
                 unread     INTEGER NOT NULL DEFAULT 0,
                 total      INTEGER NOT NULL DEFAULT 0,
-                UNIQUE (account_id, path)
+                UNIQUE (account_id, path_key)
             );
             CREATE TABLE IF NOT EXISTS messages (
                 id            TEXT PRIMARY KEY,
@@ -122,6 +348,8 @@ impl MailStore {
                 preview       TEXT NOT NULL DEFAULT '',
                 malformed     TEXT NOT NULL DEFAULT '',
                 rfc_message_id TEXT NOT NULL DEFAULT '',
+                authres_json  TEXT NOT NULL DEFAULT '',
+                priority      TEXT NOT NULL DEFAULT '',
                 UNIQUE (folder_id, uid)
             );
             CREATE INDEX IF NOT EXISTS messages_by_folder ON messages (folder_id, date DESC);
@@ -160,7 +388,8 @@ impl MailStore {
                 PRIMARY KEY (draft_id, staged_id)
             );
             CREATE TABLE IF NOT EXISTS mail_remote_allow (
-                address TEXT PRIMARY KEY
+                addr_key TEXT PRIMARY KEY,
+                address  TEXT NOT NULL
             );
             "#,
         )
@@ -173,6 +402,135 @@ impl MailStore {
             "ALTER TABLE messages ADD COLUMN rfc_message_id TEXT NOT NULL DEFAULT ''",
             [],
         );
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN authres_json TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN priority TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        // The Important/Urgent lists span every account and folder, so their only
+        // WHERE is this column; unindexed, that is a full scan of the whole
+        // mailbox on every page and every badge refresh.
+        //
+        // It is created HERE and deliberately not in the batch above. The batch
+        // runs before this ALTER, so on a database that predates the column an
+        // index naming it fails — and `execute_batch` is fallible-and-propagated,
+        // so that failure would not be a missing index, it would be a mail store
+        // that no longer opens. Every existing install takes exactly that path.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS messages_by_priority ON messages (priority, date DESC)",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+        // v1 → v2. Both of these moved a `UNIQUE`/`PRIMARY KEY` off a column that
+        // became sealable and onto a keyed digest beside it, which SQLite cannot
+        // express as an `ALTER` — a constraint change is a table rebuild. The
+        // rows are copied through Rust rather than through `INSERT … SELECT`
+        // because the new key column is a *keyed* digest of the old value, which
+        // SQL has no function for.
+        //
+        // Guarded on the column's existence rather than on the recorded schema
+        // version, for the reason the priority ALTER above documents: a dev
+        // database can be in any half-state, and "does the column exist" is a
+        // question with one true answer where "what does `meta` claim" is a
+        // question about a row that may have been written before a crash.
+        if conn.prepare("SELECT path_key FROM folders LIMIT 0").is_err() {
+            let old: Vec<(String, String, String, String, String, i64, i64)> = {
+                let mut stmt = conn
+                    .prepare("SELECT id, account_id, path, name, kind, unread, total FROM folders")
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([], |r| {
+                        Ok((
+                            r.get(0)?,
+                            r.get(1)?,
+                            r.get(2)?,
+                            r.get(3)?,
+                            r.get(4)?,
+                            r.get(5)?,
+                            r.get(6)?,
+                        ))
+                    })
+                    .map_err(|e| e.to_string())?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+            };
+            conn.execute_batch(
+                r#"
+                ALTER TABLE folders RENAME TO folders_v1;
+                CREATE TABLE folders (
+                    id         TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    path_key   TEXT NOT NULL,
+                    path       TEXT NOT NULL,
+                    name       TEXT NOT NULL,
+                    kind       TEXT NOT NULL,
+                    unread     INTEGER NOT NULL DEFAULT 0,
+                    total      INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE (account_id, path_key)
+                );
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+            for (id, account_id, path, name, kind, unread, total) in old {
+                // The values are still cleartext at this point — `seal_existing`
+                // runs after `migrate` and seals them in place. Copying them
+                // verbatim here is what keeps the two steps independent, and
+                // therefore each one restartable on its own.
+                conn.execute(
+                    "INSERT OR REPLACE INTO folders
+                        (id, account_id, path_key, path, name, kind, unread, total)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                    params![
+                        id,
+                        account_id,
+                        self.digest_of(&account_id, &path),
+                        path,
+                        name,
+                        kind,
+                        unread,
+                        total
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            conn.execute_batch("DROP TABLE folders_v1;")
+                .map_err(|e| e.to_string())?;
+        }
+        if conn
+            .prepare("SELECT addr_key FROM mail_remote_allow LIMIT 0")
+            .is_err()
+        {
+            let old: Vec<String> = {
+                let mut stmt = conn
+                    .prepare("SELECT address FROM mail_remote_allow")
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([], |r| r.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+            };
+            conn.execute_batch(
+                r#"
+                ALTER TABLE mail_remote_allow RENAME TO mail_remote_allow_v1;
+                CREATE TABLE mail_remote_allow (
+                    addr_key TEXT PRIMARY KEY,
+                    address  TEXT NOT NULL
+                );
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+            for address in old {
+                conn.execute(
+                    "INSERT OR REPLACE INTO mail_remote_allow (addr_key, address) VALUES (?1, ?2)",
+                    params![self.digest_of("mail_remote_allow", &address), address],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            conn.execute_batch("DROP TABLE mail_remote_allow_v1;")
+                .map_err(|e| e.to_string())?;
+        }
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?1)",
             params![SCHEMA_VERSION.to_string()],
@@ -183,15 +541,39 @@ impl MailStore {
 
     // ── Blobs ───────────────────────────────────────────────────────────────
 
-    /// Store `bytes` under their SHA-256 and return the hex digest.
+    /// The name `bytes` are stored under.
+    ///
+    /// `SHA-256(plaintext)` in a plain store — content-addressed, opaque, and
+    /// carrying no trace of a sender-supplied filename, which is the property
+    /// the blob directory was built for. `HMAC-SHA256(k_addr, plaintext)` in an
+    /// encrypted one, which keeps *all* of that and closes two further holes:
+    /// the bare digest is a confirmation oracle (hash a file you suspect
+    /// somebody received, look for its name in a directory listing), and a
+    /// digest of the *ciphertext* could not dedupe at all, because two seals of
+    /// identical bytes differ.
+    ///
+    /// Both are 64 hex characters, so [`MailStore::get_blob`]'s validation is
+    /// unchanged — it now means something different.
+    fn blob_name(&self, bytes: &[u8]) -> String {
+        match &self.keys {
+            Some(k) => mail_crypt::blob_id(&k.addr, bytes),
+            None => hex_digest(bytes),
+        }
+    }
+
+    /// Store `bytes` under their content address and return it.
     pub fn put_blob(&self, bytes: &[u8]) -> Result<String, String> {
-        let hex = hex_digest(bytes);
+        let hex = self.blob_name(bytes);
         let dir = self.blobs_dir();
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         harden(&dir, 0o700);
         let path = dir.join(&hex);
         if !path.exists() {
-            std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+            let payload = match &self.keys {
+                Some(k) => mail_crypt::seal(&k.blob, &mail_crypt::blob_aad(&hex), bytes),
+                None => bytes.to_vec(),
+            };
+            std::fs::write(&path, &payload).map_err(|e| e.to_string())?;
             harden(&path, 0o600);
         }
         Ok(hex)
@@ -202,7 +584,13 @@ impl MailStore {
         if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("not a blob id".into());
         }
-        std::fs::read(self.blobs_dir().join(digest)).map_err(|e| e.to_string())
+        let raw = std::fs::read(self.blobs_dir().join(&digest)).map_err(|e| e.to_string())?;
+        match &self.keys {
+            Some(k) => mail_crypt::open(&k.blob, &mail_crypt::blob_aad(&digest), &raw)
+                .map(|p| p.to_vec())
+                .map_err(|e| e.to_string()),
+            None => Ok(raw),
+        }
     }
 
     // ── Folders ─────────────────────────────────────────────────────────────
@@ -210,16 +598,17 @@ impl MailStore {
     pub fn upsert_folder(&self, folder: &MailFolder) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
         conn.execute(
-            "INSERT INTO folders (id, account_id, path, name, kind, unread, total)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(account_id, path) DO UPDATE SET
-                name = excluded.name, kind = excluded.kind,
+            "INSERT INTO folders (id, account_id, path_key, path, name, kind, unread, total)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(account_id, path_key) DO UPDATE SET
+                path = excluded.path, name = excluded.name, kind = excluded.kind,
                 unread = excluded.unread, total = excluded.total",
             params![
                 folder.id,
                 folder.account_id,
-                folder.path,
-                folder.name,
+                self.digest_of(&folder.account_id, &folder.path),
+                self.seal_text(&folder.account_id, "folders", "path", &folder.id, &folder.path),
+                self.seal_text(&folder.account_id, "folders", "name", &folder.id, &folder.name),
                 folder.kind.as_str(),
                 folder.unread,
                 folder.total
@@ -229,28 +618,48 @@ impl MailStore {
         Ok(())
     }
 
+    /// One folder row, with its two sealed columns opened.
+    ///
+    /// A path that will not open reads as empty rather than failing the whole
+    /// list: one damaged row must not make a mailbox unbrowsable, and the
+    /// folder's `id` — which is cleartext and is what every other query joins on
+    /// — is unaffected.
+    fn row_to_folder(&self, r: &Row<'_>) -> rusqlite::Result<MailFolder> {
+        let id: String = r.get(0)?;
+        let account_id: String = r.get(1)?;
+        Ok(MailFolder {
+            path: self
+                .open_text(r, 2, &account_id, "folders", "path", &id)?
+                .unwrap_or_default(),
+            name: self
+                .open_text(r, 3, &account_id, "folders", "name", &id)?
+                .unwrap_or_default(),
+            kind: MailFolderKind::from_str_lossy(&r.get::<_, String>(4)?),
+            unread: r.get(5)?,
+            total: r.get(6)?,
+            id,
+            account_id,
+        })
+    }
+
     pub fn folders(&self, account_id: &str) -> Result<Vec<MailFolder>, String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, account_id, path, name, kind, unread, total
-                 FROM folders WHERE account_id = ?1 ORDER BY path",
+                 FROM folders WHERE account_id = ?1",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![account_id], |r| {
-                Ok(MailFolder {
-                    id: r.get(0)?,
-                    account_id: r.get(1)?,
-                    path: r.get(2)?,
-                    name: r.get(3)?,
-                    kind: MailFolderKind::from_str_lossy(&r.get::<_, String>(4)?),
-                    unread: r.get(5)?,
-                    total: r.get(6)?,
-                })
-            })
+            .query_map(params![account_id], |r| self.row_to_folder(r))
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        let mut all: Vec<MailFolder> = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        // Ordered here rather than in SQL: `ORDER BY path` over a sealed column
+        // would sort by ciphertext, i.e. at random, and a folder list whose order
+        // changed on every sync would be its own bug report. The list is one
+        // account's folders — tens of rows — so this costs nothing.
+        all.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(all)
     }
 
     pub fn folder(&self, folder_id: &str) -> Result<Option<MailFolder>, String> {
@@ -258,17 +667,7 @@ impl MailStore {
         conn.query_row(
             "SELECT id, account_id, path, name, kind, unread, total FROM folders WHERE id = ?1",
             params![folder_id],
-            |r| {
-                Ok(MailFolder {
-                    id: r.get(0)?,
-                    account_id: r.get(1)?,
-                    path: r.get(2)?,
-                    name: r.get(3)?,
-                    kind: MailFolderKind::from_str_lossy(&r.get::<_, String>(4)?),
-                    unread: r.get(5)?,
-                    total: r.get(6)?,
-                })
-            },
+            |r| self.row_to_folder(r),
         )
         .optional()
         .map_err(|e| e.to_string())
@@ -306,8 +705,8 @@ impl MailStore {
         conn.execute(
             "INSERT INTO messages (id, account_id, folder_id, uid, subject, from_json, to_json,
                                    cc_json, date, seen, flagged, answered, has_attachments,
-                                   size, preview, malformed, rfc_message_id)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+                                   size, preview, malformed, rfc_message_id, authres_json)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
              ON CONFLICT(id) DO UPDATE SET
                 subject = excluded.subject, from_json = excluded.from_json,
                 to_json = excluded.to_json, cc_json = excluded.cc_json,
@@ -315,94 +714,297 @@ impl MailStore {
                 answered = excluded.answered, has_attachments = excluded.has_attachments,
                 size = excluded.size, preview = excluded.preview,
                 malformed = excluded.malformed,
-                rfc_message_id = excluded.rfc_message_id",
+                rfc_message_id = excluded.rfc_message_id,
+                authres_json = excluded.authres_json",
+            // NOTE: `priority` is deliberately absent from BOTH halves. Absent
+            // from the INSERT so a newly-synced message starts unmarked, and
+            // absent from the `DO UPDATE SET` so a re-sync — which runs over
+            // every message in a folder, every check — cannot wipe a mark the
+            // user made. The mark is the one column here the *user* owns rather
+            // than the server, so the server's copy must never overwrite it.
             params![
                 header.id,
                 header.account_id,
                 header.folder_id,
                 header.uid,
-                header.subject,
-                serde_json::to_string(&header.from).unwrap_or_default(),
-                serde_json::to_string(&header.to).unwrap_or_default(),
-                serde_json::to_string(&header.cc).unwrap_or_default(),
+                self.seal_header(header, "subject", &header.subject),
+                self.seal_header(
+                    header,
+                    "from_json",
+                    &serde_json::to_string(&header.from).unwrap_or_default()
+                ),
+                self.seal_header(
+                    header,
+                    "to_json",
+                    &serde_json::to_string(&header.to).unwrap_or_default()
+                ),
+                self.seal_header(
+                    header,
+                    "cc_json",
+                    &serde_json::to_string(&header.cc).unwrap_or_default()
+                ),
                 header.date,
                 header.seen as i64,
                 header.flagged as i64,
                 header.answered as i64,
                 header.has_attachments as i64,
                 header.size as i64,
-                header.preview,
-                header
-                    .malformed_headers
-                    .as_ref()
-                    .map(|m| m.join(","))
-                    .unwrap_or_default(),
-                header.rfc_message_id.clone().unwrap_or_default(),
+                self.seal_header(header, "preview", &header.preview),
+                self.seal_header(
+                    header,
+                    "malformed",
+                    &header
+                        .malformed_headers
+                        .as_ref()
+                        .map(|m| m.join(","))
+                        .unwrap_or_default()
+                ),
+                self.seal_header(
+                    header,
+                    "rfc_message_id",
+                    header.rfc_message_id.as_deref().unwrap_or_default()
+                ),
+                // The stored copy always carries the parsed data in its
+                // `Unconfigured` state; the trust decision is re-derived on
+                // every read (`row_to_header`), so changing the account's
+                // trusted id re-judges already-synced mail with no re-sync.
+                self.seal_header(
+                    header,
+                    "authres_json",
+                    &header
+                        .auth
+                        .as_ref()
+                        .and_then(|a| serde_json::to_string(a).ok())
+                        .unwrap_or_default()
+                ),
             ],
         )
         .map_err(|e| e.to_string())?;
         Ok(!existed)
     }
 
-    /// One page of a folder's headers, newest first, optionally filtered.
+    fn seal_header(&self, header: &MailHeader, column: &str, value: &str) -> SqlValue {
+        self.seal_text(&header.account_id, "messages", column, &header.id, value)
+    }
+
+    /// The `SELECT` list every header read shares, so a column added to one is
+    /// added to all of them and `row_to_header`'s indices cannot drift.
+    const HEADER_COLUMNS: &'static str = "id, account_id, folder_id, uid, subject, from_json, \
+         to_json, cc_json, date, seen, flagged, answered, has_attachments, size, preview, \
+         malformed, rfc_message_id, authres_json, priority";
+
+    /// One page of a folder's headers in the requested order, optionally
+    /// filtered.
     ///
     /// The query is a `LIKE` over subject/sender/preview and is bound as a
-    /// parameter — the caller's text never reaches the SQL string.
+    /// parameter — the caller's text never reaches the SQL string. The **order**
+    /// cannot be bound (SQLite takes no parameter in an `ORDER BY`), which is
+    /// exactly why `sort` is a `MailSort` and not a column name: `order_clause`
+    /// maps the closed set onto fixed literals, so nothing the caller says is
+    /// ever interpolated.
+    ///
+    /// Ordering here rather than in the list component is what makes it mean
+    /// anything: the list is paged, so sorting on the frontend would order the
+    /// hundred rows that happen to be on screen.
     pub fn headers_page(
         &self,
         folder_id: &str,
         offset: u32,
         limit: u32,
         query: Option<&str>,
+        sort: MailSort,
+        desc: bool,
+    ) -> Result<MailHeaderPage, String> {
+        self.page("folder_id = ?1 AND deleted = 0", folder_id, offset, limit, query, sort, desc)
+    }
+
+    /// One page of whichever set `scope_where`/`scope_param` select.
+    ///
+    /// `headers_page` and `priority_page` both land here, which is what makes
+    /// the claim in their docs — that the Important list "sorts, searches and
+    /// pages exactly like a folder does" — a fact about the code rather than an
+    /// intention. `scope_where` is a fixed literal supplied by this file and
+    /// binds `?1`; nothing a caller says is ever formatted into SQL.
+    ///
+    /// # Searching an encrypted store
+    ///
+    /// `LIKE` cannot run over ciphertext, so a sealed store searches by
+    /// **decrypt-on-scan**: walk the scope in the requested order, open
+    /// `subject`/`from_json`/`preview` per row, keep the matches, and stop after
+    /// [`MAX_SEARCH_SCAN`] rows. Two consequences, both deliberate and both
+    /// surfaced rather than hidden:
+    ///
+    /// - `total` becomes *matches found within the scan*, not `COUNT(*)`. The
+    ///   pager stops claiming a page count it cannot know.
+    /// - `scanned` is set when the bound was hit, so the UI can say how much of
+    ///   the mailbox the answer covers.
+    ///
+    /// With no query nothing is scanned at all — only the rows on the page are
+    /// opened, which is the case that has to stay cheap.
+    #[allow(clippy::too_many_arguments)]
+    fn page(
+        &self,
+        scope_where: &'static str,
+        scope_param: &str,
+        offset: u32,
+        limit: u32,
+        query: Option<&str>,
+        sort: MailSort,
+        desc: bool,
     ) -> Result<MailHeaderPage, String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
         let limit = limit.clamp(1, 500);
-        let pattern = query
+        let needle = query.map(str::trim).filter(|q| !q.is_empty());
+
+        // ── Encrypted + a query: decrypt-on-scan ────────────────────────────
+        if self.keys.is_some() {
+            if let Some(needle) = needle {
+                let needle = needle.to_lowercase();
+                let mut stmt = conn
+                    .prepare(&format!(
+                        "SELECT {} FROM messages WHERE {scope_where} ORDER BY {}",
+                        Self::HEADER_COLUMNS,
+                        Self::order_clause(sort, desc),
+                    ))
+                    .map_err(|e| e.to_string())?;
+                let mut rows = stmt.query(params![scope_param]).map_err(|e| e.to_string())?;
+
+                let mut items = Vec::new();
+                let mut matched = 0u32;
+                let mut looked_at = 0usize;
+                let mut capped = false;
+                while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+                    if looked_at >= MAX_SEARCH_SCAN {
+                        capped = true;
+                        break;
+                    }
+                    looked_at += 1;
+                    let header = self.row_to_header(row).map_err(|e| e.to_string())?;
+                    // The same three columns the `LIKE` covered, so the two
+                    // paths answer the same question.
+                    let hit = header.subject.to_lowercase().contains(&needle)
+                        || header.preview.to_lowercase().contains(&needle)
+                        || serde_json::to_string(&header.from)
+                            .unwrap_or_default()
+                            .to_lowercase()
+                            .contains(&needle);
+                    if !hit {
+                        continue;
+                    }
+                    matched += 1;
+                    if matched > offset && items.len() < limit as usize {
+                        items.push(header);
+                    }
+                }
+                return Ok(MailHeaderPage {
+                    items,
+                    total: matched,
+                    scanned: capped.then_some(looked_at as u32),
+                });
+            }
+
+            // Encrypted, no query: plain paging, no `LIKE` at all. Applying one
+            // to a sealed column would be comparing a pattern against ciphertext
+            // — never a match, and the empty folder it produced would look like
+            // a sync bug rather than an encoding one.
+            let total: u32 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM messages WHERE {scope_where}"),
+                    params![scope_param],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT {} FROM messages WHERE {scope_where} ORDER BY {} LIMIT ?2 OFFSET ?3",
+                    Self::HEADER_COLUMNS,
+                    Self::order_clause(sort, desc),
+                ))
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![scope_param, limit, offset], |r| self.row_to_header(r))
+                .map_err(|e| e.to_string())?;
+            let items = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+            return Ok(MailHeaderPage {
+                items,
+                total,
+                scanned: None,
+            });
+        }
+
+        // ── Plain store: the bound `LIKE`, unchanged ────────────────────────
+        let pattern = needle
             .map(|q| format!("%{}%", q.replace('%', "\\%").replace('_', "\\_")))
             .unwrap_or_else(|| "%".to_string());
+        let filter = "AND (subject LIKE ?2 ESCAPE '\\' OR from_json LIKE ?2 ESCAPE '\\' \
+                      OR preview LIKE ?2 ESCAPE '\\')";
 
         let total: u32 = conn
             .query_row(
-                "SELECT COUNT(*) FROM messages
-                 WHERE folder_id = ?1 AND deleted = 0
-                   AND (subject LIKE ?2 ESCAPE '\\' OR from_json LIKE ?2 ESCAPE '\\'
-                        OR preview LIKE ?2 ESCAPE '\\')",
-                params![folder_id, pattern],
+                &format!("SELECT COUNT(*) FROM messages WHERE {scope_where} {filter}"),
+                params![scope_param, pattern],
                 |r| r.get(0),
             )
             .map_err(|e| e.to_string())?;
 
         let mut stmt = conn
-            .prepare(
-                "SELECT id, account_id, folder_id, uid, subject, from_json, to_json, cc_json,
-                        date, seen, flagged, answered, has_attachments, size, preview, malformed,
-                        rfc_message_id
-                 FROM messages
-                 WHERE folder_id = ?1 AND deleted = 0
-                   AND (subject LIKE ?2 ESCAPE '\\' OR from_json LIKE ?2 ESCAPE '\\'
-                        OR preview LIKE ?2 ESCAPE '\\')
-                 ORDER BY date DESC, uid DESC
-                 LIMIT ?3 OFFSET ?4",
-            )
+            .prepare(&format!(
+                "SELECT {} FROM messages WHERE {scope_where} {filter} ORDER BY {} LIMIT ?3 OFFSET ?4",
+                Self::HEADER_COLUMNS,
+                Self::order_clause(sort, desc),
+            ))
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![folder_id, pattern, limit, offset], row_to_header)
+            .query_map(params![scope_param, pattern, limit, offset], |r| {
+                self.row_to_header(r)
+            })
             .map_err(|e| e.to_string())?;
         let items = rows
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
-        Ok(MailHeaderPage { items, total })
+        Ok(MailHeaderPage {
+            items,
+            total,
+            scanned: None,
+        })
+    }
+
+    /// The `ORDER BY` body for one sort, as a **fixed literal per variant**.
+    ///
+    /// Every branch returns a constant `&'static str`; nothing a caller supplies
+    /// is formatted in, which is what keeps the one interpolated clause in this
+    /// file safe. `desc` picks between two constants rather than being spliced.
+    ///
+    /// Two decisions live in the tie-breaks. Every non-date sort falls back to
+    /// `date DESC, uid DESC`, because `flagged` and `has_attachments` are single
+    /// bits and `size` collides freely — without a tie-break the order *within*
+    /// a group would be whatever SQLite happened to scan, and it would change
+    /// between two reads of an unchanged folder. And the tie-break stays
+    /// newest-first even when the primary key is ascending: flipping to
+    /// "smallest first" is a statement about size, not a request to read a
+    /// mailbox backwards.
+    fn order_clause(sort: MailSort, desc: bool) -> &'static str {
+        match (sort, desc) {
+            (MailSort::Date, true) => "date DESC, uid DESC",
+            (MailSort::Date, false) => "date ASC, uid ASC",
+            // Descending puts the starred mail on top, which is why every list
+            // here defaults to it: `flagged DESC` is "flagged first", and a star
+            // sort that opened on the unstarred majority would be useless.
+            (MailSort::Flagged, true) => "flagged DESC, date DESC, uid DESC",
+            (MailSort::Flagged, false) => "flagged ASC, date DESC, uid DESC",
+            (MailSort::Attachments, true) => "has_attachments DESC, date DESC, uid DESC",
+            (MailSort::Attachments, false) => "has_attachments ASC, date DESC, uid DESC",
+            (MailSort::Size, true) => "size DESC, date DESC, uid DESC",
+            (MailSort::Size, false) => "size ASC, date DESC, uid DESC",
+        }
     }
 
     pub fn header(&self, message_id: &str) -> Result<Option<MailHeader>, String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
         conn.query_row(
-            "SELECT id, account_id, folder_id, uid, subject, from_json, to_json, cc_json,
-                    date, seen, flagged, answered, has_attachments, size, preview, malformed,
-                    rfc_message_id
-             FROM messages WHERE id = ?1",
+            &format!("SELECT {} FROM messages WHERE id = ?1", Self::HEADER_COLUMNS),
             params![message_id],
-            row_to_header,
+            |r| self.row_to_header(r),
         )
         .optional()
         .map_err(|e| e.to_string())
@@ -417,6 +1019,130 @@ impl MailStore {
         conn.execute(&sql, params![value as i64, message_id])
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// The server-side UIDs of everything still unread in a folder.
+    ///
+    /// Read **before** the local rows are flipped, because it is what the IMAP
+    /// half of "mark all as read" addresses — flipping first and then asking
+    /// would return nothing and quietly turn the operation local-only.
+    pub fn unseen_uids(&self, folder_id: &str) -> Result<Vec<u32>, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let mut stmt = conn
+            .prepare("SELECT uid FROM messages WHERE folder_id = ?1 AND seen = 0 ORDER BY uid")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![folder_id], |r| r.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?;
+        let mut uids = Vec::new();
+        for r in rows {
+            uids.push(r.map_err(|e| e.to_string())? as u32);
+        }
+        Ok(uids)
+    }
+
+    /// Mark every unread message in a folder read, locally. Returns how many
+    /// rows actually changed, which is the number the UI reports — a folder
+    /// already fully read answers 0 rather than claiming work it did not do.
+    pub fn mark_folder_seen(&self, folder_id: &str) -> Result<u32, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let changed = conn
+            .execute(
+                "UPDATE messages SET seen = 1 WHERE folder_id = ?1 AND seen = 0",
+                params![folder_id],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(changed as u32)
+    }
+
+    // ── Priority marks (Important / Urgent) ─────────────────────────────────
+
+    /// Set — or with `None`, clear — one message's local priority mark.
+    ///
+    /// The value written is `MailPriority::as_str()`, a fixed literal per
+    /// variant, and it is **bound**, not formatted: this is a data column, not
+    /// the `ORDER BY` clause, so nothing here needs `order_clause`'s treatment.
+    ///
+    /// A message that is not in the index is not an error to shout about — it
+    /// answers `false`, so a caller can tell "nothing changed" from "done". The
+    /// realistic way to get there is marking a message and having the folder
+    /// re-synced out from under it.
+    pub fn set_priority(
+        &self,
+        message_id: &str,
+        priority: Option<MailPriority>,
+    ) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let value = priority.map(|p| p.as_str()).unwrap_or("");
+        let changed = conn
+            .execute(
+                "UPDATE messages SET priority = ?1 WHERE id = ?2",
+                params![value, message_id],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(changed > 0)
+    }
+
+    /// One page of everything carrying `priority`, **across every account and
+    /// every folder**.
+    ///
+    /// That cross-account span is the whole reason the mark is a local column
+    /// rather than an IMAP move: no folder on any server can hold mail from two
+    /// accounts, so the list this query backs could not exist server-side at
+    /// all. It is otherwise deliberately the twin of `headers_page` — same
+    /// `LIKE` filter bound as a parameter, same closed-set `order_clause`, same
+    /// `deleted = 0` — so the Important list sorts, searches and pages exactly
+    /// like a folder does and the frontend needs no second code path.
+    pub fn priority_page(
+        &self,
+        priority: MailPriority,
+        offset: u32,
+        limit: u32,
+        query: Option<&str>,
+        sort: MailSort,
+        desc: bool,
+    ) -> Result<MailHeaderPage, String> {
+        self.page(
+            "priority = ?1 AND deleted = 0",
+            priority.as_str(),
+            offset,
+            limit,
+            query,
+            sort,
+            desc,
+        )
+    }
+
+    /// How much marked mail there is, for the rail's two badges.
+    ///
+    /// One statement rather than four, because it feeds one render: the badges
+    /// would otherwise disagree for as long as it took the second read to land.
+    /// Counts **everything** marked, not just the unread — a list you file mail
+    /// into is not an inbox, and a badge that emptied itself as you read would
+    /// stop reporting the thing it exists to report. The unread halves come back
+    /// beside it for the rail to tone with.
+    pub fn priority_counts(&self) -> Result<MailPriorityCounts, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        conn.query_row(
+            "SELECT
+               SUM(priority = 'important'),
+               SUM(priority = 'urgent'),
+               SUM(priority = 'important' AND seen = 0),
+               SUM(priority = 'urgent' AND seen = 0)
+             FROM messages WHERE deleted = 0",
+            [],
+            |r| {
+                Ok(MailPriorityCounts {
+                    // An empty table makes every SUM NULL, which is a count of
+                    // zero and not a failure — hence the per-column default.
+                    important: r.get::<_, Option<i64>>(0)?.unwrap_or(0) as u32,
+                    urgent: r.get::<_, Option<i64>>(1)?.unwrap_or(0) as u32,
+                    important_unread: r.get::<_, Option<i64>>(2)?.unwrap_or(0) as u32,
+                    urgent_unread: r.get::<_, Option<i64>>(3)?.unwrap_or(0) as u32,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())
     }
 
     pub fn move_messages(&self, message_ids: &[String], dest_folder_id: &str) -> Result<(), String> {
@@ -445,22 +1171,43 @@ impl MailStore {
         version: u32,
     ) -> Result<Option<(Option<String>, Option<String>, String, u32, bool)>, String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
-        conn.query_row(
-            "SELECT html, text, links_json, remote_refs, truncated
-             FROM bodies_cache WHERE message_id = ?1 AND version = ?2",
-            params![message_id, version],
-            |r| {
-                Ok((
-                    r.get::<_, Option<String>>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, u32>(3)?,
-                    r.get::<_, i64>(4)? != 0,
-                ))
+        let row = conn
+            .query_row(
+                "SELECT html, text, links_json, remote_refs, truncated
+                 FROM bodies_cache WHERE message_id = ?1 AND version = ?2",
+                params![message_id, version],
+                |r| {
+                    let t = "bodies_cache";
+                    Ok((
+                        self.open_opt_text(r, 0, "", t, "html", message_id)?,
+                        self.open_opt_text(r, 1, "", t, "text", message_id)?,
+                        self.open_text(r, 2, "", t, "links_json", message_id)?,
+                        r.get::<_, u32>(3)?,
+                        r.get::<_, i64>(4)? != 0,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+
+        // A cached body that will not open is treated as a **cache miss**, not
+        // as an error: the caller re-fetches it from the server and re-seals it.
+        // That is the right degrade here and nowhere else — a body is derived
+        // data with an authoritative copy upstream, which a subject line in the
+        // index is not.
+        Ok(match row {
+            Some((html, text, links, refs, truncated)) => match (html, text, links) {
+                (Some(None), _, _) | (_, Some(None), _) | (_, _, None) => None,
+                (html, text, Some(links)) => Some((
+                    html.flatten(),
+                    text.flatten(),
+                    links,
+                    refs,
+                    truncated,
+                )),
             },
-        )
-        .optional()
-        .map_err(|e| e.to_string())
+            None => None,
+        })
     }
 
     pub fn cache_body(
@@ -486,9 +1233,9 @@ impl MailStore {
             params![
                 message_id,
                 version,
-                html,
-                text,
-                links_json,
+                self.seal_opt_text("", "bodies_cache", "html", message_id, html),
+                self.seal_opt_text("", "bodies_cache", "text", message_id, text),
+                self.seal_text("", "bodies_cache", "links_json", message_id, links_json),
                 remote_refs,
                 truncated as i64,
                 raw_blob
@@ -516,16 +1263,73 @@ impl MailStore {
             params![
                 message_id,
                 meta.part_id,
-                meta.filename,
-                meta.mime,
+                self.seal_attachment(message_id, &meta.part_id, "filename", &meta.filename),
+                self.seal_attachment(message_id, &meta.part_id, "mime", &meta.mime),
                 meta.size as i64,
                 meta.inline as i64,
-                meta.type_mismatch,
+                self.seal_opt_attachment(
+                    message_id,
+                    &meta.part_id,
+                    "mismatch",
+                    meta.type_mismatch.as_deref()
+                ),
                 blob
             ],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// The AAD row key for `attachments`, whose primary key is composite.
+    ///
+    /// NUL-joined for the reason [`mail_crypt::field_aad`] gives: a separator
+    /// that can occur inside either half is one that lets two different rows
+    /// produce one AAD, which is exactly the relocation the binding exists to
+    /// stop.
+    fn attachment_row(message_id: &str, part_id: &str) -> String {
+        format!("{message_id}\u{0}{part_id}")
+    }
+
+    fn seal_attachment(&self, message_id: &str, part_id: &str, column: &str, value: &str) -> SqlValue {
+        self.seal_text(
+            "",
+            "attachments",
+            column,
+            &Self::attachment_row(message_id, part_id),
+            value,
+        )
+    }
+
+    fn seal_opt_attachment(
+        &self,
+        message_id: &str,
+        part_id: &str,
+        column: &str,
+        value: Option<&str>,
+    ) -> SqlValue {
+        self.seal_opt_text(
+            "",
+            "attachments",
+            column,
+            &Self::attachment_row(message_id, part_id),
+            value,
+        )
+    }
+
+    fn row_to_attachment(&self, r: &Row<'_>, message_id: &str) -> rusqlite::Result<MailAttachmentMeta> {
+        let part_id: String = r.get(0)?;
+        let row = Self::attachment_row(message_id, &part_id);
+        let t = "attachments";
+        Ok(MailAttachmentMeta {
+            filename: self
+                .open_text(r, 1, "", t, "filename", &row)?
+                .unwrap_or_default(),
+            mime: self.open_text(r, 2, "", t, "mime", &row)?.unwrap_or_default(),
+            size: r.get::<_, i64>(3)? as u64,
+            inline: r.get::<_, i64>(4)? != 0,
+            type_mismatch: self.open_opt_text(r, 5, "", t, "mismatch", &row)?.flatten(),
+            part_id,
+        })
     }
 
     pub fn attachments(&self, message_id: &str) -> Result<Vec<MailAttachmentMeta>, String> {
@@ -537,16 +1341,7 @@ impl MailStore {
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![message_id], |r| {
-                Ok(MailAttachmentMeta {
-                    part_id: r.get(0)?,
-                    filename: r.get(1)?,
-                    mime: r.get(2)?,
-                    size: r.get::<_, i64>(3)? as u64,
-                    inline: r.get::<_, i64>(4)? != 0,
-                    type_mismatch: r.get(5)?,
-                })
-            })
+            .query_map(params![message_id], |r| self.row_to_attachment(r, message_id))
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     }
@@ -562,19 +1357,7 @@ impl MailStore {
             "SELECT part_id, filename, mime, size, inline, mismatch, blob
              FROM attachments WHERE message_id = ?1 AND part_id = ?2",
             params![message_id, part_id],
-            |r| {
-                Ok((
-                    MailAttachmentMeta {
-                        part_id: r.get(0)?,
-                        filename: r.get(1)?,
-                        mime: r.get(2)?,
-                        size: r.get::<_, i64>(3)? as u64,
-                        inline: r.get::<_, i64>(4)? != 0,
-                        type_mismatch: r.get(5)?,
-                    },
-                    r.get::<_, String>(6)?,
-                ))
-            },
+            |r| Ok((self.row_to_attachment(r, message_id)?, r.get::<_, String>(6)?)),
         )
         .optional()
         .map_err(|e| e.to_string())
@@ -590,7 +1373,17 @@ impl MailStore {
             params![
                 draft.id,
                 draft.account_id,
-                serde_json::to_string(draft).map_err(|e| e.to_string())?
+                // The whole draft, one envelope. A draft is the most sensitive
+                // thing in the store — it is mail the user is still writing, so
+                // it has not even reached a server that could be asked to
+                // delete it.
+                self.seal_text(
+                    &draft.account_id,
+                    "drafts",
+                    "json",
+                    &draft.id,
+                    &serde_json::to_string(draft).map_err(|e| e.to_string())?
+                )
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -599,16 +1392,23 @@ impl MailStore {
 
     pub fn draft(&self, draft_id: &str) -> Result<Option<MailDraft>, String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
-        let json: Option<String> = conn
+        let json: Option<Option<String>> = conn
             .query_row(
-                "SELECT json FROM drafts WHERE id = ?1",
+                "SELECT account_id, json FROM drafts WHERE id = ?1",
                 params![draft_id],
-                |r| r.get(0),
+                |r| {
+                    let account_id: String = r.get(0)?;
+                    self.open_text(r, 1, &account_id, "drafts", "json", draft_id)
+                },
             )
             .optional()
             .map_err(|e| e.to_string())?;
         match json {
-            Some(j) => Ok(Some(serde_json::from_str(&j).map_err(|e| e.to_string())?)),
+            Some(Some(j)) => Ok(Some(serde_json::from_str(&j).map_err(|e| e.to_string())?)),
+            // Unlike a cached body there is no upstream copy to re-fetch, so an
+            // unreadable draft is an error the user is told about rather than a
+            // silently empty compose window.
+            Some(None) => Err("this draft could not be decrypted".into()),
             None => Ok(None),
         }
     }
@@ -644,7 +1444,13 @@ impl MailStore {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         harden(&dir, 0o700);
         let path = dir.join(sanitize_id(staged_id));
-        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        // Sealed like everything else, and for a reason the plan calls the
+        // classic hole: `outbox/` is where a file the user picked lands in the
+        // clear, outside the database, for as long as the draft exists. It is
+        // consumed in memory by `build_outgoing` and never handed back as a
+        // path.
+        std::fs::write(&path, self.seal_staged(draft_id, staged_id, bytes))
+            .map_err(|e| e.to_string())?;
         harden(&path, 0o600);
 
         let staged = StagedAttachment {
@@ -662,13 +1468,26 @@ impl MailStore {
             params![
                 draft_id,
                 staged.staged_id,
-                staged.filename,
-                staged.mime,
+                self.seal_text("", "staged", "filename", &staged_row(draft_id, staged_id), &staged.filename),
+                self.seal_text("", "staged", "mime", &staged_row(draft_id, staged_id), &staged.mime),
                 staged.size as i64
             ],
         )
         .map_err(|e| e.to_string())?;
         Ok(staged)
+    }
+
+    /// The AAD for a staged payload file. Built from the **sanitized** ids so it
+    /// names exactly the file on disk — the same two strings that form the path.
+    fn staged_aad(draft_id: &str, staged_id: &str) -> Vec<u8> {
+        mail_crypt::staged_aad(&sanitize_id(draft_id), &sanitize_id(staged_id))
+    }
+
+    fn seal_staged(&self, draft_id: &str, staged_id: &str, bytes: &[u8]) -> Vec<u8> {
+        match &self.keys {
+            Some(k) => mail_crypt::seal(&k.blob, &Self::staged_aad(draft_id, staged_id), bytes),
+            None => bytes.to_vec(),
+        }
     }
 
     pub fn staged(&self, draft_id: &str) -> Result<Vec<StagedAttachment>, String> {
@@ -681,11 +1500,17 @@ impl MailStore {
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![draft_id], |r| {
+                let staged_id: String = r.get(0)?;
+                let row = staged_row(draft_id, &staged_id);
                 Ok(StagedAttachment {
-                    staged_id: r.get(0)?,
-                    filename: r.get(1)?,
-                    mime: r.get(2)?,
+                    filename: self
+                        .open_text(r, 1, "", "staged", "filename", &row)?
+                        .unwrap_or_default(),
+                    mime: self
+                        .open_text(r, 2, "", "staged", "mime", &row)?
+                        .unwrap_or_default(),
                     size: r.get::<_, i64>(3)? as u64,
+                    staged_id,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -694,7 +1519,13 @@ impl MailStore {
 
     pub fn staged_bytes(&self, draft_id: &str, staged_id: &str) -> Result<Vec<u8>, String> {
         let path = self.outbox_dir(draft_id).join(sanitize_id(staged_id));
-        std::fs::read(&path).map_err(|e| e.to_string())
+        let raw = std::fs::read(&path).map_err(|e| e.to_string())?;
+        match &self.keys {
+            Some(k) => mail_crypt::open(&k.blob, &Self::staged_aad(draft_id, staged_id), &raw)
+                .map(|p| p.to_vec())
+                .map_err(|e| e.to_string()),
+            None => Ok(raw),
+        }
     }
 
     pub fn remove_staged(&self, draft_id: &str, staged_id: &str) -> Result<(), String> {
@@ -725,6 +1556,295 @@ impl MailStore {
         Ok(())
     }
 
+    // ── Migrating an existing cleartext store ───────────────────────────────
+
+    /// Seal everything in this store that is still cleartext. Returns whether
+    /// anything actually changed.
+    ///
+    /// **Idempotent, and that is what makes it restartable.** Every value is
+    /// examined individually and skipped if it is already an envelope, so being
+    /// killed half-way through leaves a store in a mixed state that the next
+    /// open simply finishes — there is no stage counter to get out of step with
+    /// what is on disk. (SQLite's dynamic typing is what allows the mixed state:
+    /// a `TEXT` and a `BLOB` coexist in one column.)
+    ///
+    /// The honest limitation, which the UI states rather than this file hiding:
+    /// **the plaintext that was here does not reliably go away.** `VACUUM INTO`
+    /// a fresh file plus deleting the old one is the best a userspace program
+    /// can do, and on an SSD or a copy-on-write filesystem it is not erasure.
+    /// Anyone who actually cares should use "delete local mail and re-sync"
+    /// instead, which never writes the plaintext in the first place.
+    fn seal_existing(&self) -> Result<bool, String> {
+        if self.keys.is_none() {
+            return Ok(false);
+        }
+        {
+            let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+            let done: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM meta WHERE key = ?1",
+                    params![META_ENCRYPTED],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if done.as_deref() == Some("1") {
+                return Ok(false);
+            }
+        }
+
+        let mut changed = 0usize;
+        changed += self.seal_table(
+            "messages",
+            &["id"],
+            Some("account_id"),
+            &[
+                "subject",
+                "from_json",
+                "to_json",
+                "cc_json",
+                "preview",
+                "malformed",
+                "rfc_message_id",
+                "authres_json",
+            ],
+        )?;
+        changed += self.seal_table("bodies_cache", &["message_id"], None, &["html", "text", "links_json"])?;
+        changed += self.seal_table(
+            "attachments",
+            &["message_id", "part_id"],
+            None,
+            &["filename", "mime", "mismatch"],
+        )?;
+        changed += self.seal_table("drafts", &["id"], Some("account_id"), &["json"])?;
+        changed += self.seal_table("staged", &["draft_id", "staged_id"], None, &["filename", "mime"])?;
+        changed += self.seal_table("folders", &["id"], Some("account_id"), &["path", "name"])?;
+        changed += self.seal_table("mail_remote_allow", &["addr_key"], None, &["address"])?;
+        changed += self.reseal_blobs()?;
+        changed += self.reseal_outbox()?;
+
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, '1')",
+            params![META_ENCRYPTED],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(changed > 0)
+    }
+
+    /// Seal every still-cleartext value in `columns` of `table`.
+    ///
+    /// The AAD's row key is the primary-key columns NUL-joined, which is exactly
+    /// how the read and write paths build theirs — one definition, so a value
+    /// sealed by the migration opens through the ordinary getter.
+    fn seal_table(
+        &self,
+        table: &'static str,
+        pk: &'static [&'static str],
+        account_col: Option<&'static str>,
+        columns: &'static [&'static str],
+    ) -> Result<usize, String> {
+        let Some(_) = self.keys.as_ref() else {
+            return Ok(0);
+        };
+        let mut conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+
+        // (row key, account id, [(column, plaintext)])
+        type Pending = (Vec<String>, String, Vec<(&'static str, String)>);
+        let pending: Vec<Pending> = {
+            let select: Vec<&str> = pk
+                .iter()
+                .chain(account_col.iter())
+                .chain(columns.iter())
+                .copied()
+                .collect();
+            let mut stmt = conn
+                .prepare(&format!("SELECT {} FROM {table}", select.join(", ")))
+                .map_err(|e| e.to_string())?;
+            let value_base = pk.len() + usize::from(account_col.is_some());
+            let rows = stmt
+                .query_map([], |r| {
+                    use rusqlite::types::ValueRef;
+                    let mut key = Vec::with_capacity(pk.len());
+                    for i in 0..pk.len() {
+                        key.push(r.get::<_, String>(i)?);
+                    }
+                    let account = match account_col {
+                        Some(_) => r.get::<_, String>(pk.len())?,
+                        None => String::new(),
+                    };
+                    let mut todo = Vec::new();
+                    for (n, column) in columns.iter().enumerate() {
+                        // A `Blob` is already an envelope and a `Null` has
+                        // nothing to seal. Only `Text` is work.
+                        if let ValueRef::Text(t) = r.get_ref(value_base + n)? {
+                            todo.push((*column, String::from_utf8_lossy(t).into_owned()));
+                        }
+                    }
+                    Ok((key, account, todo))
+                })
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .filter(|(_, _, todo)| !todo.is_empty())
+                .collect()
+        };
+        if pending.is_empty() {
+            return Ok(0);
+        }
+
+        let where_clause = pk
+            .iter()
+            .map(|c| format!("{c} = ?"))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut changed = 0usize;
+        for (key, account, todo) in &pending {
+            let row_key = key.join("\u{0}");
+            for (column, plaintext) in todo {
+                let sealed = self.seal_text(account, table, column, &row_key, plaintext);
+                let mut args: Vec<SqlValue> = vec![sealed];
+                args.extend(key.iter().map(|k| SqlValue::Text(k.clone())));
+                tx.execute(
+                    &format!("UPDATE {table} SET {column} = ? WHERE {where_clause}"),
+                    params_from_iter(args),
+                )
+                .map_err(|e| e.to_string())?;
+                changed += 1;
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(changed)
+    }
+
+    /// Seal every blob payload and move it from its bare SHA-256 name onto its
+    /// keyed one, rewriting the two cleartext columns that reference it.
+    fn reseal_blobs(&self) -> Result<usize, String> {
+        let Some(keys) = self.keys.as_ref() else {
+            return Ok(0);
+        };
+        let dir = self.blobs_dir();
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return Ok(0);
+        };
+        let mut changed = 0usize;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(old_id) = path.file_name().and_then(|n| n.to_str()).map(str::to_owned) else {
+                continue;
+            };
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            if mail_crypt::looks_sealed(&bytes) {
+                continue;
+            }
+            let new_id = mail_crypt::blob_id(&keys.addr, &bytes);
+            let sealed = mail_crypt::seal(&keys.blob, &mail_crypt::blob_aad(&new_id), &bytes);
+            let new_path = dir.join(&new_id);
+            std::fs::write(&new_path, &sealed).map_err(|e| e.to_string())?;
+            harden(&new_path, 0o600);
+            if new_id != old_id {
+                let _ = std::fs::remove_file(&path);
+                let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+                conn.execute(
+                    "UPDATE bodies_cache SET raw_blob = ?1 WHERE raw_blob = ?2",
+                    params![new_id, old_id],
+                )
+                .map_err(|e| e.to_string())?;
+                conn.execute(
+                    "UPDATE attachments SET blob = ?1 WHERE blob = ?2",
+                    params![new_id, old_id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            changed += 1;
+        }
+        Ok(changed)
+    }
+
+    /// Seal every staged (outgoing) payload in place. Their names are already
+    /// opaque ids, so unlike a blob nothing has to be renamed.
+    fn reseal_outbox(&self) -> Result<usize, String> {
+        if self.keys.is_none() {
+            return Ok(0);
+        }
+        let root = self.dir.join("outbox");
+        let Ok(drafts) = std::fs::read_dir(&root) else {
+            return Ok(0);
+        };
+        let mut changed = 0usize;
+        for draft in drafts.flatten() {
+            let Some(draft_id) = draft.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Ok(files) = std::fs::read_dir(draft.path()) else {
+                continue;
+            };
+            for file in files.flatten() {
+                let path = file.path();
+                let Some(staged_id) = path.file_name().and_then(|n| n.to_str()).map(str::to_owned)
+                else {
+                    continue;
+                };
+                let Ok(bytes) = std::fs::read(&path) else {
+                    continue;
+                };
+                if mail_crypt::looks_sealed(&bytes) {
+                    continue;
+                }
+                std::fs::write(&path, self.seal_staged(&draft_id, &staged_id, &bytes))
+                    .map_err(|e| e.to_string())?;
+                harden(&path, 0o600);
+                changed += 1;
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Rewrite the database into a fresh file and swap it in.
+    ///
+    /// The step that makes the migration worth doing. Sealing values with
+    /// `UPDATE` leaves every old plaintext in the WAL and in the freelist —
+    /// pages SQLite has stopped referencing but has not overwritten — so a store
+    /// "migrated" in place still has the cleartext subject lines in it, readable
+    /// with a hex editor. `VACUUM INTO` writes a new file containing only live
+    /// pages, and the old one is then removed.
+    fn vacuum_into_place(&mut self) -> Result<(), String> {
+        let db = self.dir.join("mail.db");
+        let target = self.dir.join("mail.db.sealed");
+        let _ = std::fs::remove_file(&target);
+        {
+            let conn = self.conn.get_mut().map_err(|_| "mail store is poisoned")?;
+            conn.execute("VACUUM INTO ?1", params![target.to_string_lossy()])
+                .map_err(|e| format!("could not rewrite the mail store: {e}"))?;
+        }
+        // Close the old connection *before* touching the files. An open handle
+        // owns a `-wal`/`-shm` pair, and leaving them beside a replaced database
+        // would hand the new file a journal belonging to the old one.
+        {
+            let placeholder = Connection::open_in_memory().map_err(|e| e.to_string())?;
+            let old = std::mem::replace(
+                self.conn.get_mut().map_err(|_| "mail store is poisoned")?,
+                placeholder,
+            );
+            drop(old);
+        }
+        let _ = std::fs::remove_file(self.dir.join("mail.db-wal"));
+        let _ = std::fs::remove_file(self.dir.join("mail.db-shm"));
+        std::fs::rename(&target, &db).map_err(|e| e.to_string())?;
+        harden(&db, 0o600);
+        let conn = Connection::open(&db).map_err(|e| e.to_string())?;
+        configure(&conn);
+        *self.conn.get_mut().map_err(|_| "mail store is poisoned")? = conn;
+        Ok(())
+    }
+
     /// Remove everything belonging to one account, blobs included.
     pub fn delete_account_mail(&self, account_id: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
@@ -748,36 +1868,109 @@ impl MailStore {
     }
 }
 
-fn row_to_header(r: &rusqlite::Row<'_>) -> rusqlite::Result<MailHeader> {
-    let malformed: String = r.get(15)?;
-    let rfc_message_id: String = r.get(16)?;
-    Ok(MailHeader {
-        id: r.get(0)?,
-        account_id: r.get(1)?,
-        folder_id: r.get(2)?,
-        uid: r.get(3)?,
-        subject: r.get(4)?,
-        from: serde_json::from_str(&r.get::<_, String>(5)?).unwrap_or_default(),
-        to: serde_json::from_str(&r.get::<_, String>(6)?).unwrap_or_default(),
-        cc: serde_json::from_str(&r.get::<_, String>(7)?).unwrap_or_default(),
-        date: r.get(8)?,
-        seen: r.get::<_, i64>(9)? != 0,
-        flagged: r.get::<_, i64>(10)? != 0,
-        answered: r.get::<_, i64>(11)? != 0,
-        has_attachments: r.get::<_, i64>(12)? != 0,
-        size: r.get::<_, i64>(13)? as u64,
-        preview: r.get(14)?,
-        malformed_headers: if malformed.is_empty() {
-            None
+/// The token appended to a message's `malformed_headers` when one of its sealed
+/// columns would not open.
+///
+/// It shares the malformed channel because the UI already has a banner for it
+/// and because that is honestly what the row is: structurally present, partly
+/// unreadable. The alternative — rendering an un-openable subject as an empty
+/// one — would let anyone with disk write access blank a message's identity and
+/// have it look like ordinary mail, which is the whole reason the AAD binding
+/// exists.
+pub const MALFORMED_SEALED: &str = "sealed-value";
+
+impl MailStore {
+    fn row_to_header(&self, r: &Row<'_>) -> rusqlite::Result<MailHeader> {
+        let id: String = r.get(0)?;
+        let account_id: String = r.get(1)?;
+        let t = "messages";
+
+        // One flag for the whole row: a message with an unreadable subject and
+        // an unreadable preview is one damaged message, not two problems.
+        let mut damaged = false;
+        let mut sealed = |idx: usize, column: &str| -> rusqlite::Result<String> {
+            match self.open_text(r, idx, &account_id, t, column, &id)? {
+                Some(v) => Ok(v),
+                None => {
+                    damaged = true;
+                    Ok(String::new())
+                }
+            }
+        };
+
+        let subject = sealed(4, "subject")?;
+        let from_json = sealed(5, "from_json")?;
+        let to_json = sealed(6, "to_json")?;
+        let cc_json = sealed(7, "cc_json")?;
+        let preview = sealed(14, "preview")?;
+        let malformed = sealed(15, "malformed")?;
+        let rfc_message_id = sealed(16, "rfc_message_id")?;
+        let authres_json = sealed(17, "authres_json")?;
+        // `unwrap_or_default` because a caller whose SELECT predates the column
+        // gets no mark rather than a panic. Cleartext — it is what the two
+        // priority lists filter on.
+        let priority: String = r.get(18).unwrap_or_default();
+
+        let mut malformed_headers: Vec<String> = if malformed.is_empty() {
+            Vec::new()
         } else {
-            Some(malformed.split(',').map(|s| s.to_string()).collect())
-        },
-        rfc_message_id: if rfc_message_id.is_empty() {
-            None
-        } else {
-            Some(rfc_message_id)
-        },
-    })
+            malformed.split(',').map(|s| s.to_string()).collect()
+        };
+        if damaged {
+            malformed_headers.push(MALFORMED_SEALED.to_string());
+        }
+
+        Ok(MailHeader {
+            id,
+            account_id,
+            folder_id: r.get(2)?,
+            uid: r.get(3)?,
+            subject,
+            from: serde_json::from_str(&from_json).unwrap_or_default(),
+            to: serde_json::from_str(&to_json).unwrap_or_default(),
+            cc: serde_json::from_str(&cc_json).unwrap_or_default(),
+            date: r.get(8)?,
+            seen: r.get::<_, i64>(9)? != 0,
+            flagged: r.get::<_, i64>(10)? != 0,
+            answered: r.get::<_, i64>(11)? != 0,
+            has_attachments: r.get::<_, i64>(12)? != 0,
+            size: r.get::<_, i64>(13)? as u64,
+            preview,
+            malformed_headers: (!malformed_headers.is_empty()).then_some(malformed_headers),
+            rfc_message_id: (!rfc_message_id.is_empty()).then_some(rfc_message_id),
+            // Deserialized in whatever state it was stored in — always
+            // `Unconfigured`. `commands::mail` applies the account's trusted id
+            // before this ever reaches the frontend; a row that somehow escaped
+            // that step therefore shows no verdict rather than an unchecked one.
+            auth: if authres_json.is_empty() {
+                None
+            } else {
+                serde_json::from_str(&authres_json).unwrap_or(None)
+            },
+            // An unrecognized value reads as unmarked; see `MailPriority::parse`.
+            priority: MailPriority::parse(&priority),
+        })
+    }
+}
+
+/// The pragmas every connection to this store runs with.
+///
+/// `temp_store = MEMORY` is the one that belongs to the encryption work: it was
+/// simply unset, which means SQLite was free to spill a sort or a large join
+/// into a temp *file* — plaintext, in whatever `/tmp` the process happened to
+/// have, entirely outside the sealed store. Every other defence here is about
+/// what lands in `mail.db`, and none of them cover a scratch file.
+fn configure(conn: &Connection) {
+    conn.pragma_update(None, "journal_mode", "WAL").ok();
+    conn.pragma_update(None, "foreign_keys", "ON").ok();
+    conn.pragma_update(None, "temp_store", "MEMORY").ok();
+}
+
+/// The AAD row key for `staged`, whose primary key is composite. NUL-joined,
+/// matching [`MailStore::seal_table`]'s generic construction so a value sealed
+/// by the migration opens through the ordinary getter.
+fn staged_row(draft_id: &str, staged_id: &str) -> String {
+    format!("{draft_id}\u{0}{staged_id}")
 }
 
 /// Reduce an identifier to something that cannot name anything but a leaf
@@ -862,6 +2055,7 @@ mod tests {
                 address: "me@example.org".into(),
             }],
             cc: Vec::new(),
+            auth: None,
             date: date.into(),
             seen: false,
             flagged: false,
@@ -870,6 +2064,10 @@ mod tests {
             size: 1234,
             preview: format!("preview of {subject}"),
             malformed_headers: None,
+            // Unmarked, always — `upsert_header` writes this column in neither
+            // half of its statement, so a fixture that set it would be lying
+            // about what a sync can do.
+            priority: None,
         }
     }
 
@@ -936,14 +2134,57 @@ mod tests {
             );
             store.upsert_header(&h).unwrap();
         }
-        let page = store.headers_page(&f.id, 0, 10, None).unwrap();
+        let page = store.headers_page(&f.id, 0, 10, None, MailSort::Date, true).unwrap();
         assert_eq!(page.total, 25);
         assert_eq!(page.items.len(), 10);
         assert_eq!(page.items[0].uid, 25, "newest first");
 
-        let page2 = store.headers_page(&f.id, 20, 10, None).unwrap();
+        let page2 = store.headers_page(&f.id, 20, 10, None, MailSort::Date, true).unwrap();
         assert_eq!(page2.items.len(), 5, "the last page is short");
         assert_eq!(page2.items[0].uid, 5);
+    }
+
+    /// The sorts the list offers, checked where they are actually implemented.
+    ///
+    /// The property that matters is the one paging makes non-obvious: a sort is
+    /// over the **folder**, so the biggest (or starred, or attachment-carrying)
+    /// message reaches page one even when it is the oldest mail there — which a
+    /// list component sorting its 100 rows could never do.
+    #[test]
+    fn the_sorts_order_the_folder_and_break_ties_by_date() {
+        let (_d, store) = store();
+        let f = folder("a1", "INBOX");
+        store.upsert_folder(&f).unwrap();
+        for uid in 1..=5u32 {
+            let mut h = header(
+                &f,
+                uid,
+                &format!("subject {uid}"),
+                &format!("2026-07-{:02}T09:00:00Z", uid),
+            );
+            // Every marked message is deliberately the OLDEST, so a sort that
+            // only reordered the newest page would leave it out of reach.
+            h.flagged = uid == 1;
+            h.has_attachments = uid == 1;
+            h.size = if uid == 1 { 9_000_000 } else { 1_000 };
+            store.upsert_header(&h).unwrap();
+        }
+
+        for sort in [MailSort::Flagged, MailSort::Attachments, MailSort::Size] {
+            let page = store.headers_page(&f.id, 0, 10, None, sort, true).unwrap();
+            assert_eq!(page.items[0].uid, 1, "{sort:?} must put the marked mail first");
+            // The rest is a single group, so the tie-break is all that orders it.
+            assert_eq!(
+                page.items[1].uid, 5,
+                "{sort:?} must fall back to newest-first within a group"
+            );
+        }
+
+        let asc = store
+            .headers_page(&f.id, 0, 10, None, MailSort::Size, false)
+            .unwrap();
+        assert_eq!(asc.items[0].uid, 5, "smallest first, newest of the ties");
+        assert_eq!(asc.items[4].uid, 1, "the big one goes last");
     }
 
     #[test]
@@ -958,17 +2199,17 @@ mod tests {
             .upsert_header(&header(&f, 2, "holiday", "2026-07-02T09:00:00Z"))
             .unwrap();
 
-        let hits = store.headers_page(&f.id, 0, 10, Some("invoi")).unwrap();
+        let hits = store.headers_page(&f.id, 0, 10, Some("invoi"), MailSort::Date, true).unwrap();
         assert_eq!(hits.total, 1);
         assert_eq!(hits.items[0].subject, "invoice");
 
         // A query that would be an injection if it were interpolated.
         let hostile = store
-            .headers_page(&f.id, 0, 10, Some("'; DROP TABLE messages; --"))
+            .headers_page(&f.id, 0, 10, Some("'; DROP TABLE messages; --"), MailSort::Date, true)
             .unwrap();
         assert_eq!(hostile.total, 0);
         assert_eq!(
-            store.headers_page(&f.id, 0, 10, None).unwrap().total,
+            store.headers_page(&f.id, 0, 10, None, MailSort::Date, true).unwrap().total,
             2,
             "the table must still be there"
         );
@@ -1003,7 +2244,7 @@ mod tests {
         let h = header(&f, 1, "x", "2026-07-01T09:00:00Z");
         store.upsert_header(&h).unwrap();
         store.set_flag(&h.id, MailFlag::Deleted, true).unwrap();
-        assert_eq!(store.headers_page(&f.id, 0, 10, None).unwrap().total, 0);
+        assert_eq!(store.headers_page(&f.id, 0, 10, None, MailSort::Date, true).unwrap().total, 0);
     }
 
     #[test]
@@ -1017,8 +2258,8 @@ mod tests {
         store.upsert_header(&h).unwrap();
 
         store.move_messages(&[h.id.clone()], &archive.id).unwrap();
-        assert_eq!(store.headers_page(&inbox.id, 0, 10, None).unwrap().total, 0);
-        assert_eq!(store.headers_page(&archive.id, 0, 10, None).unwrap().total, 1);
+        assert_eq!(store.headers_page(&inbox.id, 0, 10, None, MailSort::Date, true).unwrap().total, 0);
+        assert_eq!(store.headers_page(&archive.id, 0, 10, None, MailSort::Date, true).unwrap().total, 1);
     }
 
     #[test]
@@ -1183,7 +2424,7 @@ mod tests {
         assert!(store.cached_body(&h.id, 1).unwrap().is_none());
         assert!(store.get_blob(&blob).is_err(), "blobs are gone");
         assert_eq!(
-            store.headers_page(&f.id, 0, 10, None).unwrap().total,
+            store.headers_page(&f.id, 0, 10, None, MailSort::Date, true).unwrap().total,
             1,
             "the header index survives"
         );
@@ -1206,7 +2447,7 @@ mod tests {
         store.delete_account_mail("a1").unwrap();
         assert!(store.folders("a1").unwrap().is_empty());
         assert_eq!(store.folders("a2").unwrap().len(), 1);
-        assert_eq!(store.headers_page(&b.id, 0, 10, None).unwrap().total, 1);
+        assert_eq!(store.headers_page(&b.id, 0, 10, None, MailSort::Date, true).unwrap().total, 1);
     }
 
     #[test]
@@ -1218,5 +2459,754 @@ mod tests {
         }
         let store = MailStore::open(dir.path()).unwrap();
         assert_eq!(store.folders("a1").unwrap().len(), 1);
+    }
+
+    // ── Priority marks ──────────────────────────────────────────────────────
+
+    /// Two accounts, one INBOX each, one message each.
+    fn two_accounts() -> (tempfile::TempDir, MailStore, MailFolder, MailFolder) {
+        let (d, store) = store();
+        let a = folder("a1", "INBOX");
+        let b = folder("a2", "INBOX");
+        store.upsert_folder(&a).unwrap();
+        store.upsert_folder(&b).unwrap();
+        store
+            .upsert_header(&header(&a, 1, "from account one", "2026-07-01T09:00:00Z"))
+            .unwrap();
+        store
+            .upsert_header(&header(&b, 1, "from account two", "2026-07-02T09:00:00Z"))
+            .unwrap();
+        (d, store, a, b)
+    }
+
+    #[test]
+    fn a_mark_round_trips_onto_the_header() {
+        let (_d, store, a, _b) = two_accounts();
+        let id = format!("{}#1", a.id);
+        assert!(store.header(&id).unwrap().unwrap().priority.is_none());
+
+        assert!(store.set_priority(&id, Some(MailPriority::Urgent)).unwrap());
+        assert_eq!(
+            store.header(&id).unwrap().unwrap().priority,
+            Some(MailPriority::Urgent)
+        );
+        // Re-marking as the other value replaces rather than accumulates: a
+        // message is Important *or* Urgent, never both, or the two lists would
+        // both claim it and neither would be a priority.
+        store.set_priority(&id, Some(MailPriority::Important)).unwrap();
+        assert_eq!(
+            store.header(&id).unwrap().unwrap().priority,
+            Some(MailPriority::Important)
+        );
+        store.set_priority(&id, None).unwrap();
+        assert!(store.header(&id).unwrap().unwrap().priority.is_none());
+    }
+
+    #[test]
+    fn marking_an_unknown_message_reports_that_nothing_changed() {
+        let (_d, store) = store();
+        assert!(!store
+            .set_priority("no-such-message", Some(MailPriority::Urgent))
+            .unwrap());
+    }
+
+    #[test]
+    fn the_list_spans_every_account() {
+        // The whole reason the mark is a local column: this list is exactly what
+        // no IMAP folder can be, because a folder belongs to one account.
+        let (_d, store, a, b) = two_accounts();
+        store
+            .set_priority(&format!("{}#1", a.id), Some(MailPriority::Important))
+            .unwrap();
+        store
+            .set_priority(&format!("{}#1", b.id), Some(MailPriority::Important))
+            .unwrap();
+
+        let page = store
+            .priority_page(MailPriority::Important, 0, 10, None, MailSort::Date, true)
+            .unwrap();
+        assert_eq!(page.total, 2);
+        let accounts: Vec<&str> = page.items.iter().map(|h| h.account_id.as_str()).collect();
+        assert!(accounts.contains(&"a1") && accounts.contains(&"a2"));
+        // Newest first, like every other list here.
+        assert_eq!(page.items[0].account_id, "a2");
+    }
+
+    #[test]
+    fn the_two_lists_do_not_leak_into_each_other() {
+        let (_d, store, a, b) = two_accounts();
+        store
+            .set_priority(&format!("{}#1", a.id), Some(MailPriority::Important))
+            .unwrap();
+        store
+            .set_priority(&format!("{}#1", b.id), Some(MailPriority::Urgent))
+            .unwrap();
+
+        let important = store
+            .priority_page(MailPriority::Important, 0, 10, None, MailSort::Date, true)
+            .unwrap();
+        let urgent = store
+            .priority_page(MailPriority::Urgent, 0, 10, None, MailSort::Date, true)
+            .unwrap();
+        assert_eq!(important.total, 1);
+        assert_eq!(urgent.total, 1);
+        assert_eq!(important.items[0].account_id, "a1");
+        assert_eq!(urgent.items[0].account_id, "a2");
+    }
+
+    #[test]
+    fn the_list_searches_and_pages_like_a_folder() {
+        let (_d, store, a, b) = two_accounts();
+        store
+            .set_priority(&format!("{}#1", a.id), Some(MailPriority::Important))
+            .unwrap();
+        store
+            .set_priority(&format!("{}#1", b.id), Some(MailPriority::Important))
+            .unwrap();
+
+        let hit = store
+            .priority_page(
+                MailPriority::Important,
+                0,
+                10,
+                Some("account one"),
+                MailSort::Date,
+                true,
+            )
+            .unwrap();
+        assert_eq!(hit.total, 1);
+        assert_eq!(hit.items[0].account_id, "a1");
+
+        // `total` is the whole list, not the page — that is what the pager reads.
+        let first = store
+            .priority_page(MailPriority::Important, 0, 1, None, MailSort::Date, true)
+            .unwrap();
+        assert_eq!(first.total, 2);
+        assert_eq!(first.items.len(), 1);
+    }
+
+    #[test]
+    fn a_re_sync_never_wipes_a_mark() {
+        // The single most important property: `upsert_header` runs over every
+        // message in a folder on every check. If it touched this column, every
+        // mark the user made would survive exactly until the next Check mail.
+        let (_d, store, a, _b) = two_accounts();
+        let id = format!("{}#1", a.id);
+        store.set_priority(&id, Some(MailPriority::Urgent)).unwrap();
+
+        let mut again = header(&a, 1, "from account one", "2026-07-01T09:00:00Z");
+        again.seen = true;
+        assert!(!store.upsert_header(&again).unwrap(), "not a new row");
+
+        let after = store.header(&id).unwrap().unwrap();
+        assert_eq!(after.priority, Some(MailPriority::Urgent));
+        // The server's own fields did update — this is not "the upsert is inert".
+        assert!(after.seen);
+    }
+
+    #[test]
+    fn counts_cover_every_account_and_report_the_unread_half() {
+        let (_d, store, a, b) = two_accounts();
+        assert_eq!(store.priority_counts().unwrap().important, 0);
+
+        store
+            .set_priority(&format!("{}#1", a.id), Some(MailPriority::Important))
+            .unwrap();
+        store
+            .set_priority(&format!("{}#1", b.id), Some(MailPriority::Urgent))
+            .unwrap();
+        store.set_flag(&format!("{}#1", a.id), MailFlag::Seen, true).unwrap();
+
+        let c = store.priority_counts().unwrap();
+        assert_eq!((c.important, c.urgent), (1, 1));
+        // Read mail stays on the list and stays counted — a list you file into
+        // is not an inbox. Only the unread half moves.
+        assert_eq!((c.important_unread, c.urgent_unread), (0, 1));
+    }
+
+    #[test]
+    fn a_deleted_message_leaves_the_list() {
+        let (_d, store, a, _b) = two_accounts();
+        let id = format!("{}#1", a.id);
+        store.set_priority(&id, Some(MailPriority::Urgent)).unwrap();
+        store.set_flag(&id, MailFlag::Deleted, true).unwrap();
+
+        assert_eq!(
+            store
+                .priority_page(MailPriority::Urgent, 0, 10, None, MailSort::Date, true)
+                .unwrap()
+                .total,
+            0
+        );
+        assert_eq!(store.priority_counts().unwrap().urgent, 0);
+    }
+
+    #[test]
+    fn an_unrecognized_stored_mark_reads_as_unmarked() {
+        // Forward compatibility in the safe direction: a column written by a
+        // later version must not put mail on a list the user never chose.
+        let (_d, store, a, _b) = two_accounts();
+        let id = format!("{}#1", a.id);
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE messages SET priority = 'critical' WHERE id = ?1",
+                params![id],
+            )
+            .unwrap();
+        }
+        assert!(store.header(&id).unwrap().unwrap().priority.is_none());
+        assert_eq!(store.priority_counts().unwrap().important, 0);
+    }
+
+    #[test]
+    fn the_column_survives_a_store_created_before_it_existed() {
+        // The migration path an existing dev database actually takes: the
+        // `CREATE TABLE IF NOT EXISTS` is a no-op on it, so only the additive
+        // ALTER puts the column there.
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = MailStore::open(dir.path()).unwrap();
+            let conn = store.conn.lock().unwrap();
+            // An index naming the column blocks the drop, exactly as it would
+            // block the migration if it were created too early — which is the
+            // bug this test found and the reason the CREATE INDEX sits after
+            // the ALTER rather than in the create batch.
+            conn.execute("DROP INDEX IF EXISTS messages_by_priority", [])
+                .unwrap();
+            conn.execute("ALTER TABLE messages DROP COLUMN priority", [])
+                .unwrap();
+        }
+        let store = MailStore::open(dir.path()).unwrap();
+        let a = folder("a1", "INBOX");
+        store.upsert_folder(&a).unwrap();
+        store
+            .upsert_header(&header(&a, 1, "x", "2026-07-01T09:00:00Z"))
+            .unwrap();
+        let id = format!("{}#1", a.id);
+        assert!(store.set_priority(&id, Some(MailPriority::Important)).unwrap());
+        assert_eq!(
+            store.header(&id).unwrap().unwrap().priority,
+            Some(MailPriority::Important)
+        );
+    }
+
+    // ── Encryption at rest ──────────────────────────────────────────────────
+
+    mod encrypted {
+        use super::*;
+        use crate::services::mail_crypt::{Key, MailKeys};
+
+        fn keys(seed: u8) -> Arc<MailKeys> {
+            Arc::new(MailKeys::derive(Key::from_bytes([seed; 32])))
+        }
+
+        fn sealed_store() -> (tempfile::TempDir, MailStore) {
+            let dir = tempfile::tempdir().unwrap();
+            let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+            (dir, store)
+        }
+
+        /// A folder whose id is shaped like the one `commands::mail` actually
+        /// mints: `{account}-{sha256(path)[..8]}`, and **not** the readable path.
+        ///
+        /// The plain tests above use a path-embedding id because it makes their
+        /// failures legible, which is fine when nothing is secret. Here it would
+        /// invalidate the whole exercise: `folders.id`, `messages.folder_id` and
+        /// every message id are cleartext by design (they are what paging and
+        /// joins run on), so an id that spelled the folder path would put the
+        /// path on disk no matter how well the `path` column was sealed. Using
+        /// the real derivation is what makes
+        /// [`no_sensitive_value_appears_in_the_files_on_disk`] test the store
+        /// rather than the fixture.
+        fn realistic_folder(account: &str, path: &str) -> MailFolder {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(path.as_bytes());
+            let short: String = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
+            MailFolder {
+                id: format!("{account}-{short}"),
+                account_id: account.into(),
+                path: path.into(),
+                name: path.rsplit('/').next().unwrap_or(path).into(),
+                kind: MailFolderKind::Other,
+                unread: 0,
+                total: 0,
+            }
+        }
+
+        /// Everything the plain store does, the sealed store must also do — and
+        /// through the same public API, or the two paths are two products.
+        #[test]
+        fn a_sealed_store_round_trips_every_kind_of_value() {
+            let (_d, store) = sealed_store();
+            assert!(store.is_encrypted());
+            let f = folder("a1", "INBOX/Work");
+            store.upsert_folder(&f).unwrap();
+            assert_eq!(store.folder(&f.id).unwrap().unwrap().path, "INBOX/Work");
+
+            let h = header(&f, 5, "Quarterly numbers", "2026-07-20T09:00:00Z");
+            store.upsert_header(&h).unwrap();
+            assert_eq!(store.header(&h.id).unwrap().unwrap(), h);
+
+            let blob = store.put_blob(b"%PDF-1.4 payload").unwrap();
+            assert_eq!(store.get_blob(&blob).unwrap(), b"%PDF-1.4 payload");
+            let meta = MailAttachmentMeta {
+                part_id: "3".into(),
+                filename: "salaries.pdf".into(),
+                mime: "application/pdf".into(),
+                size: 16,
+                inline: false,
+                type_mismatch: Some("looks like a zip".into()),
+            };
+            store.put_attachment(&h.id, &meta, &blob).unwrap();
+            assert_eq!(store.attachments(&h.id).unwrap(), vec![meta.clone()]);
+            assert_eq!(store.attachment(&h.id, "3").unwrap().unwrap().0, meta);
+
+            store
+                .cache_body(&h.id, 1, Some("<p>hi</p>"), Some("hi"), "[]", 0, false, None)
+                .unwrap();
+            let body = store.cached_body(&h.id, 1).unwrap().unwrap();
+            assert_eq!(body.0.as_deref(), Some("<p>hi</p>"));
+            assert_eq!(body.1.as_deref(), Some("hi"));
+
+            let draft = MailDraft {
+                id: "d1".into(),
+                account_id: "a1".into(),
+                subject: "confidential".into(),
+                ..Default::default()
+            };
+            store.save_draft(&draft).unwrap();
+            assert_eq!(store.draft("d1").unwrap().unwrap().subject, "confidential");
+            store
+                .stage_attachment("d1", "s1", "notes.txt", "text/plain", b"secret bytes")
+                .unwrap();
+            assert_eq!(store.staged("d1").unwrap()[0].filename, "notes.txt");
+            assert_eq!(store.staged_bytes("d1", "s1").unwrap(), b"secret bytes");
+        }
+
+        /// The assertion the whole feature reduces to. Not "is it different from
+        /// the plaintext" — the subject line must not be *findable* in the file
+        /// at all, which is what a `grep` over the raw bytes actually tests.
+        #[test]
+        fn no_sensitive_value_appears_in_the_files_on_disk() {
+            let dir = tempfile::tempdir().unwrap();
+            {
+                let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+                let f = realistic_folder("a1", "INBOX/Personnel");
+                store.upsert_folder(&f).unwrap();
+                let mut h = header(&f, 1, "Redundancy list", "2026-07-20T09:00:00Z");
+                h.preview = "the following roles are at risk".into();
+                store.upsert_header(&h).unwrap();
+                store
+                    .cache_body(&h.id, 1, None, Some("body of the message"), "[]", 0, false, None)
+                    .unwrap();
+                let blob = store.put_blob(b"attachment plaintext").unwrap();
+                store
+                    .put_attachment(
+                        &h.id,
+                        &MailAttachmentMeta {
+                            part_id: "2".into(),
+                            filename: "list.xlsx".into(),
+                            mime: "application/vnd.ms-excel".into(),
+                            size: 20,
+                            inline: false,
+                            type_mismatch: None,
+                        },
+                        &blob,
+                    )
+                    .unwrap();
+                store
+                    .stage_attachment("d1", "s1", "draft.txt", "text/plain", b"outgoing plaintext")
+                    .unwrap();
+            }
+
+            let secrets = [
+                "Redundancy list",
+                "the following roles are at risk",
+                "body of the message",
+                "attachment plaintext",
+                "outgoing plaintext",
+                "list.xlsx",
+                "INBOX/Personnel",
+                "sender@example.com",
+            ];
+            for path in walk(dir.path()) {
+                if !path.is_file() {
+                    continue;
+                }
+                let bytes = std::fs::read(&path).unwrap();
+                for secret in secrets {
+                    assert!(
+                        !contains(&bytes, secret.as_bytes()),
+                        "{secret:?} is readable in {}",
+                        path.display()
+                    );
+                }
+            }
+        }
+
+        fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+            haystack.windows(needle.len()).any(|w| w == needle)
+        }
+
+        /// What is still readable, asserted rather than assumed.
+        ///
+        /// The plan lists the metadata that stays in cleartext by design —
+        /// counts, folder structure, dates, sizes, flags — because they are what
+        /// paging and unread badges run on. This pins the one item in that list
+        /// whose leak is sharper than the phrase "folder structure" suggests:
+        /// a folder's **id** is an unkeyed `sha256(path)[..8]`, so anyone with
+        /// the file and a wordlist of common folder names can recover which
+        /// folders exist. It is inside the declared threat model and it is not
+        /// worth the migration it would cost to key it (every message id derives
+        /// from the folder id, and they are the AAD row keys), but it is written
+        /// down here so it stays a decision instead of becoming a surprise.
+        #[test]
+        fn the_metadata_that_stays_readable_is_the_metadata_we_said_would() {
+            let dir = tempfile::tempdir().unwrap();
+            let f = realistic_folder("a1", "INBOX");
+            {
+                let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+                store.upsert_folder(&f).unwrap();
+                store
+                    .upsert_header(&header(&f, 1, "secret", "2026-07-01T09:00:00Z"))
+                    .unwrap();
+            }
+            let db = std::fs::read(dir.path().join("mail.db")).unwrap();
+            assert!(contains(&db, f.id.as_bytes()), "folder ids are cleartext");
+            assert!(contains(&db, b"2026-07-01T09:00:00Z"), "dates are cleartext");
+            assert!(!contains(&db, b"secret"), "content is not");
+        }
+
+        /// A store sealed under one key must not open under another. This is the
+        /// property that makes the key worth protecting; without it the seal is
+        /// obfuscation.
+        #[test]
+        fn another_key_reads_nothing() {
+            let dir = tempfile::tempdir().unwrap();
+            let f = folder("a1", "INBOX");
+            {
+                let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+                store.upsert_folder(&f).unwrap();
+                store
+                    .upsert_header(&header(&f, 1, "Payroll", "2026-07-01T09:00:00Z"))
+                    .unwrap();
+            }
+            let wrong = MailStore::open_with_keys(dir.path(), Some(keys(2))).unwrap();
+            let h = wrong.header(&format!("{}#1", f.id)).unwrap().unwrap();
+            assert_eq!(h.subject, "");
+            // …and it says so, rather than presenting a blank subject as mail.
+            assert!(h
+                .malformed_headers
+                .unwrap()
+                .contains(&MALFORMED_SEALED.to_string()));
+        }
+
+        /// The relocation attack, at the level the store actually exposes:
+        /// somebody with write access to `mail.db` copies one message's sealed
+        /// subject onto another message's row.
+        #[test]
+        fn a_sealed_column_cannot_be_relocated_between_rows() {
+            let (_d, store) = sealed_store();
+            let f = folder("a1", "INBOX");
+            store.upsert_folder(&f).unwrap();
+            store
+                .upsert_header(&header(&f, 1, "From your bank", "2026-07-01T09:00:00Z"))
+                .unwrap();
+            store
+                .upsert_header(&header(&f, 2, "Lunch?", "2026-07-02T09:00:00Z"))
+                .unwrap();
+            let (a, b) = (format!("{}#1", f.id), format!("{}#2", f.id));
+            {
+                let conn = store.conn.lock().unwrap();
+                conn.execute(
+                    "UPDATE messages SET subject = (SELECT subject FROM messages WHERE id = ?1)
+                     WHERE id = ?2",
+                    params![a, b],
+                )
+                .unwrap();
+            }
+            let moved = store.header(&b).unwrap().unwrap();
+            assert_ne!(moved.subject, "From your bank", "the AAD must refuse this");
+            assert_eq!(moved.subject, "");
+            assert!(moved
+                .malformed_headers
+                .unwrap()
+                .contains(&MALFORMED_SEALED.to_string()));
+        }
+
+        #[test]
+        fn folders_still_deduplicate_and_still_sort_by_path() {
+            let (_d, store) = sealed_store();
+            for path in ["Sent", "Archive", "INBOX"] {
+                store.upsert_folder(&folder("a1", path)).unwrap();
+            }
+            let mut f = folder("a1", "INBOX");
+            f.unread = 4;
+            store.upsert_folder(&f).unwrap();
+
+            let all = store.folders("a1").unwrap();
+            assert_eq!(all.len(), 3, "the keyed UNIQUE must still deduplicate");
+            let paths: Vec<&str> = all.iter().map(|f| f.path.as_str()).collect();
+            assert_eq!(paths, vec!["Archive", "INBOX", "Sent"], "sorted by the readable path");
+            assert_eq!(all[1].unread, 4);
+        }
+
+        #[test]
+        fn search_works_over_ciphertext_and_reports_when_it_stopped_early() {
+            let (_d, store) = sealed_store();
+            let f = folder("a1", "INBOX");
+            store.upsert_folder(&f).unwrap();
+            store
+                .upsert_header(&header(&f, 1, "invoice 42", "2026-07-01T09:00:00Z"))
+                .unwrap();
+            store
+                .upsert_header(&header(&f, 2, "holiday plans", "2026-07-02T09:00:00Z"))
+                .unwrap();
+
+            let hits = store
+                .headers_page(&f.id, 0, 10, Some("INVOI"), MailSort::Date, true)
+                .unwrap();
+            assert_eq!(hits.total, 1, "case-insensitive, like the LIKE it replaces");
+            assert_eq!(hits.items[0].subject, "invoice 42");
+            assert!(hits.scanned.is_none(), "the whole folder fit inside the bound");
+
+            // No query: no scan at all, and the count is the real one.
+            let all = store.headers_page(&f.id, 0, 10, None, MailSort::Date, true).unwrap();
+            assert_eq!(all.total, 2);
+            assert_eq!(all.items[0].uid, 2, "still newest first");
+
+            // Paging over matches, not over rows.
+            store
+                .upsert_header(&header(&f, 3, "invoice 43", "2026-07-03T09:00:00Z"))
+                .unwrap();
+            let page = store
+                .headers_page(&f.id, 1, 10, Some("invoice"), MailSort::Date, true)
+                .unwrap();
+            assert_eq!(page.total, 2);
+            assert_eq!(page.items.len(), 1);
+            assert_eq!(page.items[0].uid, 1, "the second match, newest-first");
+        }
+
+        /// The scan bound, checked at a size a test can afford. The constant is
+        /// 50 000 in production; what matters is that hitting it *reports*
+        /// itself rather than silently returning a short answer.
+        #[test]
+        fn a_bounded_search_never_silently_truncates() {
+            let (_d, store) = sealed_store();
+            let f = folder("a1", "INBOX");
+            store.upsert_folder(&f).unwrap();
+            for uid in 1..=20u32 {
+                store
+                    .upsert_header(&header(&f, uid, "needle", &format!("2026-07-{uid:02}T09:00:00Z")))
+                    .unwrap();
+            }
+            let full = store
+                .headers_page(&f.id, 0, 5, Some("needle"), MailSort::Date, true)
+                .unwrap();
+            assert_eq!(full.total, 20);
+            assert!(
+                full.scanned.is_none(),
+                "under the bound, the page must not claim a partial answer"
+            );
+        }
+
+        #[test]
+        fn the_priority_lists_search_the_same_way() {
+            let (_d, store) = sealed_store();
+            let f = folder("a1", "INBOX");
+            store.upsert_folder(&f).unwrap();
+            store
+                .upsert_header(&header(&f, 1, "budget review", "2026-07-01T09:00:00Z"))
+                .unwrap();
+            let id = format!("{}#1", f.id);
+            store.set_priority(&id, Some(MailPriority::Urgent)).unwrap();
+
+            let hit = store
+                .priority_page(MailPriority::Urgent, 0, 10, Some("budget"), MailSort::Date, true)
+                .unwrap();
+            assert_eq!(hit.total, 1);
+            let miss = store
+                .priority_page(MailPriority::Urgent, 0, 10, Some("nothing"), MailSort::Date, true)
+                .unwrap();
+            assert_eq!(miss.total, 0);
+            assert_eq!(store.priority_counts().unwrap().urgent, 1, "counts are cleartext");
+        }
+
+        // ── Migrating a store that already had plaintext in it ───────────────
+
+        #[test]
+        fn an_existing_plaintext_store_migrates_and_stays_readable() {
+            let dir = tempfile::tempdir().unwrap();
+            let f = folder("a1", "INBOX/Personnel");
+            let h = header(&f, 1, "Redundancy list", "2026-07-01T09:00:00Z");
+            let blob;
+            {
+                let store = MailStore::open(dir.path()).unwrap();
+                store.upsert_folder(&f).unwrap();
+                store.upsert_header(&h).unwrap();
+                blob = store.put_blob(b"attachment plaintext").unwrap();
+                store
+                    .cache_body(&h.id, 1, None, Some("body text"), "[]", 0, false, Some(&blob))
+                    .unwrap();
+                store
+                    .put_attachment(
+                        &h.id,
+                        &MailAttachmentMeta {
+                            part_id: "2".into(),
+                            filename: "list.xlsx".into(),
+                            mime: "application/vnd.ms-excel".into(),
+                            size: 20,
+                            inline: false,
+                            type_mismatch: None,
+                        },
+                        &blob,
+                    )
+                    .unwrap();
+                store
+                    .stage_attachment("d1", "s1", "draft.txt", "text/plain", b"outgoing plaintext")
+                    .unwrap();
+            }
+
+            let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+            assert_eq!(store.header(&h.id).unwrap().unwrap(), h);
+            assert_eq!(store.folder(&f.id).unwrap().unwrap().path, "INBOX/Personnel");
+            assert_eq!(store.staged_bytes("d1", "s1").unwrap(), b"outgoing plaintext");
+
+            // The blob moved from its bare SHA-256 to its keyed name, and the
+            // two columns that referenced it followed. If they had not, the
+            // attachment would be a row pointing at a file that no longer
+            // exists — data loss wearing the costume of a successful migration.
+            let (_, digest) = store.attachment(&h.id, "2").unwrap().unwrap();
+            assert_ne!(digest, blob, "the blob id is keyed now");
+            assert_eq!(store.get_blob(&digest).unwrap(), b"attachment plaintext");
+            let body = store.cached_body(&h.id, 1).unwrap().unwrap();
+            assert_eq!(body.1.as_deref(), Some("body text"));
+
+            for path in walk(dir.path()) {
+                if !path.is_file() {
+                    continue;
+                }
+                let bytes = std::fs::read(&path).unwrap();
+                for secret in ["Redundancy list", "body text", "attachment plaintext", "outgoing plaintext"] {
+                    assert!(
+                        !contains(&bytes, secret.as_bytes()),
+                        "{secret:?} survived the migration in {}",
+                        path.display()
+                    );
+                }
+            }
+        }
+
+        /// Interrupting the migration must not corrupt anything, because the
+        /// pass is per-value and skips what is already sealed. Simulated by
+        /// sealing, then hand-writing one column back to cleartext and letting
+        /// the next open finish the job.
+        #[test]
+        fn the_migration_is_restartable() {
+            let dir = tempfile::tempdir().unwrap();
+            let f = folder("a1", "INBOX");
+            let h = header(&f, 1, "half done", "2026-07-01T09:00:00Z");
+            {
+                let store = MailStore::open(dir.path()).unwrap();
+                store.upsert_folder(&f).unwrap();
+                store.upsert_header(&h).unwrap();
+            }
+            {
+                let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+                let conn = store.conn.lock().unwrap();
+                conn.execute(
+                    "UPDATE messages SET preview = 'left in the clear' WHERE id = ?1",
+                    params![h.id],
+                )
+                .unwrap();
+                conn.execute("DELETE FROM meta WHERE key = ?1", params![META_ENCRYPTED])
+                    .unwrap();
+            }
+            let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+            let back = store.header(&h.id).unwrap().unwrap();
+            assert_eq!(back.subject, "half done", "the already-sealed value was not double-sealed");
+            assert_eq!(back.preview, "left in the clear", "the stragglers were picked up");
+            for path in walk(dir.path()) {
+                if path.is_file() {
+                    let bytes = std::fs::read(&path).unwrap();
+                    assert!(!contains(&bytes, b"left in the clear"));
+                }
+            }
+        }
+
+        #[test]
+        fn reopening_a_sealed_store_needs_no_second_migration() {
+            let dir = tempfile::tempdir().unwrap();
+            let f = folder("a1", "INBOX");
+            {
+                let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+                store.upsert_folder(&f).unwrap();
+                store
+                    .upsert_header(&header(&f, 1, "x", "2026-07-01T09:00:00Z"))
+                    .unwrap();
+            }
+            let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+            assert_eq!(store.folders("a1").unwrap().len(), 1);
+            assert_eq!(
+                store.headers_page(&f.id, 0, 10, None, MailSort::Date, true).unwrap().total,
+                1
+            );
+        }
+
+        /// A store created before `path_key` existed must come back with its
+        /// folders intact — the v1→v2 rebuild is a table swap, and getting it
+        /// wrong loses every folder rather than failing loudly.
+        #[test]
+        fn the_v1_folder_table_is_rebuilt_without_losing_rows() {
+            let dir = tempfile::tempdir().unwrap();
+            {
+                let store = MailStore::open(dir.path()).unwrap();
+                let conn = store.conn.lock().unwrap();
+                conn.execute_batch(
+                    r#"
+                    DROP TABLE folders;
+                    CREATE TABLE folders (
+                        id TEXT PRIMARY KEY, account_id TEXT NOT NULL, path TEXT NOT NULL,
+                        name TEXT NOT NULL, kind TEXT NOT NULL,
+                        unread INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0,
+                        UNIQUE (account_id, path)
+                    );
+                    INSERT INTO folders VALUES ('a1|INBOX','a1','INBOX','INBOX','inbox',3,9);
+                    DROP TABLE mail_remote_allow;
+                    CREATE TABLE mail_remote_allow (address TEXT PRIMARY KEY);
+                    INSERT INTO mail_remote_allow VALUES ('news@example.com');
+                    "#,
+                )
+                .unwrap();
+            }
+            let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+            let all = store.folders("a1").unwrap();
+            assert_eq!(all.len(), 1);
+            assert_eq!(all[0].path, "INBOX");
+            assert_eq!((all[0].unread, all[0].total), (3, 9));
+        }
+
+        /// The degrade path. It must behave like a store in every respect the
+        /// caller can see, and leave nothing behind.
+        #[test]
+        fn the_ephemeral_store_works_and_persists_nothing() {
+            let scratch;
+            {
+                let store = MailStore::open_ephemeral().unwrap();
+                scratch = store.dir().to_path_buf();
+                assert!(store.is_encrypted());
+                let f = folder("a1", "INBOX");
+                store.upsert_folder(&f).unwrap();
+                let h = header(&f, 1, "in memory only", "2026-07-01T09:00:00Z");
+                store.upsert_header(&h).unwrap();
+                assert_eq!(store.header(&h.id).unwrap().unwrap().subject, "in memory only");
+                let blob = store.put_blob(b"payload").unwrap();
+                assert_eq!(store.get_blob(&blob).unwrap(), b"payload");
+                assert!(!scratch.join("mail.db").exists(), "the index never touches disk");
+            }
+            assert!(!scratch.exists(), "the scratch directory goes with the store");
+        }
     }
 }

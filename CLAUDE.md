@@ -1,101 +1,79 @@
 # ProjectEldrun — Claude Context
 
 Eldrun is a Tauri 2 + React + TypeScript desktop workspace for AI-assisted
-development. It keeps a root control terminal, one terminal per active project,
-a bottom project switcher, a right-side file tree overlay, app launching, time
-tracking, and optional KDE/X11 workspace integration in one window.
+development: a root control terminal, one terminal per active project, a project
+switcher, a file tree overlay, app launching, time tracking, and optional
+KDE/X11 workspace integration in one window.
 
 ## Running
 
-Do not launch Eldrun from Claude or any other agent terminal for verification.
-Opening a second Eldrun instance can corrupt workspace state.
+Claude may launch Eldrun itself to click through the UI and verify a change
+(explicit user permission, 2026-07-28). **Two concurrent instances corrupt
+workspace state**, so this is conditional on one rule: before starting a new
+instance, first shut down whatever instance is already running. Check for a
+live one (`pgrep -fal 'tauri dev|start-eldrun-tauri-hotreload'`, or the
+packaged `eldrun` binary) and stop it — do not just assume none is running.
+Launch via `./start-eldrun-tauri-hotreload.sh` (backgrounded; logs to
+`~/.local/share/eldrun/hotreload.log`) or `npm run tauri:dev`. Shut the
+instance you started back down when you're done verifying, rather than
+leaving it running.
 
-Frontend (`src/`) changes hot-reload in the running instance, so no restart is
-needed to see TSX/CSS edits — do not ask the user to restart for these. Only
-backend (`src-tauri/`) changes require the user to rebuild/restart the existing
-instance; ask them to do that when runtime validation of Rust changes is needed.
+`src/` changes hot-reload in the running instance; don't ask for a restart.
+Only `src-tauri/` changes need the user to rebuild/restart.
 
-Runtime launch commands are intentionally omitted from this Claude context.
+## File maps
 
-## File Map
-
-Frontend file map: `src/CLAUDE.md`. Backend file map: `src-tauri/CLAUDE.md`.
-Both list only the load-bearing files; the tree is the source of truth.
+`src/CLAUDE.md` (frontend), `src-tauri/CLAUDE.md` (backend). Both list only
+load-bearing files; the tree is the source of truth.
 
 ## Persistence
 
-- Managed projects normally live under `~/eldrun/projects/<sanitized-name>/`.
-- The root terminal spawns in `~/eldrun/root/`.
-- Global Eldrun state lives in `~/.local/share/eldrun/`:
-  `projects.json`, `settings.json`, `default_apps.json`, `time_log.json`, and
-  `active_session.json`.
-- New/imported projects receive `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`,
+- Managed projects: `~/eldrun/projects/<sanitized-name>/`; root terminal:
+  `~/eldrun/root/`.
+- Global state in `~/.local/share/eldrun/`: `projects.json`, `settings.json`,
+  `default_apps.json`, `time_log.json`, `active_session.json`.
+- New/imported projects get `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`,
   `.claude/settings.json`, `.gitignore`, `TODO.md`, `ROADMAP.md`, `STATUS.md`,
-  and `README.md` when missing.
-- `TODO.md` uses grouped IDs such as `G1.1`. When adding a TODO, put it in the
-  matching group, create a new group if no current group fits, or merge groups
-  if the TODO depends on distinct areas that should be tracked together.
+  `README.md` when missing.
+- `TODO.md` uses grouped IDs (`G1.1`). Add a TODO to the matching group; create
+  a group if none fits, or merge groups when it spans areas tracked together.
 
-### Topic docs (read only when the task touches them)
+## Topic docs
 
-Each `docs/context/*.md` file below holds the full design rationale for one
-subsystem — load-bearing detail on *why* it works the way it does, not
-discoverable from the code alone. Don't read these speculatively; open the one
-matching the area you're touching.
+Each `docs/context/*.md` holds one subsystem's design rationale — *why* it works
+that way, not discoverable from the code. Open only the one matching the area
+you're touching; never read speculatively.
 
-- **Usage stats** — local-only rolling counters behind the daily recap; what's counted where and why. `docs/context/usage_stats.md`
-- **Remote projects** — SSH/SFTP-native, mount-free: how files/git/terminals work with no sshfs. `docs/context/remote_projects.md`
-- **Git lockstep + byte-sync** — the two transports keeping a remote mirror in step, local-loss warnings, lockstep's safe-default rules, byte-sync's opt-in scope and big-folder census. `docs/context/git_sync.md`
-- **Remote credentials & host security** — locked-keychain handling, password persistence opt-in, SSH_ASKPASS argv hardening, first-contact host-key confirmation. `docs/context/remote_credentials.md`
-- **Remote auto-connect** — when a remote project connects itself on launch/activation, headless vs. non-headless behavior, VPN-needed probing. `docs/context/remote_autoconnect.md`
-- **OpenVPN tunnel** — machine-wide (not project-scoped) lifecycle, connect-on-launch, pre-flight silent-connect check, single-polkit-prompt teardown. `docs/context/openvpn.md`
-- **Agent session persistence** — how resumable Claude/Codex tabs survive relaunch via the SessionStart hook mechanism. `docs/context/agent_sessions.md`
-- **Multi-host remote (compute hosts)** — a remote project's worker machines: push-only code sync, read-only files, pull-outputs, shared-filesystem mode. `docs/context/multi_host_remote.md`
-- **tmux session persistence** — shell/script tabs surviving SSH drops and Eldrun crashes; the Sessions view. `docs/context/tmux_sessions.md`
-- **Docker project containers** — per-project session container, toggle semantics, lifecycle. `docs/context/docker_containers.md`
-- **Agent authority axes** — sandbox / tab location / agentMode (Plan vs Auto) and how they compose. `docs/context/agent_authority.md`
-- **Careful mode on HPC hosts** — what the monitor/usage probes stop collecting on a cluster login node and why (usage rules, login-node load), how a host is classified. `docs/context/hpc_careful_mode.md`
+| Doc | Covers |
+|-----|--------|
+| `usage_stats.md` | Local-only rolling counters behind the daily recap. |
+| `remote_projects.md` | SSH/SFTP-native, mount-free remote projects (no sshfs). |
+| `git_sync.md` | Git lockstep + byte-sync: the two transports keeping a remote mirror in step. |
+| `remote_credentials.md` | Locked keychain, password-persistence opt-in, SSH_ASKPASS hardening, host-key confirmation. |
+| `remote_autoconnect.md` | When a remote project connects itself; headless vs. not; VPN probing. |
+| `openvpn.md` | Machine-wide tunnel lifecycle, connect-on-launch, single-polkit teardown. |
+| `agent_sessions.md` | Resumable Claude/Codex tabs surviving relaunch via the SessionStart hook. |
+| `multi_host_remote.md` | Worker/compute hosts: push-only sync, read-only files, pull-outputs. |
+| `tmux_sessions.md` | Shell/script tabs surviving SSH drops and crashes; Sessions view. |
+| `docker_containers.md` | Per-project session container: toggle semantics, lifecycle. |
+| `agent_authority.md` | How sandbox / tab location / agentMode compose. |
+| `hpc_careful_mode.md` | What probes stop collecting on a cluster login node, and how hosts are classified. |
+| `mail_encryption.md` | The sealed local store and the OpenPGP track: what each actually protects, and the invariants that make them worth having. |
+| `caldav.md` | CalDAV accounts: why a sync merges by resource URL instead of replacing, and what read-only actually buys. |
 
-## Dev Workflow
+## Dev workflow
 
-1. Edit files under `src/` (frontend) or `src-tauri/src/` (backend).
-2. Run Rust tests:
+1. Edit `src/` (frontend) or `src-tauri/src/` (backend).
+2. `cargo test --manifest-path src-tauri/Cargo.toml`
+3. **Before every push** — this repo is public — run the privacy/secret scan on
+   staged changes and stop if it flags anything real:
+   `git add -A && scripts/privacy-check.sh` (patterns and
+   blocker-vs-expected guidance live in the script). Commits must use the
+   GitHub `noreply` author email, never the real address.
+4. Pushes are auto-patch-bumped and packaged by CI. Enable the version hook once
+   per clone: `git config core.hooksPath .githooks`. See `.githooks/pre-push`,
+   `scripts/bump-version.sh` (`minor|major` for a bigger bump), and
+   `.github/workflows/ci-cd.yml`. Releases are manual: push a `v*` tag.
+   `npm run package` builds the same release artifact locally.
 
-```bash
-cargo test --manifest-path src-tauri/Cargo.toml
-```
-
-3. **Privacy check before every push.** This repo is intended to go public, so
-   before pushing run the privacy/secret scan on the staged changes and stop if
-   it reports anything real:
-
-   ```bash
-   git add -A && scripts/privacy-check.sh
-   ```
-
-   The patterns and the blocker-vs-expected guidance live in the script itself
-   (it derives private values at runtime and excludes its own file, so neither
-   this doc nor the script hardcodes or self-matches the literals it catches).
-   Commits must use the GitHub `noreply` author email, never the real address.
-
-4. Every push to GitHub should produce a fresh packaged artifact from the
-   workflow in `.github/workflows/ci-cd.yml`; use `npm run package` locally if
-   you need to install the same release build under `~/.local/share/eldrun/`.
-
-   **Version bumping is automatic on push.** The tracked `pre-push` hook in
-   `.githooks/` auto-bumps the patch version across `package.json`,
-   `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` (via
-   `scripts/bump-version.sh`), commits it, and re-pushes so every push carries a
-   distinct version. Enable it once per clone with
-   `git config core.hooksPath .githooks` (`core.hooksPath` is not itself tracked).
-   To bump minor/major instead, run `scripts/bump-version.sh minor|major` and
-   commit before pushing (the hook only patch-bumps when the version is otherwise
-   unchanged for that push).
-
-   **Releases are cut manually.** A GitHub Release is published only when a `v*`
-   tag is pushed (e.g. `v0.1.5`) — the `release` job is gated on `refs/tags/v*`,
-   so ordinary branch pushes never publish. The hook deliberately skips tag
-   pushes, so to ship a release: `git tag v<version> && git push origin v<version>`.
-
-Useful keys: `F11` toggles fullscreen; `Super` toggles panels while Eldrun is
-focused.
+Keys: `F11` fullscreen; `Super` toggles panels while Eldrun is focused.

@@ -592,3 +592,55 @@ Design notes worth keeping in mind before extending it:
     - [ ] Not started.
 
 ---
+
+## Group W — Native Print Manager ✅ Done · 🧪 Untested
+
+*Files: `src-tauri/src/commands/printing.rs`, `src/lib/printing.ts`,
+`src/types/printing.ts`, `src/components/printing/PrintManagerPane.tsx`, plus the
+tab wiring (`stores/tabs.ts`'s `PRINTING_TAB_CMD` / `printing` kind,
+`components/tabs/{TabPane,TabBar,NewTabMenu,newTabItems,TabHoverCard}`) and the
+role retirement in `components/layout/GlobalAppBar.tsx`.*
+
+W1. **The print manager became a tab.** `print_manager` was a **global-app
+    slot** — a toolbar button that launched whatever external printer GUI the
+    user had configured. What sat behind that button is a list of printers, a
+    queue and four verbs, so it is now Eldrun's own tab (⎙ in the new-tab menu,
+    one per scope), and the role joined `RETIRED_GLOBAL_APP_ROLES` beside mail,
+    the calendar and the file manager. A configured command is filtered, not
+    deleted: re-adding the role later finds it still there.
+
+W2. **Two backends, one shape.** CUPS (`lpstat`/`lpq`, Linux + macOS) and the
+    Windows spooler (PowerShell + `Get-Printer`/`Get-PrintJob`), mapped onto one
+    closed set of state words so the pane renders identically on both. Every
+    CUPS read runs under `LC_ALL=C` — those tools translate their output, and a
+    German locale would blind every parser. A machine with no print system is a
+    *state* (`supported: false` + a sentence), never an empty table.
+    - [x] 🤖 Automated test — the `lpstat -l -p` / `-d` / `-a` / `-o` and `lpq -a`
+      parsers, the Windows JSON shape (including `ConvertTo-Json` collapsing a
+      one-element array into an object), and the name/id validation
+      (`commands/printing.rs`, 11 cases)
+
+W3. **Actions, and what they cost.** Make default (the *user's* default —
+    `lpoptions -d`, never `lpadmin`, so nothing asks for a password), pause /
+    resume a queue, print a test page, cancel one job, cancel a printer's queue.
+    Pause/resume is the one that commonly needs rights the user does not have,
+    so CUPS's own refusal ("Forbidden") is shown verbatim rather than replaced
+    with a generic failure.
+    - [ ] 🖐️ Manual test — with a real printer: pause/resume, cancel a job
+      mid-print, make a second printer default, send a test page.
+
+W4. **What it deliberately does not do.** No print-this-file command exists on
+    the whole surface — printing a document you are looking at is the viewers'
+    job (`lib/viewers/print.ts` + the platform print dialog), so the manager
+    never needs a path and therefore never offers one. No printer *setup*
+    either: adding or configuring a queue is CUPS/Windows admin territory,
+    needs elevation, and is a different program's job.
+
+W5. **It reads only while on screen.** The queue poll is armed by the pane's
+    `visible` flag, so a background print tab shells out to nothing, and a
+    restored tab costs one `lpstat` — the same bargain the disk-usage, mail and
+    browser tabs make about not replaying work on a launch path.
+    - [x] 🤖 Automated test — `src/__tests__/Printing.test.ts` (state words
+      degrade to "unknown" not "idle"; a job whose printer is gone still shows)
+
+---

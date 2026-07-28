@@ -99,6 +99,73 @@ export function importInto(target: DropTarget, transfer: PageTransfer): boolean 
   return true;
 }
 
+// ── "A page drag is in flight" ───────────────────────────────────────────────
+// The spring-loaded rail: a PDF viewer whose rail is CLOSED is not a drop target at
+// all — no mounted strip means nothing in `strips` and, since the foreign listener is
+// refcounted by mounted strips, nobody listening either. So every viewer subscribes
+// to this signal (at the VIEWER level, which is always mounted for an open PDF) and
+// opens its rail for the duration of a drag, making every open document a possible
+// destination without the reader having to arm each one by hand.
+//
+// It is deliberately NOT derived from the `PDF_DRAG_*` events alone: a drop that
+// lands in the window it started in never emits an END (`PageStrip` resolves it
+// straight from the DOM), so the rails opened for it would never be told to close.
+// The strip therefore reports the drag's lifetime directly, and the events only carry
+// it to the OTHER windows.
+
+type DragActiveListener = (active: boolean) => void;
+const activeListeners = new Set<DragActiveListener>();
+
+/** Tell every subscriber in THIS window whether a page drag is in flight. */
+export function setPageDragActive(active: boolean): void {
+  for (const fn of [...activeListeners]) fn(active);
+}
+
+// The window-level event listener, refcounted like the foreign-drag one so it exists
+// exactly while at least one viewer is subscribed.
+let activityRefs = 0;
+let stopActivity: Promise<() => void> | null = null;
+
+/** Carry another window's drag start/end into this window's `setPageDragActive`. */
+async function listenPageDragActivity(): Promise<() => void> {
+  const me = currentWindowLabel();
+  try {
+    const unStart = await listen<PdfDragStart>(PDF_DRAG_START, (ev) => {
+      if (ev.payload.originLabel === me) return; // our own: reported directly
+      setPageDragActive(true);
+    });
+    const unEnd = await listen<PdfDragEnd>(PDF_DRAG_END, (ev) => {
+      if (ev.payload.originLabel === me) return;
+      setPageDragActive(false);
+    });
+    return () => {
+      unStart();
+      unEnd();
+    };
+  } catch {
+    return () => {}; // no Tauri event bus (tests)
+  }
+}
+
+/**
+ * Be told when a page drag starts and ends, anywhere. Installs the window-level
+ * listener on the first subscriber and drops it with the last. Returns an unsubscribe.
+ */
+export function subscribePageDragActive(fn: DragActiveListener): () => void {
+  activeListeners.add(fn);
+  activityRefs += 1;
+  if (activityRefs === 1) stopActivity = listenPageDragActivity();
+  return () => {
+    activeListeners.delete(fn);
+    activityRefs -= 1;
+    if (activityRefs === 0 && stopActivity) {
+      const pending = stopActivity;
+      stopActivity = null;
+      void pending.then((f) => f());
+    }
+  };
+}
+
 // ── The cross-window protocol ────────────────────────────────────────────────
 // Mirrors `stores/detached`'s DETACHED_DRAG_* stream: identity + physical coords out,
 // a resolved drop in. Every payload carries the origin window's label so a window can
@@ -174,6 +241,27 @@ export async function listenForeignPageDrags(): Promise<() => void> {
   // Snapshotted when a foreign drag starts: a window does not move mid-gesture, and
   // this is what maps the streamed desktop cursor into our own client px.
   let frame: WindowFrame | null = null;
+  let snapping = false;
+
+  /** Take the frame snapshot if we do not have one yet. Idempotent and in-flight
+   *  guarded, because it is driven by the cursor stream (many calls per second).
+   *
+   *  It is not enough to do this on START: a spring-loaded rail MOUNTS mid-drag, so
+   *  this listener can come into existence after the start we needed to hear. Without
+   *  a late snapshot such a window has no frame, maps no cursor, and silently refuses
+   *  every drop — the pages would bounce off the very rail that opened for them. */
+  const ensureFrame = (): void => {
+    if (frame || snapping) return;
+    snapping = true;
+    void snapshotFrame()
+      .then((f) => {
+        frame = f;
+      })
+      .catch(() => {})
+      .finally(() => {
+        snapping = false;
+      });
+  };
 
   const clientOf = (physX: number, physY: number): ClientPoint | null => {
     const p = { x: physX, y: physY };
@@ -184,15 +272,12 @@ export async function listenForeignPageDrags(): Promise<() => void> {
   try {
     const unStart = await listen<PdfDragStart>(PDF_DRAG_START, (ev) => {
       if (ev.payload.originLabel === me) return; // our own drag: handled via the DOM
-      void snapshotFrame()
-        .then((f) => {
-          frame = f;
-        })
-        .catch(() => {});
+      ensureFrame();
     });
 
     const unMove = await listen<PdfDragMove>(PDF_DRAG_MOVE, (ev) => {
       if (ev.payload.originLabel === me) return;
+      ensureFrame(); // we may have mounted after the start (a spring-loaded rail)
       const c = clientOf(ev.payload.physX, ev.payload.physY);
       paintCaret(c ? resolveDropTarget(c) : null);
     });

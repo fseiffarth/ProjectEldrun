@@ -91,14 +91,39 @@ function slugify(raw: string): string {
     .replace(/\s+/g, "-");
 }
 
+/** The extracted-span stores backing one inline render. A link label is rendered
+ *  by recursing, and the label has already had this pass's code/math/image
+ *  placeholders substituted into it — so the recursion must resolve them against
+ *  the SAME arrays. With a fresh store per call (the old shape), `[![badge](x)](y)`
+ *  and ``[`code` link](y)`` both restored an out-of-range index and printed
+ *  "undefined" where the image or code span belonged. */
+type InlineSpans = { codeSpans: string[]; mathSpans: string[]; links: string[] };
+
+/** Placeholders are delimited by NUL, a byte `renderMarkdown` strips from the
+ *  source up front, so a marker can never collide with the document's own prose.
+ *  They used to be space-padded (` L0 `), which had two consequences: a document
+ *  that literally said "step L0 of the plan" had that phrase replaced by whatever
+ *  link index 0 held, and every link was rendered with spurious spaces glued
+ *  around it (`foo[a](x)bar` → `foo <a>a</a> bar`). NUL cannot appear in the
+ *  input, so neither is reachable. */
+const NUL = "\u0000";
+const mark = (kind: "C" | "M" | "L", idx: number) => `${NUL}${kind}${idx}${NUL}`;
+
 /** Render inline constructs within already-block-split text. Input is raw
- *  (unescaped) markdown for one block; output is safe HTML. */
-function renderInline(raw: string): string {
+ *  (unescaped) markdown for one block; output is safe HTML. `spans` is passed
+ *  only by the recursive link-label render, to share this pass's placeholders. */
+function renderInline(raw: string, spans?: InlineSpans): string {
+  const { codeSpans, mathSpans, links } = spans ?? {
+    codeSpans: [],
+    mathSpans: [],
+    links: [],
+  };
+  const store: InlineSpans = { codeSpans, mathSpans, links };
+
   // Pull inline code spans out first so their contents are not formatted.
-  const codeSpans: string[] = [];
   let text = raw.replace(/`([^`]+)`/g, (_m, code: string) => {
     const idx = codeSpans.push(`<code>${escapeHtml(code)}</code>`) - 1;
-    return ` C${idx} `;
+    return mark("C", idx);
   });
 
   // Pull math out next so emphasis/escape never touches the TeX. We emit a
@@ -111,13 +136,12 @@ function renderInline(raw: string): string {
   // char on the inside, and no newline appears between the delimiters. Block math
   // (`$$…$$`) is pulled before inline (`$…$`) so the longer delimiter wins; the
   // single-line `$$x$$` form is handled here, which covers our docs in v1.
-  const mathSpans: string[] = [];
   const pushMath = (tex: string, display: boolean): string => {
     const idx =
       mathSpans.push(
         `<span class="md-math" data-display="${display}">${escapeHtml(tex)}</span>`,
       ) - 1;
-    return ` M${idx} `;
+    return mark("M", idx);
   };
   text = text.replace(/\$\$(?!\s)([^\n]+?)(?<!\s)\$\$/g, (_m, tex: string) =>
     pushMath(tex, true),
@@ -127,7 +151,6 @@ function renderInline(raw: string): string {
   );
 
   // Pull links/images out next so their text/url are not mangled by emphasis.
-  const links: string[] = [];
   text = text.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_m, alt: string, url: string) => {
     const altEsc = escapeHtml(alt);
     const img = imgSrc(url);
@@ -140,11 +163,11 @@ function renderInline(raw: string): string {
         ? `<img src="${escapeHtml(img.url)}" alt="${altEsc}" />`
         : `<img class="md-img-local" data-md-src="${escapeHtml(img.url)}" alt="${altEsc}" />`;
     const idx = links.push(html) - 1;
-    return ` L${idx} `;
+    return mark("L", idx);
   });
   text = text.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_m, label: string, url: string) => {
     const href = safeHref(url);
-    const inner = renderInline(label);
+    const inner = renderInline(label, store);
     // #49: a link to a local file (relative/absolute path or file: scheme) gets a
     // `file-link` class so it reads as clickable, matching the editor's dotted
     // underline. Remote/anchor links keep the plain style.
@@ -153,13 +176,16 @@ function renderInline(raw: string): string {
       ? `<a href="${escapeHtml(href)}"${fileCls} target="_blank" rel="noopener noreferrer">${inner}</a>`
       : `[${inner}]`;
     const idx = links.push(html) - 1;
-    return ` L${idx} `;
+    return mark("L", idx);
   });
 
   // Auto-link bare URLs (http(s):// or www.) into the same placeholder stream so
   // emphasis rules don't mangle their underscores. Trailing sentence punctuation
   // is left outside the link, matching GitHub.
-  text = text.replace(/(^|[\s(])((?:https?:\/\/|www\.)[^\s<]+)/g, (m, pre: string, rawUrl: string) => {
+  // A NUL counts as a boundary on both sides: it is only ever a placeholder
+  // delimiter, and the URL class must stop at one so a bare URL sitting directly
+  // against an earlier link's marker doesn't swallow it into its own href.
+  text = text.replace(/(^|[\s(\u0000])((?:https?:\/\/|www\.)[^\s<\u0000]+)/g, (m, pre: string, rawUrl: string) => {
     let url = rawUrl;
     let trail = "";
     const tm = url.match(/[.,;:!?)\]}]+$/);
@@ -171,7 +197,7 @@ function renderInline(raw: string): string {
     if (!href) return m;
     const html = `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`;
     const idx = links.push(html) - 1;
-    return `${pre} L${idx} ${trail}`;
+    return `${pre}${mark("L", idx)}${trail}`;
   });
 
   // Escape everything else, then apply emphasis on the escaped text.
@@ -182,10 +208,13 @@ function renderInline(raw: string): string {
   text = text.replace(/(^|[^_])_([^_\s][^_]*?)_/g, "$1<em>$2</em>");
   text = text.replace(/~~([^~]+)~~/g, "<del>$1</del>");
 
-  // Restore math, then links, then code spans.
-  text = text.replace(/ M(\d+) /g, (_m, i: string) => mathSpans[Number(i)]);
-  text = text.replace(/ L(\d+) /g, (_m, i: string) => links[Number(i)]);
-  text = text.replace(/ C(\d+) /g, (_m, i: string) => codeSpans[Number(i)]);
+  // Restore math, then links, then code spans. A marker with no entry behind it
+  // should be unreachable (NUL is stripped from the source), so drop it rather
+  // than let the array's `undefined` reach the page — that miss is what every
+  // README badge line used to render as.
+  text = text.replace(/\u0000M(\d+)\u0000/g, (_m, i: string) => mathSpans[Number(i)] ?? "");
+  text = text.replace(/\u0000L(\d+)\u0000/g, (_m, i: string) => links[Number(i)] ?? "");
+  text = text.replace(/\u0000C(\d+)\u0000/g, (_m, i: string) => codeSpans[Number(i)] ?? "");
   return text;
 }
 
@@ -361,7 +390,10 @@ function renderList(items: ListItem[]): string {
 }
 
 export function renderMarkdown(src: string): string {
-  const lines = src.replace(/\r\n?/g, "\n").split("\n");
+  // Drop NUL up front — it is the inline placeholder delimiter (`mark`), and
+  // stripping it here is what makes a marker impossible to forge from document
+  // text. A NUL in a file being viewed as markdown has nothing to render anyway.
+  const lines = src.replace(/\u0000/g, "").replace(/\r\n?/g, "\n").split("\n");
   const out: string[] = [];
   let i = 0;
 

@@ -96,6 +96,16 @@ export function SubwindowFilesSidebar({
       {/* Compact: the docked column strips the header + view-switcher toolbar +
           sync/sort rows so the tree's find-files search box sits at the top. */}
       <ProjectFilesTab
+        // Keyed by scope, because this sidebar's host is NOT remounted on a
+        // project switch: `CenterPanel`'s layout tree renders `Subwindow` (and
+        // therefore this column) at the same position for every scope, so React
+        // reuses the instance and only swaps the props. The viewer's own state —
+        // this host's browsed folder, the tree's rel path and its listed entries'
+        // absolute paths — would then survive into the next project and be
+        // resolved against ITS root: paths mixed across two projects. It bit
+        // remote projects hardest (they open disconnected, so the tree's reload
+        // is blocked and the previous project's listing simply stayed put).
+        key={scope}
         scope={scope}
         cwd={cwd}
         canOpenTabs={canOpenTabs}

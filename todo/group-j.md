@@ -25,7 +25,23 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
     passwords" stance where possible), read-only vs send/reply, and where it lives
     (right-panel view like Git/Files, a dedicated center tab, or a global-app
     surface). Pairs naturally with #33 (`mailto:` routing) once present.
-    - [ ] 🤖 Automated test
+    - **Where it lives is settled: the header's ✉ overlay, and only that.** It
+      was built as a tab *and* a global-app overlay; the tab is retired
+      (`stores/tabs`' `RETIRED_TAB_CMDS`), because the mail store is global — a
+      scoped tab could only ever show the same mailbox the overlay does while
+      still belonging to a project you switch away from. One switch too:
+      `mail_global_app` went with the tab, since a toggle hiding the only
+      surface while leaving mail "on" has nothing left to mean.
+    - **Important / Urgent lists (BUILT, untested).** A right-click on any row
+      files a message under one of two marks, and each mark has a rail entry
+      listing **every account's** marked mail together. It is a *mark, not a
+      move*, and that is forced rather than chosen: no IMAP folder can hold two
+      accounts' mail, so a cross-account list can only be a local column
+      (`messages.priority`, `schema::mail::MailPriority`). Cost stated in the
+      UI: the mark is this machine's and no other mail client sees it.
+    - [x] 🤖 Automated test — `src/__tests__/MailPriority.test.ts` (the
+      folder/priority fork), `services::mail_store::tests` (the column, the
+      cross-account query, and that a re-sync never wipes a mark)
     - [ ] 🖐️ Manual test
 
 61. **Include a browser in Eldrun. (BUILT — reader mode; live pages opt-in.)**
@@ -123,5 +139,58 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
     reintroduce a tag or attribute the sanitizer would have removed.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
+
+---
+
+66. **Encrypt the local mail store, and add OpenPGP. (BUILT — every phase,
+    never live-tested.)** Two features, deliberately sequenced, both from
+    `docs/mail_encryption_plan.md`.
+
+    **At rest (phases 1–2).** Every sensitive value in the mail store is an
+    XChaCha20-Poly1305 envelope (`services/mail_crypt.rs`), sealed *per value*
+    rather than per file — which is what keeps plaintext out of the WAL and the
+    freelist, and why converting an existing store ends in `VACUUM INTO` a new
+    file rather than an in-place `UPDATE`. Every ciphertext is bound to its row
+    by AAD, so an attacker with disk *write* access cannot relocate one
+    message's body onto another's row. Search becomes bounded decrypt-on-scan
+    and **says when it stopped**; blind indexes were rejected (a deterministic
+    per-token fingerprint answers "does this mailbox contain word X", which is
+    most of what the encryption was for). An unreachable key **degrades to a
+    memory-only store** rather than locking the mailbox — the locked-keyring
+    failure class this project has already been bitten by.
+
+    **End to end (phases 3–8).** OpenPGP via rPGP; S/MIME is detected, named and
+    deferred (no certificate is issued, so there is no credential to load). Key
+    generation is **Curve25519 only**, which is a security decision rather than
+    a preference: `pgp` depends on `rsa` unconditionally and RUSTSEC-2023-0071
+    is unpatched, but the oracle is in RSA decryption and nobody can encrypt to
+    a key we do not have. Sign-inside-then-encrypt; a missing recipient key
+    **refuses the send** rather than degrading to plaintext; decrypted bodies
+    are never written to disk (caching one would make the store key equivalent
+    to the mail private key). IMAP `APPEND` lands last and only with
+    encrypt-to-self — before it there was no Sent copy at all, which was
+    accidentally the most private behaviour available.
+
+    Only `verified` earns positive chrome, and only an explicit "I compared this
+    fingerprint" produces it: OpenPGP has no authority to ask instead.
+
+    - **Open, and the user's call:** whether to un-defer S/MIME if a work
+      certificate ever appears (plan §5, pre-costed, drops in behind the §4
+      seam); whether inline (pre-MIME) signatures are worth verifying rather
+      than merely reporting.
+    - **Known limitation, recorded not hidden:** folder ids are an unkeyed
+      `sha256(path)[..8]`, so a wordlist recovers folder names. Keying them
+      means re-deriving every message id — which is also every AAD row key.
+    - [x] 🤖 Automated test — `services::mail_crypt` (AAD relocation, envelope
+      rejection, Argon2 round-trip), `services::mail_store::tests::encrypted`
+      (nothing readable on disk, migration, restartability, bounded search),
+      `services::mail_pgp` (sign/verify/encrypt round trips, sign-inside-encrypt),
+      `tests/mail_hostile_crypto.rs` (a decrypted body still meets the sanitizer;
+      a real signature over a different body is refused),
+      `src/__tests__/MailCryptoDisplay.test.ts` (only `verified` is positive)
+    - [ ] 🖐️ Manual test — **the whole feature.** Nothing here has run against a
+      real server or a real correspondent: interop with Thunderbird and Outlook,
+      unlock latency on the slowest machine, keychain-locked behaviour, and the
+      migration of a store that actually holds mail.
 
 ---

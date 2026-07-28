@@ -14,6 +14,13 @@ import type { TabLocation } from "./tabs";
  * so the per-tab locality badge can't pre-target it — the project-wide picker is
  * the only control that can send a run to a worker.
  *
+ * It chooses among the REMOTE machines, and it does not outrank the side a file is
+ * on: a Run of a file the user is looking at on the local mirror runs in a local
+ * shell whatever this says (`lib/pythonRun`'s `pythonRunPlan` owns that rule, and
+ * the picker is not even rendered on the Local side). The value here is persisted
+ * and therefore usually set from an earlier session — a stored choice must not
+ * silently redirect a click made somewhere else.
+ *
  * This live store is the read cache; the value is **persisted** per project (in
  * `project.json`'s `run_host`, mirrored into `projects.json`) so the choice
  * survives a relaunch. `set` writes through to the backend; `seed` re-hydrates the

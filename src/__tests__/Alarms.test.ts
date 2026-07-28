@@ -24,6 +24,7 @@ function occ(over: Partial<Occurrence> = {}): Occurrence {
     title: "standup",
     location: "",
     notes: "",
+    conference: "",
     category: "",
     status: "confirmed",
     calendarId: "default",

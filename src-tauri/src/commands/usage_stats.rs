@@ -129,8 +129,10 @@ fn git_stats_blocking(project_dir: &str, since: &str) -> Result<GitStats, String
         args.push(format!("--author={email}"));
     }
 
-    let out = crate::paths::command_no_window("git")
-        .args(&args)
+    // The recap runs this unattended, in a directory a project container mounts
+    // writable — so the repo's own config is untrusted (`commands::git::
+    // hardened_git_args`, Group O #151).
+    let out = crate::commands::git::hardened_git_command(&args)
         .current_dir(project_dir)
         .output()
         .map_err(|e| e.to_string())?;

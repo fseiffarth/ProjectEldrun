@@ -23,6 +23,48 @@ use eldrun_lib::schema::TerminalSession;
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
+/// Point `storage::state_dir()` at a per-run temp directory, once for the whole
+/// test binary.
+///
+/// Needed since `docs/sandbox_hardening_plan.md` Phase 1: per-project session
+/// state (tab layout, `open_apps`, host-bound markers) moved OUT of the project
+/// tree and INTO the state dir, so these tests write there now — and a suite that
+/// writes into the developer's real `~/.local/share/eldrun/` would clobber their
+/// running workspace. Set once and never changed, so the parallel test threads
+/// all agree on the value.
+fn isolated_state_dir() -> &'static std::path::Path {
+    use std::sync::OnceLock;
+    static DIR: OnceLock<TempDir> = OnceLock::new();
+    let dir = DIR.get_or_init(|| {
+        let tmp = TempDir::new().unwrap();
+        std::env::set_var("ELDRUN_STATE_DIR", tmp.path());
+        tmp
+    });
+    // Re-assert on every call: another test in this binary may legitimately have
+    // set the variable for its own fixture, and reads are lazy.
+    std::env::set_var("ELDRUN_STATE_DIR", dir.path());
+    dir.path()
+}
+
+/// A project registered for session tests: writes its `project.json` into `tmp`,
+/// isolates the state dir, and returns `(project_id, local_file)`.
+fn session_project(tmp: &TempDir, id: &str) -> (String, String) {
+    isolated_state_dir();
+    let project = Project {
+        id: id.to_string(),
+        name: id.to_string(),
+        directory: tmp.path().to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    let local_file = write_project_json(tmp.path(), &project);
+    (id.to_string(), local_file.to_string_lossy().to_string())
+}
+
+/// The authoritative session file for a project: `<state_dir>/sessions/<key>/`.
+fn state_session_file(project_id: &str) -> PathBuf {
+    eldrun_lib::storage::project_session_dir(project_id).join("terminals.json")
+}
+
 fn tracked(
     id: &str,
     project_id: Option<&str>,
@@ -161,6 +203,9 @@ fn global_and_manual_windows_are_never_project_owned() {
 // ── terminal_service ──────────────────────────────────────────────────────
 
 fn write_project_json(dir: &std::path::Path, project: &Project) -> PathBuf {
+    // Every fixture that writes a project.json is a session-state test one way or
+    // another; isolate the state dir here so no individual test can forget to.
+    isolated_state_dir();
     let path = dir.join("project.json");
     let json = serde_json::to_string_pretty(project).unwrap();
     std::fs::write(&path, json).unwrap();
@@ -201,14 +246,7 @@ fn save_and_load_right_panel_folder_roundtrip() {
 #[test]
 fn save_and_load_tab_layout_roundtrip() {
     let tmp = TempDir::new().unwrap();
-    let project = Project {
-        id: "test-id".to_string(),
-        name: "Test".to_string(),
-        directory: tmp.path().to_string_lossy().to_string(),
-        ..Default::default()
-    };
-    let local_file = write_project_json(tmp.path(), &project);
-    let local_file_str = local_file.to_string_lossy().to_string();
+    let (id, local_file_str) = session_project(&tmp, "roundtrip");
 
     let tabs = vec![
         TabEntry {
@@ -229,8 +267,8 @@ fn save_and_load_tab_layout_roundtrip() {
         },
     ];
 
-    terminal_service::save_tab_layout(&local_file_str, &tabs, None, None, true).unwrap();
-    let loaded = terminal_service::load_tab_layout(&local_file_str);
+    terminal_service::save_tab_layout(Some(&id), &local_file_str, &tabs, None, None, true).unwrap();
+    let loaded = terminal_service::load_terminal_session(&id).tab_layout;
 
     assert_eq!(loaded.len(), 2);
     assert_eq!(loaded[0].key, "shell-1");
@@ -240,14 +278,7 @@ fn save_and_load_tab_layout_roundtrip() {
 #[test]
 fn save_tab_layout_round_trips_agent_session_id() {
     let tmp = TempDir::new().unwrap();
-    let project = Project {
-        id: "resume-id".to_string(),
-        name: "Resume".to_string(),
-        directory: tmp.path().to_string_lossy().to_string(),
-        ..Default::default()
-    };
-    let local_file = write_project_json(tmp.path(), &project);
-    let local_file_str = local_file.to_string_lossy().to_string();
+    let (id, path_str) = session_project(&tmp, "resume-id");
 
     let session_id = "22222222-2222-4222-8222-222222222222".to_string();
     let tabs = vec![
@@ -269,8 +300,8 @@ fn save_tab_layout_round_trips_agent_session_id() {
         },
     ];
 
-    terminal_service::save_tab_layout(&local_file_str, &tabs, None, None, true).unwrap();
-    let loaded = terminal_service::load_tab_layout(&local_file_str);
+    terminal_service::save_tab_layout(Some(&id), &path_str, &tabs, None, None, true).unwrap();
+    let loaded = terminal_service::load_terminal_session(&id).tab_layout;
 
     assert_eq!(loaded.len(), 2);
     // Shell tab carries no session id.
@@ -280,20 +311,22 @@ fn save_tab_layout_round_trips_agent_session_id() {
     assert_eq!(loaded[1].session_id, Some(session_id));
 
     // The on-disk JSON uses the camelCase `sessionId` key.
-    let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
-    let raw = serde_json::to_value(&reloaded).unwrap();
+    let raw: serde_json::Value =
+        eldrun_lib::storage::read_json(&state_session_file(&id)).unwrap();
     assert_eq!(
-        raw["tab_layout"][1]["sessionId"],
+        raw["tabLayout"][1]["sessionId"],
         serde_json::json!("22222222-2222-4222-8222-222222222222")
     );
     assert!(
-        raw["tab_layout"][0].get("sessionId").is_none(),
+        raw["tabLayout"][0].get("sessionId").is_none(),
         "shell tab must omit sessionId when None"
     );
 }
 
+/// Phase 1 of `docs/sandbox_hardening_plan.md`: the layout is keyed by project id
+/// and lives in the state dir, and `project.json` is left completely alone.
 #[test]
-fn save_tab_layout_preserves_other_project_fields() {
+fn save_tab_layout_never_writes_the_layout_into_project_json() {
     let tmp = TempDir::new().unwrap();
     let project = Project {
         id: "preserve-me".to_string(),
@@ -303,7 +336,7 @@ fn save_tab_layout_preserves_other_project_fields() {
         ..Default::default()
     };
     let local_file = write_project_json(tmp.path(), &project);
-    let local_file_str = local_file.to_string_lossy().to_string();
+    let path_str = local_file.to_string_lossy().to_string();
 
     let tabs = vec![TabEntry {
         key: "s-1".to_string(),
@@ -313,96 +346,109 @@ fn save_tab_layout_preserves_other_project_fields() {
         session_id: None,
         extra: Default::default(),
     }];
-    terminal_service::save_tab_layout(&local_file_str, &tabs, None, None, true).unwrap();
+    terminal_service::save_tab_layout(Some("preserve-me"), &path_str, &tabs, None, None, true)
+        .unwrap();
 
     let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
     assert_eq!(reloaded.id, "preserve-me");
     assert_eq!(reloaded.name, "MyProject");
     assert_eq!(reloaded.status.as_deref(), Some("active"));
+    assert!(
+        reloaded.tab_layout.is_none(),
+        "project.json is inside the container's writable mount — the layout must not be there"
+    );
+}
+
+/// The root scope has no project to key by, and its tabs were never restored from
+/// disk. Persisting anything for it would only create a file nothing reads.
+#[test]
+fn a_scope_with_no_project_id_persists_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let (_, path_str) = session_project(&tmp, "unused");
+    let tabs = vec![TabEntry {
+        key: "s-1".to_string(),
+        label: "Shell".to_string(),
+        cmd: "bash".to_string(),
+        cwd: "/tmp".to_string(),
+        session_id: None,
+        extra: Default::default(),
+    }];
+    terminal_service::save_tab_layout(None, &path_str, &tabs, None, None, true).unwrap();
+    assert!(!tmp.path().join(".eldrun/sessions/terminals.json").exists());
 }
 
 #[test]
 fn save_tab_layout_persists_open_session_uuids() {
     let tmp = TempDir::new().unwrap();
-    let project = Project {
-        id: "sessions".to_string(),
-        name: "Sessions".to_string(),
-        directory: tmp.path().to_string_lossy().to_string(),
-        ..Default::default()
-    };
-    let local_file = write_project_json(tmp.path(), &project);
-    let path_str = local_file.to_string_lossy().to_string();
+    let (id, path_str) = session_project(&tmp, "sessions");
 
     let sessions = serde_json::json!([
         { "sessionId": "11111111-1111-4111-8111-111111111111", "cmd": "claude", "label": "Claude" }
     ]);
-    terminal_service::save_tab_layout(&path_str, &[], None, Some(sessions.clone()), true).unwrap();
-
-    let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
-    assert_eq!(reloaded.open_tab_sessions, Some(sessions));
+    terminal_service::save_tab_layout(Some(&id), &path_str, &[], None, Some(sessions.clone()), true)
+        .unwrap();
+    assert_eq!(
+        terminal_service::load_terminal_session(&id).open_tab_sessions,
+        Some(sessions)
+    );
 
     // A subsequent layout save with `None` (the project-switch path) must leave
     // the stored UUIDs untouched, while `Some([])` clears them.
-    terminal_service::save_terminal_session(&path_str, &[], 0, None).unwrap();
-    let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
-    assert!(reloaded.open_tab_sessions.is_some());
+    terminal_service::save_terminal_session(Some(&id), &path_str, &[], 0, None).unwrap();
+    assert!(terminal_service::load_terminal_session(&id).open_tab_sessions.is_some());
 
-    terminal_service::save_tab_layout(&path_str, &[], None, Some(serde_json::json!([])), true).unwrap();
-    let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
-    assert_eq!(reloaded.open_tab_sessions, None);
+    terminal_service::save_tab_layout(
+        Some(&id),
+        &path_str,
+        &[],
+        None,
+        Some(serde_json::json!([])),
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        terminal_service::load_terminal_session(&id).open_tab_sessions,
+        None
+    );
 }
 
 #[test]
-fn load_tab_layout_returns_empty_for_missing_file() {
-    let loaded = terminal_service::load_tab_layout("/nonexistent/project.json");
-    assert!(loaded.is_empty());
+fn load_terminal_session_returns_empty_for_an_unknown_project() {
+    let loaded = terminal_service::load_terminal_session("no-such-project-at-all");
+    assert!(loaded.tab_layout.is_empty());
 }
 
 #[test]
 fn load_open_apps_returns_empty_when_none_saved() {
     let tmp = TempDir::new().unwrap();
-    let project = Project {
-        id: "no-apps".to_string(),
-        name: "NoApps".to_string(),
-        directory: tmp.path().to_string_lossy().to_string(),
-        ..Default::default()
-    };
-    let local_file = write_project_json(tmp.path(), &project);
-    let loaded = terminal_service::load_open_apps(&local_file.to_string_lossy());
-    assert!(loaded.is_empty());
+    let (id, _) = session_project(&tmp, "no-apps");
+    assert!(terminal_service::load_open_apps(&id).is_empty());
 }
 
 /// A project holding one saved tab, for the two empty-save tests below.
-fn project_with_one_tab(tmp: &TempDir) -> String {
-    let project = Project {
-        id: "p".to_string(),
-        name: "P".to_string(),
-        directory: tmp.path().to_string_lossy().to_string(),
-        tab_layout: Some(vec![TabEntry {
-            key: "old".to_string(),
-            label: "Old".to_string(),
-            cmd: "bash".to_string(),
-            cwd: "/tmp".to_string(),
-            session_id: Some("11111111-1111-4111-8111-111111111111".to_string()),
-            extra: Default::default(),
-        }]),
-        ..Default::default()
-    };
-    write_project_json(tmp.path(), &project)
-        .to_string_lossy()
-        .to_string()
+fn project_with_one_saved_tab(tmp: &TempDir, id: &str) -> String {
+    let (_, path_str) = session_project(tmp, id);
+    let tabs = vec![TabEntry {
+        key: "old".to_string(),
+        label: "Old".to_string(),
+        cmd: "bash".to_string(),
+        cwd: "/tmp".to_string(),
+        session_id: Some("11111111-1111-4111-8111-111111111111".to_string()),
+        extra: Default::default(),
+    }];
+    terminal_service::save_tab_layout(Some(id), &path_str, &tabs, None, None, true).unwrap();
+    path_str
 }
 
 #[test]
 fn save_empty_tabs_clears_layout_field_when_clearing_is_allowed() {
     let tmp = TempDir::new().unwrap();
-    let path_str = project_with_one_tab(&tmp);
+    let path_str = project_with_one_saved_tab(&tmp, "clear-ok");
 
     // The user really did close every tab.
-    terminal_service::save_tab_layout(&path_str, &[], None, None, true).unwrap();
+    terminal_service::save_tab_layout(Some("clear-ok"), &path_str, &[], None, None, true).unwrap();
 
-    let loaded = terminal_service::load_tab_layout(&path_str);
-    assert!(loaded.is_empty());
+    assert!(terminal_service::load_terminal_session("clear-ok").tab_layout.is_empty());
 }
 
 /// The DemoProj regression: an empty layout arriving from a caller that cannot
@@ -412,17 +458,17 @@ fn save_empty_tabs_clears_layout_field_when_clearing_is_allowed() {
 /// the tab store's scope has not caught up; the debounced autosave then persists the
 /// wrong scope's tabs into that file, the per-scope filter drops every one of them as
 /// foreign, and what arrives is `[]` — indistinguishable from a close-all, and fatal.
-/// It took `tab_layout`, `tab_groups` and the `.eldrun` session mirror in one call,
-/// and with them the `sessionId`s that were the only handle on three live Claude
-/// conversations. Empty now clears only when the caller says it means one.
+/// It took the layout and the `sessionId`s that were the only handle on three live
+/// Claude conversations. Empty now clears only when the caller says it means one.
 #[test]
 fn save_empty_tabs_preserves_layout_when_clearing_is_not_allowed() {
     let tmp = TempDir::new().unwrap();
-    let path_str = project_with_one_tab(&tmp);
+    let path_str = project_with_one_saved_tab(&tmp, "clear-refused");
 
-    terminal_service::save_tab_layout(&path_str, &[], None, None, false).unwrap();
+    terminal_service::save_tab_layout(Some("clear-refused"), &path_str, &[], None, None, false)
+        .unwrap();
 
-    let loaded = terminal_service::load_tab_layout(&path_str);
+    let loaded = terminal_service::load_terminal_session("clear-refused").tab_layout;
     assert_eq!(loaded.len(), 1, "an unvouched empty save must not erase tabs");
     assert_eq!(loaded[0].key, "old");
     assert_eq!(
@@ -430,31 +476,14 @@ fn save_empty_tabs_preserves_layout_when_clearing_is_not_allowed() {
         Some("11111111-1111-4111-8111-111111111111"),
         "the agent's session id is the handle on its conversation"
     );
-
-    // …and it must not have emptied the `.eldrun` mirror either — that file WINS on
-    // load, so clobbering it would lose the tabs even with project.json intact.
-    let sessions_dir = terminal_service::eldrun_sessions_dir(&path_str).unwrap();
-    let mirror = sessions_dir.join("terminals.json");
-    if mirror.exists() {
-        let session: eldrun_lib::schema::session::TerminalSession =
-            eldrun_lib::storage::read_json(&mirror).unwrap();
-        assert_eq!(session.tab_layout.len(), 1);
-    }
 }
 
-// ── terminal_service: .eldrun/sessions/ ───────────────────────────────────
+// ── terminal_service: the project tree is written, never read ─────────────
 
 #[test]
-fn save_terminal_session_writes_eldrun_file() {
+fn save_writes_the_state_dir_copy_and_the_project_tree_export() {
     let tmp = TempDir::new().unwrap();
-    let project = Project {
-        id: "p-sess".to_string(),
-        name: "Session".to_string(),
-        directory: tmp.path().to_string_lossy().to_string(),
-        ..Default::default()
-    };
-    let local_file = write_project_json(tmp.path(), &project);
-    let path_str = local_file.to_string_lossy().to_string();
+    let (id, path_str) = session_project(&tmp, "p-sess");
 
     let tabs = vec![TabEntry {
         key: "s1".to_string(),
@@ -464,27 +493,36 @@ fn save_terminal_session_writes_eldrun_file() {
         session_id: None,
         extra: Default::default(),
     }];
-    terminal_service::save_terminal_session(&path_str, &tabs, 0, None).unwrap();
+    terminal_service::save_terminal_session(Some(&id), &path_str, &tabs, 0, None).unwrap();
 
-    let session_path = tmp.path().join(".eldrun/sessions/terminals.json");
-    assert!(session_path.exists(), ".eldrun/sessions/terminals.json must be written");
-
+    // The authoritative copy: state dir, keyed by project id.
     let session: eldrun_lib::schema::TerminalSession =
-        eldrun_lib::storage::read_json(&session_path).unwrap();
+        eldrun_lib::storage::read_json(&state_session_file(&id)).unwrap();
     assert_eq!(session.tab_layout.len(), 1);
     assert_eq!(session.tab_layout[0].key, "s1");
+
+    // The export copy: still written, so the layout travels with a folder that is
+    // byte-synced or copied. Never read without an explicit adopt.
+    let export = tmp.path().join(".eldrun/sessions/terminals.json");
+    assert!(export.exists(), "the export copy must still be written");
+    let exported: eldrun_lib::schema::TerminalSession =
+        eldrun_lib::storage::read_json(&export).unwrap();
+    assert_eq!(exported.tab_layout[0].key, "s1");
 }
 
+/// The Phase 1 property, stated as a test: a layout planted in the project tree —
+/// by a cloned repository, or by an agent writing inside the container's rw mount —
+/// is **not** read. Both plantable locations are covered, because Eldrun used to
+/// read `.eldrun/sessions/terminals.json` first and `project.json` as a fallback.
 #[test]
-fn load_terminal_session_prefers_eldrun_over_project_json() {
+fn a_layout_planted_in_the_project_tree_is_never_loaded() {
     let tmp = TempDir::new().unwrap();
-    // Write project.json with one tab.
     let project = Project {
-        id: "p-pref".to_string(),
-        name: "Prefer".to_string(),
+        id: "p-planted".to_string(),
+        name: "Planted".to_string(),
         directory: tmp.path().to_string_lossy().to_string(),
         tab_layout: Some(vec![TabEntry {
-            key: "old".to_string(),
+            key: "planted-via-project-json".to_string(),
             label: "Old".to_string(),
             cmd: "bash".to_string(),
             cwd: "/tmp".to_string(),
@@ -493,57 +531,96 @@ fn load_terminal_session_prefers_eldrun_over_project_json() {
         }]),
         ..Default::default()
     };
-    let local_file = write_project_json(tmp.path(), &project);
-    let path_str = local_file.to_string_lossy().to_string();
+    write_project_json(tmp.path(), &project);
 
-    // Write .eldrun/sessions/terminals.json with a different tab.
     let sessions_dir = tmp.path().join(".eldrun/sessions");
     std::fs::create_dir_all(&sessions_dir).unwrap();
-    let session = eldrun_lib::schema::TerminalSession {
+    let planted = eldrun_lib::schema::TerminalSession {
         tab_layout: vec![TabEntry {
-            key: "new".to_string(),
-            label: "New".to_string(),
+            key: "planted-via-eldrun-mirror".to_string(),
+            label: "Pwn".to_string(),
             cmd: "claude".to_string(),
             cwd: "/home/user".to_string(),
             session_id: None,
             extra: Default::default(),
         }],
-        active_tab_index: 0,
-        tab_groups: None,
-        extra: Default::default(),
+        ..Default::default()
     };
-    eldrun_lib::storage::write_json(&sessions_dir.join("terminals.json"), &session).unwrap();
+    eldrun_lib::storage::write_json(&sessions_dir.join("terminals.json"), &planted).unwrap();
 
-    let loaded = terminal_service::load_tab_layout(&path_str);
-    assert_eq!(loaded.len(), 1);
-    assert_eq!(loaded[0].key, "new", "must prefer .eldrun/ over project.json");
+    assert!(
+        terminal_service::load_terminal_session("p-planted").tab_layout.is_empty(),
+        "nothing in the project tree may reach the restore path on its own"
+    );
 }
 
+/// …and the explicit escape hatch that replaces the old automatic fallback.
 #[test]
-fn load_tab_layout_falls_back_to_project_json_when_no_eldrun() {
+fn adopting_a_folder_layout_is_explicit_and_sanitized() {
     let tmp = TempDir::new().unwrap();
     let project = Project {
-        id: "p-fall".to_string(),
-        name: "Fallback".to_string(),
+        id: "p-adopt".to_string(),
+        name: "Adopt".to_string(),
         directory: tmp.path().to_string_lossy().to_string(),
-        tab_layout: Some(vec![TabEntry {
-            key: "fallback".to_string(),
-            label: "Fallback".to_string(),
-            cmd: "bash".to_string(),
-            cwd: "/tmp".to_string(),
-            session_id: None,
-            extra: Default::default(),
-        }]),
         ..Default::default()
     };
     let local_file = write_project_json(tmp.path(), &project);
     let path_str = local_file.to_string_lossy().to_string();
 
-    // No .eldrun/ directory exists.
-    let loaded = terminal_service::load_tab_layout(&path_str);
-    assert_eq!(loaded.len(), 1);
-    assert_eq!(loaded[0].key, "fallback");
+    let sessions_dir = tmp.path().join(".eldrun/sessions");
+    std::fs::create_dir_all(&sessions_dir).unwrap();
+    let mut hostile = TabEntry {
+        key: "t".to_string(),
+        label: "Shell".to_string(),
+        cmd: "/tmp/pwn.sh".to_string(),
+        cwd: "/tmp".to_string(),
+        session_id: None,
+        extra: Default::default(),
+    };
+    hostile
+        .extra
+        .insert("env".to_string(), serde_json::json!({ "LD_PRELOAD": "/tmp/x.so" }));
+    let saved = eldrun_lib::schema::TerminalSession {
+        tab_layout: vec![
+            hostile,
+            TabEntry {
+                key: "ok".to_string(),
+                label: "Shell".to_string(),
+                cmd: "bash".to_string(),
+                cwd: "/tmp".to_string(),
+                session_id: None,
+                extra: Default::default(),
+            },
+        ],
+        open_apps: Some(vec![eldrun_lib::schema::project::OpenApp {
+            exec: "/tmp/pwn.sh".to_string(),
+            file: None,
+            mode: None,
+            opened_at: None,
+            pid: None,
+            extra: Default::default(),
+        }]),
+        ..Default::default()
+    };
+    eldrun_lib::storage::write_json(&sessions_dir.join("terminals.json"), &saved).unwrap();
+
+    let adopted = terminal_service::adopt_project_tree_session("p-adopt", &path_str).unwrap();
+    assert_eq!(adopted.tab_layout.len(), 2, "an adopt keeps every pane");
+    assert_eq!(adopted.tab_layout[0].cmd, "", "an unknown command is neutralized");
+    assert!(!adopted.tab_layout[0].extra.contains_key("env"));
+    assert_eq!(adopted.tab_layout[1].cmd, "bash");
+    assert!(
+        adopted.open_apps.is_none(),
+        "a folder-supplied list of host commands to launch is never adopted"
+    );
+
+    // …and what it adopted is what the ordinary load now returns.
+    assert_eq!(
+        terminal_service::load_terminal_session("p-adopt").tab_layout.len(),
+        2
+    );
 }
+
 
 // ── window_service: session save/load ─────────────────────────────────────
 
@@ -583,7 +660,7 @@ fn load_window_session_returns_empty_when_missing() {
 // side effects match the plan spec.
 
 #[test]
-fn switch_saves_tab_layout_to_project_json() {
+fn switch_saves_tab_layout_into_the_state_dir() {
     let tmp = TempDir::new().unwrap();
     let project = Project {
         id: "prev".to_string(),
@@ -602,13 +679,15 @@ fn switch_saves_tab_layout_to_project_json() {
         session_id: None,
         extra: Default::default(),
     }];
-    terminal_service::save_terminal_session(&path_str, &tabs, 0, None).unwrap();
+    terminal_service::save_terminal_session(Some("prev"), &path_str, &tabs, 0, None).unwrap();
 
-    // project.json must have been updated.
-    let saved: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
-    let saved_tabs = saved.tab_layout.expect("tab_layout must be saved");
-    assert_eq!(saved_tabs.len(), 1);
-    assert_eq!(saved_tabs[0].key, "t1");
+    // The state-dir copy is the one the next activation reads back.
+    let saved = terminal_service::load_terminal_session("prev").tab_layout;
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].key, "t1");
+    // …and project.json is untouched by it.
+    let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
+    assert!(reloaded.tab_layout.is_none());
 }
 
 #[test]
@@ -773,9 +852,9 @@ fn switch_next_project_tab_layout_loaded_after_save() {
             extra: Default::default(),
         },
     ];
-    terminal_service::save_terminal_session(&path_str, &tabs, 1, None).unwrap();
+    terminal_service::save_terminal_session(Some("next"), &path_str, &tabs, 1, None).unwrap();
 
-    let session = terminal_service::load_terminal_session(&path_str);
+    let session = terminal_service::load_terminal_session("next");
     assert_eq!(session.tab_layout.len(), 2);
     assert_eq!(session.active_tab_index, 1);
     assert_eq!(session.tab_layout[1].cmd, "claude");

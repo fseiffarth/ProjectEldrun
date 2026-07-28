@@ -485,6 +485,9 @@ pub fn run() {
     // in-memory-only passwords for accounts the user chose not to persist, and
     // the per-account sync cancel flags. See `commands::mail`.
     let mail_state = commands::mail::new_state();
+    // CalDAV: session-only passwords for accounts the user chose not to persist
+    // (docs/caldav_plan.md). Nothing here is ever serialized.
+    let caldav_state: commands::caldav::CalDavState = Default::default();
     // Recursive file-churn watcher on the active project + the counters it has
     // seen since the last flush (see `services::usage_stats`).
     let usage_watch = services::usage_stats::new_state();
@@ -504,6 +507,7 @@ pub fn run() {
         .manage(worker_sync)
         .manage(disk_scans)
         .manage(mail_state)
+        .manage(caldav_state)
         .manage(usage_watch.clone())
         .setup(|_app| {
             #[cfg(target_os = "linux")]
@@ -573,6 +577,14 @@ pub fn run() {
             // persist. Off-thread so file I/O never blocks startup; additive and
             // idempotent, so a race with the frontend's first load is benign.
             std::thread::spawn(commands::projects::migrate_legacy_projects);
+            // One-shot: adopt every existing project's tab layout / `open_apps`
+            // out of its project tree and into `<state_dir>/sessions/<id>/`.
+            // Synchronous on purpose — it must complete before the frontend's
+            // first `load_tab_session`, or a pre-existing project comes up with
+            // no tabs and the debounced autosave then persists that emptiness.
+            // Cheap: one small file per project, and it no-ops after the first
+            // run. See `services::terminal_service::migrate_project_sessions_once`.
+            services::terminal_service::migrate_project_sessions_once();
             // Remove project containers a previous run left behind (a crash
             // skips the exit teardown) and the staged config copies. Off-thread:
             // docker may be slow or absent, and neither may block startup.
@@ -663,6 +675,8 @@ pub fn run() {
             commands::projects::set_project_categories,
             commands::projects::set_project_git_disabled,
             commands::projects::save_tab_layout,
+            commands::projects::load_tab_session,
+            commands::projects::adopt_folder_tab_layout,
             commands::projects::root_work_dir,
             commands::projects::projects_root_dir,
             commands::projects::remote_mirror_root_dir,
@@ -676,6 +690,7 @@ pub fn run() {
             commands::projects::repair_project_scaffold,
             commands::projects::repair_all_project_scaffolds,
             commands::projects::import_project,
+            commands::projects::check_project_site,
             commands::projects::extend_project_to_remote,
             commands::projects::detach_project_from_remote,
             commands::projects::get_time_today,
@@ -704,11 +719,32 @@ pub fn run() {
             commands::calendar::create_task,
             commands::calendar::update_task,
             commands::calendar::delete_task,
+            commands::calendar::todo_move_tasks,
+            commands::calendar::todo_columns_set,
             commands::calendar::create_calendar,
             commands::calendar::update_calendar,
             commands::calendar::delete_calendar,
             commands::calendar::calendar_read_ics,
             commands::calendar::calendar_write_ics,
+            commands::calendar::calendar_fetch_ics,
+            commands::calendar::calendar_replace_events,
+            // CalDAV accounts (docs/caldav_plan.md, Phases 1-2: read-only).
+            // A sync is deliberately two commands: `caldav_fetch` speaks the
+            // protocol and hands back iCalendar text unparsed, the frontend
+            // parses it with `src/lib/ics.ts` (the one parser that understands
+            // folding/RRULE/VALARM), and `caldav_apply` reconciles the result
+            // into calendar.json by `caldav_href` — a field-level merge, never
+            // the delete-and-reinsert `calendar_replace_events` does, because
+            // an unattended sync must not evict a card from the to-do column
+            // the user dragged it into.
+            commands::caldav::caldav_accounts_list,
+            commands::caldav::caldav_account_upsert,
+            commands::caldav::caldav_account_delete,
+            commands::caldav::caldav_password_state,
+            commands::caldav::caldav_forget_password,
+            commands::caldav::caldav_discover,
+            commands::caldav::caldav_fetch,
+            commands::caldav::caldav_apply,
             // Embedded mail client (docs/mail_client_plan_{a,b}.md). Every one
             // of these is `async` on purpose — a sync command runs on the main
             // thread, and an unreachable IMAP server would freeze the whole
@@ -727,13 +763,45 @@ pub fn run() {
             commands::mail::mail_headers,
             commands::mail::mail_body,
             commands::mail::mail_flag,
+            commands::mail::mail_mark_folder_read,
             commands::mail::mail_move,
+            // Priority marks (Important / Urgent). The only mail commands that
+            // touch no network at all: the lists span every account, and no IMAP
+            // folder can hold two accounts' mail, so the mark is a local column
+            // rather than a move (schema::mail::MailPriority).
+            commands::mail::mail_priority_set,
+            commands::mail::mail_priority_page,
+            commands::mail::mail_priority_counts,
             commands::mail::mail_draft_save,
             commands::mail::mail_draft_send,
             commands::mail::mail_attach_pick,
             commands::mail::mail_attach_remove,
             commands::mail::mail_attachment_save,
             commands::mail::mail_attachment_preview,
+            // Encryption at rest (docs/mail_encryption_plan.md). Four verbs
+            // rather than a toggle, because the states are not symmetric: a
+            // store waiting for a passphrase, and one running memory-only
+            // because its key could not be reached, both look like a working
+            // mailbox and neither is.
+            commands::mail::mail_encryption_state,
+            commands::mail::mail_encryption_enable,
+            commands::mail::mail_encryption_unlock,
+            commands::mail::mail_encryption_decline,
+            commands::mail::mail_encryption_reset,
+            // OpenPGP (docs/mail_encryption_plan.md §6). The keyring needs an
+            // encrypted store — a private key in a plaintext file would make
+            // the whole feature theatre — so `mail_pgp_available` is the one
+            // bool the UI gates the whole surface on.
+            commands::mail::mail_pgp_available,
+            commands::mail::mail_pgp_keys,
+            commands::mail::mail_pgp_generate,
+            commands::mail::mail_pgp_import,
+            commands::mail::mail_pgp_import_pick,
+            commands::mail::mail_pgp_export,
+            commands::mail::mail_pgp_set_verified,
+            commands::mail::mail_pgp_bind,
+            commands::mail::mail_pgp_delete,
+            commands::mail::mail_pgp_recipients_ready,
             // In-app browser (docs/browser_plan_{a,b,c}.md, TODO J #61). Two
             // surfaces, neither an embedded pane: a JS-free reader tab that is
             // fetched and sanitized in Rust, and a separate hardened
@@ -799,6 +867,7 @@ pub fn run() {
             commands::usage_stats::usage_git_stats,
             commands::monitor::system_monitor_snapshot,
             commands::monitor::gpu_memory_snapshot,
+            commands::monitor::machine_load_snapshot,
             commands::monitor::gpu_process_snapshot,
             // AC-vs-battery detection for Energy Saver mode.
             commands::power::get_power_state,
@@ -810,6 +879,7 @@ pub fn run() {
             commands::sync::sync_mark_selected,
             commands::sync::sync_set_auto,
             commands::sync::sync_auto_preview,
+            commands::sync::sync_transfer_preview,
             commands::sync::sync_big_folders,
             commands::sync::sync_set_excluded,
             commands::sync::sync_status,
@@ -898,6 +968,13 @@ pub fn run() {
             commands::format::check_syntax,
             commands::fs_watch::watch_dir,
             commands::fs_watch::unwatch_dir,
+            // Print manager (commands::printing)
+            commands::printing::print_system_snapshot,
+            commands::printing::print_job_cancel,
+            commands::printing::print_jobs_cancel_all,
+            commands::printing::print_set_default,
+            commands::printing::print_set_enabled,
+            commands::printing::print_test_page,
             // Disk usage analyzer (commands::disk_usage)
             commands::disk_usage::disk_usage_scan,
             commands::disk_usage::disk_usage_cancel,
@@ -912,6 +989,7 @@ pub fn run() {
             commands::tex::resolve_tex_root,
             // Terminal
             commands::terminal::pty_spawn,
+            commands::terminal::register_host_bound_tab,
             commands::terminal::pty_write,
             commands::terminal::pty_resize,
             commands::terminal::pty_kill,
@@ -997,10 +1075,22 @@ pub fn run() {
             commands::sqlite::sqlite_page,
             // Spreadsheet (.xlsx/.xls) reader (Dev G)
             commands::sheets::read_spreadsheet,
+            // Skills Library (docs/skills_plan.md)
+            commands::skills::skills_list_sources,
+            commands::skills::skills_add_source,
+            commands::skills::skills_remove_source,
+            commands::skills::skills_refresh_source,
+            commands::skills::skills_list_catalog,
+            commands::skills::skills_get_detail,
+            commands::skills::skills_install,
+            commands::skills::skills_uninstall,
+            commands::skills::skills_list_installed,
             // Git worktrees (TODO Group E #23)
             commands::git::git_worktree_list,
             commands::git::git_worktree_add,
             commands::git::git_worktree_remove,
+            commands::git::git_worktree_lock,
+            commands::git::git_worktree_unlock,
             commands::git::git_worktree_prune,
             // Crash reporting
             commands::crash::report_frontend_error,

@@ -65,7 +65,10 @@ import {
   resolveDropTarget,
   listenForeignPageDrags,
   awaitDropAck,
+  subscribePageDragActive,
+  setPageDragActive,
   PDF_DRAG_START,
+  PDF_DRAG_MOVE,
   PDF_DRAG_END,
   PDF_DROP_ACK,
   type PageTransfer,
@@ -252,6 +255,144 @@ describe("resolveDropTarget", () => {
     const landed: { transfer: PageTransfer; index: number }[] = [];
     const unmount = mountStrip("rail-a", landed);
     expect(resolveDropTarget({ x: 100, y: 100 }, "rail-a")).toBeNull();
+    unmount();
+  });
+});
+
+// ── The spring-loaded rail ───────────────────────────────────────────────────
+// A PDF viewer whose rail is closed has no strip mounted, so it is not a drop target
+// and — the foreign listener being refcounted by mounted strips — is not even
+// listening. The drag-active signal is what lets every open document open its rail
+// for the duration of a drag and become a destination.
+
+describe("the drag-active signal", () => {
+  beforeEach(() => {
+    emitted.length = 0;
+    handlers.clear();
+  });
+
+  it("reports another window's drag start and end", async () => {
+    const seen: boolean[] = [];
+    const un = subscribePageDragActive((a) => seen.push(a));
+    await settle();
+
+    deliver(PDF_DRAG_START, { originLabel: "detached_1", count: 2 });
+    deliver(PDF_DRAG_END, {
+      originLabel: "detached_1",
+      token: "clip1",
+      count: 2,
+      physX: 50,
+      physY: 50,
+      shift: false,
+      cancelled: false,
+    });
+
+    expect(seen).toEqual([true, false]);
+    un();
+  });
+
+  it("reports a CANCELLED drag as ended, so a sprung rail does not stay open", async () => {
+    const seen: boolean[] = [];
+    const un = subscribePageDragActive((a) => seen.push(a));
+    await settle();
+
+    deliver(PDF_DRAG_START, { originLabel: "detached_1", count: 1 });
+    deliver(PDF_DRAG_END, {
+      originLabel: "detached_1",
+      token: "",
+      count: 1,
+      physX: 50,
+      physY: 50,
+      shift: false,
+      cancelled: true,
+    });
+
+    expect(seen).toEqual([true, false]);
+    un();
+  });
+
+  it("ignores the echo of our OWN drag — the strip reports that one directly", async () => {
+    const seen: boolean[] = [];
+    const un = subscribePageDragActive((a) => seen.push(a));
+    await settle();
+
+    // Acting on the echo as well would be a second, unpaired open/close of the rail.
+    deliver(PDF_DRAG_START, { originLabel: "main", count: 1 });
+    expect(seen).toEqual([]);
+    un();
+  });
+
+  it("carries the same-window drag, which never reaches the event bus at all", async () => {
+    const seen: boolean[] = [];
+    const un = subscribePageDragActive((a) => seen.push(a));
+    await settle();
+
+    // A drop resolved through the DOM emits no END, so `PageStrip` says so itself.
+    setPageDragActive(true);
+    setPageDragActive(false);
+
+    expect(seen).toEqual([true, false]);
+    un();
+  });
+
+  it("stops reporting once unsubscribed", async () => {
+    const seen: boolean[] = [];
+    const un = subscribePageDragActive((a) => seen.push(a));
+    await settle();
+    un();
+    await settle();
+
+    deliver(PDF_DRAG_START, { originLabel: "detached_1", count: 1 });
+    setPageDragActive(true);
+    expect(seen).toEqual([]);
+  });
+});
+
+describe("a rail that springs open MID-drag", () => {
+  let unlisten: (() => void) | null = null;
+
+  beforeEach(() => {
+    emitted.length = 0;
+    handlers.clear();
+    document.body.innerHTML = "";
+  });
+
+  afterEach(() => {
+    unlisten?.();
+    unlisten = null;
+  });
+
+  it("still claims the drop, though it missed the START that snapshots the frame", async () => {
+    // The whole point of the spring-loaded rail is that the strip comes into
+    // existence AFTER the drag began — so this listener never hears the start. It
+    // must take its window-frame snapshot off the cursor stream instead, or it maps
+    // no coordinate, refuses every drop, and the pages bounce off the rail that
+    // opened for them.
+    deliver(PDF_DRAG_START, { originLabel: "detached_1", count: 2 });
+
+    const landed: { transfer: PageTransfer; index: number }[] = [];
+    const unmount = mountStrip("rail-late", landed);
+    unlisten = await listenForeignPageDrags();
+
+    // The drag is still moving: this is where the late snapshot happens.
+    deliver(PDF_DRAG_MOVE, { originLabel: "detached_1", physX: 1100, physY: 1100 });
+    await settle();
+
+    deliver(PDF_DRAG_END, {
+      originLabel: "detached_1",
+      token: "clip-late",
+      count: 2,
+      physX: 1100,
+      physY: 1100,
+      shift: false,
+      cancelled: false,
+    });
+
+    expect(landed).toEqual([{ transfer: { token: "clip-late", count: 2 }, index: 3 }]);
+    expect(emitted).toContainEqual({
+      event: PDF_DROP_ACK,
+      payload: { token: "clip-late", accepted: true },
+    });
     unmount();
   });
 });

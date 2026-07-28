@@ -36,14 +36,6 @@ describe("isRestorableKind", () => {
     expect(isRestorableKind("local_agent")).toBe(false);
   });
 
-  it("keeps mail — it has no live process and no session to lose", () => {
-    // The mail tab re-renders from its own global store, so it belongs in the
-    // always-restore set. This is the ONLY automated proof the tab survives a
-    // restart; note that restoring it must never *sync* — a restored tab renders
-    // from the local index and shows a "Check mail" button (MAIL_TAB_CMD).
-    expect(isRestorableKind("mail")).toBe(true);
-  });
-
   it("keeps browser — the tab comes back, on its resume card", () => {
     // A browser tab has no live process and one persisted field (its URL). What
     // it must NOT do is navigate on restore: it comes back holding the address

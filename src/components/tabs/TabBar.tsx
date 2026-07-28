@@ -5,10 +5,11 @@ import {
   BLOB_TAB_CMD,
   BROWSER_TAB_CMD,
   CALENDAR_TAB_CMD,
-  MAIL_TAB_CMD,
+  PRINTING_TAB_CMD,
   DISKUSAGE_TAB_CMD,
   NETWORK_TAB_CMD,
   MONITOR_TAB_CMD,
+  SKILLSLIBRARY_TAB_CMD,
   EMPTY_GROUP_ID,
   isPtyTabKind,
   useTabsStore,
@@ -49,6 +50,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { closeTabWithConfirm } from "../../lib/closeRemoteTab";
+import { registerHostBoundTab } from "../../lib/hostBound";
 import { useActivityStore } from "../../stores/activity";
 import { useT } from "../../lib/i18n";
 
@@ -122,13 +124,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   const setAgentMode = useTabsStore((s) => s.setAgentMode);
   // Experimental — off by default, on in debug mode: the Plan/Auto badge.
   const agentModeToggle = useExperimental("agent_mode_toggle");
-  // Experimental — off for users, on in debug: the embedded mail client. The
-  // flag gates the MENU entry only; an already-open (or restored) mail tab keeps
-  // rendering, because hiding a tab someone is reading is not what a flag flip
-  // means.
-  const mailClient = useExperimental("mail_client");
-  // Same gate, same asymmetry: the in-app browser (#61). Hides the menu entry,
-  // never a pane already on screen.
+  // Experimental — off for users, on in debug: the in-app browser (#61). This is
+  // the entry-point half of the gate; the other half is the withdrawal
+  // (`lib/experimentalSweep`), which closes any browser tab already open when the
+  // flag goes off, so hiding the menu entry here is never the whole story.
   const webBrowser = useExperimental("web_browser");
   // Where a fresh browser tab opens. Empty/unset = the built-in start page, not
   // a remote request.
@@ -531,19 +530,37 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     setMenuPos(null);
   }
 
-  // Open (or focus, if already open) the embedded mail tab. The mailbox store is
-  // global, so one per scope is enough — hence ensureTab rather than addTab, and
-  // hence a second mail tab would only ever show the same thing.
-  function handleAddMail() {
+  // Open (or focus, if already open) the native print manager. Printers belong
+  // to the machine, so a second tab in this scope would list the same ones —
+  // hence ensureTab, the bargain mail and the calendar make for the same reason.
+  function handleAddPrinting() {
     focusGroup(groupId);
     ensureTab(
-      { label: t("newTabMenu.mail"), cmd: MAIL_TAB_CMD, cwd: projectCwd, kind: "mail" },
-      (tab) => tab.kind === "mail",
+      { label: t("printing.title"), cmd: PRINTING_TAB_CMD, cwd: projectCwd, kind: "printing" },
+      (tab) => tab.kind === "printing",
     );
     setMenuPos(null);
   }
 
-  // Open an in-app browser tab. Unlike mail/calendar this is NOT a singleton:
+  // Open (or focus, if already open) the Skills Library tab. Install/uninstall
+  // act on this one project, so a second tab in this scope would show exactly
+  // the same catalog and installed list — hence ensureTab, the calendar/
+  // printing bargain, rather than addTab.
+  function handleAddSkills() {
+    focusGroup(groupId);
+    ensureTab(
+      {
+        label: t("skillsLibrary.title"),
+        cmd: SKILLSLIBRARY_TAB_CMD,
+        cwd: projectCwd,
+        kind: "skillslibrary",
+      },
+      (tab) => tab.kind === "skillslibrary",
+    );
+    setMenuPos(null);
+  }
+
+  // Open an in-app browser tab. Unlike the calendar this is NOT a singleton:
   // each tab holds its own page, and two browser tabs never show the same thing —
   // so it stacks (addTab), the way diskusage does. The tab starts on the
   // configured home address, or on its start page when there is none: an empty
@@ -574,11 +591,16 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         cmd: "vibe",
         args: [],
         // ELDRUN_LOCAL_MODEL records WHICH model this tab is driving, so the
-        // usage recap can break local agent tabs down by model. `VIBE_ACTIVE_MODEL`
-        // carries the resolved alias, not necessarily the name the user picked.
+        // usage recap can break local agent tabs down by model — and ONLY that
+        // (#150): the right to run outside the project's container is granted by
+        // `hostBoundUid` below, registered as a file in the state dir, so a
+        // display-only change here can no longer hand out a container escape.
+        // `VIBE_ACTIVE_MODEL` carries the resolved alias, not necessarily the
+        // name the user picked.
         env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias, ELDRUN_LOCAL_MODEL: model },
         cwd: projectCwd,
         kind: "local_agent",
+        hostBoundUid: await registerHostBoundTab(scope),
       });
     } catch {
       // Ollama not running or agent prep failed — don't create a tab with no model config.
@@ -603,10 +625,12 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         cmd,
         args,
         // Nothing else here names the model — cmd/args are the resolved launcher —
-        // so record it for the usage recap's per-model breakdown.
+        // so record it for the usage recap's per-model breakdown. It is a label,
+        // not an authority: see the `hostBoundUid` note above (#150).
         env: { ELDRUN_LOCAL_MODEL: model },
         cwd: projectCwd,
         kind: "local_agent",
+        hostBoundUid: await registerHostBoundTab(scope),
       });
     } catch {
       // ollama launch unavailable / agent prep failed — don't create a broken tab.
@@ -1439,16 +1463,29 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   onPick: handleAddCalendar,
                 }],
               },
-              ...(mailClient
+              {
+                label: t("printing.title"),
+                entries: [{
+                  key: "printing",
+                  label: t("printing.title"),
+                  dot: "⎙",
+                  color: TAB_ACCENT.printing,
+                  untested: true,
+                  onPick: handleAddPrinting,
+                }],
+              },
+              // Needs a project to install into — hidden at the root scope
+              // rather than offered disabled, the Network Traffic bargain above.
+              ...(scope !== "root"
                 ? [{
-                    label: t("newTabMenu.mail"),
+                    label: t("skillsLibrary.title"),
                     entries: [{
-                      key: "mail",
-                      label: t("newTabMenu.mail"),
-                      dot: "✉",
-                      color: TAB_ACCENT.mail,
+                      key: "skillslibrary",
+                      label: t("skillsLibrary.title"),
+                      dot: "◧",
+                      color: TAB_ACCENT.skillslibrary,
                       untested: true,
-                      onPick: handleAddMail,
+                      onPick: handleAddSkills,
                     }],
                   }]
                 : []),

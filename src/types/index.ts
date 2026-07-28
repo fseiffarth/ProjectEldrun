@@ -133,12 +133,36 @@ export interface Settings {
   calendar_day_end_hour?: number;
   /** Calendar: minutes-before reminder pre-filled on a new event. `0` = none. */
   calendar_default_reminder_minutes?: number;
+  /** Calendar: put a 📅 button in the header that opens the calendar overlay,
+   *  badged with the events left today. Default false. The twin of the header's
+   *  mail button, with no experimental gate above it — the calendar is a shipped
+   *  feature and reads nothing off the network. */
+  calendar_global_app?: boolean;
+  /** To-do board: put a ☑ button in the header that opens the global todo board
+   *  overlay, badged with what is due today. Default false.
+   *
+   *  A plain setting rather than an experimental flag, for `calendar_global_app`'s
+   *  reasons: the board reads one already-shipped local file (`calendar.json` —
+   *  its cards *are* the calendar's tasks) and reaches no network. Its one
+   *  network-adjacent half, the urgent-mail rail, is already gated by
+   *  `mail_client`, so a second experimental flag would gate the same thing twice
+   *  — and `experimental()` additionally means "on in debug", which would put a
+   *  third header button in every developer's window unasked. */
+  todo_board?: boolean;
   /** Mail: the experimental gate for the embedded mail client (`lib/experimental`
-   *  — unset means "on in debug mode", which is NOT the same as false). */
+   *  — unset means "on in debug mode", which is NOT the same as false).
+   *
+   *  The ONE mail switch. It turns on the header's ✉ button and the overlay
+   *  behind it, which since the mail tab was retired is the whole client; the old
+   *  `mail_global_app` sub-toggle is gone, because a switch that hides the only
+   *  surface while leaving the feature "on" has nothing to mean. */
   mail_client?: boolean;
-  /** Mail: the account a fresh mail tab opens on. Falls back to the first. */
+  /** Mail: the account the mail overlay opens on. Falls back to the first. */
   mail_default_account?: string;
-  /** Mail: minutes between background checks. Default 5; polling is Phase 2. */
+  /** Mail: minutes between automatic checks. **Unset/0 = never**, which is the
+   *  default and the reason the store's "nothing connects on its own" rule still
+   *  holds: only an explicit opt-in here starts a timer, and only while the
+   *  header's mail button is on (`MailIndicator` owns it). */
   mail_check_interval_min?: number;
   /** Mail: load remote images without asking. **Default false, and it should
    *  stay that way** — loading them tells the sender the message was opened. */
@@ -197,6 +221,19 @@ export interface Settings {
    *  serve it, so several loaded models can run different jobs in parallel. A
    *  task absent here falls back to `ollama_model`, then to any loaded model. */
   ollama_roles?: Record<string, string>;
+  /** Local models to load into memory when Eldrun starts (🧠 menu "on start"
+   *  chip / Ollama settings). Loading is what makes a model *usable* without a
+   *  manual step, so a feature that wants one waiting — mail-importance scoring,
+   *  autocomplete — finds it warm at launch. Sequential, in list order. Unset or
+   *  empty = nothing is started. Round-trips through the backend's `extra`
+   *  catch-all — no Rust field needed. */
+  ollama_autoload_models?: string[];
+  /** Whether {@link ollama_autoload_models} is honoured while Energy Saver is
+   *  active. **Default false**: a resident model holds GPU/CPU memory and Ollama
+   *  keeps it warm, which is exactly what Energy Saver exists to stop. When it
+   *  suppresses a load the 🧠 menu says so and offers to load it anyway, rather
+   *  than leaving the models silently absent. Round-trips through `extra`. */
+  ollama_autoload_in_energy_saver?: boolean;
   /** Python Run/Debug arguments (#py), the raw `sys.argv` string typed into the
    *  Run button's right-click popover, keyed by the file's absolute path. Kept
    *  per file (not per tab) so every viewer of the same script shares one set of
@@ -724,6 +761,27 @@ export interface Calendar {
   /** Unchecked in the sidebar → its events drop out of every view. */
   visible: boolean;
   readonly: boolean;
+  /**
+   * The ICS feed URL this calendar was subscribed from (e.g. TimeTree's
+   * calendar-export URL), if any — set on first "Refresh from URL" import and
+   * read back to find which calendar a later refresh replaces. Rides the
+   * Rust schema's `#[serde(flatten)] extra` map, so an older build reading
+   * this file simply doesn't recognize the key rather than failing to parse.
+   * Absent for a calendar imported from a local file or created by hand.
+   */
+  source_url?: string;
+  /**
+   * The `CalDavAccount.id` this calendar is synced from, and the collection's
+   * own URL on that account. Both ride the Rust schema's `extra` flatten, the
+   * same way `source_url` does.
+   *
+   * Deliberately **only the pointer**: the login, the sync cursors and the
+   * keychain reference live in `caldav/accounts.json`, not here — this file is
+   * read by every calendar tab on mount and exported alongside a calendar, and
+   * account plumbing has no business in either (`docs/caldav_plan.md`).
+   */
+  caldav_account_id?: string;
+  caldav_href?: string;
 }
 
 /** How often a recurring event repeats. */
@@ -773,6 +831,11 @@ export interface CalendarEvent {
   title: string;
   location?: string;
   notes?: string;
+  /** The video call's join URL (`http(s)` only). Its own field rather than a
+   *  convention on `location`, because a Join button must not be a guess about
+   *  what a room name means — see `lib/conference.ts`, which still *derives* one
+   *  from `location`/`notes` for the imported invitations that carry it there. */
+  conference?: string;
   category?: string;
   status?: EventStatus | "";
   rrule?: Rrule | null;
@@ -780,9 +843,47 @@ export interface CalendarEvent {
   exdates?: string[];
   overrides?: EventOverride[];
   alarms?: Alarm[];
+  /** The CalDAV resource this row was synced from, and its ETag. Present only
+   *  on rows a CalDAV sync created; they are what the reconciliation matches on,
+   *  so nothing else may write them. */
+  caldav_href?: string;
+  caldav_etag?: string;
 }
 
-/** A to-do (VTODO). */
+/** One checklist item inside a task. */
+export interface Subtask {
+  id: string;
+  title: string;
+  done: boolean;
+}
+
+/** The mail a card was converted from — identifiers plus a snapshot taken at
+ *  conversion, never a path. `message_id` is the `MailHeader.id` store key that
+ *  `mail_body`/`mail_flag`/`mail_priority_set` take. The subject/from are frozen
+ *  so the card still reads after the message is deleted from the server. */
+export interface TaskMailLink {
+  message_id: string;
+  account_id?: string;
+  folder_id?: string;
+  subject?: string;
+  from?: string;
+  priority_at_convert?: string;
+}
+
+/** One column of the todo board. */
+export interface TaskColumn {
+  id: string;
+  name: string;
+  position: number;
+  /** **The** completion column: dropping a card here completes it. At most one
+   *  column carries it; zero is legal and turns the coupling off. */
+  done: boolean;
+  color?: string;
+  /** Advisory WIP cap; `0` = none. Nothing ever refuses a move because of it. */
+  limit?: number;
+}
+
+/** A to-do (VTODO) — and a card on the todo board. */
 export interface CalendarTask {
   id: string;
   calendar_id: string;
@@ -797,6 +898,36 @@ export interface CalendarTask {
   completed?: string | null;
   category?: string;
   alarms?: Alarm[];
+  /** Board column id. Absent means "never placed" — the backend deliberately
+   *  does not backfill one on read, so a card acquires it on its first move. */
+  column?: string;
+  /** Fractional rank within `column`, ascending. Absent = unranked (sorts last). */
+  rank?: number | null;
+  tags?: string[];
+  subtasks?: Subtask[];
+  mail?: TaskMailLink | null;
+  /** `ProjectEntry.id`, or absent. Never validated against `projects.json` — an
+   *  unresolvable id still filters and renders as an unknown-project chip. */
+  project_id?: string;
+  /** Local wall-clock stamp minted at creation (`"YYYY-MM-DDTHH:MM"`). */
+  created?: string;
+  /** The CalDAV resource this card was synced from, and its ETag. Everything
+   *  above from `column` down is Eldrun's own and is **never** overwritten by a
+   *  sync — that is the whole point of matching on the href. */
+  caldav_href?: string;
+  caldav_etag?: string;
+}
+
+/** One card's target position after a drag, for `todo_move_tasks`. The backend
+ *  takes an **index**, not a rank, so the rank algebra lives in one place and a
+ *  replayed placement is a no-op. */
+export interface TaskPlacement {
+  id: string;
+  column: string;
+  index: number;
+  /** Stamp to use if this move completes the card (the frontend owns the clock —
+   *  the backend has no local-time source). */
+  completed_stamp?: string | null;
 }
 
 /** The whole of `calendar.json`. */
@@ -805,6 +936,10 @@ export interface CalendarData {
   calendars: Calendar[];
   events: CalendarEvent[];
   tasks: CalendarTask[];
+  /** The todo board's columns. **Absent until the board's first write** — a read
+   *  never creates one, so a calendar-only user's file never grows board state.
+   *  Until then the board renders `DEFAULT_COLUMNS` from `lib/todoBoard`. */
+  task_columns?: TaskColumn[];
 }
 
 /**
@@ -822,6 +957,9 @@ export interface Occurrence {
   title: string;
   location: string;
   notes: string;
+  /** The master's join URL, carried onto every occurrence so a list of
+   *  occurrences can offer Join without going back to the event. */
+  conference: string;
   category: string;
   status: EventStatus | "";
   calendarId: string;

@@ -54,6 +54,11 @@ function baseOccurrence(event: CalendarEvent, occurrenceStart: string, start: st
     title: event.title,
     location: event.location ?? "",
     notes: event.notes ?? "",
+    // Carried onto every occurrence rather than looked up from the master at
+    // render time: the surfaces that offer Join (the header dropdown, the
+    // agenda rail) are handed occurrences and nothing else. An override cannot
+    // change it — a series' link is the series'.
+    conference: event.conference ?? "",
     category: event.category ?? "",
     status: (event.status ?? "") as EventStatus | "",
     calendarId: event.calendar_id,

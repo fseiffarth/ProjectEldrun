@@ -81,7 +81,29 @@ Eight were fixed in place; the root cause was that Eldrun's own control files
 container's writable project mount while the host reads them back as executable
 intent. What is left is listed here.
 
-142. **Move `.eldrun/sessions/` out of the project tree.** The persisted tab
+142. **DONE (2026-07-27) — Move `.eldrun/sessions/` out of the project tree.**
+    The layout and `open_apps` now live at `<state_dir>/sessions/<project key>/
+    terminals.json`, keyed by **project id** rather than by the path to a
+    `project.json` (that re-keying was the actual work — the whole
+    `terminal_service` API took a `local_file`). `load_project` no longer serves
+    the layout at all; `CenterPanel` restores from the new `load_tab_session`.
+    The project-tree copy is still **written** — so a byte-synced or hand-copied
+    folder keeps carrying its tabs — but is never read without an explicit click
+    ("Restore layout saved in the folder…" in the pill menu →
+    `adopt_folder_tab_layout`, which sanitizes and refuses to adopt `open_apps`).
+    Migration is **once per installation**, so a project imported afterwards is
+    never adopted from. The invariant is a test now, not a memory:
+    `src-tauri/tests/project_tree_intent.rs`. The migration has run against the
+    real 27-project workspace: 26 migrated (the 27th had no saved layout at all),
+    85 tabs carried, zero neutered by the sanitizer.
+    - [x] 🤖 Automated test
+    - [x] 🖐️ Manual test — migration verified on the real workspace. Still worth a
+      look on the next relaunch: that restored tabs come back where expected, and
+      that "Restore layout saved in the folder…" adopts a synced folder's layout.
+
+    <details><summary>Original entry</summary>
+
+    The persisted tab
     layout is now *sanitized* on load (`services::terminal_service::
     sanitize_tab_layout` neutralizes any entry whose `cmd` is not a known tab
     command) and `pty_spawn` no longer trusts the renderer's `sandbox`/
@@ -101,8 +123,8 @@ intent. What is left is listed here.
     Phased plan (incl. the project-tree-read tripwire that makes the invariant
     checkable rather than remembered):
     [`docs/sandbox_hardening_plan.md`](../docs/sandbox_hardening_plan.md) Phase 1.
-    - [ ] 🤖 Automated test
-    - [ ] 🖐️ Manual test
+
+    </details>
 
 143. **Confirm before adopting a repo's own `Dockerfile` / devcontainer image.**
     `services::sandbox::detect_spec_sources` still auto-adopts a root
@@ -186,7 +208,26 @@ intent. What is left is listed here.
     site (`git_publish.rs:363`); no code change. Kept as a record so the next
     audit does not re-raise it.
 
-150. **Stop keying host-bound authority on a usage-stats env var.**
+150. **DONE (2026-07-27) — Stop keying host-bound authority on a usage-stats env
+    var.** `is_host_bound_local_agent(cmd, marker)` now takes a *registered marker*
+    instead of the tab's env: a local-model tab mints a uid at creation
+    (`src/lib/hostBound.ts` → `register_host_bound_tab`), the backend writes
+    `<state_dir>/sessions/<project>/host_bound/<uid>`, and the spawn path checks
+    for that file. `ELDRUN_LOCAL_MODEL` is a usage label again. Markers are pruned
+    on every layout save against the uids still in the layout.
+    Two corrections to the plan, both worth knowing: the uid is **not** already
+    stable across relaunch (`loadFromLayout` re-mints every key *and* the PTY id),
+    so it is minted once and persisted as `hostBoundUid`; and with #142 done this
+    is mostly a **decoupling** fix, not a containment one — it stops a
+    display-only change to a telemetry var from silently granting container
+    escapes. It does not defend against a compromised renderer, which can call the
+    registration command as easily as it can spawn. That case is the CSP's.
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test — open an Ollama/vibe tab in a container-toggled project,
+      confirm it still runs on the host, and that it still does after a relaunch.
+
+    <details><summary>Original entry</summary>
+
     `services::sandbox::is_host_bound_local_agent` lets a tab skip the container
     when its `cmd` is in `HOST_BOUND_LOCAL_AGENT_CMDS` **and** its env carries
     `ELDRUN_LOCAL_MODEL` — and both came from the persisted layout, i.e. from
@@ -203,8 +244,8 @@ intent. What is left is listed here.
     is already stable across relaunch, so a legitimate restored Ollama tab is
     unaffected. Do it with #142's Phase 1a, which builds the per-project
     state-dir keying. Plan: [`docs/sandbox_hardening_plan.md`](../docs/sandbox_hardening_plan.md) Phase 2.
-    - [ ] 🤖 Automated test
-    - [ ] 🖐️ Manual test
+
+    </details>
 
 149. **Confine `pty_spawn`'s `cwd` to the owning project.** The audit suggested
     rejecting a spawn whose `project_id` is `Some` and whose `cwd` is not under
@@ -215,6 +256,80 @@ intent. What is left is listed here.
     backend-resolved authority already remove the exploit path that made this
     urgent.
     - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+151. **A repo's own `.git/config` is executable intent too. (MITIGATED ⚠️ · not
+    closed)** The same sentence as #142, with git as the executor instead of
+    Eldrun: `services::sandbox` bind-mounts the project directory whole — `.git`
+    included — into the container's rw mount, and every host-side git call runs in
+    that directory with the repo's config honoured. So a contained agent writing
+    `.git/config` gets code execution **on the host**. The sharpest is
+    `core.fsmonitor`, whose hook form git runs on a plain `git status` — and
+    `git_file_statuses`/`git_status` are polled continuously for the file tree, so
+    the chain needs no user action at all. `diff.external` and
+    `diff.<driver>.textconv` are the same class via the diff viewer and the
+    file-status poll. All three verified to execute against a live repo.
+    - **Shipped**: every invocation in `commands::git::run_git` (local *and* the
+      SSH path) now goes through `hardened_git_args` — `-c core.fsmonitor=false`,
+      `-c protocol.ext.allow=never`, plus `--no-ext-diff --no-textconv` on the
+      subcommands that accept them. The two unattended spawns that build their own
+      `Command` (`commands::usage_stats`'s recap `log`, `commands::fs`'s
+      `ignored_paths_under` status) use the shared `hardened_git_command`. Tested
+      in both directions (`a_repos_own_config_cannot_run_a_program_on_the_host`),
+      so removing the hardening fails, and so does git ever ceasing to honour the
+      config the test plants.
+    - **Residual, needing the structural fix**: a repo-local `filter.<driver>.clean`
+      bound by an in-tree `.gitattributes` still runs on `git diff`/`git add` —
+      there is no fixed `-c` that disables a *named* driver and no switch that
+      ignores in-tree attributes. `.git/hooks/*` and `core.sshCommand` likewise
+      still fire on the **user-initiated** writes (Commit, Push, Checkout), left
+      deliberately: a repo's own hooks are a feature there, and silently skipping
+      them would break e.g. a pre-push version bump. `services::git_peer` /
+      `worker_sync` / `git_publish` are unhardened and out of scope — they run
+      against a *remote* project's mirror, which no container ever mounts.
+    - The real fix is the same shape as #142: the container's writable area must
+      stop containing things the host reads as intent. For git that means either
+      not exposing `.git` rw (breaks in-container commits, which agents genuinely
+      need) or running Eldrun's own git under a config the repo cannot reach.
+      Decide that before adding more `-c` flags — the flag list has the same
+      "can never be shown to be complete" problem as the validators #142 replaces.
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+152. **One gate for "this is already a project". (DONE ✅ · 🧪 Untested)** Importing
+    or creating a project on a site another project already owns used to be
+    refused in exactly one case — a local `keep` import of the same directory
+    string — and `create_project` had no check at all. Three consequences, all
+    data-shaped rather than cosmetic:
+    - A **remote** project's registered `directory` is a per-id state dir, so the
+      comparison could never match: the same `host:/path` could be imported any
+      number of times, each copy with its own mirror and its own lockstep +
+      byte-sync state driving one host tree, none aware of the others.
+    - The check ran **after** the mode dispatch had already moved the files, so
+      re-importing a registered folder under a different name in `move` mode moved
+      the tree out from under the original entry and left it pointing at a path
+      that no longer existed.
+    - It compared raw strings, so `/a/foo`, `/a/foo/` and a symlink into it read as
+      three different projects.
+    - **Shipped**: `find_project_conflict` in `commands::projects` is now the one
+      resolver, over a `ProjectSite` that is a local directory *or* an SSH
+      target + host path (`ssh_target_key` mirrors the frontend's
+      `machineSync.sameTarget` — host case-insensitive, default port 22, a
+      different login is a different site). `create_project`, `import_project`,
+      `finish_import` and `extend_project_to_remote` all route through it;
+      `import_project` runs it **before** the move/copy touches the disk. A remote
+      project's **mirror** counts as an owned tree, and `remote_mirror_in` now
+      avoids a path another project has registered as well as one that exists.
+      `copy` mode stays exempt on purpose — it duplicates into a new directory and
+      leaves the source registered and intact, which is a real thing to want.
+    - The dialog pre-checks via `check_project_site` and names the colliding
+      project with an **Open it** button, so a clone/fork no longer downloads a
+      whole repository into a destination the backend is about to refuse.
+    - Known limit: a host path is compared as typed, so `~/work` and
+      `/home/alice/work` are two sites. Only the host can expand `~`, and browsing
+      to a folder always yields an absolute path, so this is reachable only by
+      hand-typing the path.
+    - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
 
 ---

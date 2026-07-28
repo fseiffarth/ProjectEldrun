@@ -8,15 +8,27 @@ import {
   formatSize,
   linkIsMailto,
   linkIsOpenable,
+  mailLinkLabel,
+  mailLinkNeedsAttention,
   mailAttachmentPreview,
   mailAttachmentSave,
+  mailAuthDmarcCarried,
+  mailAuthPanelTone,
+  mailAuthShown,
+  mailAuthSummary,
+  mailAuthTone,
+  mailCryptoNoteKey,
+  mailCryptoTone,
   openMailLink,
   stripFormatControls,
 } from "../../lib/mail";
 import { useI18nStore, useT } from "../../lib/i18n";
+import { UntestedTag } from "../common/UntestedTag";
 import type {
   MailAttachmentMeta,
+  MailAuthResults,
   MailBody,
+  MailCryptoInfo,
   MailHeader,
   MailLink,
   MailPreviewBlob,
@@ -116,6 +128,14 @@ export function MailMessageView({
           <span className="mail-meta-label">{t("mail.date")}</span>
           <span className="mail-meta-value">{formatMailDate(header.date, lang)}</span>
         </div>
+        <MailAuthPanel auth={header.auth} />
+        {/* Beside the sender checks, not instead of them: they answer different
+            questions. `Authentication-Results` is what YOUR server concluded
+            about the hop that delivered the message; this is what the *sender*
+            did to it before it left their machine. A message can pass one and
+            fail the other, and folding them into one badge would hide exactly
+            that case. */}
+        {body?.crypto && <MailCryptoPanel info={body.crypto} />}
         <div className="mail-message-actions">
           <button type="button" className="mail-btn" onClick={() => onReply("reply")}>
             {t("mail.composeReply")}
@@ -196,6 +216,146 @@ export function MailMessageView({
 }
 
 /**
+ * What the **receiving server** concluded about SPF/DKIM/DMARC, read out of the
+ * message's `Authentication-Results` header.
+ *
+ * Three rules make this safe to show, and all three are load-bearing:
+ *
+ *  - **A verdict appears only in the `verified` state** — the account named a
+ *    trusted `authserv-id` and the topmost header carried it. The backend clears
+ *    `methods` in every other state and `mailAuthShown` refuses a second time,
+ *    because a tick an attacker can draw is worse than no tick at all.
+ *  - **A pass is never shown without the domain it applies to.**
+ *    `dkim=pass header.d=evil.example` on a mail claiming to be a bank is a
+ *    genuine pass by the wrong signer, so `mailAuthTone` tones an unaligned pass
+ *    as a warning, not as good news.
+ *  - **Absence is not failure.** A message with no such header renders nothing
+ *    here; only a *configured* account that received a *foreign* header gets a
+ *    warning, because that one really is a signal.
+ */
+/**
+ * End-to-end signature/encryption, in `MailAuthPanel`'s shape and vocabulary.
+ *
+ * **The chrome rule is the backend's**, not this component's: `info.state`
+ * already encodes it, and `mailCryptoTone` is the single mapping from state to
+ * appearance. Recomputing "is this good" here would be a second opinion that can
+ * disagree with the one the tests pin.
+ *
+ * Two things this panel must always say and never imply otherwise:
+ *
+ * - **The identity beside the verdict.** A good signature from a key nobody
+ *   checked is a statement about bytes; the identity is what makes it a
+ *   statement about a person, and only when the user has verified the key.
+ * - **Headers are not signed.** From, Subject and Date sit outside the signature
+ *   in both formats, so a tick never vouches for the sender line above it. That
+ *   note is emitted by the backend for every signed message precisely so it
+ *   cannot be forgotten here.
+ */
+function MailCryptoPanel({ info }: { info: MailCryptoInfo }) {
+  const t = useT();
+  const tone = mailCryptoTone(info);
+  const notes = info.notes
+    .map(mailCryptoNoteKey)
+    .filter((k) => k !== null)
+    .map((k) => k as NonNullable<typeof k>);
+
+  const headline = info.encrypted
+    ? info.decrypted
+      ? "mail.crypto.encryptedOpened"
+      : "mail.crypto.encryptedLocked"
+    : "mail.crypto.signedOnly";
+
+  return (
+    <div className={`mail-auth mail-auth-${tone}`}>
+      <div className="mail-auth-head">
+        <span className="mail-meta-label">
+          {t(info.format === "openpgp" ? "mail.crypto.titlePgp" : "mail.crypto.titleSmime")}
+        </span>
+        <span className="mail-auth-summary">{t(headline)}</span>
+        <UntestedTag />
+      </div>
+      {info.signed && (
+        <div className="mail-auth-rows">
+          <span className={`mail-auth-chip tone-${tone}`}>
+            <span className="mail-auth-method">{t("mail.crypto.signature")}</span>
+            <span className="mail-auth-result">{t(`mail.crypto.state.${info.state}`)}</span>
+            {/* Always rendered when there is one — the verdict without the
+                identity it applies to is the misreading this whole vocabulary
+                exists to prevent. */}
+            {info.identifier && (
+              <span className="mail-auth-identity">
+                {t(info.aligned ? "mail.authAligned" : "mail.authUnaligned", {
+                  domain: info.identifier,
+                })}
+              </span>
+            )}
+          </span>
+        </div>
+      )}
+      {notes.map((key) => (
+        <p key={key} className="mail-auth-hint">
+          {t(key)}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function MailAuthPanel({ auth }: { auth?: MailAuthResults }) {
+  const t = useT();
+  const summary = mailAuthSummary(auth);
+  if (!auth || !summary) return null;
+
+  const shown = mailAuthShown(auth);
+  const tone = mailAuthPanelTone(auth);
+
+  return (
+    <div className={`mail-auth mail-auth-${tone}`}>
+      <div className="mail-auth-head">
+        <span className="mail-meta-label">{t("mail.authTitle")}</span>
+        <span className="mail-auth-summary">{t(summary.key, summary.values)}</span>
+        <UntestedTag />
+      </div>
+      {shown.length > 0 && (
+        <div className="mail-auth-rows">
+          {/* Keyed by position, not by method: a message can carry **two** DKIM
+              signatures (the sending service's and the brand's), and keying by
+              name alone collides. */}
+          {shown.map((m, i) => (
+            <span key={`${m.method}-${i}`} className={`mail-auth-chip tone-${mailAuthTone(m)}`}>
+              <span className="mail-auth-method">{m.method.toUpperCase()}</span>
+              <span className="mail-auth-result">{m.result}</span>
+              <span className="mail-auth-identity">
+                {m.identifier
+                  ? t(m.aligned ? "mail.authAligned" : "mail.authUnaligned", {
+                      domain: m.identifier,
+                    })
+                  : t("mail.authNoIdentity")}
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
+      {auth.state !== "verified" && (
+        <p className="mail-auth-hint">
+          {t(auth.state === "foreign" ? "mail.authForeignHint" : "mail.authUnconfiguredHint")}
+        </p>
+      )}
+      {/* Without this, a green summary sitting above an orange chip reads as a
+          contradiction rather than as a conclusion with its workings shown. */}
+      {mailAuthDmarcCarried(auth) && (
+        <p className="mail-auth-hint">{t("mail.authDmarcCarried")}</p>
+      )}
+      {auth.state === "verified" && auth.header_count > 1 && (
+        <p className="mail-auth-hint">
+          {t("mail.authMoreHeaders", { count: auth.header_count })}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
  * The links panel — the *only* clickable surface for a message's links, because
  * the body itself has no `href` to click.
  *
@@ -210,7 +370,7 @@ function MailLinksPanel({
   onPick: (link: MailLink) => void;
 }) {
   const t = useT();
-  const suspicious = links.some((l) => l.mismatch || !!l.scheme_warning);
+  const suspicious = links.some(mailLinkNeedsAttention);
   const [open, setOpen] = useState(suspicious);
 
   if (links.length === 0) return null;
@@ -225,14 +385,17 @@ function MailLinksPanel({
             <button
               key={link.lid}
               type="button"
-              className={`mail-link-row${link.mismatch || link.scheme_warning ? " warn" : ""}`}
+              className={`mail-link-row${mailLinkNeedsAttention(link) ? " warn" : ""}`}
               onClick={() => onPick(link)}
             >
-              <span className="mail-link-host">{link.display_host || link.href}</span>
+              <span className="mail-link-host">{mailLinkLabel(link)}</span>
               {link.mismatch && (
                 <span className="mail-link-flag">{t("mail.linkMismatch")}</span>
               )}
-              {link.scheme_warning && (
+              {/* The scheme chip only where it says something the label does not.
+                  On a `tel:` row the label already *is* the number, so repeating
+                  "tel" beside it is noise dressed as a warning. */}
+              {link.scheme_warning && mailLinkNeedsAttention(link) && (
                 <span className="mail-link-flag">{link.scheme_warning}</span>
               )}
             </button>
@@ -282,7 +445,9 @@ function LinkConfirmDialog({
         <div className="dialog-scroll">
           <div className="mail-link-detail">
             <div className="mail-link-detail-label">{t("mail.linkGoesTo")}</div>
-            <div className="mail-link-detail-host">{link.display_host || "—"}</div>
+            {/* The same label the row used — for a hostless scheme the bare word
+                "tel" would tell the reader nothing about what they are copying. */}
+            <div className="mail-link-detail-host">{mailLinkLabel(link) || "—"}</div>
             <div className="mail-link-detail-label">{t("mail.linkFull")}</div>
             <div className="mail-link-detail-url">{link.href}</div>
           </div>

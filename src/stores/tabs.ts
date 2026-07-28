@@ -10,7 +10,7 @@ import { useLinkRoutingStore } from "./linkRouting";
 import { bumpUsage } from "./usage";
 import { newTmuxSessionName } from "../lib/tmuxSession";
 import { useRunHostPrefStore } from "./runHostPref";
-import { experimentalEnabled } from "../lib/experimental";
+import { experimentalEnabled, withdrawnTabKinds } from "../lib/experimental";
 import { useSettingsStore } from "./settings";
 
 /** A shell tab gets a stable persisted tmux session name at creation (TODO #85),
@@ -57,8 +57,9 @@ export type TabKind =
   | "monitor"
   | "diskusage"
   | "calendar"
-  | "mail"
-  | "browser";
+  | "browser"
+  | "printing"
+  | "skillslibrary";
 
 /**
  * SSH-sync Phase 0 — a PTY tab's locality on a REMOTE (SSH) project: does it run
@@ -168,21 +169,34 @@ export const DISKUSAGE_TAB_CMD = "__eldrun_diskusage__";
 export const CALENDAR_TAB_CMD = "__eldrun_calendar__";
 
 /**
- * Sentinel `cmd` for the embedded mail tab: an IMAP/SMTP client whose store is
- * global — one `~/.local/share/eldrun/mail/`, one zustand store — so a mail tab
- * opened from any scope shows the same mailbox and the tab is a singleton per
- * scope. Carries no PTY: like the calendar pane it owns no process at all, which
- * is exactly why it is identified by this command (so `cmdToKind` recovers its
- * kind from a bare persisted `cmd`) and why it must never enter the spawn/kill/
- * activity paths (`isPtyTabKind` deliberately does NOT list it).
+ * Sentinel `cmd` of the **retired** mail tab.
  *
- * A restored mail tab renders from the local index and **never connects on its
- * own** — it shows a "Check mail" button. Reaching a server on a launch path is
- * the one thing a mail client must not do: an unreachable IMAP host hangs for the
- * whole TCP timeout, and nothing about a window being reopened is consent to dial
- * out (see `docs/mail_client_plan_a.md` §2, rule 5).
+ * Mail was a tab and a header overlay at once, and the tab was the half that did
+ * not earn its keep: the mail store is global (one `~/.local/share/eldrun/mail/`,
+ * one zustand store), so a mail tab showed the same mailbox from every scope —
+ * i.e. exactly what the header's ✉ button already opens over whatever is on
+ * screen, without belonging to a project you then switch away from. The tab kind
+ * is gone; `MailPane` lives on, rendered only by `MailOverlayHost`.
+ *
+ * The constant stays because the *persisted layouts* do: a saved tree written
+ * before the removal still carries `kind: "mail"` tabs holding this `cmd`, and
+ * without `RETIRED_TAB_CMDS` below, `cmdToKind` would fall through to `"shell"`
+ * and restore each one as a terminal trying to run `__eldrun_mail__`.
  */
 export const MAIL_TAB_CMD = "__eldrun_mail__";
+
+/**
+ * Sentinel commands of tab kinds Eldrun no longer has, dropped unconditionally
+ * on restore. The twin of `RETIRED_GLOBAL_APP_ROLES` in `layout/GlobalAppBar.tsx`
+ * and there for the same reason: removing a feature does not remove it from the
+ * state already written to disk, and the fall-through for an unrecognized `cmd`
+ * is `"shell"` — a spawned terminal, not a no-op.
+ *
+ * Deliberately NOT `withdrawnTabKinds`: that list is a *setting* (a flag that may
+ * come back on), so it is right for it to wait for settings to load. A retired
+ * kind is never coming back, so its filter must not be conditional on anything.
+ */
+export const RETIRED_TAB_CMDS = new Set<string>([MAIL_TAB_CMD]);
 
 /**
  * Sentinel `cmd` for an in-app browser tab (TODO group J #61).
@@ -213,6 +227,46 @@ export const MAIL_TAB_CMD = "__eldrun_mail__";
  *    and the same bargain diskusage already makes about not replaying its scan.
  */
 export const BROWSER_TAB_CMD = "__eldrun_browser__";
+
+/**
+ * Sentinel `cmd` for the native print manager: the machine's printers, their
+ * queues, and the handful of verbs a queue is worth opening for.
+ *
+ * It is what the `print_manager` **global app** slot used to launch an external
+ * GUI for, brought in-window the way mail, the calendar and the file manager
+ * were before it (see `RETIRED_GLOBAL_APP_ROLES` in `layout/GlobalAppBar.tsx`).
+ *
+ *  - **It carries no PTY**, like the calendar and mail panes, which is why it is
+ *    identified by this command (so `cmdToKind` recovers its kind from a bare
+ *    persisted `cmd`) and why `isPtyTabKind` deliberately does not list it.
+ *  - **It is a singleton per scope.** Printers belong to the machine, not to a
+ *    project, so a second tab would show exactly the same list — hence
+ *    `ensureTab` rather than `addTab`, the bargain mail and the calendar make.
+ *  - **A restored one reads, it does not act.** Restoring costs one `lpstat`
+ *    against the local print system and nothing else: no job is sent, nothing
+ *    is cancelled, and the pane polls only while it is on screen.
+ */
+export const PRINTING_TAB_CMD = "__eldrun_printing__";
+
+/**
+ * Sentinel `cmd` for the Skills Library tab (`docs/skills_plan.md`): browse a
+ * git-hosted collection of Claude Code skills (plain `<name>/SKILL.md`
+ * folders), preview one, and copy it into this project's `.claude/skills/`.
+ *
+ *  - **It carries no PTY**, like the calendar/printing panes, hence the
+ *    sentinel `cmd` so `cmdToKind` recovers its kind on restore.
+ *  - **It is a singleton per scope.** The catalog is the same regardless of
+ *    which tab opened it, and install/uninstall act on the one project the
+ *    scope names — a second tab would show exactly the same thing, hence
+ *    `ensureTab` rather than `addTab` (the bargain calendar/printing make).
+ *  - **Project-scoped only.** Unlike the calendar/print manager it needs
+ *    somewhere to install INTO, so it is offered only where `scope !== "root"`
+ *    and hidden at the root scope rather than shown disabled.
+ *  - **A restored one re-reads, it does not fetch.** Coming back costs a local
+ *    disk read (installed list + whatever catalog was already cached); no
+ *    source is cloned/pulled without an explicit Refresh click.
+ */
+export const SKILLSLIBRARY_TAB_CMD = "__eldrun_skillslibrary__";
 
 /**
  * Synthetic group id for the empty-state placeholder subwindow (rendered by
@@ -419,6 +473,14 @@ export interface TabEntry {
   // session) instead of spawning a fresh one. Persisted so it reattaches across a
   // restart. Passed as `tmux_attach`, which takes precedence over `tmuxSession`.
   tmuxAttach?: string;
+  // The tab's HOST-BOUND MARKER id (`lib/hostBound.ts`, #150): set on a local-model
+  // driver tab, which is the one kind of tab allowed to run on the host when the
+  // project's container toggle is on. Minted and registered at creation and
+  // persisted here for the same reason `tmuxSession` is — the tab's key and PTY id
+  // are regenerated on restore, so nothing else on it survives a relaunch. The
+  // grant itself is a file in the state dir; this is only the index into it, which
+  // is why a planted value buys nothing.
+  hostBoundUid?: string;
 }
 
 export type SplitDir = "row" | "column";
@@ -579,6 +641,8 @@ export interface SavedTabEntry {
   tmuxAttach?: string;
   // Persisted "never tmux-wrap this tab" marker (see TabEntry.ephemeral).
   ephemeral?: boolean;
+  // Persisted host-bound marker id (see TabEntry.hostBoundUid, #150).
+  hostBoundUid?: string;
 }
 
 /** Serialized layout tree as persisted in project.json's `tab_groups`. */
@@ -1031,6 +1095,17 @@ interface TabsStore {
   // `getState()` directly. Pure read (no mutation); single tree walk for the
   // active-key resolution.
   snapshotScopeForSwitch: (scope: string) => ScopeSwitchSnapshot;
+
+  // Withdraw every tab of these kinds from EVERY loaded scope — what an
+  // experimental flag that owns a tab does when it is switched off (see
+  // `lib/experimental`'s EXPERIMENTAL_TAB_KINDS and `lib/experimentalSweep`,
+  // which is the only caller). Not a user close: it neither counts as one in the
+  // usage stats nor asks anything, because it is the feature being taken away,
+  // not a tab being finished with. A tab living inside a detached popout is
+  // deliberately left alone here — that window runs its own store and sweeps
+  // itself (DetachedApp), and reaching into its subtree from the main window
+  // would leave it rendering a tab whose payload had vanished.
+  closeTabsOfKinds: (kinds: TabKind[]) => void;
 
   // persistence
   loadFromLayout: (
@@ -3436,7 +3511,86 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     return { tabs, tabGroups, activeTabIndex };
   },
 
+  closeTabsOfKinds: (kinds) => {
+    const drop = new Set<TabKind>(kinds);
+    if (drop.size === 0) return;
+    const state = get();
+    // Collect the doomed keys per scope first, so the side effects below (link
+    // routes, prompt state) run once and outside `set`.
+    const doomedByScope = new Map<string, Set<string>>();
+    for (const scope of Object.keys(state.tabsByScope)) {
+      // Keys the popouts own — theirs to withdraw, not ours (see the interface).
+      const detached = new Set(
+        (state.detachedGroupsByScope[scope] ?? []).flatMap((d) => orderedTabKeys(d.subtree)),
+      );
+      const doomed = (state.tabsByScope[scope] ?? [])
+        .filter((t) => drop.has(t.kind) && !detached.has(t.key))
+        .map((t) => t.key);
+      if (doomed.length > 0) doomedByScope.set(scope, new Set(doomed));
+    }
+    if (doomedByScope.size === 0) return;
+    for (const [scope, keys] of doomedByScope) {
+      for (const key of keys) {
+        useLinkRoutingStore.getState().purgeForTab(key);
+        forgetPty(`${scope}:${key}`);
+      }
+    }
+    set((s) => {
+      // Fold scope by scope: `writeScope` derives its maps from the state it is
+      // handed, so each iteration must see the previous one's result.
+      let cur = s;
+      for (const [scope, keys] of doomedByScope) {
+        const kept = (cur.tabsByScope[scope] ?? []).filter((t) => !keys.has(t.key));
+        const keptKeys = new Set(kept.map((t) => t.key));
+        // Parked ("hidden subwindows") groups are not in the live layout, so
+        // `writeScope`'s prune never sees them; prune their subtrees here and drop
+        // an entry emptied by it, or the panel would list a subwindow with nothing
+        // in it.
+        const hidden = (cur.hiddenGroupsByScope[scope] ?? [])
+          .map((h) => ({ ...h, subtree: pruneCollapseCollect(h.subtree, keptKeys, []) }))
+          .filter((h): h is HiddenGroup => h.subtree != null);
+        cur = {
+          ...cur,
+          ...writeScope(
+            cur,
+            scope,
+            kept,
+            cur.layoutByScope[scope] ?? null,
+            cur.focusedGroupByScope[scope] ?? null,
+          ),
+          hiddenGroupsByScope: { ...cur.hiddenGroupsByScope, [scope]: hidden },
+        };
+      }
+      return cur;
+    });
+  },
+
   loadFromLayout: (layout, defaultCwd, targetScope, groups) => {
+    // A retired kind is dropped first and unconditionally. Unlike the withdrawal
+    // below this waits for nothing: the kind does not exist any more, and the
+    // fall-through for its unrecognized `cmd` is `"shell"` — so a mail tab saved
+    // before the tab was retired would come back as a terminal running
+    // `__eldrun_mail__` rather than as nothing at all.
+    layout = layout.filter((t) => !RETIRED_TAB_CMDS.has(t.cmd || ""));
+    // A tab whose experimental flag is off does not come back (the restore half of
+    // `closeTabsOfKinds`; the sweep only reaches scopes already in memory). Reads
+    // the settings store directly because this runs outside React — and does
+    // nothing at all until settings have loaded, since `withdrawnTabKinds` treats
+    // an unknown settings state as "withdraw nothing" rather than as "everything
+    // is off", which would drop a restored browser tab in the gap before the
+    // first settings read lands. Dropped entries leave their keys out of `keyMap`, which
+    // is exactly how `deserializeTree` prunes them from the saved tree.
+    const withdrawn = new Set<TabKind>(
+      withdrawnTabKinds(useSettingsStore.getState().settings),
+    );
+    if (withdrawn.size > 0) {
+      layout = layout.filter(
+        (t) =>
+          !withdrawn.has(
+            t.kind ?? cmdToKind(t.cmd || (t.type === "files" ? FILES_TAB_CMD : "")),
+          ),
+      );
+    }
     // Map saved keys → fresh keys. Saved keys are only unique within the
     // session that wrote them — two projects can persist the same key. Keys
     // double as PTY ids, so always mint a fresh one on restore.
@@ -3540,6 +3694,11 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
             : undefined),
         // A Sessions-view attach tab reattaches to its tmux session on restart.
         tmuxAttach: t.tmuxAttach,
+        // Carry the host-bound marker id so a restored local-model tab keeps its
+        // exemption. Never minted here: a uid without a registered marker file
+        // grants nothing, and minting one on restore would be inventing an
+        // authority the user never asked for.
+        hostBoundUid: t.hostBoundUid,
         // Restore the no-tmux marker BEFORE anything reads it: the minted name
         // above is harmless on such a tab precisely because `shouldPersistTab`
         // refuses to use it.
@@ -3719,6 +3878,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // remote shell tab REATTACHES to the same host session after a relaunch.
         tmuxSession: t.tmuxSession,
         tmuxAttach: t.tmuxAttach,
+        // The host-bound marker id (#150) — persisted so a restored local-model
+        // tab still resolves to its registered marker in the state dir.
+        hostBoundUid: t.hostBoundUid,
         // Persist the no-tmux marker. Without it a restored SLURM log tab is an
         // ordinary shell tab again, gets a freshly minted session name, and leaves
         // the `tail -F` daemon on the login node the flag exists to prevent — and
@@ -3733,6 +3895,12 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const merged = withDetachedDocked(serializeTree(layout), detached);
       const groups = pruneSavedTree(merged, keep);
       await invoke("save_tab_layout", {
+        // The layout is keyed by PROJECT ID now, not by the path to a
+        // project.json: it lives in the state dir, because the host reads it back
+        // as commands to run and its old home was inside the container's
+        // writable mount. `scope` IS the project id (or "root", which persists
+        // nothing — the root scope's tabs were never restored from disk).
+        projectId: scope === "root" ? null : scope,
         localFile,
         tabs: tabLayout,
         groups,
@@ -3802,8 +3970,9 @@ export function cmdToKind(cmd: string): TabKind {
   if (cmd === MONITOR_TAB_CMD) return "monitor";
   if (cmd === DISKUSAGE_TAB_CMD) return "diskusage";
   if (cmd === CALENDAR_TAB_CMD) return "calendar";
-  if (cmd === MAIL_TAB_CMD) return "mail";
   if (cmd === BROWSER_TAB_CMD) return "browser";
+  if (cmd === PRINTING_TAB_CMD) return "printing";
+  if (cmd === SKILLSLIBRARY_TAB_CMD) return "skillslibrary";
   if (AGENT_CMDS.has(cmd)) return "agent";
   return "shell";
 }
@@ -3832,17 +4001,20 @@ export function isRestorableKind(kind: TabKind): boolean {
     // replay on every launch, so the pane never auto-rescans.
     kind === "diskusage" ||
     kind === "calendar" ||
-    // Mail has no live process and no session to lose — it re-renders from its
-    // own global store — so it belongs in the always-restore set. What it must
-    // NOT do is sync on restore: the restored tab shows a "Check mail" button
-    // and reaches the network only when clicked (MAIL_TAB_CMD's note).
-    kind === "mail" ||
     // The browser tab comes back, on its resume card — it NEVER re-navigates by
     // itself. Same shape as diskusage above (the tab returns, the expensive work
     // does not replay) and the same rule mail states about dialling out: the
     // persisted URL is rendered as text behind a Load button, and only a click
     // makes a request. See BROWSER_TAB_CMD.
-    kind === "browser"
+    kind === "browser" ||
+    // The print manager holds no session and no process — it re-reads the local
+    // print system when it comes back on screen. Restoring it costs one
+    // `lpstat`, and nothing it can do to a queue happens without a click.
+    kind === "printing" ||
+    // Skills Library holds no session either — it re-reads the installed list
+    // (and whatever catalog is already cached) when it comes back; no source
+    // is cloned/pulled without an explicit Refresh click.
+    kind === "skillslibrary"
   );
 }
 

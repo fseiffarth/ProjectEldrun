@@ -1334,6 +1334,7 @@ mod tests {
             remote_host_id: None,
             tmux_session: None,
             tmux_attach: None,
+            host_bound_uid: None,
         }
     }
 

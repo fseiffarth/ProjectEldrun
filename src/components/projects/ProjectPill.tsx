@@ -16,7 +16,7 @@ import { useTimerStore } from "../../stores/timer";
 import { useActivityStore, type TabStatusCounts } from "../../stores/activity";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
-import { isResumableAgentTab, useTabsStore } from "../../stores/tabs";
+import { cmdToKind, isResumableAgentTab, isRestorableTab, useTabsStore } from "../../stores/tabs";
 import { IS_WINDOWS } from "../../lib/platform";
 import { runInstallInTab, PROVIDER_CLI_INSTALL, providerAuthLoginCmd } from "../../lib/installCommand";
 import { PythonInterpreterWindow } from "./PythonInterpreterWindow";
@@ -1939,6 +1939,59 @@ export function ProjectPill({
                 <UntestedTag />
               </button>
             )}
+            {/* The explicit half of the layout move: a project's tabs now live in
+                Eldrun's state dir, not in the project folder, so a folder that was
+                byte-synced from another machine (or copied by hand) no longer
+                brings its layout back on its own. It still SAVES one there, and
+                this is how it is adopted — deliberately a click rather than an
+                automatic read, because that file sits inside the project
+                container's writable mount and in any repository that gets cloned:
+                "the layout travels with the folder" and "a cloned repository
+                chooses what the host runs" are the same read, told apart only by
+                whether a person asked for it. What is adopted still goes through
+                the backend's sanitizer, and `open_apps` is never adopted. */}
+            {project.local_file && (
+              <button
+                onClick={() => {
+                  setContextMenu(null);
+                  void (async () => {
+                    try {
+                      const session = await invoke<{
+                        tabLayout?: Array<Record<string, unknown>>;
+                        tabGroups?: unknown;
+                      }>("adopt_folder_tab_layout", {
+                        projectId: project.id,
+                        localFile: project.local_file,
+                      });
+                      const raw = session.tabLayout ?? [];
+                      const restorable = raw.filter((t) => {
+                        const cmd = String(t.cmd ?? "");
+                        return isRestorableTab({
+                          kind: (t.kind as never) ?? cmdToKind(cmd),
+                          cmd,
+                          sessionId: t.sessionId as string | undefined,
+                          viewer: t.viewer as never,
+                        });
+                      });
+                      useTabsStore
+                        .getState()
+                        .loadFromLayout(
+                          restorable as never,
+                          project.directory ?? "",
+                          project.id,
+                          (session.tabGroups as never) ?? undefined,
+                        );
+                      alert(t("pill.adoptFolderLayoutOk", { count: restorable.length }));
+                    } catch {
+                      alert(t("pill.adoptFolderLayoutNone"));
+                    }
+                  })();
+                }}
+              >
+                {t("pill.adoptFolderLayout")}
+                <UntestedTag />
+              </button>
+            )}
             <button
               onClick={() => {
                 setContextMenu(null);
@@ -1955,6 +2008,7 @@ export function ProjectPill({
                 tabsStore.closeAllTabs(project.id);
                 if (project.local_file) {
                   void invoke("save_tab_layout", {
+                    projectId: project.id,
                     localFile: project.local_file,
                     tabs: [],
                     groups: null,

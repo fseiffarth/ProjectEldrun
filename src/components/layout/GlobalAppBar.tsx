@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
-import { FILES_TAB_CMD, useTabsStore } from "../../stores/tabs";
 import type { GlobalAppEntry } from "../../types";
 import { resolveProjectDirectory } from "../../types";
 import { basename, IS_WINDOWS } from "../../lib/paths";
@@ -17,14 +16,9 @@ const EXEC_PLACEHOLDER = IS_WINDOWS
 
 export const GLOBAL_APP_ROLES: Array<{ key: string; labelKey: TranslationKey; fallback: string }> = [
   { key: "browser", labelKey: "globalApp.role.browser", fallback: "🌐" },
-  { key: "mail", labelKey: "globalApp.role.mail", fallback: "✉" },
-  { key: "calendar", labelKey: "globalApp.role.calendar", fallback: "◷" },
-  { key: "print_manager", labelKey: "globalApp.role.print_manager", fallback: "⎙" },
-  { key: "file_manager", labelKey: "globalApp.role.file_manager", fallback: "📁" },
   { key: "password_manager", labelKey: "globalApp.role.password_manager", fallback: "⚿" },
   { key: "video_conf", labelKey: "globalApp.role.video_conf", fallback: "▣" },
   { key: "media_player", labelKey: "globalApp.role.media_player", fallback: "▶" },
-  { key: "system_monitor", labelKey: "globalApp.role.system_monitor", fallback: "▥" },
   { key: "notes", labelKey: "globalApp.role.notes", fallback: "☰" },
   { key: "screenshot", labelKey: "globalApp.role.screenshot", fallback: "▤" },
   { key: "screen_recorder", labelKey: "globalApp.role.screen_recorder", fallback: "●" },
@@ -32,6 +26,27 @@ export const GLOBAL_APP_ROLES: Array<{ key: string; labelKey: TranslationKey; fa
 ];
 
 const ROLE_BY_KEY = Object.fromEntries(GLOBAL_APP_ROLES.map((role) => [role.key, role]));
+
+// Roles Eldrun no longer launches an external app for, because it now has its
+// own: mail (the header's `MailIndicator` + its overlay), calendar
+// (`CalendarIndicator`/calendar tab), the file manager (the file panel, the Files tab, the docked file
+// column), the print manager (the native Print Manager tab —
+// `PRINTING_TAB_CMD` / `printing/PrintManagerPane`, opened from the new-tab
+// menu) and the system monitor (the native Monitor tab — `MONITOR_TAB_CMD` /
+// `monitoring/SystemMonitorPane`, likewise from the new-tab menu, plus the
+// header's per-machine `GlobalMachineMonitorDialog`).
+// Dropping them from `GLOBAL_APP_ROLES` alone is not enough — an
+// existing `settings.json` (or a Windows/macOS seeded default) still holds the
+// entries, and `orderedGlobalApps` deliberately renders *unknown* roles so a
+// hand-added one isn't swallowed, so without this they'd come back as unnamed
+// "●" buttons. Filtered rather than deleted from settings: a role that gets
+// re-added later should find its configured command still there.
+const RETIRED_GLOBAL_APP_ROLES = new Set([
+  "mail",
+  "calendar",
+  "file_manager",
+  "system_monitor",
+]);
 
 type EditState = {
   role: string;
@@ -45,7 +60,6 @@ export function GlobalAppBar() {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const { projects, activeId } = useProjectsStore();
-  const { ensureTab } = useTabsStore();
   const [edit, setEdit] = useState<EditState | null>(null);
   const [iconDataUrls, setIconDataUrls] = useState<Record<string, string | null>>({});
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -96,13 +110,6 @@ export function GlobalAppBar() {
   if (apps.length === 0) return null;
 
   const launch = (role: string, exec: string) => {
-    if (role === "file_manager") {
-      ensureTab(
-        { label: "Files", cmd: FILES_TAB_CMD, cwd: activeDir ?? "", kind: "files" },
-        (tab) => tab.kind === "files" && tab.cwd === (activeDir ?? ""),
-      );
-      return;
-    }
     if (role === "screenshot") {
       // Capture a region into the active project's screenshots/ folder, driving
       // the configured tool's output path (or a native fallback) there. Without
@@ -160,7 +167,7 @@ export function GlobalAppBar() {
             key={role}
             className="tab-new-menu-item global-app-menu-row"
             title={`${label}${app.exec ? `: ${app.exec}` : ""} · ${t("globalApp.rightClickConfigure")}`}
-            aria-disabled={role !== "file_manager" && role !== "screenshot" && !app.exec}
+            aria-disabled={role !== "screenshot" && !app.exec}
             onClick={() => launch(role, app.exec)}
             onContextMenu={(event) => {
               event.preventDefault();
@@ -216,7 +223,7 @@ function orderedGlobalApps(apps: Record<string, GlobalAppEntry>): Array<[string,
   return [
     ...ordered,
     ...Object.entries(apps)
-      .filter(([role]) => !known.has(role))
+      .filter(([role]) => !known.has(role) && !RETIRED_GLOBAL_APP_ROLES.has(role))
       .sort(([a], [b]) => a.localeCompare(b)),
   ];
 }

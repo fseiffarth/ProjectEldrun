@@ -224,9 +224,13 @@ export function CenterPanel() {
     // Project context: restore saved tab layout from disk (first visit this session).
     const scopeForLoad = nextScope;
     type LayoutEntry = { key: string; label: string; cmd: string; cwd: string; kind?: TabKind; type?: string; env?: Record<string, string>; sessionId?: string; embedPath?: string; embedExec?: string; viewer?: "pdf" | "image" | "markdown" | "text" };
-    invoke<Record<string, unknown>>("load_project", { localFile })
+    // The saved layout comes from `<state_dir>/sessions/<id>/`, not from the
+    // project's own `project.json` — that file lives in the project container's
+    // writable mount and in any cloned repository, and everything restored here
+    // becomes a `pty_spawn`. `load_project` no longer serves it at all.
+    invoke<Record<string, unknown>>("load_tab_session", { projectId: nextScope })
       .then((proj) => {
-        const raw = (proj.tab_layout as LayoutEntry[] | undefined) ?? [];
+        const raw = (proj.tabLayout as LayoutEntry[] | undefined) ?? [];
         // Keep shell/files/network tabs, resumable agent tabs (Claude with a sessionId,
         // resumed via --resume), and in-app file-viewer embeds; other agent/embed
         // tabs (including external-app embeds) are dropped. Derive kind from the
@@ -245,8 +249,8 @@ export function CenterPanel() {
         // A freshly-visited project with NO restorable tabs stays empty (shows the
         // empty Subwindow with a "+"); we no longer seed a default README.md tab.
         if (restorable.length === 0) return;
-        // `tab_groups` carries the saved split/group tree (absent → single group).
-        const groups = proj.tab_groups as SavedLayoutTree | undefined;
+        // `tabGroups` carries the saved split/group tree (absent → single group).
+        const groups = proj.tabGroups as SavedLayoutTree | undefined;
         loadFromLayout(restorable, projectCwd, scopeForLoad, groups ?? undefined);
       })
       .catch(() => {});

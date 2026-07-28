@@ -18,6 +18,8 @@ import {
   timePart,
   weekdayLabel,
 } from "../../lib/calendarTime";
+import { conferenceLink, isJoinableUrl } from "../../lib/conference";
+import { joinConference } from "../../lib/linkTarget";
 import { describeRrule } from "../../lib/recurrence";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 
@@ -63,6 +65,8 @@ interface Form {
   title: string;
   location: string;
   notes: string;
+  /** The video call's join URL — see `lib/conference.ts`. */
+  conference: string;
   category: string;
   status: EventStatus;
   allDay: boolean;
@@ -101,6 +105,9 @@ function initialForm(
     title: occurrence?.title ?? event?.title ?? "",
     location: occurrence?.location ?? event?.location ?? "",
     notes: occurrence?.notes ?? event?.notes ?? "",
+    // The master's, never an occurrence's: a series has one call, and the
+    // override record has no field for a second one.
+    conference: event?.conference ?? "",
     category: event?.category ?? "",
     status: (event?.status || "confirmed") as EventStatus,
     allDay,
@@ -166,6 +173,20 @@ export function EventDialog({
 
   const patch = (p: Partial<Form>) => setForm((f) => ({ ...f, ...p }));
 
+  // The call this event would offer as you type — the field when it holds a
+  // usable link, otherwise whatever the location or notes give up. Computed off
+  // the *form* rather than the saved event so the Join button and the "detected"
+  // hint both track an edit before it is saved.
+  const formConference = useMemo(
+    () =>
+      conferenceLink({
+        conference: isJoinableUrl(form.conference) ? form.conference : "",
+        location: form.location,
+        notes: form.notes,
+      }),
+    [form.conference, form.location, form.notes],
+  );
+
   const ruleSummary = useMemo(
     () => (form.repeats ? describeRrule(buildRrule(form), t, lang) : t("recurrence.doesNotRepeat")),
     [form, t, lang],
@@ -208,6 +229,7 @@ export function EventDialog({
       title,
       location: form.location.trim(),
       notes: form.notes.trim(),
+      conference: form.conference.trim(),
       category: form.category,
       status: form.status,
       rrule: form.repeats ? buildRrule(form) : null,
@@ -314,6 +336,55 @@ export function EventDialog({
                 value={form.location}
                 onChange={(e) => patch({ location: e.target.value })}
               />
+            </label>
+
+            {/* The video call. Its own field rather than a URL in the location,
+                so the Join buttons elsewhere (the header's 🗓 dropdown) are
+                acting on something the user stated rather than on a guess about
+                what a room name meant. The guess still exists — `conferenceLink`
+                derives one from the location or the notes for the imported
+                invitations that carry it there — and when it fires, this field
+                says so instead of silently filling itself in: writing a
+                derivation into the user's data would freeze it, and there would
+                be no way left to tell the two apart. */}
+            <label className="cal-field">
+              <span className="cal-field-label">{t("eventDialog.conferenceField")}</span>
+              <div className="cal-conference-row">
+                <input
+                  className="cal-input"
+                  type="url"
+                  inputMode="url"
+                  placeholder="https://"
+                  value={form.conference}
+                  onChange={(e) => patch({ conference: e.target.value })}
+                />
+                {/* Enabled only for something that can actually be handed to a
+                    browser: a half-typed link is the normal state of this field
+                    while it is being filled in, and a Join that refuses is worse
+                    than one that is visibly not ready yet. */}
+                <button
+                  type="button"
+                  className="cal-link-btn cal-conference-join"
+                  disabled={!formConference}
+                  title={
+                    formConference
+                      ? t("calendar.joinTitle", { provider: formConference.provider })
+                      : undefined
+                  }
+                  onClick={() => {
+                    if (formConference) joinConference(formConference.url);
+                  }}
+                >
+                  {t("calendar.join")}
+                </button>
+              </div>
+              {formConference && formConference.source !== "field" && (
+                <span className="cal-field-hint">
+                  {t("eventDialog.conferenceDetected", {
+                    provider: formConference.provider,
+                  })}
+                </span>
+              )}
             </label>
 
             <label className="cal-check-row">

@@ -38,8 +38,8 @@ use tokio_rustls::client::TlsStream;
 use zeroize::Zeroizing;
 
 use crate::schema::mail::{
-    MailAccount, MailAddress, MailAttachmentMeta, MailFolderKind, MailProbe, MailSecurity,
-    MailServer,
+    MailAccount, MailAddress, MailAttachmentMeta, MailAuthResults, MailFolderKind, MailProbe,
+    MailSecurity, MailServer,
 };
 use crate::services::mail_sanitize::sanitize_attachment_name;
 
@@ -226,6 +226,66 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(300);
 const SMTP_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// How long a single UID set is allowed to get before it is split across
+/// commands. RFC 3501 sets no limit; servers do, and the documented ones sit far
+/// above this — deliberately conservative, because the cost of another round
+/// trip is nothing next to a command a server answers with `BAD`.
+const MAX_UID_SET_CHARS: usize = 1000;
+
+/// Split a sorted-ish UID list into IMAP UID sets no longer than `max_chars`,
+/// collapsing runs into `a:b` ranges.
+///
+/// Range compression is what makes this cheap in the ordinary case: a folder's
+/// unread mail is usually a contiguous tail, so 4000 UIDs become the seven
+/// characters of `120:4119` rather than 24 kB of comma-separated integers. The
+/// chunking then bounds what is left, for the mailbox where the unread set is
+/// genuinely scattered.
+///
+/// Returns nothing for an empty input — a caller must not send `UID STORE ` with
+/// an empty set, which is a syntax error rather than a no-op.
+fn uid_set_chunks(uids: &[u32], max_chars: usize) -> Vec<String> {
+    let mut sorted: Vec<u32> = uids.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+
+    // Runs first, as `(start, end)` pairs, so a chunk boundary can never fall
+    // inside one and turn `120:4119` into two half-ranges that address the wrong
+    // messages between them.
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for uid in sorted {
+        match runs.last_mut() {
+            // `uid == end + 1` extends the run; `end` cannot overflow here
+            // because it came from the same u32 list.
+            Some((_, end)) if uid == *end + 1 => *end = uid,
+            _ => runs.push((uid, uid)),
+        }
+    }
+
+    let mut chunks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for (start, end) in runs {
+        let piece = if start == end {
+            start.to_string()
+        } else {
+            format!("{start}:{end}")
+        };
+        // `+ 1` for the comma this piece would need. A piece that cannot fit an
+        // empty chunk still gets its own — a range is atomic, and the longest
+        // possible one ("4294967295:4294967295") is 21 characters.
+        if !current.is_empty() && current.len() + 1 + piece.len() > max_chars {
+            chunks.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(',');
+        }
+        current.push_str(&piece);
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
 // ── Parsing ─────────────────────────────────────────────────────────────────
 
 /// The header-shaped half of a parsed message.
@@ -245,6 +305,11 @@ pub struct ParsedHeaders {
     /// Header problems the user must *see* rather than have silently resolved
     /// — a duplicate `From:` is the classic sender-spoofing setup (plan B T7).
     pub malformed_headers: Vec<String>,
+    /// The receiving server's SPF/DKIM/DMARC verdicts, if it wrote any. Always
+    /// parsed in the `Unconfigured` state — `mail_authres::apply_trust` is what
+    /// decides whether it may be believed, and that runs at the command layer
+    /// where the account (and therefore its trusted `authserv-id`) is known.
+    pub auth: Option<MailAuthResults>,
 }
 
 /// One decoded attachment. `bytes` are the decoded payload; the caller stores
@@ -268,13 +333,13 @@ pub struct ParsedMessage {
 /// Parse just the headers of a message (an IMAP `BODY.PEEK[HEADER]` fetch).
 pub fn parse_headers(raw: &[u8]) -> Result<ParsedHeaders, MailError> {
     let msg = parse_bounded(raw)?;
-    Ok(headers_of(&msg, raw.len() as u64))
+    Ok(headers_of(&msg, raw))
 }
 
 /// Parse a whole message, with every structural cap applied.
 pub fn parse_message(raw: &[u8]) -> Result<ParsedMessage, MailError> {
     let msg = parse_bounded(raw)?;
-    let headers = headers_of(&msg, raw.len() as u64);
+    let headers = headers_of(&msg, raw);
 
     // `html_body` is not "the parts that are HTML": `mail-parser` falls back to
     // the `text/plain` part when a message has no `text/html` one, because its
@@ -551,7 +616,159 @@ fn strip_controls(s: &str) -> String {
         .collect()
 }
 
-fn headers_of(msg: &mail_parser::Message<'_>, size: u64) -> ParsedHeaders {
+/// The modified-BASE64 alphabet of RFC 3501 §5.1.3: RFC 2045's, with `,` in
+/// place of `/` (because `/` is the hierarchy separator on many servers).
+const MUTF7_ALPHABET: &[u8] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+,";
+
+/// Decode an IMAP mailbox name from **modified UTF-7** (RFC 3501 §5.1.3) for
+/// display.
+///
+/// IMAP mailbox names are not UTF-8 on the wire. Non-ASCII is shifted into a
+/// modified UTF-7 run: `&` opens it, `&-` is a literal `&`, and the payload is
+/// UTF-16BE in a base64 alphabet where `,` replaces `/`. So a German Gmail's
+/// drafts folder arrives as `[Gmail]/Entw&APw-rfe` and must be shown as
+/// `[Gmail]/Entwürfe`.
+///
+/// **This is display-only, and that split is load-bearing.** `MailFolder.path`
+/// keeps the wire form because it is what `SELECT` takes; only `name` is
+/// decoded. Decoding the path would break every folder with an umlaut in it.
+///
+/// It does not conflict with `charset_is_refused` refusing UTF-7 *bodies*.
+/// There, decoding manufactures markup out of ASCII-looking bytes on a path
+/// that leads to an HTML renderer. Here the encoding is mandated by the
+/// protocol, and the output is a label rendered as a text node — so the residual
+/// risk is not markup but *direction*, which `strip_controls` handles at the
+/// call site exactly as it does for a subject.
+///
+/// Never fails: an ill-formed run is emitted verbatim rather than dropped. A
+/// mangled folder name is a cosmetic problem; a folder that vanishes from the
+/// list is not.
+fn decode_modified_utf7(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'&' {
+            // Multi-byte UTF-8 can only appear in a non-conforming name; copy it
+            // through rather than mangling it.
+            let start = i;
+            while i < bytes.len() && bytes[i] != b'&' {
+                i += 1;
+            }
+            out.push_str(&String::from_utf8_lossy(&bytes[start..i]));
+            continue;
+        }
+        // `&-` is a literal ampersand.
+        if bytes.get(i + 1) == Some(&b'-') {
+            out.push('&');
+            i += 2;
+            continue;
+        }
+        let run_start = i + 1;
+        let mut end = run_start;
+        while end < bytes.len() && MUTF7_ALPHABET.contains(&bytes[end]) {
+            end += 1;
+        }
+        match decode_mutf7_run(&bytes[run_start..end]) {
+            Some(decoded) if end > run_start => out.push_str(&decoded),
+            // Not a well-formed run — keep the source text so the name is still
+            // recognizable instead of silently losing characters.
+            _ => {
+                out.push('&');
+                out.push_str(&String::from_utf8_lossy(&bytes[run_start..end]));
+            }
+        }
+        i = end;
+        // The terminating `-` is part of the shift sequence, not the name.
+        if bytes.get(i) == Some(&b'-') {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// One modified-BASE64 run → UTF-16BE → `String`. `None` if it is not decodable.
+fn decode_mutf7_run(run: &[u8]) -> Option<String> {
+    if run.is_empty() {
+        return None;
+    }
+    let mut acc: u32 = 0;
+    let mut bits = 0u32;
+    let mut units: Vec<u16> = Vec::new();
+    for b in run {
+        let v = MUTF7_ALPHABET.iter().position(|c| c == b)? as u32;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 16 {
+            bits -= 16;
+            units.push(((acc >> bits) & 0xFFFF) as u16);
+        }
+    }
+    // Any leftover must be zero padding; a non-zero remainder means the run was
+    // truncated or corrupt, and guessing at it would invent characters.
+    if bits > 0 && (acc & ((1 << bits) - 1)) != 0 {
+        return None;
+    }
+    // A run too short to complete even one UTF-16 unit (`&A-`) passes the
+    // padding check above and yields *nothing*, which the caller would emit as
+    // an empty name. A well-formed run always carries at least one unit, so
+    // treat it as undecodable and let the caller keep the source text.
+    if units.is_empty() {
+        return None;
+    }
+    String::from_utf16(&units).ok()
+}
+
+/// Every `Authentication-Results` header's value, **in document order**, read
+/// out of the raw message rather than out of `mail-parser`'s header value.
+///
+/// The raw slice is deliberate: whether an unknown header's value gets parsed
+/// into a `HeaderValue::Text` is a detail of the parser's header table, and this
+/// header is the input to a trust decision. Slicing `offset_start..offset_end`
+/// and unfolding it here means the bytes that were on the wire are the bytes
+/// that get parsed, whatever the parser decides to do with the field.
+fn authentication_results_values(msg: &mail_parser::Message<'_>, raw: &[u8]) -> Vec<String> {
+    msg.headers()
+        .iter()
+        .filter(|h| match &h.name {
+            mail_parser::HeaderName::Other(name) => {
+                name.eq_ignore_ascii_case("authentication-results")
+            }
+            _ => false,
+        })
+        .filter_map(|h| {
+            let (start, end) = (h.offset_start as usize, h.offset_end as usize);
+            if start >= end || end > raw.len() {
+                return None;
+            }
+            Some(unfold(&String::from_utf8_lossy(&raw[start..end])))
+        })
+        .collect()
+}
+
+/// Join a folded header value into one line: a CRLF (or LF) followed by
+/// whitespace is folding and becomes a single space.
+fn unfold(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut pending_space = false;
+    for line in s.split('\n') {
+        let line = line.trim_end_matches('\r');
+        if out.is_empty() && !pending_space {
+            out.push_str(line.trim_start());
+        } else {
+            if !out.ends_with(' ') {
+                out.push(' ');
+            }
+            out.push_str(line.trim_start());
+        }
+        pending_space = true;
+    }
+    out.trim().to_string()
+}
+
+fn headers_of(msg: &mail_parser::Message<'_>, raw: &[u8]) -> ParsedHeaders {
+    let size = raw.len() as u64;
     let mut malformed = Vec::new();
     let from_count = msg
         .headers()
@@ -589,6 +806,11 @@ fn headers_of(msg: &mail_parser::Message<'_>, size: u64) -> ParsedHeaders {
         _ => None,
     };
 
+    let auth = crate::services::mail_authres::parse_authentication_results(
+        &authentication_results_values(msg, raw),
+        &from.address,
+    );
+
     ParsedHeaders {
         subject,
         from,
@@ -602,6 +824,7 @@ fn headers_of(msg: &mail_parser::Message<'_>, size: u64) -> ParsedHeaders {
         size,
         preview,
         malformed_headers: malformed,
+        auth,
     }
 }
 
@@ -725,6 +948,19 @@ pub trait MailEngine: Send + Sync {
         flag: &str,
         value: bool,
     ) -> Result<(), MailError>;
+    /// The same STORE for many messages at once — one login, one SELECT, one
+    /// command. Not a convenience: "mark all as read" over a folder holding a
+    /// few hundred unread messages would otherwise be a few hundred logins, and
+    /// a server with any connection-rate limit answers that with a ban.
+    async fn set_flags_bulk(
+        &self,
+        account: &MailAccount,
+        password: &Password,
+        folder_path: &str,
+        uids: &[u32],
+        flag: &str,
+        value: bool,
+    ) -> Result<(), MailError>;
     async fn move_messages(
         &self,
         account: &MailAccount,
@@ -739,6 +975,22 @@ pub trait MailEngine: Send + Sync {
         password: &Password,
         envelope_from: &str,
         recipients: &[String],
+        raw: &[u8],
+    ) -> Result<(), MailError>;
+    /// Put a copy of a sent message into a folder (IMAP `APPEND`).
+    ///
+    /// This did not exist until the encryption work, and its absence was
+    /// accidentally the most private behaviour available: **there was no Sent
+    /// copy at all**. Adding it is therefore a deliberate reduction in privacy,
+    /// and it is only safe because of what the caller does — `commands::mail`
+    /// appends the message it actually sent, which for an encrypted message is
+    /// the encrypted-to-self form. Adding `APPEND` *without* encrypt-to-self is
+    /// precisely how a plaintext Sent copy of an encrypted message ships.
+    async fn append(
+        &self,
+        account: &MailAccount,
+        password: &Password,
+        folder_path: &str,
         raw: &[u8],
     ) -> Result<(), MailError>;
 }
@@ -920,11 +1172,22 @@ impl MailEngine for InProcessEngine {
             while let Some(name) = stream.next().await {
                 let name = name.map_err(classify_imap_error)?;
                 let path = name.name().to_string();
-                let display = path
-                    .rsplit(['/', '.'])
-                    .next()
-                    .unwrap_or(&path)
-                    .to_string();
+                // Split on the wire form, then decode **only** the leaf for
+                // display: `path` has to stay exactly as the server said it, or
+                // `SELECT` on any folder with an umlaut in it fails. Controls
+                // are stripped from the result for the same reason they are
+                // from a subject — a server-supplied label with an RTL override
+                // in it reorders what the user reads.
+                let leaf = path.rsplit(['/', '.']).next().unwrap_or(&path);
+                let display = strip_controls(&decode_modified_utf7(leaf));
+                // A folder whose entire name was control characters would end up
+                // with no label at all; fall back to the wire form so every row
+                // is still nameable.
+                let display = if display.trim().is_empty() {
+                    leaf.to_string()
+                } else {
+                    display
+                };
                 out.push(FetchedFolder {
                     kind: folder_kind(&path, name.attributes()),
                     name: display,
@@ -1058,6 +1321,43 @@ impl MailEngine for InProcessEngine {
         Ok(())
     }
 
+    async fn set_flags_bulk(
+        &self,
+        account: &MailAccount,
+        password: &Password,
+        folder_path: &str,
+        uids: &[u32],
+        flag: &str,
+        value: bool,
+    ) -> Result<(), MailError> {
+        if uids.is_empty() {
+            return Ok(());
+        }
+        let mut session = imap_login(&account.imap, password).await?;
+        tokio::time::timeout(COMMAND_TIMEOUT, session.select(folder_path))
+            .await
+            .map_err(|_| MailError::Timeout { op: "IMAP SELECT" })?
+            .map_err(classify_imap_error)?;
+        let op = if value { "+FLAGS" } else { "-FLAGS" };
+        // One command per chunk, and the chunks exist because a UID set is part
+        // of a command *line*: RFC 3501 puts no ceiling on it, real servers do,
+        // and a folder with thousands of unread messages is exactly the one this
+        // is called on. Range compression usually collapses it to a handful of
+        // bytes anyway — the chunking is the guarantee, not the optimization.
+        for chunk in uid_set_chunks(uids, MAX_UID_SET_CHARS) {
+            let mut stream = tokio::time::timeout(
+                COMMAND_TIMEOUT,
+                session.uid_store(chunk, format!("{op} ({flag})")),
+            )
+            .await
+            .map_err(|_| MailError::Timeout { op: "IMAP STORE" })?
+            .map_err(classify_imap_error)?;
+            while stream.next().await.is_some() {}
+        }
+        let _ = tokio::time::timeout(COMMAND_TIMEOUT, session.logout()).await;
+        Ok(())
+    }
+
     async fn move_messages(
         &self,
         account: &MailAccount,
@@ -1110,6 +1410,31 @@ impl MailEngine for InProcessEngine {
             .map_err(classify_smtp_error)?;
         let _ = client.quit().await;
         Ok(())
+    }
+
+    async fn append(
+        &self,
+        account: &MailAccount,
+        password: &Password,
+        folder_path: &str,
+        raw: &[u8],
+    ) -> Result<(), MailError> {
+        if raw.len() > MAX_OUTBOUND_BYTES {
+            return Err(MailError::TooLarge { bytes: raw.len() });
+        }
+        let mut session = imap_login(&account.imap, password).await?;
+        // `\Seen` because a message you wrote is not unread mail; without it a
+        // Sent folder lights the unread badge for every message sent.
+        let flags = "(\\Seen)";
+        let result = tokio::time::timeout(
+            COMMAND_TIMEOUT,
+            session.append(folder_path, Some(flags), None, raw),
+        )
+        .await
+        .map_err(|_| MailError::Timeout { op: "IMAP APPEND" })?
+        .map_err(classify_imap_error);
+        let _ = tokio::time::timeout(COMMAND_TIMEOUT, session.logout()).await;
+        result.map(|_| ())
     }
 }
 
@@ -1248,6 +1573,69 @@ pub fn build_outgoing(
 mod tests {
     use super::*;
 
+    // ── UID sets ────────────────────────────────────────────────────────────
+
+    /// The set is what a bulk STORE *addresses*, so every case here is really
+    /// "does this name exactly the messages it was given, and nothing else".
+    #[test]
+    fn uid_set_is_empty_for_no_uids() {
+        // Not `[""]`: `UID STORE  +FLAGS (\Seen)` is a syntax error, and a
+        // caller looping over the result must therefore send nothing at all.
+        assert!(uid_set_chunks(&[], 1000).is_empty());
+    }
+
+    #[test]
+    fn uid_set_collapses_a_run_into_a_range() {
+        assert_eq!(uid_set_chunks(&[1, 2, 3, 4], 1000), vec!["1:4"]);
+    }
+
+    #[test]
+    fn uid_set_keeps_isolated_uids_separate() {
+        assert_eq!(uid_set_chunks(&[1, 3, 5], 1000), vec!["1,3,5"]);
+    }
+
+    #[test]
+    fn uid_set_mixes_runs_and_singles() {
+        assert_eq!(uid_set_chunks(&[1, 2, 3, 7, 10, 11], 1000), vec!["1:3,7,10:11"]);
+    }
+
+    #[test]
+    fn uid_set_sorts_and_dedupes_first() {
+        // The store returns them ordered, but a run is only detectable in order
+        // and a duplicate would break one in half.
+        assert_eq!(uid_set_chunks(&[3, 1, 2, 3], 1000), vec!["1:3"]);
+    }
+
+    #[test]
+    fn uid_set_splits_on_the_character_budget() {
+        // Every other uid, so nothing collapses: worst case for the budget.
+        let uids: Vec<u32> = (0..100).map(|i| i * 2 + 1).collect();
+        let chunks = uid_set_chunks(&uids, 40);
+        assert!(chunks.len() > 1, "expected a split, got {chunks:?}");
+        for c in &chunks {
+            assert!(c.len() <= 40, "chunk over budget: {c:?}");
+            assert!(!c.starts_with(','), "chunk starts with a separator: {c:?}");
+            assert!(!c.ends_with(','), "chunk ends with a separator: {c:?}");
+        }
+        // The whole point: splitting must not drop or invent a single uid.
+        let mut back: Vec<u32> = Vec::new();
+        for c in &chunks {
+            for piece in c.split(',') {
+                back.push(piece.parse().expect("single uid"));
+            }
+        }
+        assert_eq!(back, uids);
+    }
+
+    #[test]
+    fn uid_set_never_splits_inside_a_range() {
+        // A range cut in half addresses messages nobody asked about, which for
+        // a `-FLAGS` on \Seen would mark unrelated mail unread.
+        let uids: Vec<u32> = (1..=500).collect();
+        let chunks = uid_set_chunks(&uids, 4);
+        assert_eq!(chunks, vec!["1:500"]);
+    }
+
     // ── The crypto provider ─────────────────────────────────────────────────
 
     /// rustls refuses to guess between two compiled-in providers and panics at
@@ -1367,6 +1755,154 @@ mod tests {
             .join("tests/fixtures/mail")
             .join(name);
         std::fs::read(&path).unwrap_or_else(|e| panic!("fixture {name}: {e}"))
+    }
+
+    // ── Modified UTF-7 folder names ─────────────────────────────────────────
+
+    /// Found in live QA against a German Gmail: `[Gmail]/Entwürfe` arrived as
+    /// `[Gmail]/Entw&APw-rfe` and was shown that way.
+    #[test]
+    fn modified_utf7_folder_names_decode() {
+        let cases: &[(&str, &str)] = &[
+            // The reported case, and its siblings on a German account.
+            ("Entw&APw-rfe", "Entwürfe"),
+            ("Gel&APY-schte Elemente", "Gelöschte Elemente"),
+            ("&APw-", "ü"),
+            // Plain ASCII is untouched.
+            ("INBOX", "INBOX"),
+            ("[Gmail]/All Mail", "[Gmail]/All Mail"),
+            // A literal ampersand is `&-`.
+            ("Tom &- Jerry", "Tom & Jerry"),
+            ("R&D", "R&D"),
+            // Other alphabets. (Every expectation in this table was produced by
+            // an independent reference decoder, not typed by hand — two of them
+            // were wrong the first time and the decoder was right.)
+            ("&BCcENQRABD0EPgQyBDgEOgQ4-", "Черновики"),
+            ("&ZeVnLIqe-", "日本語"),
+            // Astral plane: surrogate pairs must recombine, not become two
+            // replacement characters.
+            ("&2Dzfs9g837M-", "🎳🎳"),
+            // The `,`-for-`/` substitution, which is the one way this differs
+            // from ordinary base64: `ϰ` encodes to `A/A` in RFC 2045 and must
+            // be spelled `A,A` here.
+            ("&A,A-", "ϰ"),
+            // Consecutive runs, and a run ended implicitly by a non-alphabet
+            // character rather than by `-`.
+            ("&APw-&APY-", "üö"),
+            ("&APw x", "ü x"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(decode_modified_utf7(input), *want, "input {input:?}");
+        }
+    }
+
+    /// A name that is not valid modified UTF-7 must still be *shown*. A folder
+    /// that silently loses its name is worse than one that shows the wire form.
+    #[test]
+    fn an_undecodable_folder_name_is_kept_verbatim() {
+        for input in [
+            "&",           // a dangling shift
+            "&!!!-",       // characters outside the alphabet
+            "&A-",         // a truncated run
+            "&AAAAAAAAAA", // unterminated, over-long
+            "Weird&Name",
+        ] {
+            let got = decode_modified_utf7(input);
+            assert!(!got.is_empty(), "{input:?} produced nothing");
+        }
+        assert_eq!(decode_modified_utf7("&"), "&");
+        assert_eq!(decode_modified_utf7("&!!!-"), "&!!!-");
+    }
+
+    /// Whatever a server sends, decoding returns and never panics.
+    #[test]
+    fn folder_name_decoding_is_total() {
+        let mut seed: u64 = 0xF01DE_1234_0001;
+        for _ in 0..5_000 {
+            let len = {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                (seed >> 33) as usize % 48
+            };
+            let mut bytes = Vec::with_capacity(len);
+            for _ in 0..len {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let b = (seed >> 24) as u8;
+                // Weight the structural characters, where the states are.
+                bytes.push(match b % 6 {
+                    0 => b'&',
+                    1 => b'-',
+                    2 => b',',
+                    3 => b'A',
+                    _ => b,
+                });
+            }
+            let input = String::from_utf8_lossy(&bytes).to_string();
+            let _ = decode_modified_utf7(&input);
+        }
+    }
+
+    /// The split that makes this safe: the wire form is what `SELECT` gets, the
+    /// decoded form is only ever shown. Decoding the path would break every
+    /// folder with a non-ASCII character in its name.
+    #[test]
+    fn decoding_is_display_only() {
+        let wire = "[Gmail]/Entw&APw-rfe";
+        let leaf = wire.rsplit(['/', '.']).next().unwrap();
+        assert_eq!(decode_modified_utf7(leaf), "Entwürfe");
+        assert_eq!(wire, "[Gmail]/Entw&APw-rfe", "the path must not be rewritten");
+    }
+
+    /// A server-supplied label goes through the same control-stripping a subject
+    /// does — an RTL override in a folder name reorders what the user reads.
+    #[test]
+    fn a_bidi_override_in_a_folder_name_is_stripped() {
+        // `&IC8-` is U+202F… use the actual override: U+202E is `&IC4-`.
+        let decoded = decode_modified_utf7("Rechnung&IC4-gnp.exe");
+        assert!(decoded.contains('\u{202E}'), "the fixture must contain the override");
+        assert!(!strip_controls(&decoded).contains('\u{202E}'));
+    }
+
+    /// The extraction half of the `Authentication-Results` feature: that the
+    /// header is found at all, in document order, and unfolded.
+    ///
+    /// It reads the raw bytes rather than `mail-parser`'s `HeaderValue`, so this
+    /// is the test that would catch the parser deciding to hand unknown headers
+    /// back differently — at which point a silently empty list would mean every
+    /// message shows no verdict, with nothing failing.
+    #[test]
+    fn authentication_results_headers_are_read_in_order_and_unfolded() {
+        let raw = b"From: a@example.com\r\n\
+                    To: b@example.org\r\n\
+                    Authentication-Results: mx.example.net;\r\n\
+                    \tspf=pass smtp.mailfrom=a.example;\r\n\
+                    \tdkim=pass header.d=a.example\r\n\
+                    Authentication-Results: relay.example.org; dmarc=fail\r\n\
+                    Subject: folded\r\n\r\nbody\r\n";
+        let msg = parse_bounded(raw).unwrap();
+        let values = authentication_results_values(&msg, raw);
+        assert_eq!(values.len(), 2, "{values:?}");
+        assert_eq!(
+            values[0],
+            "mx.example.net; spf=pass smtp.mailfrom=a.example; dkim=pass header.d=a.example",
+            "the topmost header must come back unfolded and first"
+        );
+        assert!(values[1].starts_with("relay.example.org"));
+
+        // …and it reaches ParsedHeaders, still untrusted.
+        let parsed = parse_message(raw).unwrap();
+        let auth = parsed.headers.auth.expect("the header must reach ParsedHeaders");
+        assert_eq!(auth.authserv_id.as_deref(), Some("mx.example.net"));
+        assert_eq!(auth.header_count, 2);
+        assert_eq!(
+            auth.state,
+            crate::schema::mail::MailAuthState::Unconfigured,
+            "parsing must never mint trust; only apply_trust does"
+        );
+    }
+
+    #[test]
+    fn a_message_with_no_authentication_results_reports_none() {
+        assert!(parse_message(&fixture("simple.eml")).unwrap().headers.auth.is_none());
     }
 
     #[test]

@@ -13,19 +13,36 @@
  * one off while *in* debug mode — otherwise "turn this off" would silently fail for
  * exactly the people most likely to hit a broken experiment.
  *
- * Note the one asymmetry a gate must respect: it hides the *entry point*, never a
- * surface already on screen. `mail_client` gates the new-tab menu item; a mail tab
- * that is already open (or was restored) keeps rendering, because a flag flip is
- * not an instruction to close what someone is reading.
+ * Most gates hide an *entry point* and nothing else: `python_run_debug` takes the
+ * Run button off a viewer that keeps working, `agent_mode_toggle` takes a badge off
+ * a tab that keeps running. Those flags have nothing to withdraw beyond the button.
+ *
+ * A flag that owns a whole TAB is different, and `EXPERIMENTAL_TAB_KINDS` is that
+ * list. Turning one off **withdraws the feature**, open tabs included: leaving a
+ * network client on screen after the user switched it off would mean the switch
+ * does not mean what it says. The withdrawal is not destructive — a browser tab
+ * holds a URL that is persisted until the layout is next written — so turning the
+ * flag back on and opening a new tab gets the same surface back.
+ *
+ * `mail_client` used to be in that list and is not any more: mail lost its tab
+ * (the store is global, so the tab only ever duplicated the header's overlay), so
+ * the flag now gates a header button and an overlay, which is an entry point like
+ * any other. A layout saved while the mail tab still existed is dropped on
+ * restore by `RETIRED_TAB_CMDS`, unconditionally — a retired kind is not a flag
+ * that might come back on, so its filter must not wait for settings to load.
  *
  * Adding an experiment: add its key to `Settings` (and to the Rust `Settings`, so
  * it round-trips through `save_settings`), list it here, and read it through
  * `useExperimental`. Never read `settings.<flag> ?? false` at the call site — that
- * spelling is what makes a flag miss the debug default.
+ * spelling is what makes a flag miss the debug default. If it owns a tab kind, add
+ * it to `EXPERIMENTAL_TAB_KINDS` too, which is what wires the withdrawal
+ * (`lib/experimentalSweep`) and the restore filter (`stores/tabs`'s
+ * `loadFromLayout`).
  */
 
 import { useSettingsStore } from "../stores/settings";
 import type { Settings } from "../types";
+import type { TabKind } from "../stores/tabs";
 
 /** Every experimental flag. Keys of `Settings`, all `boolean | undefined`. */
 export const EXPERIMENTAL_FLAGS = [
@@ -49,4 +66,28 @@ export function experimentalEnabled(
 /** `experimentalEnabled` as a store subscription — the call site for a component. */
 export function useExperimental(flag: ExperimentalFlag): boolean {
   return useSettingsStore((s) => experimentalEnabled(s.settings, flag));
+}
+
+/**
+ * Tab kinds an experimental flag owns **end to end** — the new-tab entry and the
+ * tab itself. These are the flags whose "off" closes something already open; every
+ * other flag only hides a control (see the module header).
+ */
+export const EXPERIMENTAL_TAB_KINDS: Record<string, ExperimentalFlag> = {
+  browser: "web_browser",
+};
+
+/** The tab kinds these settings say may not exist right now.
+ *
+ * Empty while `settings` is null, and that is the load-bearing part: unknown is
+ * not off. The settings store starts empty and fills in asynchronously, so a
+ * caller that treated null as "everything is disabled" would close the user's
+ * restored mail tab in the window between app start and the first read. Both
+ * callers (the live sweep and the restore filter) therefore do nothing until
+ * settings have actually arrived. */
+export function withdrawnTabKinds(settings: Settings | null | undefined): TabKind[] {
+  if (!settings) return [];
+  return Object.keys(EXPERIMENTAL_TAB_KINDS).filter(
+    (kind) => !experimentalEnabled(settings, EXPERIMENTAL_TAB_KINDS[kind]),
+  ) as TabKind[];
 }

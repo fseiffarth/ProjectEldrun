@@ -454,6 +454,16 @@ async fn walk_inner(
 ) -> Result<(), String> {
     let abs = join_remote(remote_root, rel);
     let entries = sftp::list_dir_raw_on(sftp, &abs).await?;
+    // #23 D2: a directory holding a `.git` entry of EITHER kind is somebody else's
+    // repo — a nested clone, or a linked worktree, whose `.git` is a *file*. Skipping
+    // the entry named `.git` (below) covers the file but not the checkout around it,
+    // so a worktree inside the project used to be walked and mirrored as a second full
+    // copy of the source tree: doubling every pass, counted in the big-folder census,
+    // and landing on the peer as a plain directory with no `.git` at all. The project
+    // root itself of course has one, so this is a check on *sub*directories only.
+    if !rel.is_empty() && entries.iter().any(|e| e.name == ".git") {
+        return Ok(());
+    }
     for entry in entries {
         // Skip Eldrun's internal runtime dir, mirroring the local/remote listers.
         // `.git` is likewise never byte-mirrored: git state is kept in step
@@ -800,6 +810,13 @@ pub fn walk_mirror_files(project_id: &str, rel: &str) -> Result<Vec<String>, Str
 }
 
 fn walk_mirror_inner(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(), String> {
+    // #23 D2, the mirror side of the same boundary: a subdirectory holding a `.git`
+    // entry of either kind (a nested repo's directory, a linked worktree's *file*) is
+    // not this project's bytes to push. `symlink_metadata` so a `.git` symlink counts
+    // as present without being followed.
+    if dir != root && std::fs::symlink_metadata(dir.join(".git")).is_ok() {
+        return Ok(());
+    }
     let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
         let path = entry.path();
@@ -836,6 +853,57 @@ fn rel_under(root: &Path, path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #23 D2. Both walkers skipped the entry *named* `.git`, which correctly skips a
+    /// linked worktree's `.git` FILE — but the checkout around it is not named `.git`
+    /// and was walked like ordinary content. A worktree inside the project was
+    /// therefore mirrored as a full second copy of the source tree: every pass
+    /// doubled, the copy counted in the big-folder census, and it landed on the peer
+    /// as a plain directory with no `.git` at all, which then drifted.
+    #[test]
+    fn the_mirror_walk_stops_at_a_nested_repo_or_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join("src.rs"), b"x").unwrap();
+
+        // A linked worktree: `.git` is a FILE holding `gitdir: …`.
+        let wt = root.join("wt-feature");
+        std::fs::create_dir_all(wt.join("deep")).unwrap();
+        std::fs::write(wt.join(".git"), b"gitdir: /elsewhere/.git/worktrees/feature").unwrap();
+        std::fs::write(wt.join("deep/copy.rs"), b"x").unwrap();
+
+        // A nested clone: `.git` is a DIRECTORY.
+        let nested = root.join("vendor/lib");
+        std::fs::create_dir_all(nested.join(".git")).unwrap();
+        std::fs::write(nested.join("lib.rs"), b"x").unwrap();
+
+        let mut out = Vec::new();
+        walk_mirror_inner(root, root, &mut out).unwrap();
+        out.sort();
+        assert_eq!(
+            out,
+            vec!["src.rs".to_string()],
+            "only the project's own files; the walk stops at any .git boundary"
+        );
+    }
+
+    #[test]
+    fn the_mirror_walk_does_not_stop_at_the_project_root_itself() {
+        // The root of course holds a `.git` — the boundary is a check on
+        // SUBdirectories, or every project would sync nothing at all.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join("a.txt"), b"x").unwrap();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/b.txt"), b"x").unwrap();
+
+        let mut out = Vec::new();
+        walk_mirror_inner(root, root, &mut out).unwrap();
+        out.sort();
+        assert_eq!(out, vec!["a.txt".to_string(), "sub/b.txt".to_string()]);
+    }
 
     fn excluded_dir() -> SyncEntry {
         SyncEntry { is_dir: true, excluded: true, auto_off: true, ..Default::default() }

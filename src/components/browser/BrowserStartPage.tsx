@@ -10,7 +10,7 @@ import { UntestedTag } from "../common/UntestedTag";
  * **not** navigate at launch. Restoring six tabs would be six automatic outbound
  * requests, to whatever the user last had open, before they have looked at the
  * screen — and "nothing about a window being reopened is consent to dial out"
- * is the rule the mail tab already states. The persisted URL is rendered here as
+ * is the rule the mail client already states. The persisted URL is rendered here as
  * *text*, with the host at full weight, behind a Load button.
  *
  * The URL is attacker-influenceable (it is whatever page the tab last committed

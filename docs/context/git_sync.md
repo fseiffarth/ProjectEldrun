@@ -23,6 +23,31 @@ Referenced from `CLAUDE.md`.
   local edits ("clears amber → green" means the host wins). It is a **log file**, not an
   event: the services are `AppHandle`-free and a background pass can delete with no window
   listening, so a loss recorded while the app was closed still surfaces on next launch.
+- **Every manual transfer asks first** (`stores/syncConfirm` → `SyncConfirmDialog`,
+  priced by the read-only `sync_transfer_preview`). The clause above — "non-destructive
+  by construction" — describes the *background* engine, which skips a both-sides-changed
+  file rather than pick a winner. The **manual** transfers are exactly the ones that do
+  pick: a pull writes the host's bytes over the mirror's, a push writes the mirror's over
+  the host's, and each used to be one unconfirmed click — on a file, on a **folder**
+  (whole subtree), or on the whole project. From the button alone the safe case (the
+  other side holds nothing) and the lossy one (it holds edits held nowhere else) are
+  indistinguishable, which is what made an ordinary misclick destructive. So the click is
+  now a question that states direction, scope, file count and size, how many files land
+  on top of an existing one, and **by name** the receiving-side files whose content would
+  be gone — the same rule `local_loss` files a warning for afterwards, asked before
+  instead. A preview that fails, or a tree too big to inspect up front, says so and still
+  requires the answer: a missing price is never an implicit yes. Covers the file tree's
+  ⇄ button and its sync/push menu items, the file view's whole-project "Sync all" in both
+  directions, and the diverged-files list's per-row and bulk take-a-side actions (which
+  are force transfers, and are labelled as such).
+  - **A conflict queue can be dropped whole ("Skip all").** A push that a host change
+    would clobber is blocked per file and queued for a keep-local/take-host answer; over
+    a folder or a whole project that queue can be hundreds long, and answering it file by
+    file is not a decision anyone can make at that size. "Not now" is a legitimate answer
+    and is the safe one: skipping writes to neither side, so the files stay diverged and
+    stay in the file view's **orange** list, where the merge viewer resolves them one at
+    a time and the bulk take-a-side buttons resolve them together. The dialog says so
+    rather than leaving "skip all" reading as giving up.
 - **Lockstep is ON by default for a new git-backed remote project** — set at
   creation by both `create_project` and `extend_project_to_remote` (gated on the
   mirror actually being a repo). It is safe as a default precisely there: the host

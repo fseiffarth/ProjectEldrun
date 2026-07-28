@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
+import { UntestedTag } from "../common/UntestedTag";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { GLOBAL_APP_ROLES } from "./GlobalAppBar";
@@ -913,6 +914,7 @@ interface OllamaInstallStrategy {
 
 export function OllamaPanel({ onBack }: { onBack: () => void }) {
   const t = useT();
+  const { settings, updateSettings } = useSettingsStore();
   const [installed, setInstalled] = useState<boolean | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installLog, setInstallLog] = useState<string | null>(null);
@@ -1354,6 +1356,38 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
     return out;
   }, [regModels, regTypes, regSizes, sortBy]);
 
+  // "Load on Eldrun start" — which models `stores/ollamaAutoload` warms into
+  // memory at launch. The per-model switches write straight through (the same
+  // setting the 🧠 menu's chip toggles, so the two surfaces cannot disagree);
+  // the Energy Saver opt-out is *staged* behind a Save button, because it is the
+  // one control here that changes whether the app spends power unattended.
+  const autoloadModels = settings?.ollama_autoload_models ?? [];
+  const saverPref = settings?.ollama_autoload_in_energy_saver === true;
+  const [saverDraft, setSaverDraft] = useState(saverPref);
+  const [saverSaved, setSaverSaved] = useState(false);
+  // Re-seat the draft when the *stored* value actually moves — settings arrive
+  // asynchronously, so the first render of this panel can precede them, and this
+  // panel's own save lands here too. Guarded on a change (not on every render)
+  // so a staged edit survives unrelated settings writes.
+  const lastStoredSaver = useRef(saverPref);
+  useEffect(() => {
+    if (lastStoredSaver.current === saverPref) return;
+    lastStoredSaver.current = saverPref;
+    setSaverDraft(saverPref);
+  }, [saverPref]);
+  const toggleAutoload = (name: string) => {
+    const next = autoloadModels.includes(name)
+      ? autoloadModels.filter((m) => m !== name)
+      : [...autoloadModels, name];
+    void updateSettings({ ollama_autoload_models: next });
+  };
+  const saveSaverPref = () => {
+    void updateSettings({ ollama_autoload_in_energy_saver: saverDraft }).then(() => {
+      setSaverSaved(true);
+      window.setTimeout(() => setSaverSaved(false), 2000);
+    });
+  };
+
   const runningModels = models.filter((m) => m.running);
   const loadedLabel =
     runningModels.length === 0
@@ -1788,6 +1822,52 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
           ))}
         </div>
       )}
+
+      {/* Load-on-start: the models Eldrun warms into memory at launch, plus the
+          Energy Saver opt-out. See `stores/ollamaAutoload` for the rules. */}
+      <div className="settings-section-title">
+        {t("ollama.autostartTitle")} <UntestedTag />
+      </div>
+      <p className="settings-help">{t("ollama.autostartHelp")}</p>
+      {models.length === 0 ? (
+        <div className="ollama-empty">{t("ollama.noModelsDownloaded")}</div>
+      ) : (
+        <div className="settings-list ollama-autostart-list">
+          {models.map((m) => (
+            <label
+              className={`ollama-autostart-row${autoloadModels.includes(m.name) ? " on" : ""}`}
+              key={`autostart:${m.name}`}
+            >
+              <Toggle
+                size="sm"
+                checked={autoloadModels.includes(m.name)}
+                onChange={() => toggleAutoload(m.name)}
+                title={t("ollama.autostartToggleTitle", { name: m.name })}
+              />
+              <span className="ollama-model-name">{m.name}</span>
+              {m.parameter_size && <span className="ollama-badge">{m.parameter_size}</span>}
+            </label>
+          ))}
+        </div>
+      )}
+      <div className="settings-toggle-card">
+        <label className="settings-toggle-card-row">
+          <span>{t("ollama.autostartInSaver")}</span>
+          <Toggle checked={saverDraft} onChange={(e) => setSaverDraft(e.target.checked)} />
+        </label>
+        <p className="settings-help">{t("ollama.autostartInSaverHelp")}</p>
+        <div className="ollama-autostart-saver-actions">
+          {saverSaved && <span className="ollama-status-text">{t("ollama.autostartSaved")}</span>}
+          <button
+            type="button"
+            className="ollama-action-btn primary"
+            disabled={saverDraft === saverPref}
+            onClick={saveSaverPref}
+          >
+            {t("common.save")}
+          </button>
+        </div>
+      </div>
 
       <div className="settings-section-title ollama-section-title-row">
         <span>{t("ollama.browseRegistry")}</span>

@@ -7,16 +7,17 @@
     authored once and mirrored across the vertical centre line (x = 256).
   -->
   <g stroke="#0F3D2E" stroke-linecap="round" stroke-linejoin="round" fill="none">
-    <!-- Ring, with a small opening at the bottom where the trunk passes through. -->
-    <path d="M 214 491 A 239 239 0 1 1 298 491" stroke-width="10" />
+    <!-- Ring: a full circle. The trunk and the two splayed feet stop short
+         of it, leaving a visible gap rather than touching or crossing it. -->
+    <circle cx="256" cy="256" r="239" stroke-width="10" />
 
-    <!-- Central trunk stem. -->
-    <path d="M 256 161 L 256 499" stroke-width="10" />
+    <!-- Central trunk stem, stopping short of the ring. -->
+    <path d="M 256 161 L 256 475" stroke-width="10" />
 
     <!-- Left-side branches + descending leg (authored), then mirrored. -->
     <g id="eldrun-branches">
-      <!-- L1: node → vertical → 45° diagonal → leg → splayed foot. -->
-      <path d="M 165 176 L 165 238 L 233 306 L 233 440 L 222 483" stroke-width="10" />
+      <!-- L1: node → vertical → 45° diagonal → leg → splayed foot, stopping short of the ring. -->
+      <path d="M 165 176 L 165 238 L 233 306 L 233 440 L 225 473" stroke-width="10" />
       <!-- L2 → vertical → diagonal → L3 (trace stops short of the pad on both sides) → 45° diagonal down into the leg. -->
       <path d="M 98 235 L 98 289 L 129.9 320.9 M 159.7 347.4 L 233 405" stroke-width="10" />
       <!-- Node terminals (thinner stroke than the traces). -->

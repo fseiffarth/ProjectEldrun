@@ -3,12 +3,19 @@ pub mod big_folders;
 // In-app browser (TODO J #61): reader-mode fetch+sanitize, the live-page window
 // registry, and download quarantine. See docs/browser_plan_{b,c}.md.
 pub mod browser_engine;
+// CalDAV accounts (docs/caldav_plan.md): the WebDAV transport half. Hand-rolled
+// on reqwest + roxmltree; iCalendar itself is still parsed by src/lib/ics.ts.
+pub mod caldav;
 pub mod codex_bind;
 pub mod git_credentials;
 pub mod git_peer;
 pub mod hpc_mode;
 pub mod local_loss;
+pub mod mail_authres;
+pub mod mail_crypt;
+pub mod mail_crypto;
 pub mod mail_engine;
+pub mod mail_pgp;
 pub mod mail_sanitize;
 pub mod mail_store;
 pub mod net_usage;
@@ -28,6 +35,7 @@ pub mod restore_service;
 // unconditionally.
 pub mod sandbox;
 pub mod sftp;
+pub mod skills;
 pub mod ssh_common;
 pub mod ssh_exec;
 pub mod sync_auto;

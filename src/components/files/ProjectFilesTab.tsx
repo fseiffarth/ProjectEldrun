@@ -82,19 +82,31 @@ export function ProjectFilesTab({
   const project = projects.find((p) => p.id === scope) ?? null;
   const projectDir = project ? resolveProjectDirectory(project) : cwd;
 
-  const [folder, setFolder] = useState(initialFolder ?? "");
+  // The browsed folder is meaningless without the root it is relative to, so it
+  // is held WITH that identity and dropped the moment the identity changes — a
+  // project switch in a host that reuses this instance (the docked subwindow
+  // sidebar; a popout whose group re-roots on its active tab), or a project
+  // whose directory moved. Deriving it during render rather than resetting it in
+  // an effect is load-bearing: child effects run BEFORE the parent's, so an
+  // effect-based reset would let `FileTree` fire one listing at the previous
+  // project's rel path — and that listing, having succeeded, is the one that
+  // sticks (its reload is not re-run for a mere prop change).
+  const identity = `${scope}\u0000${projectDir}`;
+  const [held, setHeld] = useState({ identity, folder: initialFolder ?? "" });
+  const folder = held.identity === identity ? held.folder : (initialFolder ?? "");
   const [source, setSource] = useIndependentFileSource(project?.id ?? null, !!project?.remote);
 
-  // Re-seed when the persisted folder changes out from under us — a restart
-  // restore or a popout's streamed `files` edit hands a new browsed folder that
-  // must win over local state. In steady state the persisted value tracks
-  // `folder`, so this is a no-op except on those external updates.
+  // Re-seed when the identity changes (above is the same frame's answer; this
+  // commits it) or when the persisted folder changes out from under us — a
+  // restart restore or a popout's streamed `files` edit hands a new browsed
+  // folder that must win over local state. In steady state the persisted value
+  // tracks `folder`, so this is a no-op except on those external updates.
   useEffect(() => {
-    setFolder(initialFolder ?? "");
-  }, [initialFolder]);
+    setHeld({ identity, folder: initialFolder ?? "" });
+  }, [identity, initialFolder]);
 
   const onFolderChange = (next: string) => {
-    setFolder(next);
+    setHeld({ identity, folder: next });
     // Persist so it reopens where it was left (debounced by the store's own
     // saveLayout): the docked viewer routes onto its group node (persistFolder),
     // a tab onto its own TabEntry.folder.

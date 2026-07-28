@@ -308,6 +308,35 @@ export function performLinkTarget(target: LinkTarget, hooks: DispatchHooks = {})
   }
 }
 
+/**
+ * Join a video call — the one link in the app that must never open in a reader.
+ *
+ * `explicit: "external"` because a conference URL is not a page to look at: it
+ * is the door into a meeting, and the session, the camera permission and the
+ * "open in the desktop app" handoff all live in the user's real browser. An
+ * inert sanitized copy of Zoom's launch page is a Join button that does not
+ * join. The routing is still asked (rather than calling the OS directly), so the
+ * scheme gate applies here like everywhere else: `lib/conference.ts` has already
+ * refused anything that is not `http(s)`, and this is the independent second
+ * check that a `zoommtg:`-style URL never reaches the OS handler.
+ */
+export function joinConference(url: string, hooks: DispatchHooks = {}): LinkTarget {
+  return openRoutedUri(
+    url,
+    // Every field but `explicit` is inert on this path — an explicit gesture is
+    // resolved before the flags or the setting are read — so they are spelled
+    // out as the "no in-app anything" case rather than threaded from the stores.
+    {
+      setting: undefined,
+      browserEnabled: false,
+      mailEnabled: false,
+      origin: "viewer",
+      explicit: "external",
+    },
+    hooks,
+  );
+}
+
 /** Route and perform in one call — the shape every #33 call site uses. */
 export function openRoutedUri(
   uri: string,

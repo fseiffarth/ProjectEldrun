@@ -9,6 +9,11 @@
  * sandboxing. A bespoke "run" IPC path would have to re-derive both and would get
  * them wrong.
  *
+ * The one thing a fresh tab cannot inherit is *which* machine, because it has no
+ * predecessor to inherit from — a new shell tab defaults to the host. So the tab
+ * is given an explicit locality, resolved by {@link pythonRunPlan}: the run-host
+ * preference when the project has one, else the side the file itself lives on.
+ *
  * It also means the process is a *visible, interactive terminal*: a script that
  * prompts for input works, Ctrl+C works, and the shell survives the program's
  * exit so the output (and the traceback) stays on screen and ↑ re-runs it. This
@@ -22,9 +27,8 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import { basename, dirname } from "./paths";
-import { useTabsStore, type TabEntry } from "../stores/tabs";
-import { useRunHostPrefStore } from "../stores/runHostPref";
+import { basename, dirname, relativePathWithin } from "./paths";
+import { useTabsStore, isRemoteLocation, type TabEntry, type TabLocation } from "../stores/tabs";
 import { guardLoginNodeRun } from "./hpcGuard";
 
 /** How a run/debug tab is inserted into the layout. Given the built (keyless)
@@ -154,6 +158,113 @@ export function currentPlatform(): PyPlatform {
   return navigator.userAgent.includes("Windows") ? "windows" : "unix";
 }
 
+/**
+ * Which side of a remote project an absolute path lives on — and therefore where
+ * a Run of it lands when the project has no run-host preference.
+ *
+ * The **path itself** is the ground truth, not the file view's Remote/Local
+ * switch: a code-editor tab has no switch of its own (and can outlive the folder
+ * it was opened from), while a host path and a mirror path never coincide. The
+ * test is deliberately one-sided — only a path *under the host root* is treated as
+ * remote — because the failure it exists to prevent is sending a path we cannot
+ * prove is the host's to a shell on the host, where it either fails or, worse,
+ * names a different file that happens to exist there.
+ *
+ * `null`/blank `remotePath` (a local project) has no machine axis at all.
+ */
+export function fileSideLocation(
+  file: string,
+  remotePath?: string | null,
+): TabLocation | undefined {
+  const root = remotePath?.trim();
+  if (!root) return undefined;
+  return relativePathWithin(root, file) !== null ? "remote" : "local";
+}
+
+/** Where a Python Run/Debug of one file lands, and what it has to say to get there. */
+export interface PyRunPlan {
+  /** The tab's locality. Undefined on a local project (the axis is inert). */
+  location?: TabLocation;
+  /** The tab's cwd, on the machine the run lands on. */
+  cwd: string;
+  /** The path to put on the command line: the clicked absolute path when the run
+   *  stays on the file's own side, else the project-relative path (see below). */
+  runPath: string;
+  /** The directory to resolve the interpreter against — the backend's remoteness
+   *  oracle is the *directory*, so this decides whether it probes the host or the
+   *  local machine (`commands::python`). */
+  probeDir: string;
+}
+
+/**
+ * Resolve a Python Run/Debug to a machine, a cwd and a path — the twin of
+ * `shellScriptRunPlan`, and for the same reason: the ▶ on a `.py` row and the ▶ on
+ * a `.sh` row sit in the same file view and must not disagree about where they
+ * run.
+ *
+ * **The side the file is on decides, and the run-host preference cannot overrule
+ * it.** A file on the local mirror runs locally — full stop. The preference picks
+ * *which machine* among the remote ones (primary or a worker) for a file that
+ * lives on the host, and that is the only question it answers; it is not offered
+ * at all on the Local side, because there is only one local machine.
+ *
+ * That asymmetry is the whole point. The preference is **persisted per project**
+ * (`project.json`'s `run_host`), so it is normally set — and letting a choice made
+ * weeks ago while browsing the host silently redirect a Run of a *local* file to
+ * that host is the bug this function exists to prevent. Switching the file view to
+ * Local is a statement about this click; the stored preference is not.
+ *
+ * The one crossing that remains is deliberate and explicit: picking ⌂ Local from
+ * the picker while browsing the host. The clicked absolute path then names a file
+ * on the *other* machine, so it is re-expressed project-relative and resolved
+ * against the run side's own root (the two sides mirror the same tree, so it is
+ * the same file). A path under neither root — a file opened outside the project —
+ * is passed through untouched and the shell reports the truth.
+ */
+export function pythonRunPlan(opts: {
+  /** The project's canonical directory (`resolveProjectDirectory`) — the value the
+   *  backend matches against `projects.json` to decide remoteness. */
+  projectDir: string;
+  /** The project's host root (`remote.remote_path`); absent for a local project. */
+  remotePath?: string | null;
+  /** The local root the project's files mirror to: the mirror root on a remote
+   *  project, the project directory on a local one. */
+  localRoot?: string | null;
+  /** Absolute path of the file to run, on whichever side it was browsed. */
+  file: string;
+  /** The project's run-host preference (`useRunHostPrefStore`), if any. */
+  runHostPref?: TabLocation;
+}): PyRunPlan {
+  const { file } = opts;
+  const remotePath = opts.remotePath?.trim() || null;
+  const projectCwd = runCwd(opts.projectDir, file);
+  if (!remotePath) {
+    return { location: undefined, cwd: projectCwd, runPath: file, probeDir: projectCwd };
+  }
+  const localRoot = opts.localRoot?.trim() || projectCwd;
+  const fileSide = fileSideLocation(file, remotePath) ?? "local";
+  // A local-mirror file runs in a LOCAL shell, whatever machine the preference
+  // names — see the dominance rule above. Only a host-side file asks the
+  // preference, and only to choose between the remote machines (or ⌂ Local).
+  const location: TabLocation =
+    fileSide === "local" ? "local" : (opts.runHostPref ?? "remote");
+  const runsRemote = isRemoteLocation(location);
+  // The cwd must match the run side so a relative `runPath` resolves. A local run
+  // on a remote project is re-cwd'd into the mirror by `localTabCwd` anyway; a
+  // remote one lands in the target host's own project root.
+  const cwd = runsRemote ? remotePath : localRoot;
+  // The interpreter is probed on the machine that will run the file — a host venv
+  // is not on the local mirror, and vice versa. The backend resolves remoteness
+  // from the directory, so the local side deliberately passes the mirror root
+  // (which matches no `projects.json` entry) rather than the project directory.
+  const probeDir = runsRemote ? opts.projectDir : localRoot;
+  if (runsRemote === (fileSide === "remote")) {
+    return { location, cwd, runPath: file, probeDir };
+  }
+  const rel = relativePathWithin(runsRemote ? localRoot : remotePath, file);
+  return { location, cwd, runPath: rel && rel.trim() ? rel : file, probeDir };
+}
+
 /** The label a run/debug tab carries. */
 export function pyTabLabel(mode: PyRunMode, file: string): string {
   return `${mode === "debug" ? "🐞" : "▶"} ${basename(file)}`;
@@ -170,9 +281,11 @@ export function pyTabLabel(mode: PyRunMode, file: string): string {
  */
 export function openPythonTab(opts: {
   mode: PyRunMode;
+  /** The file's own (browsed) absolute path — the tab's IDENTITY, not what it
+   *  runs: a cross-side run puts `plan.runPath` on the command line instead. */
   file: string;
-  /** cwd for the tab — the project root, so relative paths and the venv resolve. */
-  projectDir: string;
+  /** Where the run lands (`pythonRunPlan`) — the machine, the cwd on it. */
+  plan: PyRunPlan;
   /** The scope owning the tab: the project's id, or "root". Only used by the
    *  default placement (when no `place` is supplied). */
   scope: string;
@@ -182,7 +295,7 @@ export function openPythonTab(opts: {
    *  focused subwindow via `addTabToScope`. See {@link placeForFocused}. */
   place?: PyTabPlacer;
 }): void {
-  const { mode, file, projectDir, scope, command, place } = opts;
+  const { mode, file, plan, scope, command, place } = opts;
   const store = useTabsStore.getState();
 
   const prior = store.tabs.find(
@@ -193,25 +306,22 @@ export function openPythonTab(opts: {
   );
   if (prior) store.removeTab(prior.key);
 
-  // Which machine to run on: the project's run-host preference (set from the file
-  // viewer's `RunHostPicker`), keyed by the owning project. `scope` is the project
-  // id for a project tab ("root" has no pref). Honoured for EVERY remote project,
-  // including a genuinely multi-machine one with a synced-code worker — a Python
-  // Run creates a fresh tab, so the per-tab locality badge can't pre-target it and
-  // the project-wide picker is the only control that can send a run to a worker.
-  // Unset ⇒ `location` is omitted (⇒ the shell default, the primary). A pref naming
-  // a since-removed worker is harmless: CenterPanel/`wrap_pty_options` fall the tab
-  // back to the primary.
-  const runHost = useRunHostPrefStore.getState().byProject[scope];
+  // Which machine to run on is `pythonRunPlan`'s answer and nothing else's — the
+  // project's run-host preference (set from the file viewer's `RunHostPicker`)
+  // when there is one, else the side the file lives on. It must be set EXPLICITLY
+  // even for "local", because a shell tab's per-kind default is *remote* (see
+  // `defaultLocationForKind`): leaving it off is what used to send a run of a
+  // local-mirror file to the host. A pref naming a since-removed worker is
+  // harmless — CenterPanel/`wrap_pty_options` fall the tab back to the primary.
   const tab: Omit<TabEntry, "key"> = {
     label: pyTabLabel(mode, file),
     cmd: "", // the host's default shell
-    cwd: projectDir,
+    cwd: plan.cwd,
     kind: "shell",
     env: { [PY_TARGET_ENV]: file, [PY_MODE_ENV]: mode },
     initialInput: command,
     runFile: file,
-    ...(runHost ? { location: runHost } : {}),
+    ...(plan.location ? { location: plan.location } : {}),
   };
   // A placer OWNS insertion. It returns the created entry for a main-window store
   // write (which we then activate), or null when it streamed the tab elsewhere (a
@@ -226,19 +336,18 @@ export function openPythonTab(opts: {
   useTabsStore.getState().setActive(entry.key);
 }
 
-/** The login-node gate for a Python run/debug, resolving the run host the same
- *  way {@link openPythonTab} does — the project's run-host preference. Returns
- *  whether to go ahead; `false` means the user backed out or took an interactive
- *  job instead. */
-async function guardRunHost(scope: string, projectId: string | null): Promise<boolean> {
-  const runHost = useRunHostPrefStore.getState().byProject[scope];
-  return guardLoginNodeRun({ projectId, location: runHost, kind: "login-node-run" });
+/** The login-node gate for a Python run/debug, on the machine the plan resolved.
+ *  Returns whether to go ahead; `false` means the user backed out or took an
+ *  interactive job instead. */
+async function guardRunHost(plan: PyRunPlan, projectId: string | null): Promise<boolean> {
+  return guardLoginNodeRun({ projectId, location: plan.location, kind: "login-node-run" });
 }
 
 /** Run `file` in a fresh terminal tab. */
 export async function runPythonFile(opts: {
   file: string;
-  projectDir: string;
+  /** Where this run lands — build it with {@link pythonRunPlan}. */
+  plan: PyRunPlan;
   scope: string;
   /** The project whose pinned interpreter applies; null in the root scope. */
   projectId: string | null;
@@ -247,18 +356,17 @@ export async function runPythonFile(opts: {
   /** Where to insert the run tab (see openPythonTab); defaults to the scope group. */
   place?: PyTabPlacer;
 }): Promise<void> {
-  // A run lands on whichever machine the project's run-host preference names, and
-  // if that machine is a tagged cluster login node, ask before computing there
-  // (`lib/hpcGuard.ts`). Untagged hosts and local runs never see this.
-  if (!(await guardRunHost(opts.scope, opts.projectId))) return;
+  // If the machine the plan names is a tagged cluster login node, ask before
+  // computing there (`lib/hpcGuard.ts`). Untagged hosts and local runs never see this.
+  if (!(await guardRunHost(opts.plan, opts.projectId))) return;
   const platform = currentPlatform();
-  const interp = await resolveInterpreter(opts.projectId, opts.projectDir, platform);
+  const interp = await resolveInterpreter(opts.projectId, opts.plan.probeDir, platform);
   openPythonTab({
     mode: "run",
     file: opts.file,
-    projectDir: opts.projectDir,
+    plan: opts.plan,
     scope: opts.scope,
-    command: buildRunCommand(interp, opts.file, platform, opts.args),
+    command: buildRunCommand(interp, opts.plan.runPath, platform, opts.args),
     place: opts.place,
   });
 }
@@ -266,7 +374,7 @@ export async function runPythonFile(opts: {
 /** Debug `file` under pdb, breaking on `breakpoints` (1-based lines). */
 export async function debugPythonFile(opts: {
   file: string;
-  projectDir: string;
+  plan: PyRunPlan;
   scope: string;
   projectId: string | null;
   breakpoints: number[];
@@ -275,15 +383,17 @@ export async function debugPythonFile(opts: {
   /** Where to insert the debug tab (see openPythonTab); defaults to the scope group. */
   place?: PyTabPlacer;
 }): Promise<void> {
-  if (!(await guardRunHost(opts.scope, opts.projectId))) return;
+  if (!(await guardRunHost(opts.plan, opts.projectId))) return;
   const platform = currentPlatform();
-  const interp = await resolveInterpreter(opts.projectId, opts.projectDir, platform);
+  const interp = await resolveInterpreter(opts.projectId, opts.plan.probeDir, platform);
   openPythonTab({
     mode: "debug",
     file: opts.file,
-    projectDir: opts.projectDir,
+    plan: opts.plan,
     scope: opts.scope,
-    command: buildDebugCommand(interp, opts.file, opts.breakpoints, platform, opts.args),
+    // pdb's `b <file>:<line>` takes the same path the run does — relative to the
+    // tab's cwd on a cross-side run, which is the project root there.
+    command: buildDebugCommand(interp, opts.plan.runPath, opts.breakpoints, platform, opts.args),
     place: opts.place,
   });
 }

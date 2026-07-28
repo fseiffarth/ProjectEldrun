@@ -4,6 +4,7 @@ import { Toggle } from "../common/Toggle";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Dropdown } from "../common/Dropdown";
+import { UntestedTag } from "../common/UntestedTag";
 import { useTabsStore } from "../../stores/tabs";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
@@ -30,7 +31,25 @@ interface Worktree {
   head: string;
   is_main: boolean;
   is_locked: boolean;
+  /** git's own words for why — the whole content of a lock. */
+  lock_reason: string;
+  /** The admin entry survives but the checkout is gone; only `prune` clears it. */
+  is_prunable: boolean;
+  prunable_reason: string;
   is_bare: boolean;
+  /** This worktree is the one Eldrun is working in — never removable (#23 D4). */
+  is_current: boolean;
+}
+
+/** The create form's fields. `branch` means different things per mode: an existing
+ *  branch to check out, or the NEW branch's name — which is why the control has to
+ *  swap between a dropdown and a text input (#23 B1). */
+interface WorktreeForm {
+  name: string;
+  branch: string;
+  newBranch: boolean;
+  /** Only meaningful when `newBranch`: where the new branch starts. */
+  startPoint: string;
 }
 
 /** A peer's HEAD as reported by the git-lockstep backend (#28n). */
@@ -103,6 +122,23 @@ interface Props {
 function basename(p: string): string {
   const parts = p.split(/[/\\]/).filter(Boolean);
   return parts[parts.length - 1] ?? p;
+}
+
+/**
+ * The one place a worktree may live for this project, derived from the **main
+ * worktree's own path** in the listing rather than from `projectDir` — for a
+ * remote project those are two different machines' paths, and the listing is
+ * always the side the command actually ran on (#23 I2/I3).
+ *
+ * Mirrors `commands::git::WorktreeCtx::worktrees_root`; the backend re-derives
+ * and enforces it, so this is a preview, never the gate.
+ */
+function worktreesRoot(worktrees: Worktree[]): string {
+  const main = worktrees.find((w) => w.is_main);
+  if (!main) return "";
+  const root = main.path.replace(/[/\\]+$/, "");
+  const sep = /^[a-zA-Z]:[\\/]/.test(root) || root.includes("\\") ? "\\" : "/";
+  return `${root}${sep}.eldrun${sep}worktrees`;
 }
 
 function parseRefs(refs: string): string[] {
@@ -281,7 +317,16 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
   const [lockstepBusy, setLockstepBusy] = useState(false);
   // #28p D6: null = the Backups list is closed.
   const [backups, setBackups] = useState<BackupRef[] | null>(null);
-  const [wtForm, setWtForm] = useState<{ path: string; branch: string; newBranch: boolean } | null>(null);
+  const [wtForm, setWtForm] = useState<WorktreeForm | null>(null);
+  /**
+   * Which side's worktrees these are (#23 I2). For a remote project `projectDir`
+   * is the **local mirror** while the repo of record is on the host, so resolving
+   * this from the directory alone created host worktrees at mirror-shaped paths
+   * and left the mirror's own repo unmanageable. Defaults to the host, which is
+   * what the rest of this panel reflects. Meaningless (and hidden) for a local
+   * project, where there is only one side.
+   */
+  const [wtSite, setWtSite] = useState<"host" | "mirror">("host");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<GitCommit | null>(null);
@@ -309,21 +354,23 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
     if (!projectDir) return;
     setLoading(true);
     setError(null);
-    try {
-      const [log, br, wt] = await Promise.all([
-        invoke<GitCommit[]>("git_log", { projectDir, limit: 100 }),
-        invoke<GitBranch[]>("git_branches", { projectDir }),
-        invoke<Worktree[]>("git_worktree_list", { projectDir }),
-      ]);
-      setCommits(log);
-      setBranches(br);
-      setWorktrees(wt ?? []);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [projectDir]);
+    // `allSettled`, not `all`: these are three independent reads, and one of them
+    // rejecting used to reject the whole batch — so a git build that does not know
+    // `git_worktree_list`, or a worktree probe that failed on its own, blanked the
+    // commit list and the branch pills too. Each result now stands or falls alone
+    // and only the failures are reported.
+    const [log, br, wt] = await Promise.allSettled([
+      invoke<GitCommit[]>("git_log", { projectDir, limit: 100 }),
+      invoke<GitBranch[]>("git_branches", { projectDir }),
+      invoke<Worktree[]>("git_worktree_list", { projectDir, site: wtSite }),
+    ]);
+    if (log.status === "fulfilled") setCommits(log.value ?? []);
+    if (br.status === "fulfilled") setBranches(br.value ?? []);
+    if (wt.status === "fulfilled") setWorktrees(wt.value ?? []);
+    const failed = [log, br, wt].filter((r) => r.status === "rejected");
+    setError(failed.length ? String((failed[0] as PromiseRejectedResult).reason) : null);
+    setLoading(false);
+  }, [projectDir, wtSite]);
 
   useEffect(() => {
     load();
@@ -570,9 +617,12 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
     try {
       await invoke("git_worktree_add", {
         projectDir,
-        path: wtForm.path,
-        branch: wtForm.branch,
+        site: wtSite,
+        // A NAME, not a path: the backend owns where a worktree lives (#23 I3).
+        path: wtForm.name.trim() || wtForm.branch.trim(),
+        branch: wtForm.branch.trim(),
         newBranch: wtForm.newBranch,
+        startPoint: wtForm.newBranch ? wtForm.startPoint || null : null,
       });
       setWtForm(null);
       await load();
@@ -583,13 +633,80 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
     }
   }
 
-  async function removeWorktree(path: string, force = false) {
+  /**
+   * Remove a worktree, asking first and naming what goes (#23 B2/B3).
+   *
+   * `git worktree remove` refuses a *dirty* tree but does **not** refuse on
+   * **ignored** files — it deletes the tree wholesale, so a `node_modules`, a
+   * `.venv` and a `.env` full of keys all go with it. There is no undo and no
+   * trash, which is exactly why the sibling destructive actions in this file
+   * (lockstep resolve, pairing overwrite, backup restore) all confirm first.
+   *
+   * `force` is a **count**: git answers a locked worktree with "use 'remove -f -f'
+   * to override or unlock first" and exits 128 for a single `--force`. So a
+   * refusal is re-offered at the next level rather than dead-ending — the state
+   * that used to be escapable only from a terminal.
+   */
+  async function removeWorktree(wt: Worktree, force = 0) {
+    if (force === 0) {
+      if (!window.confirm(t("gitHistory.confirmRemoveWorktree", { path: wt.path }))) return;
+    }
     setLoading(true);
     setError(null);
     try {
-      await invoke("git_worktree_remove", { projectDir, path, force });
+      await invoke("git_worktree_remove", { projectDir, path: wt.path, force, site: wtSite });
       await load();
       onChanged?.();
+    } catch (e) {
+      const msg = String(e);
+      setLoading(false);
+      // git names its own escape in the failure. Offer exactly that one, once.
+      const next = /use\s+'?remove\s+-f\s+-f|locked working tree/i.test(msg)
+        ? 2
+        : /use --force|use `--force`/i.test(msg)
+          ? 1
+          : 0;
+      if (next > force) {
+        const key =
+          next === 2 ? "gitHistory.confirmForceRemoveLocked" : "gitHistory.confirmForceRemoveDirty";
+        if (window.confirm(t(key, { path: wt.path }))) {
+          await removeWorktree(wt, next);
+          return;
+        }
+      }
+      setError(msg);
+    }
+  }
+
+  async function setWorktreeLock(wt: Worktree, lock: boolean) {
+    setLoading(true);
+    setError(null);
+    try {
+      if (lock) {
+        const reason = window.prompt(t("gitHistory.lockReasonPrompt", { path: wt.path }), "");
+        if (reason === null) {
+          setLoading(false);
+          return;
+        }
+        await invoke("git_worktree_lock", { projectDir, path: wt.path, reason, site: wtSite });
+      } else {
+        await invoke("git_worktree_unlock", { projectDir, path: wt.path, site: wtSite });
+      }
+      await load();
+    } catch (e) {
+      setError(String(e));
+      setLoading(false);
+    }
+  }
+
+  /** Drop the administrative entries of worktrees whose checkout is gone. The
+   *  command has existed since #23 landed and was never invoked from anywhere. */
+  async function pruneWorktrees() {
+    setLoading(true);
+    setError(null);
+    try {
+      await invoke("git_worktree_prune", { projectDir, site: wtSite });
+      await load();
     } catch (e) {
       setError(String(e));
       setLoading(false);
@@ -626,6 +743,15 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
   const current = branches.find((b) => b.is_current)?.name;
   const localBranches = branches.filter((b) => !b.is_remote);
   const remoteBranches = branches.filter((b) => b.is_remote);
+  const currentBranch = current;
+
+  // A branch already checked out anywhere — the main worktree included — cannot be
+  // checked out again: git answers `'x' is already used by worktree at '…'`. Offering
+  // it was a guaranteed failure one click away. `Worktree.branch` and `GitBranch.name`
+  // are the same string space, so this is an exact match, not a heuristic.
+  const checkedOut = new Set(worktrees.map((w) => w.branch).filter(Boolean));
+  const addableBranches = localBranches.filter((b) => !checkedOut.has(b.name));
+  const wtRoot = worktreesRoot(worktrees);
 
   if (!projectDir) {
     return <div className="file-tree-empty">{t("common.noProjectSelected")}</div>;
@@ -831,11 +957,48 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
       <div className="git-worktree-section">
         <div className="git-worktree-header">
           <span className="git-worktree-title">{t("gitHistory.worktrees")}</span>
+          <UntestedTag />
+          {remote && (
+            // #23 I2: two repos, two answers. `git_publish`'s "Publish from"
+            // selector is the precedent — where the bytes are is not where the
+            // operation runs, and for a remote project `projectDir` is the mirror.
+            <Dropdown
+              className="git-worktree-site"
+              value={wtSite}
+              title={t("gitHistory.worktreeSiteLabel")}
+              onChange={(v) => {
+                setWtForm(null);
+                setWtSite(v === "mirror" ? "mirror" : "host");
+              }}
+              options={[
+                { value: "host", label: t("gitHistory.worktreeSiteHost") },
+                { value: "mirror", label: t("gitHistory.worktreeSiteMirror") },
+              ]}
+            />
+          )}
+          <span className="git-worktree-spacer" />
+          {worktrees.some((w) => w.is_prunable) && (
+            <button
+              className="tab-add-btn"
+              onClick={pruneWorktrees}
+              disabled={loading}
+              title={t("gitHistory.pruneWorktreesTitle")}
+            >
+              {t("gitHistory.pruneWorktrees")}
+            </button>
+          )}
           <button
             className="tab-add-btn"
             onClick={() =>
               setWtForm((f) =>
-                f ? null : { path: "", branch: localBranches[0]?.name ?? "", newBranch: false },
+                f
+                  ? null
+                  : {
+                      name: "",
+                      branch: addableBranches[0]?.name ?? "",
+                      newBranch: addableBranches.length === 0,
+                      startPoint: "",
+                    },
               )
             }
             disabled={loading}
@@ -844,22 +1007,69 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
             {t(wtForm ? "gitHistory.cancel" : "gitHistory.addWorktree")}
           </button>
         </div>
+        {lockstep?.enabled && (
+          // #23 I5: `worktree add` does not route through the lockstep coordinator
+          // the way `checkout` does, and a branch checked out in a worktree is one
+          // lockstep will now refuse to move rather than corrupt (#23 D1).
+          <div className="git-worktree-note">{t("gitHistory.worktreeLockstepNote")}</div>
+        )}
         {worktrees.length > 0 && (
           <div className="git-branch-list git-worktree-list">
             {worktrees.map((wt) => {
               const label = wt.branch || wt.head.slice(0, 7) || basename(wt.path);
+              const state = wt.is_prunable
+                ? t("gitHistory.worktreeGone", {
+                    reason: wt.prunable_reason || t("gitHistory.worktreeGoneReason"),
+                  })
+                : wt.is_locked
+                  ? t("gitHistory.worktreeLocked", {
+                      reason: wt.lock_reason || t("gitHistory.worktreeNoReason"),
+                    })
+                  : "";
               return (
                 <span
                   key={wt.path}
-                  className={`git-branch-pill${wt.is_main ? " current" : ""}`}
-                  title={wt.path}
+                  className={
+                    `git-branch-pill git-worktree-pill${wt.is_current ? " current" : ""}` +
+                    `${wt.is_prunable ? " prunable" : ""}`
+                  }
+                  title={state ? `${wt.path}\n${state}` : wt.path}
                 >
-                  {wt.is_locked && <span aria-label={t("gitHistory.locked")}>🔒 </span>}
+                  {wt.is_locked && (
+                    <span className="git-worktree-flag" aria-label={t("gitHistory.locked")}>
+                      🔒
+                    </span>
+                  )}
+                  {wt.is_prunable && (
+                    <span className="git-worktree-flag" aria-label={t("gitHistory.prunable")}>
+                      ⚠
+                    </span>
+                  )}
                   {label}
                   {!wt.is_main && (
                     <button
-                      className="git-worktree-remove"
-                      onClick={() => removeWorktree(wt.path)}
+                      className="git-worktree-btn"
+                      onClick={() => setWorktreeLock(wt, !wt.is_locked)}
+                      disabled={loading}
+                      aria-label={t(
+                        wt.is_locked ? "gitHistory.unlockWorktreeTitle" : "gitHistory.lockWorktreeTitle",
+                        { path: wt.path },
+                      )}
+                      title={t(
+                        wt.is_locked ? "gitHistory.unlockWorktreeTitle" : "gitHistory.lockWorktreeTitle",
+                        { path: wt.path },
+                      )}
+                    >
+                      {wt.is_locked ? "🔓" : "🔒"}
+                    </button>
+                  )}
+                  {/* `is_main` is not the question a Remove control has to answer:
+                      git deletes the tree you are standing in without complaint
+                      (#23 D4), and the backend refuses that separately. */}
+                  {!wt.is_main && !wt.is_current && (
+                    <button
+                      className="git-worktree-btn git-worktree-remove"
+                      onClick={() => removeWorktree(wt)}
                       disabled={loading}
                       aria-label={t("gitHistory.removeWorktreeTitle", { path: wt.path })}
                       title={t("gitHistory.removeWorktreeTitle", { path: wt.path })}
@@ -874,34 +1084,83 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
         )}
         {wtForm && (
           <div className="git-worktree-form">
-            <Dropdown
-              value={wtForm.branch}
-              title={t("gitHistory.branchLabel")}
-              onChange={(v) => setWtForm({ ...wtForm, branch: v })}
-              options={localBranches.map((b) => ({ value: b.name, label: b.name }))}
-            />
-            <input
-              type="text"
-              placeholder={t("gitHistory.worktreePathPlaceholder")}
-              value={wtForm.path}
-              onChange={(e) => setWtForm({ ...wtForm, path: e.target.value })}
-              aria-label={t("gitHistory.worktreePathPlaceholder")}
-            />
             <label className="git-worktree-newbranch">
               <Toggle
                 size="sm"
                 checked={wtForm.newBranch}
-                onChange={(e) => setWtForm({ ...wtForm, newBranch: e.target.checked })}
+                onChange={(e) =>
+                  setWtForm({
+                    ...wtForm,
+                    newBranch: e.target.checked,
+                    // The field means a different thing in each mode, so it is
+                    // cleared rather than carried across: an existing branch name
+                    // is precisely the one value `-b` can never accept.
+                    branch: e.target.checked ? "" : (addableBranches[0]?.name ?? ""),
+                    startPoint: e.target.checked ? (currentBranch || localBranches[0]?.name || "") : "",
+                  })
+                }
               />
               {t("gitHistory.newBranchLabel")}
             </label>
+            {wtForm.newBranch ? (
+              <>
+                {/* B1: with the toggle on, this MUST be free text. It was a listbox
+                    of existing branches, so `-b <existing>` was the only payload the
+                    form could send and git always answered "already exists". */}
+                <input
+                  type="text"
+                  className="git-worktree-input"
+                  placeholder={t("gitHistory.newBranchPlaceholder")}
+                  value={wtForm.branch}
+                  onChange={(e) => setWtForm({ ...wtForm, branch: e.target.value })}
+                  aria-label={t("gitHistory.newBranchPlaceholder")}
+                />
+                <Dropdown
+                  value={wtForm.startPoint}
+                  title={t("gitHistory.startPointLabel")}
+                  onChange={(v) => setWtForm({ ...wtForm, startPoint: v })}
+                  options={[...localBranches, ...remoteBranches].map((b) => ({
+                    value: b.name,
+                    label: b.name,
+                  }))}
+                  placeholder={t("gitHistory.startPointLabel")}
+                />
+              </>
+            ) : (
+              <Dropdown
+                value={wtForm.branch}
+                title={t("gitHistory.branchLabel")}
+                onChange={(v) => setWtForm({ ...wtForm, branch: v })}
+                options={addableBranches.map((b) => ({ value: b.name, label: b.name }))}
+                placeholder={t("gitHistory.branchLabel")}
+              />
+            )}
+            <input
+              type="text"
+              className="git-worktree-input"
+              placeholder={t("gitHistory.worktreeNamePlaceholder")}
+              value={wtForm.name}
+              onChange={(e) => setWtForm({ ...wtForm, name: e.target.value })}
+              aria-label={t("gitHistory.worktreeNamePlaceholder")}
+            />
             <button
               className="tab-add-btn"
               onClick={createWorktree}
-              disabled={loading || !wtForm.path.trim() || !wtForm.branch.trim()}
+              disabled={loading || !wtForm.branch.trim()}
             >
               {t("gitHistory.create")}
             </button>
+            {/* One legal location, so the path is shown rather than chosen. */}
+            {wtRoot && (
+              <div className="git-worktree-path" title={wtRoot}>
+                {`${wtRoot}${wtRoot.includes("\\") ? "\\" : "/"}${
+                  wtForm.name.trim() || wtForm.branch.trim() || "…"
+                }`}
+              </div>
+            )}
+            {!wtForm.newBranch && addableBranches.length === 0 && (
+              <div className="git-worktree-note">{t("gitHistory.noBranchesToAdd")}</div>
+            )}
           </div>
         )}
       </div>

@@ -350,6 +350,32 @@ export function MailAccountDialog({
             />
           </label>
 
+          {/* The trusted `authserv-id`. Optional, and while it is empty **no**
+              SPF/DKIM/DMARC verdict is shown anywhere — the hint says so rather
+              than leaving the field looking like a cosmetic preference, because
+              the alternative to setting it is not "less detail", it is showing
+              the sender's own claims as if a server had checked them. */}
+          <label className="mail-field">
+            {/* No UntestedTag here: the dialog title already carries one, and
+                two pills in one dialog reads as two separate warnings. */}
+            <span className="mail-field-label">{t("mail.authservIdLabel")}</span>
+            <input
+              className="mail-input"
+              type="text"
+              spellCheck={false}
+              autoCapitalize="none"
+              placeholder={t("mail.authservIdPlaceholder")}
+              value={form.authserv_id ?? ""}
+              // Trimmed, and an empty field clears the setting rather than
+              // storing "" — which `apply_trust` would otherwise have to treat
+              // as configured-but-unmatched, i.e. warn about every message.
+              onChange={(e) =>
+                patch({ authserv_id: e.target.value.trim() ? e.target.value : undefined })
+              }
+            />
+            <span className="mail-field-hint">{t("mail.authservIdHint")}</span>
+          </label>
+
           {status && <div className="mail-note">{status}</div>}
           {error && <div className="project-dialog-error">{error}</div>}
 

@@ -340,3 +340,16 @@ pub async fn project_cpu_percent(
     let pct = busy_secs / interval.as_secs_f64() * 100.0;
     Ok((pct * 10.0).round() / 10.0)
 }
+
+/// Register a tab as a **host-bound local-model tab** — the one kind of tab that
+/// keeps running on the host when the project's container toggle is on.
+///
+/// Called by `TabBar` / `NewTabMenu` at the moment such a tab is created, with the
+/// uuid the tab persists as `hostBoundUid`. The grant is a file in the state dir
+/// (`services::sandbox::register_host_bound_tab`), which is what makes it survive
+/// a relaunch — the tab's key and PTY id do not — without the decision riding on
+/// anything a project's own files can state.
+#[tauri::command]
+pub fn register_host_bound_tab(project_id: String, uid: String) -> Result<(), String> {
+    crate::services::sandbox::register_host_bound_tab(&project_id, &uid)
+}

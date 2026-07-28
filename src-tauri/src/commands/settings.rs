@@ -99,9 +99,11 @@ fn env_join(var: &str, tail: &str) -> String {
 }
 
 /// Probe well-known install locations for the common global-app roles on
-/// Windows. Always-present system tools (Explorer, Notepad, Task Manager) are
-/// effectively guaranteed, so the toolbar is never empty; browser/mail/etc. are
-/// included only when found.
+/// Windows. Notepad is effectively guaranteed, so the toolbar is never empty;
+/// the browser and the rest are included only when found. Mail, calendar,
+/// file-manager and system-monitor roles are deliberately absent: Eldrun has
+/// its own of each (the Monitor tab for the last), so seeding an external app
+/// for them only offered a second, worse copy.
 #[cfg(target_os = "windows")]
 fn detect_windows_global_apps()
 -> Option<std::collections::HashMap<String, crate::schema::settings::GlobalAppEntry>> {
@@ -109,7 +111,7 @@ fn detect_windows_global_apps()
     use std::collections::HashMap;
 
     // role -> ordered candidate executable paths (first existing wins).
-    let candidates: [(&str, Vec<String>); 8] = [
+    let candidates: [(&str, Vec<String>); 5] = [
         (
             "browser",
             vec![
@@ -124,12 +126,7 @@ fn detect_windows_global_apps()
                 env_join("ProgramFiles", "Microsoft\\Edge\\Application\\msedge.exe"),
             ],
         ),
-        ("file_manager", vec![env_join("WINDIR", "explorer.exe")]),
         ("notes", vec![env_join("WINDIR", "System32\\notepad.exe")]),
-        (
-            "system_monitor",
-            vec![env_join("WINDIR", "System32\\Taskmgr.exe")],
-        ),
         (
             "screenshot",
             vec![env_join("WINDIR", "System32\\SnippingTool.exe")],
@@ -139,16 +136,6 @@ fn detect_windows_global_apps()
             vec![
                 env_join("ProgramFiles(x86)", "Windows Media Player\\wmplayer.exe"),
                 env_join("ProgramFiles", "Windows Media Player\\wmplayer.exe"),
-            ],
-        ),
-        (
-            "mail",
-            vec![
-                env_join("ProgramFiles", "Microsoft Office\\root\\Office16\\OUTLOOK.EXE"),
-                env_join(
-                    "ProgramFiles(x86)",
-                    "Microsoft Office\\root\\Office16\\OUTLOOK.EXE",
-                ),
             ],
         ),
         (
@@ -187,7 +174,10 @@ fn detect_windows_global_apps()
 /// `exec` points at the launchable binary inside the bundle's `Contents/MacOS/`
 /// (not the `.app` path) so the existing `Command::new(exec)` launch path works.
 /// Roles whose app is absent (e.g. iTerm) are skipped; the toolbar is never empty
-/// on a stock install since Safari/Finder/Mail are always present.
+/// on a stock install since Safari is always present. Mail, calendar,
+/// file-manager and system-monitor roles are deliberately absent — Eldrun has
+/// its own of each (the Monitor tab for the last), so seeding Mail/Finder/
+/// Activity Monitor here only offered a second, worse copy.
 #[cfg(target_os = "macos")]
 fn detect_macos_global_apps()
 -> Option<std::collections::HashMap<String, crate::schema::settings::GlobalAppEntry>> {
@@ -195,28 +185,13 @@ fn detect_macos_global_apps()
     use std::collections::HashMap;
 
     // role -> ordered candidate executable paths (first existing wins).
-    let candidates: [(&str, Vec<String>); 7] = [
+    let candidates: [(&str, Vec<String>); 4] = [
         (
             "browser",
             vec![
                 "/Applications/Safari.app/Contents/MacOS/Safari".to_string(),
                 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".to_string(),
                 "/Applications/Firefox.app/Contents/MacOS/firefox".to_string(),
-            ],
-        ),
-        (
-            "mail",
-            vec!["/System/Applications/Mail.app/Contents/MacOS/Mail".to_string()],
-        ),
-        (
-            "file_manager",
-            vec!["/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder".to_string()],
-        ),
-        (
-            "system_monitor",
-            vec![
-                "/System/Applications/Utilities/Activity Monitor.app/Contents/MacOS/Activity Monitor"
-                    .to_string(),
             ],
         ),
         (

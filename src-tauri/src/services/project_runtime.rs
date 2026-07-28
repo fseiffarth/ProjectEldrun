@@ -71,10 +71,14 @@ pub fn switch(
         }
     }
 
-    // 2. Save previous project's tab layout to project.json + .eldrun/sessions/.
+    // 2. Save previous project's tab layout to <state_dir>/sessions/<id>/ (and
+    //    its export copy in the project tree).
     if let Some(local_file) = previous_local_file {
         if let Err(e) = terminal_service::save_terminal_session(
+            previous_project_id,
             local_file,
+            // project-tree-read: ok — `snapshot` is the frontend's live in-memory
+            // switch payload (`PreviousProjectSnapshot`), not a file read.
             &snapshot.tab_layout,
             snapshot.active_tab_index,
             snapshot.tab_groups.clone(),
@@ -91,10 +95,12 @@ pub fn switch(
     // 3. Load the next project's session data (terminal, apps, file tabs).
     //    This is the only part the frontend waits on, so it runs before the
     //    slow window hide/show below.
-    let next_terminal_session = next_local_file
+    //    Both are keyed by project id now, not by the path to its project.json:
+    //    the state they read is executable intent, and its home is the state dir.
+    let next_terminal_session = project_id
         .map(terminal_service::load_terminal_session)
         .unwrap_or_default();
-    let next_open_apps = next_local_file
+    let next_open_apps = project_id
         .map(terminal_service::load_open_apps)
         .unwrap_or_default();
     let (next_file_tabs, next_right_panel_folder) = next_local_file
@@ -107,6 +113,8 @@ pub fn switch(
     //    early event leaves it empty.
     let payload = ProjectRuntimeSwitchedPayload {
         project_id: project_id.map(String::from),
+        // project-tree-read: ok — the state-dir `TerminalSession` loaded above by
+        // project id, forwarded to the frontend.
         tab_layout: next_terminal_session.tab_layout,
         active_tab_index: next_terminal_session.active_tab_index,
         tab_groups: next_terminal_session.tab_groups,

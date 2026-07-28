@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,11 +58,27 @@ async fn clear_host_bound_state(project_id: &str, manifest: &SyncManifestState) 
 /// name-based path already taken by another remote project, so two hosts' `~/work`
 /// never collide on the same local mirror. Shared by the default location and the
 /// user-chosen `mirror_parent`.
-fn remote_mirror_in(parent: &Path, name: &str, id: &str) -> PathBuf {
+///
+/// "Already taken" is two questions, not one: a directory that **exists** on disk,
+/// and one another project has **registered** as its mirror. They are not the same
+/// set — a user who deletes a mirror folder leaves its registration behind, and
+/// existence alone would then hand the next remote project the very same path,
+/// putting two projects' lockstep and byte-sync on one local tree. Checking the
+/// registry too costs one list scan and closes that.
+fn remote_mirror_in(parent: &Path, name: &str, id: &str, list: &ProjectsList) -> PathBuf {
     let safe = sanitize_name(name);
     let leaf = if safe.is_empty() { id.to_string() } else { safe };
     let candidate = parent.join(&leaf);
-    if candidate.exists() {
+    let taken = candidate.exists()
+        || find_project_conflict(
+            list,
+            &ProjectSite::Local {
+                dir: &candidate.to_string_lossy(),
+            },
+            None,
+        )
+        .is_some();
+    if taken {
         parent.join(format!("{leaf}-{}", &id[..id.len().min(8)]))
     } else {
         candidate
@@ -72,21 +88,284 @@ fn remote_mirror_in(parent: &Path, name: &str, id: &str) -> PathBuf {
 /// The default local mirror location for a new remote (SSH) project: a readable
 /// `<name>` subfolder of the top-level `eldrun/projects-ssh/` root (rather than a
 /// hidden state dir or the managed-local `projects/` tree).
-fn default_remote_mirror(name: &str, id: &str) -> PathBuf {
-    remote_mirror_in(&paths::projects_ssh_root(), name, id)
+fn default_remote_mirror(name: &str, id: &str, list: &ProjectsList) -> PathBuf {
+    remote_mirror_in(&paths::projects_ssh_root(), name, id, list)
 }
 
 /// Resolve a remote project's local mirror path: under the user-chosen
 /// `mirror_parent` (the dialog's "Local location") when provided and non-empty,
 /// otherwise the default `projects-ssh` root. Returns the full `<parent>/<name>`
 /// path as a string, ready to store in `project.json`/`projects.json`.
-fn resolve_remote_mirror(mirror_parent: Option<&str>, name: &str, id: &str) -> String {
+fn resolve_remote_mirror(
+    mirror_parent: Option<&str>,
+    name: &str,
+    id: &str,
+    list: &ProjectsList,
+) -> String {
     match mirror_parent.map(str::trim).filter(|p| !p.is_empty()) {
-        Some(parent) => remote_mirror_in(Path::new(parent), name, id),
-        None => default_remote_mirror(name, id),
+        Some(parent) => remote_mirror_in(Path::new(parent), name, id, list),
+        None => default_remote_mirror(name, id, list),
     }
     .to_string_lossy()
     .to_string()
+}
+
+// ── Duplicate registration ────────────────────────────────────────────────
+
+/// What a project **occupies**, as the registry sees it — the identity no two
+/// projects may share.
+///
+/// The two variants are not two spellings of one thing. A *local* project is its
+/// directory. A *remote* project's `directory` is a per-id state dir holding only
+/// `project.json`, so comparing that would never match anything, however many
+/// times the same host folder is imported; its identity is the host login plus the
+/// path on that host.
+pub enum ProjectSite<'a> {
+    Local { dir: &'a str },
+    Remote { spec: &'a RemoteSpec },
+}
+
+/// The already-registered project a new one would collide with. `kind` is a
+/// machine token (the frontend words it, in five languages — same split
+/// `services::web_safety` uses for its refusal reasons).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectConflict {
+    pub id: String,
+    pub name: String,
+    /// `"directory"` — the same local folder is already a project.
+    /// `"mirror"` — it is a remote project's local mirror (the working copy
+    /// Eldrun syncs), which is a tree that already has an owner.
+    /// `"remote-path"` — the same login on the same host, at the same path.
+    pub kind: String,
+}
+
+/// Resolve `.`/`..`/repeated separators without touching the filesystem — the
+/// fallback for a path that does not exist yet, where `canonicalize` cannot help.
+/// A leading `..` in a relative path survives (there is nothing to pop), and
+/// `/..` stays `/`, matching what the kernel would do.
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else if out.has_root() {
+                    // `/..` is `/`: nothing above the root to climb to.
+                } else {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Canonical comparison key for a **local** project directory.
+///
+/// The registry is compared on this rather than on the raw string the dialog
+/// happened to send, because `/a/foo`, `/a/foo/`, `/a/./foo` and a symlink into
+/// that folder are one project, and a plain string compare reads them as four.
+///
+/// `canonicalize` is the real answer (it resolves symlinks against the actual
+/// filesystem) but only works on a path that exists — a copy/move import's
+/// destination does not yet — so `lexical_normalize` is the fallback. Its
+/// `\\?\` verbatim prefix is stripped so the two halves produce comparable keys
+/// on Windows, where the comparison is also case-insensitive.
+fn local_dir_key(dir: &str) -> String {
+    let trimmed = dir.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let path = PathBuf::from(trimmed);
+    let resolved = fs::canonicalize(&path).unwrap_or_else(|_| lexical_normalize(&path));
+    let key = resolved.to_string_lossy().to_string();
+    let key = key.strip_prefix(r"\\?\").unwrap_or(&key).to_string();
+    if cfg!(windows) {
+        key.to_lowercase()
+    } else {
+        key
+    }
+}
+
+/// Canonical `user@host:port` for a remote spec — the backend twin of the
+/// frontend's `machineSync.sameTarget` (host case-insensitive, default port 22,
+/// an empty user equivalent to none). A *different login* on the same host stays
+/// a different target on purpose: it is a different connection, reaching a
+/// different home directory with different rights.
+fn ssh_target_key(spec: &RemoteSpec) -> String {
+    let user = spec
+        .user
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .unwrap_or("");
+    format!(
+        "{user}@{}:{}",
+        spec.host.trim().to_lowercase(),
+        spec.port.unwrap_or(22)
+    )
+}
+
+/// Canonical comparison form of a path **on a host**: POSIX, so collapse repeated
+/// separators and drop the trailing one (keeping `/` itself).
+///
+/// Deliberately does not expand `~` or resolve `..`: only the host knows what
+/// they resolve to, and guessing here would either merge two different folders or
+/// split one. `~/work` and `/home/alice/work` are therefore compared as the two
+/// different strings they are — reachable only by typing the path, since browsing
+/// to a folder always yields an absolute one.
+fn remote_path_key(path: &str) -> String {
+    let trimmed = path.trim();
+    let body = trimmed
+        .split('/')
+        .filter(|seg| !seg.is_empty() && *seg != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    let key = if trimmed.starts_with('/') {
+        format!("/{body}")
+    } else {
+        body
+    };
+    if key.is_empty() {
+        trimmed.to_string()
+    } else {
+        key
+    }
+}
+
+fn remote_site_key(spec: &RemoteSpec) -> String {
+    format!("{}|{}", ssh_target_key(spec), remote_path_key(&spec.remote_path))
+}
+
+fn entry_remote_spec(entry: &ProjectEntry) -> Option<RemoteSpec> {
+    entry
+        .extra
+        .get("remote")
+        .and_then(|v| serde_json::from_value::<RemoteSpec>(v.clone()).ok())
+}
+
+/// The already-registered project `site` would collide with, if any.
+///
+/// This is the **whole** duplicate gate, in one pure function, so `create_project`,
+/// `import_project`, `finish_import` and `extend_project_to_remote` cannot drift
+/// into four different ideas of what "already imported" means — which is how the
+/// gate came to cover local keep-imports and nothing else. `skip_id` excludes the
+/// project being re-pointed (extend edits one that is already in the list).
+fn find_project_conflict(
+    list: &ProjectsList,
+    site: &ProjectSite,
+    skip_id: Option<&str>,
+) -> Option<ProjectConflict> {
+    let entries = list.iter().filter(|p| skip_id != Some(p.id.as_str()));
+    match site {
+        ProjectSite::Local { dir } => {
+            let key = local_dir_key(dir);
+            if key.is_empty() {
+                return None;
+            }
+            for entry in entries {
+                // A remote project's `directory` is its state dir — never a folder
+                // the user can browse to — but its `mirror` is a real local tree
+                // that lockstep and byte-sync already own, so importing *that* as
+                // its own project is the same collision wearing a different hat.
+                let kind = if entry_directory(entry).map(|d| local_dir_key(&d)).as_deref()
+                    == Some(key.as_str())
+                {
+                    "directory"
+                } else if entry_mirror(entry).map(|m| local_dir_key(&m)).as_deref()
+                    == Some(key.as_str())
+                {
+                    "mirror"
+                } else {
+                    continue;
+                };
+                return Some(ProjectConflict {
+                    id: entry.id.clone(),
+                    name: entry.name.clone(),
+                    kind: kind.to_string(),
+                });
+            }
+            None
+        }
+        ProjectSite::Remote { spec } => {
+            let key = remote_site_key(spec);
+            entries
+                .filter(|entry| {
+                    entry_remote_spec(entry).map(|s| remote_site_key(&s)).as_deref()
+                        == Some(key.as_str())
+                })
+                .map(|entry| ProjectConflict {
+                    id: entry.id.clone(),
+                    name: entry.name.clone(),
+                    kind: "remote-path".to_string(),
+                })
+                .next()
+        }
+    }
+}
+
+/// The refusal a command returns. Only ever reached when the dialog's pre-check
+/// (`check_project_site`) was skipped or read a stale list, so it is plain English
+/// like every other backend error here — the *worded*, translated version is the
+/// frontend's, off `ProjectConflict.kind`.
+fn conflict_message(conflict: &ProjectConflict) -> String {
+    match conflict.kind.as_str() {
+        "remote-path" => format!(
+            "That folder on the host is already the project '{}'",
+            conflict.name
+        ),
+        "mirror" => format!(
+            "That folder is the local mirror of the remote project '{}'",
+            conflict.name
+        ),
+        _ => format!("That folder is already the project '{}'", conflict.name),
+    }
+}
+
+fn read_projects_list() -> ProjectsList {
+    let path = storage::state_dir().join("projects.json");
+    if path.exists() {
+        storage::read_json(&path).unwrap_or_default()
+    } else {
+        vec![]
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckProjectSiteRequest {
+    /// The local folder a new/imported project would occupy. Ignored when
+    /// `remote` is present (a remote project's identity is its host path).
+    #[serde(default)]
+    pub directory: Option<String>,
+    #[serde(default)]
+    pub remote: Option<RemoteSpec>,
+    /// The project being re-pointed (extend-to-remote), excluded from the scan.
+    #[serde(default)]
+    pub skip_id: Option<String>,
+}
+
+/// Ask, without creating anything, whether a folder or host path is already a
+/// project — so the dialog can say so **before** the user fills the rest of the
+/// form and before a clone downloads a whole repository that will be refused.
+///
+/// Advisory only: the commands that write re-run the same check against the list
+/// on disk, since this answer can be stale by the time Create is clicked.
+#[tauri::command]
+pub fn check_project_site(req: CheckProjectSiteRequest) -> Result<Option<ProjectConflict>, String> {
+    let list = read_projects_list();
+    let site = match req.remote.as_ref() {
+        Some(spec) => ProjectSite::Remote { spec },
+        None => match req.directory.as_deref() {
+            Some(dir) => ProjectSite::Local { dir },
+            None => return Ok(None),
+        },
+    };
+    Ok(find_project_conflict(&list, &site, req.skip_id.as_deref()))
 }
 
 // ── Project list ──────────────────────────────────────────────────────────
@@ -1412,14 +1691,38 @@ pub fn load_project(local_file: String) -> Result<Project, String> {
     if let Some(gt) = project.git_type.as_deref() {
         project.git_type = Some(normalize_git_type(gt));
     }
-    // `project.json` lives inside the project tree, and the frontend's relaunch
-    // path restores tabs straight out of this response — so the layout gets the
-    // same untrusted-input treatment `load_terminal_session` applies to the
-    // `.eldrun` mirror (see `services::terminal_service::sanitize_tab_layout`).
-    if let Some(tabs) = project.tab_layout.as_mut() {
-        crate::services::terminal_service::sanitize_loaded_layout(tabs);
-    }
+    // The layout and the app list are NOT served from here any more. They live in
+    // `<state_dir>/sessions/<id>/` (see `services::terminal_service`), because
+    // `project.json` sits in the project container's writable mount and in any
+    // cloned repository, and every one of these fields is read back by the host as
+    // something to execute. Blanking them keeps a stale in-tree copy from reaching
+    // a caller that still reads `Project` wholesale.
+    project.tab_layout = None;
+    project.tab_groups = None;
+    project.open_tab_sessions = None;
+    project.open_apps = None;
     Ok(project)
+}
+
+/// The project's saved tab layout — the frontend's relaunch restore path.
+///
+/// Split out of `load_project` when the layout moved to the state dir: the two
+/// answer different questions now (what this project *is* vs. what it should
+/// reopen), and only one of them is keyed by a trustworthy id.
+#[tauri::command]
+pub fn load_tab_session(project_id: String) -> crate::schema::session::TerminalSession {
+    crate::services::terminal_service::load_terminal_session(&project_id)
+}
+
+/// Adopt the layout saved in the project **folder** (`.eldrun/sessions/`) as this
+/// project's session state. Explicit user action only — see
+/// `terminal_service::adopt_project_tree_session`.
+#[tauri::command]
+pub fn adopt_folder_tab_layout(
+    project_id: String,
+    local_file: String,
+) -> Result<crate::schema::session::TerminalSession, String> {
+    crate::services::terminal_service::adopt_project_tree_session(&project_id, &local_file)
 }
 
 #[tauri::command]
@@ -1428,13 +1731,16 @@ pub fn save_project(local_file: String, project: Project) -> Result<(), String> 
     storage::write_json(&path, &project).map_err(|e| e.to_string())
 }
 
-/// Save only the tab layout — writes to both project.json and the session file.
+/// Save only the tab layout — into `<state_dir>/sessions/<project_id>/`, plus the
+/// export copy in the project folder. `project_id` is what it is keyed by; a
+/// `None` id (the root scope) persists nothing.
 ///
 /// `allow_clear` licenses an EMPTY `tabs` to erase the saved layout. The frontend
 /// sets it only for a scope it has actually hydrated and that genuinely holds no
 /// tabs; every other empty save is a no-op. See `terminal_service`.
 #[tauri::command]
 pub fn save_tab_layout(
+    project_id: Option<String>,
     local_file: String,
     tabs: Vec<crate::schema::project::TabEntry>,
     groups: Option<Value>,
@@ -1442,6 +1748,7 @@ pub fn save_tab_layout(
     allow_clear: bool,
 ) -> Result<(), String> {
     crate::services::terminal_service::save_tab_layout(
+        project_id.as_deref(),
         &local_file,
         &tabs,
         groups,
@@ -1497,7 +1804,7 @@ pub fn remote_mirror_status(project_id: String, name: String) -> Result<MirrorSt
         return Err("not a remote project".to_string());
     }
     let dir = crate::services::remote_sync::mirror_dir(&project_id);
-    let suggested = default_remote_mirror(&name, &project_id);
+    let suggested = default_remote_mirror(&name, &project_id, &read_projects_list());
     Ok(MirrorStatus {
         exists: dir.is_dir(),
         path: dir.to_string_lossy().to_string(),
@@ -1804,7 +2111,10 @@ fn repair_project_scaffold_at(dir: &Path, with_git: bool) -> std::io::Result<Sca
             .args(["init"])
             .current_dir(dir)
             .output();
-        report.git_initialized = dir.join(".git").is_dir();
+        // `.exists()`, not `is_dir()` (#23 I6): `.git` is a directory for a main repo
+        // and a *file* in a linked worktree, so `is_dir` reported a worktree-rooted
+        // project as having no repo at all.
+        report.git_initialized = dir.join(".git").exists();
     }
     Ok(report)
 }
@@ -1977,7 +2287,10 @@ fn scaffold_preview(dir: &Path) -> Vec<ScaffoldPreviewItem> {
     });
     items.push(ScaffoldPreviewItem {
         path: ".git".to_string(),
-        exists: dir.join(".git").is_dir(),
+        // `.exists()`, not `is_dir()` (#23 I6): in a linked worktree `.git` is a file.
+        // Reporting it **Missing** there invited a `git init` that would nest a second
+        // repository inside somebody else's worktree.
+        exists: dir.join(".git").exists(),
         kind: "directory".to_string(),
     });
     items.push(ScaffoldPreviewItem {
@@ -2055,6 +2368,21 @@ pub struct CreateProjectRequest {
 pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String> {
     let id = uuid_v4();
 
+    // Refuse a site another project already owns — BEFORE any of the filesystem
+    // work below (a remote `mkdir`, a scaffold, a `git init`). "New project"
+    // pointed at a folder that is already a project used to register a second
+    // entry straight over the first, and scaffold it while it was at it.
+    let registered = read_projects_list();
+    let site = match req.remote.as_ref() {
+        Some(spec) => ProjectSite::Remote { spec },
+        None => ProjectSite::Local {
+            dir: &req.directory,
+        },
+    };
+    if let Some(conflict) = find_project_conflict(&registered, &site, None) {
+        return Err(conflict_message(&conflict));
+    }
+
     // Mount-free remote: a remote project's `directory` is a LOCAL per-project
     // state dir that holds its `project.json` (tabs/time/etc.); the project's
     // actual tree lives on the host at `remote.remote_path` and is reached over
@@ -2080,10 +2408,9 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
     // Remote projects mirror into `<name>` under the chosen "Local location"
     // (`mirror_parent`), defaulting to the top-level `eldrun/projects-ssh/` root;
     // relocatable later. None for local projects.
-    let mirror = req
-        .remote
-        .as_ref()
-        .map(|_| resolve_remote_mirror(req.mirror_parent.as_deref(), &req.name, &id));
+    let mirror = req.remote.as_ref().map(|_| {
+        resolve_remote_mirror(req.mirror_parent.as_deref(), &req.name, &id, &registered)
+    });
 
     // A remote project's local `directory` only holds project.json (created
     // below); its scaffold belongs in the local **mirror** twin — the working
@@ -2160,6 +2487,11 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
     // repo-less mirror has no history to seed from. Best-effort — a write failure
     // just leaves lockstep off (its default), never fails project creation.
     if let Some(mirror) = mirror.as_deref() {
+        // `is_dir()` here is DELIBERATE, unlike the two `.exists()` fixes above (#23 I6):
+        // a mirror whose `.git` is a *file* is a linked worktree, and lockstep against a
+        // worktree would `reset --hard` a branch backed by an object store the parent
+        // and every sibling worktree share. Staying off is the right outcome; this
+        // comment is so the next reader knows it is the intended one.
         if Path::new(mirror).join(".git").is_dir() {
             let state = crate::services::git_peer::GitPeerState {
                 enabled: true,
@@ -2210,6 +2542,29 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
     }
 
     let id = uuid_v4();
+
+    // Refuse a site another project already owns, BEFORE the mode dispatch below
+    // moves or copies anything. Ordering is the whole point: the move used to run
+    // first and `finish_import` checked only the *destination*, so re-importing a
+    // registered folder under a different name moved the tree out from under the
+    // original entry and left it pointing at a path that no longer existed.
+    //
+    // `copy` is deliberately exempt: it duplicates the tree into a new directory
+    // and leaves the source registered and intact, so the result is a genuinely
+    // separate project — "start a variant from this one" is a real thing to want.
+    // `keep` and `move` both end up on the source tree itself.
+    let registered = read_projects_list();
+    if req.mode != "copy" {
+        let site = match req.remote.as_ref() {
+            Some(spec) => ProjectSite::Remote { spec },
+            None => ProjectSite::Local {
+                dir: &req.source_dir,
+            },
+        };
+        if let Some(conflict) = find_project_conflict(&registered, &site, None) {
+            return Err(conflict_message(&conflict));
+        }
+    }
 
     if let Some(remote) = req.remote.clone() {
         if req.mode != "keep" {
@@ -2315,11 +2670,16 @@ fn finish_import(
     } else {
         vec![]
     };
-    if list.iter().any(|p| {
-        p.local_file == project_file_s
-            || p.extra.get("directory").and_then(Value::as_str) == Some(directory.as_str())
-    }) {
-        return Err("Project is already registered".to_string());
+    // The second half of the gate: `import_project` checked the *source* before
+    // touching the disk, this checks where the import actually landed (which for
+    // copy/move is a different directory). Both go through the one resolver, so a
+    // trailing slash or a symlink cannot slip a duplicate past either of them.
+    let site = match remote.as_ref() {
+        Some(spec) => ProjectSite::Remote { spec },
+        None => ProjectSite::Local { dir: &directory },
+    };
+    if let Some(conflict) = find_project_conflict(&list, &site, None) {
+        return Err(conflict_message(&conflict));
     }
 
     let mut git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
@@ -2366,7 +2726,7 @@ fn finish_import(
     // front so a local-on-remote tab can cwd into it immediately. None for local.
     let mirror = remote
         .as_ref()
-        .map(|_| resolve_remote_mirror(req.mirror_parent.as_deref(), &req.name, &id));
+        .map(|_| resolve_remote_mirror(req.mirror_parent.as_deref(), &req.name, &id, &list));
     if let Some(mirror) = &mirror {
         let _ = std::fs::create_dir_all(mirror);
     }
@@ -2455,6 +2815,19 @@ pub async fn extend_project_to_remote(
     // Guard: only local projects can be extended.
     if list[idx].extra.contains_key("remote") {
         return Err("Project is already remote".to_string());
+    }
+
+    // …and not onto a host folder another project already owns. Extend reaches the
+    // same end state as a remote import, so it needs the same gate: two projects
+    // paired to one host path means two mirrors and two lockstep states driving one
+    // tree, each blind to the other. `skip_id` is this project — it is in the list
+    // already, and re-pointing it is what the command is for.
+    if let Some(conflict) = find_project_conflict(
+        &list,
+        &ProjectSite::Remote { spec: &req.remote },
+        Some(&req.project_id),
+    ) {
+        return Err(conflict_message(&conflict));
     }
 
     // The current local tree becomes the mirror (working copy), unchanged.
@@ -2630,7 +3003,10 @@ pub async fn detach_project_from_remote(
     project.remote = None;
     project.mirror = None;
 
-    // Re-point the carried tabs at the mirror. While the project was remote its
+    let new_project_file = mirror_path.join("project.json");
+    storage::write_json(&new_project_file, &project).map_err(|e| e.to_string())?;
+
+    // Re-point the saved tabs at the mirror. While the project was remote its
     // `directory` WAS the state dir, so that is what every tab holds as its cwd —
     // harmless then (the frontend rewrote it at render time, gated on the project
     // being remote), a dangling path the moment it isn't. Left alone, a restored
@@ -2638,46 +3014,36 @@ pub async fn detach_project_from_remote(
     // Claude — which keys its session history by cwd — finds no conversation to
     // `--resume`. The frontend fixes the LIVE tabs (`detachScopeFromRemote`); this
     // fixes the ones on disk, which is what a restart restores from.
+    //
+    // The layout is keyed by **project id**, which a detach does not change, so
+    // there is nothing to move or copy any more — and no stale mirror-side session
+    // file to lose the tabs to. (That is what the old code was working around: the
+    // layout used to be keyed by `local_file`, so a detach swapped which file was
+    // authoritative and the mirror's leftover copy silently won.)
     let state_dir = remote_project_state_dir(&project_id);
     let state_dir_s = state_dir.to_string_lossy().to_string();
-    if let Some(tabs) = project.tab_layout.as_mut() {
-        for tab in tabs.iter_mut() {
+    let new_local_file = new_project_file.to_string_lossy().to_string();
+    let mut session = crate::services::terminal_service::load_terminal_session(&project_id);
+    // project-tree-read: ok — `session` is the state-dir `TerminalSession`, loaded
+    // by project id; the whole block below never touches the project tree.
+    if !session.tab_layout.is_empty() {
+        // project-tree-read: ok — same `TerminalSession`.
+        for tab in session.tab_layout.iter_mut() {
             if tab.cwd == state_dir_s {
                 tab.cwd = mirror.clone();
             } else if let Some(rest) = tab.cwd.strip_prefix(&format!("{state_dir_s}/")) {
                 tab.cwd = format!("{mirror}/{rest}");
             }
         }
-    }
-
-    let new_project_file = mirror_path.join("project.json");
-    storage::write_json(&new_project_file, &project).map_err(|e| e.to_string())?;
-
-    // The tabs are in project.json now — but that is not where they are READ from.
-    // `load_terminal_session` prefers `.eldrun/sessions/terminals.json` and only falls
-    // back to project.json, and the mirror has its OWN session file, left over from
-    // before this project was ever extended to a host. Preserving `tab_layout` while
-    // that stale file still sits there restores the pre-extend tabs and silently drops
-    // everything the project gained while it was remote. Rewrite it from what we carried
-    // (or drop it, when the project genuinely ended up with no tabs — project.json is the
-    // record, and a leftover session file must not resurrect tabs from before the extend).
-    let new_local_file = new_project_file.to_string_lossy().to_string();
-    match project.tab_layout.as_deref() {
-        Some(tabs) if !tabs.is_empty() => {
-            let _ = crate::services::terminal_service::save_tab_layout(
-                &new_local_file,
-                tabs,
-                project.tab_groups.clone(),
-                None,
-                false,
-            );
-        }
-        _ => {
-            if let Some(dir) = crate::services::terminal_service::eldrun_sessions_dir(&new_local_file)
-            {
-                let _ = std::fs::remove_file(dir.join("terminals.json"));
-            }
-        }
+        let _ = crate::services::terminal_service::save_tab_layout(
+            Some(&project_id),
+            &new_local_file,
+            // project-tree-read: ok — same `TerminalSession`, written straight back.
+            &session.tab_layout,
+            session.tab_groups.clone(),
+            None,
+            false,
+        );
     }
 
     // Drop everything that was bound to the host we are detaching from. Not merely
@@ -2793,14 +3159,25 @@ pub(crate) fn sanitize_name(name: &str) -> String {
         .join("-")
 }
 
+/// Copy a tree, leaving git's administrative state behind.
+///
+/// `.git` is skipped whatever **kind** of entry it is (#23 D3). Testing `is_dir()`
+/// first — as this did — let a linked worktree's `.git` *file* through, and that file
+/// is one line: `gitdir: <main>/.git/worktrees/<name>`. Copying it produces a second
+/// directory claiming the **same** admin entry, so git operations in the copy write
+/// into the original's index and HEAD. A directory holding one is likewise not copied
+/// into: a nested repo or worktree is not this tree's content to duplicate.
 fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
     fs::create_dir_all(dst).map_err(|e| e.to_string())?;
     for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let file_type = entry.file_type().map_err(|e| e.to_string())?;
+        if entry.file_name() == ".git" {
+            continue;
+        }
         let target = dst.join(entry.file_name());
         if file_type.is_dir() {
-            if entry.file_name() == ".git" {
+            if fs::symlink_metadata(entry.path().join(".git")).is_ok() {
                 continue;
             }
             copy_dir_all(&entry.path(), &target)?;
@@ -2834,6 +3211,331 @@ fn chrono_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #23 D3. `copy_dir_all` skipped `.git` only when `is_dir()`, so in a linked
+    /// worktree the one-line `.git` FILE (`gitdir: <main>/.git/worktrees/<name>`)
+    /// was copied — producing a second directory claiming the SAME admin entry, in
+    /// which git writes into the original's index and HEAD.
+    #[test]
+    fn copying_a_tree_never_carries_a_git_pointer_of_either_kind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join(".git")).unwrap();
+        std::fs::write(src.join(".git/HEAD"), b"ref: refs/heads/main").unwrap();
+        std::fs::write(src.join("a.txt"), b"x").unwrap();
+
+        // A linked worktree inside the tree: `.git` is a file, not a directory.
+        let wt = src.join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(".git"), b"gitdir: /elsewhere/.git/worktrees/wt").unwrap();
+        std::fs::write(wt.join("b.txt"), b"x").unwrap();
+
+        let dst = tmp.path().join("dst");
+        copy_dir_all(&src, &dst).unwrap();
+
+        assert!(dst.join("a.txt").exists());
+        assert!(!dst.join(".git").exists(), "the repo's own .git must not travel");
+        assert!(
+            !dst.join("wt").exists(),
+            "a directory holding a .git of either kind is not this tree's content"
+        );
+    }
+
+    /// A worktree copied as a bare directory would be worse than useless — but a
+    /// stray `.git` FILE at the top level must be dropped too, whatever the tree
+    /// around it looks like.
+    #[test]
+    fn a_worktree_rooted_source_copies_its_files_without_its_git_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("wt");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join(".git"), b"gitdir: /elsewhere/.git/worktrees/wt").unwrap();
+        std::fs::write(src.join("sub/a.txt"), b"x").unwrap();
+
+        let dst = tmp.path().join("dst");
+        copy_dir_all(&src, &dst).unwrap();
+        assert!(dst.join("sub/a.txt").exists());
+        assert!(!dst.join(".git").exists());
+    }
+
+    // ── Duplicate registration ─────────────────────────────────────────────
+
+    fn entry(id: &str, name: &str, extra: Vec<(&str, Value)>) -> ProjectEntry {
+        ProjectEntry {
+            id: id.to_string(),
+            name: name.to_string(),
+            status: "inactive".to_string(),
+            position: 10,
+            local_file: format!("/p/{id}/project.json"),
+            extra: extra
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        }
+    }
+
+    fn local_entry(id: &str, name: &str, dir: &str) -> ProjectEntry {
+        entry(id, name, vec![("directory", Value::String(dir.to_string()))])
+    }
+
+    fn spec(user: Option<&str>, host: &str, port: Option<u16>, path: &str) -> RemoteSpec {
+        RemoteSpec {
+            user: user.map(str::to_string),
+            host: host.to_string(),
+            port,
+            remote_path: path.to_string(),
+            openvpn: None,
+            auto_connect: None,
+            key_auth: None,
+            persist_sessions: None,
+            label: None,
+            extra: HashMap::new(),
+        }
+    }
+
+    fn remote_entry(id: &str, name: &str, spec: &RemoteSpec, mirror: Option<&str>) -> ProjectEntry {
+        let mut extra = vec![
+            (
+                "directory",
+                Value::String(format!("/state/remote-projects/{id}")),
+            ),
+            ("remote", serde_json::to_value(spec).unwrap()),
+        ];
+        if let Some(mirror) = mirror {
+            extra.push(("mirror", Value::String(mirror.to_string())));
+        }
+        entry(id, name, extra)
+    }
+
+    #[test]
+    fn lexical_normalize_drops_cur_dir_and_trailing_separator() {
+        assert_eq!(lexical_normalize(Path::new("/a/./foo/")), PathBuf::from("/a/foo"));
+    }
+
+    #[test]
+    fn lexical_normalize_pops_parent_dir() {
+        assert_eq!(lexical_normalize(Path::new("/a/b/../foo")), PathBuf::from("/a/foo"));
+    }
+
+    #[test]
+    fn lexical_normalize_keeps_leading_parent_dir_of_relative_path() {
+        // Nothing to pop, so `..` has to survive or the path changes meaning.
+        assert_eq!(lexical_normalize(Path::new("../a")), PathBuf::from("../a"));
+    }
+
+    #[test]
+    fn lexical_normalize_cannot_climb_above_root() {
+        assert_eq!(lexical_normalize(Path::new("/../a")), PathBuf::from("/a"));
+    }
+
+    #[test]
+    fn local_dir_key_ignores_trailing_separator() {
+        // The case the old string compare missed: one folder, two spellings.
+        assert_eq!(local_dir_key("/no/such/dir/foo/"), local_dir_key("/no/such/dir/foo"));
+    }
+
+    #[test]
+    fn local_dir_key_is_empty_for_blank_input() {
+        assert_eq!(local_dir_key("   "), "");
+    }
+
+    #[test]
+    fn remote_path_key_normalizes_separators() {
+        assert_eq!(remote_path_key("/home//alice/./work/"), "/home/alice/work");
+    }
+
+    #[test]
+    fn remote_path_key_keeps_root() {
+        assert_eq!(remote_path_key("/"), "/");
+    }
+
+    #[test]
+    fn remote_path_key_leaves_tilde_unexpanded() {
+        // Only the host knows what `~` resolves to; guessing would merge or split
+        // two folders on no evidence.
+        assert_eq!(remote_path_key("~/work"), "~/work");
+        assert_ne!(remote_path_key("~/work"), remote_path_key("/home/alice/work"));
+    }
+
+    #[test]
+    fn ssh_target_key_defaults_port_and_lowercases_host() {
+        assert_eq!(
+            ssh_target_key(&spec(Some("alice"), "Build.Example.COM", None, "/w")),
+            ssh_target_key(&spec(Some("alice"), "build.example.com", Some(22), "/w"))
+        );
+    }
+
+    #[test]
+    fn ssh_target_key_treats_blank_user_as_absent() {
+        assert_eq!(
+            ssh_target_key(&spec(Some("  "), "h", None, "/w")),
+            ssh_target_key(&spec(None, "h", None, "/w"))
+        );
+    }
+
+    #[test]
+    fn conflict_finds_same_local_directory() {
+        let list = vec![local_entry("a", "Foo", "/no/such/dir/foo")];
+        let found = find_project_conflict(
+            &list,
+            &ProjectSite::Local {
+                dir: "/no/such/dir/foo/",
+            },
+            None,
+        )
+        .expect("trailing separator must not hide a duplicate");
+        assert_eq!(found.id, "a");
+        assert_eq!(found.name, "Foo");
+        assert_eq!(found.kind, "directory");
+    }
+
+    #[test]
+    fn conflict_ignores_an_unrelated_directory() {
+        let list = vec![local_entry("a", "Foo", "/no/such/dir/foo")];
+        assert!(find_project_conflict(
+            &list,
+            &ProjectSite::Local {
+                dir: "/no/such/dir/bar"
+            },
+            None
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn conflict_flags_a_remote_projects_mirror() {
+        // The mirror is a real local tree lockstep already owns — importing it as
+        // its own project puts two projects on one working copy.
+        let list = vec![remote_entry(
+            "a",
+            "Foo",
+            &spec(Some("alice"), "h", None, "/work"),
+            Some("/no/such/dir/mirror"),
+        )];
+        let found = find_project_conflict(
+            &list,
+            &ProjectSite::Local {
+                dir: "/no/such/dir/mirror",
+            },
+            None,
+        )
+        .expect("a mirror is an owned tree");
+        assert_eq!(found.kind, "mirror");
+    }
+
+    #[test]
+    fn conflict_finds_same_host_path() {
+        // The gap the old check could not see at all: a remote project's registered
+        // `directory` is a per-id state dir, so it never matched twice.
+        let list = vec![remote_entry(
+            "a",
+            "Foo",
+            &spec(Some("alice"), "build.example.com", None, "/home/alice/work"),
+            None,
+        )];
+        let found = find_project_conflict(
+            &list,
+            &ProjectSite::Remote {
+                spec: &spec(
+                    Some("alice"),
+                    "Build.Example.com",
+                    Some(22),
+                    "/home/alice/work/",
+                ),
+            },
+            None,
+        )
+        .expect("same login, same host, same path");
+        assert_eq!(found.kind, "remote-path");
+        assert_eq!(found.id, "a");
+    }
+
+    #[test]
+    fn conflict_treats_a_different_login_as_a_different_site() {
+        let list = vec![remote_entry(
+            "a",
+            "Foo",
+            &spec(Some("alice"), "h", None, "/work"),
+            None,
+        )];
+        assert!(find_project_conflict(
+            &list,
+            &ProjectSite::Remote {
+                spec: &spec(Some("bob"), "h", None, "/work")
+            },
+            None
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn conflict_treats_a_different_port_as_a_different_site() {
+        let list = vec![remote_entry(
+            "a",
+            "Foo",
+            &spec(Some("alice"), "h", Some(22), "/work"),
+            None,
+        )];
+        assert!(find_project_conflict(
+            &list,
+            &ProjectSite::Remote {
+                spec: &spec(Some("alice"), "h", Some(2222), "/work")
+            },
+            None
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn conflict_does_not_match_a_nested_host_path() {
+        // A subfolder of a paired root is its own site; a prefix compare would
+        // wrongly claim `/work2` collides with `/work`.
+        let list = vec![remote_entry(
+            "a",
+            "Foo",
+            &spec(Some("alice"), "h", None, "/work"),
+            None,
+        )];
+        for path in ["/work2", "/work/sub"] {
+            assert!(
+                find_project_conflict(
+                    &list,
+                    &ProjectSite::Remote {
+                        spec: &spec(Some("alice"), "h", None, path)
+                    },
+                    None
+                )
+                .is_none(),
+                "{path} must not collide with /work"
+            );
+        }
+    }
+
+    #[test]
+    fn conflict_skips_the_project_being_repointed() {
+        // Extend-to-remote edits an entry that is already in the list.
+        let list = vec![remote_entry(
+            "a",
+            "Foo",
+            &spec(Some("alice"), "h", None, "/work"),
+            None,
+        )];
+        let site = ProjectSite::Remote {
+            spec: &spec(Some("alice"), "h", None, "/work"),
+        };
+        assert!(find_project_conflict(&list, &site, Some("a")).is_none());
+        assert!(find_project_conflict(&list, &site, Some("other")).is_some());
+    }
+
+    #[test]
+    fn conflict_message_names_the_existing_project() {
+        let conflict = ProjectConflict {
+            id: "a".to_string(),
+            name: "Foo".to_string(),
+            kind: "directory".to_string(),
+        };
+        assert!(conflict_message(&conflict).contains("Foo"));
+    }
 
     // ── sanitize_name ──────────────────────────────────────────────────────
 

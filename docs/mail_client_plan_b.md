@@ -1046,6 +1046,50 @@ it can be argued with rather than assumed:
 
 ---
 
+## 5.4 Sender authentication: `Authentication-Results` (added after v1)
+
+PGP/S-MIME stays deferred (§6), but the *practical* authenticity question — "did
+this really come from the domain it claims?" — is already answered in every
+message by the receiving MTA, in an `Authentication-Results` header (RFC 8601).
+Reading it costs a header parse and no crypto, and it is what §6's PGP row is
+mostly wanted for. Implementation: `services::mail_authres`.
+
+**The header is ordinary message text.** Anyone can write one; a phisher writes
+`dmarc=pass` and hopes. Two rules are what make reading it worth anything, and
+neither is optional:
+
+1. **Only the topmost instance is read.** Headers are prepended, so the top one
+   was written by the last MTA to touch the message — yours.
+2. **Only if its `authserv-id` matches the id configured on the account**
+   (`MailAccount.authserv_id`, unset by default). Rule 1 identifies a *position*,
+   not an author: if your server adds no header, the sender's forgery *is* the
+   topmost one.
+
+With no configured id the state is `unconfigured` and **no verdict is shown**.
+That is deliberate and is the whole posture: a tick nobody checked is worse than
+no tick, because it trains the user to believe something an attacker can draw.
+
+**Alignment is shown, never folded away.** `dkim=pass header.d=evil.example` on a
+message claiming to be from a bank is a *real* pass by the wrong signer — the
+most common way these headers are misread. Every clause therefore carries its
+identifier and an `aligned` flag against the visible `From`, and an unaligned
+pass is toned as a warning on both sides of the IPC boundary.
+
+**The residual risk, stated rather than glossed:** if the provider adds no header
+and an attacker forges one bearing that provider's `authserv-id`, this believes
+it. No client can distinguish those cases — RFC 8601 §5 puts the duty to strip
+forged instances on the receiving MTA. Hence the setting's help text says to take
+the id from a message known to be genuine, and hence the trust state is disclosed
+in the UI instead of being reduced to a bare tick.
+
+Tests: `services::mail_authres` (24, incl. comment stripping, an equality-not-
+suffix id match, a forged header below a genuine one, and a totality fuzz),
+`commands::mail` (5, the serve-boundary rule incl. a deleted account),
+`tests/mail_hostile_message.rs` (the fixture forges its own all-pass header), and
+`src/__tests__/MailAuthDisplay.test.ts` (15, the display rules).
+
+---
+
 ## 6. Explicitly out of scope for v1
 
 Each entry says what a later phase would need, so "out of scope" is a plan rather than a
