@@ -6,9 +6,12 @@ import type {
   CalendarEvent,
   CalendarTask,
   Occurrence,
+  TaskColumn,
+  TaskPlacement,
 } from "../types";
 // `CalendarData` is the shape `calendar_load` returns; the store flattens it.
-import { excludeOccurrence, overrideOccurrence } from "../lib/recurrence";
+import { excludeOccurrence, expandEvents, overrideOccurrence } from "../lib/recurrence";
+import { addDays, toStamp, todayStr } from "../lib/calendarTime";
 
 /**
  * The native calendar's store: one global set of calendars, events and tasks,
@@ -26,6 +29,11 @@ import { excludeOccurrence, overrideOccurrence } from "../lib/recurrence";
  * what the backend returned, so the store never drifts from disk.
  */
 interface CalendarStore {
+  /** The header button's calendar overlay is on screen (`calendar_global_app`). */
+  overlayOpen: boolean;
+  openOverlay: () => void;
+  closeOverlay: () => void;
+
   calendars: Calendar[];
   events: CalendarEvent[];
   tasks: CalendarTask[];
@@ -56,6 +64,24 @@ interface CalendarStore {
   updateTask: (task: CalendarTask) => Promise<void>;
   deleteTask: (id: string) => Promise<void>;
 
+  /**
+   * The todo board's columns. **Empty until the board's first write** — the
+   * backend deliberately does not seed them on read, so a calendar-only user's
+   * file never grows board state; the board renders `DEFAULT_COLUMNS` from
+   * `lib/todoBoard` until then.
+   */
+  taskColumns: TaskColumn[];
+  /**
+   * Apply a board drag — one backend write however many cards it moved, which is
+   * why it is a store action rather than N `updateTask` calls: a whole-file
+   * rewrite per card would let a concurrent edit land in the middle of a drag.
+   * The returned tasks (a superset of what was dragged, whenever a reindex
+   * fired) are merged into `tasks` instead of reloading the calendar.
+   */
+  moveTasks: (moves: TaskPlacement[]) => Promise<void>;
+  /** Replace the board's columns (add/rename/recolor/reorder/delete). */
+  setColumns: (columns: TaskColumn[], fallbackColumn?: string | null) => Promise<void>;
+
   createCalendar: (calendar: Omit<Calendar, "id">) => Promise<Calendar>;
   updateCalendar: (calendar: Calendar) => Promise<void>;
   deleteCalendar: (id: string) => Promise<void>;
@@ -68,9 +94,14 @@ const withoutId = (event: Omit<CalendarEvent, "id">): CalendarEvent =>
   ({ ...event, id: "" }) as CalendarEvent;
 
 export const useCalendarStore = create<CalendarStore>((set, get) => ({
+  overlayOpen: false,
+  openOverlay: () => set({ overlayOpen: true }),
+  closeOverlay: () => set({ overlayOpen: false }),
+
   calendars: [],
   events: [],
   tasks: [],
+  taskColumns: [],
   loaded: false,
 
   load: async () => {
@@ -84,6 +115,7 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
       calendars: data?.calendars ?? [],
       events: data?.events ?? [],
       tasks: data?.tasks ?? [],
+      taskColumns: data?.task_columns ?? [],
       loaded: true,
     });
   },
@@ -138,6 +170,35 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
     set((s) => ({ tasks: s.tasks.filter((t) => t.id !== id) }));
   },
 
+  // ── The todo board ──────────────────────────────────────────────────────
+
+  moveTasks: async (moves) => {
+    const changed = await invoke<CalendarTask[]>("todo_move_tasks", { moves });
+    if (changed.length > 0) {
+      const byId = new Map(changed.map((t) => [t.id, t]));
+      set((s) => ({ tasks: s.tasks.map((t) => byId.get(t.id) ?? t) }));
+    }
+    // The first drag is also what *creates* the board (a read never does), so a
+    // move can be the moment the columns come into existence — re-read once
+    // rather than guessing what the backend seeded.
+    if (get().taskColumns.length === 0) await get().reload();
+  },
+
+  setColumns: async (columns, fallbackColumn = null) => {
+    const data = await invoke<CalendarData>("todo_columns_set", {
+      columns,
+      fallbackColumn,
+    });
+    // A column delete refiles cards, so the whole store comes back rather than
+    // just the column list.
+    set({
+      calendars: data.calendars,
+      events: data.events,
+      tasks: data.tasks,
+      taskColumns: data.task_columns ?? [],
+    });
+  },
+
   // ── Calendars ───────────────────────────────────────────────────────────
 
   createCalendar: async (draft) => {
@@ -179,4 +240,41 @@ export function visibleCalendarIds(calendars: Calendar[]): Set<string> {
 /** A calendar's color, falling back to the accent when it has been deleted. */
 export function calendarColor(calendars: Calendar[], id: string): string {
   return calendars.find((c) => c.id === id)?.color ?? "var(--accent)";
+}
+
+/**
+ * The number in the header button's badge: **events left today**.
+ *
+ * Deliberately *derived*, where the mail badge's number is *acknowledged*. Mail
+ * counts arrivals and clears when you open the overlay, because a delivery is an
+ * event that happened once and has been seen. An appointment is not: opening the
+ * calendar does not make the 3 p.m. meeting stop being at 3 p.m., so this number
+ * is recomputed from the events themselves and falls to zero by the end of the
+ * day on its own. Nothing here needs a "seen" flag, and adding one would only
+ * let the badge lie.
+ *
+ * "Left" means **not yet ended**, not "not yet started" — an appointment you are
+ * currently sitting in is still one of today's, and a meeting that ran from 09:00
+ * to 17:00 should not vanish from the count at 09:01. An all-day event runs to
+ * the end of the day, so it counts all day.
+ *
+ * Only *visible* calendars are counted: a calendar unchecked in the sidebar is
+ * hidden from every view, and a badge that counted what no view will show would
+ * send the user looking for events they cannot find.
+ */
+export function eventsLeftToday(
+  events: CalendarEvent[],
+  calendars: Calendar[],
+  now: Date = new Date(),
+): number {
+  const today = todayStr(now);
+  const stamp = toStamp(now);
+  // `expandEvents`' window is half-open — `[start, end)` — so a single day is
+  // today up to tomorrow, not today to today (which is the empty window).
+  return expandEvents(
+    events,
+    today,
+    addDays(today, 1),
+    visibleCalendarIds(calendars),
+  ).filter((occ) => occ.allDay || occ.end > stamp).length;
 }

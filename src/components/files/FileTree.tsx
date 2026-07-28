@@ -26,6 +26,7 @@ import { createDeckFile } from "../../lib/viewers/deck/create";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSyncStore, isPathExcluded, type SyncFileState } from "../../stores/sync";
+import { confirmSyncTransfer } from "../../stores/syncConfirm";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
 import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, visibleEntries, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
@@ -34,7 +35,7 @@ import { basename, dirname, relativePathWithin, resolvePath } from "../../lib/pa
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import { DirSizeUnavailable, guardedDirSize, isHostTimeout } from "../../lib/dirSizeGuard";
 import { isPythonPath, isPythonMainScript } from "../../lib/viewers/python";
-import { runPythonFile, runCwd, placeForFocused } from "../../lib/pythonRun";
+import { runPythonFile, pythonRunPlan, placeForFocused } from "../../lib/pythonRun";
 import {
   shellRunnerFor,
   shellScriptRunPlan,
@@ -2004,9 +2005,22 @@ export function FileTree({
 
   // SSH-sync Phase 1: pull this file/folder into the local mirror (and mark it
   // selected), or stop tracking it. Remote source view only.
+  //
+  // A pull writes the host's bytes over the mirror's — for a folder row, over the
+  // whole subtree — so it asks first (`stores/syncConfirm`), naming what would be
+  // replaced and what would be lost. The button used to do it on one click, which
+  // is what made an ordinary misclick destructive.
   async function syncEntryToLocal(entry: FileEntry) {
     setContextMenu(null);
     if (!projectId) return;
+    const ok = await confirmSyncTransfer({
+      projectId,
+      direction: "pull",
+      relPath: relForEntry(entry),
+      isDir: entry.is_dir,
+      label: entry.name,
+    });
+    if (!ok) return;
     try {
       await syncPull(projectId, relForEntry(entry));
     } catch (err) {
@@ -2078,10 +2092,21 @@ export function FileTree({
   }
 
   // SSH-sync Phase 2: push a local mirror file/folder up to the host. A push that
-  // a host change would clobber is blocked and queued for per-file resolution.
+  // a host change would clobber is blocked and queued for per-file resolution —
+  // but a push that lands on an unchanged host file simply replaces it, which for
+  // a folder row is a whole subtree of the host's content going under the mirror's.
+  // So, like the pull, it asks first and names what it would replace.
   async function pushEntryToHost(entry: FileEntry) {
     setContextMenu(null);
     if (!projectId) return;
+    const ok = await confirmSyncTransfer({
+      projectId,
+      direction: "push",
+      relPath: relForEntry(entry),
+      isDir: entry.is_dir,
+      label: entry.name,
+    });
+    if (!ok) return;
     try {
       const { conflicts } = await syncPush(projectId, relForEntry(entry), false);
       if (conflicts.length > 0) setPushConflicts(conflicts);
@@ -2094,12 +2119,34 @@ export function FileTree({
   async function pushAllToHost() {
     setContextMenu(null);
     if (!projectId) return;
+    const ok = await confirmSyncTransfer({
+      projectId,
+      direction: "push",
+      relPath: "",
+      isDir: true,
+      label: basename(projectDir) || t("fileTree.projectRootFolder"),
+    });
+    if (!ok) return;
     try {
       const { conflicts } = await syncPush(projectId, "", false);
       if (conflicts.length > 0) setPushConflicts(conflicts);
     } catch (err) {
       setError(String(err));
     }
+  }
+
+  // Drop the whole remaining conflict queue in one click. A push over a folder or
+  // a whole project can come back with hundreds of both-sides-changed files, and
+  // answering "keep local or take host?" once per file is not a decision anyone
+  // can make at that size — the honest answer is "not now". It is the safe
+  // direction and it loses nothing: skipping touches neither side, so every file
+  // left here stays diverged and stays listed in the file view's orange
+  // (diverged) list, where they can be worked through one at a time with the
+  // merge viewer.
+  function skipAllPushConflicts() {
+    if (pushBusy) return;
+    setPushConflicts([]);
+    void load(relPath);
   }
 
   // Resolve the first queued push conflict: keep-local force-pushes, take-host
@@ -2429,8 +2476,9 @@ export function FileTree({
       syncSource,
       scriptPath: entry.path,
       interp,
-      // Run on the machine chosen in the RunHostPicker (the same preference the
-      // Python Run honours), so "pick machine X ⇒ all shells run on X".
+      // The machine chosen in the RunHostPicker. It only picks WHICH remote
+      // machine a host-side script runs on — a script browsed on the local mirror
+      // runs in a local shell regardless (same rule as the Python Run beside it).
       runHostPref: projectId
         ? useRunHostPrefStore.getState().byProject[projectId]
         : undefined,
@@ -2481,7 +2529,20 @@ export function FileTree({
   function launchPython(entry: FileEntry, args?: string) {
     runPythonFile({
       file: entry.path,
-      projectDir: runCwd(projectDir, entry.path),
+      // Which machine, cwd and path — the same resolution the shell-script Run
+      // above uses, so the ▶ on a `.py` row and the ▶ on a `.sh` row beside it
+      // cannot land on different machines. Browsing the Local mirror with no
+      // run-host chosen runs LOCALLY; `projectDir` is already the mirror root on
+      // that side, so it doubles as the local root here.
+      plan: pythonRunPlan({
+        projectDir: project ? resolveProjectDirectory(project) : projectDir,
+        remotePath: project?.remote?.remote_path,
+        localRoot: mirrorRoot ?? projectDir,
+        file: entry.path,
+        runHostPref: projectId
+          ? useRunHostPrefStore.getState().byProject[projectId]
+          : undefined,
+      }),
       scope: projectId ?? "root",
       projectId,
       args,
@@ -3637,16 +3698,35 @@ export function FileTree({
             </p>
             <div className="file-delete-path">{pushConflicts[0]}</div>
             {pushConflicts.length > 1 && (
-              <p style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                {t(
-                  pushConflicts.length - 1 > 1
-                    ? "fileTree.moreConflictsMany"
-                    : "fileTree.moreConflictsOne",
-                  { count: pushConflicts.length - 1 },
-                )}
-              </p>
+              <>
+                <p style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  {t(
+                    pushConflicts.length - 1 > 1
+                      ? "fileTree.moreConflictsMany"
+                      : "fileTree.moreConflictsOne",
+                    { count: pushConflicts.length - 1 },
+                  )}
+                </p>
+                {/* Where the skipped ones go. Stated here rather than only in the
+                    button's tooltip, because "skip all" reads like giving up
+                    unless you know the files stay listed and resolvable. */}
+                <p style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  {t("fileTree.skipAllWhere")}
+                </p>
+              </>
             )}
             <div className="file-delete-actions">
+              {pushConflicts.length > 1 && (
+                <button
+                  type="button"
+                  disabled={pushBusy}
+                  onClick={skipAllPushConflicts}
+                  title={t("fileTree.skipAllTitle")}
+                  style={{ marginRight: "auto" }}
+                >
+                  {t("fileTree.skipAll", { count: pushConflicts.length })}
+                </button>
+              )}
               <button type="button" disabled={pushBusy} onClick={() => resolvePushConflict("skip")}>
                 {t("common.skip")}
               </button>

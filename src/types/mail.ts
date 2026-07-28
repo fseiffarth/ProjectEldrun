@@ -103,6 +103,62 @@ export interface MailEncryptionState {
   keyring: MailKeyringState;
 }
 
+// ── End-to-end encryption and signatures ──────────────────────────────────
+
+export type MailCryptoFormat = "openpgp" | "smime";
+
+/**
+ * What the panel may say about a signature — deliberately `MailAuthResults`'
+ * vocabulary, because the misreading is the same one.
+ *
+ * `verified` is the ONLY state that earns positive chrome, and it needs three
+ * clauses at once: a good signature, from a key the user checked out of band,
+ * whose identity is the address the message claims to be from. Drop the middle
+ * clause and a padlock goes to whoever last emailed you a key; drop the last and
+ * it goes to anyone with *a* verified key signing as anyone they like.
+ */
+export type MailCryptoState =
+  | "none"
+  | "verified"
+  | "unaligned"
+  | "known"
+  | "invalid"
+  | "nokey"
+  | "unusable"
+  | "unsupported";
+
+export interface MailCryptoInfo {
+  format: MailCryptoFormat;
+  encrypted: boolean;
+  /** …and it was decrypted for this render. `encrypted && !decrypted` is locked. */
+  decrypted: boolean;
+  signed: boolean;
+  state: MailCryptoState;
+  /** The signing identity — an address, else a fingerprint. Shown *beside* the
+   *  verdict, never instead of it: a verdict without the identity it applies to
+   *  is the classic misreading. */
+  identifier?: string;
+  aligned?: boolean;
+  supported: boolean;
+  /** Machine tokens the frontend turns into sentences (so the wording lives in
+   *  `i18n` ×5). Always includes `headers-not-signed` for a signed message. */
+  notes: string[];
+}
+
+/** One key in the local keyring. Carries no key material, by construction. */
+export interface PgpKeyInfo {
+  /** Uppercase hex, no spaces. Displayed grouped — see `formatFingerprint`. */
+  fingerprint: string;
+  identities: string[];
+  addresses: string[];
+  /** We hold the private half: one of the user's own keys. */
+  secret: boolean;
+  /** The user compared this fingerprint out of band. */
+  verified: boolean;
+  accounts: string[];
+  algorithm: string;
+}
+
 export interface MailPasswordState {
   has_saved: boolean;
   keyring: MailKeyringState;
@@ -327,6 +383,10 @@ export interface MailBody {
   attachments: MailAttachmentMeta[];
   /** Set when the body hit a size/element cap and was truncated. */
   truncated?: boolean;
+  /** End-to-end signature/encryption, when the message carried any. Absent for
+   *  ordinary mail — a reassuring "not encrypted" row on every message would be
+   *  noise that trains people to ignore the row. */
+  crypto?: MailCryptoInfo;
 }
 
 /** A file the user explicitly picked, already copied inside the mail sandbox dir. */

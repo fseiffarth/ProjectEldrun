@@ -48,19 +48,17 @@ export function ConnTypeIcon({ type, online }: Props) {
       aria-label={label}
     >
       <title>{label}</title>
-      {/* plug body */}
-      <rect x="5" y="2" width="6" height="5" rx="1" stroke="currentColor" strokeWidth="1.3" fill="none"/>
-      {/* pins */}
-      <line x1="6.5" y1="2" x2="6.5" y2="0.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-      <line x1="9.5" y1="2" x2="9.5" y2="0.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-      {/* stem */}
-      <line x1="8" y1="7" x2="8" y2="10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-      {/* base bar */}
-      <line x1="4" y1="10" x2="12" y2="10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-      {/* legs */}
-      <line x1="5.5" y1="10" x2="5.5" y2="13" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-      <line x1="8" y1="10" x2="8" y2="13" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-      <line x1="10.5" y1="10" x2="10.5" y2="13" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+      {/* RJ45 clip (the retention tab on top of the plug) */}
+      <rect x="6.5" y="3.2" width="3" height="2.4" rx="0.5" fill="currentColor"/>
+      {/* plug housing */}
+      <rect x="3.5" y="5.2" width="9" height="6" rx="1" stroke="currentColor" strokeWidth="1.3" fill="none"/>
+      {/* contact pins, straight and parallel like a real RJ45 connector */}
+      <line x1="4.7" y1="11.2" x2="4.7" y2="12.8" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
+      <line x1="6.1" y1="11.2" x2="6.1" y2="12.8" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
+      <line x1="7.5" y1="11.2" x2="7.5" y2="12.8" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
+      <line x1="8.9" y1="11.2" x2="8.9" y2="12.8" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
+      <line x1="10.3" y1="11.2" x2="10.3" y2="12.8" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
+      <line x1="11.3" y1="11.2" x2="11.3" y2="12.8" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
       {slash}
     </svg>
   );

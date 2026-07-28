@@ -134,3 +134,5 @@ describe("renderMarkdown", () => {
     expect(html).not.toContain("<img");
   });
 });
+// Link labels (images/code/math inside `[…](…)`) and the placeholder scheme they
+// share are covered in MarkdownLinkLabel.test.ts.

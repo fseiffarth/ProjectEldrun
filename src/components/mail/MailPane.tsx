@@ -9,6 +9,8 @@ import { MailMessageView } from "./MailMessageView";
 import { MailAccountDialog } from "./MailAccountDialog";
 import { MailComposeDialog, type ComposeMode } from "./MailComposeDialog";
 import { MailEncryptionDialog } from "./MailEncryptionDialog";
+import { MailKeysDialog } from "./MailKeysDialog";
+import { mailPgpAvailable } from "../../lib/mail";
 import { mailEncryptionState } from "../../lib/mail";
 import type { MailEncryptionState } from "../../types/mail";
 
@@ -71,6 +73,15 @@ export function MailPane({ visible }: MailPaneProps) {
   // decides to migrate a database.
   const [encryption, setEncryption] = useState<MailEncryptionState | null>(null);
   const [encryptionDialog, setEncryptionDialog] = useState(false);
+  // The key surface is offered only where it can work: the keyring needs the
+  // local store encrypted, and a button that always fails with the same sentence
+  // is worse than one that is not there until the precondition is met.
+  const [keysDialog, setKeysDialog] = useState(false);
+  const [pgpReady, setPgpReady] = useState(false);
+  useEffect(() => {
+    if (visible === false) return;
+    void mailPgpAvailable().then(setPgpReady);
+  }, [visible, encryption]);
   useEffect(() => {
     if (visible === false || encryption) return;
     void mailEncryptionState().then(setEncryption).catch(() => {});
@@ -204,6 +215,16 @@ export function MailPane({ visible }: MailPaneProps) {
         >
           {encryption?.active ? "🔒" : "🔓"}
         </button>
+        {pgpReady && (
+          <button
+            type="button"
+            className="mail-btn"
+            title={t("mail.keys.title")}
+            onClick={() => setKeysDialog(true)}
+          >
+            🔑
+          </button>
+        )}
         <div className="mail-toolbar-spacer" />
         {/* The sort is NOT here. It lives on the list's own header row
             (`MailList`), where each control sits above the column it orders —
@@ -419,6 +440,13 @@ export function MailPane({ visible }: MailPaneProps) {
             // the next render — the exact nag the one-time rule forbids.
             void mailEncryptionState().then(setEncryption).catch(() => {});
           }}
+        />
+      )}
+
+      {keysDialog && (
+        <MailKeysDialog
+          account={accounts.find((a) => a.id === selectedAccountId) ?? null}
+          onClose={() => setKeysDialog(false)}
         />
       )}
 

@@ -250,6 +250,13 @@ export function RightPanel({
 
   return (
     <ProjectFilesView
+      // The panel is one long-lived instance across every project switch, so
+      // without this key the viewer's project-specific state (git status and a
+      // half-typed commit message, the detected nested repo root, the session
+      // rows, the tree's entries) carried into the next project — a path from
+      // one project resolved against another's root. Identity is the project,
+      // so a switch is a remount.
+      key={activeId ?? "none"}
       scope={scope}
       projectId={activeId ?? null}
       project={activeProject}

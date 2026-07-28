@@ -145,6 +145,19 @@ interface MailStore {
   openOverlay: () => void;
   closeOverlay: () => void;
 
+  /**
+   * Open the overlay **on** a given account — the header dropdown's account rows.
+   *
+   * It lives here rather than in the button because it is two state changes that
+   * have to happen in one gesture: a caller that opened the overlay and then
+   * selected would render one frame of whatever was last on screen, and a caller
+   * that selected first would move the list under an overlay that is not open yet
+   * (and, if the user never opens it, silently retarget the *next* one).
+   */
+  openAccountView: (accountId: string) => Promise<void>;
+  /** The same for the Important/Urgent lists — every account's marked mail. */
+  openPriorityView: (priority: MailPriority) => Promise<void>;
+
   /** Read every account's folder counts from the local index — no socket. What
    *  the header's unread badge needs before any mail surface has been opened,
    *  and the one thing `loadAccounts` alone does not give it. */
@@ -261,6 +274,23 @@ export const useMailStore = create<MailStore>((set, get) => ({
     void get().refreshPriorityCounts();
   },
   closeOverlay: () => set({ overlayOpen: false }),
+
+  openAccountView: async (accountId) => {
+    get().openOverlay();
+    // Re-selecting the account that is already showing one of its folders is a
+    // no-op on purpose: `selectAccount` re-opens the inbox, so a second click on
+    // the row you are already reading would throw away the folder you navigated
+    // to. Coming back from a priority list is not that case — there is no folder
+    // on screen, which is exactly when the account has to be re-entered.
+    const { selectedAccountId, selectedFolderId, selectedPriority } = get();
+    if (selectedAccountId === accountId && selectedFolderId && !selectedPriority) return;
+    await get().selectAccount(accountId);
+  },
+
+  openPriorityView: async (priority) => {
+    get().openOverlay();
+    await get().openPriority(priority);
+  },
 
   refreshUnread: async () => {
     await get().loadAccounts();

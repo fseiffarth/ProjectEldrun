@@ -17,6 +17,8 @@ import {
   mailAuthShown,
   mailAuthSummary,
   mailAuthTone,
+  mailCryptoNoteKey,
+  mailCryptoTone,
   openMailLink,
   stripFormatControls,
 } from "../../lib/mail";
@@ -26,6 +28,7 @@ import type {
   MailAttachmentMeta,
   MailAuthResults,
   MailBody,
+  MailCryptoInfo,
   MailHeader,
   MailLink,
   MailPreviewBlob,
@@ -126,6 +129,13 @@ export function MailMessageView({
           <span className="mail-meta-value">{formatMailDate(header.date, lang)}</span>
         </div>
         <MailAuthPanel auth={header.auth} />
+        {/* Beside the sender checks, not instead of them: they answer different
+            questions. `Authentication-Results` is what YOUR server concluded
+            about the hop that delivered the message; this is what the *sender*
+            did to it before it left their machine. A message can pass one and
+            fail the other, and folding them into one badge would hide exactly
+            that case. */}
+        {body?.crypto && <MailCryptoPanel info={body.crypto} />}
         <div className="mail-message-actions">
           <button type="button" className="mail-btn" onClick={() => onReply("reply")}>
             {t("mail.composeReply")}
@@ -223,6 +233,74 @@ export function MailMessageView({
  *    here; only a *configured* account that received a *foreign* header gets a
  *    warning, because that one really is a signal.
  */
+/**
+ * End-to-end signature/encryption, in `MailAuthPanel`'s shape and vocabulary.
+ *
+ * **The chrome rule is the backend's**, not this component's: `info.state`
+ * already encodes it, and `mailCryptoTone` is the single mapping from state to
+ * appearance. Recomputing "is this good" here would be a second opinion that can
+ * disagree with the one the tests pin.
+ *
+ * Two things this panel must always say and never imply otherwise:
+ *
+ * - **The identity beside the verdict.** A good signature from a key nobody
+ *   checked is a statement about bytes; the identity is what makes it a
+ *   statement about a person, and only when the user has verified the key.
+ * - **Headers are not signed.** From, Subject and Date sit outside the signature
+ *   in both formats, so a tick never vouches for the sender line above it. That
+ *   note is emitted by the backend for every signed message precisely so it
+ *   cannot be forgotten here.
+ */
+function MailCryptoPanel({ info }: { info: MailCryptoInfo }) {
+  const t = useT();
+  const tone = mailCryptoTone(info);
+  const notes = info.notes
+    .map(mailCryptoNoteKey)
+    .filter((k) => k !== null)
+    .map((k) => k as NonNullable<typeof k>);
+
+  const headline = info.encrypted
+    ? info.decrypted
+      ? "mail.crypto.encryptedOpened"
+      : "mail.crypto.encryptedLocked"
+    : "mail.crypto.signedOnly";
+
+  return (
+    <div className={`mail-auth mail-auth-${tone}`}>
+      <div className="mail-auth-head">
+        <span className="mail-meta-label">
+          {t(info.format === "openpgp" ? "mail.crypto.titlePgp" : "mail.crypto.titleSmime")}
+        </span>
+        <span className="mail-auth-summary">{t(headline)}</span>
+        <UntestedTag />
+      </div>
+      {info.signed && (
+        <div className="mail-auth-rows">
+          <span className={`mail-auth-chip tone-${tone}`}>
+            <span className="mail-auth-method">{t("mail.crypto.signature")}</span>
+            <span className="mail-auth-result">{t(`mail.crypto.state.${info.state}`)}</span>
+            {/* Always rendered when there is one — the verdict without the
+                identity it applies to is the misreading this whole vocabulary
+                exists to prevent. */}
+            {info.identifier && (
+              <span className="mail-auth-identity">
+                {t(info.aligned ? "mail.authAligned" : "mail.authUnaligned", {
+                  domain: info.identifier,
+                })}
+              </span>
+            )}
+          </span>
+        </div>
+      )}
+      {notes.map((key) => (
+        <p key={key} className="mail-auth-hint">
+          {t(key)}
+        </p>
+      ))}
+    </div>
+  );
+}
+
 function MailAuthPanel({ auth }: { auth?: MailAuthResults }) {
   const t = useT();
   const summary = mailAuthSummary(auth);

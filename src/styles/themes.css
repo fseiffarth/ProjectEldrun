@@ -15180,19 +15180,44 @@ select option {
 
 /* ── The device's own GPU memory: how much headroom is left before the next
       model is loaded. Toned by ratio, like the header's GPU row. ───────────── */
+/* The machine's headroom block: one row per device (CPU / RAM / GPU), each a
+   spread line whose colour *is* the reading — toned by ratio, so a glance says
+   how tight things are before the numbers are read. Rows sit tight together so
+   the three read as one block rather than three unrelated hints. */
+.local-model-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.local-model-stat,
 .local-model-gpu {
   display: flex;
   justify-content: space-between;
   gap: 8px;
 }
+.local-model-stat.low,
 .local-model-gpu.low {
   color: var(--success);
 }
+.local-model-stat.medium,
 .local-model-gpu.medium {
   color: var(--warning);
 }
+.local-model-stat.high,
 .local-model-gpu.high {
   color: var(--danger);
+}
+/* The middle cell (CPU temperature, GPU utilization) is context, not the
+   headline figure the row is toned for — it renders muted so the used/free pair
+   at the two ends stays the thing the eye lands on. */
+.local-model-stat > span:not(:first-child):not(:last-child) {
+  opacity: 0.75;
+}
+/* The block's "untested" pill, on its own line at the right edge: it belongs to
+   the CPU/RAM readings as a whole, not to any one of them. */
+.local-model-stats-tag {
+  align-self: flex-end;
+  padding: 0 8px;
 }
 
 /* ── Loaded-model row: green "resident" lamp + per-task tag chips ─────────── */
@@ -21130,6 +21155,89 @@ select option {
   color: #1c1300;
 }
 
+/* ── The ✉ button's accounts dropdown ──────────────────────────────────────
+   A caret beside the button, not a replacement for it: the ✉ keeps its
+   one-click "open mail", and the caret opens the list that makes the
+   destination part of the gesture (an account's inbox, or Important/Urgent).
+
+   It is deliberately narrow and quiet — `min-width` overrides the 32px every
+   `.global-apps-menu-btn` carries, because a second full-size button here would
+   read as a second app in the header rather than as an affordance on this one.
+   Pulled 4px in so the pair reads as one control, and it wears the icon
+   button's hover/expanded treatment untouched. */
+.mail-indicator-caret {
+  min-width: 14px;
+  margin-left: -4px;
+  padding: 0;
+  font-size: 9px;
+  line-height: 1;
+}
+
+.mail-indicator-menu {
+  min-width: 220px;
+  max-width: 320px;
+  /* Bounded so a fleet of accounts scrolls inside the menu instead of running
+     off the bottom of the window; the `.menu-scroll-region` inside is what
+     actually scrolls (the accent rail and wash live on this element). */
+  max-height: min(60vh, 460px);
+}
+
+/* One row = one destination. The name takes the width and truncates; the count
+   is pinned to the right so a column of rows lines up whatever the labels do. */
+.mail-menu-row {
+  justify-content: space-between;
+}
+.mail-menu-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-menu-badge {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--bg-panel);
+  font-size: 10px;
+  font-weight: 700;
+}
+/* The rail's rule, repeated because it is the same statement: the priority
+   badge counts everything filed, and the accent tint is the "some of it is
+   unread" signal — an all-read list still shows its size, muted, so it cannot be
+   mistaken for work outstanding. */
+.mail-menu-badge:not(.unread) {
+  background: color-mix(in srgb, var(--text-muted) 30%, transparent);
+  color: var(--text-primary);
+}
+/* What is on screen behind the menu. Marked, not hidden: the row is still a
+   destination (it is how you get back to that account's inbox from a priority
+   list), so it stays clickable and merely says where you already are. */
+.mail-menu-row.selected {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  font-weight: 600;
+}
+/* The rail's coloured bar, so Important and Urgent are recognisable as the same
+   two lists in both places. */
+.mail-menu-priority {
+  position: relative;
+  padding-left: 14px;
+}
+.mail-menu-priority::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--warning, #e3b341);
+}
+.mail-menu-priority.urgent::before {
+  background: var(--danger, #f85149);
+}
+
 /* Both overlays ride the shared `.project-dialog.dialog-framed` chrome (accent
    top rail, accent-washed `.settings-title-row` band, `.dialog-close-btn`), so
    all that is left here is their size — exactly the split `.sysmon-dialog`
@@ -22642,6 +22750,70 @@ select option {
 .mail-list-scan-note {
   padding: 4px 8px;
   border-top: 1px solid var(--border-subtle);
+}
+
+/* ── OpenPGP keys ──────────────────────────────────────────────────────────
+   The crypto panel deliberately has no styles of its own: it reuses
+   `.mail-auth` and its four tones wholesale, because it is the same kind of
+   claim as the sender checks and rendering it differently would suggest the two
+   are answering the same question at different confidences. */
+.mail-keys-dialog {
+  max-width: 660px;
+}
+.mail-key-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  margin-bottom: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+}
+.mail-key-identity {
+  flex: 1 1 180px;
+  min-width: 0;
+  word-break: break-word;
+}
+/* Monospace, wrapping, and NEVER truncated. This string is the whole trust
+   model of OpenPGP — an abbreviated fingerprint is worse than none, because it
+   still looks like something that was checked. */
+.mail-key-fingerprint {
+  flex: 1 1 100%;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  word-break: break-all;
+  color: var(--text-primary);
+}
+.mail-key-verified {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.mail-key-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+.mail-keys-paste {
+  width: 100%;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  resize: vertical;
+}
+/* The composer's two checkboxes, grouped so they read as one decision about
+   this message rather than as two unrelated switches. */
+.mail-compose-crypto {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  margin-top: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
 }
 .mail-confirm-strip {
   display: flex;

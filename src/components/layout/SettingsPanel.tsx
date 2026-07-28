@@ -13,6 +13,7 @@ import { experimentalEnabled } from "../../lib/experimental";
 import { usePowerStore, useEnergySaver } from "../../stores/power";
 import { useProjectsStore } from "../../stores/projects";
 import { DEFAULT_MIN_SUBWINDOW_PX } from "../../stores/tabs";
+import { DEFAULT_MAIL_CHECK_MIN } from "../../lib/mail";
 import type {
   ArchivedProject,
   CalendarViewKind,
@@ -808,7 +809,8 @@ export function SettingsDialog({
             <div className="settings-section-title">{t("settings.experimental")}</div>
             <p className="settings-help">
               {t("settings.experimentalHelp1")}{" "}
-              <b>{t("settings.experimentalHelpBold")}</b> {t("settings.experimentalHelp2")}
+              <b>{t("settings.experimentalHelpBold")}</b> {t("settings.experimentalHelp2")}{" "}
+              {t("settings.experimentalHelp3")}
             </p>
 
             <ToggleCard
@@ -822,6 +824,53 @@ export function SettingsDialog({
                 </>
               }
             />
+
+            {/* Mail is ONE switch. It used to be two — this gate plus a
+                `mail_global_app` sub-toggle deciding whether the header button
+                appeared *as well as* the mail tab — but the tab is retired, so
+                the overlay is the only surface and a second switch could only
+                ever mean "mail on, and unreachable". The interval check stays
+                nested because it is genuinely a different question (how often to
+                dial out), and it is the one part of the feature that reaches the
+                network without a click. The browser below still owns a whole TAB,
+                so switching *it* off closes what it opened — see
+                lib/experimentalSweep. */}
+            <div className="settings-toggle-card">
+              <label className="settings-toggle-card-row">
+                <span>
+                  {t("settings.mailClient")} <UntestedTag />
+                </span>
+                <Toggle
+                  checked={experimentalEnabled(settings, "mail_client")}
+                  onChange={(e) => void updateSettings({ mail_client: e.target.checked })}
+                />
+              </label>
+              <p className="settings-help">{t("settings.mailClientHelp")}</p>
+              {experimentalEnabled(settings, "mail_client") && (
+                <>
+                  <div className="settings-row">
+                    <label>{t("settings.mailCheckInterval")}</label>
+                    <Dropdown
+                      value={String(
+                        settings?.mail_check_interval_min ?? DEFAULT_MAIL_CHECK_MIN,
+                      )}
+                      onChange={(v) =>
+                        void updateSettings({ mail_check_interval_min: Number(v) })
+                      }
+                      options={[
+                        { value: "0", label: t("settings.mailCheckNever") },
+                        { value: "5", label: t("settings.mailCheckMinutes", { count: 5 }) },
+                        { value: "10", label: t("settings.mailCheckMinutes", { count: 10 }) },
+                        { value: "15", label: t("settings.mailCheckMinutes", { count: 15 }) },
+                        { value: "30", label: t("settings.mailCheckMinutes", { count: 30 }) },
+                        { value: "60", label: t("settings.mailCheckMinutes", { count: 60 }) },
+                      ]}
+                    />
+                  </div>
+                  <p className="settings-help">{t("settings.mailCheckIntervalHelp")}</p>
+                </>
+              )}
+            </div>
 
             <ToggleCard
               label={t("settings.webBrowser")}
@@ -883,6 +932,38 @@ export function SettingsDialog({
             </div>
 
             <div className="settings-section-title">{t("settings.calendar")}</div>
+
+            {/* The calendar's twin of "Mail in the header". Not nested under
+                anything: the calendar is shipped, not experimental. */}
+            <div className="settings-toggle-card">
+              <label className="settings-toggle-card-row">
+                <span>
+                  {t("settings.calendarGlobalApp")} <UntestedTag />
+                </span>
+                <Toggle
+                  checked={settings?.calendar_global_app ?? false}
+                  onChange={(e) => void updateSettings({ calendar_global_app: e.target.checked })}
+                />
+              </label>
+              <p className="settings-help">{t("settings.calendarGlobalAppHelp")}</p>
+            </div>
+
+            {/* The to-do board sits under Calendar because that is literally
+                where its cards live: they ARE this calendar's tasks, so the
+                board is a second view of the store above, not a second store. */}
+            <div className="settings-toggle-card">
+              <label className="settings-toggle-card-row">
+                <span>
+                  {t("settings.todoBoard")} <UntestedTag />
+                </span>
+                <Toggle
+                  checked={settings?.todo_board ?? false}
+                  onChange={(e) => void updateSettings({ todo_board: e.target.checked })}
+                />
+              </label>
+              <p className="settings-help">{t("settings.todoBoardHelp")}</p>
+            </div>
+
             <div className="settings-row">
               <label>{t("settings.weekStartsOn")}</label>
               <Dropdown

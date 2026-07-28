@@ -61,9 +61,9 @@ describe("shell script run planning", () => {
       runHostPref: "host:worker1",
     });
 
-    // The chosen machine wins over the browsed side; the script path stays
-    // project-relative so it resolves against that host's own project root (the
-    // backend re-cds into the worker's remote_path).
+    // For a HOST-side script the preference picks which remote machine; the script
+    // path stays project-relative so it resolves against that host's own project
+    // root (the backend re-cds into the worker's remote_path).
     expect(plan).toMatchObject({
       cwd: "/home/alice/demoproj",
       scriptRel: "train.sh",
@@ -72,9 +72,11 @@ describe("shell script run planning", () => {
     });
   });
 
-  it("sends a mirror-browsed script to the chosen remote machine", () => {
-    // Browsing the local mirror but with a worker chosen: the run still lands on
-    // the worker, and scriptRel (project-relative) resolves there.
+  it("keeps a mirror-browsed script LOCAL even with a worker chosen", () => {
+    // The browsed side is dominant (`lib/pythonRun`'s `pythonRunPlan` carries the
+    // reasoning): the preference is persisted per project, so it is normally set
+    // from some earlier session on the host side, and it must not reach back and
+    // redirect a Run of a file the user is looking at on the local mirror.
     const plan = shellScriptRunPlan({
       project: remoteProject,
       treeRoot: "/state/demoproj/mirror",
@@ -85,10 +87,42 @@ describe("shell script run planning", () => {
     });
 
     expect(plan).toMatchObject({
-      cwd: "/home/alice/demoproj",
+      cwd: "/state/demoproj/mirror",
       scriptRel: "train.sh",
-      location: "host:worker1",
+      location: "local",
     });
+  });
+
+  it("keeps a mirror path local even if syncSource never arrives", () => {
+    // The prop has to be threaded correctly through five components to be true;
+    // the path is a fact. A mirror-side script is local whatever `syncSource` says
+    // (here: absent, which used to read as "browsing the host" and put an `ssh`
+    // tab on screen for a file sitting on this machine).
+    const plan = shellScriptRunPlan({
+      project: remoteProject,
+      treeRoot: "/state/demoproj/mirror",
+      scriptPath: "/state/demoproj/mirror/train.sh",
+      interp: "bash",
+      runHostPref: "remote",
+    });
+
+    expect(plan).toMatchObject({
+      cwd: "/state/demoproj/mirror",
+      scriptRel: "train.sh",
+      location: "local",
+    });
+  });
+
+  it("keeps a host path remote even if syncSource says local", () => {
+    const plan = shellScriptRunPlan({
+      project: remoteProject,
+      treeRoot: "/state/demoproj/mirror",
+      syncSource: "local",
+      scriptPath: "/home/alice/demoproj/train.sh",
+      interp: "bash",
+    });
+
+    expect(plan).toMatchObject({ cwd: "/home/alice/demoproj", location: "remote" });
   });
 
   it("refuses to build bash with an empty script path", () => {

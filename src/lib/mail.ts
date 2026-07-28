@@ -23,6 +23,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { stripFormatControls } from "./textSafety";
+import type { TranslationKey } from "./i18n";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   MailAccount,
@@ -30,6 +31,8 @@ import type {
   MailAuthMethod,
   MailAuthResults,
   MailBody,
+  MailCryptoInfo,
+  MailCryptoState,
   MailDraft,
   MailEncryptionState,
   MailFlag,
@@ -40,6 +43,7 @@ import type {
   MailPreviewBlob,
   MailPriority,
   MailPriorityCounts,
+  PgpKeyInfo,
   MailProbe,
   MailSendResult,
   MailSort,
@@ -237,8 +241,23 @@ export function mailDraftSave(draft: MailDraft): Promise<MailDraft> {
   return invoke<MailDraft>("mail_draft_save", { draft });
 }
 
-export function mailDraftSend(draftId: string): Promise<MailSendResult> {
-  return invoke<MailSendResult>("mail_draft_send", { draftId });
+/**
+ * Send a draft, optionally signed and/or encrypted.
+ *
+ * The flags default to **off**, and a sealed send that cannot be sealed comes
+ * back as an error rather than as a plaintext send: there is no path in the
+ * backend where these degrade quietly, because a silent downgrade to cleartext
+ * looks exactly like success.
+ */
+export function mailDraftSend(
+  draftId: string,
+  opts: { sign?: boolean; encrypt?: boolean } = {},
+): Promise<MailSendResult> {
+  return invoke<MailSendResult>("mail_draft_send", {
+    draftId,
+    sign: opts.sign ?? false,
+    encrypt: opts.encrypt ?? false,
+  });
 }
 
 /**
@@ -320,6 +339,138 @@ export function mailEncryptionReset(
   passphrase?: string,
 ): Promise<MailEncryptionState> {
   return invoke<MailEncryptionState>("mail_encryption_reset", { mode, passphrase });
+}
+
+// ── OpenPGP (docs/mail_encryption_plan.md §6) ─────────────────────────────
+
+/**
+ * Whether the key surface can be used at all. The keyring needs the local store
+ * encrypted — a private key in a plaintext file would make the whole feature
+ * theatre — so the UI gates on this one bool rather than letting every key
+ * action fail with the same sentence.
+ */
+export function mailPgpAvailable(): Promise<boolean> {
+  return invoke<boolean>("mail_pgp_available").catch(() => false);
+}
+
+export function mailPgpKeys(): Promise<PgpKeyInfo[]> {
+  return invoke<PgpKeyInfo[]>("mail_pgp_keys");
+}
+
+export function mailPgpGenerate(
+  accountId: string,
+  name: string,
+  address: string,
+): Promise<PgpKeyInfo> {
+  return invoke<PgpKeyInfo>("mail_pgp_generate", { accountId, name, address });
+}
+
+/** Import from pasted text. No wrapper here takes a path, because no command does. */
+export function mailPgpImport(armored: string): Promise<PgpKeyInfo[]> {
+  return invoke<PgpKeyInfo[]>("mail_pgp_import", { armored });
+}
+
+/** Import from a file the user picks in the OS dialog the **backend** raises. */
+export function mailPgpImportPick(): Promise<PgpKeyInfo[]> {
+  return invoke<PgpKeyInfo[]>("mail_pgp_import_pick");
+}
+
+/** The armored **public** half. There is no command that exports a private key. */
+export function mailPgpExport(fingerprint: string): Promise<string> {
+  return invoke<string>("mail_pgp_export", { fingerprint });
+}
+
+/**
+ * Record that the user compared this fingerprint out of band.
+ *
+ * The only path to `state: "verified"`, and therefore the only way any message
+ * ever earns positive chrome. OpenPGP has no authority to ask instead.
+ */
+export function mailPgpSetVerified(fingerprint: string, verified: boolean): Promise<PgpKeyInfo> {
+  return invoke<PgpKeyInfo>("mail_pgp_set_verified", { fingerprint, verified });
+}
+
+export function mailPgpBind(
+  fingerprint: string,
+  accountId: string,
+  bind: boolean,
+): Promise<void> {
+  return invoke<void>("mail_pgp_bind", { fingerprint, accountId, bind });
+}
+
+export function mailPgpDelete(fingerprint: string): Promise<void> {
+  return invoke<void>("mail_pgp_delete", { fingerprint });
+}
+
+/**
+ * Which recipients have no key — asked **before** the message is written, not
+ * discovered on Send, because finding out then means either a refused send or
+ * (far worse) a silent downgrade to plaintext.
+ */
+export function mailPgpRecipientsReady(
+  accountId: string,
+  recipients: string[],
+): Promise<string[]> {
+  return invoke<string[]>("mail_pgp_recipients_ready", { accountId, recipients });
+}
+
+/**
+ * A fingerprint in the form people actually compare: groups of four.
+ *
+ * 40 run-together hex characters do not get compared, they get glanced at — and
+ * a glanced-at fingerprint is the whole trust model of OpenPGP quietly failing.
+ */
+export function formatFingerprint(fp: string): string {
+  return (fp.match(/.{1,4}/g) ?? []).join(" ");
+}
+
+/**
+ * The panel's tone. **Only `verified` is positive** — see `MailCryptoState`.
+ *
+ * `known` is neutral rather than good on purpose: a good signature from a key
+ * nobody checked is a statement about bytes, not about a person, and toning it
+ * green would say the opposite.
+ */
+export function mailCryptoTone(info: MailCryptoInfo): "good" | "warn" | "bad" | "neutral" {
+  const byState: Record<MailCryptoState, "good" | "warn" | "bad" | "neutral"> = {
+    verified: "good",
+    known: "neutral",
+    unaligned: "warn",
+    invalid: "bad",
+    nokey: "neutral",
+    unusable: "warn",
+    unsupported: "neutral",
+    none: "neutral",
+  };
+  const tone = byState[info.state] ?? "neutral";
+  // An encrypted message we could not open is a warning whatever its signature
+  // says — the reader is looking at a message they cannot read.
+  if (info.encrypted && !info.decrypted) return tone === "bad" ? "bad" : "warn";
+  return tone;
+}
+
+/**
+ * The i18n key for a backend note token.
+ *
+ * The backend speaks in machine tokens so the wording can live in `i18n` ×5 —
+ * the same split the browser's `reasonPhrase` uses. An unrecognized token
+ * renders as **nothing** rather than as the raw token: a note is context, and a
+ * user shown `signer-key-unverified` learns less than one shown nothing.
+ */
+export function mailCryptoNoteKey(note: string): TranslationKey | null {
+  const known: Record<string, TranslationKey> = {
+    "headers-not-signed": "mail.crypto.noteHeaders",
+    "signer-key-unverified": "mail.crypto.noteUnverified",
+    "signer-not-aligned": "mail.crypto.noteUnaligned",
+    "signer-key-missing": "mail.crypto.noteNoKey",
+    "signature-invalid": "mail.crypto.noteInvalid",
+    "format-not-supported": "mail.crypto.noteUnsupported",
+    "inline-signature-not-checked": "mail.crypto.noteInlineUnchecked",
+    "decrypt-failed": "mail.crypto.noteDecryptFailed",
+    "decrypt-no-key": "mail.crypto.noteDecryptNoKey",
+    "decrypt-locked": "mail.crypto.noteDecryptLocked",
+  };
+  return known[note] ?? null;
 }
 
 export function onMailSync(handler: (e: MailSyncEvent) => void): Promise<UnlistenFn> {

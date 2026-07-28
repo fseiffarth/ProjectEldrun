@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { ProjectEntry } from "../../types";
+import type { ProjectEntry, SandboxSpec } from "../../types";
 import { resolveProjectDirectory } from "../../types";
 import { basename } from "../../lib/paths";
 import { cmdToKind, useTabsStore } from "../../stores/tabs";
@@ -24,7 +24,11 @@ import {
 } from "./scaffold";
 import { useRemoteSession, type RemoteStep } from "./useRemoteSession";
 import { RemoteProjectSection } from "./RemoteProjectSection";
-import { stashRemotePassword, stashRemoteViaLogin } from "../../stores/projects";
+import {
+  stashRemotePassword,
+  stashRemoteViaLogin,
+  useProjectsStore,
+} from "../../stores/projects";
 import { Dropdown } from "../common/Dropdown";
 import { runInstallInTab, PROVIDER_CLI_INSTALL } from "../../lib/installCommand";
 import { UntestedTag } from "../common/UntestedTag";
@@ -46,6 +50,22 @@ const GIT_INSTALL_CMD = IS_WINDOWS
  *  the same clone, preceded by creating the user's own copy of the repository
  *  on the host so there is something to push to. */
 export type ImportSource = "folder" | "git" | "fork";
+
+/** The already-registered project a new one would collide with, as the backend's
+ *  `check_project_site` reports it. `kind` is a machine token so the wording can
+ *  live in `i18n.ts` ×5 — the same split `lib/browser.ts` makes for the
+ *  navigation gate's refusal reasons. */
+interface ProjectConflict {
+  id: string;
+  name: string;
+  kind: "directory" | "mirror" | "remote-path";
+}
+
+const CONFLICT_KEY = {
+  directory: "projectDialog.conflictDirectory",
+  mirror: "projectDialog.conflictMirror",
+  "remote-path": "projectDialog.conflictRemotePath",
+} as const;
 
 export function ProjectDialog({
   kind,
@@ -77,6 +97,10 @@ export function ProjectDialog({
   const [gitType, setGitType] = useState("local");
   const [mode, setMode] = useState("keep");
   const [skipScaffold, setSkipScaffold] = useState(false);
+  // Project container (#38) at creation time. `null` = untouched, so the row
+  // tracks the source default until the user states a preference; an explicit
+  // choice then sticks even if the import source changes under it.
+  const [containerChoice, setContainerChoice] = useState<boolean | null>(null);
   const [sourceDir, setSourceDir] = useState("");
   // Import source: an existing local folder, or a clone from GitHub/GitLab.
   const [importSource, setImportSource] = useState<ImportSource>(initialImportSource);
@@ -94,6 +118,8 @@ export function ProjectDialog({
   const [scaffoldError, setScaffoldError] = useState("");
   const [manualValidationConfirmed, setManualValidationConfirmed] = useState(false);
   const [error, setError] = useState("");
+  // The project this one would land on top of, if any (see the pre-check effect).
+  const [conflict, setConflict] = useState<ProjectConflict | null>(null);
   const [busy, setBusy] = useState(false);
   // Whether `git` is on PATH on this machine. `null` while still probing (never
   // block submit or show the install banner on that transient state); checked
@@ -157,6 +183,17 @@ export function ProjectDialog({
   // Same shape as the git-install banner: only claim the CLI is missing once the
   // probe has actually answered.
   const needsForkCliInstall = isForkImport && forkCliAvailable === false && forkCli !== null;
+  // The *site* this project would occupy — the same identity the backend's
+  // `find_project_conflict` compares, so the warning here and the command's
+  // refusal can never disagree about what "already imported" means. A remote
+  // project is its host path; a local one is the folder it ends up in, which for
+  // a copy import is the destination rather than the source it copies from.
+  const checkedRemote = isRemoteProject ? buildRemoteSpec(safeName) : undefined;
+  const checkedDir = isRemoteProject
+    ? ""
+    : kind === "new" || isCloneImport || mode === "copy"
+      ? targetDir
+      : sourceDir;
   // "Push to GitHub/GitLab" was chosen, but no Eldrun connection is set up yet.
   // Here "remote" is the git push target (a hosting service), distinct from the
   // SSH host the files may live on — see the git-hosting hint below.
@@ -167,6 +204,21 @@ export function ProjectDialog({
   // to. (The clone itself only needs the token when the repo is private, which
   // the URL field's own hint covers.)
   const needsGitConnection = wantsRemoteGit && !gitConnected && !isCloneImport;
+  // The container toggle, asked here rather than only in the pill menu, because
+  // this is the one moment it is cheap: flipping it later restarts every tab of
+  // the project (and costs a non-resumable agent its conversation). Same
+  // availability gate as the menu item — a remote project's tabs already run on
+  // its host, and the backend refuses on Windows (host paths mean nothing inside
+  // a Linux container).
+  const containerAvailable = !isRemoteProject && !IS_WINDOWS;
+  // Default ON for code that arrived from somewhere else (a folder import, a
+  // clone, a fork) and OFF for a project scaffolded from scratch: an import is
+  // exactly the case where build scripts and agent-facing docs the user hasn't
+  // read are about to be run, while a new project starts empty — there is
+  // nothing to contain yet, and the image/toolchain cost would be paid for a
+  // folder holding a README.
+  const containerDefault = kind === "import";
+  const runInContainer = containerAvailable && (containerChoice ?? containerDefault);
   // A git repo is created LOCALLY even for a remote (SSH) project — the local
   // mirror scaffolds with `git init` the same way a local project does — so this
   // gates on the chosen git type alone, not on isRemoteProject. A clone import
@@ -266,6 +318,43 @@ export function ProjectDialog({
   useEffect(() => {
     setManualValidationConfirmed(false);
   }, [mode, sourceDir]);
+
+  // Is this folder / host path already a project? Asked as the user picks it,
+  // so the answer arrives before the rest of the form is filled in — and, for a
+  // clone or fork import, before a whole repository is downloaded into a
+  // destination the backend is going to refuse. The backend re-runs the same
+  // check when it writes; this one is advisory (the list can change underneath).
+  //
+  // Keyed on the serialized spec rather than on `buildRemoteSpec`, which is a new
+  // closure every render and would re-fire the probe on every keystroke.
+  const checkedRemoteKey = checkedRemote ? JSON.stringify(checkedRemote) : "";
+  useEffect(() => {
+    if (!checkedDir && !checkedRemoteKey) {
+      setConflict(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      invoke<ProjectConflict | null>("check_project_site", {
+        req: {
+          directory: checkedDir || null,
+          remote: checkedRemoteKey ? JSON.parse(checkedRemoteKey) : null,
+        },
+      })
+        .then((found) => {
+          if (!cancelled) setConflict(found ?? null);
+        })
+        // A backend that doesn't know the command (an older build) must not
+        // block the dialog — the write-side gate is the real one.
+        .catch(() => {
+          if (!cancelled) setConflict(null);
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [checkedDir, checkedRemoteKey]);
 
   const chooseFolder = async () => {
     const picked = await open({ directory: true, multiple: false });
@@ -374,6 +463,14 @@ export function ProjectDialog({
     });
   };
 
+  /** Activate the project this one would have collided with, and close. The
+   *  dialog's whole job was to get the user into a project; when it turns out to
+   *  exist already, opening it is the thing they actually wanted. */
+  const openExisting = async (found: ProjectConflict) => {
+    await useProjectsStore.getState().setActive(found.id);
+    onClose();
+  };
+
   const submit = async () => {
     setError("");
     setBusy(true);
@@ -449,6 +546,33 @@ export function ProjectDialog({
                 mirrorParent: isRemoteProject ? mirrorParent : undefined,
               },
             });
+      // Turn the container on before the project reaches the store, so activation
+      // (which warms the container up) already sees the flag and the pill's menu
+      // renders it ticked. Advisory: a project that failed to become contained is
+      // still a created project, and the toggle is one right-click away.
+      let created = project;
+      if (runInContainer) {
+        try {
+          const spec = await invoke<SandboxSpec>("set_project_sandbox", {
+            projectId: project.id,
+            enabled: true,
+          });
+          created = { ...project, sandbox: spec };
+          // Same preflight the pill's toggle runs: a missing image becomes a
+          // one-click build in a fresh tab rather than an error at the first
+          // spawn (house convention — never a copy-it-yourself message).
+          const pf = await invoke<{ status: string; image: string; build_command: string | null }>(
+            "sandbox_preflight",
+            { projectId: project.id },
+          );
+          if (pf.status === "image_missing" && pf.build_command) {
+            runInstallInTab(`container image ${pf.image}`, pf.build_command, "bash");
+          }
+        } catch {
+          // Docker missing/down surfaces at the first tab spawn; not worth
+          // failing a project creation that otherwise succeeded.
+        }
+      }
       if (isRemoteProject) {
         rememberChosenPath();
         // The new project's pooled connect happens on activation, inside `onProject`
@@ -462,9 +586,9 @@ export function ProjectDialog({
         // credential-less first connect is recorded as key auth on a password host.
         if (remote.sshTerm) stashRemoteViaLogin(project.id);
       }
-      await onProject(project);
-      await openScaffoldAgentTabs(project, scaffoldAgentFills);
-      await openDescriptionAgentTab(project, descriptionAgent);
+      await onProject(created);
+      await openScaffoldAgentTabs(created, scaffoldAgentFills);
+      await openDescriptionAgentTab(created, descriptionAgent);
       onClose();
     } catch (err) {
       setError(String(err));
@@ -474,6 +598,10 @@ export function ProjectDialog({
   };
 
   const canSubmit =
+    // The folder / host path is already a project. Blocked here so a clone never
+    // downloads a repository the backend is going to refuse; the backend's own
+    // check stays the gate, since this one can be answering a stale list.
+    !conflict &&
     // "Push to GitHub/GitLab" requires an Eldrun connection first — block submit
     // until a token is saved (the notice above links to Settings → Git Hosting).
     !needsGitConnection &&
@@ -841,6 +969,25 @@ export function ProjectDialog({
           {t("projectDialog.skipScaffoldLabel")}
         </label>
 
+        {containerAvailable && (
+          <label className="skip-scaffold-row" title={t("pill.containerRunTitle")}>
+            <Toggle
+              size="sm"
+              checked={runInContainer}
+              onChange={(e) => setContainerChoice(e.target.checked)}
+            />
+            {t("projectDialog.runInContainerLabel")}
+            <UntestedTag />
+          </label>
+        )}
+        {containerAvailable && runInContainer && (
+          <div className="project-dialog-path">
+            {kind === "import"
+              ? t("projectDialog.runInContainerImportHint")
+              : t("projectDialog.runInContainerHint")}
+          </div>
+        )}
+
         {/* The scaffold preview reads the source folder off the disk, so it only
             applies to a folder import — a clone's tree doesn't exist yet. Missing
             scaffold files are still written after the clone (unless skipped);
@@ -953,6 +1100,20 @@ export function ProjectDialog({
             ""
           )}
         </div>
+        {/* Already a project. A dead-end error would leave the user to find it
+            themselves, so the notice names it and offers to open it instead. */}
+        {conflict && (
+          <div className="project-dialog-error project-dialog-conflict">
+            <span>{t(CONFLICT_KEY[conflict.kind], { name: conflict.name })}</span>
+            <button
+              type="button"
+              className="remote-change-folder-btn"
+              onClick={() => void openExisting(conflict)}
+            >
+              {t("projectDialog.conflictOpen")}
+            </button>
+          </div>
+        )}
         {error && <div className="project-dialog-error">{error}</div>}
         </>
         )}

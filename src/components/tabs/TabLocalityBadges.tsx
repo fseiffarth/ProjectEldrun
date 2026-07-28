@@ -255,8 +255,9 @@ export function RunHostPicker({
   const pref = useRunHostPrefStore((s) => s.byProject[projectId]);
   const setPref = useRunHostPrefStore((s) => s.set);
   const [menu, setMenu] = useState<LocalityMenuState | null>(null);
-  // Unset ⇒ the shell default (the primary host) — the same default pythonRun
-  // falls back to, so the label never lies about where a run would land.
+  // Unset ⇒ the primary, which is where a HOST-side run lands with no choice made
+  // (`pythonRunPlan`) — and a host-side file is the only case this control is
+  // rendered for, so the label cannot lie about a local run it never governs.
   const current: TabLocation = pref ?? "remote";
   const label = localityHostLabel(current, { primaryHost, computeHosts });
   const onRemote = remoteHostIdOf(current) !== null;

@@ -15,6 +15,7 @@ import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFile
 import { useImportDrop } from "./importDrop";
 import { logoutRemote, useProjectsStore } from "../../stores/projects";
 import { useSyncStore, amberPaths } from "../../stores/sync";
+import { confirmSyncTransfer } from "../../stores/syncConfirm";
 import { openLinkedFile } from "../embed/FileViewerPane";
 import { useWindowsStore } from "../../stores/windows";
 import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
@@ -28,6 +29,13 @@ import { UntestedTag } from "../common/UntestedTag";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { persistentSessionOf } from "../../lib/closeRemoteTab";
 import { useRemoteStatusStore, sshOf } from "../../stores/remoteStatus";
+import {
+  sessionHostsOf,
+  useHostSessions,
+  useHostSessionsStore,
+  useShowAllSessions,
+  type SessionRow,
+} from "../../stores/hostSessions";
 import {
   slurmAvailable,
   slurmQueue,
@@ -60,26 +68,6 @@ import { useT, type TranslationKey } from "../../lib/i18n";
  *  long enough that a mouse merely passing over the list never triggers it. */
 const TOOLTIP_DWELL_MS = 400;
 
-/** One host tmux session (TODO #85), mirroring the backend `TmuxSession`. */
-interface TmuxSession {
-  name: string;
-  windows: number;
-  /** Creation time, seconds since the Unix epoch (host clock). */
-  created: number;
-  attached: boolean;
-  /** Last activity time, seconds since the Unix epoch (host clock). */
-  activity: number;
-  /** The active pane's current foreground command (e.g. `python`, or a shell
-   *  name when idling at the prompt). */
-  currentCommand: string;
-  /** False when the active pane is sitting at a bare shell prompt. */
-  working: boolean;
-  /** The active pane's working directory on the host (empty when the host's
-   *  `tmux ls` did not report it). What attributes a session whose *name* has no
-   *  project id — every pre-scoping and hand-started one — to a project. */
-  currentPath: string;
-}
-
 /** The row's own name button shows a short, stable label rather than the raw
  *  `eldrun-<uuid>` — meaningless to read at a glance and mostly there to keep
  *  the name unique. The full id lives in the session-stats popup instead
@@ -111,14 +99,6 @@ function relativeDuration(epochSecs: number): string {
   if (hrs < 24) return `${hrs}h ${mins % 60}m`;
   const days = Math.floor(hrs / 24);
   return `${days}d ${hrs % 24}h`;
-}
-
-/** A session row in the (multi-host) Sessions view: the session plus which host
- *  it runs on (the primary or a worker). */
-interface SessionRow {
-  hostId: string;
-  hostLabel: string;
-  session: TmuxSession;
 }
 
 /** Anchor for the per-row session-stats hover card (TODO #85) — the same
@@ -437,58 +417,25 @@ export function ProjectFilesView({
   // feature. **Multi-host**: aggregated across the primary AND every connected
   // worker, each row tagged with its host; polled while this view is active (rides
   // each host's pooled ControlMaster). An absent tmux / no server yields nothing.
-  const sessionHosts = useMemo(() => {
-    if (!project?.remote) return [] as { id: string; label: string }[];
-    const list = [{ id: "primary", label: project.remote.host }];
-    for (const w of project.compute_hosts ?? [])
-      list.push({ id: w.id, label: w.label || w.host || w.id });
-    return list;
-  }, [project?.remote, project?.compute_hosts]);
-  // A connectivity signature so the poll re-runs the moment a host connects.
-  const connSig = useRemoteStatusStore((s) =>
-    sessionHosts.map((h) => `${h.id}:${sshOf(s, projectId ?? "", h.id)}`).join("|"),
-  );
-  const [sessionRows, setSessionRows] = useState<SessionRow[]>([]);
+  //
+  // The list, its poll and its toggle all live in `stores/hostSessions`, NOT
+  // here: this component is rendered by the right panel, by every Files (Project)
+  // tab and by every subwindow's docked column at once, and a per-instance poll
+  // meant one `tmux ls` per host per surface every 7s — and, worse, that a
+  // session killed in one surface sat on in the others until their own interval
+  // came round. The store keeps one reading per project, refcounted by the
+  // surfaces showing it (`active` decides whether this one subscribes at all), so
+  // every viewer reads the same rows and a kill/rename lands in all of them.
+  const sessionHosts = useMemo(() => sessionHostsOf(project), [project]);
+  const sessionRows = useHostSessions(projectId, active && !!project?.remote);
   // The Sessions list is scoped to THIS project by default (the backend filters
   // by session name, falling back to the session's working directory for the
   // pre-scoping and hand-started ones a name cannot attribute). This is the
   // escape hatch: a host's full listing, so a session running outside any
   // project tree — an orphaned run whose tab is long gone — is still reachable
-  // to attach to or kill.
-  const [showAllSessions, setShowAllSessions] = useState(false);
-  useEffect(() => {
-    if (!active || !projectId || !project?.remote) {
-      setSessionRows([]);
-      return;
-    }
-    let cancelled = false;
-    const poll = async () => {
-      const st = useRemoteStatusStore.getState();
-      const connected = sessionHosts.filter((h) => sshOf(st, projectId, h.id) === "connected");
-      if (connected.length === 0) {
-        if (!cancelled) setSessionRows([]);
-        return;
-      }
-      const lists = await Promise.all(
-        connected.map((h) =>
-          invoke<TmuxSession[]>("remote_tmux_list", {
-            projectId,
-            hostId: h.id,
-            includeAll: showAllSessions,
-          })
-            .then((ss) => ss.map((session) => ({ hostId: h.id, hostLabel: h.label, session })))
-            .catch(() => [] as SessionRow[]),
-        ),
-      );
-      if (!cancelled) setSessionRows(lists.flat());
-    };
-    void poll();
-    const iv = setInterval(() => void poll(), 7000);
-    return () => {
-      cancelled = true;
-      clearInterval(iv);
-    };
-  }, [active, projectId, project?.remote, connSig, sessionHosts, showAllSessions]);
+  // to attach to or kill. Shared like the list itself: it changes what the
+  // backend returns, so two viewers of one project must not hold two answers.
+  const [showAllSessions, setShowAllSessions] = useShowAllSessions(projectId);
 
   // Per-row session-stats hover card (TODO #85): the exact dwell-tooltip
   // mechanism `FileTree` uses for a file/folder row — open on a genuine pause,
@@ -610,7 +557,9 @@ export function ProjectFilesView({
     const ownerKey = sessionOwners.get(`${hostId} ${name}`);
     invoke("remote_tmux_kill", { projectId, hostId, session: name })
       .then(() => {
-        setSessionRows((rs) => rs.filter((r) => !(r.hostId === hostId && r.session.name === name)));
+        // Into the SHARED list, so the panel, the tab and every docked column
+        // drop the row together rather than each waiting out its own poll.
+        useHostSessionsStore.getState().dropRow(projectId, hostId, name);
         if (ownerKey) useTabsStore.getState().removeTab(ownerKey);
       })
       .catch(() => {});
@@ -633,13 +582,7 @@ export function ProjectFilesView({
       .then(() => {
         const ownerKey = sessionOwners.get(`${hostId} ${oldName}`);
         if (ownerKey) useTabsStore.getState().setTabTmuxName(scope, ownerKey, next);
-        setSessionRows((rs) =>
-          rs.map((r) =>
-            r.hostId === hostId && r.session.name === oldName
-              ? { ...r, session: { ...r.session, name: next } }
-              : r,
-          ),
-        );
+        useHostSessionsStore.getState().renameRow(projectId, hostId, oldName, next);
       })
       .catch((e) => window.alert(t("projectFilesView.renameSessionFailed", { error: String(e) })));
   };
@@ -1130,12 +1073,13 @@ export function ProjectFilesView({
               pin/name (header padding edge) instead of trailing the tags. */}
           <span style={{ flexBasis: "100%", width: 0, height: 0 }} />
           <FileSourceSwitch source={source} onChange={setSource} />
-          {/* Run-host picker — which machine scripts/shells launched from this
-              project run on (primary or a worker), distinct from the source
-              switch's read side. Shown whenever the switch is on Remote (no machine
-              axis on Local), including a multi-machine project with a synced-code
-              worker: a Python Run opens a fresh tab, so this project-wide picker is
-              the only control that can send that run to a worker. */}
+          {/* Run-host picker — which REMOTE machine (primary or a worker) scripts
+              and shells launched from this project run on, distinct from the source
+              switch's read side. Deliberately absent on Local: there is only one
+              local machine, so the control would have nothing to choose, and
+              showing a machine name there would state the opposite of what happens
+              (a Local-side ▶ runs in a local shell and the preference cannot
+              overrule it — see `lib/pythonRun`'s `pythonRunPlan`). */}
           {source === "remote" && (
             <RunHostPicker
               projectId={projectId}
@@ -1306,6 +1250,10 @@ export function ProjectFilesView({
       {compact && !activeBox && project?.remote && projectId && (
         <div className="right-panel-source right-panel-source--compact">
           <FileSourceSwitch source={source} onChange={setSource} />
+          {/* Remote side only, same reason as the full header's copy above — and
+              this is the compact (docked subwindow) viewer, where the switch and
+              the picker sit on one narrow row and a stale machine name beside a
+              Local tag is at its most misleading. */}
           {source === "remote" && (
             <RunHostPicker
               projectId={projectId}
@@ -1561,9 +1509,11 @@ export function ProjectFilesView({
           ) : (
             <>
               {/* Bulk "…for all" resolution: take one side for every diverged
-                  file at once. Both are destructive to the losing side, so each
-                  confirms first (with the file count). Header + icon buttons
-                  (not a text button per row) so the bar stays compact. */}
+                  file at once. Both are destructive to the losing side — and by
+                  definition every file here has content on BOTH sides — so each
+                  goes through the shared transfer confirmation, which names the
+                  losing files rather than only counting them. Header + icon
+                  buttons (not a text button per row) so the bar stays compact. */}
               <div className="orange-bulk-bar">
                 <span className="orange-bulk-count">
                   {t("projectFilesView.divergedCount", { count: orangeFiles.length })}
@@ -1577,15 +1527,21 @@ export function ProjectFilesView({
                     disabled={remoteBlocked}
                     onClick={() => {
                       if (!projectId) return;
-                      if (
-                        !window.confirm(
-                          t("projectFilesView.confirmTakeRemoteAll", { count: orangeFiles.length }),
-                        )
-                      )
-                        return;
-                      void useSyncStore
-                        .getState()
-                        .resolveAll(projectId, orangeFiles, "host");
+                      void (async () => {
+                        const ok = await confirmSyncTransfer({
+                          projectId,
+                          direction: "pull",
+                          relPath: "",
+                          isDir: true,
+                          label: project?.name ?? projectId,
+                          relPaths: orangeFiles,
+                          force: true,
+                        });
+                        if (!ok) return;
+                        await useSyncStore
+                          .getState()
+                          .resolveAll(projectId, orangeFiles, "host");
+                      })();
                     }}
                   >
                     ⬇
@@ -1598,15 +1554,21 @@ export function ProjectFilesView({
                     disabled={remoteBlocked}
                     onClick={() => {
                       if (!projectId) return;
-                      if (
-                        !window.confirm(
-                          t("projectFilesView.confirmKeepLocalAll", { count: orangeFiles.length }),
-                        )
-                      )
-                        return;
-                      void useSyncStore
-                        .getState()
-                        .resolveAll(projectId, orangeFiles, "local");
+                      void (async () => {
+                        const ok = await confirmSyncTransfer({
+                          projectId,
+                          direction: "push",
+                          relPath: "",
+                          isDir: true,
+                          label: project?.name ?? projectId,
+                          relPaths: orangeFiles,
+                          force: true,
+                        });
+                        if (!ok) return;
+                        await useSyncStore
+                          .getState()
+                          .resolveAll(projectId, orangeFiles, "local");
+                      })();
                     }}
                   >
                     ⬆
@@ -1661,7 +1623,23 @@ export function ProjectFilesView({
                     aria-label={t("projectFilesView.takeRemoteAria")}
                     title={t(noHostFile ? "projectFilesView.noRemoteCopyTitle" : "projectFilesView.takeRemoteTitle")}
                     disabled={remoteBlocked || noHostFile}
-                    onClick={() => projectId && void useSyncStore.getState().pull(projectId, rel)}
+                    // Per-row take-a-side: the other side's copy of this file is
+                    // gone the moment it runs, and this row exists precisely
+                    // because both sides hold something. Ask, naming the file.
+                    onClick={() => {
+                      if (!projectId) return;
+                      void (async () => {
+                        const ok = await confirmSyncTransfer({
+                          projectId,
+                          direction: "pull",
+                          relPath: rel,
+                          isDir: false,
+                          label: basename(rel) || rel,
+                          force: true,
+                        });
+                        if (ok) await useSyncStore.getState().pull(projectId, rel);
+                      })();
+                    }}
                   >
                     ⬇
                   </button>
@@ -1671,7 +1649,20 @@ export function ProjectFilesView({
                     aria-label={t("projectFilesView.keepLocalAria")}
                     title={t(noLocalFile ? "projectFilesView.noLocalCopyTitle" : "projectFilesView.keepLocalTitle")}
                     disabled={remoteBlocked || noLocalFile}
-                    onClick={() => projectId && void useSyncStore.getState().push(projectId, rel, true)}
+                    onClick={() => {
+                      if (!projectId) return;
+                      void (async () => {
+                        const ok = await confirmSyncTransfer({
+                          projectId,
+                          direction: "push",
+                          relPath: rel,
+                          isDir: false,
+                          label: basename(rel) || rel,
+                          force: true,
+                        });
+                        if (ok) await useSyncStore.getState().push(projectId, rel, true);
+                      })();
+                    }}
                   >
                     ⬆
                   </button>

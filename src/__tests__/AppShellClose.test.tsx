@@ -65,11 +65,15 @@ vi.mock("../stores/settings", () => {
   // `loaded` stays false on purpose: the other launch-time hosts (the stats
   // recap) gate on it, and flipping it would run them against this same
   // deliberately-minimal mock.
+  // `subscribe` is here for the experimental-tab sweep, which re-runs whenever
+  // settings change (a flag can go off without the Settings panel being open).
+  // With `settings: null` it withdraws nothing, so the no-op unsubscribe is all
+  // this test needs from it.
   const state = { load: vi.fn(), settings: null, loaded: false };
   return {
     useSettingsStore: Object.assign(
       vi.fn((sel: (s: object) => unknown) => sel(state)),
-      { getState: () => state },
+      { getState: () => state, subscribe: () => () => {} },
     ),
     whenSettingsLoaded: () => Promise.resolve(),
   };

@@ -52,7 +52,7 @@ import {
 } from "./outline";
 import { PageStrip } from "../../common/PageStrip";
 import { UntestedTag } from "../../common/UntestedTag";
-import type { PageTransfer } from "../../../stores/pdfDrag";
+import { subscribePageDragActive, type PageTransfer } from "../../../stores/pdfDrag";
 import { ContextFilePicker } from "../ContextFilePicker";
 import { useProjectsStore } from "../../../stores/projects";
 import { resolveProjectDirectory } from "../../../types";
@@ -759,6 +759,14 @@ function PdfCanvas({
   const [editError, setEditError] = useState<string | null>(null);
   /** The page rail (the thumbnail strip you arrange pages in) is showing. */
   const [railOpen, setRailOpen] = useState(false);
+  // The rail is the ONLY drop target for a page drag, so a viewer holding it closed
+  // cannot receive pages at all. These two drive the spring-loaded rail below: the
+  // live open state (read from a subscription callback, which closes over nothing),
+  // and whether it was WE who opened it — only a rail this feature opened may be
+  // closed again behind the reader's back.
+  const railOpenRef = useRef(false);
+  railOpenRef.current = railOpen;
+  const railAutoOpenedRef = useRef(false);
   /** The contents sidebar (the PDF's chapters/outline) is showing. */
   const [outlineOpen, setOutlineOpen] = useState(false);
   /** The document's resolved outline: null = not loaded yet, [] = none. */
@@ -1036,6 +1044,11 @@ function PdfCanvas({
   /** Take pages dragged out of another viewer and splice them in at `index`. */
   const importPages = useCallback(
     (transfer: PageTransfer, index: number) => {
+      // Pages landed here, so the rail is now showing something the reader asked for
+      // — it stays open when the drag ends, however it came to be open. Set
+      // SYNCHRONOUSLY, before the await below: the close is only deferred by a
+      // macrotask, and the fetch takes far longer than that.
+      railAutoOpenedRef.current = false;
       void (async () => {
         try {
           const bytes = await invoke<number[]>("pdf_clip_get", { token: transfer.token });
@@ -1056,6 +1069,40 @@ function PdfCanvas({
       applyEdit(deletePages(pagesRef.current, ids));
     },
     [applyEdit],
+  );
+
+  // ── The spring-loaded rail ───────────────────────────────────────────────
+  // Dragging pages needs a rail at BOTH ends, and the rail starts closed — so the
+  // feature used to require arming every document by hand before it could be a
+  // destination, which is a setup step nobody discovers. Instead: while a page drag
+  // is in flight, every open PDF shows its rail, and puts it away again afterwards
+  // unless pages actually landed in it.
+  //
+  // This lives on the VIEWER, not on the strip, and that is the whole point — the
+  // strip only exists while the rail is open, so a strip-level subscription could
+  // never hear the drag that ought to open it.
+  useEffect(
+    () =>
+      subscribePageDragActive((active) => {
+        if (active) {
+          if (railOpenRef.current) return; // already the reader's own choice
+          railAutoOpenedRef.current = true;
+          setRailOpen(true);
+          return;
+        }
+        if (!railAutoOpenedRef.current) return; // the reader opened it — leave it
+        // Deferred by a macrotask because a drop in ANOTHER window is delivered to
+        // two listeners on one event — this one and the strip's — in registration
+        // order, not in the order the work depends on. Closing here could therefore
+        // unmount the very strip that is about to claim the pages. `onImport` clears
+        // the flag synchronously, so by the time this runs a claimed rail stays open.
+        setTimeout(() => {
+          if (!railAutoOpenedRef.current) return;
+          railAutoOpenedRef.current = false;
+          setRailOpen(false);
+        }, 0);
+      }),
+    [],
   );
   // Per-SHEET text runs, extracted lazily the first time the find bar is used and
   // cached until the arrangement changes. Indexed by position in the arrangement —

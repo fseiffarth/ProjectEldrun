@@ -52,6 +52,8 @@ interface Props {
   // Attach this tab to an existing named tmux session instead of spawning one
   // (TODO #85 Sessions view). Takes precedence over `tmuxSession`. No-op locally.
   tmuxAttach?: string | null;
+  /** Host-bound marker id (#150) — see `lib/hostBound.ts`. */
+  hostBoundUid?: string | null;
   // Whether this pane is laid out on screen (single-mode active tab, or any
   // pane in grid mode). Drives display + xterm fit.
   visible: boolean;
@@ -192,7 +194,7 @@ function readAgentFontSize(): number {
   return DEFAULT_FONT_SIZE;
 }
 
-export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, remoteHostId = null, tmuxSession = null, tmuxAttach = null, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false }: Props) {
+export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, remoteHostId = null, tmuxSession = null, tmuxAttach = null, hostBoundUid = null, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false }: Props) {
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -577,7 +579,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       notePtySpawn(id);
       try {
         await invoke("pty_spawn", {
-          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, project_id: projectId ?? null, remote_host_id: remoteHostId ?? null, tmux_session: tmuxSession ?? null, tmux_attach: tmuxAttach ?? null },
+          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, project_id: projectId ?? null, remote_host_id: remoteHostId ?? null, tmux_session: tmuxSession ?? null, tmux_attach: tmuxAttach ?? null, host_bound_uid: hostBoundUid ?? null },
         });
       } catch (e) {
         if (!cancelled) {
@@ -711,7 +713,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       fitRef.current = null;
       openedRef.current = false;
     };
-  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, remoteHostId, tmuxSession, tmuxAttach, attachOnly, zoomable, persistOnUnmount]);
+  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, remoteHostId, tmuxSession, tmuxAttach, hostBoundUid, attachOnly, zoomable, persistOnUnmount]);
 
   // Re-theme a LIVE, OPEN terminal. Both halves of that guard are load-bearing,
   // and `termRef.current` alone was neither: assigning `options.theme` makes

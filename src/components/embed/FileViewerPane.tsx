@@ -65,8 +65,16 @@ import {
   resolvePythonDefinition,
   snapBreakpointLine,
 } from "../../lib/viewers/python";
-import { debugPythonFile, runCwd, runPythonFile, placeForFocused } from "../../lib/pythonRun";
+import {
+  debugPythonFile,
+  runCwd,
+  runPythonFile,
+  pythonRunPlan,
+  fileSideLocation,
+  placeForFocused,
+} from "../../lib/pythonRun";
 import { RunHostPicker } from "../tabs/TabLocalityBadges";
+import { useRunHostPrefStore } from "../../stores/runHostPref";
 import {
   isSlurmScript,
   parseSbatchDirectives,
@@ -5066,6 +5074,27 @@ function TextView({
   // and its Run button must not fire a terminal into a different project's layout.
   const scope = projectId ?? "root";
   const cwd = runCwd(projectDir, path);
+  // The local root this project's files mirror to (null for a local project) —
+  // the same helper the Local/Remote switch and auto-sync path-building use, so
+  // all three agree on which root a local-side path hangs off. A viewer has no
+  // Remote/Local switch of its own, so this plus the host root is how
+  // `pythonRunPlan` tells which side the open file lives on.
+  const mirrorRoot = useMemo(() => localMirrorRootFor(project), [project]);
+  // Built at click time, not memoized: the run-host preference is read imperatively
+  // (the picker beside this button writes it) and must be the value at the click.
+  const runPlan = useCallback(
+    () =>
+      pythonRunPlan({
+        projectDir,
+        remotePath: project?.remote?.remote_path,
+        localRoot: mirrorRoot,
+        file: path,
+        runHostPref: projectId
+          ? useRunHostPrefStore.getState().byProject[projectId]
+          : undefined,
+      }),
+    [projectDir, project, mirrorRoot, path, projectId],
+  );
 
   const launch = useCallback(
     async (go: () => Promise<void>) => {
@@ -5086,21 +5115,21 @@ function TextView({
       void launch(() =>
         runPythonFile({
           file: path,
-          projectDir: cwd,
+          plan: runPlan(),
           scope,
           projectId,
           args: pyArgs,
           place: placeForFocused(fileDrop),
         }),
       ),
-    [launch, path, cwd, scope, projectId, pyArgs, fileDrop],
+    [launch, path, runPlan, scope, projectId, pyArgs, fileDrop],
   );
   const onDebug = useCallback(
     () =>
       void launch(() =>
         debugPythonFile({
           file: path,
-          projectDir: cwd,
+          plan: runPlan(),
           scope,
           projectId,
           breakpoints: bp.lines,
@@ -5108,7 +5137,7 @@ function TextView({
           place: placeForFocused(fileDrop),
         }),
       ),
-    [launch, path, cwd, scope, projectId, bp.lines, pyArgs, fileDrop],
+    [launch, path, runPlan, scope, projectId, bp.lines, pyArgs, fileDrop],
   );
 
   // ── SLURM (HPC): submit / interactive on a batch script ───────────────────
@@ -5310,7 +5339,11 @@ function TextView({
             the run would fall back to the primary). Only for a remote project with
             extra worker machines; a lone-primary project has no machine to pick. */}
         {showEditor && pyRun && isRemoteProject && projectId &&
-          (project?.compute_hosts?.length ?? 0) > 0 && (
+          (project?.compute_hosts?.length ?? 0) > 0 &&
+          // Not for a file open from the LOCAL mirror: that one runs in a local
+          // shell and the preference cannot overrule it (`pythonRunPlan`), so a
+          // machine name here would state the opposite of what ▶ does.
+          fileSideLocation(path, project?.remote?.remote_path) === "remote" && (
             <RunHostPicker
               projectId={projectId}
               primaryHost={project?.remote?.label || project?.remote?.host}

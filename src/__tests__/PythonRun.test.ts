@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   buildDebugCommand,
   buildRunCommand,
+  fileSideLocation,
   pyTabLabel,
+  pythonRunPlan,
   runCwd,
   shellQuote,
   systemInterpreter,
@@ -108,5 +110,115 @@ describe("runCwd", () => {
   it("falls back to the file's own directory outside a project", () => {
     expect(runCwd(null, "/tmp/scratch/main.py")).toBe("/tmp/scratch");
     expect(runCwd("", "/tmp/scratch/main.py")).toBe("/tmp/scratch");
+  });
+});
+
+describe("fileSideLocation", () => {
+  const HOST = "/scratch/me/proj";
+
+  it("has no answer for a local project — there is no machine axis", () => {
+    expect(fileSideLocation("/proj/main.py", null)).toBeUndefined();
+    expect(fileSideLocation("/proj/main.py", "  ")).toBeUndefined();
+  });
+
+  it("reads a path under the host root as the host's", () => {
+    expect(fileSideLocation(`${HOST}/pkg/main.py`, HOST)).toBe("remote");
+  });
+
+  it("reads everything else as local — the safe direction", () => {
+    // Only a path we can PROVE is the host's may be sent to a shell on the host:
+    // otherwise it either fails there or names a different file that happens to
+    // exist at the same path.
+    expect(fileSideLocation("/state/eldrun/p/mirror/main.py", HOST)).toBe("local");
+    expect(fileSideLocation("/tmp/elsewhere/main.py", HOST)).toBe("local");
+    // A sibling directory sharing the root's prefix is NOT inside it.
+    expect(fileSideLocation("/scratch/me/proj2/main.py", HOST)).toBe("local");
+  });
+});
+
+describe("pythonRunPlan", () => {
+  const HOST = "/scratch/me/proj";
+  const DIR = "/state/eldrun/p";
+  const MIRROR = "/state/eldrun/p/mirror";
+  const remote = { projectDir: DIR, remotePath: HOST, localRoot: MIRROR };
+
+  it("leaves a local project's runs alone (no machine axis)", () => {
+    const plan = pythonRunPlan({ projectDir: "/proj", file: "/proj/pkg/main.py" });
+    expect(plan.location).toBeUndefined();
+    expect(plan.cwd).toBe("/proj");
+    expect(plan.runPath).toBe("/proj/pkg/main.py");
+    expect(plan.probeDir).toBe("/proj");
+  });
+
+  it("runs a mirror file LOCALLY when no machine was chosen", () => {
+    // The reported bug: browsing the Local side of a remote project and clicking ▶
+    // opened a tab with no explicit locality, and a shell tab defaults to the host.
+    const plan = pythonRunPlan({ ...remote, file: `${MIRROR}/pkg/main.py` });
+    expect(plan.location).toBe("local");
+    expect(plan.cwd).toBe(MIRROR);
+    expect(plan.runPath).toBe(`${MIRROR}/pkg/main.py`);
+    // Probed locally too: a host venv is not on the mirror. The backend's
+    // remoteness oracle is the directory, and the mirror matches no project entry.
+    expect(plan.probeDir).toBe(MIRROR);
+  });
+
+  it("runs a mirror file locally even when a remote machine IS chosen", () => {
+    // The dominance rule, and the whole second half of the bug: the preference is
+    // persisted per project, so it is normally set from some earlier session on the
+    // host side. It must not reach back and redirect a Run of a LOCAL file.
+    for (const pref of ["remote", "host:w1"] as const) {
+      const plan = pythonRunPlan({ ...remote, file: `${MIRROR}/pkg/main.py`, runHostPref: pref });
+      expect(plan.location).toBe("local");
+      expect(plan.cwd).toBe(MIRROR);
+      expect(plan.runPath).toBe(`${MIRROR}/pkg/main.py`);
+      expect(plan.probeDir).toBe(MIRROR);
+    }
+  });
+
+  it("runs a host file on the host when no machine was chosen", () => {
+    const plan = pythonRunPlan({ ...remote, file: `${HOST}/pkg/main.py` });
+    expect(plan.location).toBe("remote");
+    expect(plan.cwd).toBe(HOST);
+    expect(plan.runPath).toBe(`${HOST}/pkg/main.py`);
+    expect(plan.probeDir).toBe(DIR);
+  });
+
+  it("sends a HOST file to the chosen worker (the preference's one job)", () => {
+    const plan = pythonRunPlan({
+      ...remote,
+      file: `${HOST}/pkg/main.py`,
+      runHostPref: "host:w1",
+    });
+    expect(plan.location).toBe("host:w1");
+    expect(plan.cwd).toBe(HOST);
+    // Same side (host→host), so the browsed absolute path is valid there.
+    expect(plan.runPath).toBe(`${HOST}/pkg/main.py`);
+  });
+
+  it("still honours an explicit ⌂ Local for a host file — the one crossing left", () => {
+    const plan = pythonRunPlan({
+      ...remote,
+      file: `${HOST}/pkg/main.py`,
+      runHostPref: "local",
+    });
+    expect(plan.location).toBe("local");
+    expect(plan.cwd).toBe(MIRROR);
+    expect(plan.runPath).toBe("pkg/main.py");
+    expect(plan.probeDir).toBe(MIRROR);
+  });
+
+  it("passes a path under neither root through untouched, and runs it locally", () => {
+    // Not provably the host's ⇒ local (the safe direction), and there is nothing
+    // sensible to relativize against — let the shell report the truth rather than
+    // invent a path.
+    const plan = pythonRunPlan({ ...remote, file: "/tmp/x/main.py", runHostPref: "remote" });
+    expect(plan.location).toBe("local");
+    expect(plan.runPath).toBe("/tmp/x/main.py");
+  });
+
+  it("falls back to the project dir when a remote project has no mirror root", () => {
+    const plan = pythonRunPlan({ projectDir: DIR, remotePath: HOST, file: `${DIR}/main.py` });
+    expect(plan.location).toBe("local");
+    expect(plan.cwd).toBe(DIR);
   });
 });

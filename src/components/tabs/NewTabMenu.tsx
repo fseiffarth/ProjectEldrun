@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   BROWSER_TAB_CMD,
   CALENDAR_TAB_CMD,
-  MAIL_TAB_CMD,
+  PRINTING_TAB_CMD,
   DISKUSAGE_TAB_CMD,
   NETWORK_TAB_CMD,
   type TabEntry,
@@ -23,6 +23,7 @@ import {
 import { AddTabMenuList } from "./AddTabMenuList";
 import { useExperimental } from "../../lib/experimental";
 import { useT } from "../../lib/i18n";
+import { registerHostBoundTab } from "../../lib/hostBound";
 
 interface Props {
   /** Scope (project id or "root") the new tab belongs to. Gates the project-only
@@ -61,7 +62,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   // Experimental — off for users, on in debug. This menu is the DETACHED
   // window's, and it is a separate React root: an entry added only to `TabBar`
   // exists in the main window and is silently missing from every popout.
-  const mailClient = useExperimental("mail_client");
   const webBrowser = useExperimental("web_browser");
   const browserHome = useSettingsStore((s) => s.settings?.browser_home_url);
 
@@ -172,10 +172,13 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
         cmd: "vibe",
         args: [],
         // ELDRUN_LOCAL_MODEL: which model this tab drives, for the usage recap's
-        // per-model breakdown (VIBE_ACTIVE_MODEL is the resolved alias).
+        // per-model breakdown (VIBE_ACTIVE_MODEL is the resolved alias). A label,
+        // never an authority — the right to run outside the project's container
+        // is `hostBoundUid`, a marker the backend records in the state dir (#150).
         env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias, ELDRUN_LOCAL_MODEL: model },
         cwd: projectCwd,
         kind: "local_agent",
+        hostBoundUid: await registerHostBoundTab(scope),
       });
     } catch {
       /* ollama down / prep failed — don't create a broken tab */
@@ -197,9 +200,11 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
         cmd,
         args,
         // cmd/args are the resolved launcher and name no model — record it here.
+        // Label only; the container exemption is `hostBoundUid` (#150).
         env: { ELDRUN_LOCAL_MODEL: model },
         cwd: projectCwd,
         kind: "local_agent",
+        hostBoundUid: await registerHostBoundTab(scope),
       });
     } catch {
       /* ollama launch unavailable / prep failed */
@@ -323,25 +328,23 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                 }),
             }],
           },
-          ...(mailClient
-            ? [{
-                label: t("newTabMenu.mail"),
-                entries: [{
-                  key: "mail",
-                  label: t("newTabMenu.mail"),
-                  dot: "✉",
-                  color: TAB_ACCENT.mail,
-                  untested: true,
-                  onPick: () =>
-                    pickFixed({
-                      label: t("newTabMenu.mail"),
-                      cmd: MAIL_TAB_CMD,
-                      cwd: projectCwd,
-                      kind: "mail",
-                    }),
-                }],
-              }]
-            : []),
+          {
+            label: t("printing.title"),
+            entries: [{
+              key: "printing",
+              label: t("printing.title"),
+              dot: "⎙",
+              color: TAB_ACCENT.printing,
+              untested: true,
+              onPick: () =>
+                pickFixed({
+                  label: t("printing.title"),
+                  cmd: PRINTING_TAB_CMD,
+                  cwd: projectCwd,
+                  kind: "printing",
+                }),
+            }],
+          },
           ...(webBrowser
             ? [{
                 label: t("newTabMenu.browser"),

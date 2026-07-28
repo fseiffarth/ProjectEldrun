@@ -8,10 +8,14 @@ import { trackWindowMove } from "../../stores/windowMove";
 import { AppTimerDisplay } from "../header/AppTimerDisplay";
 import { AppResourceDisplay } from "../header/AppResourceDisplay";
 import { Clock } from "../header/Clock";
-import { useEnergySaver, saverInterval } from "../../stores/power";
+import { useEnergySaver, saverInterval, usePowerStore } from "../../stores/power";
 import { ConnTypeIcon } from "../header/ConnTypeIcon";
+import { BatteryIndicator } from "../header/BatteryIndicator";
 import { VpnIndicator } from "../header/VpnIndicator";
 import { MachinesIndicator } from "../header/MachinesIndicator";
+import { MailIndicator } from "../header/MailIndicator";
+import { CalendarIndicator } from "../header/CalendarIndicator";
+import { TodoIndicator } from "../header/TodoIndicator";
 import { WindowControls } from "../header/WindowControls";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { GlobalAppMenu } from "./GlobalAppMenu";
@@ -67,6 +71,9 @@ export function HeaderBar() {
   const activeId = useProjectsStore((s) => s.activeId);
   const setActive = useProjectsStore((s) => s.setActive);
   const energySaver = useEnergySaver();
+  const batterySupported = usePowerStore((s) => s.supported);
+  const batteryPercentage = usePowerStore((s) => s.percentage);
+  const onBattery = usePowerStore((s) => s.onBattery);
 
   useEffect(() => {
     invoke<WorkspaceInfo>("workspace_info").catch(() => {});
@@ -132,10 +139,20 @@ export function HeaderBar() {
         {(connKind || !online) && (
           <ConnTypeIcon type={connKind ?? "wlan"} online={online} />
         )}
+        {batterySupported && (
+          <BatteryIndicator percentage={batteryPercentage} plugged={!onBattery} />
+        )}
       </div>
 
       <div className="header-center no-drag">
         <LocalModelMenu />
+        {/* Directly right of the brain button: these are global apps you reach
+            from anywhere, not per-project status readouts like the right
+            cluster. Each renders nothing until its own "in the header" setting
+            is on — see MailIndicator / CalendarIndicator. */}
+        <MailIndicator />
+        <CalendarIndicator />
+        <TodoIndicator />
         <GlobalAppMenu />
         <ProjectSwitcher open />
       </div>

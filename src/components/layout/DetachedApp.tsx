@@ -33,12 +33,15 @@ import {
   setDetachedViewerState,
   type LayoutNode,
   type TabEntry,
+  type TabKind,
 } from "../../stores/tabs";
+import { withdrawnTabKinds } from "../../lib/experimental";
 import { useTabLandStore } from "../../stores/tabLand";
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenEditorJump } from "../../stores/editorJump";
 import { DetachedCenterPanel } from "./DetachedCenterPanel";
 import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
+import { SyncConfirmDialog } from "../common/SyncConfirmDialog";
 
 interface Props {
   param: DetachedParam;
@@ -369,6 +372,31 @@ export function DetachedApp({ param }: Props) {
     pushEdit({ kind: "close", key });
   };
 
+  // Withdraw the tabs of an experiment that was switched off — the popout's half
+  // of `lib/experimentalSweep`. This window runs its own store and its own
+  // settings copy, so the main window's sweep deliberately skips every tab that
+  // lives in a popout (`closeTabsOfKinds`) and each popout closes its own,
+  // streaming the ordinary `close` edit back so the main window drops the payload.
+  // Closing the LAST one closes the window, for the reason handleClose gives —
+  // done in one step here rather than by looping through handleClose, whose
+  // is-this-the-last-tab check would read the same pre-close tree on every
+  // iteration and so never fire.
+  const settings = useSettingsStore((s) => s.settings);
+  useEffect(() => {
+    const withdrawn = new Set<TabKind>(withdrawnTabKinds(settings));
+    if (withdrawn.size === 0 || !group) return;
+    const inGroup = new Set(orderedTabKeys(group));
+    const doomed = tabs.filter((t) => inGroup.has(t.key) && withdrawn.has(t.kind));
+    if (doomed.length === 0) return;
+    if (doomed.length === inGroup.size) {
+      void emit(DETACHED_CLOSE, { scope: param.scope, groupId: param.groupId });
+      void getCurrentWindow().destroy();
+      return;
+    }
+    for (const tab of doomed) pushEdit({ kind: "close", key: tab.key });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings, tabs, group, param.scope, param.groupId]);
+
   // Hide the WHOLE popout into the main window's right-panel "Hidden subwindows"
   // list. Like handleClose it closes THIS OS window, but the main window PARKS the
   // group (tabs stay mounted, PTYs alive) instead of discarding it — restorable
@@ -421,6 +449,10 @@ export function DetachedApp({ param }: Props) {
           emits browser events to every window — so it needs its own single
           download-consent host for the same reason AppShell does. */}
       <BrowserDownloadHost />
+      {/* Same reason: a popout hosts the per-subwindow file viewer, so a pull or
+          push can be started in this window and its confirmation has to render
+          here — this store instance is this window's. */}
+      <SyncConfirmDialog />
       <DetachedCenterPanel
       scope={param.scope}
       popoutId={param.groupId}

@@ -41,6 +41,7 @@ import {
   awaitDropAck,
   currentWindowLabel,
   listenForeignPageDrags,
+  setPageDragActive,
   type PageTransfer,
   type DropTarget,
 } from "../../stores/pdfDrag";
@@ -293,6 +294,10 @@ export function PageStrip({
         leaving = true;
         lastTarget = -1;
         onChange(listAtStart); // they are not staying here — put the strip back
+        // Every other PDF viewer springs its rail open, so a document that was merely
+        // *open* becomes a place these pages can be dropped. Reported directly rather
+        // than read back off the event, so a drop in this same window is covered too.
+        setPageDragActive(true);
         emitPdfDragStart(label, movingIds.length);
         exporting = onExport!(movingIds).then((t) => {
           transfer = t;
@@ -419,6 +424,7 @@ export function PageStrip({
 
         if (restore) {
           if (leaving) {
+            setPageDragActive(false);
             // Tell the other windows to drop their carets; nothing is being handed over.
             emitPdfDragEnd({
               originLabel: label,
@@ -434,7 +440,11 @@ export function PageStrip({
           return;
         }
         if (leaving) {
-          void dropElsewhere(shift);
+          // The end is announced only once the drop has been RESOLVED. Announcing it
+          // here would close every rail this drag sprang open — including the one the
+          // pointer is over — and `dropElsewhere` would then find no strip registered
+          // at the target and quietly drop the pages on the floor.
+          void dropElsewhere(shift).finally(() => setPageDragActive(false));
           return;
         }
         // A press that never became a drag is a click: apply the modifiers.

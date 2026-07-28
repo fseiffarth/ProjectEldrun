@@ -9,8 +9,8 @@ import { NetworkTrafficPane } from "../monitoring/NetworkTrafficPane";
 import { SystemMonitorPane } from "../monitoring/SystemMonitorPane";
 import { DiskUsagePane } from "../monitoring/DiskUsagePane";
 import { CalendarPane } from "../calendar/CalendarPane";
-import { MailPane } from "../mail/MailPane";
 import { BrowserPane } from "../browser/BrowserPane";
+import { PrintManagerPane } from "../printing/PrintManagerPane";
 import { RemotePaneHold } from "../projects/RemotePaneHold";
 import { effectiveTabLocation, remoteHostIdOf, type TabEntry } from "../../stores/tabs";
 
@@ -91,12 +91,6 @@ function TabPaneImpl({
       return <ProjectBlobPane />;
     case "calendar":
       return <CalendarPane visible={visible} />;
-    case "mail":
-      // Global store, no PTY, no props from the projects store — the same shape
-      // as the calendar pane. `ownsTabs` marks the main window, which is the one
-      // that reports newly-arrived mail (a popout runs its own store instance
-      // against the same backend, so both would otherwise announce it twice).
-      return <MailPane visible={visible} ownsTabs={ownsTabs} />;
     case "browser":
       // Reader mode is ordinary DOM (a sanitized page in a script-less iframe),
       // so this pane needs none of the native-view plumbing Plan A anticipated —
@@ -105,6 +99,11 @@ function TabPaneImpl({
       return (
         <BrowserPane tab={tab} scope={scope} visible={visible} ownsTabs={ownsTabs} />
       );
+    case "printing":
+      // Printers belong to the machine, so — like the calendar pane — this one
+      // takes no project props at all. `visible` is not cosmetic here: it arms
+      // the queue poll, so a background print tab shells out to nothing.
+      return <PrintManagerPane visible={visible} />;
     case "network":
       return <NetworkTrafficPane projectId={scope} visible={visible} onConnect={onConnect} />;
     case "monitor":
@@ -180,6 +179,7 @@ function TabPaneImpl({
           // the Sessions view) wins over the tab's own persistent session.
           tmuxSession={tmuxSession ?? null}
           tmuxAttach={tab.tmuxAttach ?? null}
+          hostBoundUid={tab.hostBoundUid ?? null}
           zoomable={zoomable}
           visible={visible}
           focused={visible}

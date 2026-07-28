@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { UntestedTag } from "../common/UntestedTag";
 import {
@@ -9,6 +9,8 @@ import {
   mailAttachRemove,
   mailDraftSave,
   mailDraftSend,
+  mailPgpAvailable,
+  mailPgpRecipientsReady,
   stripFormatControls,
 } from "../../lib/mail";
 import { useI18nStore, useT } from "../../lib/i18n";
@@ -124,6 +126,37 @@ export function MailComposeDialog({
   const [busy, setBusy] = useState<"" | "attach" | "save" | "send">("");
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  // End-to-end signing/encryption. **Both default off**, per message, and never
+  // remembered — a sticky "encrypt" that silently turned itself off once would
+  // be worse than one that always has to be chosen.
+  const [sign, setSign] = useState(false);
+  const [encrypt, setEncrypt] = useState(false);
+  const [pgpReady, setPgpReady] = useState(false);
+  const [missingKeys, setMissingKeys] = useState<string[]>([]);
+
+  useEffect(() => {
+    void mailPgpAvailable().then(setPgpReady);
+  }, []);
+
+  // Which recipients have no key, asked **while the message is being written**
+  // rather than on Send. Finding out at Send means either a refused send after
+  // the work is done, or — the thing this exists to make impossible — a user who
+  // ticked Encrypt and did not notice it could not be honoured.
+  const recipientList = [...parseRecipients(to), ...parseRecipients(cc), ...parseRecipients(bcc)];
+  const recipientKey = recipientList.join(",");
+  useEffect(() => {
+    if (!encrypt || !recipientKey) {
+      setMissingKeys([]);
+      return;
+    }
+    let live = true;
+    void mailPgpRecipientsReady(from, recipientKey.split(","))
+      .then((missing) => live && setMissingKeys(missing))
+      .catch(() => live && setMissingKeys([]));
+    return () => {
+      live = false;
+    };
+  }, [encrypt, recipientKey, from]);
 
   function buildDraft(): MailDraft {
     return {
@@ -207,7 +240,7 @@ export function MailComposeDialog({
       setBusy("");
       return;
     }
-    const result = await mailDraftSend(id).catch((err) => {
+    const result = await mailDraftSend(id, { sign, encrypt }).catch((err) => {
       setError(typeof err === "string" ? err : String(err));
       return null;
     });
@@ -330,6 +363,37 @@ export function MailComposeDialog({
                   </button>
                 </span>
               ))}
+            </div>
+          )}
+
+          {/* Offered only where it can actually be honoured: the keyring needs
+              an encrypted local store, and a checkbox that fails on click is
+              worse than one that is not there. */}
+          {pgpReady && (
+            <div className="mail-compose-crypto">
+              <label className="mail-field-row">
+                <input type="checkbox" checked={sign} onChange={(e) => setSign(e.target.checked)} />
+                <span>{t("mail.crypto.signThis")}</span>
+              </label>
+              <label className="mail-field-row">
+                <input
+                  type="checkbox"
+                  checked={encrypt}
+                  onChange={(e) => setEncrypt(e.target.checked)}
+                />
+                <span>{t("mail.crypto.encryptThis")}</span>
+              </label>
+              {encrypt && (
+                <p className="mail-note">{t("mail.crypto.encryptSubjectVisible")}</p>
+              )}
+              {/* Named, before the click. The send would refuse anyway — the
+                  backend never downgrades to plaintext — but a refusal after the
+                  message is written is a worse way to learn it. */}
+              {encrypt && missingKeys.length > 0 && (
+                <div className="mail-warning-strip">
+                  {t("mail.crypto.missingKeys", { who: missingKeys.join(", ") })}
+                </div>
+              )}
             </div>
           )}
 

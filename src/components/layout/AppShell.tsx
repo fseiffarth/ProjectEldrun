@@ -14,6 +14,7 @@ import { PLATFORM } from "../../lib/dragPlatform";
 import { nextWindowState } from "../../lib/windowState";
 import { notePtyOutput, useActivityStore } from "../../stores/activity";
 import { usePowerStore, useEnergySaver, saverInterval } from "../../stores/power";
+import { useOllamaAutoloadOnLaunch } from "../../stores/ollamaAutoload";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
@@ -25,9 +26,13 @@ import { GlobalMachineMonitorDialogHost } from "../monitoring/GlobalMachineMonit
 import { HpcPipelineWizardHost } from "../projects/HpcPipelineWizard";
 import { BigFolderDialogHost } from "../projects/BigFolderExcludeDialog";
 import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
+import { MailOverlayHost } from "../mail/MailOverlay";
+import { CalendarOverlayHost } from "../calendar/CalendarOverlay";
+import { TodoOverlayHost } from "../todo/TodoOverlay";
 import { LocalLossDialog } from "../common/LocalLossDialog";
 import { HostKeyConfirmDialog } from "../common/HostKeyConfirmDialog";
 import { HpcGuardDialog } from "../common/HpcGuardDialog";
+import { SyncConfirmDialog } from "../common/SyncConfirmDialog";
 import { RemoteUsageWarningDialog } from "../common/RemoteUsageWarningDialog";
 import { QuickOpen } from "../files/QuickOpen";
 import { HintHost } from "./HintHost";
@@ -49,6 +54,7 @@ import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenSyncProgress } from "../../stores/sync";
 import { autoConnectVpnOnLaunch } from "../../lib/vpnAutoConnect";
 import { initRemoteAutoReconnect } from "../../lib/remoteAutoReconnect";
+import { initExperimentalSweep } from "../../lib/experimentalSweep";
 import { initMachineSync } from "../../lib/machineSync";
 import { listenEditorJump } from "../../stores/editorJump";
 import { listenSourceJump } from "../embed/FileViewerPane";
@@ -137,6 +143,9 @@ export function AppShell() {
   const initTimer = useTimerStore((s) => s.init);
   const flushTimer = useTimerStore((s) => s.flush);
   const energySaver = useEnergySaver();
+  // Load the armed local (Ollama) models into memory at launch — main window
+  // only, and skipped (loudly) while Energy Saver is on. See stores/ollamaAutoload.
+  useOllamaAutoloadOnLaunch();
   const [panelsHidden, setPanelsHidden] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [rightPinned, setRightPinned] = useState(false);
@@ -338,6 +347,13 @@ export function AppShell() {
     initRemoteAutoReconnect();
     initMachineSync();
   }, []);
+
+  // Withdraw the tabs (and live browser windows) of any experiment that is
+  // switched off — now and on every settings change. Installed here rather than
+  // in the Settings panel because a flag can go off without that panel being
+  // open: Debug mode carries every unset flag with it, and settings arrive
+  // asynchronously at launch. See lib/experimentalSweep.
+  useEffect(() => initExperimentalSweep(), []);
 
   const togglePin = () => {
     setRightPinned((v) => {
@@ -789,6 +805,12 @@ export function AppShell() {
           here for the same reason the host-key prompt is: the caller is a lib
           function with no component of its own to render into. */}
       <HpcGuardDialog />
+      {/* "This will overwrite that side" — the confirmation every byte-sync
+          transfer asks for. Here for the same reason as the two above: a pull or
+          push can be started from the file tree, the file view's toolbar or the
+          diverged-files list, and none of them may carry its own copy of the
+          question. */}
+      <SyncConfirmDialog />
       <RemoteConnectDialog />
       {/* Multi-host remote: the "Remote machines" manager, opened from a pill's
           Runtime menu or a right-click on its remote lamp. */}
@@ -813,6 +835,20 @@ export function AppShell() {
           tab. It also owns the browser event listeners, so a download raised by a
           live-page window is answerable even when no browser tab is open. */}
       <BrowserDownloadHost />
+      {/* Mail as a global app: the header's ✉ button opens the ordinary MailPane
+          as an overlay over whatever is on screen. At the shell rather than in
+          the header because it covers the window, not the header — and because
+          it must survive a project switch, which mail (unlike a tab) ignores. */}
+      <MailOverlayHost />
+      {/* The calendar's twin of the above: the header's 🗓 button opens the
+          ordinary CalendarPane as an overlay, at the shell for the same reason —
+          it covers the window and must survive a project switch. */}
+      <CalendarOverlayHost />
+      {/* The todo board, third of the same family — and mounted LAST of the
+          three deliberately: all three are `.modal-backdrop` at one z-index and
+          nothing makes them mutually exclusive, so DOM order is the tie-break
+          and the surface opened most recently should be the one on top. */}
+      <TodoOverlayHost />
       {/* Fires once per connect (manual or silent auto-connect): warns that the
           host's load/memory/logged-in sessions suggest it's already in use. */}
       <RemoteUsageWarningDialog />

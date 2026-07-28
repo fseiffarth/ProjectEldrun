@@ -3,10 +3,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../../stores/settings";
 import { useEnergySaver, saverInterval } from "../../stores/power";
+import { useOllamaAutoloadStore } from "../../stores/ollamaAutoload";
 import { useOllamaStatus } from "../../lib/ollamaStatus";
+import { UntestedTag } from "../common/UntestedTag";
 import {
   formatBytes,
+  formatTempC,
   gpuAdapterTooltip,
+  gpuBusy,
   gpuTone,
   gpuTotals,
   type GpuSample,
@@ -21,6 +25,24 @@ interface LocalModelInfo {
   running: boolean;
   /** VRAM bytes in use; non-zero → running on GPU. */
   size_vram: number;
+}
+
+/**
+ * The machine's CPU + memory load (backend `MachineLoadSample`). The GPU half of
+ * the same question comes from `gpu_memory_snapshot`; these two are separate
+ * commands because the GPU read is cached and instant while this one spans a
+ * 300 ms sampling window (a CPU percentage is a ratio of two readings).
+ */
+interface MachineLoad {
+  supported: boolean;
+  cpu_percent: number;
+  num_cores: number;
+  load_avg: [number, number, number];
+  mem_total_bytes: number;
+  mem_used_bytes: number;
+  swap_total_bytes: number;
+  swap_used_bytes: number;
+  cpu_temp_c: number | null;
 }
 
 /** Subset of the backend `AgentInfo` the menu lists (installed agent CLIs). */
@@ -77,6 +99,9 @@ export function LocalModelMenu() {
   const [models, setModels] = useState<LocalModelInfo[]>([]);
   /** The machine's GPUs; empty when none can be read, and then no headroom line. */
   const [gpus, setGpus] = useState<GpuSample[]>([]);
+  /** The machine's CPU + RAM; null until the first sample, and on a platform
+      with no aggregate backend (`supported: false`) the block stays hidden. */
+  const [machine, setMachine] = useState<MachineLoad | null>(null);
   // Installed agent CLIs (from list_agents), shown in the Agents section so the
   // ones already available are visible without opening "Manage agents".
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -182,6 +207,32 @@ export function LocalModelMenu() {
       invoke<GpuSample[]>("gpu_memory_snapshot")
         .then((g) => {
           if (!cancelled) setGpus(g);
+        })
+        .catch(() => {});
+    void check();
+    const id = window.setInterval(check, saverInterval(2000, energySaver));
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [open, energySaver]);
+
+  // The CPU and RAM the *machine* is under, on the same open-only poll as the
+  // GPU above and for the same reason: "will the next model fit, and is there
+  // anything left to run it with?" is one question with three halves, and a
+  // model that doesn't fit in VRAM lands in system RAM and answers on the CPU.
+  // Machine-wide deliberately, not Eldrun's own tree (the header readout's
+  // subject) — Ollama is a separate process, so the app's own figures would say
+  // nothing about the thing this menu is about. The command carries no process
+  // table, so a poll here is three small reads rather than the monitor pane's
+  // whole-system snapshot.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const check = () =>
+      invoke<MachineLoad>("machine_load_snapshot")
+        .then((m) => {
+          if (!cancelled) setMachine(m);
         })
         .catch(() => {});
     void check();
@@ -340,6 +391,18 @@ export function LocalModelMenu() {
     void updateSettings({ ollama_model: only, ollama_roles: allRoles });
   }, [models, settings, updateSettings]);
 
+  // "Load on Eldrun start": which models are warmed into memory at launch
+  // (`settings.ollama_autoload_models`, honoured by `stores/ollamaAutoload`).
+  // A chip per model rather than one global switch, because the whole point is
+  // that different jobs want different models resident.
+  const autoload = settings?.ollama_autoload_models ?? [];
+  const toggleAutoload = (model: string) => {
+    const next = autoload.includes(model)
+      ? autoload.filter((m) => m !== model)
+      : [...autoload, model];
+    void updateSettings({ ollama_autoload_models: next });
+  };
+
   // Per-task model tags. Each task maps to exactly one model; tagging a model for
   // a task it already owns clears the tag (toggle). Kept open so several tags can
   // be assigned in one pass. Unassigned tasks fall back to the default model.
@@ -351,10 +414,63 @@ export function LocalModelMenu() {
     void updateSettings({ ollama_roles: next });
   };
 
+  // The launch-time autoload's one report to the user. The Energy Saver skip is
+  // the case this exists for: the models the user armed are deliberately absent,
+  // and without a line saying so that is indistinguishable from a broken switch.
+  // A failed load is reported for the same reason — nobody is watching at launch.
+  const autoPhase = useOllamaAutoloadStore((s) => s.phase);
+  const autoDismissed = useOllamaAutoloadStore((s) => s.dismissed);
+  const autoModels = useOllamaAutoloadStore((s) => s.models);
+  const autoFailed = useOllamaAutoloadStore((s) => s.failed);
+  const autoLoadNow = useOllamaAutoloadStore((s) => s.loadNow);
+  const autoDismiss = useOllamaAutoloadStore((s) => s.dismiss);
+  const showAutoNote =
+    !autoDismissed && (autoPhase === "skipped" || autoPhase === "loading" || autoPhase === "error");
+  // The same sentence, carried on the button's tooltip so it is readable without
+  // opening the menu (the `!` marker is what points at it).
+  const autoNoteTitle = !showAutoNote
+    ? ""
+    : autoPhase === "skipped"
+      ? t("localModel.autostartSkipped", { names: autoModels.join(", ") })
+      : autoPhase === "loading"
+        ? t("localModel.autostartLoading", { names: autoModels.join(", ") })
+        : t("localModel.autostartFailed", { error: Object.values(autoFailed)[0] ?? "" });
+
   // Resident models are selectable; the rest are offered as "load into memory".
   const running = models.filter((m) => m.running);
   const available = models.filter((m) => !m.running);
   const { used: gpuUsed, total: gpuTotal } = gpuTotals(gpus);
+  const gpuBusyPct = gpuBusy(gpus);
+  const showMachine = machine?.supported === true;
+  // Windows reports no load average, so its zeroed triple is "no reading" rather
+  // than an idle machine — printing `0.00` there would be a made-up measurement.
+  const loadShown = showMachine && machine.load_avg.some((v) => v > 0);
+  const cpuTemp = formatTempC(machine?.cpu_temp_c);
+  const cpuTitle = !showMachine
+    ? ""
+    : [
+        t("localModel.cpuTitle"),
+        t("localModel.cpuCores", { cores: machine.num_cores }),
+        loadShown
+          ? t("localModel.cpuLoad", { load: machine.load_avg.map((v) => v.toFixed(2)).join(" ") })
+          : null,
+        cpuTemp,
+      ]
+        .filter(Boolean)
+        .join("\n");
+  const ramTitle = !showMachine
+    ? ""
+    : [
+        t("localModel.ramTitle"),
+        machine.swap_total_bytes > 0
+          ? t("localModel.ramSwap", {
+              used: formatBytes(machine.swap_used_bytes),
+              total: formatBytes(machine.swap_total_bytes),
+            })
+          : null,
+      ]
+        .filter(Boolean)
+        .join("\n");
 
   return (
     <div className="global-apps-menu no-drag" onMouseEnter={reveal} onMouseLeave={scheduleClose}>
@@ -370,7 +486,9 @@ export function LocalModelMenu() {
                   : status === "idle"
                     ? "localModel.running"
                     : "localModel.stopped",
-              )}${activeModel ? t("localModel.modelSuffix", { name: activeModel }) : t("localModel.noModelSelected")}`
+              )}${activeModel ? t("localModel.modelSuffix", { name: activeModel }) : t("localModel.noModelSelected")}${
+                autoNoteTitle ? `\n${autoNoteTitle}` : ""
+              }`
         }
         aria-label={t("localModel.ariaLabel")}
         aria-haspopup="menu"
@@ -383,6 +501,14 @@ export function LocalModelMenu() {
             className={`local-model-status-dot ${status}`}
             aria-hidden="true"
           />
+        )}
+        {/* The menu only opens on hover, so a notice living inside it would be
+            invisible to someone who never opens it — which is precisely the
+            person who armed a model at start and expects it to be there. */}
+        {showAutoNote && autoPhase !== "loading" && (
+          <span className="local-model-autostart-flag" aria-hidden="true">
+            !
+          </span>
         )}
       </button>
       {open && (
@@ -402,6 +528,52 @@ export function LocalModelMenu() {
             {t("localModel.manageAgents")}
           </button>
           <div className="tab-new-menu-group-label">{t("localModel.localModelsGroup")}</div>
+          {showAutoNote && (
+            <div
+              className={`local-model-autostart-note${
+                autoPhase === "skipped" ? " saver" : autoPhase === "error" ? " failed" : ""
+              }`}
+            >
+              {/* Corner ✕, not a chip in the action row: dismissing is not one of
+                  the note's offers, and while loading it was that row's only
+                  member — a lone ✕ floating where a button was expected. */}
+              <button
+                type="button"
+                className="local-model-autostart-dismiss"
+                title={t("localModel.autostartDismiss")}
+                aria-label={t("localModel.autostartDismiss")}
+                onClick={autoDismiss}
+              >
+                ✕
+              </button>
+              <div className="local-model-autostart-text">
+                <span className="local-model-autostart-sentence">{autoNoteTitle}</span>
+                <UntestedTag />
+              </div>
+              {autoPhase !== "loading" && (
+                <div className="local-model-autostart-actions">
+                  <button
+                    type="button"
+                    className="local-model-role-chip"
+                    title={t("localModel.autostartLoadNowTitle")}
+                    onClick={() => void autoLoadNow()}
+                  >
+                    {t("localModel.autostartLoadNow")}
+                  </button>
+                  {autoPhase === "skipped" && (
+                    <button
+                      type="button"
+                      className="local-model-role-chip"
+                      title={t("localModel.autostartSettingsTitle")}
+                      onClick={openInstall}
+                    >
+                      {t("localModel.autostartSettings")}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           {installed && (Object.keys(downloads).length > 0 || paused.size > 0) && (
             <div className="local-model-downloads">
               {Object.entries(downloads).map(([model, d]) => (
@@ -454,16 +626,67 @@ export function LocalModelMenu() {
               ))}
             </div>
           )}
-          {/* The device's memory, not any model's share of it: what is free here
-              is what the next model has to fit into. Absent when no GPU can be
-              read (macOS, an Intel-only box) — a zero would read as "no room". */}
-          {gpus.length > 0 && (
-            <div
-              className={`tab-new-menu-hint local-model-gpu ${gpuTone(gpuUsed, gpuTotal)}`}
-              title={gpus.map(gpuAdapterTooltip).join("\n")}
-            >
-              <span>{t("localModel.gpuUsedTotal", { used: formatBytes(gpuUsed), total: formatBytes(gpuTotal) })}</span>
-              <span>{t("localModel.gpuFree", { free: formatBytes(Math.max(0, gpuTotal - gpuUsed)) })}</span>
+          {/* What the machine has left for the next model: CPU, RAM, GPU. Each
+              row is the *device's* figure, never a model's share of it — what is
+              free here is what the next model has to fit into — and each is
+              absent when it cannot be read rather than shown as a zero, which
+              would read as "no room" (no GPU on an Intel-only box; no aggregate
+              CPU/memory backend outside Linux/Windows/macOS). Every reading is
+              toned by ratio, so the row itself says how tight things are. */}
+          {(showMachine || gpus.length > 0) && (
+            <div className="local-model-stats">
+              {showMachine && (
+                <>
+                  <div
+                    className={`tab-new-menu-hint local-model-stat ${gpuTone(machine.cpu_percent, 100)}`}
+                    title={cpuTitle}
+                  >
+                    <span>{t("localModel.cpuPercent", { pct: Math.round(machine.cpu_percent) })}</span>
+                    {/* Temperature only where a sensor answers; the tooltip
+                        carries the load average, which is a three-number reading
+                        no single-line row has room for. */}
+                    {cpuTemp && <span>{t("localModel.cpuTemp", { temp: cpuTemp })}</span>}
+                    <span>{t("localModel.cpuCores", { cores: machine.num_cores })}</span>
+                  </div>
+                  <div
+                    className={`tab-new-menu-hint local-model-stat ${gpuTone(machine.mem_used_bytes, machine.mem_total_bytes)}`}
+                    title={ramTitle}
+                  >
+                    <span>
+                      {t("localModel.ramUsedTotal", {
+                        used: formatBytes(machine.mem_used_bytes),
+                        total: formatBytes(machine.mem_total_bytes),
+                      })}
+                    </span>
+                    <span>
+                      {t("localModel.ramFree", {
+                        free: formatBytes(
+                          Math.max(0, machine.mem_total_bytes - machine.mem_used_bytes),
+                        ),
+                      })}
+                    </span>
+                  </div>
+                </>
+              )}
+              {gpus.length > 0 && (
+                <div
+                  className={`tab-new-menu-hint local-model-stat local-model-gpu ${gpuTone(gpuUsed, gpuTotal)}`}
+                  title={gpus.map(gpuAdapterTooltip).join("\n")}
+                >
+                  <span>{t("localModel.gpuUsedTotal", { used: formatBytes(gpuUsed), total: formatBytes(gpuTotal) })}</span>
+                  {/* Utilization only when a driver reports it — `null` there is
+                      "the driver won't say", not an idle GPU. */}
+                  {gpuBusyPct != null && (
+                    <span>{t("localModel.gpuBusy", { pct: Math.round(gpuBusyPct) })}</span>
+                  )}
+                  <span>{t("localModel.gpuFree", { free: formatBytes(Math.max(0, gpuTotal - gpuUsed)) })}</span>
+                </div>
+              )}
+              {showMachine && (
+                <div className="local-model-stats-tag">
+                  <UntestedTag />
+                </div>
+              )}
             </div>
           )}
           {!installed ? (
@@ -528,16 +751,36 @@ export function LocalModelMenu() {
                           </button>
                         );
                       })}
-                      {/* Evict this model from memory (keeps it on disk). */}
-                      <button
-                        type="button"
-                        className="local-model-role-chip local-model-unload"
-                        disabled={unloading.has(m.name)}
-                        title={t("localModel.unloadFromMemoryTitle", { name: m.name })}
-                        onClick={() => unloadFromMemory(m.name)}
-                      >
-                        {unloading.has(m.name) ? t("localModel.unloading") : t("ollama.unload")}
-                      </button>
+                      {/* The row's own two verbs, grouped and right-aligned: the
+                          task tags above are a wrapping set, these are a column. */}
+                      <div className="local-model-row-actions">
+                        {/* Load this model into memory on every Eldrun start. */}
+                        <button
+                          type="button"
+                          className={`local-model-role-chip local-model-autostart-chip${
+                            autoload.includes(m.name) ? " on" : ""
+                          }`}
+                          title={t(
+                            autoload.includes(m.name)
+                              ? "localModel.autostartOnTitle"
+                              : "localModel.autostartOffTitle",
+                            { name: m.name },
+                          )}
+                          onClick={() => toggleAutoload(m.name)}
+                        >
+                          {t("localModel.autostartChip")}
+                        </button>
+                        {/* Evict this model from memory (keeps it on disk). */}
+                        <button
+                          type="button"
+                          className="local-model-role-chip local-model-unload"
+                          disabled={unloading.has(m.name)}
+                          title={t("localModel.unloadFromMemoryTitle", { name: m.name })}
+                          onClick={() => unloadFromMemory(m.name)}
+                        >
+                          {unloading.has(m.name) ? t("localModel.unloading") : t("ollama.unload")}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))
@@ -560,15 +803,36 @@ export function LocalModelMenu() {
                               <span>{m.parameter_size}</span>
                             </span>
                           )}
-                          <button
-                            type="button"
-                            className="local-model-role-chip local-model-load-action"
-                            disabled={st === "loading"}
-                            title={t(st === "error" ? "localModel.failedRetryTitle" : "localModel.loadIntoMemoryTitle")}
-                            onClick={() => loadIntoMemory(m.name)}
-                          >
-                            {st === "loading" ? t("common.loading") : st === "error" ? t("localModel.failed") : t("ollama.load")}
-                          </button>
+                          {/* Same trailing pair as a resident row: armed-for-launch,
+                              then the row's verb — a column, not a ragged edge
+                              trailing whatever width the model name happened to be. */}
+                          <div className="local-model-row-actions">
+                            {/* Arm it for the next launch without loading it now. */}
+                            <button
+                              type="button"
+                              className={`local-model-role-chip local-model-autostart-chip${
+                                autoload.includes(m.name) ? " on" : ""
+                              }`}
+                              title={t(
+                                autoload.includes(m.name)
+                                  ? "localModel.autostartOnTitle"
+                                  : "localModel.autostartOffTitle",
+                                { name: m.name },
+                              )}
+                              onClick={() => toggleAutoload(m.name)}
+                            >
+                              {t("localModel.autostartChip")}
+                            </button>
+                            <button
+                              type="button"
+                              className="local-model-role-chip local-model-load-action"
+                              disabled={st === "loading"}
+                              title={t(st === "error" ? "localModel.failedRetryTitle" : "localModel.loadIntoMemoryTitle")}
+                              onClick={() => loadIntoMemory(m.name)}
+                            >
+                              {st === "loading" ? t("common.loading") : st === "error" ? t("localModel.failed") : t("ollama.load")}
+                            </button>
+                          </div>
                         </div>
                         {st === "loading" && (
                           <div className="ollama-download-bar local-model-load-bar">

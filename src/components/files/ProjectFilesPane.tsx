@@ -4,6 +4,7 @@ import { DownloadsSection } from "./DownloadsSection";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSyncStore } from "../../stores/sync";
+import { confirmSyncTransfer } from "../../stores/syncConfirm";
 import { useBigFoldersStore } from "../../stores/bigFolders";
 import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { useFileSourcePrefStore } from "../../stores/fileSourcePref";
@@ -233,6 +234,10 @@ function BoxRootSection({
       {!collapsed && (
         <div className="file-root-body">
           <FileTree
+            // Same invariant as the single-root tree: (project, root dir) is the
+            // tree's identity, so a root whose directory moves remounts rather
+            // than repainting the old one's entries under the new path.
+            key={`${rootId}|${dir}`}
             projectDir={dir}
             projectId={rootId}
             localFile={localFile}
@@ -368,11 +373,27 @@ export function ProjectFilesPane({
           >
             {t("projectFilesPane.bigFolders")}
           </button>
+          {/* Both directions ask first (`stores/syncConfirm`). This is the widest
+              transfer in the app — one click over the *whole* tree, in whichever
+              direction the source switch happens to be on — so the one thing it
+              must never be is ambiguous about which side it is about to
+              overwrite. */}
           {source === "remote" ? (
             <button
               className="tab-add-btn"
               style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: "auto" }}
-              onClick={() => void useSyncStore.getState().syncWholeProject(projectId)}
+              onClick={() =>
+                void (async () => {
+                  const ok = await confirmSyncTransfer({
+                    projectId,
+                    direction: "pull",
+                    relPath: "",
+                    isDir: true,
+                    label: project?.name ?? projectId,
+                  });
+                  if (ok) await useSyncStore.getState().syncWholeProject(projectId);
+                })()
+              }
               title={t("projectFilesPane.syncAllRemoteTitle")}
             >
               {t("projectFilesPane.syncAll")}
@@ -381,7 +402,18 @@ export function ProjectFilesPane({
             <button
               className="tab-add-btn"
               style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: "auto" }}
-              onClick={() => void useSyncStore.getState().pushWholeProject(projectId)}
+              onClick={() =>
+                void (async () => {
+                  const ok = await confirmSyncTransfer({
+                    projectId,
+                    direction: "push",
+                    relPath: "",
+                    isDir: true,
+                    label: project?.name ?? projectId,
+                  });
+                  if (ok) await useSyncStore.getState().pushWholeProject(projectId);
+                })()
+              }
               title={t("projectFilesPane.syncAllLocalTitle")}
             >
               {t("projectFilesPane.syncAll")}
@@ -473,6 +505,18 @@ export function ProjectFilesPane({
             const treeDir = isRemoteProject && source === "local" ? mirrorDir : projectDir;
             return (
               <FileTree
+                // The tree's identity IS (project, root dir) — every piece of its
+                // state (browsed rel path, the listed entries and their ABSOLUTE
+                // paths, selection, git statuses, folder sizes) belongs to that
+                // pair, and none of it is re-derived from props on a change. Its
+                // one reload effect is gated on `remoteBlocked`, so switching to
+                // a not-yet-connected remote project left the previous project's
+                // listing on screen — under the new project's root — and opening
+                // a row then acted on the OLD project's path. Keying makes the
+                // switch a remount, so no state can outlive the project it
+                // describes. The same holds for the Remote/Local source flip,
+                // which is likewise a different root dir.
+                key={`${projectId ?? ""}|${treeDir}`}
                 projectDir={treeDir}
                 projectId={projectId}
                 localFile={project?.local_file}
