@@ -1750,7 +1750,7 @@ dependencies = [
  "plist",
  "png 0.17.16",
  "portable-pty",
- "rand 0.9.5",
+ "rand 0.8.6",
  "reqwest",
  "rusqlite",
  "rustls",

@@ -340,6 +340,88 @@ pub struct MailAuthResults {
     pub header_count: u32,
 }
 
+// ── End-to-end encryption and signatures ────────────────────────────────────
+
+/// Which of the two end-to-end formats a message uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MailCryptoFormat {
+    #[serde(rename = "openpgp")]
+    OpenPgp,
+    #[serde(rename = "smime")]
+    Smime,
+}
+
+/// What the panel is allowed to say about a signature.
+///
+/// The vocabulary is deliberately `mail_authres`'s, because the misreading is
+/// the same one: a verdict without the identity it applies to is the classic
+/// error, so the states that separate "checked out" from "checked out *as the
+/// person this claims to be from*" are distinct rather than folded together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MailCryptoState {
+    /// No signature to judge.
+    None,
+    /// Good signature, from a key the user verified out of band, whose identity
+    /// matches the visible `From`.
+    ///
+    /// **The only state that earns positive chrome**, and it needs all three
+    /// clauses. Drop the middle one and a padlock is granted to whoever last
+    /// emailed you a key; drop the last and it is granted to anyone with *a*
+    /// verified key, signing as anyone they like.
+    Verified,
+    /// Good signature from a verified key, but the signing identity is not the
+    /// address the message claims to be from.
+    Unaligned,
+    /// Good signature from a key we merely happen to hold — attached to a
+    /// message, fetched from a keyserver, imported without a fingerprint check.
+    /// OpenPGP has no certificate authority, so there is nothing asserting that
+    /// this key belongs to anyone; the UI shows a shrug, not a tick.
+    Known,
+    /// A signature was present and did **not** check out.
+    Invalid,
+    /// No key for the signer, so nothing could be checked either way. Kept apart
+    /// from [`MailCryptoState::Invalid`] because "this is forged" and "I cannot
+    /// tell" are different sentences.
+    NoKey,
+    /// Structurally broken, or an algorithm this build does not implement.
+    Unusable,
+    /// The format was recognized but this build does not handle it — today, all
+    /// of S/MIME. Naming it is the point: a banner beats rendering the ASN.1
+    /// blob as if it were the message.
+    Unsupported,
+}
+
+/// The signature/encryption panel's wire shape, beside `MailAuthResults`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailCryptoInfo {
+    pub format: MailCryptoFormat,
+    /// The message arrived encrypted.
+    pub encrypted: bool,
+    /// …and was successfully decrypted for this render. `encrypted && !decrypted`
+    /// is what a locked or unopenable message looks like.
+    pub decrypted: bool,
+    pub signed: bool,
+    pub state: MailCryptoState,
+    /// The signing identity — an address when the key carries one, else its
+    /// fingerprint. Shown *beside* the verdict, never instead of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identifier: Option<String>,
+    /// Whether `identifier` is the same mailbox as the visible `From`. `None`
+    /// when there was no identity to compare.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aligned: Option<bool>,
+    /// Whether this build can do anything with the format beyond naming it.
+    pub supported: bool,
+    /// Machine tokens the frontend turns into sentences, so the wording lives in
+    /// `i18n` ×5 rather than in Rust. Always includes `headers-not-signed` for a
+    /// signed message — the thing users most reliably assume a tick covers, and
+    /// which it never does in either format.
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MailHeader {
     pub id: String,

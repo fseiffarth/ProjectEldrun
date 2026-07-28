@@ -173,9 +173,12 @@ getrandom = "0.3"
 # encryption), so the vulnerable PKCS#1 v1.5 decryption path is never exercised
 # for our own mail — nobody can encrypt to an RSA key we do not have.
 pgp = { version = "0.20", default-features = false }
-# rPGP's key-generation API takes an RNG by value; this is the version it
-# resolves, so naming it adds nothing new.
-rand = "0.9"
+# rPGP's key-generation and encryption APIs take an RNG by value. Pinned to
+# **0.8**, which is the line `pgp` itself resolves — `rand` 0.9 is a different
+# `rand_core`, so passing its `OsRng` is a type error rather than a version
+# nit. The tree already carries both lines transitively; this names the one the
+# OpenPGP calls need.
+rand = "0.8"
 
 # ── In-app browser (see docs/browser_plan_b.md, docs/browser_plan_c.md) ──────
 # The URL parser the navigation gate runs on. Named directly rather than reached
