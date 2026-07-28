@@ -65,13 +65,13 @@ only `src-tauri/` changes need a rebuild/restart.
 | KDE Wayland backend (#18) | | | | show/hide are explicit no-ops (KWin scripting pending) |
 | Windows backend | | | | stub (`platform/windows.rs`) |
 | Boxes phases 3–4 (#41) | | | | merged file tree + relation graph deferred |
+| Git worktrees (#23) | ✅ | | | list/add/remove/lock/prune, host-or-mirror side, worktrees confined to `<root>/.eldrun/worktrees/`; `docs/worktree_improvement_plan.md` phases 0–2. **Untested.** Worktree-aware tab groups + worktree-as-project (phases 3–4) deferred |
 
 ## Open / not started
 
 | Feature | Notes |
 |---------|-------|
 | X11 switching stability | #15–17 |
-| Git worktrees | #23 |
 | Full session restore on startup | #24 — `schema/active_session.rs` exists but unwired |
 | Docker projects | #38 — plan in `docs/docker_projects_plan.md`, no runtime |
 | Cross-platform Windows/macOS QA | #30/#31 |

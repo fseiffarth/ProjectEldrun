@@ -38,12 +38,46 @@ no confirmed renderer-execution path at all.
 Consequence: **the CSP is load-bearing** (pinned by
 `src/__tests__/CspTripwire.test.ts`, added because nothing else in the tree fails
 when it is loosened), and #144 is defence-in-depth against a *future* renderer
-bug rather than a live hole. Phase 1 is the only remaining confirmed escape
-class.
+bug rather than a live hole.
+
+Two confirmed escape classes remain, and they are the same sentence twice — the
+container's writable area holds files the host reads as intent. Phase 1 (#142) is
+Eldrun's own control files. The second, found later, is **the repo's `.git`**:
+`.git/config` names programs git runs, and `core.fsmonitor` fires on the polled
+`git status` behind the file tree, so it needs no user action. Verified live, and
+partly mitigated in code (`commands::git::hardened_git_args`) — the residual and
+why flags cannot finish the job are in Group O **#151**.
 
 ---
 
 ## Phase 1 — #142: move executable-intent state out of the project tree
+
+> **Implemented** (develop, 2026-07-27), with one deliberate change to the plan
+> below: the project-tree copy is **not** dropped in 1c. It is still written, and
+> is now **export-only** — nothing reads it without an explicit user action
+> (`commands::projects::adopt_folder_tab_layout`, the pill menu's "Restore layout
+> saved in the folder…"). Writing a file into the container's writable mount grants
+> nothing; reading one back as a command to run is the entire bug class. Keeping
+> the write costs nothing and keeps the "layout travels with the folder" property
+> the *Costs* section below calls the real loss — so byte-sync / multi-host / a
+> hand-copied folder still carry their tabs, one click away.
+>
+> The one-time migration (1c) is **once per installation**, not once per project:
+> a project registered *after* it ran — a fresh scaffold, an imported or cloned
+> repository — is never adopted from, so a hostile tree's layout is inert from the
+> moment it arrives.
+>
+> The migration has **run for real** (a build from this tree, 2026-07-27 09:54):
+> 26 of 27 projects migrated, the 27th correctly skipped for having no saved layout
+> anywhere, 85 tabs carried across (41 `claude`, 5 `codex`, the pane markers, one
+> `bash`, the rest shells/embeds with an empty `cmd` by design) and **zero** tabs
+> neutered by the sanitizer. That is the failure mode this was most exposed to —
+> a silently-dropped layout and a green test suite look identical — so it is worth
+> stating that it was checked against a real workspace rather than only a fixture.
+>
+> `open_apps` moved too, and is deliberately **not** adoptable: a
+> folder-supplied list of host commands to launch has no legitimate reason to
+> travel. Phase 1d landed as `src-tauri/tests/project_tree_intent.rs`.
 
 **Why this one first.** It is the only item that makes the codebase *simpler*.
 Today every future feature that reads a field out of `project.json` has to
@@ -117,6 +151,26 @@ reintroduces a project-tree read.
 ---
 
 ## Phase 2 — #150: the host-bound local-model marker
+
+> **Implemented** (develop, 2026-07-27). One correction to the plan below: it
+> asserts "the tab uid is already stable across relaunch". It is not — `loadFromLayout`
+> re-mints every tab key *and* its PTY id, and the only stable per-tab id that
+> existed was `tmuxSession`, which a local-model tab never has. So the uid is now
+> minted at tab creation (`src/lib/hostBound.ts`) and persisted in the layout as
+> `hostBoundUid`; the marker file under
+> `<state_dir>/sessions/<project>/host_bound/<uid>` is the grant, and the layout
+> field is only an index into it. Markers are pruned on every layout save against
+> the uids the layout still carries.
+>
+> **State what this buys, because the plan overstates it.** With Phase 1 done, the
+> layout is no longer attacker-writable, so this is not primarily a containment
+> fix any more. What it removes is the *coupling*: the exemption was keyed on
+> `ELDRUN_LOCAL_MODEL`, a label `TabBar.tsx` sets for the usage recap — so any
+> future surface setting it for a display reason would have handed out container
+> escapes with nothing failing. It does **not** defend against a compromised
+> renderer: registration is a command the renderer calls, so a renderer that can
+> spawn can also register. That case is the CSP's, which is why the CSP is
+> load-bearing.
 
 The residual half of the persisted-layout escape, and the one item here that is
 small.
@@ -274,5 +328,22 @@ the audit pass was tested. Two tripwires carry the load, because both guard
 properties that fail *silently*: `CspTripwire.test.ts` (already in), and Phase
 1d's project-tree-read tripwire.
 
+Phase 1d landed as **`src-tauri/tests/project_tree_intent.rs`**. It scans the
+backend for reads of `Project::{tab_layout, tab_groups, open_tab_sessions,
+open_apps}` and fails unless the line clears the field or carries a
+`// project-tree-read: ok — <reason>` marker in the paragraph above it. The marker
+is the escape hatch a textual check needs — `TerminalSession` and the frontend's
+switch snapshot have identically-named fields and are read all over — and it is
+also the point: a reviewer greps for the marker, and writing one that says "read
+from project.json" is the thing this makes impossible to do by accident. It was
+verified to *fail* on a planted read, not just to pass.
+
+One thing the move forced: these tests now write to the state dir, so
+`storage::state_dir()` honours `ELDRUN_STATE_DIR` and the suites point it at a
+temp dir. A test run must never touch the developer's real
+`~/.local/share/eldrun/`.
+
 Baseline to preserve: the Rust suite was green at 1269 immediately after the
-audit pass, and the frontend at 2108 with `tsc --noEmit` clean.
+audit pass, and the frontend at 2108 with `tsc --noEmit` clean. After Phases 1+2:
+**1352 Rust** (all green, incl. the 2 new tripwire tests) and **2207 frontend**,
+`tsc --noEmit` clean.

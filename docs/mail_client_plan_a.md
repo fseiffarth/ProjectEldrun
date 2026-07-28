@@ -5,6 +5,19 @@ HTML sanitization are Plan B's (`docs/mail_client_plan_b.md`); this plan owns th
 tab surface, the backend surface, the sandbox/capability boundary, persistence,
 credentials, and the two-workstream split.
 
+> **Superseded in one respect: there is no mail tab.** This plan specifies the
+> client as a tab (§ steps 8–10, decision 9) with the header overlay added
+> afterwards as a second surface. Both were built, and the tab was then retired:
+> the mail store is global, so a tab could only ever show the same mailbox the
+> overlay does while still belonging to a scope you switch away from. What
+> survives is the overlay (`MailOverlayHost` → `MailPane`) behind the header's ✉
+> button, gated by `mail_client` alone — the `mail_global_app` sub-toggle went
+> with the tab. `MAIL_TAB_CMD` remains only as a retirement marker
+> (`RETIRED_TAB_CMDS`), so a layout persisted before the removal drops its mail
+> tab instead of restoring it as a terminal. **Everything else in this plan —
+> the backend surface, the path-free IPC boundary, persistence, credentials —
+> is unchanged and still binding.**
+
 ## 0. Constraints (restated, binding)
 
 - **Never launch Eldrun to verify.** The only gates an agent has are

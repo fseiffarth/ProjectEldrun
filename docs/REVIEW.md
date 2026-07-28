@@ -315,10 +315,14 @@ autocomplete; filesystem watch.
 - **Boxes phase 3–4 (#41):** multi-root merged file tree + agent-hint relation
   graph deferred.
 - **KDE Wayland (#18):** show/hide are explicit no-ops pending KWin scripting.
+- **Git worktrees (#23):** phases 0–2 of `docs/worktree_improvement_plan.md`
+  shipped (blocking defects, the data-loss set, locality + containment); the
+  product rungs — worktree-aware tab groups, worktree-as-project,
+  agent-per-branch — are phases 3–4 and deferred. Untested in the running app.
 
 ### Open / not started
 
-X11 switching stability (#15–17); git worktrees (#23); **full session restore on
+X11 switching stability (#15–17); **full session restore on
 startup (#24)** — `active_session.rs` exists but is unwired; **Docker projects
 (#38)** — full plan in `docs/docker_projects_plan.md`, no runtime yet;
 cross-platform Windows/macOS QA (#30/#31); backend runtime hardening (#32, PTY

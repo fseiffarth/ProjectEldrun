@@ -29,3 +29,20 @@
     project-scoped, not re-rooted per nested repo.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
+
+66. **Share the remaining per-surface probes across file-viewer instances.** The
+    same `ProjectFilesView` is mounted many times over at once (right panel, each
+    Files (Project) tab, each subwindow's docked file column, main window + every
+    popout). The persistent-session list was pulled out into one shared, refcounted
+    reading (`src/stores/hostSessions.ts`); the same duplication remains for the
+    HPC probes, which are per-project facts held per surface:
+    `slurmAvailable(projectDir)` (one SSH round trip per mounted viewer),
+    `slurmQueue` (a 7s poll per viewer showing the Jobs view — so a cancel in one
+    surface lingers in the others), and `wsAvailable` + `wsList` (two round trips
+    per mounted viewer for any project recording a workspace, since the expiry
+    banner reads them in *every* view). Move them behind the same
+    retain/release + shared-list pattern. Deliberately NOT in scope: the git
+    section — `effectiveGitRoot` follows each surface's own browsed folder (nested
+    repo detection), so those probes are genuinely per-surface.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
