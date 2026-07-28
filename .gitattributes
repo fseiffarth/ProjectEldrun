@@ -1,0 +1,15 @@
+# Line endings.
+#
+# GitHub's Windows runners set `core.autocrlf=true`, so without this file a
+# Windows checkout rewrites every text file to CRLF. That is invisible on Linux
+# and macOS and breaks exactly the tests that treat a file as *bytes*:
+# `tests/mail_hostile_message.rs` compares the checked-in sanitizer fixture
+# against the pipeline's own output, and a CRLF copy of it can never match.
+# Pin the working tree to LF on every platform instead of teaching each such
+# test to normalize — the byte-for-byte comparison is the point of those tests,
+# and LF is what the green Linux/macOS runs have always fed them, `.eml`
+# message fixtures included.
+* text=auto eol=lf
+
+# Consumed by cmd.exe, which wants CRLF.
+*.cmd text eol=crlf
