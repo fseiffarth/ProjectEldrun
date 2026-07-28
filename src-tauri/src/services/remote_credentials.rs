@@ -82,6 +82,23 @@ pub fn mail_account(proto: MailProto, user: &str, host: &str, port: u16) -> Stri
     format!("mail:{}:{user}@{host}:{port}", proto.as_str())
 }
 
+/// The keychain account for the **local mail store's** key-encryption key.
+///
+/// One entry per machine, not per mail account: the master key it wraps seals
+/// the whole store, which spans every account. Keyed by nothing, therefore — the
+/// store has exactly one home (`state_dir()/mail`) and a second one would be a
+/// second Eldrun installation with its own keychain anyway.
+///
+/// The secret here is **machine-generated, never a user password**, which is why
+/// it does not fall under the "no passwords persisted by default" rule: there is
+/// no password to leak, and the alternative to a silent unlock is a passphrase
+/// prompt every session, which in practice is people not enabling encryption at
+/// all. Turning encryption on is itself the opt-in. See
+/// `services::mail_crypt`.
+pub fn mail_store_key_account() -> String {
+    "mail:store-key".to_string()
+}
+
 /// The keychain account for an OpenVPN tunnel's primary secret, keyed by its
 /// stored config path — the `auth-user-pass` account password, or (for a config
 /// with no account) the private-key passphrase.

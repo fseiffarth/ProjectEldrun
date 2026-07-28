@@ -131,6 +131,52 @@ idna = "1"
 # filename never reaches a syscall).
 sha2 = "0.10"
 
+# ── Mail encryption (see docs/mail_encryption_plan.md) ───────────────────────
+# The whole block obeys the same invariant as the TLS one above: **no OpenSSL,
+# no C toolchain**. Every crate here is pure Rust, which is what rules out
+# SQLCipher for the at-rest half and `sequoia-openpgp` (LGPL, Nettle by default)
+# for the OpenPGP half.
+#
+# The at-rest primitive. XChaCha20-Poly1305 rather than AES-GCM for one reason:
+# its 192-bit nonce can be drawn at random, so there is no counter that has to
+# survive both a crash and a restore-from-backup — which is exactly how GCM
+# nonce reuse happens in practice (plan §1.1).
+chacha20poly1305 = "0.11"
+# Purpose-bound subkeys from the one master key (`k_field`/`k_blob`/`k_addr`/
+# `k_name`/`k_wrap`), so compromise of one does not hand over the others.
+hkdf = "0.12"
+# Keyed digests: blob ids (`HMAC-SHA256(k_addr, plaintext)` instead of a bare
+# SHA-256, which is a known-file confirmation oracle against a directory
+# listing) and the cleartext `UNIQUE` columns that randomized AEAD would
+# otherwise destroy.
+hmac = "0.12"
+# Passphrase unlock. Pinned to the **0.5 stable line** deliberately — 0.6 is an
+# rc — and it is the version `pgp` resolves too, so this adds no second copy.
+# Parameters are recorded *in* the key file so they can be raised later without
+# stranding an existing store.
+argon2 = "0.5"
+# Nonces, salts and the master key itself. Already in the tree transitively;
+# named directly so the one place randomness enters the crypto path is explicit.
+getrandom = "0.3"
+# OpenPGP. `default-features = false` drops `bzip2`, and that is deliberate: a
+# decompressor nobody asked for is the same decompression-bomb channel that
+# keeps `COMPRESS=DEFLATE` off in `async-imap` above. Chosen over
+# `sequoia-openpgp`, which is LGPL-2.0-or-later (a real constraint for a
+# statically linked, publicly redistributed binary) and whose pure-Rust backend
+# is gated behind `allow-experimental-crypto` + `allow-variable-time-crypto`.
+#
+# KNOWN, ACCEPTED ADVISORY: `pgp` depends on `rsa` unconditionally, and `rsa` is
+# under RUSTSEC-2023-0071 (Marvin timing oracle) with `patched = []`. There is no
+# version that escapes it and no feature that gates it out, so `cargo audit`
+# reports it permanently. The mitigation is a key-algorithm choice, not a crate
+# choice: key generation defaults to **Curve25519** (Ed25519 signing, X25519
+# encryption), so the vulnerable PKCS#1 v1.5 decryption path is never exercised
+# for our own mail — nobody can encrypt to an RSA key we do not have.
+pgp = { version = "0.20", default-features = false }
+# rPGP's key-generation API takes an RNG by value; this is the version it
+# resolves, so naming it adds nothing new.
+rand = "0.9"
+
 # ── In-app browser (see docs/browser_plan_b.md, docs/browser_plan_c.md) ──────
 # The URL parser the navigation gate runs on. Named directly rather than reached
 # through `tauri::Url` so `services::web_safety` stays AppHandle-free and unit
