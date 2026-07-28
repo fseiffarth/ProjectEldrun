@@ -573,6 +573,14 @@ pub fn run() {
             // persist. Off-thread so file I/O never blocks startup; additive and
             // idempotent, so a race with the frontend's first load is benign.
             std::thread::spawn(commands::projects::migrate_legacy_projects);
+            // One-shot: adopt every existing project's tab layout / `open_apps`
+            // out of its project tree and into `<state_dir>/sessions/<id>/`.
+            // Synchronous on purpose — it must complete before the frontend's
+            // first `load_tab_session`, or a pre-existing project comes up with
+            // no tabs and the debounced autosave then persists that emptiness.
+            // Cheap: one small file per project, and it no-ops after the first
+            // run. See `services::terminal_service::migrate_project_sessions_once`.
+            services::terminal_service::migrate_project_sessions_once();
             // Remove project containers a previous run left behind (a crash
             // skips the exit teardown) and the staged config copies. Off-thread:
             // docker may be slow or absent, and neither may block startup.
@@ -663,6 +671,8 @@ pub fn run() {
             commands::projects::set_project_categories,
             commands::projects::set_project_git_disabled,
             commands::projects::save_tab_layout,
+            commands::projects::load_tab_session,
+            commands::projects::adopt_folder_tab_layout,
             commands::projects::root_work_dir,
             commands::projects::projects_root_dir,
             commands::projects::remote_mirror_root_dir,
@@ -676,6 +686,7 @@ pub fn run() {
             commands::projects::repair_project_scaffold,
             commands::projects::repair_all_project_scaffolds,
             commands::projects::import_project,
+            commands::projects::check_project_site,
             commands::projects::extend_project_to_remote,
             commands::projects::detach_project_from_remote,
             commands::projects::get_time_today,
@@ -704,6 +715,8 @@ pub fn run() {
             commands::calendar::create_task,
             commands::calendar::update_task,
             commands::calendar::delete_task,
+            commands::calendar::todo_move_tasks,
+            commands::calendar::todo_columns_set,
             commands::calendar::create_calendar,
             commands::calendar::update_calendar,
             commands::calendar::delete_calendar,
@@ -727,13 +740,31 @@ pub fn run() {
             commands::mail::mail_headers,
             commands::mail::mail_body,
             commands::mail::mail_flag,
+            commands::mail::mail_mark_folder_read,
             commands::mail::mail_move,
+            // Priority marks (Important / Urgent). The only mail commands that
+            // touch no network at all: the lists span every account, and no IMAP
+            // folder can hold two accounts' mail, so the mark is a local column
+            // rather than a move (schema::mail::MailPriority).
+            commands::mail::mail_priority_set,
+            commands::mail::mail_priority_page,
+            commands::mail::mail_priority_counts,
             commands::mail::mail_draft_save,
             commands::mail::mail_draft_send,
             commands::mail::mail_attach_pick,
             commands::mail::mail_attach_remove,
             commands::mail::mail_attachment_save,
             commands::mail::mail_attachment_preview,
+            // Encryption at rest (docs/mail_encryption_plan.md). Four verbs
+            // rather than a toggle, because the states are not symmetric: a
+            // store waiting for a passphrase, and one running memory-only
+            // because its key could not be reached, both look like a working
+            // mailbox and neither is.
+            commands::mail::mail_encryption_state,
+            commands::mail::mail_encryption_enable,
+            commands::mail::mail_encryption_unlock,
+            commands::mail::mail_encryption_decline,
+            commands::mail::mail_encryption_reset,
             // In-app browser (docs/browser_plan_{a,b,c}.md, TODO J #61). Two
             // surfaces, neither an embedded pane: a JS-free reader tab that is
             // fetched and sanitized in Rust, and a separate hardened
@@ -810,6 +841,7 @@ pub fn run() {
             commands::sync::sync_mark_selected,
             commands::sync::sync_set_auto,
             commands::sync::sync_auto_preview,
+            commands::sync::sync_transfer_preview,
             commands::sync::sync_big_folders,
             commands::sync::sync_set_excluded,
             commands::sync::sync_status,
@@ -898,6 +930,13 @@ pub fn run() {
             commands::format::check_syntax,
             commands::fs_watch::watch_dir,
             commands::fs_watch::unwatch_dir,
+            // Print manager (commands::printing)
+            commands::printing::print_system_snapshot,
+            commands::printing::print_job_cancel,
+            commands::printing::print_jobs_cancel_all,
+            commands::printing::print_set_default,
+            commands::printing::print_set_enabled,
+            commands::printing::print_test_page,
             // Disk usage analyzer (commands::disk_usage)
             commands::disk_usage::disk_usage_scan,
             commands::disk_usage::disk_usage_cancel,
@@ -912,6 +951,7 @@ pub fn run() {
             commands::tex::resolve_tex_root,
             // Terminal
             commands::terminal::pty_spawn,
+            commands::terminal::register_host_bound_tab,
             commands::terminal::pty_write,
             commands::terminal::pty_resize,
             commands::terminal::pty_kill,
@@ -1001,6 +1041,8 @@ pub fn run() {
             commands::git::git_worktree_list,
             commands::git::git_worktree_add,
             commands::git::git_worktree_remove,
+            commands::git::git_worktree_lock,
+            commands::git::git_worktree_unlock,
             commands::git::git_worktree_prune,
             // Crash reporting
             commands::crash::report_frontend_error,

@@ -55,17 +55,54 @@ pub struct Settings {
     /// Calendar: minutes-before reminder pre-filled on a new event. `0` = none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar_default_reminder_minutes: Option<i64>,
+    /// Calendar: put a 📅 button in the header that opens the calendar overlay,
+    /// badged with the events left today.
+    ///
+    /// The twin of the header's mail button, with no experimental gate above
+    /// it: the calendar is a shipped feature and its store reads one local file,
+    /// so there is nothing here to withdraw or to keep off the network.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_global_app: Option<bool>,
+    /// To-do board: put a ☑ button in the header that opens the global todo
+    /// board overlay, badged with what is due today.
+    ///
+    /// A plain setting for `calendar_global_app`'s reasons — the board's cards
+    /// *are* `calendar.json`'s tasks, so it reads a shipped local file and
+    /// reaches no network; the urgent-mail rail beside it is already gated by
+    /// `mail_client`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo_board: Option<bool>,
     /// Mail: the experimental gate for the embedded mail client
     /// (`src/lib/experimental.ts` — unset falls back to debug mode, so a flag
     /// still moving is invisible to someone *using* Eldrun and on by default
     /// for someone building it).
+    ///
+    /// It is the ONE mail switch, and it gates the whole feature: the header's
+    /// ✉ button and the overlay behind it, which is the entire client since the
+    /// mail *tab* was retired (its store is global, so the tab only ever showed
+    /// the same mailbox the overlay does while still belonging to a scope). The
+    /// companion `mail_global_app` field went with the tab — while both surfaces
+    /// existed it chose whether the header carried one too; with the overlay
+    /// alone, a switch that hides it while leaving mail "on" can only produce an
+    /// unreachable client. Old `settings.json` files still holding the key are
+    /// fine: serde ignores fields this struct no longer declares.
+    ///
+    /// The `mail_*` commands are deliberately still not refused when it is off —
+    /// with no surface there is no caller, and a renderer able to invoke them
+    /// could equally flip this setting, so a second gate here would buy nothing
+    /// and could only fail independently.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail_client: Option<bool>,
-    /// Mail: which account a fresh mail tab opens on.
+    /// Mail: which account the mail overlay opens on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail_default_account: Option<String>,
-    /// Mail: minutes between background checks (Phase 2; the backend does not
-    /// poll yet, so this is stored and honoured by the frontend only).
+    /// Mail: minutes between automatic checks. **Unset or 0 means never**, and
+    /// the backend still does not poll — the timer is the frontend's, owned by
+    /// the header's mail button (`src/components/header/MailIndicator.tsx`), so
+    /// it runs only when the user has turned mail on and picked an interval
+    /// here. That default is what keeps the mail store's "nothing
+    /// reaches a server without a click" rule true for everyone who has not
+    /// explicitly asked otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail_check_interval_min: Option<u32>,
     /// Mail: whether to offer remote images at all. **Default false** — loading
@@ -148,13 +185,18 @@ pub struct Settings {
     /// even if it wanted to, and a typo in the key would round-trip silently
     /// instead of failing to compile.
     ///
-    /// **What the gate does and does not do.** Like `mail_client` and
-    /// `deck_presenter`, it hides the *entry points* — the two add-tab menu
-    /// entries — and never a pane already on screen: an open or restored browser
-    /// tab keeps rendering, because a flag flip must not blank a surface the
-    /// user is looking at. The commands are therefore deliberately NOT refused
-    /// when it is off (that would break exactly that restored tab), which is the
-    /// same posture the mail commands take.
+    /// **What the gate does.** Like `mail_client` — and unlike `deck_presenter`,
+    /// which only hides buttons on a viewer that keeps working — it withdraws the
+    /// whole feature: the two add-tab menu entries, any open browser tab, any live
+    /// page window, and any persisted browser tab that would otherwise be restored
+    /// (`src/lib/experimentalSweep.ts`). Off means gone; a browser left running
+    /// after the switch was thrown would make the switch a lie, and the tab loses
+    /// nothing by closing (its one persisted field is the URL).
+    ///
+    /// The `browser_*` commands are still deliberately NOT refused when it is
+    /// off, the same posture the mail commands take: with no tab and no live
+    /// window there is no caller, and a renderer able to invoke them could
+    /// equally flip this setting, so a second gate could only fail on its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_browser: Option<bool>,
     /// Browser: where a fresh browser tab opens. Empty/unset is the built-in
@@ -218,6 +260,19 @@ pub struct Settings {
     /// (headless) so existing behaviour is preserved.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connections_headless: Option<bool>,
+    /// Whether the local mail store is encrypted at rest
+    /// (`docs/mail_encryption_plan.md`).
+    ///
+    /// **Three states, and the third is the point.** `Some(true)` = on,
+    /// `Some(false)` = the user was asked and said no, `None` = never asked. A
+    /// plain bool would collapse the last two, and they call for opposite
+    /// behaviour: a store that has never been asked about gets encryption turned
+    /// on silently *if it is empty* (a new install has nothing to migrate, so
+    /// the cost is nil), and gets a one-time prompt if it already holds mail (a
+    /// migration rewrites the whole database and is the user's call). Once
+    /// answered, neither is asked again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_encrypt_store: Option<bool>,
     /// Hosts marked **careful**: "this machine is shared and policed, so keep
     /// Eldrun's background load off it." An HPC login node is the case it exists
     /// for — CPU there is watched, its `$HOME` usually sits on a parallel

@@ -45,13 +45,16 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::projects::uuid_v4;
 use crate::schema::mail::{
-    MailAccount, MailAccountSaved, MailAccounts, MailBody, MailDraft, MailFlag, MailFolder,
-    MailHeaderPage, MailKeyringState, MailLink, MailPasswordState, MailPreviewBlob, MailProbe,
-    MailSendResult, MailSyncEvent, MailSyncSummary, StagedAttachment, ACCOUNTS_VERSION,
+    MailAccount, MailAccountSaved, MailAccounts, MailBody, MailDraft, MailEncryptionState,
+    MailFlag, MailFolder, MailHeader, MailHeaderPage, MailKeyringState, MailLink, MailPasswordState, MailPreviewBlob,
+    MailPriority, MailPriorityCounts, MailProbe, MailSendResult, MailSort, MailSyncEvent,
+    MailSyncSummary, StagedAttachment, ACCOUNTS_VERSION,
 };
+use crate::services::mail_crypt::{self, MailKeys};
 use crate::services::mail_engine::{
     self, InProcessEngine, MailEngine, OutboundAttachment, Password,
 };
+use crate::services::mail_authres;
 use crate::services::mail_sanitize::{self, SANITIZER_VERSION};
 use crate::services::mail_store::MailStore;
 use crate::services::remote_credentials::{self, KeyringState, MailProto};
@@ -68,6 +71,16 @@ pub fn mail_dir() -> PathBuf {
 
 fn accounts_path() -> PathBuf {
     mail_dir().join("accounts.json")
+}
+
+/// Where the account list lives once the store is encrypted.
+///
+/// A separate filename rather than a sealed `accounts.json`, so the two are
+/// never ambiguous: whichever one is on disk says unambiguously which state the
+/// store is in, and a half-finished migration is visible rather than a file
+/// whose contents have to be sniffed.
+fn accounts_enc_path() -> PathBuf {
+    mail_dir().join("accounts.json.enc")
 }
 
 /// How many headers one sync pulls per folder. Bounded because "sync" on a
@@ -93,6 +106,11 @@ pub struct MailRuntime {
     store: Option<Arc<MailStore>>,
     passwords: HashMap<String, Password>,
     cancel: HashMap<String, Arc<AtomicBool>>,
+    /// Set when the open store is a memory-only stand-in — see [`UnlockNote`].
+    /// The UI reads it through `mail_encryption_state` so "your mail is not
+    /// being saved" is a statement the user sees, not one they infer from an
+    /// inbox that empties itself every launch.
+    unlock_note: Option<UnlockNote>,
 }
 
 pub type MailState = Arc<Mutex<MailRuntime>>;
@@ -108,15 +126,172 @@ fn store_of(state: &MailState) -> Result<Arc<MailStore>, String> {
     if let Some(store) = &rt.store {
         return Ok(store.clone());
     }
-    let store = Arc::new(MailStore::open(&mail_dir())?);
-    rt.store = Some(store.clone());
-    Ok(store)
+    let opened = open_store(&mail_dir())?;
+    set_session_keys(opened.keys.clone());
+    rt.store = Some(opened.store.clone());
+    rt.unlock_note = opened.note;
+    Ok(opened.store)
+}
+
+// ── The store key, for the session ──────────────────────────────────────────
+
+/// The mail store's keys, for as long as this process runs.
+///
+/// A module-level handle rather than a field on [`MailRuntime`], deliberately,
+/// and the reason is that there is exactly **one** of them: `mail_dir()` is a
+/// constant, so a process has one mail store and therefore one master key. The
+/// per-*account* secrets — the passwords the user chose not to persist — stay in
+/// `MailRuntime` where they belong, because there is one per account and they
+/// are what "not persisted by default" is about.
+///
+/// It exists because the account-list helpers below are path-shaped free
+/// functions reached from a dozen call sites, several inside `spawn_blocking`
+/// closures. Threading an `Option<&MailKeys>` through all of them would be a
+/// large mechanical diff for an identical security property, and a large
+/// mechanical diff through a crypto path is its own risk.
+///
+/// Nothing here is ever serialized and it dies with the process, exactly like
+/// the password map.
+static SESSION_KEYS: std::sync::RwLock<Option<Arc<MailKeys>>> = std::sync::RwLock::new(None);
+
+fn set_session_keys(keys: Option<Arc<MailKeys>>) {
+    if let Ok(mut slot) = SESSION_KEYS.write() {
+        *slot = keys;
+    }
+}
+
+fn session_keys() -> Option<Arc<MailKeys>> {
+    SESSION_KEYS.read().ok().and_then(|k| k.clone())
+}
+
+/// The outcome of opening the store: the handle, the keys behind it, and — when
+/// the store is *not* the real one — why.
+struct OpenedStore {
+    store: Arc<MailStore>,
+    keys: Option<Arc<MailKeys>>,
+    note: Option<UnlockNote>,
+}
+
+/// Why the store on screen is not the store on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnlockNote {
+    /// Waiting for the user to type their passphrase.
+    NeedsPassphrase,
+    /// The key could not be reached — a locked keyring, most often — so this is
+    /// a memory-only store that forgets everything at exit.
+    Unavailable(String),
+}
+
+/// Open the mail store, resolving how it unlocks.
+///
+/// The **degrade** is the load-bearing part. A locked Secret Service collection
+/// reads identically to "nothing saved" and can block a read forever; that
+/// failure class already cost this codebase a set of permanently-amber
+/// connection lamps. Here it must not cost a mailbox: an unreachable key opens
+/// an ephemeral store instead, so mail still syncs and still reads, and the next
+/// run with an unlocked keyring picks up the persistent one.
+fn open_store(dir: &Path) -> Result<OpenedStore, String> {
+    use crate::services::mail_crypt::Unlock;
+    match mail_crypt::unlock(dir) {
+        Unlock::Ready(keys) => {
+            let keys = Arc::new(keys);
+            let store = Arc::new(MailStore::open_with_keys(dir, Some(keys.clone()))?);
+            migrate_accounts_file(Some(&keys))?;
+            Ok(OpenedStore {
+                store,
+                keys: Some(keys),
+                note: None,
+            })
+        }
+        Unlock::NeedsPassphrase => Ok(OpenedStore {
+            store: Arc::new(MailStore::open_ephemeral()?),
+            keys: None,
+            note: Some(UnlockNote::NeedsPassphrase),
+        }),
+        Unlock::Unavailable(why) => Ok(OpenedStore {
+            store: Arc::new(MailStore::open_ephemeral()?),
+            keys: None,
+            note: Some(UnlockNote::Unavailable(why)),
+        }),
+        Unlock::Disabled => open_unencrypted_or_enable(dir),
+    }
+}
+
+/// The first-run decision, made once and then remembered.
+///
+/// A **new** install has nothing to migrate, so encryption costs nothing and is
+/// turned on silently. An install that already holds mail is *not* converted
+/// behind the user's back — the migration rewrites the whole database and is
+/// their call — so it opens plain and `mail_encryption_state` tells the UI to
+/// ask, once. `Some(false)` means they answered no and are never asked again.
+fn open_unencrypted_or_enable(dir: &Path) -> Result<OpenedStore, String> {
+    let preference = read_settings().mail_encrypt_store;
+    let is_new = !dir.join("mail.db").exists();
+    let should_enable = match preference {
+        Some(false) => false,
+        // Asked for, but the key file is gone (a half-finished reset, a restored
+        // backup). Re-enabling is right: the setting is what the user asked for.
+        Some(true) => true,
+        None => is_new,
+    };
+    if should_enable {
+        // Best effort. A locked keyring at first launch must not stop the mail
+        // client from opening at all — the store simply stays plain and the
+        // preference stays unset, so the question is asked again later.
+        if let Ok(keys) = mail_crypt::enable_with_keychain(dir) {
+            let keys = Arc::new(keys);
+            let store = Arc::new(MailStore::open_with_keys(dir, Some(keys.clone()))?);
+            migrate_accounts_file(Some(&keys))?;
+            set_encrypt_preference(Some(true));
+            return Ok(OpenedStore {
+                store,
+                keys: Some(keys),
+                note: None,
+            });
+        }
+    }
+    Ok(OpenedStore {
+        store: Arc::new(MailStore::open(dir)?),
+        keys: None,
+        note: None,
+    })
+}
+
+fn read_settings() -> crate::schema::Settings {
+    let path = storage::state_dir().join("settings.json");
+    storage::read_json(&path).unwrap_or_default()
+}
+
+/// Read-modify-write of the single field, for the reason
+/// `commands::settings::save_window_state` documents: the frontend's
+/// `updateSettings` writes the whole cached object back, so writing the whole
+/// object from here would clobber anything changed since that cache was filled.
+fn set_encrypt_preference(value: Option<bool>) {
+    let path = storage::state_dir().join("settings.json");
+    let mut settings: crate::schema::Settings = storage::read_json(&path).unwrap_or_default();
+    settings.mail_encrypt_store = value;
+    let _ = storage::write_json_atomic(&path, &settings);
 }
 
 // ── accounts.json ───────────────────────────────────────────────────────────
 
 /// Read the account list. A missing file is an empty list, not an error.
+///
+/// `path` is `accounts.json` and is passed by every caller; the sealed twin
+/// beside it is resolved here rather than at the call sites, so "is the store
+/// encrypted" is one question asked in one place. When keys are present the
+/// sealed file wins — and if only the plaintext one is there, it is read and
+/// then converted by [`migrate_accounts_file`].
 fn read_accounts(path: &Path) -> Result<MailAccounts, String> {
+    if let Some(keys) = session_keys() {
+        let enc = accounts_enc_path();
+        if enc.exists() {
+            let raw = std::fs::read(&enc).map_err(|e| e.to_string())?;
+            let plain = mail_crypt::open(&keys.field, &mail_crypt::accounts_aad(), &raw)
+                .map_err(|e| format!("the mail account list could not be decrypted: {e}"))?;
+            return serde_json::from_slice(&plain).map_err(|e| e.to_string());
+        }
+    }
     if !path.exists() {
         return Ok(MailAccounts {
             version: ACCOUNTS_VERSION,
@@ -127,7 +302,35 @@ fn read_accounts(path: &Path) -> Result<MailAccounts, String> {
 }
 
 fn write_accounts(path: &Path, data: &MailAccounts) -> Result<(), String> {
-    storage::write_json_atomic(path, data).map_err(|e| e.to_string())
+    let Some(keys) = session_keys() else {
+        return storage::write_json_atomic(path, data).map_err(|e| e.to_string());
+    };
+    let json = serde_json::to_vec(data).map_err(|e| e.to_string())?;
+    let sealed = mail_crypt::seal(&keys.field, &mail_crypt::accounts_aad(), &json);
+    mail_crypt::write_bytes_atomic(&accounts_enc_path(), &sealed)?;
+    // Only after the sealed copy is safely on disk. The other order loses every
+    // configured account if the process dies between the two calls.
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+/// Convert a plaintext `accounts.json` into its sealed twin, once.
+///
+/// Runs at store-open rather than lazily, so a user who never touches the
+/// account dialog still ends up with the file sealed. A no-op when there is
+/// nothing to convert.
+fn migrate_accounts_file(keys: Option<&MailKeys>) -> Result<(), String> {
+    let Some(keys) = keys else { return Ok(()) };
+    let plain = accounts_path();
+    if !plain.exists() || accounts_enc_path().exists() {
+        return Ok(());
+    }
+    let data: MailAccounts = storage::read_json(&plain).map_err(|e| e.to_string())?;
+    let json = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
+    let sealed = mail_crypt::seal(&keys.field, &mail_crypt::accounts_aad(), &json);
+    mail_crypt::write_bytes_atomic(&accounts_enc_path(), &sealed)?;
+    let _ = std::fs::remove_file(&plain);
+    Ok(())
 }
 
 /// Insert or replace one account, minting an id when the caller has none.
@@ -185,6 +388,38 @@ fn short_hash(s: &str) -> String {
         .take(8)
         .map(|b| format!("{b:02x}"))
         .collect::<String>()
+}
+
+// ── Authentication-Results trust ────────────────────────────────────────────
+
+/// Apply each header's account's trusted `authserv-id` to its stored
+/// `Authentication-Results`.
+///
+/// **Every** path that hands a `MailHeader` to the frontend goes through here.
+/// The store deliberately persists the parsed data in its `Unconfigured` state,
+/// so this is where a verdict becomes believable — which means configuring or
+/// clearing the id re-judges mail that was synced long before, and a row that
+/// somehow skipped this step shows no verdict rather than an unchecked one.
+///
+/// A missing accounts file, or a header whose account is gone, leaves every
+/// verdict unconfigured: failing to *find* the trusted id must never read as
+/// having *matched* it.
+fn serve_auth_state(headers: &mut [MailHeader]) {
+    let accounts = read_accounts(&accounts_path()).unwrap_or_default().accounts;
+    apply_auth_trust(headers, &accounts);
+}
+
+/// [`serve_auth_state`] with the account list injected, so the rule can be
+/// tested without a state directory.
+fn apply_auth_trust(headers: &mut [MailHeader], accounts: &[MailAccount]) {
+    for h in headers.iter_mut() {
+        let Some(auth) = h.auth.as_mut() else { continue };
+        let trusted = accounts
+            .iter()
+            .find(|a| a.id == h.account_id)
+            .and_then(|a| a.authserv_id.as_deref());
+        mail_authres::apply_trust(auth, trusted);
+    }
 }
 
 // ── Credentials ─────────────────────────────────────────────────────────────
@@ -251,6 +486,36 @@ fn remember_arg(remember: Option<bool>) -> Option<bool> {
     remember.filter(|v| *v)
 }
 
+/// The password this session is already authenticating `account_id` with, if any.
+///
+/// The typed field is only ever *one* of the two places a live password lives:
+/// the other is the in-memory map, which is where "save it for the session only"
+/// puts it. Ticking Save later has to be able to reach it, or the tick means
+/// "retype it or lose it" — see [`mail_account_upsert`].
+fn session_secret(state: &MailState, account_id: &str) -> Option<String> {
+    let rt = state.lock().ok()?;
+    let pw = rt.passwords.get(account_id)?;
+    (!pw.is_empty()).then(|| pw.expose().to_string())
+}
+
+/// What to report when Save was ticked but there was **no secret to write**.
+///
+/// `None` means "nothing to say": an entry is already there, so the tick is
+/// satisfied and the blank field simply meant "leave it alone". Otherwise the
+/// reason has to be said out loud — a bare `saved: false` with no error renders
+/// as a box that quietly unticks itself, which is indistinguishable from the
+/// feature being broken.
+fn blank_save_error(already_saved: bool, store_readable: bool) -> Option<String> {
+    if already_saved {
+        return None;
+    }
+    Some(if store_readable {
+        "no password to save — type it in the password field, then save again".into()
+    } else {
+        "the OS keyring is locked, so nothing was saved — unlock it and try again".into()
+    })
+}
+
 // ── Commands: accounts ──────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -265,6 +530,16 @@ pub async fn mail_accounts_list() -> Result<Vec<MailAccount>, String> {
 /// Returns what the keychain *actually did* rather than a bare account: a write
 /// that silently failed is how a user loses a password they think is saved, so
 /// `remember_secret`'s `{ saved, error }` is passed straight through.
+///
+/// **A tick with a blank password field still saves.** The password field is
+/// deliberately never pre-filled, so the common way to reach this command with
+/// Save ticked is a *second* visit to the dialog — at which point the only live
+/// copy of the secret is the session map. Passing the blank field straight to
+/// `remember_secret` made Save mean `Remember::Save` with no secret, which is a
+/// **clear**: it deleted the entry and reported `saved: false` with no error,
+/// which is exactly what "saving the mail password does not work" looks like
+/// from the outside. The secret is resolved first (typed → session), and a
+/// genuinely empty one leaves the keychain alone and says why.
 #[tauri::command]
 pub async fn mail_account_upsert(
     account: MailAccount,
@@ -291,12 +566,44 @@ pub async fn mail_account_upsert(
         let mut saved = false;
         let mut error: Option<String> = None;
         if remember == Some(true) {
-            for key in [imap_key(&account), smtp_key(&account)] {
-                let outcome =
-                    remote_credentials::remember_secret(&key, remember, secret.as_deref());
-                saved |= outcome.saved;
-                if error.is_none() {
-                    error = outcome.error;
+            // The secret to write is the typed one, else the one this session is
+            // already authenticating with. It is **never** `None`:
+            // `remember_secret`'s Save branch reads an absent secret as a *clear*
+            // (which is what OpenVPN wants for a stale key passphrase), so a
+            // ticked box over an empty field used to delete the very entry the
+            // user was asking to keep — and report `saved: false` with no error,
+            // i.e. "Save password does nothing". `ssh_connect` has always
+            // resolved its `effective` secret before remembering; this is that.
+            let effective = secret.clone().or_else(|| session_secret(&rt, &account.id));
+            // A key needs a host to mean anything. An account with no SMTP server
+            // configured must not put `mail:smtp:@:0` in the keychain.
+            let keys: Vec<String> = [
+                (!account.imap.host.trim().is_empty()).then(|| imap_key(&account)),
+                (!account.smtp.host.trim().is_empty()).then(|| smtp_key(&account)),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            match &effective {
+                Some(effective) => {
+                    for key in &keys {
+                        let outcome = remote_credentials::remember_secret(
+                            key,
+                            remember,
+                            Some(effective.as_str()),
+                        );
+                        saved |= outcome.saved;
+                        if error.is_none() {
+                            error = outcome.error;
+                        }
+                    }
+                }
+                // Nothing to write — and nothing to clear either. Whatever is in
+                // the keychain stays there (this is the pre-ticked box being
+                // re-saved), and the state is reported rather than implied.
+                None => {
+                    saved = keys.first().is_some_and(|k| remote_credentials::has(k));
+                    error = blank_save_error(saved, remote_credentials::store_readable());
                 }
             }
         }
@@ -316,6 +623,182 @@ pub async fn mail_account_upsert(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+// ── Encryption at rest ──────────────────────────────────────────────────────
+
+/// Everything the UI needs to describe the store's encryption, in one read.
+///
+/// One command rather than several because the answers have to agree: "is it
+/// enabled" and "is the open store actually sealed" are different questions with
+/// a meaningful gap between them, and two round trips could observe that gap at
+/// two different moments and render a contradiction.
+#[tauri::command]
+pub async fn mail_encryption_state(
+    state: State<'_, MailState>,
+) -> Result<MailEncryptionState, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || encryption_state(&rt))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The blocking half of [`mail_encryption_state`], so the commands that *change*
+/// the state can report the result without re-entering a `#[tauri::command]`.
+fn encryption_state(rt: &MailState) -> Result<MailEncryptionState, String> {
+    {
+        // Opening the store is what resolves the unlock, so the report cannot be
+        // produced without it. Failing to open is itself an answer, not an
+        // error to propagate — the dialog still has to render.
+        let store = store_of(rt).ok();
+        let note = rt.lock().ok().and_then(|g| g.unlock_note.clone());
+        let dir = mail_dir();
+        let file = mail_crypt::read_key_file(&dir).ok().flatten();
+        Ok(MailEncryptionState {
+            enabled: file.is_some(),
+            active: store.as_ref().map(|s| s.is_encrypted()).unwrap_or(false),
+            mode: file.as_ref().map(|f| match f.mode {
+                mail_crypt::UnlockMode::Keychain => "keychain".to_string(),
+                mail_crypt::UnlockMode::Passphrase => "passphrase".to_string(),
+            }),
+            ephemeral: note.is_some(),
+            reason: match &note {
+                Some(UnlockNote::Unavailable(why)) => Some(why.clone()),
+                _ => None,
+            },
+            needs_passphrase: matches!(note, Some(UnlockNote::NeedsPassphrase)),
+            preference: read_settings().mail_encrypt_store,
+            has_existing_mail: dir.join("mail.db").exists(),
+            keyring: keyring_state_for_ui(),
+        })
+    }
+}
+
+/// Turn encryption on, migrating whatever is already in the store.
+///
+/// `mode` is `"keychain"` (silent, the recommended default) or `"passphrase"`.
+/// The migration itself is [`MailStore::seal_existing`] — idempotent, so an
+/// interrupted run finishes on the next open — and it ends by rewriting the
+/// database into a fresh file, because `UPDATE`-ing values in place leaves every
+/// old plaintext in the WAL and the freelist.
+///
+/// The honest caveat, which the UI states beside the button: on an SSD or a
+/// copy-on-write filesystem, deleting the old file is not erasure.
+/// [`mail_encryption_reset`] is the option for anyone who actually cares.
+#[tauri::command]
+pub async fn mail_encryption_enable(
+    mode: String,
+    passphrase: Option<String>,
+    state: State<'_, MailState>,
+) -> Result<MailEncryptionState, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let dir = mail_dir();
+        let keys = match mode.as_str() {
+            "passphrase" => {
+                let pass = passphrase.unwrap_or_default();
+                mail_crypt::enable_with_passphrase(&dir, &pass)?
+            }
+            "keychain" => mail_crypt::enable_with_keychain(&dir)?,
+            other => return Err(format!("unknown unlock mode '{other}'")),
+        };
+        adopt_keys(&rt, &dir, Arc::new(keys))?;
+        set_encrypt_preference(Some(true));
+        encryption_state(&rt)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Open a passphrase-protected store that is currently showing its memory-only
+/// stand-in.
+#[tauri::command]
+pub async fn mail_encryption_unlock(
+    passphrase: String,
+    state: State<'_, MailState>,
+) -> Result<MailEncryptionState, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let dir = mail_dir();
+        let keys = mail_crypt::unlock_with_passphrase(&dir, &passphrase)?;
+        adopt_keys(&rt, &dir, Arc::new(keys))?;
+        encryption_state(&rt)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Record that the user does not want the local store encrypted, so the one-time
+/// prompt stops asking.
+#[tauri::command]
+pub async fn mail_encryption_decline() -> Result<(), String> {
+    tokio::task::spawn_blocking(|| set_encrypt_preference(Some(false)))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Delete the local mail and start again, encrypted.
+///
+/// The **honest** alternative to migrating, and the right recommendation for
+/// anyone who cares about the plaintext that is already on disk: a migration
+/// cannot reliably erase what it replaces, while this never produces a second
+/// copy at all. Everything here is a cache with an authoritative copy on the
+/// server — the one exception is drafts, which is why the UI says so before it
+/// offers the button.
+#[tauri::command]
+pub async fn mail_encryption_reset(
+    mode: String,
+    passphrase: Option<String>,
+    state: State<'_, MailState>,
+) -> Result<MailEncryptionState, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let dir = mail_dir();
+        // Drop the open handle first: on Windows a live SQLite connection holds
+        // the file open and the removal below would fail rather than delete.
+        if let Ok(mut guard) = rt.lock() {
+            guard.store = None;
+            guard.unlock_note = None;
+        }
+        set_session_keys(None);
+        mail_crypt::forget(&dir)?;
+        for name in ["mail.db", "mail.db-wal", "mail.db-shm", "accounts.json.enc"] {
+            let _ = std::fs::remove_file(dir.join(name));
+        }
+        let _ = std::fs::remove_dir_all(dir.join("blobs"));
+        let _ = std::fs::remove_dir_all(dir.join("outbox"));
+        // `accounts.json` deliberately survives: the account *list* is
+        // configuration, not cached mail, and wiping it would make "start over"
+        // mean "set up your mail from scratch".
+        let keys = match mode.as_str() {
+            "passphrase" => {
+                mail_crypt::enable_with_passphrase(&dir, &passphrase.unwrap_or_default())?
+            }
+            "keychain" => mail_crypt::enable_with_keychain(&dir)?,
+            other => return Err(format!("unknown unlock mode '{other}'")),
+        };
+        adopt_keys(&rt, &dir, Arc::new(keys))?;
+        set_encrypt_preference(Some(true));
+        encryption_state(&rt)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Reopen the store under `keys` and publish them for the session.
+fn adopt_keys(rt: &MailState, dir: &Path, keys: Arc<MailKeys>) -> Result<(), String> {
+    // Released before the (possibly long) migration so nothing else blocks on
+    // the runtime lock while a database is being rewritten.
+    if let Ok(mut guard) = rt.lock() {
+        guard.store = None;
+    }
+    let store = Arc::new(MailStore::open_with_keys(dir, Some(keys.clone()))?);
+    set_session_keys(Some(keys.clone()));
+    migrate_accounts_file(Some(&keys))?;
+    let mut guard = rt.lock().map_err(|_| "mail state is poisoned")?;
+    guard.store = Some(store);
+    guard.unlock_note = None;
+    Ok(())
 }
 
 #[tauri::command]
@@ -494,8 +977,8 @@ fn emit_sync(app: &AppHandle, event: MailSyncEvent) {
 /// once at the end.
 ///
 /// Cancellable via [`mail_sync_cancel`] — the `commands::disk_usage` pattern.
-/// Never dispatched from a launch or restore path: a restored mail tab renders
-/// from the local store and shows a **Check mail** button.
+/// Never dispatched from a launch or restore path: the mail overlay renders from
+/// the local store and shows a **Check mail** button.
 #[tauri::command]
 pub async fn mail_sync(
     app: AppHandle,
@@ -660,6 +1143,16 @@ async fn sync_inner(
                     } else {
                         Some(h.headers.malformed_headers)
                     },
+                    // Stored as parsed, i.e. `Unconfigured`. `serve_auth_state`
+                    // applies the account's trusted `authserv-id` on the way
+                    // out, so the setting governs already-synced mail too.
+                    auth: h.headers.auth,
+                    // Always `None` here, and it never reaches the column:
+                    // `upsert_header` writes `priority` in neither half of its
+                    // statement precisely so this loop — which runs over every
+                    // message in the folder on every check — cannot wipe a mark
+                    // the user made. The mark is the user's, not the server's.
+                    priority: None,
                 };
                 if store3.upsert_header(&row)? {
                     added += 1;
@@ -717,18 +1210,33 @@ pub async fn mail_sync_cancel(
 
 /// One page of a folder's header index. Reads the local store only — listing
 /// mail must never open a socket.
+///
+/// `sort`/`desc` are optional so an older frontend keeps the newest-first order
+/// it used to get; they are a `MailSort`, never a column name, because the order
+/// is the one part of the statement SQLite cannot take as a bound parameter.
 #[tauri::command]
 pub async fn mail_headers(
     folder_id: String,
     offset: u32,
     limit: u32,
     query: Option<String>,
+    sort: Option<MailSort>,
+    desc: Option<bool>,
     state: State<'_, MailState>,
 ) -> Result<MailHeaderPage, String> {
     let rt = state.inner().clone();
     tokio::task::spawn_blocking(move || {
         let store = store_of(&rt)?;
-        store.headers_page(&folder_id, offset, limit, query.as_deref())
+        let mut page = store.headers_page(
+            &folder_id,
+            offset,
+            limit,
+            query.as_deref(),
+            sort.unwrap_or_default(),
+            desc.unwrap_or(true),
+        )?;
+        serve_auth_state(&mut page.items);
+        Ok(page)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -914,6 +1422,149 @@ pub async fn mail_flag(
         )
         .await
         .map_err(String::from)
+}
+
+/// Mark every unread message in a folder read, locally **and** on the server.
+/// Returns how many rows changed.
+///
+/// It exists because the per-message command cannot stand in for it at any
+/// honest cost: 200 unread messages would be 200 `mail_flag` calls, i.e. 200
+/// IMAP logins, which is slower than the sync that fetched them and is what a
+/// connection-rate limit exists to refuse. Here it is one login, one SELECT and
+/// (almost always) one STORE.
+///
+/// The local index is written **first**, exactly as `mail_flag` does and for the
+/// same reason — the UI must not sit on a round trip — and a server refusal is
+/// reported rather than swallowed. The divergence that leaves is self-healing in
+/// this one direction: `upsert_header` takes `seen` from the server on every
+/// sync, so a mark that never reached the server comes back unread at the next
+/// check rather than staying wrong forever. That is the safe way round; the
+/// opposite (server-first) would leave the user staring at an unchanged list
+/// while the connection times out.
+#[tauri::command]
+pub async fn mail_mark_folder_read(
+    folder_id: String,
+    state: State<'_, MailState>,
+) -> Result<u32, String> {
+    let rt = state.inner().clone();
+    let rt2 = rt.clone();
+    let id = folder_id.clone();
+    // The UIDs are read *before* the local flip: afterwards there is nothing
+    // unread left to find and the operation would silently become local-only.
+    let (account, folder, uids, store) = tokio::task::spawn_blocking(move || {
+        let store = store_of(&rt2)?;
+        let folder = store
+            .folder(&id)?
+            .ok_or_else(|| format!("folder '{id}' is not in the local index"))?;
+        let account = account_by_id(&accounts_path(), &folder.account_id)?;
+        let uids = store.unseen_uids(&id)?;
+        Ok::<_, String>((account, folder, uids, store))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    // Nothing unread is not an error and must not cost a login.
+    if uids.is_empty() {
+        return Ok(0);
+    }
+
+    let id = folder_id.clone();
+    let changed = tokio::task::spawn_blocking(move || {
+        let changed = store.mark_folder_seen(&id)?;
+        store.refresh_counts(&id)?;
+        Ok::<_, String>(changed)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let Some(pw) = resolve_password(&rt, &account, MailProto::Imap) else {
+        return Err(no_password_message());
+    };
+    InProcessEngine
+        // Via the enum, never the literal: one spelling of `\Seen` in the
+        // codebase, and it is the one the per-message path already uses.
+        .set_flags_bulk(&account, &pw, &folder.path, &uids, MailFlag::Seen.imap_flag(), true)
+        .await
+        .map_err(String::from)?;
+    Ok(changed)
+}
+
+// ── Commands: priority marks (Important / Urgent) ───────────────────────────
+//
+// The one part of the mail surface that **never touches the network**, in either
+// direction, and that is not an oversight — it is what the feature is.
+//
+// Important and Urgent are lists that span *every account*. No IMAP folder can
+// hold mail from two accounts, so the instant the list is cross-account the only
+// thing that can implement it is a local column; a real server-side move would
+// need one folder per account, a round trip per mark, and would mint new UIDs —
+// invalidating every cached body, attachment row and store key for the message,
+// and leaving a half-applied state whenever one account's server said no. See
+// `schema::mail::MailPriority` for the full statement, including the honest
+// cost: a mark is this machine's and is invisible to any other mail client.
+
+/// Set — or with `priority: None`, clear — one message's local priority mark.
+///
+/// Local only: no login, no STORE, no COPY. It returns whether a row actually
+/// changed, so the frontend can tell "marked" from "that message is no longer in
+/// the index" rather than reporting a silent success either way.
+#[tauri::command]
+pub async fn mail_priority_set(
+    message_id: String,
+    priority: Option<MailPriority>,
+    state: State<'_, MailState>,
+) -> Result<bool, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || store_of(&rt)?.set_priority(&message_id, priority))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// One page of everything carrying `priority`, across every account and folder.
+///
+/// Deliberately the twin of [`mail_headers`] — same paging, same optional query,
+/// same `MailSort`-not-a-column-name rule — so the Important list behaves like a
+/// folder and the frontend keeps one list component. `serve_auth_state` runs
+/// here too: a cross-account list is exactly where an unchecked SPF/DKIM verdict
+/// would be most misleading, since the reader is no longer looking at one
+/// account's mail.
+#[tauri::command]
+pub async fn mail_priority_page(
+    priority: MailPriority,
+    offset: u32,
+    limit: u32,
+    query: Option<String>,
+    sort: Option<MailSort>,
+    desc: Option<bool>,
+    state: State<'_, MailState>,
+) -> Result<MailHeaderPage, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let store = store_of(&rt)?;
+        let mut page = store.priority_page(
+            priority,
+            offset,
+            limit,
+            query.as_deref(),
+            sort.unwrap_or_default(),
+            desc.unwrap_or(true),
+        )?;
+        serve_auth_state(&mut page.items);
+        Ok(page)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The two rail badges' numbers, read together so they cannot disagree.
+#[tauri::command]
+pub async fn mail_priority_counts(
+    state: State<'_, MailState>,
+) -> Result<MailPriorityCounts, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || store_of(&rt)?.priority_counts())
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1551,6 +2202,118 @@ mod tests {
         }
     }
 
+    // ── Authentication-Results trust, applied at the serve boundary ─────────
+
+    fn header_with_auth(account_id: &str, authserv: &str) -> MailHeader {
+        let auth = mail_authres::parse_authentication_results(
+            &[format!("{authserv}; dmarc=pass header.from=bank.example")],
+            "security@bank.example",
+        )
+        .unwrap();
+        MailHeader {
+            id: "m1".into(),
+            account_id: account_id.into(),
+            folder_id: "f1".into(),
+            uid: 1,
+            rfc_message_id: None,
+            subject: String::new(),
+            from: Default::default(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            date: String::new(),
+            seen: false,
+            flagged: false,
+            answered: false,
+            has_attachments: false,
+            size: 0,
+            preview: String::new(),
+            malformed_headers: None,
+            auth: Some(auth),
+            priority: None,
+        }
+    }
+
+    fn account_with_authserv(id: &str, authserv: Option<&str>) -> MailAccount {
+        MailAccount {
+            id: id.into(),
+            authserv_id: authserv.map(str::to_string),
+            ..account("A")
+        }
+    }
+
+    #[test]
+    fn a_matching_authserv_id_is_the_only_thing_that_shows_a_verdict() {
+        let mut headers = [header_with_auth("acc1", "mx.example.net")];
+        apply_auth_trust(
+            &mut headers,
+            &[account_with_authserv("acc1", Some("mx.example.net"))],
+        );
+        let auth = headers[0].auth.as_ref().unwrap();
+        assert_eq!(auth.state, crate::schema::mail::MailAuthState::Verified);
+        assert_eq!(auth.methods.len(), 1);
+    }
+
+    #[test]
+    fn an_account_with_no_configured_id_shows_no_verdict() {
+        let mut headers = [header_with_auth("acc1", "mx.example.net")];
+        apply_auth_trust(&mut headers, &[account_with_authserv("acc1", None)]);
+        let auth = headers[0].auth.as_ref().unwrap();
+        assert_eq!(auth.state, crate::schema::mail::MailAuthState::Unconfigured);
+        assert!(auth.methods.is_empty());
+    }
+
+    /// Failing to *find* the account must never read as having *matched* it —
+    /// otherwise a deleted account would silently promote every stored header
+    /// to whatever the message claimed.
+    #[test]
+    fn a_header_whose_account_is_gone_shows_no_verdict() {
+        let mut headers = [header_with_auth("acc-deleted", "mx.example.net")];
+        apply_auth_trust(
+            &mut headers,
+            &[account_with_authserv("acc1", Some("mx.example.net"))],
+        );
+        let auth = headers[0].auth.as_ref().unwrap();
+        assert_eq!(auth.state, crate::schema::mail::MailAuthState::Unconfigured);
+        assert!(auth.methods.is_empty());
+    }
+
+    #[test]
+    fn a_header_from_a_server_the_account_does_not_name_is_flagged_foreign() {
+        let mut headers = [header_with_auth("acc1", "evil.example")];
+        apply_auth_trust(
+            &mut headers,
+            &[account_with_authserv("acc1", Some("mx.example.net"))],
+        );
+        let auth = headers[0].auth.as_ref().unwrap();
+        assert_eq!(auth.state, crate::schema::mail::MailAuthState::Foreign);
+        assert!(auth.methods.is_empty());
+        assert_eq!(auth.authserv_id.as_deref(), Some("evil.example"));
+    }
+
+    /// Each header is judged against **its own** account, not the first one.
+    #[test]
+    fn two_accounts_are_not_judged_by_each_others_settings() {
+        let mut headers = [
+            header_with_auth("acc1", "mx.one.example"),
+            header_with_auth("acc2", "mx.one.example"),
+        ];
+        apply_auth_trust(
+            &mut headers,
+            &[
+                account_with_authserv("acc1", Some("mx.one.example")),
+                account_with_authserv("acc2", Some("mx.two.example")),
+            ],
+        );
+        assert_eq!(
+            headers[0].auth.as_ref().unwrap().state,
+            crate::schema::mail::MailAuthState::Verified
+        );
+        assert_eq!(
+            headers[1].auth.as_ref().unwrap().state,
+            crate::schema::mail::MailAuthState::Foreign
+        );
+    }
+
     // ── The remember tri-state ──────────────────────────────────────────────
 
     /// **`false` is unrepresentable.** The bug this closes is documented and
@@ -1566,6 +2329,51 @@ mod tests {
             None,
             "an upsert must never be able to forget a password"
         );
+    }
+
+    /// The password field is never pre-filled, so a *second* visit to the dialog
+    /// ticks Save with a blank field — and the live secret is then only in the
+    /// session map. Reaching it is what makes the tick mean anything.
+    #[test]
+    fn a_ticked_save_reaches_the_session_password() {
+        let state = new_state();
+        assert_eq!(session_secret(&state, "acct"), None, "nothing yet");
+        state
+            .lock()
+            .unwrap()
+            .passwords
+            .insert("acct".into(), Password::new("hunter2"));
+        assert_eq!(session_secret(&state, "acct").as_deref(), Some("hunter2"));
+        assert_eq!(session_secret(&state, "other"), None, "keyed per account");
+
+        // An empty stashed password is not a password — writing it would store a
+        // blank secret that then authenticates with nothing.
+        state
+            .lock()
+            .unwrap()
+            .passwords
+            .insert("blank".into(), Password::new(""));
+        assert_eq!(session_secret(&state, "blank"), None);
+    }
+
+    /// A tick with nothing to write must never be silent: `saved: false` and no
+    /// error is a box that unticks itself for no stated reason.
+    #[test]
+    fn a_blank_save_reports_why_instead_of_clearing() {
+        assert_eq!(
+            blank_save_error(true, true),
+            None,
+            "already saved — the blank field meant leave it alone"
+        );
+        assert_eq!(
+            blank_save_error(true, false),
+            None,
+            "unreadable is not absence; the entry is still there"
+        );
+        let typed = blank_save_error(false, true).expect("must say something");
+        assert!(typed.contains("type it"), "{typed}");
+        let locked = blank_save_error(false, false).expect("must say something");
+        assert!(locked.contains("locked"), "{locked}");
     }
 
     // ── Identity ────────────────────────────────────────────────────────────
