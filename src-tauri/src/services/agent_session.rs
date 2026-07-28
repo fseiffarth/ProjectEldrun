@@ -222,25 +222,11 @@ pub fn project_live_sessions_dir(project_id: &str) -> PathBuf {
     live_sessions_dir().join(sanitize_project_key(project_id))
 }
 
-/// Reduce a project id to a single path-safe component. Mirrors
-/// `services::sandbox::sanitize_key` (kept local so this module stays free of a
-/// dependency on the sandbox module, which is the *caller* here).
+/// Reduce a project id to a single path-safe component — the shared
+/// [`storage::project_key`], which is also what names the per-project session
+/// directory and the sandbox's container. One reduction, one answer.
 fn sanitize_project_key(id: &str) -> String {
-    let safe: String = id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if safe.is_empty() {
-        "x".to_string()
-    } else {
-        safe
-    }
+    storage::project_key(id)
 }
 
 fn hook_script_path() -> PathBuf {
@@ -729,6 +715,7 @@ mod tests {
             remote_host_id: None,
             tmux_session: None,
             tmux_attach: None,
+            host_bound_uid: None,
         }
     }
 

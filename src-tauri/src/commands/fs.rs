@@ -406,7 +406,10 @@ fn ignored_paths_under(root: &Path, rel_path: &str) -> HashSet<String> {
         args.push("--");
         args.push(rel_path);
     }
-    let Ok(out) = crate::paths::command_no_window("git").args(&args).current_dir(root).output() else {
+    // Hardened: `status` in a project directory a container mounts writable, so
+    // the repo's config is untrusted (`commands::git`, Group O #151).
+    let Ok(out) = crate::commands::git::hardened_git_command(&args).current_dir(root).output()
+    else {
         return HashSet::new();
     };
     let text = String::from_utf8_lossy(&out.stdout);

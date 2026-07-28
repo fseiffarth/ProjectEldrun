@@ -14,14 +14,28 @@
 //!
 //! Every non-required field defaults and each record keeps an `extra` flatten,
 //! so a newer or hand-edited file round-trips without losing keys.
+//!
+//! The tasks are also **the todo board's cards** (`task_columns` + `CalendarTask`'s
+//! `column`/`rank`). That is one store, not two, on purpose: a todo and a VTODO are
+//! the same thing, and a second file would mean the calendar's Tasks view and the
+//! board could disagree about whether something is done. `normalize` is where they
+//! are kept from drifting — see its doc.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Current `version` written into `calendar.json`.
-pub const CALENDAR_VERSION: u32 = 2;
+///
+/// **Nothing branches on it, and nothing may.** `CalendarFile` dispatches on the
+/// file's *shape* (it is `#[serde(untagged)]`), and `normalize` stamps this value
+/// unconditionally — so an older Eldrun that reads a v3 file writes it back
+/// stamped `2`, with the v3 fields intact in the `extra` flattens. The number can
+/// therefore go *backwards* on the same file, and a migration gated on it would
+/// run, or fail to run, non-deterministically. Every backfill below is instead
+/// version-independent and idempotent.
+pub const CALENDAR_VERSION: u32 = 3;
 
 /// Id of the calendar that legacy events (and events with no calendar) land in.
 pub const DEFAULT_CALENDAR_ID: &str = "default";
@@ -29,6 +43,21 @@ pub const DEFAULT_CALENDAR_ID: &str = "default";
 /// Fallback duration for a timed event whose end is missing/invalid — also what a
 /// migrated legacy event (which only had a start) gets.
 pub const DEFAULT_EVENT_MINUTES: i64 = 60;
+
+/// Gap between adjacent board ranks. Large enough that a card can be dropped
+/// between the same two neighbours ~50 times before the bisection runs out of
+/// mantissa; small enough that the raw JSON stays legible.
+pub const RANK_GAP: f64 = 1024.0;
+
+/// Two ranks closer than this are "too close to split": the column is reindexed
+/// instead. Cheap here because every write rewrites the whole file anyway, so a
+/// whole-column reindex costs exactly what a single-field update costs.
+pub const RANK_EPSILON: f64 = 1e-6;
+
+/// Most tags one task may carry. A cap rather than a validation error: tags are
+/// typed into a chip field, and the failure mode being guarded against is a
+/// hand-edited or generated file, not a user with opinions.
+pub const MAX_TAGS: usize = 16;
 
 // ── Calendars ───────────────────────────────────────────────────────────────
 
@@ -189,10 +218,126 @@ fn default_calendar_id() -> String {
     DEFAULT_CALENDAR_ID.to_string()
 }
 
+// ── Board columns ───────────────────────────────────────────────────────────
+
+/// One column of the todo board.
+///
+/// User-defined, and stored here rather than in `settings.json`, because a column
+/// id is *referenced by task records* — putting the two in different files would
+/// mean a settings restore could leave every card pointing at a column that no
+/// longer exists, with nothing in this file able to notice.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TaskColumn {
+    /// Stable id (a slug for the seeded set, a fresh uuid for a user-added one).
+    /// `CalendarTask::column` names it, which is exactly why the label is a
+    /// separate field: a rename must not move any cards.
+    pub id: String,
+    pub name: String,
+    /// Left-to-right order. Ties break by `id`, so a hand-edited file with two
+    /// equal positions still renders in a stable order rather than shuffling.
+    #[serde(default)]
+    pub position: i64,
+    /// **The** completion column: dropping a card here completes it, and
+    /// completing a task anywhere else moves it here. At most one column may
+    /// carry the flag (`normalize` enforces it); *zero* is legal and simply turns
+    /// the coupling off, which is what a user who deleted their Done column meant.
+    #[serde(default)]
+    pub done: bool,
+    /// CSS color for the column header, like `Calendar::color`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub color: String,
+    /// Optional soft "WIP limit"; `0` = none. **Advisory only** — no code path
+    /// refuses a move because of it. A drag that reports success and silently
+    /// snaps back is indistinguishable from a broken drag.
+    #[serde(default)]
+    pub limit: u32,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+impl TaskColumn {
+    /// The board a user who has never touched one starts with.
+    pub fn default_set() -> Vec<TaskColumn> {
+        [
+            ("backlog", "Backlog", "#8a93a5", false),
+            ("today", "Today", "#4aa3df", false),
+            ("doing", "Doing", "#e8a33d", false),
+            ("done", "Done", "#5cb85c", true),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, (id, name, color, done))| TaskColumn {
+            id: (*id).to_string(),
+            name: (*name).to_string(),
+            position: i as i64,
+            done: *done,
+            color: (*color).to_string(),
+            limit: 0,
+            extra: HashMap::new(),
+        })
+        .collect()
+    }
+}
+
 // ── Tasks ───────────────────────────────────────────────────────────────────
+
+/// One checklist item inside a task.
+///
+/// Deliberately **not** a separate VTODO linked by `RELATED-TO`: N sub-VTODOs
+/// would mean N ids, N board cards and N rows in the calendar's Tasks view for
+/// what is one commitment with a checklist. Binary rather than a percentage,
+/// because `CalendarTask::percent` already carries the gradual reading.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Subtask {
+    /// Stable within its task. `normalize` backfills an empty one as
+    /// `{task.id}-{index}`, so the frontend never needs an array index as a key.
+    #[serde(default)]
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub done: bool,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// The mail a task was converted from.
+///
+/// **Identifiers and a display snapshot, never a path.** The mail command surface
+/// is path-free by rule (`commands::mail`'s own `no_command_takes_a_path`
+/// tripwire), and a type that carries mail data *out* of that surface and into
+/// `calendar.json` must not be where the rule quietly stops holding.
+/// `message_id` is `MailHeader::id` — Eldrun's `{folder_id}-{uid}` store key,
+/// which is exactly what `mail_body`, `mail_flag` and `mail_priority_set` take.
+///
+/// `subject`/`from` are a **snapshot taken at conversion**, not a live lookup, for
+/// two reasons: the card must still read sensibly after the message is deleted
+/// from the server, and re-resolving them on every board render would make the
+/// todo board depend on a feature that is off by default.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TaskMailLink {
+    pub message_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub account_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub folder_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub subject: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub from: String,
+    /// The mark the message carried when it was converted (`"urgent"` /
+    /// `"important"`) — a record of *why* this card exists, never re-read as the
+    /// message's current mark.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub priority_at_convert: String,
+}
 
 /// A to-do (VTODO). `due`/`start` use the same local encoding as events; a task
 /// with no `due` simply never appears in the calendar views, only in the task list.
+///
+/// It is also a **board card**: `column` and `rank` place it, and the remaining
+/// board fields (`tags`, `subtasks`, `mail`, `project_id`, `created`) are
+/// Eldrun's own and are not exported to ICS — see `CalendarData::normalize` for
+/// how board state and VTODO completion are kept from contradicting each other.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct CalendarTask {
     pub id: String,
@@ -218,6 +363,58 @@ pub struct CalendarTask {
     pub category: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alarms: Vec<Alarm>,
+
+    // ── Board fields ────────────────────────────────────────────────────────
+    // Real fields rather than `extra` keys, because `normalize` reads every one
+    // of them: a key that only lives in `extra` cannot be read without `Value`
+    // juggling, and a typo in its name round-trips silently instead of failing
+    // to compile.
+    /// Id of the [`TaskColumn`] this card sits in. Empty means "not placed yet",
+    /// which `normalize` backfills — so a task created by the calendar's Tasks
+    /// view, by an ICS import, or by an older Eldrun still appears on the board.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub column: String,
+    /// Manual position within `column`: a fractional rank, ascending (smallest is
+    /// topmost). `None` is "unranked" and is backfilled by `normalize`.
+    ///
+    /// A rank on the *record* rather than an ordered id list on the column,
+    /// because an id list is a second index over `tasks` and would drift: tasks
+    /// are created by the Tasks view, by ICS import, and by builds that have
+    /// never heard of columns, none of which can append to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rank: Option<f64>,
+    /// Free-form labels. `normalize` trims, drops empties and dedupes them
+    /// case-insensitively (keeping the first spelling) — the board filters by
+    /// equality, and `Work` and `work` showing as two chips is a state the user
+    /// cannot repair from the UI.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Checklist items.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subtasks: Vec<Subtask>,
+    /// The mail this card was converted from, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail: Option<TaskMailLink>,
+    /// `ProjectEntry.id` this card belongs to, or empty.
+    ///
+    /// Deliberately **not** validated against `projects.json`: that would make
+    /// `calendar.json` unloadable, untestable and unmigratable on its own, and a
+    /// project can be legitimately absent for a while (removed and re-imported,
+    /// or simply on another machine) — clearing the chip would destroy the
+    /// association permanently. The frontend renders an unresolvable id as a
+    /// dimmed "unknown project" chip that still filters.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project_id: String,
+    /// Local wall-clock stamp the card was created at (`"YYYY-MM-DDTHH:MM"`).
+    ///
+    /// Minted by the frontend, exactly as `completed` already is: this crate
+    /// pulls in no time crate and `SystemTime` is UTC, so a backend stamp would
+    /// be the one field in this file that is not local wall-clock. Empty on every
+    /// pre-existing task, and left that way — an invented creation date is worse
+    /// than an absent one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub created: String,
+
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -234,6 +431,11 @@ pub struct CalendarData {
     pub events: Vec<CalendarEvent>,
     #[serde(default)]
     pub tasks: Vec<CalendarTask>,
+    /// The todo board's columns. `skip_serializing_if` so a user who has never
+    /// opened the board never grows the key in their file; `normalize` seeds the
+    /// default set the moment anything needs one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_columns: Vec<TaskColumn>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -245,24 +447,45 @@ impl Default for CalendarData {
             calendars: vec![Calendar::default_calendar()],
             events: Vec::new(),
             tasks: Vec::new(),
+            // Empty, not `default_set()`: `normalize` seeds it, and a `Default`
+            // that seeded too would make a fresh `default()` and a fresh *read*
+            // disagree about a file neither has written yet.
+            task_columns: Vec::new(),
             extra: HashMap::new(),
         }
     }
 }
 
 impl CalendarData {
-    /// Guarantee the invariants every reader relies on: at least one calendar
-    /// exists, and every event/task points at a calendar that is actually in the
-    /// list (a dangling `calendar_id` — from a hand-edit or a deleted calendar —
-    /// is refiled into the default rather than rendering invisibly).
+    /// Guarantee the invariants every reader relies on.
+    ///
+    /// The original two: at least one calendar exists, and every event/task
+    /// points at a calendar that is actually in the list (a dangling
+    /// `calendar_id` — from a hand-edit or a deleted calendar — is refiled into
+    /// the default rather than rendering invisibly).
+    ///
+    /// Since the todo board it also **moves task records between columns**, which
+    /// is worth stating plainly because it is no longer just "fix dangling
+    /// references": `normalize_tasks` reconciles board placement with VTODO
+    /// completion. That reconciliation lives here, rather than in the board's
+    /// frontend, precisely because this function runs on every *read* as well as
+    /// inside every create/update/save — so the calendar's Tasks view and the
+    /// board pass through it equally and cannot drift.
+    ///
+    /// Every rule below is **idempotent** (each one's postcondition falsifies its
+    /// own precondition) and **time-independent** — nothing consults a clock,
+    /// because a function that runs on every read must not migrate the same file
+    /// differently depending on the hour it was opened.
     pub fn normalize(&mut self) {
         self.version = CALENDAR_VERSION;
         if self.calendars.is_empty() {
             self.calendars.push(Calendar::default_calendar());
         }
-        let known: Vec<&str> = self.calendars.iter().map(|c| c.id.as_str()).collect();
+        // A set, not the `Vec::contains` this used to be: the board is what makes
+        // `tasks` actually grow, and the old form was O(tasks × calendars).
+        let known: HashSet<&str> = self.calendars.iter().map(|c| c.id.as_str()).collect();
         let fallback = self.calendars[0].id.clone();
-        let orphan = |id: &String| !known.contains(&id.as_str());
+        let orphan = |id: &String| !known.contains(id.as_str());
 
         let refile: Vec<usize> = self
             .events
@@ -283,6 +506,184 @@ impl CalendarData {
             .collect();
         for i in refile {
             self.tasks[i].calendar_id = fallback.clone();
+        }
+
+        self.normalize_tasks();
+    }
+
+    /// Seed the default columns if this store has none.
+    ///
+    /// Called by the board's *write* paths only, never by a read — that split is
+    /// the whole reason a calendar-only user's file never grows board state. The
+    /// first drag (or column edit) is what says "there is a board here now".
+    pub fn ensure_board(&mut self) {
+        if self.task_columns.is_empty() {
+            self.task_columns = TaskColumn::default_set();
+        }
+    }
+
+    /// The board half of [`normalize`](Self::normalize): columns, placement,
+    /// ranks, tags and subtask ids.
+    fn normalize_tasks(&mut self) {
+        // Tags and subtask ids are board fields but not *board* state: they are
+        // properties of a task however it is being looked at, so they are
+        // normalized whether or not a board exists.
+        for task in self.tasks.iter_mut() {
+            if !task.tags.is_empty() {
+                let mut seen: HashSet<String> = HashSet::new();
+                let mut kept: Vec<String> = Vec::with_capacity(task.tags.len());
+                for tag in task.tags.iter() {
+                    let trimmed = tag.trim();
+                    if trimmed.is_empty() || kept.len() >= MAX_TAGS {
+                        continue;
+                    }
+                    if seen.insert(trimmed.to_lowercase()) {
+                        kept.push(trimmed.to_string());
+                    }
+                }
+                if kept != task.tags {
+                    task.tags = kept;
+                }
+            }
+            let task_id = task.id.clone();
+            for (i, sub) in task.subtasks.iter_mut().enumerate() {
+                if sub.id.is_empty() {
+                    sub.id = format!("{task_id}-{i}");
+                }
+            }
+        }
+
+        // 1. No columns means no board — **and this function does not create
+        //    one**. Seeding here would grow `task_columns` (and a `column` on
+        //    every task) in the file of someone who only ever uses the calendar's
+        //    Tasks view, because `normalize` runs on every read: a plain read
+        //    would silently rewrite the store. The default set is seeded by the
+        //    first *write* the board makes instead (`ensure_board`), and until
+        //    then the frontend renders its own default columns and files
+        //    unplaced cards into the first of them.
+        if self.task_columns.is_empty() {
+            return;
+        }
+
+        // 2. At most one done column — the first one wins. Never *invent* one: a
+        //    user who deleted their Done column meant it, and inventing one
+        //    resurrects a column they removed. With none, step 4 is skipped and
+        //    the done↔column coupling is simply off.
+        let mut seen_done = false;
+        for col in self.task_columns.iter_mut() {
+            if col.done && seen_done {
+                col.done = false;
+            } else if col.done {
+                seen_done = true;
+            }
+        }
+
+        let done_col: Option<String> = self
+            .task_columns
+            .iter()
+            .find(|c| c.done)
+            .map(|c| c.id.clone());
+        // The destination for a card with no home: the leftmost column that is
+        // not the done one (falling back to the first column at all, for a board
+        // whose only column is Done).
+        let col_fallback: String = {
+            let mut open: Vec<&TaskColumn> = self.task_columns.iter().filter(|c| !c.done).collect();
+            open.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+            open.first()
+                .map(|c| c.id.clone())
+                .unwrap_or_else(|| self.task_columns[0].id.clone())
+        };
+        let known_cols: HashSet<&str> = self.task_columns.iter().map(|c| c.id.as_str()).collect();
+
+        for task in self.tasks.iter_mut() {
+            // 3. Refile a card naming a column that is gone — the `calendar_id`
+            //    rule again, for the same reason: a dangling id renders nowhere.
+            if !task.column.is_empty() && !known_cols.contains(task.column.as_str()) {
+                task.column = col_fallback.clone();
+            }
+
+            // 4. Reconcile done-ness → column, one-directionally.
+            //
+            //    `percent`/`completed` are authoritative: they are the
+            //    ICS-round-trippable, cross-tool truth that `TasksView` and
+            //    `serializeIcs` both read, while `column` is Eldrun's own and is
+            //    the field that can be absent. So this writes **only `column`**,
+            //    and never `percent`/`completed` — it also has no clock to mint a
+            //    completion stamp with.
+            //
+            //    The second arm is the case that actually happens: ticking a task
+            //    in the calendar's Tasks view changes `percent` and knows nothing
+            //    about columns. Un-completing sends the card to the fallback
+            //    rather than "wherever it was", because nothing records where it
+            //    was and inventing a memory field for a cross-surface edge case
+            //    is worse than one predictable, stated destination.
+            if let Some(done_id) = &done_col {
+                if task.percent >= 100 && &task.column != done_id {
+                    task.column = done_id.clone();
+                    task.rank = None; // re-ranked to the column's end below
+                } else if task.percent < 100 && &task.column == done_id {
+                    task.column = col_fallback.clone();
+                    task.rank = None;
+                }
+            }
+
+            // 5. Backfill an unplaced card — **from `percent` only, never from
+            //    `due`**. Any date-derived rule is time-dependent, and this runs
+            //    on every read: the same file would migrate differently depending
+            //    on the hour, and a board would silently reshuffle at midnight. It
+            //    would also dump every dated task into "Today" on first launch,
+            //    which makes the board useless on day one. Which column a card
+            //    belongs in is a statement of intent the user makes by dragging.
+            if task.column.is_empty() {
+                task.column = match (&done_col, task.percent >= 100) {
+                    (Some(done_id), true) => done_id.clone(),
+                    _ => col_fallback.clone(),
+                };
+            }
+
+            // 6. Drop a non-finite rank. Not cosmetic: `CalendarTask` derives
+            //    `PartialEq`, and a `NaN` makes equality non-reflexive — which
+            //    would silently break every round-trip assertion in the suite and
+            //    any frontend memo keyed on deep equality.
+            if task.rank.is_some_and(|r| !r.is_finite()) {
+                task.rank = None;
+            }
+        }
+
+        // 7. Backfill missing ranks, per column, in a deterministic and
+        //    time-independent order: due date (undated last), then priority
+        //    (unset last), then the record's position in the file. Appended after
+        //    whatever is already ranked, so an existing board is never reshuffled
+        //    by a task arriving from another surface.
+        for col in self.task_columns.iter().map(|c| c.id.clone()) {
+            let max_rank = self
+                .tasks
+                .iter()
+                .filter(|t| t.column == col)
+                .filter_map(|t| t.rank)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let mut base = if max_rank.is_finite() { max_rank } else { 0.0 };
+
+            let mut unranked: Vec<usize> = self
+                .tasks
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.column == col && t.rank.is_none())
+                .map(|(i, _)| i)
+                .collect();
+            unranked.sort_by(|&a, &b| {
+                let ta = &self.tasks[a];
+                let tb = &self.tasks[b];
+                let da = ta.due.clone().unwrap_or_else(|| "9999-99-99".to_string());
+                let db = tb.due.clone().unwrap_or_else(|| "9999-99-99".to_string());
+                let pa = if ta.priority == 0 { 10 } else { ta.priority };
+                let pb = if tb.priority == 0 { 10 } else { tb.priority };
+                da.cmp(&db).then(pa.cmp(&pb)).then(a.cmp(&b))
+            });
+            for i in unranked {
+                base += RANK_GAP;
+                self.tasks[i].rank = Some(base);
+            }
         }
     }
 }
@@ -361,6 +762,7 @@ pub fn migrate_legacy(events: Vec<LegacyEvent>) -> CalendarData {
         calendars: vec![Calendar::default_calendar()],
         events,
         tasks: Vec::new(),
+        task_columns: Vec::new(),
         extra: HashMap::new(),
     }
 }
@@ -563,6 +965,7 @@ mod tests {
                 calendar_id: "deleted-cal".into(),
                 ..Default::default()
             }],
+            task_columns: Vec::new(),
             extra: HashMap::new(),
         };
         data.normalize();
@@ -581,5 +984,422 @@ mod tests {
         let out = serde_json::to_string(&data).unwrap();
         assert!(out.contains("keep me"), "event extra must survive: {out}");
         assert!(out.contains("also keep"), "file extra must survive: {out}");
+    }
+
+    // ── Board: columns, placement, ranks ────────────────────────────────────
+
+    /// A store whose board already exists — the shape every board test starts
+    /// from, since the columns are seeded by the first board *write* rather than
+    /// by `normalize` (see `no_board_means_normalize_leaves_tasks_alone`).
+    fn board(tasks: Vec<CalendarTask>) -> CalendarData {
+        CalendarData {
+            version: CALENDAR_VERSION,
+            calendars: vec![Calendar::default_calendar()],
+            events: Vec::new(),
+            tasks,
+            task_columns: TaskColumn::default_set(),
+            extra: HashMap::new(),
+        }
+    }
+
+    fn task(id: &str) -> CalendarTask {
+        CalendarTask {
+            id: id.into(),
+            calendar_id: DEFAULT_CALENDAR_ID.into(),
+            title: id.into(),
+            ..Default::default()
+        }
+    }
+
+    fn done_column_id(data: &CalendarData) -> String {
+        data.task_columns
+            .iter()
+            .find(|c| c.done)
+            .map(|c| c.id.clone())
+            .expect("seeded board has a done column")
+    }
+
+    #[test]
+    fn ensure_board_seeds_the_default_columns() {
+        let mut data = CalendarData::default();
+        data.ensure_board();
+        assert_eq!(data.task_columns.len(), 4);
+        assert_eq!(data.task_columns.iter().filter(|c| c.done).count(), 1);
+        assert_eq!(done_column_id(&data), "done");
+
+        // Idempotent: a second call must not duplicate or re-seed.
+        let once = data.clone();
+        data.ensure_board();
+        assert_eq!(data, once);
+    }
+
+    /// The rule that keeps a calendar-only user's file clean: reading (which is
+    /// what `normalize` runs on) must never create a board, or every plain read
+    /// would silently rewrite the store with board state its owner never asked
+    /// for.
+    #[test]
+    fn no_board_means_normalize_leaves_tasks_unplaced() {
+        let mut data = CalendarData {
+            version: CALENDAR_VERSION,
+            calendars: vec![Calendar::default_calendar()],
+            events: Vec::new(),
+            tasks: vec![task("t")],
+            task_columns: Vec::new(),
+            extra: HashMap::new(),
+        };
+        data.normalize();
+        assert!(data.task_columns.is_empty(), "a read must not create a board");
+        assert!(data.tasks[0].column.is_empty());
+        assert_eq!(data.tasks[0].rank, None);
+    }
+
+    /// …but the task-level tidying is not board state, so it still runs.
+    #[test]
+    fn tags_and_subtask_ids_normalize_without_a_board() {
+        let mut data = CalendarData {
+            version: CALENDAR_VERSION,
+            calendars: vec![Calendar::default_calendar()],
+            events: Vec::new(),
+            tasks: vec![CalendarTask {
+                tags: vec![" Work ".into(), "work".into()],
+                subtasks: vec![Subtask {
+                    title: "s".into(),
+                    ..Default::default()
+                }],
+                ..task("t")
+            }],
+            task_columns: Vec::new(),
+            extra: HashMap::new(),
+        };
+        data.normalize();
+        assert_eq!(data.tasks[0].tags, vec!["Work"]);
+        assert_eq!(data.tasks[0].subtasks[0].id, "t-0");
+    }
+
+    #[test]
+    fn normalize_is_idempotent() {
+        let mut data = board(vec![
+            task("open"),
+            CalendarTask {
+                percent: 100,
+                ..task("finished")
+            },
+            CalendarTask {
+                column: "gone".into(),
+                ..task("orphan")
+            },
+            CalendarTask {
+                tags: vec![" Work ".into(), "work".into(), String::new()],
+                subtasks: vec![Subtask {
+                    title: "step".into(),
+                    ..Default::default()
+                }],
+                ..task("messy")
+            },
+        ]);
+        data.normalize();
+        let once = data.clone();
+        data.normalize();
+        assert_eq!(data, once, "normalize must be a no-op the second time");
+    }
+
+    #[test]
+    fn unplaced_tasks_are_filed_by_percent_not_by_due() {
+        let mut data = board(vec![
+            CalendarTask {
+                due: Some("1999-01-01".into()),
+                ..task("long-overdue")
+            },
+            CalendarTask {
+                percent: 100,
+                ..task("finished")
+            },
+        ]);
+        data.normalize();
+        // The overdue one lands in the leftmost open column — NOT in "today",
+        // which is what a due-date-derived rule would have done.
+        assert_eq!(data.tasks[0].column, "backlog");
+        assert_eq!(data.tasks[1].column, done_column_id(&data));
+    }
+
+    #[test]
+    fn backfill_does_not_depend_on_the_clock() {
+        // The same task, once with a due date far in the past and once far in the
+        // future, must be filed identically — the property that lets normalize
+        // run on every read.
+        let mut past = board(vec![CalendarTask {
+            due: Some("1999-01-01".into()),
+            ..task("t")
+        }]);
+        let mut future = board(vec![CalendarTask {
+            due: Some("2999-01-01".into()),
+            ..task("t")
+        }]);
+        past.normalize();
+        future.normalize();
+        assert_eq!(past.tasks[0].column, future.tasks[0].column);
+    }
+
+    #[test]
+    fn normalize_refiles_orphan_columns() {
+        let mut data = board(vec![CalendarTask {
+            column: "deleted-col".into(),
+            ..task("t")
+        }]);
+        data.normalize();
+        assert_eq!(data.tasks[0].column, "backlog");
+    }
+
+    #[test]
+    fn completing_a_task_moves_it_to_the_done_column() {
+        let mut data = board(vec![CalendarTask {
+            column: "doing".into(),
+            rank: Some(RANK_GAP),
+            percent: 100,
+            ..task("t")
+        }]);
+        data.normalize();
+        assert_eq!(data.tasks[0].column, done_column_id(&data));
+    }
+
+    #[test]
+    fn uncompleting_a_task_moves_it_out_of_done() {
+        let mut data = board(vec![CalendarTask {
+            column: "done".into(),
+            rank: Some(RANK_GAP),
+            percent: 0,
+            ..task("t")
+        }]);
+        data.normalize();
+        assert_eq!(data.tasks[0].column, "backlog");
+    }
+
+    #[test]
+    fn normalize_never_writes_percent_or_completed() {
+        // A card sitting in Done with percent 0 gets *moved*; its completion
+        // fields are left exactly as they were, because normalize has no clock
+        // and percent/completed are the authoritative half.
+        let mut data = board(vec![CalendarTask {
+            column: "done".into(),
+            percent: 0,
+            completed: None,
+            ..task("t")
+        }]);
+        data.normalize();
+        assert_eq!(data.tasks[0].percent, 0);
+        assert_eq!(data.tasks[0].completed, None);
+    }
+
+    #[test]
+    fn no_done_column_disables_the_coupling() {
+        let mut data = board(vec![CalendarTask {
+            column: "doing".into(),
+            percent: 100,
+            ..task("t")
+        }]);
+        data.task_columns = TaskColumn::default_set()
+            .into_iter()
+            .filter(|c| !c.done)
+            .collect();
+        data.normalize();
+        assert_eq!(data.tasks[0].column, "doing", "no Done column, no move");
+    }
+
+    #[test]
+    fn at_most_one_done_column_survives() {
+        let mut data = board(Vec::new());
+        data.task_columns = vec![
+            TaskColumn {
+                id: "a".into(),
+                name: "A".into(),
+                done: true,
+                ..Default::default()
+            },
+            TaskColumn {
+                id: "b".into(),
+                name: "B".into(),
+                position: 1,
+                done: true,
+                ..Default::default()
+            },
+        ];
+        data.normalize();
+        assert_eq!(data.task_columns.iter().filter(|c| c.done).count(), 1);
+        assert_eq!(done_column_id(&data), "a", "the first one wins");
+    }
+
+    #[test]
+    fn ranks_backfill_in_a_deterministic_order() {
+        // Due date first (undated last), then priority, then file order.
+        let mut data = board(vec![
+            task("undated"),
+            CalendarTask {
+                due: Some("2026-08-01".into()),
+                ..task("later")
+            },
+            CalendarTask {
+                due: Some("2026-07-01".into()),
+                ..task("sooner")
+            },
+        ]);
+        data.normalize();
+        let mut ordered: Vec<&CalendarTask> = data.tasks.iter().collect();
+        ordered.sort_by(|a, b| a.rank.unwrap().total_cmp(&b.rank.unwrap()));
+        let ids: Vec<&str> = ordered.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["sooner", "later", "undated"]);
+    }
+
+    #[test]
+    fn non_finite_ranks_are_dropped() {
+        let mut data = board(vec![CalendarTask {
+            column: "backlog".into(),
+            rank: Some(f64::NAN),
+            ..task("t")
+        }]);
+        data.normalize();
+        assert!(data.tasks[0].rank.is_some_and(|r| r.is_finite()));
+        // The reflexivity trap: a NaN anywhere makes `PartialEq` non-reflexive,
+        // which would silently break every round-trip assertion in this suite.
+        assert_eq!(data, data.clone());
+    }
+
+    #[test]
+    fn tags_are_trimmed_deduped_and_capped() {
+        let mut data = board(vec![CalendarTask {
+            tags: vec![" Work ".into(), "work".into(), String::new(), "home".into()],
+            ..task("t")
+        }]);
+        data.normalize();
+        assert_eq!(data.tasks[0].tags, vec!["Work", "home"]);
+
+        let mut many = board(vec![CalendarTask {
+            tags: (0..40).map(|i| format!("tag{i}")).collect(),
+            ..task("t")
+        }]);
+        many.normalize();
+        assert_eq!(many.tasks[0].tags.len(), MAX_TAGS);
+    }
+
+    #[test]
+    fn empty_subtask_ids_are_backfilled() {
+        let mut data = board(vec![CalendarTask {
+            subtasks: vec![
+                Subtask {
+                    title: "one".into(),
+                    ..Default::default()
+                },
+                Subtask {
+                    id: "kept".into(),
+                    title: "two".into(),
+                    ..Default::default()
+                },
+            ],
+            ..task("t")
+        }]);
+        data.normalize();
+        assert_eq!(data.tasks[0].subtasks[0].id, "t-0");
+        assert_eq!(data.tasks[0].subtasks[1].id, "kept");
+    }
+
+    #[test]
+    fn a_file_written_without_board_fields_still_loads() {
+        let raw = r#"{"version":2,"calendars":[],"events":[],"tasks":[
+            {"id":"t","calendar_id":"default","title":"old"}
+        ]}"#;
+        let data: CalendarFile = serde_json::from_str(raw).unwrap();
+        let mut data = data.into_data();
+        // Loading alone leaves it unplaced — reading creates no board.
+        assert!(data.tasks[0].column.is_empty());
+        // Once a board exists, the pre-existing task is filed and ranked without
+        // anyone having had to migrate it.
+        data.ensure_board();
+        data.normalize();
+        assert_eq!(data.tasks[0].column, "backlog");
+        assert!(data.tasks[0].rank.is_some());
+    }
+
+    #[test]
+    fn board_fields_are_omitted_when_empty() {
+        // A calendar that never opened the board must not grow board keys.
+        let out = serde_json::to_string(&CalendarData::default()).unwrap();
+        for key in ["task_columns", "column", "rank", "tags", "subtasks", "mail"] {
+            assert!(!out.contains(key), "{key} must not be written: {out}");
+        }
+    }
+
+    /// The "an older Eldrun does not lose data" claim, mechanically: a build that
+    /// has never heard of the board fields keeps them in its `extra` flatten and
+    /// writes them back out.
+    #[test]
+    fn an_older_build_round_trips_the_board_fields() {
+        #[derive(Serialize, Deserialize)]
+        struct OldTask {
+            id: String,
+            #[serde(default)]
+            calendar_id: String,
+            title: String,
+            #[serde(default)]
+            percent: u8,
+            #[serde(flatten)]
+            extra: HashMap<String, Value>,
+        }
+
+        let mine = CalendarTask {
+            column: "doing".into(),
+            rank: Some(2048.0),
+            tags: vec!["v2".into()],
+            mail: Some(TaskMailLink {
+                message_id: "inbox-42".into(),
+                subject: "hi".into(),
+                ..Default::default()
+            }),
+            project_id: "proj".into(),
+            ..task("t")
+        };
+        let json = serde_json::to_string(&mine).unwrap();
+
+        // Old build reads it, then writes it back untouched.
+        let old: OldTask = serde_json::from_str(&json).unwrap();
+        let rewritten = serde_json::to_string(&old).unwrap();
+
+        // New build reads what the old build wrote.
+        let back: CalendarTask = serde_json::from_str(&rewritten).unwrap();
+        assert_eq!(back.column, "doing");
+        assert_eq!(back.rank, Some(2048.0));
+        assert_eq!(back.tags, vec!["v2"]);
+        assert_eq!(back.project_id, "proj");
+        assert_eq!(back.mail.unwrap().message_id, "inbox-42");
+    }
+
+    #[test]
+    fn board_fields_survive_an_unknown_key_round_trip() {
+        let raw = r#"{"version":3,"calendars":[],"events":[],
+            "task_columns":[{"id":"a","name":"A","col_future":"keep col"}],
+            "tasks":[{"id":"t","calendar_id":"default","title":"x","column":"a",
+                      "tags":["k"],"subtasks":[{"title":"s","sub_future":"keep sub"}],
+                      "task_future":"keep task"}]}"#;
+        let data: CalendarFile = serde_json::from_str(raw).unwrap();
+        let data = data.into_data();
+        let out = serde_json::to_string(&data).unwrap();
+        for expected in ["keep col", "keep sub", "keep task"] {
+            assert!(out.contains(expected), "{expected} must survive: {out}");
+        }
+    }
+
+    #[test]
+    fn version_is_stamped_but_never_branched_on() {
+        // Two files claiming wildly different versions normalize identically —
+        // the property that makes an older build's write-back harmless.
+        let mk = |v: u32| {
+            let raw = format!(
+                r#"{{"version":{v},"calendars":[],"events":[],"tasks":[
+                    {{"id":"t","calendar_id":"default","title":"x"}}]}}"#
+            );
+            serde_json::from_str::<CalendarFile>(&raw).unwrap().into_data()
+        };
+        let old = mk(1);
+        let future = mk(99);
+        assert_eq!(old, future);
+        assert_eq!(old.version, CALENDAR_VERSION);
     }
 }

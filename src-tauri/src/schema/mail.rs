@@ -632,6 +632,11 @@ pub struct MailBody {
     /// Set when the body hit a size/element cap and was truncated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated: Option<bool>,
+    /// End-to-end signature/encryption, when the message carried any. Absent
+    /// for ordinary mail — the panel renders nothing rather than a reassuring
+    /// "not encrypted" row on every message in the mailbox.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crypto: Option<MailCryptoInfo>,
 }
 
 // ── Compose ─────────────────────────────────────────────────────────────────

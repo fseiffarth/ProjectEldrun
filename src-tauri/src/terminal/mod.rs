@@ -86,6 +86,16 @@ pub struct PtyOptions {
     /// precedence over `tmux_session` when set. No-op for a local project.
     #[serde(default)]
     pub tmux_attach: Option<String>,
+    /// The tab's **host-bound marker id** — the frontend-minted, layout-persisted
+    /// uuid of a local-model driver tab that is allowed to run on the host rather
+    /// than inside the project's container (`services::sandbox`).
+    ///
+    /// It is only an *index*: the grant itself is a file under
+    /// `<state_dir>/sessions/<project>/host_bound/`, written when the tab is
+    /// genuinely created. This replaced keying that decision on the tab's
+    /// `ELDRUN_LOCAL_MODEL` env var, which is a usage-recap label.
+    #[serde(default)]
+    pub host_bound_uid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

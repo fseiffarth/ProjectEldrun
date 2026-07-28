@@ -9,6 +9,7 @@
 
 use crate::gpustat::{self, GpuProc, GpuSample};
 use crate::sysstat::{self, SystemSnapshot};
+use serde::Serialize;
 
 /// One whole-system sample. `supported` is `false` on non-Linux targets, where
 /// the pane shows a "Linux only" placeholder instead of an empty table.
@@ -67,6 +68,87 @@ pub async fn system_monitor_snapshot(
         .map_err(|e| e.to_string())?;
     }
     Ok(sysstat::system_snapshot())
+}
+
+/// The machine's CPU and memory load, ready to print. The counterpart of
+/// [`gpu_memory_snapshot`] for the other two halves of the same question the
+/// local-model menu asks — "what is this machine doing, and what is left for the
+/// model I am about to load".
+///
+/// Unlike [`system_monitor_snapshot`] this carries **no process table**: the
+/// caller is a hover menu polling every couple of seconds, and the whole table
+/// (a `/proc` read per process, then the JSON for all of it) is a price only the
+/// monitor pane's own view justifies.
+///
+/// It also resolves the CPU percentage **here**, which the pane deliberately does
+/// not. The pane is long-lived, so diffing successive samples on the frontend is
+/// free and keeps the command sleep-less; a menu is often closed again before a
+/// second poll lands, so a diffing caller would show nothing at all for the usual
+/// visit. The two samples are 300 ms apart around an `await` (never a blocking
+/// sleep — the same shape as `debug_app_resource_usage`), and the reads between
+/// them are three small files, so the sampler cannot race any other caller: it
+/// holds no shared state.
+#[derive(Serialize, Clone, Copy)]
+pub struct MachineLoadSample {
+    /// `false` where the platform has no aggregate backend — the UI hides the
+    /// block rather than showing zeros.
+    pub supported: bool,
+    /// 0–100 across the whole machine (not per core), over the sample window.
+    pub cpu_percent: f64,
+    pub num_cores: u32,
+    /// 1/5/15-minute load average; all zero on Windows, which has none.
+    pub load_avg: [f64; 3],
+    pub mem_total_bytes: u64,
+    pub mem_used_bytes: u64,
+    pub swap_total_bytes: u64,
+    pub swap_used_bytes: u64,
+    /// Whole-package CPU temperature, or `None` where no sensor is readable.
+    pub cpu_temp_c: Option<f64>,
+}
+
+#[tauri::command]
+pub async fn machine_load_snapshot() -> Result<MachineLoadSample, String> {
+    let first = sysstat::machine_load();
+    if !first.supported {
+        return Ok(MachineLoadSample {
+            supported: false,
+            cpu_percent: 0.0,
+            num_cores: 0,
+            load_avg: [0.0; 3],
+            mem_total_bytes: 0,
+            mem_used_bytes: 0,
+            swap_total_bytes: 0,
+            swap_used_bytes: 0,
+            cpu_temp_c: None,
+        });
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let now = sysstat::machine_load();
+
+    // Cumulative counters, so the percentage is the ratio of the two deltas —
+    // wall-clock-independent, which is why the window length never enters it. A
+    // zero (or backwards) total delta means the counters didn't move: report 0
+    // rather than dividing by it.
+    let busy = now.cpu.busy.saturating_sub(first.cpu.busy) as f64;
+    let total = now.cpu.total.saturating_sub(first.cpu.total) as f64;
+    let cpu_percent = if total > 0.0 {
+        (busy / total * 1000.0).round() / 10.0
+    } else {
+        0.0
+    };
+
+    Ok(MachineLoadSample {
+        supported: true,
+        cpu_percent: cpu_percent.clamp(0.0, 100.0),
+        num_cores: now.num_cores,
+        load_avg: now.load_avg,
+        mem_total_bytes: now.mem_total_kib * 1024,
+        mem_used_bytes: now.mem_total_kib.saturating_sub(now.mem_available_kib) * 1024,
+        swap_total_bytes: now.swap_total_kib * 1024,
+        swap_used_bytes: now.swap_total_kib.saturating_sub(now.swap_free_kib) * 1024,
+        cpu_temp_c: now.cpu_temp_c,
+    })
 }
 
 /// GPU memory alone, for callers that want the device's memory without paying

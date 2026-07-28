@@ -3,9 +3,16 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::schema::project::TabEntry;
+use crate::schema::project::{OpenApp, TabEntry};
 
-/// `.eldrun/sessions/terminals.json` — terminal tab layout snapshot.
+/// A project's terminal tab layout snapshot.
+///
+/// Lives at `<state_dir>/sessions/<project key>/terminals.json` — see
+/// [`crate::storage::project_session_dir`] for why it is **not** in the project
+/// tree. A copy is still written to `<project>/.eldrun/sessions/terminals.json`
+/// so the layout keeps travelling with a folder that gets synced or copied, but
+/// that copy is **export-only**: nothing reads it without an explicit user
+/// action (`commands::projects::adopt_folder_tab_layout`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalSession {
@@ -16,6 +23,16 @@ pub struct TerminalSession {
     /// sessions, where the frontend rebuilds a single root group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab_groups: Option<Value>,
+    /// Opaque list of open agent-session UUIDs (frontend-owned).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_tab_sessions: Option<Value>,
+    /// Standalone apps to relaunch on project activation. Moved here out of
+    /// `project.json`, whose home is the container's writable mount: this list
+    /// is a host-side `spawn_reaped` on every activation, so it is exactly the
+    /// kind of state that must not be writable from inside the boundary it
+    /// escapes. Still filtered by `services::restore_service`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_apps: Option<Vec<OpenApp>>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }

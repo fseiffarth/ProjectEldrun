@@ -56,6 +56,16 @@ where
 /// Windows: `%APPDATA%\eldrun\`
 /// macOS:   `~/Library/Application Support/eldrun/`
 pub fn state_dir() -> std::path::PathBuf {
+    // Test/dev override. The state dir is now written to by tests (the per-project
+    // session state moved here out of the project tree), and a test suite that
+    // writes into the developer's real `~/.local/share/eldrun/` is not a test
+    // suite. Not a supported runtime knob — nothing sets it but the test harness,
+    // and anything that could set it for the app already owns the process.
+    if let Ok(dir) = std::env::var("ELDRUN_STATE_DIR") {
+        if !dir.is_empty() {
+            return std::path::PathBuf::from(dir);
+        }
+    }
     if cfg!(target_os = "windows") {
         let base = std::env::var("APPDATA")
             .map(std::path::PathBuf::from)
@@ -79,6 +89,53 @@ pub fn state_dir() -> std::path::PathBuf {
 /// Working directory for terminals that are not attached to a project.
 pub fn root_work_dir() -> std::path::PathBuf {
     paths::root_work_dir()
+}
+
+/// Reduce a project id to a single path-safe component, so it can name a
+/// directory under the state dir without any part of it being read as a path.
+///
+/// The **one** copy of this reduction. It used to exist three times over
+/// (`services::sandbox::sanitize_key`, `services::agent_session::
+/// sanitize_project_key`, and now the per-project session dir), and three copies
+/// of a path-safety rule is two too many: a project id that one of them mapped
+/// differently would put two subsystems' state in different places for the same
+/// project, silently.
+pub fn project_key(id: &str) -> String {
+    let safe: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe.is_empty() {
+        "x".to_string()
+    } else {
+        safe
+    }
+}
+
+/// `<state_dir>/sessions/` — the root of the per-project session state that used
+/// to live inside each project tree.
+pub fn sessions_root() -> std::path::PathBuf {
+    state_dir().join("sessions")
+}
+
+/// `<state_dir>/sessions/<project key>/` — where a project's tab layout,
+/// `open_apps` and host-bound markers live.
+///
+/// **The reason this directory exists at all**: everything under it is read back
+/// by the host as *executable intent* (a tab's `cmd`/`env`/`cwd`, an app to
+/// launch, a decision to skip the container), and its previous home was inside
+/// the project tree — i.e. inside the project container's writable rw mount, and
+/// inside any repository that gets cloned or imported as a project. A boundary
+/// whose writable area contains the control plane of the thing enforcing it is
+/// not a boundary. Nothing here is mounted into any container.
+pub fn project_session_dir(project_id: &str) -> std::path::PathBuf {
+    sessions_root().join(project_key(project_id))
 }
 
 fn now_secs() -> u64 {

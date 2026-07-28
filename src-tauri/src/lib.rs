@@ -765,6 +765,20 @@ pub fn run() {
             commands::mail::mail_encryption_unlock,
             commands::mail::mail_encryption_decline,
             commands::mail::mail_encryption_reset,
+            // OpenPGP (docs/mail_encryption_plan.md §6). The keyring needs an
+            // encrypted store — a private key in a plaintext file would make
+            // the whole feature theatre — so `mail_pgp_available` is the one
+            // bool the UI gates the whole surface on.
+            commands::mail::mail_pgp_available,
+            commands::mail::mail_pgp_keys,
+            commands::mail::mail_pgp_generate,
+            commands::mail::mail_pgp_import,
+            commands::mail::mail_pgp_import_pick,
+            commands::mail::mail_pgp_export,
+            commands::mail::mail_pgp_set_verified,
+            commands::mail::mail_pgp_bind,
+            commands::mail::mail_pgp_delete,
+            commands::mail::mail_pgp_recipients_ready,
             // In-app browser (docs/browser_plan_{a,b,c}.md, TODO J #61). Two
             // surfaces, neither an embedded pane: a JS-free reader tab that is
             // fetched and sanitized in Rust, and a separate hardened
@@ -830,6 +844,7 @@ pub fn run() {
             commands::usage_stats::usage_git_stats,
             commands::monitor::system_monitor_snapshot,
             commands::monitor::gpu_memory_snapshot,
+            commands::monitor::machine_load_snapshot,
             commands::monitor::gpu_process_snapshot,
             // AC-vs-battery detection for Energy Saver mode.
             commands::power::get_power_state,

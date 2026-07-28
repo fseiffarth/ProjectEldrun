@@ -32,6 +32,8 @@
 //! - the **project directory** (rw) — the sole project bytes exposed;
 //! - selected subpaths of `~/.claude`, `~/.codex` (rw, when present) — the agent
 //!   auth + transcript files resume needs, and **only** those (see [`rw_mounts`]);
+//! - `~/.claude/projects` **per transcript dir**: this project's rw, every other
+//!   project's read-only (see the transcript section below);
 //! - `<state_dir>/live_sessions/<project-id>` (rw) — where the in-container
 //!   SessionStart hook records a tab's live session id for resume. **Per project**,
 //!   not the shared root: one flat directory let a contained agent overwrite
@@ -49,14 +51,22 @@
 //! Nothing else under `$HOME` or `state_dir` (notably `projects.json`,
 //! `time_log.json`, or another project's `live_sessions` record) is mounted.
 //!
-//! One caveat the mount list cannot hide: `~/.claude/projects` **is** mounted, and
-//! Claude keys its transcripts by encoded cwd, not by Eldrun project — so a
-//! contained agent can read (and write) the conversation history of every project
-//! whose transcripts live there. Narrowing that to this project's own encoded-cwd
-//! directory needs Claude's encoding replicated on the Rust side and is tracked
-//! separately; the other formerly-exposed `~/.claude` entries (shell snapshots,
-//! plugins, agents, hooks-bearing backups, telemetry, the global history) are no
-//! longer mounted at all.
+//! ## Claude transcripts: read every project, write only our own
+//!
+//! `~/.claude/projects` is the one mount whose contents span projects — Claude
+//! keys transcripts by encoded cwd, not by Eldrun project. It is therefore
+//! mounted **per entry, explicitly** ([`claude_transcript_mounts`]), never as one
+//! dir: this project's transcript dirs rw, **every other project's `:ro`**. Reading
+//! another project's history is allowed; rewriting one is not, because the
+//! rewritten log is what an *uncontained* future session reads back as its own
+//! history. Membership is decided by the `cwd` recorded **inside** a transcript,
+//! not by decoding the directory name — that encoding maps both `/` and `.` to
+//! `-`, so a name cannot distinguish a subdirectory from a sibling project.
+//!
+//! A cwd with no host dir at create time (a subdir tab, a fresh worktree) has
+//! nothing to mount, so the mount *parent* is a per-project stage dir: the new
+//! transcript lands there, on the host, and teardown harvests it into the real
+//! `~/.claude/projects`.
 //!
 //! ## Hook mounts (host-RCE defence)
 //!
@@ -159,23 +169,11 @@ impl Default for HardenOpts {
 
 /// Reduce an id to a docker-name/shell/path-safe key (`[A-Za-z0-9_-]`, never
 /// empty). Shared by the container name, the per-project stage dir, and the
-/// per-tab pidfile so all three stay derivable from the same id.
+/// per-tab pidfile so all three stay derivable from the same id — and, via
+/// [`crate::storage::project_key`], by the per-project session directory, so a
+/// project's container and its session state are named by the same rule.
 fn sanitize_key(id: &str) -> String {
-    let safe: String = id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if safe.is_empty() {
-        "x".to_string()
-    } else {
-        safe
-    }
+    crate::storage::project_key(id)
 }
 
 /// Name of the session container for a project: `eldrun-<sanitized-id>`.
@@ -413,8 +411,67 @@ pub struct SpawnAuthority {
 
 /// Env var Eldrun sets on every local-model tab (both the `vibe` per-model driver
 /// and the `prepare_local_launch` drivers) to record which Ollama model it drives.
-/// Doubles as the marker that identifies a genuinely host-bound `local_agent` tab.
+///
+/// **A usage label, and nothing else.** It used to double as the marker that
+/// granted a tab the right to skip the container, which was an authority decision
+/// keyed on a telemetry string: `TabBar.tsx` sets it so the daily recap can break
+/// local-agent tabs down by model, and *any* future surface that set it for a
+/// display reason would silently have handed out container escapes. The authority
+/// now comes from [`host_bound_marker_exists`].
 pub const LOCAL_MODEL_ENV: &str = "ELDRUN_LOCAL_MODEL";
+
+/// Directory of host-bound markers for a project:
+/// `<state_dir>/sessions/<project key>/host_bound/`.
+fn host_bound_dir(project_id: &str) -> std::path::PathBuf {
+    crate::storage::project_session_dir(project_id).join("host_bound")
+}
+
+/// Whether `uid` is a well-formed marker name. A marker names a file, so it must
+/// reduce to one path component and nothing else — this is the only validation
+/// between a renderer-supplied string and a `join`.
+fn valid_marker_uid(uid: &str) -> bool {
+    !uid.is_empty()
+        && uid.len() <= 64
+        && uid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Record that a tab was genuinely created as a host-bound local-model tab.
+///
+/// Written when the user opens one (`TabBar`/`NewTabMenu` → the
+/// `register_host_bound_tab` command), into the state dir — which no container
+/// mounts, unlike the persisted layout this decision used to be re-derived from.
+/// The uid is the frontend-minted, layout-persisted `hostBoundUid`, stable across
+/// a relaunch (the tab's key and PTY id are both regenerated on restore), so a
+/// legitimately restored Ollama tab keeps its exemption.
+pub fn register_host_bound_tab(project_id: &str, uid: &str) -> Result<(), String> {
+    if !valid_marker_uid(uid) {
+        return Err("invalid host-bound tab id".to_string());
+    }
+    let dir = host_bound_dir(project_id);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create host_bound dir: {e}"))?;
+    std::fs::write(dir.join(uid), b"1").map_err(|e| format!("write host_bound marker: {e}"))
+}
+
+/// Whether a marker exists for this (project, tab uid) pair.
+pub fn host_bound_marker_exists(project_id: &str, uid: &str) -> bool {
+    valid_marker_uid(uid) && host_bound_dir(project_id).join(uid).is_file()
+}
+
+/// Drop markers for tabs the project no longer has, so the directory does not
+/// grow one file per local-model tab ever opened. Called after a layout save with
+/// the uids the saved layout still carries.
+pub fn prune_host_bound_markers(project_id: &str, keep: &std::collections::HashSet<String>) {
+    let dir = host_bound_dir(project_id);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !keep.contains(&name) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
 
 /// The commands a **host-bound** local-model tab can spawn: `vibe`, `ollama`
 /// (`ollama launch <agent> --model …`) and the direct fallbacks of
@@ -423,18 +480,26 @@ pub const LOCAL_MODEL_ENV: &str = "ELDRUN_LOCAL_MODEL";
 /// `VIBE_HOME`, and each agent's host-side wiring, none of which exists inside the
 /// image. Kept as an explicit allowlist rather than "trust whatever says it is
 /// local": several of these names (`claude`, `codex`, …) are also ordinary agent
-/// CLIs, which is exactly why the [`LOCAL_MODEL_ENV`] marker is required too.
+/// CLIs, which is exactly why a registered marker is required too.
 pub const HOST_BOUND_LOCAL_AGENT_CMDS: &[&str] =
     &["vibe", "ollama", "claude", "codex", "opencode", "droid", "openclaw"];
 
 /// Whether this spawn is one of the host-bound local-model driver tabs (see
 /// [`HOST_BOUND_LOCAL_AGENT_CMDS`]): the command is a known driver **and** the tab
-/// carries the local-model marker env var.
-pub fn is_host_bound_local_agent(cmd: &str, env: &HashMap<String, String>) -> bool {
-    if env.get(LOCAL_MODEL_ENV).is_none_or(|m| m.trim().is_empty()) {
-        return false;
-    }
-    HOST_BOUND_LOCAL_AGENT_CMDS.contains(&cmd)
+/// holds a registered host-bound marker.
+///
+/// `marker` is the caller's answer to "does this tab's uid have a marker file?",
+/// injected so the policy stays pure and testable; the state-dir lookup is
+/// [`host_bound_marker_exists`].
+///
+/// **What this buys, precisely.** It removes an authority decision that was keyed
+/// on `ELDRUN_LOCAL_MODEL` — a label `TabBar.tsx` sets for the usage recap, which
+/// meant a display-only change elsewhere could hand out container escapes without
+/// anyone noticing. It does *not* defend against a compromised renderer: the
+/// registration is a command the renderer calls, so a renderer that can spawn can
+/// also register. That case is the CSP's, and it is why the CSP is load-bearing.
+pub fn is_host_bound_local_agent(cmd: &str, marker: bool) -> bool {
+    marker && HOST_BOUND_LOCAL_AGENT_CMDS.contains(&cmd)
 }
 
 /// Re-derive a spawn's authority flags from the trustworthy project record.
@@ -457,7 +522,7 @@ pub fn resolve_spawn_authority(
     toggle_on: bool,
     requested: SpawnAuthority,
     cmd: &str,
-    env: &HashMap<String, String>,
+    host_bound_marker: bool,
 ) -> SpawnAuthority {
     if !has_project {
         return requested;
@@ -468,7 +533,7 @@ pub fn resolve_spawn_authority(
             local_only: requested.local_only,
         };
     }
-    if is_host_bound_local_agent(cmd, env) {
+    if is_host_bound_local_agent(cmd, host_bound_marker) {
         return SpawnAuthority {
             sandbox: false,
             local_only: true,
@@ -489,6 +554,12 @@ pub fn enforce_spawn_authority(opts: &mut PtyOptions) {
     };
     let is_remote = crate::services::remote::remote_target_for(&project_id).is_some();
     let toggle_on = sandbox_spec_for(&project_id).is_some_and(|s| s.enabled);
+    // The container exemption is looked up in the state dir, never taken from the
+    // spawn's own env — see `is_host_bound_local_agent`.
+    let marker = opts
+        .host_bound_uid
+        .as_deref()
+        .is_some_and(|uid| host_bound_marker_exists(&project_id, uid));
     let resolved = resolve_spawn_authority(
         true,
         is_remote,
@@ -498,7 +569,7 @@ pub fn enforce_spawn_authority(opts: &mut PtyOptions) {
             local_only: opts.local_only,
         },
         &opts.cmd,
-        &opts.env,
+        marker,
     );
     if resolved.sandbox != opts.sandbox || resolved.local_only != opts.local_only {
         eprintln!(
@@ -642,12 +713,21 @@ pub fn up(project_id: &str, spec: Option<&SandboxSpec>, project_dir: &str) -> Re
     let harden = harden_opts(spec);
     let image = image_for(project_id, spec);
 
-    // The create argv (sans fingerprint label) is its own fingerprint input.
+    // The create argv (sans fingerprint label) is its own fingerprint input —
+    // and deliberately WITHOUT the transcript mounts. That set changes whenever
+    // *any* project gains a transcript dir, and a fingerprint mismatch means
+    // `rm -f` + recreate: folding it in would let an unrelated project's agent
+    // kill every live tab of this one. Mounts are fixed at create anyway, so a
+    // session simply runs with the set it started with.
     let base = docker_create_args(
         &name, project_id, &image, &home, uid, gid, project_dir, &rw_mounts, &ro_mounts, &harden,
         None,
     );
     let fingerprint = spec_fingerprint(&base);
+
+    let (tx_rw, tx_ro) = claude_transcript_mounts(&home, project_dir, &claude_projects_stage(project_id));
+    let rw_mounts: Vec<String> = rw_mounts.into_iter().chain(tx_rw).collect();
+    let ro_mounts: Vec<String> = ro_mounts.into_iter().chain(tx_ro).collect();
 
     match up_decision(&probe_container(&name), &fingerprint) {
         UpAction::UseExisting => {
@@ -724,6 +804,9 @@ pub fn down_for_project(project_id: &str) {
     }
     let _guard = lifecycle_lock().lock().unwrap();
     let _ = docker(&["rm", "-f", &name]);
+    // The mounts are gone with the container: anything the session recorded for
+    // a cwd that had no host dir at create time is in the stage now.
+    harvest_project_transcripts(project_id);
     created_set().lock().unwrap().remove(&name);
     exec_tabs()
         .lock()
@@ -739,6 +822,7 @@ pub fn down_all() {
         return;
     }
     remove_all_owned();
+    harvest_all_transcripts();
     created_set().lock().unwrap().clear();
     exec_tabs().lock().unwrap().clear();
 }
@@ -749,6 +833,9 @@ pub fn down_all() {
 /// docker is absent.
 pub fn sweep_orphans() {
     let stage_root = storage::state_dir().join("sandbox-stage");
+    // Before the wipe: a previous run that crashed never got to harvest the
+    // transcripts its containers wrote into the stage.
+    harvest_all_transcripts();
     let _ = std::fs::remove_dir_all(&stage_root);
     // Containers are Unix-only (`up_for_project` is a no-op and spawn refuses on
     // Windows), so a previous run can't have left one behind — don't spawn
@@ -1141,6 +1228,9 @@ pub fn detect_spec_sources(project_dir: &Path, spec: &mut SandboxSpec) {
 /// `settings.json`/`settings.local.json` are excluded here because
 /// [`staged_config_mounts`] mounts a writable per-project **copy** at those exact
 /// paths; mounting the originals as well would be a duplicate destination.
+/// `projects` (the transcripts) is excluded for the same reason — it is mounted
+/// explicitly, per entry, by [`claude_transcript_mounts`], because *this*
+/// project's transcripts must be writable and every other project's must not.
 ///
 /// A trailing `*` matches by prefix (`daemon.*`). Everything not listed is still
 /// mounted — deliberately: an unknown new entry breaking resume is worse than an
@@ -1159,6 +1249,7 @@ const CLAUDE_UNMOUNTED: &[&str] = &[
     "daemon.*",
     "settings.json",
     "settings.local.json",
+    CLAUDE_PROJECTS_ENTRY,
 ];
 
 /// Entries of `~/.codex` that are not mounted. Much shorter than
@@ -1228,6 +1319,211 @@ fn rw_mounts(home: &str, live_sessions_src: &str, live_sessions_dst: &str) -> Ve
         }
     }
     m
+}
+
+// ── Claude transcripts: read every project, write only our own ────────────
+
+/// The `~/.claude` entry holding **transcripts**
+/// (`~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`). Kept out of the
+/// [`CLAUDE_UNMOUNTED`] denylist's mounted-by-default set and mounted explicitly
+/// instead — see [`claude_transcript_mounts`].
+const CLAUDE_PROJECTS_ENTRY: &str = "projects";
+
+/// How many transcript files / how many of each file's leading lines are read
+/// when asking a transcript dir which cwd it belongs to. Bounded because this
+/// runs for every dir at every container create, and a single transcript line
+/// can carry a large tool result.
+const TRANSCRIPT_PROBE_FILES: usize = 3;
+const TRANSCRIPT_PROBE_LINES: usize = 32;
+
+/// This project's stand-in for `~/.claude/projects` inside the container:
+/// `<state_dir>/sandbox-stage/<project>/claude-projects`.
+///
+/// It is the mount *parent*, so a transcript dir the container creates for a cwd
+/// nobody knew about at create time (a subdir tab, a fresh worktree) lands in a
+/// real host directory instead of the container's throwaway layer — teardown
+/// harvests it into `~/.claude/projects` (see [`harvest_claude_transcripts`]).
+fn claude_projects_stage(project_id: &str) -> PathBuf {
+    stage_dir(project_id).join("claude-projects")
+}
+
+/// The absolute cwd a transcript dir's sessions were recorded in, read out of a
+/// transcript rather than decoded from the directory name.
+///
+/// The name is Claude's own encoding of the cwd and it is **lossy** — both `/`
+/// and `.` become `-`, so `…-KeyboardLayouts-modular-panel` is either a
+/// subdirectory `panel/` of the `modular` project or the *sibling* project
+/// `modular-panel`, and nothing in the name says which. The transcript itself
+/// carries the real `cwd`, so that is what decides.
+fn transcript_cwd(dir: &Path) -> Option<String> {
+    use std::io::BufRead as _;
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut logs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .collect();
+    logs.sort();
+    for log in logs.iter().take(TRANSCRIPT_PROBE_FILES) {
+        let Ok(file) = std::fs::File::open(log) else {
+            continue;
+        };
+        for line in std::io::BufReader::new(file)
+            .lines()
+            .take(TRANSCRIPT_PROBE_LINES)
+            .map_while(Result::ok)
+        {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if let Some(cwd) = v.get("cwd").and_then(serde_json::Value::as_str) {
+                return Some(cwd.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Whether a recorded cwd is the project dir or something inside it. Compared
+/// **component-wise** (`Path::starts_with`), so a sibling `…/proj2` is not read
+/// as being inside `…/proj`.
+fn cwd_is_within(cwd: &str, project_dir: &str) -> bool {
+    Path::new(cwd).starts_with(Path::new(project_dir))
+}
+
+/// Name-only fallback for a transcript dir with no readable `cwd` (empty, or
+/// a truncated log): Claude's encoding applied to the project dir, matched at a
+/// `-` boundary. Lossy by construction (see [`transcript_cwd`]) — used only when
+/// there is no transcript to ask, where the stake is a dir holding nothing.
+fn transcript_name_matches(name: &str, project_dir: &str) -> bool {
+    let encoded: String = project_dir
+        .chars()
+        .map(|c| if c == '/' || c == '\\' || c == '.' { '-' } else { c })
+        .collect();
+    name == encoded || name.strip_prefix(&encoded).is_some_and(|rest| rest.starts_with('-'))
+}
+
+/// The `~/.claude/projects` mounts as `(rw, ro)` `src:dst` pairs — **an explicit
+/// entry per transcript directory**, never one mount of the parent.
+///
+/// The policy, which the mount list states rather than implies:
+/// - the per-project **stage** dir is mounted rw *at* `~/.claude/projects`, so it
+///   is the parent every nested mount lands in and the only place a *new*
+///   transcript dir can be created;
+/// - every transcript dir belonging to **this** project is nested **rw** — a
+///   containerized session has to append to its own log, and `--resume` has to
+///   find it there next time;
+/// - every **other** project's transcript dir is nested **`:ro`** — readable
+///   (an agent may look at what was done elsewhere) but not writable, because a
+///   rewritten transcript is a message an *uncontained* future session will read
+///   back as its own history.
+///
+/// The whole dir used to be one rw mount, which made every project's history
+/// rewritable from inside any container.
+fn claude_transcript_mounts(home: &str, project_dir: &str, stage: &Path) -> (Vec<String>, Vec<String>) {
+    let dest_root = format!("{home}/.claude/{CLAUDE_PROJECTS_ENTRY}");
+    // Created by us so the mount maps a real user-owned dir rather than a
+    // docker-auto-created root-owned one (the container runs as --user uid:gid).
+    let _ = std::fs::create_dir_all(stage);
+    let mut rw = vec![format!("{}:{dest_root}", stage.to_string_lossy())];
+    let mut ro = Vec::new();
+
+    let real_root = Path::new(home).join(".claude").join(CLAUDE_PROJECTS_ENTRY);
+    let Ok(entries) = std::fs::read_dir(&real_root) else {
+        return (rw, ro);
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .collect();
+    // Deterministic order so the mount list doesn't flap with readdir order.
+    names.sort();
+
+    for name in names {
+        let src = real_root.join(&name);
+        // Pre-create the nested mountpoint inside the stage for the same
+        // ownership reason as the stage itself.
+        let _ = std::fs::create_dir_all(stage.join(&name));
+        let pair = format!("{}:{dest_root}/{name}", src.to_string_lossy());
+        let ours = match transcript_cwd(&src) {
+            Some(cwd) => cwd_is_within(&cwd, project_dir),
+            None => transcript_name_matches(&name, project_dir),
+        };
+        if ours {
+            rw.push(pair);
+        } else {
+            ro.push(pair);
+        }
+    }
+    (rw, ro)
+}
+
+/// Move transcript dirs the container created in `stage` into the host's real
+/// `~/.claude/projects`, so a session opened in a cwd that had no dir at create
+/// time is still resumable (and still visible to `claude_session_exists`, which
+/// scans the real dir) after teardown.
+///
+/// A dir that *was* mounted leaves an empty mountpoint behind, so "has anything
+/// in it" is exactly the test for "the container made this". Never overwrites a
+/// host file: same-named entries are left alone.
+fn harvest_claude_transcripts(stage: &Path, real_root: &Path) {
+    let Ok(entries) = std::fs::read_dir(stage) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let src = entry.path();
+        if !src.is_dir() {
+            continue;
+        }
+        let empty = std::fs::read_dir(&src).map(|mut d| d.next().is_none()).unwrap_or(true);
+        if empty {
+            let _ = std::fs::remove_dir(&src);
+            continue;
+        }
+        let Some(name) = src.file_name() else {
+            continue;
+        };
+        let dest = real_root.join(name);
+        let _ = std::fs::create_dir_all(real_root);
+        if !dest.exists() && std::fs::rename(&src, &dest).is_ok() {
+            continue;
+        }
+        // The host already has that dir (or the rename crossed a filesystem):
+        // move over only the files it doesn't have.
+        let _ = std::fs::create_dir_all(&dest);
+        if let Ok(files) = std::fs::read_dir(&src) {
+            for file in files.flatten() {
+                let target = dest.join(file.file_name());
+                if target.exists() {
+                    continue;
+                }
+                if std::fs::rename(file.path(), &target).is_err() {
+                    let _ = std::fs::copy(file.path(), &target);
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&src);
+    }
+}
+
+/// [`harvest_claude_transcripts`] for one project's stage.
+fn harvest_project_transcripts(project_id: &str) {
+    let real = paths::home_dir().join(".claude").join(CLAUDE_PROJECTS_ENTRY);
+    harvest_claude_transcripts(&claude_projects_stage(project_id), &real);
+}
+
+/// [`harvest_claude_transcripts`] for every staged project — app exit, and the
+/// startup sweep (where it is a previous *crashed* run's harvest, and so must
+/// run before the stage root is cleared).
+fn harvest_all_transcripts() {
+    let real = paths::home_dir().join(".claude").join(CLAUDE_PROJECTS_ENTRY);
+    let Ok(entries) = std::fs::read_dir(storage::state_dir().join("sandbox-stage")) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        harvest_claude_transcripts(&entry.path().join("claude-projects"), &real);
+    }
 }
 
 /// Read-only identical-path mounts: just the hook *script* dir, which is shared
@@ -1759,6 +2055,7 @@ mod tests {
             remote_host_id: None,
             tmux_session: None,
             tmux_attach: None,
+            host_bound_uid: None,
         };
         wrap_pty_options_docker(&mut opts).unwrap();
         assert_eq!(opts.cmd, "claude");
@@ -1771,80 +2068,64 @@ mod tests {
         SpawnAuthority { sandbox, local_only }
     }
 
-    fn local_model_env() -> HashMap<String, String> {
-        HashMap::from([(LOCAL_MODEL_ENV.to_string(), "qwen3:8b".to_string())])
-    }
-
     #[test]
     fn a_toggled_local_project_containerizes_regardless_of_the_renderers_flags() {
         // The S-2 escape: a persisted tab declaring itself local (which makes
         // `pty_spawn` skip BOTH the docker and the ssh wrap) is overruled.
-        let resolved = resolve_spawn_authority(
-            true,
-            false,
-            true,
-            want(false, true),
-            "bash",
-            &HashMap::new(),
-        );
+        let resolved = resolve_spawn_authority(true, false, true, want(false, true), "bash", false);
         assert_eq!(resolved, want(true, false));
 
         // …including when it also claims to be a `local_agent` kind by naming an
-        // agent CLI, but carries no local-model marker.
-        let resolved = resolve_spawn_authority(
-            true,
-            false,
-            true,
-            want(false, true),
-            "claude",
-            &HashMap::new(),
-        );
+        // agent CLI, but holds no registered host-bound marker.
+        let resolved =
+            resolve_spawn_authority(true, false, true, want(false, true), "claude", false);
         assert_eq!(resolved, want(true, false));
     }
 
     #[test]
     fn host_bound_local_model_tabs_still_run_on_the_host() {
         for cmd in HOST_BOUND_LOCAL_AGENT_CMDS {
-            let resolved = resolve_spawn_authority(
-                true,
-                false,
-                true,
-                want(false, true),
-                cmd,
-                &local_model_env(),
-            );
+            let resolved =
+                resolve_spawn_authority(true, false, true, want(false, true), cmd, true);
             assert_eq!(resolved, want(false, true), "{cmd} must stay on the host");
         }
         // The marker alone is not enough — the command must be a known driver.
-        let resolved = resolve_spawn_authority(
-            true,
-            false,
-            true,
-            want(false, true),
-            "/tmp/pwn.sh",
-            &local_model_env(),
-        );
+        let resolved =
+            resolve_spawn_authority(true, false, true, want(false, true), "/tmp/pwn.sh", true);
         assert_eq!(resolved, want(true, false));
-        // An empty marker is no marker.
-        let env = HashMap::from([(LOCAL_MODEL_ENV.to_string(), "  ".to_string())]);
-        assert!(!is_host_bound_local_agent("vibe", &env));
+        // …and a known driver alone is not enough either. This is #150: the grant
+        // used to be the tab's `ELDRUN_LOCAL_MODEL` env var, which is a label the
+        // usage recap sets, so anything that set it for a display reason handed
+        // out a container escape. It is now a file in the state dir.
+        assert!(!is_host_bound_local_agent("vibe", false));
+        assert!(is_host_bound_local_agent("vibe", true));
+    }
+
+    #[test]
+    fn a_host_bound_marker_is_a_single_path_component() {
+        // The uid names a file, and it arrives from the renderer.
+        for bad in ["", "../../etc/passwd", "a/b", "a\\b", "..", "x y", "é"] {
+            assert!(!host_bound_marker_exists("p1", bad), "{bad:?} must not resolve");
+            assert!(register_host_bound_tab("p1", bad).is_err(), "{bad:?} must be refused");
+        }
+        assert!(register_host_bound_tab("p1", &"x".repeat(65)).is_err());
     }
 
     #[test]
     fn toggle_off_and_remote_projects_can_never_be_told_they_are_sandboxed() {
         // Toggle off: the renderer cannot invent a container.
         assert_eq!(
-            resolve_spawn_authority(true, false, false, want(true, false), "bash", &HashMap::new()),
+            resolve_spawn_authority(true, false, false, want(true, false), "bash", false),
             want(false, false)
         );
         // Remote project: containers are local-only, but `local_only` is a real
         // per-tab choice there (mirror vs. host) and is left alone.
         assert_eq!(
-            resolve_spawn_authority(true, true, true, want(true, true), "claude", &HashMap::new()),
+            resolve_spawn_authority(true, true, true, want(true, true), "claude", false),
             want(false, true)
         );
         assert_eq!(
-            resolve_spawn_authority(true, true, true, want(true, false), "claude", &HashMap::new()),
+            resolve_spawn_authority(true, true, true, want(true, false), "claude", false),
             want(false, false)
         );
     }
@@ -1854,7 +2135,7 @@ mod tests {
         // Root scope / connection terminals: no project record to consult.
         let requested = want(false, true);
         assert_eq!(
-            resolve_spawn_authority(false, false, false, requested, "", &HashMap::new()),
+            resolve_spawn_authority(false, false, false, requested, "", false),
             requested
         );
     }
@@ -1871,8 +2152,10 @@ mod tests {
         assert!(is_unmounted_entry("daemon.sock", CLAUDE_UNMOUNTED));
         // Not a prefix match for a non-star pattern.
         assert!(!is_unmounted_entry("plugins-of-mine", CLAUDE_UNMOUNTED));
+        // Transcripts are excluded *here* because `claude_transcript_mounts`
+        // owns that destination — per entry, rw for ours and `:ro` for the rest.
+        assert!(is_unmounted_entry("projects", CLAUDE_UNMOUNTED));
         // What resume needs stays mounted.
-        assert!(!is_unmounted_entry("projects", CLAUDE_UNMOUNTED));
         assert!(!is_unmounted_entry(".credentials.json", CLAUDE_UNMOUNTED));
         // Codex keeps `sessions/` — a containerized Codex writes its rollouts there
         // and the host reads them back to decide whether a tab can resume.
@@ -1901,14 +2184,16 @@ mod tests {
         // and `rsplit('/')` would never match. Building the expectation with the
         // same `{p}:{p}` shape also asserts the identical-path property (the one
         // agent resume depends on) by construction.
-        let expected: Vec<String> = [".credentials.json", "projects"]
+        let expected: Vec<String> = [".credentials.json"]
             .iter()
             .map(|n| format!("{dir}/{n}:{dir}/{n}"))
             .collect();
         assert_eq!(mounts, expected);
         // `settings.json` is deliberately absent here — `staged_config_mounts`
-        // owns that destination with a writable per-project copy.
+        // owns that destination with a writable per-project copy. So is
+        // `projects` — `claude_transcript_mounts` owns that one.
         assert!(!mounts.iter().any(|m| m.contains("settings.json")));
+        assert!(!mounts.iter().any(|m| m.ends_with("/projects")));
         // Stable across calls, so the spec fingerprint doesn't flap.
         assert_eq!(narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED), mounts);
         // A dir that isn't there mounts nothing (never auto-created).
@@ -1924,6 +2209,140 @@ mod tests {
         // is served by this project's own slice.
         assert!(mounts.contains(&"/state/live_sessions/p1:/state/live_sessions".to_string()));
         assert!(!mounts.contains(&"/state/live_sessions:/state/live_sessions".to_string()));
+    }
+
+    // ── Claude transcripts: read all, write ours ──────────────────────────
+
+    /// A transcript dir holding one log whose first line records `cwd`.
+    fn transcript_dir(root: &Path, name: &str, cwd: Option<&str>) {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Some(cwd) = cwd {
+            // First line without a `cwd` on purpose: real logs open with a
+            // summary/title record, so the probe has to read past it.
+            let log = format!(
+                "{{\"type\":\"summary\",\"sessionId\":\"s\"}}\n{{\"type\":\"user\",\"cwd\":{}}}\n",
+                serde_json::to_string(cwd).unwrap()
+            );
+            std::fs::write(dir.join("11111111-2222-3333-4444-555555555555.jsonl"), log).unwrap();
+        }
+    }
+
+    #[test]
+    fn every_transcript_dir_is_listed_and_only_ours_is_writable() {
+        let base = std::env::temp_dir().join(format!("eldrun-tx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let projects = home.join(".claude").join("projects");
+        let project_dir = base.join("work").join("proj");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let project = project_dir.to_string_lossy().into_owned();
+
+        transcript_dir(&projects, "ours", Some(&project));
+        transcript_dir(
+            &projects,
+            "ours-subdir",
+            Some(&project_dir.join("sub").to_string_lossy()),
+        );
+        transcript_dir(
+            &projects,
+            "sibling",
+            // The encoding is lossy, so this name *could* be read as a subdir of
+            // ours — the recorded cwd says it is a different project.
+            Some(&base.join("work").join("proj-panel").to_string_lossy()),
+        );
+        transcript_dir(&projects, "elsewhere", Some("/somewhere/else"));
+        // No log at all and a name that matches nothing: unknown ⇒ read-only.
+        transcript_dir(&projects, "empty-unknown", None);
+
+        let stage = base.join("stage");
+        let home_str = home.to_string_lossy().into_owned();
+        let (rw, ro) = claude_transcript_mounts(&home_str, &project, &stage);
+
+        let src_of = |name: &str| projects.join(name).to_string_lossy().into_owned();
+        let has = |v: &[String], name: &str| {
+            let src = src_of(name);
+            v.iter().any(|m| m.starts_with(&format!("{src}:")))
+        };
+
+        // The stage is the mount parent — the only place a *new* transcript dir
+        // can be created, and it is ours.
+        assert!(rw[0].starts_with(&format!("{}:", stage.to_string_lossy())));
+        assert!(rw[0].ends_with(&format!("{home_str}/.claude/projects")));
+
+        assert!(has(&rw, "ours"));
+        assert!(has(&rw, "ours-subdir"));
+        assert!(has(&ro, "sibling"), "a sibling project must not be writable");
+        assert!(has(&ro, "elsewhere"));
+        assert!(has(&ro, "empty-unknown"), "unknown must default to read-only");
+        // Nothing is writable that isn't ours, and nothing is silently dropped:
+        // the read allowance is listed entry by entry.
+        for name in ["sibling", "elsewhere", "empty-unknown"] {
+            assert!(!has(&rw, name));
+        }
+        assert_eq!(rw.len() + ro.len(), 1 + 5);
+        // Deterministic, so the mount list doesn't flap with readdir order.
+        assert_eq!(claude_transcript_mounts(&home_str, &project, &stage), (rw, ro));
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn the_name_fallback_matches_at_a_separator_boundary_only() {
+        // Claude's encoding of `/home/u/proj`.
+        assert!(transcript_name_matches("-home-u-proj", "/home/u/proj"));
+        // A subdirectory of it.
+        assert!(transcript_name_matches("-home-u-proj-src", "/home/u/proj"));
+        // A sibling whose name merely *starts* with ours — the `GNNGED` vs
+        // `GNNGEDAnalysis` case.
+        assert!(!transcript_name_matches("-home-u-projAnalysis", "/home/u/proj"));
+        assert!(!transcript_name_matches("-home-u-other", "/home/u/proj"));
+        // A dotted segment encodes like a separator does.
+        assert!(transcript_name_matches("-home-u-proj--hidden", "/home/u/proj"));
+    }
+
+    #[test]
+    fn cwd_containment_is_component_wise() {
+        assert!(cwd_is_within("/home/u/proj", "/home/u/proj"));
+        assert!(cwd_is_within("/home/u/proj/sub", "/home/u/proj"));
+        // Not a string prefix match — this is the sibling that used to slip in.
+        assert!(!cwd_is_within("/home/u/proj2", "/home/u/proj"));
+    }
+
+    #[test]
+    fn harvest_moves_new_transcripts_home_and_never_overwrites() {
+        let base = std::env::temp_dir().join(format!("eldrun-harvest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let stage = base.join("stage");
+        let real = base.join("home").join(".claude").join("projects");
+        std::fs::create_dir_all(&real).unwrap();
+
+        // A dir that *was* mounted: the mountpoint is left behind empty.
+        std::fs::create_dir_all(stage.join("mounted")).unwrap();
+        // A cwd nobody knew about at create time — the container made this.
+        std::fs::create_dir_all(stage.join("fresh")).unwrap();
+        std::fs::write(stage.join("fresh").join("a.jsonl"), b"{}").unwrap();
+        // A dir the host already has: keep its file, take the new one.
+        std::fs::create_dir_all(stage.join("both")).unwrap();
+        std::fs::write(stage.join("both").join("old.jsonl"), b"container").unwrap();
+        std::fs::write(stage.join("both").join("new.jsonl"), b"container").unwrap();
+        std::fs::create_dir_all(real.join("both")).unwrap();
+        std::fs::write(real.join("both").join("old.jsonl"), b"host").unwrap();
+
+        harvest_claude_transcripts(&stage, &real);
+
+        assert!(real.join("fresh").join("a.jsonl").is_file());
+        assert!(!stage.join("fresh").exists());
+        // An empty mountpoint is not a transcript — dropped, not "harvested".
+        assert!(!real.join("mounted").exists());
+        assert_eq!(
+            std::fs::read_to_string(real.join("both").join("old.jsonl")).unwrap(),
+            "host",
+            "a host transcript must never be overwritten by the container's copy"
+        );
+        assert!(real.join("both").join("new.jsonl").is_file());
+
+        std::fs::remove_dir_all(&base).ok();
     }
 
     // ── Dockerfile confinement + network allowlist (S-8) ──────────────────

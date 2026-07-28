@@ -756,6 +756,223 @@ pub async fn sync_resolve_if_identical(
     Ok(true)
 }
 
+/// Cap on the per-file host stats a **push** preview will pay for. A push preview
+/// re-stats every file it would write, which is the same round-trip count the push
+/// itself pays — fine for a folder, wasteful for a whole tree. Past this count the
+/// preview reports the file/byte totals and says outright that the receiving side
+/// was not inspected (`exact: false`) rather than quietly reporting zero
+/// overwrites, which would read as "this replaces nothing".
+const PUSH_PREVIEW_STAT_CAP: usize = 2000;
+
+/// Cap on the named paths a preview carries back. The count is always exact
+/// (`destructive_total`); the list is only what the dialog shows.
+const PREVIEW_NAME_CAP: usize = 24;
+
+/// What a pull or push would actually do, read **before** it runs — the numbers
+/// behind the confirmation every transfer now asks for.
+///
+/// Byte-sync's two manual transfers each write one side's bytes over the other's,
+/// and both used to be a single unconfirmed click on a file *or a whole folder*.
+/// That is fine when the receiving side has nothing, and is data loss when it has
+/// edits nobody else holds — from the button alone the two are indistinguishable,
+/// which is exactly what made the click dangerous. So the frontend asks first, and
+/// this is what it asks *with*: how much would move, how much of it lands on top
+/// of an existing file, and — the load-bearing number — how many of those carry
+/// changes that exist nowhere else and would be gone.
+///
+/// Read-only: it walks and stats, it never transfers, records a base or touches
+/// the manifest.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncTransferPreview {
+    /// Files the transfer would write.
+    pub files: usize,
+    /// Their total size in bytes (source side).
+    pub bytes: u64,
+    /// How many of them already exist on the *receiving* side (i.e. would be
+    /// replaced rather than created).
+    pub overwrites: usize,
+    /// Receiving-side paths whose current content would be **lost**: for a pull,
+    /// mirror files edited since the last sync; for a forced push, host files that
+    /// moved since the last sync. Capped at [`PREVIEW_NAME_CAP`] entries.
+    pub destructive: Vec<String>,
+    /// The full count behind `destructive` (which is only the shown prefix).
+    pub destructive_total: usize,
+    /// Push only, non-forced: files that would be BLOCKED as stale and queued for
+    /// per-file resolution instead of written.
+    pub conflicts: usize,
+    /// Whether the receiving side was actually inspected. False when the push
+    /// preview gave up on per-file stats (see [`PUSH_PREVIEW_STAT_CAP`]) — the
+    /// overwrite/destructive/conflict counts are then unknown, not zero.
+    pub exact: bool,
+}
+
+/// Price a pull or push before it runs (see [`SyncTransferPreview`]).
+///
+/// `direction` is `"pull"` (host → mirror) or `"push"` (mirror → host).
+/// `rel_paths`, when given, is an explicit file list (the diverged-files view's
+/// bulk resolve) and replaces the subtree walk of `rel_path`; otherwise `rel_path`
+/// is walked exactly as the transfer itself would walk it, exclusions included, so
+/// the numbers describe the transfer that is actually about to happen.
+/// `force` mirrors `sync_push`'s flag: it turns what would have been a blocked
+/// conflict into a destroyed host file, which is the difference the dialog exists
+/// to state.
+#[tauri::command]
+pub async fn sync_transfer_preview(
+    project_id: String,
+    rel_path: String,
+    direction: String,
+    force: bool,
+    rel_paths: Option<Vec<String>>,
+    pool: State<'_, RemotePoolState>,
+    manifest: State<'_, SyncManifestState>,
+) -> Result<SyncTransferPreview, String> {
+    let (target, sftp) = resolve(&project_id, pool.inner()).await?;
+    match direction.as_str() {
+        "pull" => {
+            preview_pull(&project_id, &target, &sftp, &rel_path, rel_paths, manifest.inner()).await
+        }
+        "push" => {
+            preview_push(&project_id, &target, &sftp, &rel_path, rel_paths, force, manifest.inner())
+                .await
+        }
+        other => Err(format!("unknown sync direction '{other}'")),
+    }
+}
+
+/// The pull half of [`sync_transfer_preview`]: walk the host side, then ask the
+/// mirror what it is about to lose.
+async fn preview_pull(
+    project_id: &str,
+    target: &RemoteTarget,
+    sftp: &Sftp,
+    rel: &str,
+    rel_paths: Option<Vec<String>>,
+    manifest: &SyncManifestState,
+) -> Result<SyncTransferPreview, String> {
+    // Source side: the same host files `pull_subtree` would transfer.
+    let files: Vec<remote_sync::HostFile> = match rel_paths {
+        Some(paths) => {
+            let mut out = Vec::with_capacity(paths.len());
+            for p in paths {
+                let host_abs = join_remote(&target.spec.remote_path, &p);
+                let (size, mtime) = remote_sync::stat_or_zero(sftp, &host_abs).await;
+                out.push(remote_sync::HostFile { rel: p, size, mtime });
+            }
+            out
+        }
+        None => match remote_sync::walk_host_files(sftp, &target.spec.remote_path, rel).await {
+            Ok(f) => f,
+            Err(_) => {
+                // Not a directory — a single file, exactly as `pull_subtree` falls back.
+                let host_abs = join_remote(&target.spec.remote_path, rel);
+                let (size, mtime) = sftp::metadata_on(sftp, &host_abs).await?;
+                vec![remote_sync::HostFile { rel: rel.to_string(), size, mtime }]
+            }
+        },
+    };
+    let files: Vec<remote_sync::HostFile> = {
+        let mut guard = manifest.lock().await;
+        let m = ensure_loaded(&mut guard, project_id);
+        files
+            .into_iter()
+            .filter(|f| !remote_sync::is_excluded(m, &f.rel, rel))
+            .collect()
+    };
+
+    let bytes = files.iter().map(|f| f.size).sum();
+    let overwrites = files
+        .iter()
+        .filter(|f| mirror_local_path(project_id, &f.rel).is_file())
+        .count();
+    let rels: Vec<String> = files.iter().map(|f| f.rel.clone()).collect();
+    // The same rule `pull_subtree` files a local-loss warning for, asked *before*
+    // the transfer instead of reported after it.
+    let doomed = unsynced_local_edits(project_id, manifest, &rels).await;
+    Ok(SyncTransferPreview {
+        files: files.len(),
+        bytes,
+        overwrites,
+        destructive_total: doomed.len(),
+        destructive: doomed.into_iter().take(PREVIEW_NAME_CAP).collect(),
+        conflicts: 0,
+        exact: true,
+    })
+}
+
+/// The push half of [`sync_transfer_preview`]: walk the mirror, then re-stat the
+/// host per file exactly as `sync_push` does — up to [`PUSH_PREVIEW_STAT_CAP`].
+async fn preview_push(
+    project_id: &str,
+    target: &RemoteTarget,
+    sftp: &Sftp,
+    rel: &str,
+    rel_paths: Option<Vec<String>>,
+    force: bool,
+    manifest: &SyncManifestState,
+) -> Result<SyncTransferPreview, String> {
+    let files = match rel_paths {
+        Some(paths) => paths,
+        None => remote_sync::walk_mirror_files(project_id, rel)?,
+    };
+    let files: Vec<String> = {
+        let mut guard = manifest.lock().await;
+        let m = ensure_loaded(&mut guard, project_id);
+        files
+            .into_iter()
+            .filter(|f| !remote_sync::is_excluded(m, f, rel))
+            .collect()
+    };
+    let bytes = files
+        .iter()
+        .filter_map(|r| std::fs::metadata(mirror_local_path(project_id, r)).ok())
+        .map(|m| m.len())
+        .sum();
+
+    if files.len() > PUSH_PREVIEW_STAT_CAP {
+        return Ok(SyncTransferPreview {
+            files: files.len(),
+            bytes,
+            exact: false,
+            ..Default::default()
+        });
+    }
+
+    let mut overwrites = 0usize;
+    let mut conflicts = 0usize;
+    let mut doomed: Vec<String> = Vec::new();
+    for r in &files {
+        let host_abs = join_remote(&target.spec.remote_path, r);
+        let host = sftp::metadata_on(sftp, &host_abs).await.ok();
+        if host.is_some() {
+            overwrites += 1;
+        }
+        let base = {
+            let mut guard = manifest.lock().await;
+            let m = ensure_loaded(&mut guard, project_id);
+            m.get(r).cloned().unwrap_or_default()
+        };
+        if remote_sync::push_decision(&base, host) == PushDecision::Stale {
+            // Stale means the host moved past our base. Without `force` the push
+            // blocks and asks; with it, that host copy is what gets destroyed.
+            if force {
+                doomed.push(r.clone());
+            } else {
+                conflicts += 1;
+            }
+        }
+    }
+    Ok(SyncTransferPreview {
+        files: files.len(),
+        bytes,
+        overwrites,
+        destructive_total: doomed.len(),
+        destructive: doomed.into_iter().take(PREVIEW_NAME_CAP).collect(),
+        conflicts,
+        exact: true,
+    })
+}
+
 /// Result of a local→remote push: how many files were written, and which
 /// project-relative paths were blocked by a stale host base (only populated when
 /// `force` is false — the frontend prompts per conflict and re-calls with the

@@ -131,6 +131,41 @@ pub struct SystemSnapshot {
     pub careful: bool,
 }
 
+/// The machine's aggregate load **without** the process table: what a readout
+/// that only asks "how loaded is this box, and what is left" needs (the 🧠
+/// local-model menu's headroom block). A [`SystemSnapshot`] answers that too, but
+/// it costs one `/proc/<pid>/{stat,status,cmdline}` read per process plus a JSON
+/// payload of the whole table — a price a hover menu polling every two seconds
+/// must not pay, and which is why this is a separate sampler rather than a
+/// filtered snapshot.
+///
+/// `cpu` is cumulative, exactly like [`SystemSnapshot::cpu`]: a percentage is the
+/// ratio of two samples' deltas. Unlike the monitor pane, the caller here doesn't
+/// diff — `commands::monitor::machine_load_snapshot` takes both samples itself,
+/// since a hover menu is often closed again before a second poll would land.
+#[derive(Serialize, Clone, Copy, Default)]
+pub struct MachineLoad {
+    /// `false` on a target with no aggregate CPU/memory backend, so the UI can
+    /// omit the block rather than print zeros as if they were measurements.
+    pub supported: bool,
+    pub num_cores: u32,
+    pub cpu: CpuTimes,
+    pub mem_total_kib: u64,
+    pub mem_available_kib: u64,
+    pub swap_total_kib: u64,
+    pub swap_free_kib: u64,
+    pub load_avg: [f64; 3],
+    /// Whole-package CPU temperature; `None` where no sensor is readable — never
+    /// a fake zero, matching [`SystemSnapshot::cpu_temp_c`].
+    pub cpu_temp_c: Option<f64>,
+}
+
+/// One aggregate-only sample of this machine (see [`MachineLoad`]). Local only —
+/// a remote host's load rides `system_monitor_snapshot`'s one SSH round trip.
+pub fn machine_load() -> MachineLoad {
+    platform::machine_load()
+}
+
 /// Generation counter bumped whenever a PTY is spawned or dies (see
 /// [`invalidate_descendant_cache`]). A change forces [`descendant_pids`] to
 /// rebuild its cached process tree instead of reusing the previous walk.
@@ -1363,6 +1398,28 @@ mod platform {
         hottest
     }
 
+    /// Aggregate-only sample: three small `/proc` reads and the CPU hwmon, with
+    /// no process walk at all (see [`super::MachineLoad`]).
+    pub fn machine_load() -> super::MachineLoad {
+        let (cpu, per_core) =
+            super::parse_cpu_stat(&fs::read_to_string("/proc/stat").unwrap_or_default());
+        let (mem_total_kib, mem_available_kib, swap_total_kib, swap_free_kib) =
+            super::parse_meminfo(&fs::read_to_string("/proc/meminfo").unwrap_or_default());
+        super::MachineLoad {
+            supported: true,
+            num_cores: per_core.len() as u32,
+            cpu,
+            mem_total_kib,
+            mem_available_kib,
+            swap_total_kib,
+            swap_free_kib,
+            load_avg: super::parse_loadavg(
+                &fs::read_to_string("/proc/loadavg").unwrap_or_default(),
+            ),
+            cpu_temp_c: cpu_temp_c(),
+        }
+    }
+
     /// Whole-system sample from `/proc`: aggregate + per-core CPU, memory/swap,
     /// load, uptime, and every process (one `/proc/<pid>/{stat,status,cmdline}`
     /// read each). Kernel threads (empty `cmdline`) fall back to `[comm]`.
@@ -1583,26 +1640,18 @@ mod platform {
         super::parse_processor_perf_buffer(&buf)
     }
 
-    /// Whole-system sample via Win32: `GetSystemTimes` (aggregate CPU; kernel
-    /// time INCLUDES idle, so total = kernel+user and busy = total−idle),
-    /// ntdll per-core times, `GlobalMemoryStatusEx` (swap ≈ pagefile −
-    /// physical, both counters include RAM), `GetTickCount64` uptime, and one
-    /// ToolHelp walk for the process table. Windows has no load average, so
-    /// `load_avg` stays `[0.0; 3]` and the pane hides it. All CPU counters are
-    /// 100-ns units to match `proc_ticks`/`clk_tck` — the frontend divides
-    /// per-process ticks by machine ticks, so the units MUST agree.
-    pub fn system_snapshot() -> super::SystemSnapshot {
-        use super::{CpuTimes, ProcSample, SystemSnapshot};
-        use windows::Win32::System::SystemInformation::{
-            GetSystemInfo, GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX, SYSTEM_INFO,
-        };
+    /// Machine-aggregate CPU times. `GetSystemTimes`' kernel time INCLUDES idle,
+    /// so `total = kernel + user` and `busy = total − idle`. 100-ns units, to
+    /// match `proc_ticks`/`clk_tck`.
+    fn aggregate_cpu() -> super::CpuTimes {
+        use super::CpuTimes;
         use windows::Win32::System::Threading::GetSystemTimes;
 
         let mut idle = FILETIME::default();
         let mut kernel = FILETIME::default();
         let mut user = FILETIME::default();
         // SAFETY: three valid FILETIME out-params, written on success only.
-        let cpu = if unsafe {
+        if unsafe {
             GetSystemTimes(
                 Some(&mut idle as *mut _),
                 Some(&mut kernel as *mut _),
@@ -1618,33 +1667,75 @@ mod platform {
             }
         } else {
             CpuTimes::default()
-        };
+        }
+    }
 
-        let per_core = query_per_core_times();
+    /// `(mem_total, mem_available, swap_total, swap_free)` in KiB from
+    /// `GlobalMemoryStatusEx`; swap ≈ pagefile − physical, since both counters
+    /// include RAM.
+    fn memory_kib() -> (u64, u64, u64, u64) {
+        use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 
         let mut mem = MEMORYSTATUSEX {
             dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
             ..Default::default()
         };
         // SAFETY: `mem` is valid and its dwLength is set as the API requires.
-        let (mem_total_kib, mem_available_kib, swap_total_kib, swap_free_kib) =
-            if unsafe { GlobalMemoryStatusEx(&mut mem) }.is_ok() {
-                (
-                    mem.ullTotalPhys / 1024,
-                    mem.ullAvailPhys / 1024,
-                    mem.ullTotalPageFile.saturating_sub(mem.ullTotalPhys) / 1024,
-                    mem.ullAvailPageFile.saturating_sub(mem.ullAvailPhys) / 1024,
-                )
-            } else {
-                (0, 0, 0, 0)
-            };
+        if unsafe { GlobalMemoryStatusEx(&mut mem) }.is_ok() {
+            (
+                mem.ullTotalPhys / 1024,
+                mem.ullAvailPhys / 1024,
+                mem.ullTotalPageFile.saturating_sub(mem.ullTotalPhys) / 1024,
+                mem.ullAvailPageFile.saturating_sub(mem.ullAvailPhys) / 1024,
+            )
+        } else {
+            (0, 0, 0, 0)
+        }
+    }
 
-        let num_cores = {
-            let mut info = SYSTEM_INFO::default();
-            // SAFETY: plain out-param write into a valid SYSTEM_INFO.
-            unsafe { GetSystemInfo(&mut info) };
-            info.dwNumberOfProcessors
-        };
+    fn num_cores() -> u32 {
+        use windows::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
+
+        let mut info = SYSTEM_INFO::default();
+        // SAFETY: plain out-param write into a valid SYSTEM_INFO.
+        unsafe { GetSystemInfo(&mut info) };
+        info.dwNumberOfProcessors
+    }
+
+    /// Aggregate-only sample (see [`super::MachineLoad`]): the same three Win32
+    /// calls the whole snapshot opens with, and none of its ToolHelp walk.
+    /// Windows has no load average, so `load_avg` stays zeroed as it does there.
+    pub fn machine_load() -> super::MachineLoad {
+        let (mem_total_kib, mem_available_kib, swap_total_kib, swap_free_kib) = memory_kib();
+        super::MachineLoad {
+            supported: true,
+            num_cores: num_cores(),
+            cpu: aggregate_cpu(),
+            mem_total_kib,
+            mem_available_kib,
+            swap_total_kib,
+            swap_free_kib,
+            load_avg: [0.0; 3],
+            cpu_temp_c: None, // no cheap CPU thermal read on this backend
+        }
+    }
+
+    /// Whole-system sample via Win32: `GetSystemTimes` (aggregate CPU; kernel
+    /// time INCLUDES idle, so total = kernel+user and busy = total−idle),
+    /// ntdll per-core times, `GlobalMemoryStatusEx` (swap ≈ pagefile −
+    /// physical, both counters include RAM), `GetTickCount64` uptime, and one
+    /// ToolHelp walk for the process table. Windows has no load average, so
+    /// `load_avg` stays `[0.0; 3]` and the pane hides it. All CPU counters are
+    /// 100-ns units to match `proc_ticks`/`clk_tck` — the frontend divides
+    /// per-process ticks by machine ticks, so the units MUST agree.
+    pub fn system_snapshot() -> super::SystemSnapshot {
+        use super::{ProcSample, SystemSnapshot};
+        use windows::Win32::System::SystemInformation::GetTickCount64;
+
+        let cpu = aggregate_cpu();
+        let per_core = query_per_core_times();
+        let (mem_total_kib, mem_available_kib, swap_total_kib, swap_free_kib) = memory_kib();
+        let num_cores = num_cores();
 
         // SAFETY: no arguments; returns milliseconds since boot.
         let uptime_secs = unsafe { GetTickCount64() } as f64 / 1000.0;
@@ -1930,28 +2021,9 @@ mod platform {
         }
     }
 
-    /// Whole-system sample via mach/sysctl/libproc. All CPU counters are in
-    /// nanoseconds to match `proc_ticks`/`clk_tck` (1e9) — the frontend
-    /// divides per-process by machine deltas, so the units MUST agree; the
-    /// host tick counters are converted via `1e9 / _SC_CLK_TCK`.
-    ///
-    /// Visibility caveat: unprivileged `proc_pidinfo` only inspects the
-    /// calling user's processes, so other users' (and most system) processes
-    /// appear without CPU/RSS detail — they are skipped entirely rather than
-    /// listed as zero rows (TODO 31c).
-    pub fn system_snapshot() -> super::SystemSnapshot {
-        use super::{ProcSample, SystemSnapshot};
-
-        // SAFETY: sysconf takes no pointers.
-        let clk = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-        let ns_per_tick = if clk > 0 { 1_000_000_000 / clk as u64 } else { 10_000_000 };
-
-        let per_core = per_core_times(ns_per_tick);
-        let cpu = super::CpuTimes {
-            busy: per_core.iter().map(|c| c.busy).sum(),
-            total: per_core.iter().map(|c| c.total).sum(),
-        };
-
+    /// `(mem_total, mem_available, swap_total, swap_free)` in KiB, from
+    /// `sysctl hw.memsize` + the mach VM statistics + `sysctl vm.swapusage`.
+    fn memory_kib() -> (u64, u64, u64, u64) {
         let mem_total_kib = sysctl_read::<u64>(&mut [CTL_HW, HW_MEMSIZE])
             .map(|bytes| bytes / 1024)
             .unwrap_or(0);
@@ -1987,11 +2059,73 @@ mod platform {
                 .map(|xsw| (xsw.xsu_total / 1024, xsw.xsu_avail / 1024))
                 .unwrap_or((0, 0));
 
+        (
+            mem_total_kib,
+            mem_available_kib,
+            swap_total_kib,
+            swap_free_kib,
+        )
+    }
+
+    fn load_avg() -> [f64; 3] {
         let mut load_avg = [0.0f64; 3];
         // SAFETY: getloadavg writes at most 3 doubles into the array.
         unsafe {
             let _ = libc::getloadavg(load_avg.as_mut_ptr(), 3);
         }
+        load_avg
+    }
+
+    /// Aggregate-only sample (see [`super::MachineLoad`]): the host CPU tick
+    /// counters, memory and load average, and none of the libproc walk. CPU
+    /// counters are nanoseconds, exactly as in the whole snapshot.
+    pub fn machine_load() -> super::MachineLoad {
+        // SAFETY: sysconf takes no pointers.
+        let clk = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        let ns_per_tick = if clk > 0 { 1_000_000_000 / clk as u64 } else { 10_000_000 };
+        let per_core = per_core_times(ns_per_tick);
+        let (mem_total_kib, mem_available_kib, swap_total_kib, swap_free_kib) = memory_kib();
+
+        super::MachineLoad {
+            supported: true,
+            num_cores: per_core.len() as u32,
+            cpu: super::CpuTimes {
+                busy: per_core.iter().map(|c| c.busy).sum(),
+                total: per_core.iter().map(|c| c.total).sum(),
+            },
+            mem_total_kib,
+            mem_available_kib,
+            swap_total_kib,
+            swap_free_kib,
+            load_avg: load_avg(),
+            cpu_temp_c: None, // no cheap CPU thermal read on this backend
+        }
+    }
+
+    /// Whole-system sample via mach/sysctl/libproc. All CPU counters are in
+    /// nanoseconds to match `proc_ticks`/`clk_tck` (1e9) — the frontend
+    /// divides per-process by machine deltas, so the units MUST agree; the
+    /// host tick counters are converted via `1e9 / _SC_CLK_TCK`.
+    ///
+    /// Visibility caveat: unprivileged `proc_pidinfo` only inspects the
+    /// calling user's processes, so other users' (and most system) processes
+    /// appear without CPU/RSS detail — they are skipped entirely rather than
+    /// listed as zero rows (TODO 31c).
+    pub fn system_snapshot() -> super::SystemSnapshot {
+        use super::{ProcSample, SystemSnapshot};
+
+        // SAFETY: sysconf takes no pointers.
+        let clk = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        let ns_per_tick = if clk > 0 { 1_000_000_000 / clk as u64 } else { 10_000_000 };
+
+        let per_core = per_core_times(ns_per_tick);
+        let cpu = super::CpuTimes {
+            busy: per_core.iter().map(|c| c.busy).sum(),
+            total: per_core.iter().map(|c| c.total).sum(),
+        };
+
+        let (mem_total_kib, mem_available_kib, swap_total_kib, swap_free_kib) = memory_kib();
+        let load_avg = load_avg();
 
         let uptime_secs = sysctl_read::<libc::timeval>(&mut [CTL_KERN, KERN_BOOTTIME])
             .map(|boot| {
@@ -2090,6 +2224,12 @@ mod platform {
     /// monitor pane degrades to a placeholder rather than failing to build.
     pub fn system_snapshot() -> super::SystemSnapshot {
         super::SystemSnapshot::default()
+    }
+
+    /// Nothing to read: `supported: false`, so the readout omits the block
+    /// instead of printing zeros that look like measurements.
+    pub fn machine_load() -> super::MachineLoad {
+        super::MachineLoad::default()
     }
 }
 

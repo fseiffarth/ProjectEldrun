@@ -46,11 +46,13 @@ use tauri_plugin_dialog::DialogExt;
 use crate::commands::projects::uuid_v4;
 use crate::schema::mail::{
     MailAccount, MailAccountSaved, MailAccounts, MailBody, MailDraft, MailEncryptionState,
-    MailFlag, MailFolder, MailHeader, MailHeaderPage, MailKeyringState, MailLink, MailPasswordState, MailPreviewBlob,
+    MailCryptoInfo, MailFlag, MailFolder, MailFolderKind, MailHeader, MailHeaderPage, MailKeyringState, MailLink, MailPasswordState, MailPreviewBlob,
     MailPriority, MailPriorityCounts, MailProbe, MailSendResult, MailSort, MailSyncEvent,
     MailSyncSummary, StagedAttachment, ACCOUNTS_VERSION,
 };
 use crate::services::mail_crypt::{self, MailKeys};
+use crate::services::mail_crypto::{self, CryptoKind, DecryptError};
+use crate::services::mail_pgp::{self, PgpKeyInfo, PgpKeyring, SealOpts};
 use crate::services::mail_engine::{
     self, InProcessEngine, MailEngine, OutboundAttachment, Password,
 };
@@ -271,6 +273,140 @@ fn set_encrypt_preference(value: Option<bool>) {
     let mut settings: crate::schema::Settings = storage::read_json(&path).unwrap_or_default();
     settings.mail_encrypt_store = value;
     let _ = storage::write_json_atomic(&path, &settings);
+}
+
+// ── OpenPGP ─────────────────────────────────────────────────────────────────
+
+/// The keyring, which exists only when the store is encrypted.
+///
+/// Not a limitation to work around: private key material in a plaintext file
+/// would make the whole feature theatre, and the phase ordering in the plan is
+/// built on exactly this coupling. The error names the fix rather than the rule.
+fn keyring_of(rt: &MailState) -> Result<PgpKeyring, String> {
+    // Opening the store is what resolves the unlock and publishes the keys.
+    store_of(rt)?;
+    let keys = session_keys().ok_or(
+        "turn on encryption for the local mail store first — an OpenPGP private key \
+         cannot be kept in a plaintext file",
+    )?;
+    PgpKeyring::open(&mail_dir(), &keys)
+}
+
+/// Whether this message was signed or encrypted, and what came of it.
+///
+/// Returns the raw bytes to go on parsing, which for an encrypted message are
+/// the **decrypted** ones — so everything downstream (structural caps, the
+/// sanitizer, the attachment walk) runs over the plaintext exactly as it does
+/// for an ordinary message. That is the plan's non-negotiable ordering,
+/// `decrypt → parse → sanitize → render`: decryption confers no trust, and a
+/// decrypted body is if anything *more* attacker-controlled than a plain one
+/// because it arrived wearing a padlock.
+fn apply_crypto(
+    rt: &MailState,
+    raw: Vec<u8>,
+    from_address: &str,
+) -> (Vec<u8>, Option<MailCryptoInfo>) {
+    let parsed = match mail_parser::MessageParser::default().parse(&raw) {
+        Some(m) => m,
+        None => return (raw, None),
+    };
+    let Some(kind) = mail_crypto::detect(&parsed) else {
+        return (raw, None);
+    };
+    if !kind.is_supported() {
+        return (raw, Some(mail_crypto::info_for(kind, None, false, from_address)));
+    }
+    let Ok(ring) = keyring_of(rt) else {
+        // No keyring at all. The message is still reported as encrypted/signed —
+        // silence here would render an armored blob as if it were the mail.
+        return (raw, Some(mail_crypto::info_for(kind, None, false, from_address)));
+    };
+
+    match kind {
+        CryptoKind::PgpEncrypted | CryptoKind::PgpInlineEncrypted => {
+            let payload = match kind {
+                CryptoKind::PgpEncrypted => mail_pgp::encrypted_part_bytes(&raw, &parsed),
+                _ => parsed
+                    .text_body
+                    .first()
+                    .and_then(|id| parsed.part(*id))
+                    .and_then(|p| p.text_contents())
+                    .map(|t| t.as_bytes().to_vec()),
+            };
+            let Some(payload) = payload else {
+                return (raw, Some(mail_crypto::info_for(kind, None, false, from_address)));
+            };
+            match ring.decrypt_message(&payload) {
+                Ok(plain) => {
+                    // Decrypted mail is often signed *inside*, which is the
+                    // ordering that means anything — so the inner message is
+                    // re-examined rather than reported as merely "decrypted".
+                    let inner = plain.to_vec();
+                    let (inner_raw, inner_info) = apply_crypto(rt, inner, from_address);
+                    let mut info = inner_info.unwrap_or_else(|| {
+                        mail_crypto::info_for(kind, None, true, from_address)
+                    });
+                    info.encrypted = true;
+                    info.decrypted = true;
+                    (inner_raw, Some(info))
+                }
+                Err(e) => {
+                    let mut info = mail_crypto::info_for(kind, None, false, from_address);
+                    info.notes.push(match e {
+                        DecryptError::NoKey => "decrypt-no-key".into(),
+                        DecryptError::Locked => "decrypt-locked".into(),
+                        DecryptError::Unsupported(_) => "format-not-supported".into(),
+                        // One indistinguishable failure, deliberately: see
+                        // `mail_crypto::DecryptError`.
+                        DecryptError::Failed => "decrypt-failed".into(),
+                    });
+                    (raw, Some(info))
+                }
+            }
+        }
+        CryptoKind::PgpSigned => {
+            let outcome = mail_pgp::signed_part_bytes(&raw, &parsed)
+                .map(|(signed, sig)| ring.verify_detached(&signed, &sig));
+            let info = mail_crypto::info_for(kind, outcome.as_ref(), false, from_address);
+            (raw, Some(info))
+        }
+        // Inline (pre-MIME) signatures are detected and reported, not checked:
+        // the cleartext-signature framework has its own dash-escaping and
+        // canonicalization rules, and a verifier that got them subtly wrong
+        // would report passes over text the sender never signed. Naming it
+        // honestly is better than checking it badly.
+        CryptoKind::PgpInlineSigned => {
+            let mut info = mail_crypto::info_for(kind, None, false, from_address);
+            info.notes.push("inline-signature-not-checked".into());
+            (raw, Some(info))
+        }
+        _ => (raw, Some(mail_crypto::info_for(kind, None, false, from_address))),
+    }
+}
+
+/// The account's Sent folder, from the **local index only**.
+///
+/// Read locally rather than listed over IMAP because this runs immediately after
+/// a successful send: a second round trip to discover a folder would put a
+/// network call between "the message is delivered" and "the user is told so",
+/// and its failure would be indistinguishable from a failed send. No Sent folder
+/// in the index means no Sent copy, which is exactly the behaviour that existed
+/// before phase 8 and is a safe place to land.
+async fn sent_folder_for(rt: &MailState, account: &MailAccount) -> Option<String> {
+    let rt = rt.clone();
+    let account_id = account.id.clone();
+    tokio::task::spawn_blocking(move || {
+        let store = store_of(&rt).ok()?;
+        store
+            .folders(&account_id)
+            .ok()?
+            .into_iter()
+            .find(|f| f.kind == MailFolderKind::Sent)
+            .map(|f| f.path)
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 // ── accounts.json ───────────────────────────────────────────────────────────
@@ -801,6 +937,188 @@ fn adopt_keys(rt: &MailState, dir: &Path, keys: Arc<MailKeys>) -> Result<(), Str
     Ok(())
 }
 
+// ── OpenPGP keys ────────────────────────────────────────────────────────────
+
+/// Whether the OpenPGP surface can be used at all.
+///
+/// One bool the UI gates on, rather than letting every key command fail with the
+/// same sentence: the keyring needs an encrypted store, and a settings panel
+/// that offers key management it cannot deliver is a worse experience than one
+/// that explains the precondition.
+#[tauri::command]
+pub async fn mail_pgp_available(state: State<'_, MailState>) -> Result<bool, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || Ok(keyring_of(&rt).is_ok()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn mail_pgp_keys(state: State<'_, MailState>) -> Result<Vec<PgpKeyInfo>, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || keyring_of(&rt)?.list())
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Generate this account's key. Curve25519, always — see `services::mail_pgp`.
+///
+/// Key generation is CPU work and runs in `spawn_blocking` like everything else
+/// here; a synchronous command would freeze the window for its duration.
+#[tauri::command]
+pub async fn mail_pgp_generate(
+    account_id: String,
+    name: String,
+    address: String,
+    state: State<'_, MailState>,
+) -> Result<PgpKeyInfo, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || keyring_of(&rt)?.generate(&name, &address, &account_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Import a key from **pasted text**, never a path.
+///
+/// The path-free rule this file is built on (`no_command_takes_a_path`) applies
+/// here too, and it costs nothing: an armored key is text, so pasting it is the
+/// natural gesture anyway. [`mail_pgp_import_pick`] covers the file case by
+/// raising the OS dialog inside Rust, exactly as attachments do.
+#[tauri::command]
+pub async fn mail_pgp_import(
+    armored: String,
+    state: State<'_, MailState>,
+) -> Result<Vec<PgpKeyInfo>, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || keyring_of(&rt)?.import(armored.as_bytes()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Import a key from a file the user picks in the **OS dialog raised by Rust**.
+///
+/// The same shape as `mail_attach_pick`: the dialog runs in the backend and the
+/// frontend never sees or supplies a path, and the picker is the async one
+/// bridged to a `oneshot` — the blocking variants would freeze the main thread,
+/// which is rule 1 of this module and which `the_dialogs_are_never_raised_with_
+/// the_blocking_api` enforces by scanning this very file (so it must not be
+/// named here either).
+#[tauri::command]
+pub async fn mail_pgp_import_pick(
+    app: AppHandle,
+    state: State<'_, MailState>,
+) -> Result<Vec<PgpKeyInfo>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .add_filter("OpenPGP key", &["asc", "gpg", "pgp", "key"])
+        .pick_file(move |picked| {
+            let _ = tx.send(picked);
+        });
+    let Some(picked) = rx.await.map_err(|e| e.to_string())? else {
+        return Ok(Vec::new());
+    };
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let path = picked
+            .into_path()
+            .map_err(|e| format!("could not read that file: {e}"))?;
+        // A key file is small; anything huge is not one, and reading it would be
+        // the only unbounded read in the mail subsystem.
+        let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+        if meta.len() > 1024 * 1024 {
+            return Err("that file is too large to be an OpenPGP key".into());
+        }
+        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        keyring_of(&rt)?.import(&bytes)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The armored **public** half, to send to a correspondent. There is no command
+/// that exports a private key, and that is not an omission.
+#[tauri::command]
+pub async fn mail_pgp_export(
+    fingerprint: String,
+    state: State<'_, MailState>,
+) -> Result<String, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || keyring_of(&rt)?.export_public(&fingerprint))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Record that the user compared this fingerprint out of band.
+///
+/// The only path to `MailCryptoState::Verified`, and therefore the only way any
+/// message ever earns positive chrome. There is no heuristic that can stand in
+/// for it, because OpenPGP has no authority to ask.
+#[tauri::command]
+pub async fn mail_pgp_set_verified(
+    fingerprint: String,
+    verified: bool,
+    state: State<'_, MailState>,
+) -> Result<PgpKeyInfo, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || keyring_of(&rt)?.set_verified(&fingerprint, verified))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn mail_pgp_bind(
+    fingerprint: String,
+    account_id: String,
+    bind: bool,
+    state: State<'_, MailState>,
+) -> Result<(), String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || keyring_of(&rt)?.bind_account(&fingerprint, &account_id, bind))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn mail_pgp_delete(
+    fingerprint: String,
+    state: State<'_, MailState>,
+) -> Result<(), String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || keyring_of(&rt)?.delete(&fingerprint))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Whether every recipient of a draft has a key, so the composer can enable or
+/// explain the Encrypt control **before** the user writes the message.
+///
+/// Asked up front rather than discovered on Send, because finding out at that
+/// moment means either a refused send or — far worse — a silent downgrade.
+#[tauri::command]
+pub async fn mail_pgp_recipients_ready(
+    account_id: String,
+    recipients: Vec<String>,
+    state: State<'_, MailState>,
+) -> Result<Vec<String>, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let ring = keyring_of(&rt)?;
+        if ring.secret_for_account(&account_id)?.is_none() {
+            return Err("this account has no OpenPGP key".into());
+        }
+        let mut missing = Vec::new();
+        for address in recipients {
+            if ring.public_for_address(&address)?.is_none() {
+                missing.push(address);
+            }
+        }
+        Ok(missing)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn mail_account_delete(
     account_id: String,
@@ -1279,6 +1597,10 @@ pub async fn mail_body(
             links,
             attachments: store.attachments(&id)?,
             truncated: truncated.then_some(true),
+            // A cached body is never an end-to-end one: `cache_body` is not
+            // called for those (see below), so a cache hit is proof this
+            // message was ordinary mail.
+            crypto: None,
         }))
     })
     .await
@@ -1313,7 +1635,14 @@ pub async fn mail_body(
         .map_err(String::from)?;
 
     let id = message_id.clone();
+    let rt4 = rt.clone();
+    let from_address = header.from.address.clone();
     tokio::task::spawn_blocking(move || {
+        // Decrypt FIRST, then parse, then sanitize, then render. The ordering is
+        // the plan's one non-negotiable: decryption confers no trust, so the
+        // plaintext goes through the same structural caps and the same sanitizer
+        // as anything the server handed us in the clear.
+        let (raw, crypto) = apply_crypto(&rt4, raw, &from_address);
         // Parsing and sanitizing are CPU-bound work over attacker-controlled
         // bytes, so they run here rather than on the runtime's async threads.
         let parsed = mail_engine::parse_message(&raw).map_err(String::from)?;
@@ -1339,21 +1668,32 @@ pub async fn mail_body(
             attachments.push(att.meta.clone());
         }
 
-        let raw_blob = if raw.len() > crate::services::mail_store::INLINE_BODY_LIMIT {
-            Some(store.put_blob(&raw)?)
-        } else {
-            None
-        };
-        store.cache_body(
-            &id,
-            SANITIZER_VERSION,
-            html.as_deref(),
-            parsed.text.as_deref(),
-            &serde_json::to_string(&links).unwrap_or_else(|_| "[]".into()),
-            remote_refs,
-            truncated,
-            raw_blob.as_deref(),
-        )?;
+        // **Decrypted plaintext is never written to disk.** Not to
+        // `bodies_cache`, not to a blob, not to `preview`. If it were, the store
+        // key would become cryptographically equivalent to the mail private key
+        // and the end-to-end guarantee would collapse into the at-rest one — a
+        // message you can only read with your PGP key would become a message
+        // anyone holding the store key can read. So an encrypted message is
+        // re-fetched and re-decrypted on every open, which is the cost of the
+        // guarantee and is measured in milliseconds.
+        let decrypted = crypto.as_ref().is_some_and(|c| c.decrypted);
+        if !decrypted {
+            let raw_blob = if raw.len() > crate::services::mail_store::INLINE_BODY_LIMIT {
+                Some(store.put_blob(&raw)?)
+            } else {
+                None
+            };
+            store.cache_body(
+                &id,
+                SANITIZER_VERSION,
+                html.as_deref(),
+                parsed.text.as_deref(),
+                &serde_json::to_string(&links).unwrap_or_else(|_| "[]".into()),
+                remote_refs,
+                truncated,
+                raw_blob.as_deref(),
+            )?;
+        }
 
         Ok(MailBody {
             id,
@@ -1363,6 +1703,7 @@ pub async fn mail_body(
             links,
             attachments,
             truncated: truncated.then_some(true),
+            crypto,
         })
     })
     .await
@@ -1645,6 +1986,8 @@ pub async fn mail_draft_save(
 #[tauri::command]
 pub async fn mail_draft_send(
     draft_id: String,
+    sign: bool,
+    encrypt: bool,
     state: State<'_, MailState>,
 ) -> Result<MailSendResult, String> {
     let rt = state.inner().clone();
@@ -1682,6 +2025,24 @@ pub async fn mail_draft_send(
         let mut recipients = draft.to.clone();
         recipients.extend(draft.cc.clone());
         recipients.extend(draft.bcc.clone());
+
+        // Sign and/or encrypt, and **never silently fall back**. An encryption
+        // feature that quietly sends in the clear when something goes wrong is
+        // worse than no encryption at all, because it looks exactly like
+        // success — so a missing recipient key, a locked keyring or a missing
+        // own key all abort the send with a message naming the problem, and the
+        // user decides what to do about it.
+        let opts = SealOpts { sign, encrypt };
+        let raw = if opts.any() {
+            let ring = keyring_of(&rt2)?;
+            // Bcc recipients must be encrypted to as well — a blind copy that
+            // cannot be read is not a copy. They stay out of the *headers*
+            // (that is what blind means) but they are in the envelope, so they
+            // are in the key list.
+            ring.seal_outgoing(&draft.account_id, &recipients, &raw, opts)?
+        } else {
+            raw
+        };
         Ok::<_, String>((account, raw, recipients, store))
     })
     .await
@@ -1709,6 +2070,22 @@ pub async fn mail_draft_send(
         .await
     {
         Ok(()) => {
+            // The Sent copy (plan phase 8). **Exactly the bytes that were sent**
+            // — which for an encrypted message is the encrypted-to-self form,
+            // and that is the whole reason this is here rather than earlier:
+            // adding APPEND without encrypt-to-self is precisely how a plaintext
+            // Sent copy of an encrypted message ships. Before this existed there
+            // was no Sent copy at all, which was accidentally the most private
+            // behaviour available; adding one is a deliberate trade.
+            //
+            // Best effort, and deliberately so: a failed APPEND must not report
+            // a failed *send*. The message is already delivered, and telling the
+            // user otherwise is how a message gets sent twice.
+            if let Some(sent) = sent_folder_for(&rt, &account).await {
+                if let Err(e) = InProcessEngine.append(&account, &pw, &sent, &raw).await {
+                    eprintln!("mail: could not file the sent copy: {e}");
+                }
+            }
             let id = draft_id.clone();
             let _ = tokio::task::spawn_blocking(move || store.delete_draft(&id)).await;
             Ok(MailSendResult {

@@ -28,6 +28,7 @@ pub mod ollama;
 pub mod pdf_clip;
 pub mod power;
 pub mod presenter;
+pub mod printing;
 pub mod openvpn;
 pub mod project_runtime;
 pub mod python;

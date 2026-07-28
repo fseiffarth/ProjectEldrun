@@ -7,8 +7,13 @@ use crate::schema::project::{OpenApp, TabEntry};
 use crate::schema::session::TerminalSession;
 use crate::storage;
 
-/// Save tab layout into a project.json, preserving all other fields.
-/// Also mirrors the layout to `.eldrun/sessions/terminals.json`.
+/// Save a project's tab layout.
+///
+/// `project_id` is what the state lives under (`<state_dir>/sessions/<key>/`),
+/// and `local_file` is only where the **export copy** goes. Passing `None` for
+/// the id means there is no project to key by (the root scope), in which case
+/// nothing is persisted — the root scope's tabs were never restored from disk.
+///
 /// `groups` is the opaque split/group layout tree (None clears it).
 /// `sessions` is the opaque list of open agent-session UUIDs: `Some([])` clears
 /// it, `Some(list)` replaces it, and `None` leaves the stored value untouched.
@@ -18,19 +23,19 @@ use crate::storage;
 /// apart, and it only knows for a scope it actually hydrated — see the guard in
 /// `write_terminal_session`.
 pub fn save_tab_layout(
+    project_id: Option<&str>,
     local_file: &str,
     tabs: &[TabEntry],
     groups: Option<Value>,
     sessions: Option<Value>,
     allow_clear: bool,
 ) -> Result<(), String> {
-    write_terminal_session(local_file, tabs, 0, groups, sessions, allow_clear)
+    write_terminal_session(project_id, local_file, tabs, 0, groups, sessions, allow_clear)
 }
 
-/// Save tab layout with the active tab index.
-/// Writes to `.eldrun/sessions/terminals.json` (including active_tab_index)
-/// and also saves to `project.json` (which does not store active_tab_index).
+/// Save tab layout with the active tab index (the project-switch snapshot).
 pub fn save_terminal_session(
+    project_id: Option<&str>,
     local_file: &str,
     tabs: &[TabEntry],
     active_tab_index: usize,
@@ -41,10 +46,12 @@ pub fn save_terminal_session(
     // It also never clears: a snapshot is a picture of what was in memory, and an
     // empty one is far more likely to mean "this scope was never loaded" than
     // "the user closed everything" — the debounced save owns that intent.
-    write_terminal_session(local_file, tabs, active_tab_index, groups, None, false)
+    write_terminal_session(project_id, local_file, tabs, active_tab_index, groups, None, false)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_terminal_session(
+    project_id: Option<&str>,
     local_file: &str,
     tabs: &[TabEntry],
     active_tab_index: usize,
@@ -71,72 +78,108 @@ fn write_terminal_session(
     if tabs.is_empty() && !allow_clear {
         return Ok(());
     }
-    let path = PathBuf::from(local_file);
-    let mut project: crate::schema::project::Project =
-        storage::read_json(&path).unwrap_or_default();
-    project.tab_layout = if tabs.is_empty() {
-        None
-    } else {
-        Some(tabs.to_vec())
+    let Some(project_id) = project_id else {
+        // No project to key by — the root scope, whose tabs are never restored
+        // from disk. Writing the export copy alone would create a file nothing
+        // ever reads, so do nothing at all.
+        return Ok(());
     };
-    // Clear the tree when there are no tabs; otherwise persist what was sent
-    // (a missing tree is tolerated → frontend rebuilds a single group on load).
-    project.tab_groups = if tabs.is_empty() { None } else { groups.clone() };
-    // Only touch the persisted session UUIDs when a list was supplied; an empty
-    // list clears them, a missing list (None) preserves what's on disk.
-    if let Some(sessions) = sessions {
-        let is_empty = sessions.as_array().is_some_and(|a| a.is_empty());
-        project.open_tab_sessions = if is_empty { None } else { Some(sessions) };
-    }
-    storage::write_json(&path, &project).map_err(|e| e.to_string())?;
 
-    // Mirror to .eldrun/sessions/terminals.json.
-    if let Some(sessions_dir) = eldrun_sessions_dir(local_file) {
-        let session = TerminalSession {
-            tab_layout: tabs.to_vec(),
-            active_tab_index,
-            tab_groups: if tabs.is_empty() { None } else { groups.clone() },
-            extra: Default::default(),
-        };
-        if let Err(e) = storage::write_json(&sessions_dir.join("terminals.json"), &session) {
-            eprintln!("terminal_service: write .eldrun session: {e}");
-        }
-    }
+    // Preserve the fields this call does not carry. `open_apps` is never written
+    // by any caller (it is legacy restore metadata), so it only survives by being
+    // read back; the session UUIDs survive a `None` the same way.
+    let prev = read_state_session(project_id).unwrap_or_default();
+    let session = TerminalSession {
+        tab_layout: tabs.to_vec(),
+        active_tab_index,
+        // Clear the tree when there are no tabs; otherwise persist what was sent
+        // (a missing tree is tolerated → frontend rebuilds a single group on load).
+        tab_groups: if tabs.is_empty() { None } else { groups },
+        // Only touch the persisted session UUIDs when a list was supplied; an
+        // empty list clears them, a missing list (None) preserves what's on disk.
+        open_tab_sessions: match sessions {
+            Some(s) if s.as_array().is_some_and(|a| a.is_empty()) => None,
+            Some(s) => Some(s),
+            None => prev.open_tab_sessions,
+        },
+        open_apps: prev.open_apps,
+        extra: prev.extra,
+    };
 
+    let dir = storage::project_session_dir(project_id);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return Err(format!("create session dir: {e}"));
+    }
+    storage::write_json(&dir.join(TERMINALS_FILE), &session).map_err(|e| e.to_string())?;
+
+    // Drop host-bound markers (#150) for tabs this project no longer has, so the
+    // directory does not accumulate one file per local-model tab ever opened.
+    // Driven off the layout that was just saved, which is the same file the spawn
+    // path's uid comes back from.
+    let live: HashSet<String> = session
+        .tab_layout
+        .iter()
+        .filter_map(|t| t.extra.get(HOST_BOUND_UID_KEY).and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    crate::services::sandbox::prune_host_bound_markers(project_id, &live);
+
+    write_export_copy(local_file, &session);
     Ok(())
 }
 
-/// Load tab layout. Tries `.eldrun/sessions/terminals.json` first; falls back
-/// to `project.json` if the session file is absent or unreadable.
-pub fn load_tab_layout(local_file: &str) -> Vec<TabEntry> {
-    load_terminal_session(local_file).tab_layout
+/// Write the project-tree copy of the layout: `<project>/.eldrun/sessions/
+/// terminals.json`.
+///
+/// **Export-only.** Nothing reads this file on its own — not on relaunch, not on
+/// project switch, not on import. It exists so the layout keeps travelling with a
+/// folder that is byte-synced to another machine, copied, or moved by hand, which
+/// is the one real cost of moving the authoritative copy into the state dir. A
+/// user who wants it back asks for it (`adopt_folder_tab_layout`), and what they
+/// get goes through [`sanitize_loaded_layout`] first.
+///
+/// The asymmetry is the whole point: *writing* a file into the container's
+/// writable mount grants nothing, and *reading* one back as a command to run is
+/// the entire bug class. Keeping the write and dropping the automatic read costs
+/// nothing and keeps the portability property.
+fn write_export_copy(local_file: &str, session: &TerminalSession) {
+    let Some(sessions_dir) = eldrun_sessions_dir(local_file) else {
+        return;
+    };
+    if let Err(e) = storage::write_json(&sessions_dir.join(TERMINALS_FILE), session) {
+        eprintln!("terminal_service: write .eldrun export copy: {e}");
+    }
 }
 
-/// Load the full terminal session (tab layout + active tab index).
-/// Tries `.eldrun/sessions/terminals.json` first; falls back to `project.json`
-/// for the tab layout (active_tab_index will be 0 on fallback).
+/// Load a project's full terminal session (tab layout + active tab index) from
+/// the state dir. **The only automatic read of layout state there is.**
 ///
-/// **The layout is untrusted input.** Both files it reads live inside the project
-/// tree: `.eldrun/sessions/terminals.json` and `project.json` sit in the project
-/// container's writable rw mount, and a cloned/imported repository can ship either.
-/// Yet the frontend rehydrates `cmd` / `resumeArgs` / `env` / `cwd` / `location`
-/// from them straight into `pty_spawn`. So everything read here is passed through
-/// [`sanitize_tab_layout`] before any caller sees it.
-pub fn load_terminal_session(local_file: &str) -> TerminalSession {
-    let mut session = match read_session_file(local_file) {
-        Some(session) => session,
-        None => {
-            let (tab_layout, tab_groups) = read_project_tab_state(local_file);
-            TerminalSession {
-                tab_layout,
-                active_tab_index: 0,
-                tab_groups,
-                extra: Default::default(),
-            }
-        }
-    };
+/// It reads `<state_dir>/sessions/<key>/terminals.json` and nothing else — in
+/// particular not `<project>/.eldrun/sessions/terminals.json` and not
+/// `project.json`, both of which sit inside the project container's writable rw
+/// mount and inside any repository that gets cloned or imported as a project.
+/// That was the escape: the frontend rehydrates `cmd` / `resumeArgs` / `env` /
+/// `cwd` / `location` from this layout straight into `pty_spawn`, so a file the
+/// contained agent could write was a file the host executed.
+///
+/// The result is *still* passed through [`sanitize_tab_layout`]. The state dir is
+/// trustworthy, so this is now the second layer rather than the only one — it
+/// costs nothing, it guards the migration and adopt paths (which do read the
+/// untrusted copy), and it is what catches a future feature that reintroduces a
+/// project-tree read.
+pub fn load_terminal_session(project_id: &str) -> TerminalSession {
+    let mut session = read_state_session(project_id).unwrap_or_default();
     sanitize_loaded_layout(&mut session.tab_layout);
     session
+}
+
+/// Read the state-dir session file verbatim (no sanitizing, no fallback).
+fn read_state_session(project_id: &str) -> Option<TerminalSession> {
+    let path = storage::project_session_dir(project_id).join(TERMINALS_FILE);
+    if !path.exists() {
+        return None;
+    }
+    storage::read_json::<TerminalSession>(&path).ok()
 }
 
 // ── Untrusted-layout sanitizing ───────────────────────────────────────────────
@@ -272,7 +315,7 @@ pub fn sanitize_tab_layout(
         );
         tab.cmd = String::new();
         tab.session_id = None;
-        for key in ["resumeArgs", "env", "location", "args", "agentMode"] {
+        for key in ["resumeArgs", "env", "location", "args", "agentMode", HOST_BOUND_UID_KEY] {
             tab.extra.remove(key);
         }
     }
@@ -311,38 +354,164 @@ fn rebuild_resume_args(tab: &mut TabEntry, custom: &HashMap<String, Vec<String>>
     }
 }
 
-fn read_session_file(local_file: &str) -> Option<TerminalSession> {
-    if let Some(sessions_dir) = eldrun_sessions_dir(local_file) {
-        let session_path = sessions_dir.join("terminals.json");
-        if session_path.exists() {
-            if let Ok(session) = storage::read_json::<TerminalSession>(&session_path) {
+/// Load the project's `open_apps` list — the standalone apps
+/// `restore_service::restore_project_apps` relaunches on every activation.
+///
+/// Read from the state dir, like the layout and for the same reason: this list
+/// turns into a host-side `spawn_reaped` outside any container. It is legacy
+/// metadata nothing writes any more, so in practice it is empty for every project
+/// that did not carry one across the migration.
+pub fn load_open_apps(project_id: &str) -> Vec<OpenApp> {
+    read_state_session(project_id)
+        .and_then(|s| s.open_apps)
+        .unwrap_or_default()
+}
+
+// ── The project-tree copy ─────────────────────────────────────────────────
+//
+// Everything below reads the *untrusted* copy inside the project tree. These are
+// the only functions in the backend allowed to, and each one either runs exactly
+// once per install (the migration) or is driven by an explicit user click (the
+// adopt). Both sanitize what they read before it is stored or returned.
+
+/// Read the project-tree export copy, or the legacy `project.json` fields if no
+/// export copy exists (Eldrun wrote both before the move).
+///
+/// **Untrusted.** Every caller must sanitize.
+fn read_project_tree_session(local_file: &str) -> Option<TerminalSession> {
+    if let Some(dir) = eldrun_sessions_dir(local_file) {
+        let path = dir.join(TERMINALS_FILE);
+        if path.exists() {
+            if let Ok(session) = storage::read_json::<TerminalSession>(&path) {
                 return Some(session);
             }
         }
     }
-    None
-}
-
-/// Read both the flat tab layout and the opaque layout tree from project.json.
-fn read_project_tab_state(local_file: &str) -> (Vec<TabEntry>, Option<Value>) {
-    let path = PathBuf::from(local_file);
-    match storage::read_json::<crate::schema::project::Project>(&path) {
-        Ok(p) => (p.tab_layout.unwrap_or_default(), p.tab_groups),
-        Err(_) => (Vec::new(), None),
+    // Legacy: the layout used to be duplicated into project.json itself, and a
+    // project last written by an older Eldrun may only have that copy.
+    let project: crate::schema::project::Project =
+        storage::read_json(&PathBuf::from(local_file)).ok()?;
+    let tab_layout = project.tab_layout.unwrap_or_default();
+    if tab_layout.is_empty() && project.open_apps.is_none() {
+        return None;
     }
+    Some(TerminalSession {
+        tab_layout,
+        active_tab_index: 0,
+        tab_groups: project.tab_groups,
+        open_tab_sessions: project.open_tab_sessions,
+        open_apps: project.open_apps,
+        extra: Default::default(),
+    })
 }
 
-/// Load open_apps list from a project.json.
-pub fn load_open_apps(local_file: &str) -> Vec<OpenApp> {
-    let path = PathBuf::from(local_file);
-    storage::read_json::<crate::schema::project::Project>(&path)
-        .ok()
-        .and_then(|p| p.open_apps)
-        .unwrap_or_default()
+/// Adopt the project-tree copy of a layout as this project's session state, at
+/// the user's explicit request. Returns the sanitized session it stored.
+///
+/// This is the deliberate replacement for the automatic fallback that used to
+/// happen on every load. Same bytes, same sanitizer — the difference is that a
+/// person asked for them, which is the whole distinction between "the layout
+/// travels with the folder" (a feature) and "a cloned repository chooses what the
+/// host runs" (the bug).
+pub fn adopt_project_tree_session(
+    project_id: &str,
+    local_file: &str,
+) -> Result<TerminalSession, String> {
+    let mut session = read_project_tree_session(local_file)
+        .ok_or_else(|| "no saved layout in this folder".to_string())?;
+    sanitize_loaded_layout(&mut session.tab_layout);
+    // `open_apps` is not adopted: a folder-supplied list of host commands to
+    // launch is precisely what the move was about, and no legitimate workflow
+    // needs one to travel. The tabs do.
+    session.open_apps = None;
+    let dir = storage::project_session_dir(project_id);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create session dir: {e}"))?;
+    storage::write_json(&dir.join(TERMINALS_FILE), &session).map_err(|e| e.to_string())?;
+    Ok(session)
+}
+
+/// One-shot adoption of every existing project's project-tree session state into
+/// the state dir. Called once at startup.
+///
+/// **Once per installation, not once per project** — that difference is what
+/// keeps this from being the old hole under a new name. A project registered
+/// *after* the migration ran (a fresh scaffold, or an imported/cloned repository)
+/// is never adopted from, so a hostile tree's layout is inert from the moment it
+/// arrives. Projects that predate the move keep their tabs.
+///
+/// Logs what it migrated: a silently-wrong one-time read is the failure mode this
+/// whole change is most exposed to.
+pub fn migrate_project_sessions_once() {
+    let marker = storage::sessions_root().join(MIGRATED_MARKER);
+    if marker.exists() {
+        return;
+    }
+    let list_path = storage::state_dir().join("projects.json");
+    let projects: crate::schema::projects::ProjectsList =
+        storage::read_json(&list_path).unwrap_or_default();
+
+    let mut migrated = 0usize;
+    for entry in &projects {
+        if entry.local_file.is_empty() {
+            continue;
+        }
+        let dir = storage::project_session_dir(&entry.id);
+        if dir.join(TERMINALS_FILE).exists() {
+            continue;
+        }
+        let Some(mut session) = read_project_tree_session(&entry.local_file) else {
+            continue;
+        };
+        sanitize_loaded_layout(&mut session.tab_layout);
+        if std::fs::create_dir_all(&dir).is_err() {
+            continue;
+        }
+        match storage::write_json(&dir.join(TERMINALS_FILE), &session) {
+            Ok(()) => {
+                migrated += 1;
+                eprintln!(
+                    "terminal_service: migrated {} tab(s){} for project '{}' out of the project tree",
+                    session.tab_layout.len(),
+                    match session.open_apps.as_ref().map(Vec::len).unwrap_or(0) {
+                        0 => String::new(),
+                        n => format!(" and {n} open_apps entr(y/ies)"),
+                    },
+                    entry.name,
+                );
+            }
+            Err(e) => eprintln!("terminal_service: migrate '{}': {e}", entry.name),
+        }
+    }
+
+    if let Err(e) = std::fs::create_dir_all(storage::sessions_root())
+        .and_then(|()| std::fs::write(&marker, b"1"))
+    {
+        // Without the marker the pass would run again next launch. That is only
+        // wasteful (every project now has a state-dir copy, so each one is
+        // skipped) — but say so, because it also means a project imported before
+        // the next launch would be eligible for adoption.
+        eprintln!("terminal_service: could not record the session migration marker: {e}");
+    }
+    if migrated > 0 {
+        eprintln!("terminal_service: session migration complete ({migrated} project(s))");
+    }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
+/// Filename of the layout snapshot, in both its state-dir and export locations.
+const TERMINALS_FILE: &str = "terminals.json";
+
+/// Marks the one-shot migration as done: `<state_dir>/sessions/.migrated`.
+const MIGRATED_MARKER: &str = ".migrated";
+
+/// The layout field carrying a tab's host-bound marker id (#150). An index into
+/// `<state_dir>/sessions/<project>/host_bound/`, never an authority on its own.
+const HOST_BOUND_UID_KEY: &str = "hostBoundUid";
+
+/// `<project>/.eldrun/sessions/` — where the **export** copies of the session
+/// files live (and where `filetabs.json` / `layout.json` / `windows.json` still
+/// live outright; none of those is executable intent).
 pub fn eldrun_sessions_dir(local_file: &str) -> Option<PathBuf> {
     Path::new(local_file)
         .parent()

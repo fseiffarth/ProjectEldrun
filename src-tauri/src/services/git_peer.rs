@@ -110,6 +110,21 @@ pub struct PeerSnapshot {
     /// Subject line of the commit at HEAD (#28p D8: shown in the desync bar so a
     /// Use-local/Use-remote choice is informed rather than blind).
     pub head_subject: Option<String>,
+    /// Every branch this peer has checked out in **any** worktree, linked ones
+    /// included (#23 D1).
+    ///
+    /// `head` alone answers only for the *main* worktree, so a branch checked out
+    /// in a linked worktree looked to lockstep like an ordinary unattached ref —
+    /// and every ref move for it went down the `update-ref` arm. `update-ref`,
+    /// unlike `git branch -f`, does **not** refuse (verified: exit 0, no message),
+    /// so the worktree's HEAD moved under it and its index was left claiming a
+    /// staged modification that reverts the incoming change. Silent, and the
+    /// commit UI's `git add -A` then commits the revert.
+    ///
+    /// Empty for a peer whose git is too old to have been asked, which reads as
+    /// "no linked worktrees" — the pre-#23 behaviour, not a new failure mode.
+    #[serde(default)]
+    pub checked_out: Vec<String>,
 }
 
 /// Overall lockstep status for a project.
@@ -585,18 +600,25 @@ pub fn blocked_detail(branch: &str, stderr: &str) -> String {
 // ── Batched probe (#28p D5) ─────────────────────────────────────────────────
 
 /// One `sh` script emitting every field [`probe`] needs, as `\x1e`-separated sections
-/// — replacing **6 SSH round trips with 1**. Sections, in order: the literal `repo`
+/// — replacing **7 SSH round trips with 1**. Sections, in order: the literal `repo`
 /// marker, `symbolic-ref HEAD`, `rev-parse HEAD`, branches, tags, `status --porcelain`,
-/// HEAD's subject. A non-repo emits the single token `norepo`.
+/// HEAD's subject, `worktree list --porcelain`. A non-repo emits the single token
+/// `norepo`.
+///
+/// The worktree section is the whole of the #23 D1 fix and costs nothing extra here:
+/// `symbolic-ref HEAD` answers only for the **main** worktree, so without it a branch
+/// checked out in a *linked* worktree is invisible and every ref move for it takes the
+/// `update-ref` arm, which does not refuse.
 ///
 /// Contains no interpolation: it is a constant, so there is nothing here to inject
 /// into (the only variable — the project's remote path — is `shell_quote`d by
 /// [`ssh_exec::run_remote_script`], which `cd`s to it).
 /// The batched host probe. Its **output** is its answer; its **exit status** means only
-/// "the probe ran" — hence the trailing `|| true`. An unborn repo makes the final
-/// `git log HEAD` exit 128, and letting that escape would make a legitimately-empty side
-/// indistinguishable from a probe that could not run at all — the one confusion that must
-/// never happen here, since "could not run" is what withholds a `reset --hard`.
+/// "the probe ran" — hence the trailing `|| true`, which must stay on whatever command
+/// ends up last. An unborn repo makes `git log HEAD` exit 128, and letting that escape
+/// would make a legitimately-empty side indistinguishable from a probe that could not run
+/// at all — the one confusion that must never happen here, since "could not run" is what
+/// withholds a `reset --hard`.
 ///
 /// Every `rev-parse` inside must likewise report an unborn HEAD by *printing nothing*
 /// (`--verify --quiet`), not by exiting non-zero: a bare `git rev-parse HEAD` prints the
@@ -609,7 +631,8 @@ git rev-parse --verify --quiet HEAD 2>/dev/null; printf '\\036'; \
 git for-each-ref --format='%(objectname) %(refname:short)' refs/heads 2>/dev/null; printf '\\036'; \
 git for-each-ref --format='%(objectname) %(refname:short)' refs/tags 2>/dev/null; printf '\\036'; \
 git status --porcelain 2>/dev/null; printf '\\036'; \
-git log -1 --format=%s HEAD 2>/dev/null || true; \
+git log -1 --format=%s HEAD 2>/dev/null; printf '\\036'; \
+git worktree list --porcelain 2>/dev/null || true; \
 else printf 'norepo'; fi";
 
 /// Parse [`PROBE_SCRIPT`]'s output into a snapshot. `None` means the output was not
@@ -637,7 +660,42 @@ pub fn parse_probe_block(stdout: &str) -> Option<PeerSnapshot> {
             .get(5)
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
+        // Absent on a git too old to list worktrees → an empty set, i.e. "nothing
+        // linked", which is the pre-#23 reading and never a false *block*.
+        checked_out: parts.get(6).map(|s| checked_out_branches(s)).unwrap_or_default(),
     })
+}
+
+/// The branches a peer has checked out in a **linked** worktree — i.e. everything
+/// in `checked_out` that is not the main worktree's own HEAD (#23 D1).
+///
+/// This is the set no ref move may touch. The main worktree's branch is excluded
+/// because it is already handled, and handled *correctly*: it takes the
+/// `merge --ff-only` / `reset --hard` arm, which moves the working tree with the
+/// ref and refuses on a dirty tree. It is every *other* checkout that fell
+/// through to bare `update-ref`, which moves the ref and leaves the tree behind.
+/// Pure.
+pub fn linked_checkout_branches(snap: &PeerSnapshot) -> std::collections::HashSet<&str> {
+    let head = match &snap.head {
+        Some(HeadRef::Branch { name, .. }) => Some(name.as_str()),
+        _ => None,
+    };
+    snap.checked_out
+        .iter()
+        .map(String::as_str)
+        .filter(|b| head != Some(*b))
+        .collect()
+}
+
+/// The branches checked out across a peer's worktrees, from `git worktree list
+/// --porcelain`. Reuses `commands::git`'s parser so the two readings of the same
+/// output cannot drift. Pure.
+pub fn checked_out_branches(porcelain: &str) -> Vec<String> {
+    crate::commands::git::parse_worktree_porcelain(porcelain)
+        .into_iter()
+        .filter(|w| !w.branch.is_empty())
+        .map(|w| w.branch)
+        .collect()
 }
 
 /// Whether a string is a plain hex object name — the guard that lets [`ancestry_script`]
@@ -1079,6 +1137,16 @@ fn probe_per_command(peer: &Peer) -> PeerSnapshot {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty());
+    // #23 D1: the branches checked out in LINKED worktrees, which `symbolic-ref`
+    // above cannot see. The batched probe asks for the same thing in its own
+    // section; both must, or a peer that fell back to per-command probing would
+    // silently lose the protection.
+    let checked_out = peer
+        .run(&["worktree", "list", "--porcelain"])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| checked_out_branches(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_default();
 
     PeerSnapshot {
         is_repo: true,
@@ -1088,6 +1156,7 @@ fn probe_per_command(peer: &Peer) -> PeerSnapshot {
         dirty_tracked,
         probe_error: false,
         head_subject,
+        checked_out,
     }
 }
 
@@ -1253,6 +1322,7 @@ async fn transfer_and_apply(
         Some(HeadRef::Branch { name, .. }) => Some(name.clone()),
         _ => None,
     };
+    let linked_checkouts = linked_checkout_branches(dest);
     let ts = now_secs();
 
     // Every branch's two ancestry bits in ONE round trip on the dest (#28p D5); the
@@ -1291,7 +1361,22 @@ async fn transfer_and_apply(
             .unwrap_or((false, false));
         let is_head = head_branch.as_deref() == Some(src_ref.name.as_str());
         let action = decide(dst_sha, &src_ref.sha, fwd, back);
+        // #23 D1. Reported like the dirty-tree case rather than forced: a sync engine
+        // that quietly rewrites a checkout it cannot see is the failure mode, and
+        // `--force` here would be the same write with a nicer name. The user's escape
+        // is the one git gives — remove the worktree, or commit and move it there.
+        let blocked_by_worktree =
+            action != RefAction::InSync && linked_checkouts.contains(src_ref.name.as_str());
+        if blocked_by_worktree {
+            result.blocked = Some(format!(
+                "'{}' is checked out in a linked worktree on the {} side — its ref was left alone \
+                 (moving it would leave that worktree's index reverting this change)",
+                src_ref.name,
+                if to_remote { "remote" } else { "local" },
+            ));
+        }
         match action {
+            _ if blocked_by_worktree => {}
             RefAction::InSync => {}
             RefAction::DestAhead => {
                 // Under a resolution the authority wins even where the dest is ahead:
@@ -2875,6 +2960,18 @@ pub async fn restore_backup(
     let snap = probe(&peer);
     let is_head = matches!(&snap.head, Some(HeadRef::Branch { name, .. }) if *name == branch);
 
+    // #23 D1 applies here too: `force_reset_branch` falls through to `update-ref` for
+    // any branch that is not the MAIN worktree's HEAD, and `update-ref` does not refuse
+    // a branch a linked worktree has checked out. Resume auto-sync before returning.
+    if !is_head && snap.checked_out.contains(&branch) {
+        crate::services::sync_auto::resume(auto, project_id).await;
+        return Err(format!(
+            "'{branch}' is checked out in a linked worktree on the {peer_label} side. Moving it \
+             would leave that worktree's index reverting the restore — remove the worktree (or \
+             restore from inside it) and retry."
+        ));
+    }
+
     // #28p D9: same clobber risk as `resolve` — check before `force_reset_branch`'s
     // `reset --hard` on the checked-out branch. Resume auto-sync before returning so a
     // refusal never leaves it paused.
@@ -4013,6 +4110,106 @@ mod tests {
         assert_eq!(snap.head, per_cmd.head);
         assert_eq!(snap.dirty_tracked, per_cmd.dirty_tracked);
         assert_eq!(snap.branches.len(), per_cmd.branches.len());
+    }
+
+    /// #23 D1 — the single most valuable test in the worktree audit, and the one
+    /// whose absence let the corruption ship.
+    ///
+    /// `git symbolic-ref HEAD` at the peer root answers for the MAIN worktree only,
+    /// so a branch checked out in a linked worktree read as an ordinary unattached
+    /// ref and every lockstep ref move for it went down the `update-ref` arm. That
+    /// arm does not refuse (verified: exit 0, silent) — unlike `git branch -f`,
+    /// which answers `fatal: cannot force update the branch 'feat' used by worktree
+    /// at '…'`. The worktree's HEAD moved under it and its index was left staging a
+    /// revert of the incoming change, which the commit UI's `git add -A` would then
+    /// commit.
+    ///
+    /// The whole fix is upstream of the decision: the probe has to *see* the linked
+    /// checkout. So that is what this asserts, on both probe paths.
+    #[cfg(unix)]
+    #[test]
+    fn the_probe_sees_a_branch_checked_out_in_a_linked_worktree() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        repo_behind_by_one(dir); // `main` checked out, `feat` ahead and unattached
+        let wt = tmp.path().join("wt-feat");
+        let out = std::process::Command::new("git")
+            .args(["worktree", "add", &wt.to_string_lossy(), "feat"])
+            .current_dir(dir)
+            .output()
+            .expect("git worktree add");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+        let snap = parse_probe_block(&run_sh(dir, PROBE_SCRIPT)).expect("parses");
+        // HEAD alone still says only "main" — which is exactly the blind spot.
+        assert!(matches!(&snap.head, Some(HeadRef::Branch { name, .. }) if name == "main"));
+        assert!(
+            snap.checked_out.iter().any(|b| b == "feat"),
+            "the batched probe must report the linked worktree's branch: {:?}",
+            snap.checked_out
+        );
+        assert!(snap.checked_out.iter().any(|b| b == "main"));
+
+        // The per-command fallback must agree, or a peer that fell back would
+        // silently lose the protection.
+        let per_cmd = probe_per_command(&Peer::Local(dir.to_path_buf()));
+        let mut a = snap.checked_out.clone();
+        let mut b = per_cmd.checked_out.clone();
+        a.sort();
+        b.sort();
+        assert_eq!(a, b);
+
+        // And the guard derived from it names `feat` and only `feat`.
+        let linked = linked_checkout_branches(&snap);
+        assert!(linked.contains("feat"));
+        assert!(
+            !linked.contains("main"),
+            "the MAIN worktree's branch is handled by the reset/merge arm, not blocked"
+        );
+    }
+
+    #[test]
+    fn linked_checkout_branches_excludes_the_main_worktrees_head() {
+        let snap = PeerSnapshot {
+            is_repo: true,
+            head: Some(HeadRef::Branch {
+                name: "main".into(),
+                sha: "abc".into(),
+            }),
+            checked_out: vec!["main".into(), "feat".into(), "wip".into()],
+            ..Default::default()
+        };
+        let linked = linked_checkout_branches(&snap);
+        assert_eq!(linked.len(), 2);
+        assert!(linked.contains("feat") && linked.contains("wip"));
+
+        // A detached peer has no HEAD branch to exclude, so every checkout is linked.
+        let detached = PeerSnapshot {
+            is_repo: true,
+            head: Some(HeadRef::Detached { sha: "abc".into() }),
+            checked_out: vec!["feat".into()],
+            ..Default::default()
+        };
+        assert!(linked_checkout_branches(&detached).contains("feat"));
+
+        // A peer whose git never answered reads as "nothing linked" — the pre-#23
+        // behaviour, never a false block on every branch.
+        assert!(linked_checkout_branches(&PeerSnapshot::default()).is_empty());
+    }
+
+    #[test]
+    fn checked_out_branches_skips_detached_and_bare_worktrees() {
+        let text = "worktree /r\nHEAD abc\nbranch refs/heads/main\n\n\
+                    worktree /r/wt\nHEAD def\ndetached\n\n\
+                    worktree /r/bare.git\nbare\n\n\
+                    worktree /r/wt2\nHEAD ghi\nbranch refs/heads/feat\n";
+        let mut got = checked_out_branches(text);
+        got.sort();
+        assert_eq!(got, vec!["feat".to_string(), "main".to_string()]);
     }
 
     #[cfg(unix)]

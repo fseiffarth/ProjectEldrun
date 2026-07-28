@@ -24,21 +24,121 @@ use crate::services::remote::{remote_target_for_dir, RemoteTarget};
 // owning project's `RemoteSpec`) and threads the resulting `Option<&RemoteTarget>`
 // into `run_git` and the `local_non_repo` guard.
 
+// ── The repo's own config is untrusted input (Group O #151) ───────────────────
+//
+// Every git invocation below runs in the **project directory**, and for a project
+// with the container toggle on that directory — `.git` included — is the
+// container's writable rw mount (`services::sandbox` mounts `<project_dir>` whole).
+// A repo's `.git/config` names programs git then executes, so a contained agent
+// writing one gets code execution **on the host**, outside the container that was
+// supposed to confine it. The sharpest is `core.fsmonitor`: it fires on plain
+// `git status`, and `git_file_statuses`/`git_status` are polled continuously for
+// the file tree — no user action anywhere in the chain.
+//
+// So Eldrun's own invocations pin the config keys that turn a read into an exec.
+// This does not need a read/write split: none of these are settings an Eldrun
+// git call wants honoured in the first place.
+
+/// `-c <key>=<value>` overrides applied to every git call Eldrun makes.
+///
+/// - `core.fsmonitor=false` — the hook form of this key is a program git runs on
+///   `status`/`diff`. Pinning it off also costs the *builtin* FSMonitor daemon on
+///   a repo that enables it, i.e. a little polling speed on very large trees; a
+///   `-c` override cannot distinguish `true` (safe, builtin) from a path (exec),
+///   and the safe direction is the one that cannot execute.
+/// - `protocol.ext.allow=never` — an `ext::<command>` remote URL runs a shell
+///   command, and git's default (`user`) permits exactly the direct invocations
+///   Eldrun makes. Eldrun never legitimately uses `ext::`.
+///
+/// Deliberately **not** here: `diff.external=`. An empty value does not disable an
+/// external differ, it makes git try to exec the empty string and die
+/// ("external diff died") — verified, and it would break diff for every user. The
+/// working form is the per-command `--no-ext-diff` below.
+const HARDENED_CONFIG: &[&str] = &["core.fsmonitor=false", "protocol.ext.allow=never"];
+
+/// Subcommands that accept `--no-ext-diff` / `--no-textconv`, the two flags that
+/// stop a repo-configured `diff.external` / `diff.<driver>.textconv` program from
+/// running. Neither flag changes output for a repo that configures neither, and
+/// every parser here reads git's own internal diff format anyway.
+const DIFF_DRIVER_CMDS: &[&str] = &["diff", "log", "show", "blame"];
+
+/// Prefix `args` with [`HARDENED_CONFIG`] and, for a [`DIFF_DRIVER_CMDS`]
+/// subcommand, insert the diff-driver flags straight after it. Pure, so the shape
+/// is unit-tested rather than inferred from a spawn.
+///
+/// **Known residuals**, both the same shape — repo-controlled state naming a
+/// program git then executes:
+///
+/// * a repo-local `filter.<driver>.clean` (bound by an in-tree `.gitattributes`)
+///   still runs on `git diff`/`git add`. There is no fixed `-c` that disables a
+///   *named* driver and no switch that ignores in-tree attributes, so closing
+///   that one needs the structural fix — see Group O #151.
+/// * **`.git/hooks/*`**. `core.hooksPath` is deliberately NOT pinned here: every
+///   git call goes through this function, `git_commit` included, and a user's own
+///   `pre-commit`/`commit-msg` hooks are the point of that one. It is pinned per
+///   command instead, on the verbs that check out a tree without authoring
+///   anything — see [`NO_HOOKS_CONFIG`]. The residual is every *other* command
+///   that can fire a hook (`git_checkout`'s `post-checkout`, a push's
+///   `pre-push`), which for a container-toggled project means a contained agent
+///   writing a hook file gets execution on the **host**. Same #151 structural
+///   fix; naming only the filter driver here made the gap look smaller than it is.
+pub(crate) fn hardened_git_args<S: AsRef<str>>(args: &[S]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(args.len() + HARDENED_CONFIG.len() * 2 + 2);
+    for kv in HARDENED_CONFIG {
+        out.push("-c".to_string());
+        out.push((*kv).to_string());
+    }
+    let mut rest = args.iter().map(|a| a.as_ref()).peekable();
+    // A caller may bring its own `-c <key>=<value>` pairs (see `NO_HOOKS_CONFIG`),
+    // and those are git's *pre-subcommand* options — so they are passed through
+    // first and the subcommand is whatever follows them. Without this the leading
+    // `-c` was mistaken for the subcommand, which happens to still produce a valid
+    // command line but would silently skip the diff-driver flags for `diff`/`log`/
+    // `show`/`blame` the moment one of those grew a scoped config of its own.
+    while rest.peek() == Some(&"-c") {
+        out.push(rest.next().unwrap().to_string());
+        if let Some(kv) = rest.next() {
+            out.push(kv.to_string());
+        }
+    }
+    if let Some(sub) = rest.next() {
+        out.push(sub.to_string());
+        if DIFF_DRIVER_CMDS.contains(&sub) {
+            out.push("--no-ext-diff".to_string());
+            out.push("--no-textconv".to_string());
+        }
+    }
+    out.extend(rest.map(str::to_string));
+    out
+}
+
+/// `crate::paths::command_no_window("git")` with [`hardened_git_args`] already
+/// applied. For the git spawns that build their own `Command` instead of going
+/// through [`run_git`] but still run inside a project directory
+/// (`commands::usage_stats`, `commands::fs`), so the policy has one definition.
+pub(crate) fn hardened_git_command<S: AsRef<str>>(args: &[S]) -> std::process::Command {
+    let mut cmd = crate::paths::command_no_window("git");
+    cmd.args(hardened_git_args(args));
+    cmd
+}
+
 /// Run `git <args>` for a project, dispatching local-vs-remote on `target`.
 /// Returns the captured `Output` (stdout/stderr/exit) for both, so callers parse
 /// it identically. `target` is the resolved remoteness for `project_dir`.
+///
+/// Both branches go through [`hardened_git_args`] — the remote one too, because a
+/// host repo's config is written by whatever runs on that host, and `git <args>`
+/// there is built from the same argument list.
 fn run_git(
     target: Option<&RemoteTarget>,
     project_dir: &str,
     args: &[&str],
 ) -> Result<std::process::Output, String> {
+    let args = hardened_git_args(args);
     match target {
-        Some(t) => {
-            let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-            crate::services::ssh_exec::run_git_remote(&t.spec, &owned)
-        }
+        Some(t) => crate::services::ssh_exec::run_git_remote(&t.spec, &args),
         None => crate::paths::command_no_window("git")
-            .args(args)
+            .args(&args)
             .current_dir(project_dir)
             .output()
             .map_err(|e| e.to_string()),
@@ -1057,7 +1157,17 @@ fn git_checkout_blocking(project_dir: String, target: String) -> Result<String, 
     // refname beginning with `-` would be parsed by git as an option.
     check_rev(&target)?;
     let rt = remote_target_for_dir(&project_dir);
-    let out = run_git(rt.as_ref(), &project_dir, &["checkout", &target])?;
+    // A checkout fires `post-checkout`, and for a container-toggled project
+    // `.git/hooks` is the container's writable mount — so a contained agent
+    // writing one would get host execution from a click in Eldrun's Git panel.
+    // Pinned here rather than in `HARDENED_CONFIG` because `git_commit` shares
+    // that path and a user's own commit hooks are the point of it. See the
+    // module header's residuals note and `NO_HOOKS_CONFIG`.
+    let out = run_git(
+        rt.as_ref(),
+        &project_dir,
+        &["-c", NO_HOOKS_CONFIG[0], "checkout", &target],
+    )?;
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if !out.status.success() {
@@ -1259,6 +1369,42 @@ fn git_blame_blocking(project_dir: String, rel_path: String) -> Result<Vec<GitBl
 }
 
 // ── Git worktrees (#23) ──────────────────────────────────────────────────────
+//
+// Three things about this surface are not obvious from the git verbs it wraps.
+//
+// **Where the operation runs is not where the bytes the user picked live** (I2).
+// For a remote project `project_dir` is the *local mirror*, so resolving
+// remoteness from it alone made every path the user typed into a local file
+// tree get created on the login node — a mirror of the mirror's path inside the
+// cluster `$HOME`, with nothing erroring. `WorktreeSite` makes that choice
+// explicit, following `git_publish::PublishSite`, which solved the same problem.
+//
+// **A worktree has exactly one legitimate home** (I3). `git worktree add <path>`
+// creates *and populates* `<path>`, so an unconstrained path argument is a
+// "write repo-controlled content to any writable absolute path" primitive —
+// including a path Eldrun would later read back as executable intent (Group O
+// #151). Every worktree therefore lands under `<root>/.eldrun/worktrees/`, which
+// is also the answer to two other findings at once: `.eldrun` is already a walk
+// boundary for both byte-sync walkers (so a worktree is never mirrored as a
+// second full copy of the tree), and it sits inside the project directory the
+// container bind-mounts at its identical absolute path (so the linked `.git`
+// file's `gitdir:` pointer resolves inside the container instead of dangling).
+// A single enumerable root per project is also what the deferred PTY-cwd
+// confinement (#149) was waiting on.
+//
+// **`worktree add` checks out, and a checkout runs hooks** (I4). `.git/hooks`
+// sits in a container-toggled project's writable rw mount, so a contained agent
+// writing `.git/hooks/post-checkout` would get *host* execution the moment the
+// user clicked Add. `NO_HOOKS_CONFIG` is pinned on the worktree verbs (verified:
+// `-c core.hooksPath=` does suppress the hook) — deliberately not in
+// `HARDENED_CONFIG`, which every call goes through including `git_commit`, where
+// the user's own hooks are the point.
+
+/// `-c core.hooksPath=` — pinned on the git verbs Eldrun runs that are *not*
+/// authoring a commit but still check out a tree. An empty value makes git find
+/// no hook to run (verified against git 2.53.0); unlike `diff.external=` it does
+/// not make git try to exec the empty string.
+const NO_HOOKS_CONFIG: &[&str] = &["core.hooksPath="];
 
 #[derive(serde::Serialize)]
 pub struct Worktree {
@@ -1269,7 +1415,19 @@ pub struct Worktree {
     pub head: String,
     pub is_main: bool,
     pub is_locked: bool,
+    /// git's own words for *why* it is locked ("on a removable drive"), or "".
+    /// Shown rather than discarded: the reason is the whole content of a lock.
+    pub lock_reason: String,
+    /// The administrative entry survives but the checkout is gone (deleted
+    /// out-of-band). Discarding this was why a dead worktree listed as healthy.
+    pub is_prunable: bool,
+    pub prunable_reason: String,
     pub is_bare: bool,
+    /// This worktree **is** the directory the command ran in. git does not
+    /// protect the current worktree — `remove --force` on the tree you are
+    /// standing in exits 0 and deletes it (verified) — so the refusal is ours
+    /// (D4). `is_main` answers a different question and cannot stand in for it.
+    pub is_current: bool,
 }
 
 /// Parses `git worktree list --porcelain` output. Records are blank-line
@@ -1277,7 +1435,7 @@ pub struct Worktree {
 /// attribute lines (`HEAD <sha>`, `branch refs/heads/<name>`, `bare`,
 /// `detached`, `locked [<reason>]`, `prunable [<reason>]`). git always lists
 /// the main worktree first, so the first record is flagged `is_main`.
-fn parse_worktree_porcelain(text: &str) -> Vec<Worktree> {
+pub(crate) fn parse_worktree_porcelain(text: &str) -> Vec<Worktree> {
     let mut out: Vec<Worktree> = Vec::new();
     let mut cur: Option<Worktree> = None;
     let mut first = true;
@@ -1304,7 +1462,11 @@ fn parse_worktree_porcelain(text: &str) -> Vec<Worktree> {
                 head: String::new(),
                 is_main: first,
                 is_locked: false,
+                lock_reason: String::new(),
+                is_prunable: false,
+                prunable_reason: String::new(),
                 is_bare: false,
+                is_current: false,
             });
             first = false;
         } else if let Some(wt) = cur.as_mut() {
@@ -1321,45 +1483,289 @@ fn parse_worktree_porcelain(text: &str) -> Vec<Worktree> {
                 // branch stays empty
             } else if line == "locked" || line.starts_with("locked ") {
                 wt.is_locked = true;
+                wt.lock_reason = line["locked".len()..].trim().to_string();
+            } else if line == "prunable" || line.starts_with("prunable ") {
+                wt.is_prunable = true;
+                wt.prunable_reason = line["prunable".len()..].trim().to_string();
             }
-            // ignore prunable / unknown lines
+            // ignore unknown lines
         }
     }
     flush(&mut cur, &mut out);
     out
 }
 
-/// Lists worktrees attached to the repository at `project_dir`.
-#[tauri::command]
-pub async fn git_worktree_list(project_dir: String) -> Result<Vec<Worktree>, String> {
-    run_off_thread(move || git_worktree_list_blocking(project_dir)).await
+/// Which side of a project a worktree command operates on.
+///
+/// The distinction only bites for a **remote** project, whose `project_dir` is
+/// the local mirror while its repo of record is on the host. `git_publish`'s
+/// `PublishSite` is the precedent: where the bytes are is not where the
+/// operation runs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum WorktreeSite {
+    /// The remote host's tree (a remote project's default — the Git panel
+    /// reflects the host, and `git_checkout` already initiates from there).
+    Host,
+    /// The local working copy: a local project's directory, or a remote
+    /// project's lockstep mirror.
+    Local,
 }
 
-fn git_worktree_list_blocking(project_dir: String) -> Result<Vec<Worktree>, String> {
-    // `.git` exists as a dir for the main repo and as a file in linked worktrees.
-    let target = remote_target_for_dir(&project_dir);
-    if local_non_repo(target.as_ref(), &project_dir) {
+impl WorktreeSite {
+    fn parse(s: Option<&str>) -> Self {
+        match s {
+            Some("mirror") | Some("local") => WorktreeSite::Local,
+            _ => WorktreeSite::Host,
+        }
+    }
+}
+
+/// Everything a worktree command needs once the site question is settled.
+pub(crate) struct WorktreeCtx {
+    /// `Some` → git runs over SSH on that host (and `remote_git_command` cds
+    /// into `spec.remote_path`); `None` → git runs locally in `cwd`.
+    target: Option<RemoteTarget>,
+    /// The directory git runs in for a local invocation.
+    cwd: String,
+    /// The repo root on the side git actually runs — the containment anchor.
+    /// Equal to `cwd` locally and to `spec.remote_path` on a host.
+    root: String,
+    /// The root's path separator: a host is always POSIX, whatever this machine is.
+    posix: bool,
+}
+
+impl WorktreeCtx {
+    /// The one sanctioned home for this side's worktrees (I3).
+    fn worktrees_root(&self) -> String {
+        self.join(&self.root, ".eldrun/worktrees")
+    }
+
+    fn sep(&self) -> char {
+        if self.posix || cfg!(not(windows)) {
+            '/'
+        } else {
+            '\\'
+        }
+    }
+
+    fn join(&self, base: &str, rel: &str) -> String {
+        let base = base.trim_end_matches(['/', '\\']);
+        let sep = self.sep();
+        let rel = if sep == '/' {
+            rel.replace('\\', "/")
+        } else {
+            rel.replace('/', "\\")
+        };
+        format!("{base}{sep}{rel}")
+    }
+}
+
+/// Resolve `(project_dir, site, host_id)` into the side a worktree command runs on.
+///
+/// `host_id` mirrors `commands::slurm`: absent (or `"primary"`) means the
+/// project's own host; anything else names one of its compute hosts.
+pub(crate) fn worktree_ctx(
+    project_dir: &str,
+    site: Option<&str>,
+    host_id: Option<&str>,
+) -> WorktreeCtx {
+    let primary = remote_target_for_dir(project_dir);
+    let Some(primary) = primary else {
+        // A local project has one side; `site` is meaningless and ignored.
+        return WorktreeCtx {
+            target: None,
+            cwd: project_dir.to_string(),
+            root: project_dir.to_string(),
+            posix: false,
+        };
+    };
+    if WorktreeSite::parse(site) == WorktreeSite::Local {
+        // The remote project's local mirror — a real local git repo, and the
+        // only repo whose worktrees could never be managed at all before.
+        let mirror = crate::services::remote_sync::mirror_dir(&primary.project_id)
+            .to_string_lossy()
+            .to_string();
+        return WorktreeCtx {
+            target: None,
+            cwd: mirror.clone(),
+            root: mirror,
+            posix: false,
+        };
+    }
+    let target = match host_id {
+        Some(h) if h != crate::services::remote::PRIMARY_HOST => {
+            crate::services::remote::remote_target_for_host(&primary.project_id, h)
+                .unwrap_or(primary)
+        }
+        _ => primary,
+    };
+    let root = target.spec.remote_path.clone();
+    WorktreeCtx {
+        target: Some(target),
+        cwd: project_dir.to_string(),
+        root,
+        posix: true,
+    }
+}
+
+/// Split a path into its components for both separators, so a lexical
+/// containment check cannot be defeated by the other machine's slash.
+fn path_components(s: &str) -> Vec<&str> {
+    s.split(['/', '\\']).filter(|c| !c.is_empty()).collect()
+}
+
+fn is_absolute_on(s: &str, posix: bool) -> bool {
+    if posix {
+        s.starts_with('/')
+    } else {
+        s.starts_with('/')
+            || s.starts_with('\\')
+            || s.as_bytes()
+                .get(1)
+                .is_some_and(|&b| b == b':' && s.len() > 2)
+    }
+}
+
+/// Resolve the user's worktree input to an absolute path **inside the sanctioned
+/// worktrees root**, or refuse with the reason (I3).
+///
+/// Accepts a bare name (`feature-x`, the normal case — resolved inside the root)
+/// or an absolute path already under the root (what the resolved-path preview in
+/// the UI shows, so a paste of it round-trips). Everything else is refused
+/// naming the root, because with exactly one legal location there is nothing
+/// else a path could mean. `..` is rejected outright rather than normalized: a
+/// path that has to be walked back into bounds is not one anybody typed on
+/// purpose.
+pub(crate) fn resolve_worktree_path(ctx: &WorktreeCtx, input: &str) -> Result<String, String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err("Worktree path cannot be empty".to_string());
+    }
+    if input.chars().any(|c| c.is_control()) {
+        return Err("Worktree path contains control characters".to_string());
+    }
+    // `git worktree add` has no `--` boundary, so a positional that looks like an
+    // option is refused rather than shielded.
+    if !valid_positional_path(input) {
+        return Err(format!("'{input}' is not a valid worktree path"));
+    }
+    let root = ctx.worktrees_root();
+    let comps = path_components(input);
+    if comps.iter().any(|c| *c == ".." || *c == ".") {
+        return Err(format!(
+            "A worktree path may not contain '.' or '..' — it must sit directly under {root}"
+        ));
+    }
+    let abs = if is_absolute_on(input, ctx.posix) {
+        input.to_string()
+    } else {
+        ctx.join(&root, input)
+    };
+    // Lexical containment, component-wise so `<root>-evil` cannot pass a prefix test.
+    let root_comps = path_components(&root);
+    let abs_comps = path_components(&abs);
+    let contained = abs_comps.len() > root_comps.len()
+        && abs_comps[..root_comps.len()] == root_comps[..]
+        && is_absolute_on(&abs, ctx.posix);
+    if !contained {
+        return Err(format!(
+            "Worktrees live under {root}. '{input}' is outside it."
+        ));
+    }
+    Ok(abs)
+}
+
+/// Whether two paths on `ctx`'s side name the same directory. Canonicalized
+/// locally (so a symlink or a `//` cannot smuggle a second name past the
+/// current-worktree refusal); lexical for a host, where there is nothing to
+/// canonicalize against without another round trip.
+fn same_dir(ctx: &WorktreeCtx, a: &str, b: &str) -> bool {
+    if ctx.target.is_none() {
+        if let (Ok(a), Ok(b)) = (
+            std::fs::canonicalize(a),
+            std::fs::canonicalize(b),
+        ) {
+            return a == b;
+        }
+    }
+    path_components(a) == path_components(b)
+}
+
+/// Run a worktree verb on `ctx`'s side, with hooks pinned off (I4).
+fn run_worktree_git(ctx: &WorktreeCtx, args: &[&str]) -> Result<std::process::Output, String> {
+    let mut full: Vec<&str> = Vec::with_capacity(args.len() + NO_HOOKS_CONFIG.len() * 2);
+    for kv in NO_HOOKS_CONFIG {
+        full.push("-c");
+        full.push(kv);
+    }
+    full.extend_from_slice(args);
+    run_git(ctx.target.as_ref(), &ctx.cwd, &full)
+}
+
+fn git_err(out: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    if stderr.trim().is_empty() {
+        stdout
+    } else {
+        stderr
+    }
+}
+
+/// Lists worktrees attached to the repository on the chosen side.
+#[tauri::command]
+pub async fn git_worktree_list(
+    project_dir: String,
+    site: Option<String>,
+    host_id: Option<String>,
+) -> Result<Vec<Worktree>, String> {
+    run_off_thread(move || git_worktree_list_blocking(project_dir, site, host_id)).await
+}
+
+fn git_worktree_list_blocking(
+    project_dir: String,
+    site: Option<String>,
+    host_id: Option<String>,
+) -> Result<Vec<Worktree>, String> {
+    let ctx = worktree_ctx(&project_dir, site.as_deref(), host_id.as_deref());
+    // `.git` exists as a DIRECTORY for a main repo and as a FILE in a linked
+    // worktree, so this guard tests existence, never `is_dir` (I6).
+    if local_non_repo(ctx.target.as_ref(), &ctx.cwd) {
         return Ok(vec![]);
     }
-    let out = run_git(target.as_ref(), &project_dir, &["worktree", "list", "--porcelain"])?;
+    let out = run_worktree_git(&ctx, &["worktree", "list", "--porcelain"])?;
     if !out.status.success() {
         // Lenient, like git_log (e.g. empty repo).
         return Ok(vec![]);
     }
-    Ok(parse_worktree_porcelain(&String::from_utf8_lossy(&out.stdout)))
+    let mut list = parse_worktree_porcelain(&String::from_utf8_lossy(&out.stdout));
+    for wt in list.iter_mut() {
+        wt.is_current = same_dir(&ctx, &wt.path, &ctx.root);
+    }
+    Ok(list)
 }
 
-/// Adds a worktree at `path`. When `new_branch` is true, creates a new branch
-/// `branch` at `path` (`git worktree add -b <branch> <path>`); otherwise checks
-/// out the existing `branch` (`git worktree add <path> <branch>`).
+/// Adds a worktree. When `new_branch` is true, `branch` is *created* at
+/// `start_point` (default `HEAD`); otherwise the existing `branch` is checked
+/// out there.
+///
+/// `path` is resolved into the project's sanctioned worktrees root — see
+/// [`resolve_worktree_path`]; a bare name is the normal input.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn git_worktree_add(
     project_dir: String,
     path: String,
     branch: String,
     new_branch: bool,
-) -> Result<(), String> {
-    run_off_thread(move || git_worktree_add_blocking(project_dir, path, branch, new_branch)).await
+    start_point: Option<String>,
+    site: Option<String>,
+    host_id: Option<String>,
+) -> Result<String, String> {
+    run_off_thread(move || {
+        git_worktree_add_blocking(project_dir, path, branch, new_branch, start_point, site, host_id)
+    })
+    .await
 }
 
 fn git_worktree_add_blocking(
@@ -1367,81 +1773,230 @@ fn git_worktree_add_blocking(
     path: String,
     branch: String,
     new_branch: bool,
-) -> Result<(), String> {
-    if path.trim().is_empty() {
-        return Err("Worktree path cannot be empty".to_string());
-    }
+    start_point: Option<String>,
+    site: Option<String>,
+    host_id: Option<String>,
+) -> Result<String, String> {
     if branch.trim().is_empty() {
         return Err("Branch cannot be empty".to_string());
     }
-    // `git worktree add` has no pathspec boundary, so neither positional can be
-    // shielded with `--`; both are checked for the option-lookalike case instead.
+    // Neither positional can be shielded with `--` (`git worktree add`'s synopsis
+    // has no pathspec boundary), so both are validated instead.
     check_rev(&branch)?;
-    if !valid_positional_path(&path) {
-        return Err(format!("'{path}' is not a valid worktree path"));
+    let start = start_point.unwrap_or_default();
+    let start = start.trim();
+    if !start.is_empty() {
+        check_rev(start)?;
     }
+    if !new_branch && !start.is_empty() {
+        return Err("A start point only applies when creating a new branch".to_string());
+    }
+    let ctx = worktree_ctx(&project_dir, site.as_deref(), host_id.as_deref());
+    let abs = resolve_worktree_path(&ctx, &path)?;
+
+    // The worktrees root lives inside the project tree so a container mount and
+    // both byte-sync walkers already cover it — but an *imported* repo has no
+    // `.eldrun/` ignore rule, and `git add -A` then records the new checkout as a
+    // bogus gitlink (mode 160000, verified). Repo-local `info/exclude` fixes that
+    // without touching a tracked file. Best-effort: a failure here costs a noisy
+    // `git status`, never the worktree.
+    exclude_eldrun_dir(&ctx);
+
     let mut args: Vec<&str> = vec!["worktree", "add"];
     if new_branch {
         args.push("-b");
         args.push(&branch);
-        args.push(&path);
+        args.push(&abs);
+        if !start.is_empty() {
+            args.push(start);
+        }
     } else {
-        args.push(&path);
+        args.push(&abs);
         args.push(&branch);
     }
-    let target = remote_target_for_dir(&project_dir);
-    let out = run_git(target.as_ref(), &project_dir, &args)?;
+    let out = run_worktree_git(&ctx, &args)?;
     if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        return Err(if stderr.is_empty() { stdout } else { stderr });
+        return Err(git_err(&out));
     }
-    Ok(())
+    Ok(abs)
 }
 
-/// Removes the worktree at `path`. Pass `force` to remove a dirty worktree;
-/// git refuses to remove the main worktree or a dirty one without it, and that
-/// error is surfaced to the caller as-is.
+/// Add `.eldrun/` to the repo's own `info/exclude` if it is not already ignored.
+/// Untracked and repo-local, so it changes nothing the user has committed.
+fn exclude_eldrun_dir(ctx: &WorktreeCtx) {
+    const RULE: &str = ".eldrun/";
+    match ctx.target.as_ref() {
+        None => {
+            let Ok(out) = run_git(None, &ctx.cwd, &["rev-parse", "--git-common-dir"]) else {
+                return;
+            };
+            if !out.status.success() {
+                return;
+            }
+            let git_dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if git_dir.is_empty() {
+                return;
+            }
+            let git_dir = Path::new(&git_dir);
+            let git_dir = if git_dir.is_absolute() {
+                git_dir.to_path_buf()
+            } else {
+                Path::new(&ctx.cwd).join(git_dir)
+            };
+            let info = git_dir.join("info");
+            let file = info.join("exclude");
+            let existing = std::fs::read_to_string(&file).unwrap_or_default();
+            if existing.lines().any(|l| l.trim() == RULE) {
+                return;
+            }
+            let _ = std::fs::create_dir_all(&info);
+            let mut next = existing;
+            if !next.is_empty() && !next.ends_with('\n') {
+                next.push('\n');
+            }
+            next.push_str(RULE);
+            next.push('\n');
+            let _ = std::fs::write(&file, next);
+        }
+        Some(t) => {
+            // One round trip, nothing interpolated: `run_remote_script` supplies the
+            // `cd <remote_path> &&` itself, already shell-quoted.
+            let script = "d=$(git rev-parse --git-common-dir 2>/dev/null) && \
+                 mkdir -p \"$d/info\" && \
+                 { grep -qxF '.eldrun/' \"$d/info/exclude\" 2>/dev/null || \
+                   printf '.eldrun/\\n' >> \"$d/info/exclude\"; }";
+            let _ = crate::services::ssh_exec::run_remote_script(&t.spec, script);
+        }
+    }
+}
+
+/// Removes the worktree at `path`.
+///
+/// `force` is a **count**, not a flag: `1` removes a dirty worktree, and `2`
+/// (`remove -f -f`) is the only thing that removes a *locked* one — git says so
+/// itself and exits 128 for a single `--force` (verified). Passing a bool here
+/// is what made a locked worktree permanently unremovable from Eldrun (B4).
 #[tauri::command]
-pub async fn git_worktree_remove(project_dir: String, path: String, force: bool) -> Result<(), String> {
-    run_off_thread(move || git_worktree_remove_blocking(project_dir, path, force)).await
+pub async fn git_worktree_remove(
+    project_dir: String,
+    path: String,
+    force: u8,
+    site: Option<String>,
+    host_id: Option<String>,
+) -> Result<(), String> {
+    run_off_thread(move || git_worktree_remove_blocking(project_dir, path, force, site, host_id))
+        .await
 }
 
-fn git_worktree_remove_blocking(project_dir: String, path: String, force: bool) -> Result<(), String> {
+fn git_worktree_remove_blocking(
+    project_dir: String,
+    path: String,
+    force: u8,
+    site: Option<String>,
+    host_id: Option<String>,
+) -> Result<(), String> {
     if !valid_positional_path(&path) {
         return Err(format!("'{path}' is not a valid worktree path"));
     }
-    let mut args: Vec<&str> = vec!["worktree", "remove"];
-    if force {
-        args.push("--force");
+    let ctx = worktree_ctx(&project_dir, site.as_deref(), host_id.as_deref());
+    // D4: git happily deletes the tree you are standing in. Every open terminal
+    // tab, the file watcher and the container bind mount are rooted there.
+    if same_dir(&ctx, &path, &ctx.root) {
+        return Err(
+            "That is this project's own checkout — removing it would delete the tree Eldrun is \
+             working in. Switch to another worktree first."
+                .to_string(),
+        );
     }
+    // Deliberately NOT containment-checked: git refuses a path it never
+    // registered, so the delete side is already bounded — and a worktree created
+    // before the sanctioned root existed (or from a terminal) must stay removable.
+    let mut args: Vec<&str> = vec!["worktree", "remove"];
+    args.extend(std::iter::repeat_n("--force", force.min(2) as usize));
     args.push(&path);
-    let target = remote_target_for_dir(&project_dir);
-    let out = run_git(target.as_ref(), &project_dir, &args)?;
+    let out = run_worktree_git(&ctx, &args)?;
     if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        return Err(if stderr.is_empty() { stdout } else { stderr });
+        return Err(git_err(&out));
     }
     Ok(())
+}
+
+/// Locks a worktree so neither `prune` nor a plain `remove` can drop it —
+/// `reason` is git's own free text, shown back in the list.
+#[tauri::command]
+pub async fn git_worktree_lock(
+    project_dir: String,
+    path: String,
+    reason: Option<String>,
+    site: Option<String>,
+    host_id: Option<String>,
+) -> Result<(), String> {
+    run_off_thread(move || {
+        let ctx = worktree_ctx(&project_dir, site.as_deref(), host_id.as_deref());
+        if !valid_positional_path(&path) {
+            return Err(format!("'{path}' is not a valid worktree path"));
+        }
+        let reason = reason.unwrap_or_default();
+        let reason = reason.trim();
+        let mut args: Vec<&str> = vec!["worktree", "lock"];
+        if !reason.is_empty() {
+            if reason.chars().any(|c| c.is_control()) {
+                return Err("A lock reason cannot contain control characters".to_string());
+            }
+            args.push("--reason");
+            args.push(reason);
+        }
+        args.push(&path);
+        let out = run_worktree_git(&ctx, &args)?;
+        if !out.status.success() {
+            return Err(git_err(&out));
+        }
+        Ok(())
+    })
+    .await
+}
+
+/// Unlocks a worktree. Without this, and without `remove -f -f`, a locked
+/// worktree could only be freed from a terminal — for a feature whose point is
+/// not needing one (B4).
+#[tauri::command]
+pub async fn git_worktree_unlock(
+    project_dir: String,
+    path: String,
+    site: Option<String>,
+    host_id: Option<String>,
+) -> Result<(), String> {
+    run_off_thread(move || {
+        let ctx = worktree_ctx(&project_dir, site.as_deref(), host_id.as_deref());
+        if !valid_positional_path(&path) {
+            return Err(format!("'{path}' is not a valid worktree path"));
+        }
+        let out = run_worktree_git(&ctx, &["worktree", "unlock", &path])?;
+        if !out.status.success() {
+            return Err(git_err(&out));
+        }
+        Ok(())
+    })
+    .await
 }
 
 /// Prunes administrative entries for worktrees whose directories were removed
 /// out-of-band (`git worktree prune`).
 #[tauri::command]
-pub async fn git_worktree_prune(project_dir: String) -> Result<(), String> {
-    run_off_thread(move || git_worktree_prune_blocking(project_dir)).await
-}
-
-fn git_worktree_prune_blocking(project_dir: String) -> Result<(), String> {
-    let target = remote_target_for_dir(&project_dir);
-    let out = run_git(target.as_ref(), &project_dir, &["worktree", "prune"])?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        return Err(if stderr.is_empty() { stdout } else { stderr });
-    }
-    Ok(())
+pub async fn git_worktree_prune(
+    project_dir: String,
+    site: Option<String>,
+    host_id: Option<String>,
+) -> Result<(), String> {
+    run_off_thread(move || {
+        let ctx = worktree_ctx(&project_dir, site.as_deref(), host_id.as_deref());
+        let out = run_worktree_git(&ctx, &["worktree", "prune"])?;
+        if !out.status.success() {
+            return Err(git_err(&out));
+        }
+        Ok(())
+    })
+    .await
 }
 
 /// Map an `origin` remote URL to a hosting provider by its **host only**.
@@ -1562,6 +2117,91 @@ mod tests {
         run(&["init"]);
         run(&["config", "user.email", "test@example.com"]);
         run(&["config", "user.name", "Test User"]);
+    }
+
+    // ── Repo config hardening (Group O #151) ─────────────────────────────────
+
+    #[test]
+    fn hardened_git_args_pins_config_ahead_of_the_subcommand() {
+        let args = hardened_git_args(&["status", "--porcelain"]);
+        // `-c k=v` pairs must precede the subcommand, or git parses them as its
+        // arguments instead of its own options.
+        assert_eq!(&args[..4], &["-c", "core.fsmonitor=false", "-c", "protocol.ext.allow=never"]);
+        assert_eq!(&args[4..], &["status", "--porcelain"]);
+        // A subcommand that takes no diff-driver flags gets none.
+        assert!(!args.iter().any(|a| a == "--no-ext-diff"));
+    }
+
+    #[test]
+    fn hardened_git_args_adds_diff_driver_flags_after_the_subcommand_only() {
+        for sub in DIFF_DRIVER_CMDS {
+            let args = hardened_git_args(&[sub, "--", "a file.txt"]);
+            let at = args.iter().position(|a| a == sub).expect("subcommand present");
+            assert_eq!(args[at + 1], "--no-ext-diff");
+            assert_eq!(args[at + 2], "--no-textconv");
+            // Everything the caller passed keeps its order behind them — the
+            // pathspec separator must not end up before the flags.
+            assert_eq!(&args[at + 3..], &["--", "a file.txt"]);
+        }
+        // Owned args (the `Vec<String>` call sites) go through the same builder.
+        let owned = vec!["log".to_string(), "--numstat".to_string()];
+        assert_eq!(hardened_git_args(&owned)[4..], ["log", "--no-ext-diff", "--no-textconv", "--numstat"]);
+        // No subcommand at all is just the pinned config (no panic, no stray flag).
+        let empty: [&str; 0] = [];
+        assert_eq!(hardened_git_args(&empty).len(), HARDENED_CONFIG.len() * 2);
+    }
+
+    /// The escape this hardening exists for: a project container mounts the
+    /// project dir — `.git` included — writable, so a contained agent can write
+    /// `.git/config`, and git runs what it names **on the host**. Asserted in both
+    /// directions, so the test fails if the hardening is removed *and* if git ever
+    /// stops honouring the config the test plants (which would make it vacuous).
+    #[cfg(unix)]
+    #[test]
+    fn a_repos_own_config_cannot_run_a_program_on_the_host() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping a_repos_own_config_cannot_run_a_program_on_the_host");
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        init_repo(dir);
+        let run = |args: &[&str]| {
+            crate::paths::command_no_window("git").args(args).current_dir(dir).output().expect("git")
+        };
+        fs::write(dir.join("f.txt"), "a\n").expect("write");
+        run(&["add", "f.txt"]);
+        run(&["commit", "-m", "init"]);
+        fs::write(dir.join("f.txt"), "b\n").expect("modify");
+
+        // The payload a hostile `.git/config` would name, and the mark it leaves.
+        let marker = dir.join("executed");
+        let payload = dir.join("payload.sh");
+        fs::write(&payload, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).expect("write");
+        fs::set_permissions(&payload, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let p = payload.to_str().expect("utf-8 path");
+        run(&["config", "core.fsmonitor", p]);
+        run(&["config", "diff.external", p]);
+
+        let project_dir = dir.to_str().expect("utf-8 path");
+        // `core.fsmonitor` on a plain status — the polled read the file tree makes.
+        run(&["status", "--porcelain"]);
+        assert!(marker.exists(), "setup is stale: git no longer runs core.fsmonitor on status");
+        fs::remove_file(&marker).expect("clear marker");
+        run_git(None, project_dir, &["status", "--porcelain"]).expect("hardened status");
+        assert!(!marker.exists(), "core.fsmonitor executed through run_git");
+
+        // `diff.external` on a diff — the viewer's and the file-status poll's path.
+        run(&["diff"]);
+        assert!(marker.exists(), "setup is stale: git no longer runs diff.external");
+        fs::remove_file(&marker).expect("clear marker");
+        let out = run_git(None, project_dir, &["diff"]).expect("hardened diff");
+        assert!(!marker.exists(), "diff.external executed through run_git");
+        // …and the hardening must leave a working diff behind, not a dead one.
+        assert!(out.status.success(), "hardened diff failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(String::from_utf8_lossy(&out.stdout).contains("+b"));
     }
 
     #[test]
@@ -1867,7 +2507,159 @@ filename note.txt
         let wts = parse_worktree_porcelain(text);
         assert_eq!(wts.len(), 2);
         assert!(wts[1].is_locked);
+        // The reason IS the content of a lock — discarding it left the UI with
+        // nothing to say about a worktree it could not remove.
+        assert_eq!(wts[1].lock_reason, "on a removable drive");
         assert_eq!(wts[1].branch, "wip");
+        assert!(wts[0].lock_reason.is_empty());
+    }
+
+    #[test]
+    fn parses_a_bare_locked_line_with_no_reason() {
+        let text = "worktree /home/u/proj\nHEAD abc\nbranch refs/heads/main\n\nworktree /home/u/l\nHEAD def\nbranch refs/heads/wip\nlocked\n";
+        let wts = parse_worktree_porcelain(text);
+        assert!(wts[1].is_locked);
+        assert!(wts[1].lock_reason.is_empty());
+    }
+
+    #[test]
+    fn parses_prunable_with_reason() {
+        // The one signal git gives that a listed worktree is dead. It used to be
+        // discarded, so a deleted checkout listed as healthy.
+        let text = "worktree /home/u/proj\nHEAD abc\nbranch refs/heads/main\n\nworktree /home/u/gone\nHEAD def\nbranch refs/heads/old\nprunable gitdir file points to non-existent location\n";
+        let wts = parse_worktree_porcelain(text);
+        assert_eq!(wts.len(), 2);
+        assert!(!wts[0].is_prunable);
+        assert!(wts[1].is_prunable);
+        assert_eq!(
+            wts[1].prunable_reason,
+            "gitdir file points to non-existent location"
+        );
+    }
+
+    #[test]
+    fn is_main_is_the_first_record_not_the_first_path_alphabetically() {
+        // Every other fixture puts main both first AND alphabetically first, so a
+        // regression to "sort by path" would pass them all. git lists the main
+        // worktree first whatever its path sorts like (verified against 2.53.0).
+        let text = "worktree /home/u/zzz-main\nHEAD abc\nbranch refs/heads/main\n\nworktree /home/u/aaa-linked\nHEAD def\nbranch refs/heads/feature\n";
+        let wts = parse_worktree_porcelain(text);
+        assert!(wts[0].is_main, "the first record is main");
+        assert_eq!(wts[0].path, "/home/u/zzz-main");
+        assert!(!wts[1].is_main);
+    }
+
+    /// A local-project context rooted at `dir`, i.e. what `worktree_ctx` builds
+    /// for any project `projects.json` does not know as remote.
+    fn local_ctx(dir: &str) -> WorktreeCtx {
+        worktree_ctx(dir, None, None)
+    }
+
+    #[test]
+    fn a_bare_name_resolves_inside_the_sanctioned_root() {
+        let ctx = local_ctx("/home/u/proj");
+        let p = resolve_worktree_path(&ctx, "feature-x").unwrap();
+        assert_eq!(path_components(&p), path_components("/home/u/proj/.eldrun/worktrees/feature-x"));
+    }
+
+    #[test]
+    fn an_absolute_path_inside_the_root_round_trips() {
+        let ctx = local_ctx("/home/u/proj");
+        let shown = ctx.join(&ctx.worktrees_root(), "feature-x");
+        let p = resolve_worktree_path(&ctx, &shown).unwrap();
+        assert_eq!(path_components(&p), path_components(&shown));
+    }
+
+    #[test]
+    fn paths_outside_the_sanctioned_root_are_refused() {
+        let ctx = local_ctx("/home/u/proj");
+        // The whole point of I3: `git worktree add <path>` populates `<path>`, so an
+        // unconstrained argument writes repo content anywhere writable.
+        for bad in [
+            "/etc/cron.d/x",
+            "/home/u/proj/wt",                       // inside the project, outside the root
+            "/home/u/proj/.eldrun/sessions/x",       // Eldrun reads this dir as intent
+            "../../elsewhere",
+            "/home/u/proj/.eldrun/worktrees/../../x",
+            "/home/u/proj/.eldrun/worktrees-evil/x", // prefix-match near miss
+        ] {
+            assert!(
+                resolve_worktree_path(&ctx, bad).is_err(),
+                "should refuse {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_root_itself_is_not_a_worktree_path() {
+        let ctx = local_ctx("/home/u/proj");
+        let root = ctx.worktrees_root();
+        assert!(resolve_worktree_path(&ctx, &root).is_err());
+    }
+
+    #[test]
+    fn option_lookalike_and_empty_worktree_paths_are_refused() {
+        let ctx = local_ctx("/home/u/proj");
+        assert!(resolve_worktree_path(&ctx, "").is_err());
+        assert!(resolve_worktree_path(&ctx, "   ").is_err());
+        assert!(resolve_worktree_path(&ctx, "--upload-pack=x").is_err());
+        assert!(resolve_worktree_path(&ctx, "a\u{7}b").is_err());
+    }
+
+    #[test]
+    fn a_worktree_verb_pins_hooks_off_and_keeps_its_subcommand() {
+        // I4: `worktree add` checks out, and a checkout runs `post-checkout` — which
+        // for a container-toggled project lives in the container's writable mount.
+        // `-c core.hooksPath=` suppresses it (verified against git 2.53.0).
+        let args = hardened_git_args(&["-c", "core.hooksPath=", "worktree", "add", "/p/wt", "feat"]);
+        assert_eq!(
+            args,
+            vec![
+                "-c", "core.fsmonitor=false",
+                "-c", "protocol.ext.allow=never",
+                "-c", "core.hooksPath=",
+                "worktree", "add", "/p/wt", "feat",
+            ]
+        );
+        // The caller's own `-c` pair must not be mistaken for the subcommand: a
+        // scoped config on a diff-driver command would otherwise silently drop
+        // `--no-ext-diff`/`--no-textconv`.
+        let diff = hardened_git_args(&["-c", "core.hooksPath=", "diff", "HEAD"]);
+        assert!(diff.contains(&"--no-ext-diff".to_string()));
+        assert_eq!(diff[diff.len() - 4..], ["diff", "--no-ext-diff", "--no-textconv", "HEAD"]);
+    }
+
+    #[test]
+    fn the_remote_worktree_command_is_quoted_argument_by_argument() {
+        // Nothing asserts the `cd '<path>' && git 'worktree' …` shape anywhere, so an
+        // argv-order regression on the remote path was caught only by the LOCAL
+        // roundtrip — which cannot run it.
+        use crate::services::ssh_exec::remote_git_command;
+        let args = hardened_git_args(&["-c", "core.hooksPath=", "worktree", "add", "/s/p/.eldrun/worktrees/a b", "feat"]);
+        let cmd = remote_git_command("/scratch/proj", &args);
+        assert_eq!(
+            cmd,
+            "cd '/scratch/proj' && git '-c' 'core.fsmonitor=false' '-c' 'protocol.ext.allow=never' \
+             '-c' 'core.hooksPath=' 'worktree' 'add' '/s/p/.eldrun/worktrees/a b' 'feat'"
+        );
+    }
+
+    #[test]
+    fn a_host_side_root_is_posix_whatever_this_machine_is() {
+        // A ctx built for a host must never join with a backslash: the path is
+        // interpolated into a POSIX shell on the other end.
+        let ctx = WorktreeCtx {
+            target: None,
+            cwd: "/scratch/proj".into(),
+            root: "/scratch/proj".into(),
+            posix: true,
+        };
+        assert_eq!(ctx.worktrees_root(), "/scratch/proj/.eldrun/worktrees");
+        assert_eq!(
+            resolve_worktree_path(&ctx, "feat").unwrap(),
+            "/scratch/proj/.eldrun/worktrees/feat"
+        );
+        assert!(resolve_worktree_path(&ctx, "/scratch/other/feat").is_err());
     }
 
     #[test]
@@ -1907,24 +2699,231 @@ filename note.txt
         run(&["add", "-A"]);
         assert!(run(&["commit", "-m", "init"]).status.success());
 
-        // Initially a single (main) worktree.
-        let listed = git_worktree_list_blocking(root_str.clone()).unwrap();
+        // Initially a single (main) worktree, which is also the one we ran in.
+        let listed = git_worktree_list_blocking(root_str.clone(), None, None).unwrap();
         assert_eq!(listed.len(), 1);
         assert!(listed[0].is_main);
+        assert!(listed[0].is_current);
 
-        // Add a new worktree on a new branch.
-        let wt_path = tmp.path().join("wt-feature").to_string_lossy().to_string();
-        git_worktree_add_blocking(root_str.clone(), wt_path.clone(), "feature".to_string(), true).unwrap();
+        // Add a new worktree on a new branch. The path is a bare NAME now — the
+        // backend decides where a worktree lives (I3).
+        let wt_path = git_worktree_add_blocking(
+            root_str.clone(),
+            "feature".to_string(),
+            "feature".to_string(),
+            true,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(wt_path.ends_with("feature"));
+        assert!(Path::new(&wt_path).join(".git").exists());
 
-        let listed = git_worktree_list_blocking(root_str.clone()).unwrap();
+        let listed = git_worktree_list_blocking(root_str.clone(), None, None).unwrap();
         assert_eq!(listed.len(), 2);
         assert_eq!(listed.iter().filter(|w| w.is_main).count(), 1);
+        assert_eq!(listed.iter().filter(|w| w.is_current).count(), 1);
         assert!(listed.iter().any(|w| w.branch == "feature"));
 
+        // `.eldrun/` is excluded repo-locally, so the new checkout is not staged as
+        // a bogus gitlink by the commit UI's `git add -A` (verified: without this,
+        // `git ls-files --stage` shows mode 160000 for it).
+        run(&["add", "-A"]);
+        let staged = run(&["ls-files", "--stage"]);
+        let staged = String::from_utf8_lossy(&staged.stdout).to_string();
+        assert!(!staged.contains("160000"), "embedded gitlink staged: {staged}");
+        run(&["reset"]);
+
+        // Removing the worktree we are standing in is refused (D4) — git itself
+        // does not refuse it, and it would delete the tree Eldrun works in.
+        let err = git_worktree_remove_blocking(
+            root_str.clone(),
+            root_str.clone(),
+            2,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("own checkout"), "unexpected: {err}");
+
         // Remove it and confirm we are back to one.
-        git_worktree_remove_blocking(root_str.clone(), wt_path, true).unwrap();
-        let listed = git_worktree_list_blocking(root_str).unwrap();
+        git_worktree_remove_blocking(root_str.clone(), wt_path, 1, None, None).unwrap();
+        let listed = git_worktree_list_blocking(root_str, None, None).unwrap();
         assert_eq!(listed.len(), 1);
+    }
+
+    #[test]
+    fn a_locked_worktree_needs_two_forces_and_can_be_unlocked() {
+        // git: "use 'remove -f -f' to override or unlock first" — exit 128 for a
+        // single --force. Neither escape existed in Eldrun before (B4).
+        if !git_available() {
+            eprintln!("skipping: git binary not available");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        let root_str = root.to_string_lossy().to_string();
+        let run = |args: &[&str]| {
+            crate::paths::command_no_window("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("git run")
+        };
+        assert!(run(&["init"]).status.success());
+        run(&["config", "user.email", "t@e.c"]);
+        run(&["config", "user.name", "T"]);
+        run(&["checkout", "-b", "main"]);
+        std::fs::write(root.join("f.txt"), "hi").unwrap();
+        run(&["add", "-A"]);
+        assert!(run(&["commit", "-m", "init"]).status.success());
+
+        let wt = git_worktree_add_blocking(
+            root_str.clone(),
+            "wip".into(),
+            "wip".into(),
+            true,
+            Some("main".into()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ctx = worktree_ctx(&root_str, None, None);
+        run_worktree_git(&ctx, &["worktree", "lock", "--reason", "on a removable drive", &wt])
+            .unwrap();
+
+        let listed = git_worktree_list_blocking(root_str.clone(), None, None).unwrap();
+        let locked = listed.iter().find(|w| !w.is_main).unwrap();
+        assert!(locked.is_locked);
+        assert_eq!(locked.lock_reason, "on a removable drive");
+
+        // One --force is not enough.
+        assert!(
+            git_worktree_remove_blocking(root_str.clone(), wt.clone(), 1, None, None).is_err()
+        );
+        // Two is.
+        git_worktree_remove_blocking(root_str.clone(), wt, 2, None, None).unwrap();
+        assert_eq!(
+            git_worktree_list_blocking(root_str, None, None).unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_new_branch_is_created_at_its_start_point() {
+        // B1: the toggle could never succeed, because the branch name came from a
+        // list of EXISTING branches — `git worktree add -b <existing>` always
+        // answers "a branch named 'X' already exists".
+        if !git_available() {
+            eprintln!("skipping: git binary not available");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        let root_str = root.to_string_lossy().to_string();
+        let run = |args: &[&str]| {
+            crate::paths::command_no_window("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("git run")
+        };
+        assert!(run(&["init"]).status.success());
+        run(&["config", "user.email", "t@e.c"]);
+        run(&["config", "user.name", "T"]);
+        run(&["checkout", "-b", "main"]);
+        std::fs::write(root.join("f.txt"), "one").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-m", "one"]);
+        let first = String::from_utf8_lossy(&run(&["rev-parse", "HEAD"]).stdout)
+            .trim()
+            .to_string();
+        std::fs::write(root.join("f.txt"), "two").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-m", "two"]);
+
+        let wt = git_worktree_add_blocking(
+            root_str.clone(),
+            "from-first".into(),
+            "from-first".into(),
+            true,
+            Some(first.clone()),
+            None,
+            None,
+        )
+        .unwrap();
+        let head = crate::paths::command_no_window("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&wt)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), first);
+
+        // A start point without `newBranch` is a contradiction, not a silent no-op.
+        assert!(git_worktree_add_blocking(
+            root_str,
+            "x".into(),
+            "main".into(),
+            false,
+            Some(first),
+            None,
+            None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn listing_from_inside_a_linked_worktree_still_finds_main_and_current() {
+        // Every existing fixture operates from the MAIN worktree, so `is_main`
+        // and `is_current` were both unguarded for the one case where they differ.
+        if !git_available() {
+            eprintln!("skipping: git binary not available");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        let root_str = root.to_string_lossy().to_string();
+        let run = |args: &[&str]| {
+            crate::paths::command_no_window("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("git run")
+        };
+        assert!(run(&["init"]).status.success());
+        run(&["config", "user.email", "t@e.c"]);
+        run(&["config", "user.name", "T"]);
+        run(&["checkout", "-b", "main"]);
+        std::fs::write(root.join("f.txt"), "hi").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-m", "init"]);
+        let wt = git_worktree_add_blocking(
+            root_str.clone(),
+            "feat".into(),
+            "feat".into(),
+            true,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // A linked worktree's `.git` is a FILE — `local_non_repo` must test
+        // existence, never `is_dir` (I6), or this returns an empty list.
+        let listed = git_worktree_list_blocking(wt.clone(), None, None).unwrap();
+        assert_eq!(listed.len(), 2, "listing from a linked worktree");
+        assert!(listed[0].is_main, "main is still first");
+        assert!(!listed[0].is_current);
+        let cur = listed.iter().find(|w| w.is_current).expect("a current row");
+        assert_eq!(cur.branch, "feat");
+
+        // …and removing the one we are standing in is refused from here too.
+        assert!(git_worktree_remove_blocking(wt.clone(), wt, 2, None, None).is_err());
     }
 
     #[test]
