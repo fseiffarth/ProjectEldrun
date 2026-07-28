@@ -15120,6 +15120,40 @@ select option {
 .local-model-btn {
   position: relative;
 }
+
+/* ── The 🧠 menu's section headers (Agents · Local models · Machine) ──────────
+   The shared `.tab-new-menu-group-label` is a small accent word, which is the
+   right weight for a menu of one-line entries. This menu is not that: its rows
+   are two and three lines tall (a model carries a badge strip, a chip row and a
+   progress bar), so four accent words scattered down it read as more of the same
+   text rather than as the boundaries between three different things.
+
+   So the header is given a *band*: a tinted, rounded strip with a solid accent
+   bar down its left edge — a shape none of the rows have, so the eye finds the
+   boundaries without reading them. Inset rather than bled to the menu's edge,
+   since the menu's own 4px padding, rounded corners and accent top rail are what
+   a full-bleed band would have to fight. Scoped to this menu deliberately: the
+   pinned titles of the VPN and mail menus lay their own flex out (a close button
+   pushed to the far edge), and a shared change here would break them. Flat
+   backgrounds only, never a blurred shadow (the WebKit software-rendering rule).
+   The 4px top margin is what separates a header from the section above it; the
+   first one drops it, having nothing to be separated from. */
+.local-model-menu .tab-new-menu-group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 3px;
+  padding: 5px 8px 5px 9px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  border-left: 2px solid var(--accent);
+  border-radius: calc(var(--radius) / 2);
+  color: color-mix(in srgb, var(--accent) 85%, var(--text-primary));
+}
+.local-model-menu > .tab-new-menu-group-label:first-child {
+  margin-top: 0;
+}
 .local-model-status-dot {
   position: absolute;
   right: 1px;
@@ -15180,44 +15214,85 @@ select option {
 
 /* ── The device's own GPU memory: how much headroom is left before the next
       model is loaded. Toned by ratio, like the header's GPU row. ───────────── */
-/* The machine's headroom block: one row per device (CPU / RAM / GPU), each a
-   spread line whose colour *is* the reading — toned by ratio, so a glance says
-   how tight things are before the numbers are read. Rows sit tight together so
-   the three read as one block rather than three unrelated hints. */
+/* ── Machine group: what's left for the next model (CPU / RAM / GPU) ──────── */
+/* Its own section of the 🧠 menu, so the readings stop interleaving with the
+   download rows. The group label carries the "untested" pill inline — the pill
+   belongs to the block as a whole, not to any one reading. */
+.local-model-machine-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .local-model-stats {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 6px;
+  padding: 2px 10px 4px;
 }
-.local-model-stat,
-.local-model-gpu {
+/* One reading: label · value · a secondary fact, with the meter under all three.
+   The text stays in the menu's ordinary colour and the METER carries the tone —
+   three coloured lines of numbers read as an alarm, three quiet lines over three
+   coloured bars read as a gauge. */
+.local-model-stat {
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 3px;
+}
+.local-model-stat-head {
+  display: flex;
+  align-items: baseline;
   gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary, var(--text-primary));
 }
-.local-model-stat.low,
-.local-model-gpu.low {
-  color: var(--success);
+.local-model-stat-label {
+  min-width: 26px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
 }
-.local-model-stat.medium,
-.local-model-gpu.medium {
-  color: var(--warning);
+/* Tabular figures so a value changing every two seconds doesn't jitter the
+   line it sits on. */
+.local-model-stat-value {
+  font-variant-numeric: tabular-nums;
 }
-.local-model-stat.high,
-.local-model-gpu.high {
-  color: var(--danger);
+/* The sensor reading beside the value (CPU temperature, GPU utilization):
+   context, so it is dimmer than the value and never takes its place. */
+.local-model-stat-note {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
-/* The middle cell (CPU temperature, GPU utilization) is context, not the
-   headline figure the row is toned for — it renders muted so the used/free pair
-   at the two ends stays the thing the eye lands on. */
-.local-model-stat > span:not(:first-child):not(:last-child) {
-  opacity: 0.75;
+/* The row's end is always the headroom ("N GB free", "N cores") — the figure
+   the question is really about, pinned right so the three rows align. */
+.local-model-stat-detail {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
-/* The block's "untested" pill, on its own line at the right edge: it belongs to
-   the CPU/RAM readings as a whole, not to any one of them. */
-.local-model-stats-tag {
-  align-self: flex-end;
-  padding: 0 8px;
+.local-model-meter {
+  height: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+/* Width and colour both transition: a poll that jumps from amber to red should
+   read as the same bar moving, not as a different bar appearing. */
+.local-model-meter-fill {
+  height: 100%;
+  border-radius: var(--radius-sm);
+  transition: width var(--transition-slow), background-color var(--transition);
+}
+.local-model-meter-fill.low {
+  background: var(--success);
+}
+.local-model-meter-fill.medium {
+  background: var(--warning);
+}
+.local-model-meter-fill.high {
+  background: var(--danger);
 }
 
 /* ── Loaded-model row: green "resident" lamp + per-task tag chips ─────────── */
@@ -18563,6 +18638,23 @@ select option {
   min-width: 0;
 }
 
+/* The subscribe form holds a name + a URL — two inputs side by side would be
+   squeezed to nothing in a 190px sidebar, so it stacks instead. */
+.cal-list-subscribe {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.cal-list-subscribe .cal-input {
+  flex: none;
+  width: 100%;
+}
+
+.cal-list-refresh {
+  font-size: 13px;
+  line-height: 1;
+}
+
 .cal-list-row {
   display: flex;
   align-items: center;
@@ -21156,23 +21248,14 @@ select option {
 }
 
 /* ── The ✉ button's accounts dropdown ──────────────────────────────────────
-   A caret beside the button, not a replacement for it: the ✉ keeps its
-   one-click "open mail", and the caret opens the list that makes the
-   destination part of the gesture (an account's inbox, or Important/Urgent).
+   Revealed by hovering the button itself — no second control in the header, the
+   shape `.vpn-indicator-menu` and the local-model menu already have. The ✉ keeps
+   its one-click "open mail"; the hover offers the destinations (an account's
+   inbox, Important, Urgent) so the choice is part of the same gesture.
 
-   It is deliberately narrow and quiet — `min-width` overrides the 32px every
-   `.global-apps-menu-btn` carries, because a second full-size button here would
-   read as a second app in the header rather than as an affordance on this one.
-   Pulled 4px in so the pair reads as one control, and it wears the icon
-   button's hover/expanded treatment untouched. */
-.mail-indicator-caret {
-  min-width: 14px;
-  margin-left: -4px;
-  padding: 0;
-  font-size: 9px;
-  line-height: 1;
-}
-
+   The menu is a child of the `.global-apps-menu` wrapper, which is what lets the
+   pointer walk down into it: `mouseleave` holds off for anything inside that
+   element, and the 250ms grace in the component covers the 4px gap. */
 .mail-indicator-menu {
   min-width: 220px;
   max-width: 320px;
@@ -21238,17 +21321,148 @@ select option {
   background: var(--danger, #f85149);
 }
 
+/* ── The 🗓 button's day list ───────────────────────────────────────────────
+   `.mail-indicator-menu`'s twin, revealed the same way and for a reason the
+   badge cannot cover on its own: a count says how many appointments are left,
+   never whether one of them starts in five minutes — which is precisely what
+   sends someone opening the whole calendar. Same wrapper-hover mechanics (the
+   menu is a child of `.global-apps-menu`, so `mouseleave` holds off while the
+   pointer is inside it, and the component's 250ms grace covers the gap). */
+.calendar-indicator-menu {
+  min-width: 240px;
+  max-width: 360px;
+  /* A day with a dozen meetings scrolls inside the menu instead of running off
+     the bottom of the window; `.menu-scroll-region` is what actually scrolls
+     (the accent rail and wash live on this element). */
+  max-height: min(60vh, 460px);
+}
+
+/* A day's section — its label plus its rows. A wrapper element rather than a
+   flat run of siblings, because the menu is a flex column: without one, the
+   `.menu-scroll-region`'s gap is all that separates tomorrow's heading from
+   today's last row, and the two days read as one list. It has to re-declare the
+   column + gap for the same reason — it is a flex *item*, so the region's own
+   layout stops at its edge. */
+.cal-menu-day {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.cal-menu-day + .cal-menu-day {
+  margin-top: 6px;
+}
+
+/* An entry = the row plus, when the event has a video call, its Join. Siblings
+   rather than a button inside a button (invalid markup, and the two go to
+   genuinely different places: the calendar, and out of the app). */
+.cal-menu-entry {
+  display: flex;
+  align-items: stretch;
+  gap: 3px;
+}
+.cal-menu-entry > .cal-menu-row {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Direct connection. Accent-tinted, because it is the one control in this menu
+   that *does* something rather than navigating — and the whole reason to read
+   the day from the header two minutes before the hour. */
+.cal-menu-join {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background-color var(--transition);
+}
+.cal-menu-join:hover {
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+/* The label is what a narrow menu drops first — the 📹 plus the tooltip (which
+   names the service) still say what the button is, and the row's title is worth
+   more pixels than the word "Join". */
+@media (max-width: 720px) {
+  .cal-menu-join-text {
+    display: none;
+  }
+}
+
+/* The dialog's field: the input takes the width, Join sits on its right. */
+.cal-conference-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.cal-conference-row .cal-input {
+  flex: 1;
+  min-width: 0;
+}
+.cal-conference-join:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* One row = one occurrence: colour · time · title. The time is a fixed column
+   rather than part of the text flow, so a column of rows reads down the clock
+   even when a title above it is long enough to truncate. */
+.cal-menu-row {
+  gap: 7px;
+}
+.cal-menu-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.cal-menu-time {
+  flex: 0 0 auto;
+  min-width: 46px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+.cal-menu-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Already over. Dimmed rather than dropped — the agenda rail's rule, so the two
+   surfaces cannot disagree about what today held, and "what have I already
+   done" is half of what a glance at the day is for. Deliberately not struck
+   through: an appointment that happened is not one that was cancelled. */
+.cal-menu-row.past {
+  opacity: 0.5;
+}
+
 /* Both overlays ride the shared `.project-dialog.dialog-framed` chrome (accent
    top rail, accent-washed `.settings-title-row` band, `.dialog-close-btn`), so
    all that is left here is their size — exactly the split `.sysmon-dialog`
    makes, and for the same reason: a whole pane hosted in a dialog needs a
    definite height, because the pane fills it and scrolls its own regions. */
 .mail-overlay,
-.calendar-overlay,
-.todo-overlay {
+.calendar-overlay {
   width: min(1180px, calc(100vw - 48px));
   height: min(85vh, calc(100vh - 48px));
   max-height: min(85vh, calc(100vh - 48px));
+}
+/* The board is the one of the three that is *wider* than it is deep — its
+   columns tile sideways and the rails now sit under them, so every extra pixel
+   of width is another column on screen. Hence its own, larger size rather than
+   the shared one. */
+.todo-overlay {
+  width: min(1680px, calc(100vw - 24px));
+  height: min(93vh, calc(100vh - 24px));
+  max-height: min(93vh, calc(100vh - 24px));
 }
 .mail-overlay-body,
 .calendar-overlay-body,
@@ -21279,6 +21493,64 @@ select option {
    rendered and costs whole frames — during a drag, which is exactly when the
    lift would be wanted. Every hover/drag emphasis here is therefore a static
    shadow on a pseudo-element with only its `opacity` transitioning. */
+
+/* ── The ☑ button's urgent list ──────────────────────────────────────────────
+   `.calendar-indicator-menu`'s twin, revealed the same way and for the reason
+   that badge has one too: a count says how many cards today demands, never
+   whether one of them was due a fortnight ago. Same wrapper-hover mechanics (a
+   child of `.global-apps-menu`, so `mouseleave` holds off while the pointer is
+   inside it) and the same shape — pinned title, `.menu-scroll-region` below. */
+.todo-indicator-menu {
+  min-width: 250px;
+  max-width: 380px;
+  max-height: min(60vh, 460px);
+}
+
+/* One section = one deadline horizon. A wrapper element rather than a flat run
+   of siblings for `.cal-menu-day`'s reason: the menu is a flex column, so
+   without one the region's gap is all that separates tomorrow's heading from
+   today's last row and the two read as a single list. It re-declares the column
+   + gap because it is a flex *item* — the region's layout stops at its edge. */
+.todo-menu-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.todo-menu-section + .todo-menu-section {
+  margin-top: 6px;
+}
+
+/* One row = one card: colour · title · how late · priority. The two trailing
+   chips are fixed-size and sit at the end, so a long title truncates rather
+   than pushing the thing that says the row is three weeks old off the menu. */
+.todo-menu-row {
+  gap: 7px;
+}
+.todo-menu-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.todo-menu-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.todo-menu-late {
+  flex: 0 0 auto;
+  color: var(--danger, #f85149);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+/* High priority, as a mark rather than a word: the row already carries a date
+   and a title, and "High" spelled out would be the widest thing on it. */
+.todo-menu-prio {
+  flex: 0 0 auto;
+  color: var(--warning, #e8a33d);
+  font-weight: 700;
+}
 
 .todo-indicator-badge.overdue {
   /* Same number, said louder — a ring in the header's own background colour,
@@ -21332,10 +21604,14 @@ select option {
   font-size: 12px;
 }
 
-/* The board and the rails side by side; each scrolls its own region, which is
-   why the overlay body clips instead of scrolling. */
+/* The board across the full width, the rails beneath it in the bottom-right
+   corner; each scrolls its own region, which is why the overlay body clips
+   instead of scrolling. Stacked rather than side by side because the board's
+   columns tile horizontally: a rail column took 300px off every column count,
+   permanently, to show two short lists that are a glance, not a workspace. */
 .todo-body {
   display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   position: relative;
@@ -21347,6 +21623,7 @@ select option {
   gap: 12px;
   flex: 1;
   min-width: 0;
+  min-height: 0;
   padding: 12px;
   overflow-x: auto;
   overflow-y: hidden;
@@ -21581,7 +21858,11 @@ select option {
   color: var(--text-primary);
   outline: none;
 }
-.todo-card-edit {
+/* The two head buttons (add a step, edit the card) are revealed by opacity, not
+by being taken out of flow: appearing on hover must not resize the card, or the
+column reflows under the pointer that is about to click. */
+.todo-card-edit,
+.todo-card-add-step {
   all: unset;
   cursor: pointer;
   padding: 0 2px;
@@ -21591,8 +21872,14 @@ select option {
   transition: opacity 0.12s ease;
 }
 .todo-card:hover .todo-card-edit,
-.todo-card:focus-within .todo-card-edit {
+.todo-card:focus-within .todo-card-edit,
+.todo-card:hover .todo-card-add-step,
+.todo-card:focus-within .todo-card-add-step {
   opacity: 1;
+}
+.todo-card-edit:hover,
+.todo-card-add-step:hover {
+  color: var(--text-primary);
 }
 
 .todo-card-chips {
@@ -21635,10 +21922,14 @@ select option {
   font-size: 11px;
 }
 
+/* The progress bar is the checklist's disclosure control, so it is a button —
+`all: unset` first, then the row it used to be as a div. */
 .todo-card-steps {
+  all: unset;
   display: flex;
   align-items: center;
   gap: 6px;
+  cursor: pointer;
 }
 .todo-card-steps-bar {
   flex: 1;
@@ -21656,6 +21947,80 @@ select option {
   font-size: 10px;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* The inline checklist. Text selection is re-enabled inside it: the card turns
+it off so a press-and-hold cannot end the drag gesture in a cancel, but a step's
+title is ordinary text somebody may want to copy, and the panel is not a drag
+handle — it swallows the pointer before the card ever sees it. */
+.todo-card-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 0 1px;
+  border-top: 1px solid var(--border-subtle);
+  cursor: default;
+  user-select: text;
+}
+.todo-card-step-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.todo-card-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+}
+.todo-card-step-check {
+  margin: 2px 0 0;
+  flex: none;
+}
+.todo-card-step-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.todo-card-step-title-done {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+.todo-card-step-x {
+  all: unset;
+  cursor: pointer;
+  flex: none;
+  padding: 0 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.todo-card-step:hover .todo-card-step-x,
+.todo-card-step:focus-within .todo-card-step-x {
+  opacity: 1;
+}
+.todo-card-step-x:hover {
+  color: var(--danger);
+}
+.todo-card-step-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 0;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  outline: none;
+}
+.todo-card-step-input:focus {
+  border-bottom-color: var(--accent);
 }
 
 .todo-card-foot {
@@ -21721,16 +22086,30 @@ select option {
 
 /* ── The rails ──────────────────────────────────────────────────────────── */
 
+/* Bottom-right: the two lists sit side by side under the board, pushed to the
+   right edge by `align-self`. Height is capped as a *fraction* rather than in
+   pixels — the strip is the board's guest, so a long agenda scrolls inside it
+   instead of eating the columns' rows. */
 .todo-rails {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: stretch;
+  align-self: flex-end;
   gap: 10px;
-  flex: 0 0 300px;
+  flex: 0 0 auto;
+  max-width: 100%;
   min-width: 0;
-  padding: 12px 12px 12px 0;
-  overflow-y: auto;
+  max-height: 38%;
+  padding: 0 12px 12px;
+  overflow: hidden;
 }
 .todo-rail {
+  flex: 0 1 300px;
+  min-width: 0;
+  min-height: 0;
+  /* Each rail scrolls itself: one scrollbar around both would move the mail list
+     because the agenda is long. */
+  overflow-y: auto;
   background: var(--bg-panel);
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
@@ -21936,11 +22315,14 @@ select option {
   flex: 1;
 }
 
+/* Centred over the board itself. `right: 0` now that the rails are below rather
+   than beside it — the old 300px inset was the rail column's width, and left in
+   place it would push this message off-centre. */
 .todo-empty {
   position: absolute;
-  top: 44%;
+  top: 30%;
   left: 0;
-  right: 300px;
+  right: 0;
   text-align: center;
   pointer-events: none;
   z-index: 1;
@@ -22675,6 +23057,120 @@ select option {
   margin: 0;
   max-width: 46ch;
   line-height: 1.6;
+}
+
+/* ── CalDAV accounts (docs/caldav_plan.md) ─────────────────────────────────
+   The account dialog rides the shared `.settings-dialog` chrome and — being
+   portaled to <body>, which carries no colour — sets an explicit `color`, the
+   same rule the mail dialogs follow. Its controls are the *calendar's*
+   (`.cal-input`, `.cal-btn`, `.cal-link-btn`), so CalDAV reads as part of the
+   calendar rather than as a second feature bolted beside it. */
+
+.caldav-dialog {
+  width: min(620px, calc(100vw - 32px));
+  color: var(--text-primary);
+}
+
+.caldav-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 10px;
+}
+.caldav-field-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.caldav-field-hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  opacity: 0.85;
+}
+.caldav-warning-strip {
+  padding: 5px 8px;
+  margin-bottom: 10px;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--warning, #e3b341);
+  background: color-mix(in srgb, var(--warning, #e3b341) 12%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.caldav-discover-row {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+}
+.caldav-collections {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  max-height: 220px;
+  overflow-y: auto;
+}
+.caldav-collection-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 2px;
+  cursor: pointer;
+}
+.caldav-collection-name {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+/* The URL is the collection's real identity — two calendars can share a display
+   name — so it is shown, dimmed, and allowed to ellipsis rather than wrap the
+   row into two lines. */
+.caldav-collection-href {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.caldav-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 6px 0;
+}
+.caldav-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  padding-top: 6px;
+}
+.caldav-confirm-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--danger, #d9534f) 12%, transparent);
+  font-size: 12px;
+}
+.caldav-confirm-strip span {
+  flex: 1;
+}
+
+/* A failed unattended sync on the sidebar row — the calendar's answer to the
+   mail button's amber `!`, and here for the same reason: the dialog that would
+   otherwise carry the message is exactly the surface nobody has open when the
+   timer fires, and a quietly stale calendar looks just like one with nothing
+   new in it. The error itself is the button's tooltip. */
+.cal-list-sync-error {
+  color: var(--warning, #e3b341);
+  font-weight: 600;
 }
 
 /* ── Mail dialogs ────────────────────────────────────────────────────────── */
@@ -23553,4 +24049,260 @@ select option {
 .print-job-time {
   color: var(--text-muted);
   white-space: nowrap;
+}
+
+/* Skills Library (docs/skills_plan.md) — the print pane's layout applied to a
+   list+preview split rather than a single scrolling column. */
+.skills-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.skills-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+}
+.skills-title {
+  font-weight: 650;
+  color: var(--accent);
+}
+.skills-toolbar-spacer {
+  flex: 1;
+}
+.skills-source-select {
+  padding: 3px 6px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-color);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 12px;
+  max-width: 220px;
+}
+
+.skills-btn {
+  padding: 4px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-color);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.skills-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.skills-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.skills-btn.small {
+  padding: 2px 7px;
+  font-size: 11px;
+  line-height: 1.3;
+}
+.skills-btn.danger {
+  border-color: var(--danger, #d9534f);
+  color: var(--danger, #d9534f);
+}
+.skills-btn.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.skills-add-source {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.skills-input {
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-color);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.skills-strip {
+  padding: 6px 10px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  word-break: break-word;
+}
+.skills-strip.error {
+  color: var(--danger, #d9534f);
+}
+.skills-strip.notice {
+  color: var(--warning, #e3b341);
+}
+
+.skills-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.skills-list-col {
+  width: 45%;
+  min-width: 220px;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--border-subtle);
+  padding: 8px;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.skills-section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.skills-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 8px 2px;
+}
+
+.skills-installed {
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 8px;
+}
+.skills-installed-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+.skills-installed-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.skills-installed-name {
+  font-weight: 600;
+}
+.skills-installed-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skills-filter {
+  width: 100%;
+}
+
+.skills-catalog {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.skills-catalog-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  background: var(--bg-input);
+  cursor: pointer;
+}
+.skills-catalog-row:hover {
+  border-color: var(--accent);
+}
+.skills-catalog-row.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-input));
+}
+.skills-catalog-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.skills-catalog-name {
+  font-weight: 600;
+}
+.skills-catalog-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.skills-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+/* A skill bundling scripts/ can execute code on install — flagged as a plain
+   dot on the row (the preview panel states it in full) rather than hidden. */
+.skills-scripts-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning, #e3b341);
+  flex: none;
+}
+
+.skills-preview {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 10px 14px;
+}
+.skills-preview-empty {
+  padding: 20px 2px;
+}
+.skills-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.skills-preview-name {
+  font-weight: 650;
+  font-size: 14px;
+}
+.skills-preview-desc {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin: 4px 0 10px;
+}
+.skills-preview-files {
+  margin: 10px 0;
+  font-size: 12px;
+}
+.skills-preview-files ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+}
+.skills-preview-body {
+  margin-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
 }

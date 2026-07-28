@@ -195,6 +195,12 @@ pub struct CalendarEvent {
     pub location: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
+    /// The video call's join URL (`http(s)`; the frontend's `lib/conference.ts`
+    /// is the one place that decides what is joinable). Its own field rather
+    /// than a convention on `location`, so a **Join** button is never a guess
+    /// about what a room name meant.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub conference: String,
     /// Category key; maps to a color in the frontend's category palette.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub category: String,

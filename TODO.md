@@ -156,7 +156,7 @@ toward broad, cloud, team-scale agent automation — and the defensibility
 | --- | --- | --- |
 | A | [`todo/group-a.md`](todo/group-a.md) | Bottom Panel: Meta-Project Grouping — "project boxes" to group related pills into one (#13 core UI, #41 multi-project merge). |
 | C | [`todo/group-c.md`](todo/group-c.md) | Workspace Switching / Platform Stability — X11/KDE hidden-workspace hardening, window z-order, i3-style tiling mode, cross-OS verification. |
-| E | [`todo/group-e.md`](todo/group-e.md) | Git Worktree — mostly done (#23); "open worktree as project" stretch goal still deferred. |
+| E | [`todo/group-e.md`](todo/group-e.md) | Git Worktree (#23) — phases 0–2 of [`docs/worktree_improvement_plan.md`](docs/worktree_improvement_plan.md) done (blocking defects, data loss, locality/containment), untested; worktree-aware tab groups and "open worktree as project" (phases 3–4) deferred. |
 | F | [`todo/group-f.md`](todo/group-f.md) | Session Restore — wire up unused `active_session.json` startup restore on top of existing terminal/tab persistence. |
 | G | [`todo/group-g.md`](todo/group-g.md) | Remote / SSH & Containerized Projects — largest net-new backend surface: work-remote axis, SSH/SFTP-native projects, Docker sandboxing, VPN. |
 | H | [`todo/group-h.md`](todo/group-h.md) | Cross-Platform: Windows & macOS Support — follow-ups on the already-landed platform foundations. |
@@ -165,12 +165,14 @@ toward broad, cloud, team-scale agent automation — and the defensibility
 | L | [`todo/group-l.md`](todo/group-l.md) | Center Panel: Tabs, Subwindows & Navigation — detach-to-window, tab UX fixes, keyboard nav, on top of the done tiling split model. |
 | M | [`todo/group-m.md`](todo/group-m.md) | In-App Viewers — text/TeX/image enhancements (Phase 2+) on top of the done file→tab viewer infrastructure. |
 | N | [`todo/group-n.md`](todo/group-n.md) | Internationalization (i18n) — full app-wide translation coverage. **DONE** (3716 keys, 5-language parity). Plan/history: [`docs/i18n_translation_plan.md`](docs/i18n_translation_plan.md). |
-| O | [`todo/group-o.md`](todo/group-o.md) | Project Security & Permissions — per-project policy for downloads, agent spawn, and git-push guardrails, plus the **sandbox-audit follow-ups** (#142–#150: move `.eldrun/sessions/` out of the project tree, confirm a repo-supplied Dockerfile, per-window capabilities, narrow `~/.claude/projects`, drop the env-var host-bound marker). Phased plan: [`docs/sandbox_hardening_plan.md`](docs/sandbox_hardening_plan.md). |
+| O | [`todo/group-o.md`](todo/group-o.md) | Project Security & Permissions — per-project policy for downloads, agent spawn, and git-push guardrails, plus the **sandbox-audit follow-ups** (#142–#151: move `.eldrun/sessions/` out of the project tree, confirm a repo-supplied Dockerfile, per-window capabilities, narrow `~/.claude/projects`, drop the env-var host-bound marker, stop the mounted `.git/config` from executing on the host). Phased plan: [`docs/sandbox_hardening_plan.md`](docs/sandbox_hardening_plan.md). |
 | R | [`todo/group-r.md`](todo/group-r.md) | Right Panel: Polish & App-Window Tracking — follow-on polish + a tracking-display bug on the done pin toggle. |
 | S | [`todo/group-s.md`](todo/group-s.md) | Local Agents via Ollama — generalize the local `vibe` model tab into a family of local Ollama-backed agent tabs. |
 | T | [`todo/group-t.md`](todo/group-t.md) | Smart / Native Shell Terminal — research done, not yet built; shell-completion via a new Ollama command. |
 | P | [`todo/group-p.md`](todo/group-p.md) | Git Hosting: Multi-Host Publishing — generalize the GitHub-only publish flow to GitLab + generic remote URLs. |
 | V | [`todo/group-v.md`](todo/group-v.md) | Native Presenter ("Deck") — post-Phase-7 hardening. **V.1 + V.2 (#93–#122) ✅ done:** both data-loss defects, the first-real-use failures, the anchoring rework (SyncTeX line anchors now exist at runtime), and real font embedding. V.3 (#123–#141 — performance and the differentiated bet) open. Follows Group M #90. |
+| W | [`todo/group-w.md`](todo/group-w.md) | Agent Skills (MVP) — browse/preview/one-click-install `SKILL.md` bundles into a project's `.claude/skills/`, Claude-only. Plan: [`docs/skills_plan.md`](docs/skills_plan.md). |
+| X | [`todo/group-x.md`](todo/group-x.md) | CalDAV Accounts — calendars synced from a server the user has an account on (typed URL + login, scheduled read-only sync, identity-based merge that preserves board placement). Phases 0–2 done/untested; Phase 3 (push) deliberately deferred. Plan: [`docs/caldav_plan.md`](docs/caldav_plan.md). |
 
 Completed groups (code-complete, automated tests green, manual QA pending
 across the board) live in [`todo/done.md`](todo/done.md).

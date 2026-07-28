@@ -7,9 +7,16 @@ KDE/X11 workspace integration in one window.
 
 ## Running
 
-**Never launch Eldrun from Claude or any other agent terminal** — a second
-instance can corrupt workspace state. Launch commands are deliberately omitted
-from this context.
+Claude may launch Eldrun itself to click through the UI and verify a change
+(explicit user permission, 2026-07-28). **Two concurrent instances corrupt
+workspace state**, so this is conditional on one rule: before starting a new
+instance, first shut down whatever instance is already running. Check for a
+live one (`pgrep -fal 'tauri dev|start-eldrun-tauri-hotreload'`, or the
+packaged `eldrun` binary) and stop it — do not just assume none is running.
+Launch via `./start-eldrun-tauri-hotreload.sh` (backgrounded; logs to
+`~/.local/share/eldrun/hotreload.log`) or `npm run tauri:dev`. Shut the
+instance you started back down when you're done verifying, rather than
+leaving it running.
 
 `src/` changes hot-reload in the running instance; don't ask for a restart.
 Only `src-tauri/` changes need the user to rebuild/restart.
@@ -52,6 +59,7 @@ you're touching; never read speculatively.
 | `agent_authority.md` | How sandbox / tab location / agentMode compose. |
 | `hpc_careful_mode.md` | What probes stop collecting on a cluster login node, and how hosts are classified. |
 | `mail_encryption.md` | The sealed local store and the OpenPGP track: what each actually protects, and the invariants that make them worth having. |
+| `caldav.md` | CalDAV accounts: why a sync merges by resource URL instead of replacing, and what read-only actually buys. |
 
 ## Dev workflow
 

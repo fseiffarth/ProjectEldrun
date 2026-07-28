@@ -715,13 +715,13 @@ pub fn reader_hop_allowed(url: &Url, previous: Option<&Url>, hop: usize) -> Resu
     }
 }
 
-/// Fetch a page and sanitize it. **The whole point is where this runs**: in the
-/// backend, so the unsanitized bytes never exist inside a webview process at
-/// all. A frontend sanitizer would mean the raw attacker HTML is already a JS
-/// string in the app origin when sanitization runs, and any bug in the
-/// surrounding code — a stray log, a devtools hook, a refactor that renders
-/// before it sanitizes — is app-origin XSS with a live IPC bridge.
-pub async fn fetch_reader(raw: &str) -> Result<FetchedPage, String> {
+/// Fetch raw bytes with the reader's whole network discipline — hop 0 vs.
+/// later-hop SSRF judging, DNS-pinned redirect following, the size cap — but
+/// none of the HTML-specific decisions (content-type gate, sanitize). Shared
+/// by [`fetch_reader`] and `commands::calendar`'s ICS-subscription fetch,
+/// which both need the same "may this backend touch this URL" answer and would
+/// otherwise carry two copies of the SSRF defence to keep in sync.
+async fn fetch_raw(raw: &str) -> Result<(Vec<u8>, String, Url, bool), String> {
     let mut url = Url::parse(raw).map_err(|_| BlockReason::Unparsable.token())?;
     reader_hop_allowed(&url, None, 0)?;
 
@@ -767,8 +767,6 @@ pub async fn fetch_reader(raw: &str) -> Result<FetchedPage, String> {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let is_html = readable_content_type(&content_type)
-        .ok_or_else(|| format!("unsupported-content-type:{content_type}"))?;
 
     // Read with a hard cap rather than `bytes()`: a hostile (or merely huge)
     // response must not be able to decide how much memory this process uses.
@@ -788,6 +786,20 @@ pub async fn fetch_reader(raw: &str) -> Result<FetchedPage, String> {
         }
         body.extend_from_slice(&chunk);
     }
+
+    Ok((body, content_type, final_url, over_cap))
+}
+
+/// Fetch a page and sanitize it. **The whole point is where this runs**: in the
+/// backend, so the unsanitized bytes never exist inside a webview process at
+/// all. A frontend sanitizer would mean the raw attacker HTML is already a JS
+/// string in the app origin when sanitization runs, and any bug in the
+/// surrounding code — a stray log, a devtools hook, a refactor that renders
+/// before it sanitizes — is app-origin XSS with a live IPC bridge.
+pub async fn fetch_reader(raw: &str) -> Result<FetchedPage, String> {
+    let (body, content_type, final_url, over_cap) = fetch_raw(raw).await?;
+    let is_html = readable_content_type(&content_type)
+        .ok_or_else(|| format!("unsupported-content-type:{content_type}"))?;
 
     let text = decode_body(&body, &content_type);
     let title = if is_html {
@@ -818,6 +830,28 @@ pub async fn fetch_reader(raw: &str) -> Result<FetchedPage, String> {
         blocked_remote: clean.remote_refs,
         final_url,
     })
+}
+
+/// Fetch an `.ics` subscription feed (the calendar's "Refresh from URL",
+/// `commands::calendar::calendar_fetch_ics`) and decode it to text.
+///
+/// Deliberately **not** `fetch_reader`: an ICS body is handed to
+/// `src/lib/ics.ts`'s parser, never rendered as markup, so there is nothing
+/// here for the mail sanitizer to do — it would only risk mangling a `\n`
+/// inside a folded content line. The SSRF defence (hop judging, DNS pinning,
+/// the size cap) is `fetch_raw`'s and is identical to the reader's.
+///
+/// The one content check that *is* worth making: a feed URL is something the
+/// user pasted once and this runs on every click of "Refresh", so a redirect
+/// to a login page or an expired link should fail loudly rather than hand the
+/// frontend parser an HTML document it will silently import zero events from.
+pub async fn fetch_ics(raw: &str) -> Result<String, String> {
+    let (body, content_type, _final_url, _over_cap) = fetch_raw(raw).await?;
+    let text = decode_body(&body, &content_type);
+    if !text.trim_start_matches('\u{feff}').trim_start().starts_with("BEGIN:VCALENDAR") {
+        return Err("not-icalendar".to_string());
+    }
+    Ok(text)
 }
 
 /// Build the reader's HTTP client.

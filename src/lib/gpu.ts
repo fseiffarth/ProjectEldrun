@@ -72,6 +72,17 @@ export function gpuBusy(gpus: GpuSample[]): number | null {
   return busy.length > 0 ? Math.max(...busy) : null;
 }
 
+/**
+ * Hottest adapter temperature in °C; `null` when no driver reports one. The
+ * *max* rather than an average, for `mem_temp_c`'s reason on the Rust side: the
+ * question a single number answers is "how hot is the GPU", and averaging a
+ * loaded card with an idle one answers a question nobody asked.
+ */
+export function gpuHottest(gpus: GpuSample[]): number | null {
+  const temps = gpus.map((g) => g.temp_c).filter((c): c is number => c != null);
+  return temps.length > 0 ? Math.max(...temps) : null;
+}
+
 export function gpuPercent(used: number, total: number): number {
   if (!(total > 0)) return 0;
   return Math.min(100, Math.max(0, (used / total) * 100));

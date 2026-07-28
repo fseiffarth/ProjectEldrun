@@ -82,6 +82,44 @@ pub fn mail_account(proto: MailProto, user: &str, host: &str, port: u16) -> Stri
     format!("mail:{}:{user}@{host}:{port}", proto.as_str())
 }
 
+/// The keychain account for a CalDAV login: `"caldav:{user}@{host}[:{port}]"`.
+///
+/// Keyed by **server target, not Eldrun account id**, for the reason
+/// [`mail_account`] and [`ssh_account`] give: one saved secret per login, so
+/// re-adding an account (or pointing a second one at the same server) finds the
+/// password that is already there instead of the two silently disagreeing about
+/// whether one is saved.
+///
+/// Only the *origin* of the base URL goes into the key — a CalDAV account is a
+/// login on a server, and one login typically covers several collection paths
+/// under it, so including the path would mint a second entry the day discovery
+/// resolves a longer URL than the one the user first pasted. A non-default port
+/// is part of the target and is kept.
+pub fn caldav_account(user: &str, base_url: &str) -> String {
+    let user = user.trim();
+    let target = origin_of(base_url);
+    format!("caldav:{user}@{target}")
+}
+
+/// `https://Dav.Example.org:8443/dav/me/` → `dav.example.org:8443`.
+///
+/// Deliberately string-level rather than a URL parse: this crate's URL type
+/// lives in `reqwest`, this module is used from paths that have no HTTP client
+/// in scope, and the shape being reduced here is simple enough that a parse
+/// would only add a failure mode. An unparseable value degrades to itself,
+/// lower-cased — a stable key for a nonsense URL is still a stable key.
+fn origin_of(base_url: &str) -> String {
+    let raw = base_url.trim();
+    let after_scheme = raw.split_once("://").map(|(_, rest)| rest).unwrap_or(raw);
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    // A `user@host` in the URL is not part of the target's identity.
+    let host = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+    host.trim().trim_end_matches('.').to_lowercase()
+}
+
 /// The keychain account for the **local mail store's** key-encryption key.
 ///
 /// One entry per machine, not per mail account: the master key it wraps seals
@@ -558,6 +596,36 @@ pub fn remember_secret(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_caldav_key_is_the_login_and_the_origin_only() {
+        // Two URLs under one server, one login → one saved secret. Including
+        // the path would mint a second entry the day discovery resolves a
+        // longer URL than the one the user first pasted.
+        assert_eq!(
+            caldav_account("me", "https://DAV.Example.org/dav/"),
+            caldav_account("me", "https://dav.example.org/dav/me/personal/")
+        );
+        assert_eq!(
+            caldav_account(" me ", "https://dav.example.org/"),
+            "caldav:me@dav.example.org"
+        );
+        // A non-default port is part of the target.
+        assert_ne!(
+            caldav_account("me", "https://dav.example.org/"),
+            caldav_account("me", "https://dav.example.org:8443/")
+        );
+        // A different login is a different account, however same the server.
+        assert_ne!(
+            caldav_account("me", "https://dav.example.org/"),
+            caldav_account("you", "https://dav.example.org/")
+        );
+        // Userinfo in the URL is not part of the target's identity.
+        assert_eq!(
+            caldav_account("me", "https://someone@dav.example.org/dav/"),
+            caldav_account("me", "https://dav.example.org/dav/")
+        );
+    }
 
     /// The whole point of the tri-state: "no checkbox behind this call" must not be
     /// read as "the user unticked the box". A probe or a silent reconnect that

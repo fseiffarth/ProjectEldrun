@@ -9,6 +9,7 @@ import {
   DISKUSAGE_TAB_CMD,
   NETWORK_TAB_CMD,
   MONITOR_TAB_CMD,
+  SKILLSLIBRARY_TAB_CMD,
   EMPTY_GROUP_ID,
   isPtyTabKind,
   useTabsStore,
@@ -537,6 +538,24 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     ensureTab(
       { label: t("printing.title"), cmd: PRINTING_TAB_CMD, cwd: projectCwd, kind: "printing" },
       (tab) => tab.kind === "printing",
+    );
+    setMenuPos(null);
+  }
+
+  // Open (or focus, if already open) the Skills Library tab. Install/uninstall
+  // act on this one project, so a second tab in this scope would show exactly
+  // the same catalog and installed list — hence ensureTab, the calendar/
+  // printing bargain, rather than addTab.
+  function handleAddSkills() {
+    focusGroup(groupId);
+    ensureTab(
+      {
+        label: t("skillsLibrary.title"),
+        cmd: SKILLSLIBRARY_TAB_CMD,
+        cwd: projectCwd,
+        kind: "skillslibrary",
+      },
+      (tab) => tab.kind === "skillslibrary",
     );
     setMenuPos(null);
   }
@@ -1455,6 +1474,21 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   onPick: handleAddPrinting,
                 }],
               },
+              // Needs a project to install into — hidden at the root scope
+              // rather than offered disabled, the Network Traffic bargain above.
+              ...(scope !== "root"
+                ? [{
+                    label: t("skillsLibrary.title"),
+                    entries: [{
+                      key: "skillslibrary",
+                      label: t("skillsLibrary.title"),
+                      dot: "◧",
+                      color: TAB_ACCENT.skillslibrary,
+                      untested: true,
+                      onPick: handleAddSkills,
+                    }],
+                  }]
+                : []),
               ...(webBrowser
                 ? [{
                     label: t("newTabMenu.browser"),

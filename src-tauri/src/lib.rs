@@ -485,6 +485,9 @@ pub fn run() {
     // in-memory-only passwords for accounts the user chose not to persist, and
     // the per-account sync cancel flags. See `commands::mail`.
     let mail_state = commands::mail::new_state();
+    // CalDAV: session-only passwords for accounts the user chose not to persist
+    // (docs/caldav_plan.md). Nothing here is ever serialized.
+    let caldav_state: commands::caldav::CalDavState = Default::default();
     // Recursive file-churn watcher on the active project + the counters it has
     // seen since the last flush (see `services::usage_stats`).
     let usage_watch = services::usage_stats::new_state();
@@ -504,6 +507,7 @@ pub fn run() {
         .manage(worker_sync)
         .manage(disk_scans)
         .manage(mail_state)
+        .manage(caldav_state)
         .manage(usage_watch.clone())
         .setup(|_app| {
             #[cfg(target_os = "linux")]
@@ -722,6 +726,25 @@ pub fn run() {
             commands::calendar::delete_calendar,
             commands::calendar::calendar_read_ics,
             commands::calendar::calendar_write_ics,
+            commands::calendar::calendar_fetch_ics,
+            commands::calendar::calendar_replace_events,
+            // CalDAV accounts (docs/caldav_plan.md, Phases 1-2: read-only).
+            // A sync is deliberately two commands: `caldav_fetch` speaks the
+            // protocol and hands back iCalendar text unparsed, the frontend
+            // parses it with `src/lib/ics.ts` (the one parser that understands
+            // folding/RRULE/VALARM), and `caldav_apply` reconciles the result
+            // into calendar.json by `caldav_href` — a field-level merge, never
+            // the delete-and-reinsert `calendar_replace_events` does, because
+            // an unattended sync must not evict a card from the to-do column
+            // the user dragged it into.
+            commands::caldav::caldav_accounts_list,
+            commands::caldav::caldav_account_upsert,
+            commands::caldav::caldav_account_delete,
+            commands::caldav::caldav_password_state,
+            commands::caldav::caldav_forget_password,
+            commands::caldav::caldav_discover,
+            commands::caldav::caldav_fetch,
+            commands::caldav::caldav_apply,
             // Embedded mail client (docs/mail_client_plan_{a,b}.md). Every one
             // of these is `async` on purpose — a sync command runs on the main
             // thread, and an unreachable IMAP server would freeze the whole
@@ -1052,6 +1075,16 @@ pub fn run() {
             commands::sqlite::sqlite_page,
             // Spreadsheet (.xlsx/.xls) reader (Dev G)
             commands::sheets::read_spreadsheet,
+            // Skills Library (docs/skills_plan.md)
+            commands::skills::skills_list_sources,
+            commands::skills::skills_add_source,
+            commands::skills::skills_remove_source,
+            commands::skills::skills_refresh_source,
+            commands::skills::skills_list_catalog,
+            commands::skills::skills_get_detail,
+            commands::skills::skills_install,
+            commands::skills::skills_uninstall,
+            commands::skills::skills_list_installed,
             // Git worktrees (TODO Group E #23)
             commands::git::git_worktree_list,
             commands::git::git_worktree_add,

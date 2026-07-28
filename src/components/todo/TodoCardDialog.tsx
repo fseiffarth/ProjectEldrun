@@ -6,6 +6,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useTodoStore } from "../../stores/todo";
 import { mailPrioritySet } from "../../lib/mail";
 import { useExperimental } from "../../lib/experimental";
+import { addSubtask, removeSubtask, setSubtask } from "../../lib/todoBoard";
 import { datePart } from "../../lib/calendarTime";
 import { useT } from "../../lib/i18n";
 
@@ -78,20 +79,19 @@ export function TodoCardDialog({ task, columns, onClose, onOpenMail }: Props) {
     setTagInput("");
   };
 
+  // The checklist ops are `lib/todoBoard`'s, shared with the board card's inline
+  // checklist — one definition of what an add or a delete does, for two surfaces
+  // writing the same field of the same file. The only difference is here: this
+  // one stages the result in the draft, the card saves it.
   const addStep = () => {
     const value = stepInput.trim();
     if (!value) return;
-    const subtasks = draft.subtasks ?? [];
-    patch({
-      subtasks: [...subtasks, { id: `${draft.id}-${subtasks.length}`, title: value, done: false }],
-    });
+    setDraft((d) => addSubtask(d, value));
     setStepInput("");
   };
 
-  const setStep = (index: number, changes: Partial<Subtask>) =>
-    patch({
-      subtasks: (draft.subtasks ?? []).map((s, i) => (i === index ? { ...s, ...changes } : s)),
-    });
+  const setStep = (id: string, changes: Partial<Subtask>) =>
+    setDraft((d) => setSubtask(d, id, changes));
 
   const steps = draft.subtasks ?? [];
   const stepsDone = steps.filter((s) => s.done).length;
@@ -290,20 +290,18 @@ export function TodoCardDialog({ task, columns, onClose, onOpenMail }: Props) {
                   <input
                     type="checkbox"
                     checked={step.done}
-                    onChange={() => setStep(i, { done: !step.done })}
+                    onChange={() => setStep(step.id, { done: !step.done })}
                   />
                   <input
                     className="cal-input"
                     value={step.title}
                     onKeyDown={stopEscape}
-                    onChange={(e) => setStep(i, { title: e.target.value })}
+                    onChange={(e) => setStep(step.id, { title: e.target.value })}
                   />
                   <button
                     type="button"
                     className="cal-link-btn cal-link-danger"
-                    onClick={() =>
-                      patch({ subtasks: steps.filter((_, x) => x !== i) })
-                    }
+                    onClick={() => setDraft((d) => removeSubtask(d, step.id))}
                   >
                     {t("common.remove")}
                   </button>

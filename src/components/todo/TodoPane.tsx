@@ -34,6 +34,7 @@ export function TodoPane() {
   const tagFilter = useTodoStore((s) => s.tagFilter);
   const hideDone = useTodoStore((s) => s.hideDone);
   const pendingOrder = useTodoStore((s) => s.pendingOrder);
+  const focusTaskId = useTodoStore((s) => s.focusTaskId);
   const error = useTodoStore((s) => s.error);
 
   const [editing, setEditing] = useState<CalendarTask | null>(null);
@@ -52,6 +53,19 @@ export function TodoPane() {
     const fresh = tasks.find((task) => task.id === editing.id);
     if (!fresh) setEditing(null);
   }, [tasks, editing]);
+
+  // The header's urgent list asked for a card by id. Consumed once and cleared,
+  // so the request cannot re-raise the dialog the next time the board is opened;
+  // a card that has since been deleted simply clears without opening anything.
+  useEffect(() => {
+    // `tasks.length === 0` is the not-loaded-yet case, not "no such card": the
+    // effect re-runs when the load lands, and a store that really holds nothing
+    // has no card to open either way.
+    if (!focusTaskId || tasks.length === 0) return;
+    const target = tasks.find((task) => task.id === focusTaskId);
+    if (target) setEditing(target);
+    useTodoStore.getState().clearFocusTask();
+  }, [focusTaskId, tasks]);
 
   const columns = useMemo(() => boardColumns(storedColumns), [storedColumns]);
   const withPending = useMemo(

@@ -29,12 +29,12 @@ import type {
   CalendarEvent,
   CalendarTask,
   Occurrence,
+  Subtask,
   TaskColumn,
 } from "../types";
 import type { MailHeader } from "../types/mail";
-import { addDays, datePart, todayStr, toStamp } from "./calendarTime";
-import { expandEvents, occurrencesOn, sortOccurrences } from "./recurrence";
-import { visibleCalendarIds } from "../stores/calendar";
+import { addDays, datePart, daysBetween, todayStr, toStamp } from "./calendarTime";
+import { dayAgenda, visibleCalendarIds } from "../stores/calendar";
 import type { TranslationKey } from "./i18n";
 
 /** Gap between adjacent ranks. Mirrors the backend's `RANK_GAP`. */
@@ -275,6 +275,79 @@ export function subtaskProgress(
   return { done: subs.filter((s) => s.done).length, total: subs.length };
 }
 
+// ── The checklist ───────────────────────────────────────────────────────────
+
+/**
+ * The checklist's four edits, as pure functions over a card.
+ *
+ * They live here rather than in either component because the checklist is now
+ * edited from **two** surfaces — inline on the board card, and in the full card
+ * dialog — and those two write the same field to the same file. One set of ops
+ * is what keeps them from disagreeing about what an add or a delete does; the
+ * difference between the surfaces is only what they do with the result (the card
+ * saves it, the dialog stages it in its draft).
+ *
+ * None of them drives `percent`. That is `TodoCardDialog`'s documented rule and
+ * it matters more from a card: 100% moves a card to Done, so a derived percent
+ * would make ticking the last step silently relocate the card out from under
+ * the pointer that ticked it.
+ */
+
+/**
+ * An id no step of this task already carries.
+ *
+ * Deliberately not `${task.id}-${subtasks.length}`, which is the obvious
+ * spelling and is wrong: delete the last step and add another and the new one is
+ * handed the id the deleted one had — which for a React key is survivable, but
+ * for `setSubtask`/`removeSubtask`, which address a step *by id*, means two rows
+ * that tick and delete each other. The suffix is scanned rather than counted, so
+ * the only guarantee needed is that it is free.
+ */
+export function mintSubtaskId(task: CalendarTask): string {
+  const subs = task.subtasks ?? [];
+  const taken = new Set(subs.map((s) => s.id));
+  for (let n = subs.length; ; n++) {
+    const id = `${task.id}-s${n}`;
+    if (!taken.has(id)) return id;
+  }
+}
+
+/** Append a step. An empty (or blank) title is a no-op, never a nameless row. */
+export function addSubtask(task: CalendarTask, title: string): CalendarTask {
+  const value = title.trim();
+  if (!value) return task;
+  return {
+    ...task,
+    subtasks: [
+      ...(task.subtasks ?? []),
+      { id: mintSubtaskId(task), title: value, done: false },
+    ],
+  };
+}
+
+/** Edit one step, addressed by id. An unknown id changes nothing. */
+export function setSubtask(
+  task: CalendarTask,
+  id: string,
+  changes: Partial<Subtask>,
+): CalendarTask {
+  return {
+    ...task,
+    subtasks: (task.subtasks ?? []).map((s) => (s.id === id ? { ...s, ...changes } : s)),
+  };
+}
+
+/** Tick or untick one step. */
+export function toggleSubtask(task: CalendarTask, id: string): CalendarTask {
+  const step = (task.subtasks ?? []).find((s) => s.id === id);
+  return step ? setSubtask(task, id, { done: !step.done }) : task;
+}
+
+/** Drop one step. */
+export function removeSubtask(task: CalendarTask, id: string): CalendarTask {
+  return { ...task, subtasks: (task.subtasks ?? []).filter((s) => s.id !== id) };
+}
+
 /**
  * Tick or untick a card: completion **and** placement in one edit.
  *
@@ -343,6 +416,69 @@ export function todosOverdue(
   return tasks.some((t) => visible.has(t.calendar_id) && isOverdue(t, today));
 }
 
+/**
+ * The badge's **explanation**: the cards behind the number, in three sections.
+ *
+ * The badge can only ever say *how many* — and "4" is exactly the figure that
+ * sends someone opening the whole board to find out whether one of them was due
+ * last week. So the header's hover list reads them out, and it is computed here
+ * rather than in the component for `eventsLeftToday`'s reason: the count and the
+ * list are read against each other, and one of them being right is not enough.
+ *
+ * The same three filters as `todosDueCount` — open, on a visible calendar, dated
+ * — so no row can appear that the badge did not count, plus tomorrow's, which
+ * the badge deliberately does not count and which by late afternoon is the only
+ * question left. Tomorrow is its own section for the calendar menu's reason: a
+ * date that is not today, mixed into today's list, reads as an ordering bug.
+ *
+ * Overdue is split out rather than folded into today, because "due today" and
+ * "was due and still isn't done" are two different demands, and the badge's
+ * overdue emphasis has to be explainable by *something* on screen.
+ */
+export interface UrgentTodos {
+  overdue: CalendarTask[];
+  today: CalendarTask[];
+  tomorrow: CalendarTask[];
+}
+
+/** Soonest first, then priority, then title — `id` breaking the last tie. */
+function byUrgency(a: CalendarTask, b: CalendarTask): number {
+  const ad = a.due ? datePart(a.due) : "9999";
+  const bd = b.due ? datePart(b.due) : "9999";
+  if (ad !== bd) return ad.localeCompare(bd);
+  // `|| 10` is `orderedColumn`'s rule: priority 0 means *unset*, which sorts
+  // after an explicit low (9) rather than ahead of a high (1).
+  const ap = a.priority || 10;
+  const bp = b.priority || 10;
+  return ap - bp || a.title.localeCompare(b.title) || a.id.localeCompare(b.id);
+}
+
+export function urgentTodos(
+  tasks: CalendarTask[],
+  calendars: Calendar[],
+  now: Date = new Date(),
+): UrgentTodos {
+  const today = todayStr(now);
+  const tomorrow = addDays(today, 1);
+  const visible = visibleCalendarIds(calendars);
+  const open = tasks.filter(
+    (t) => t.percent < 100 && visible.has(t.calendar_id) && !!t.due,
+  );
+  const on = (cmp: (date: string) => boolean) =>
+    open.filter((t) => cmp(datePart(t.due!))).sort(byUrgency);
+  return {
+    overdue: on((d) => d < today),
+    today: on((d) => d === today),
+    tomorrow: on((d) => d === tomorrow),
+  };
+}
+
+/** How many days late a card is — the "3d late" chip on an overdue row. */
+export function daysLate(task: CalendarTask, now: Date = new Date()): number {
+  if (!task.due) return 0;
+  return Math.max(0, daysBetween(datePart(task.due), todayStr(now)));
+}
+
 // ── The rails ───────────────────────────────────────────────────────────────
 
 export interface AgendaWindow {
@@ -353,31 +489,26 @@ export interface AgendaWindow {
 }
 
 /**
- * Today's and tomorrow's appointments.
+ * Today's and tomorrow's appointments — this rail's shape over `dayAgenda`,
+ * which is where the expansion itself lives.
  *
- * `addDays(today, 2)` because `expandEvents`' window is half-open — the same note
- * `eventsLeftToday` carries for its own `+1`. `occurrencesOn` puts a multi-day
- * event under both days, which is what someone scanning "what is tomorrow" wants
- * and what the calendar's own agenda already does.
+ * It delegates rather than expanding its own two days because the header's 🗓
+ * hover list shows the same two days and its badge counts the first of them: the
+ * rail and the button are read against each other, so one implementation is what
+ * keeps them from disagreeing about what today held (a multi-day event lands
+ * under both days there, and past occurrences survive to be dimmed here).
  */
 export function agendaWindow(
   events: CalendarEvent[],
   calendars: Calendar[],
   now: Date = new Date(),
 ): AgendaWindow {
-  const todayDate = todayStr(now);
-  const tomorrowDate = addDays(todayDate, 1);
-  const occurrences = expandEvents(
-    events,
-    todayDate,
-    addDays(todayDate, 2),
-    visibleCalendarIds(calendars),
-  );
+  const [today, tomorrow] = dayAgenda(events, calendars, now, 2);
   return {
-    todayDate,
-    tomorrowDate,
-    today: sortOccurrences(occurrencesOn(occurrences, todayDate)),
-    tomorrow: sortOccurrences(occurrencesOn(occurrences, tomorrowDate)),
+    todayDate: today.date,
+    tomorrowDate: tomorrow.date,
+    today: today.occurrences,
+    tomorrow: tomorrow.occurrences,
   };
 }
 

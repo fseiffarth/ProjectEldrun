@@ -158,6 +158,10 @@ pub struct MachineLoad {
     /// Whole-package CPU temperature; `None` where no sensor is readable — never
     /// a fake zero, matching [`SystemSnapshot::cpu_temp_c`].
     pub cpu_temp_c: Option<f64>,
+    /// Hottest DIMM temperature; `None` where no on-module sensor is readable —
+    /// most boards wire none, so absent is the ordinary case, not a failure.
+    /// Same rule as [`SystemSnapshot::mem_temp_c`]: never a fake zero.
+    pub mem_temp_c: Option<f64>,
 }
 
 /// One aggregate-only sample of this machine (see [`MachineLoad`]). Local only —
@@ -1417,6 +1421,7 @@ mod platform {
                 &fs::read_to_string("/proc/loadavg").unwrap_or_default(),
             ),
             cpu_temp_c: cpu_temp_c(),
+            mem_temp_c: mem_temp_c(),
         }
     }
 
@@ -1717,6 +1722,7 @@ mod platform {
             swap_free_kib,
             load_avg: [0.0; 3],
             cpu_temp_c: None, // no cheap CPU thermal read on this backend
+            mem_temp_c: None, // nor a DIMM one
         }
     }
 
@@ -2099,6 +2105,7 @@ mod platform {
             swap_free_kib,
             load_avg: load_avg(),
             cpu_temp_c: None, // no cheap CPU thermal read on this backend
+            mem_temp_c: None, // nor a DIMM one
         }
     }
 

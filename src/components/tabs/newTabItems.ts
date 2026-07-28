@@ -96,6 +96,7 @@ export const TAB_ACCENT: Record<TabKind, string> = {
   calendar: "var(--accent)",
   browser: "var(--accent-secondary)",
   printing: "var(--text-muted)",
+  skillslibrary: "var(--accent-secondary)",
 };
 
 /**

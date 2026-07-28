@@ -104,6 +104,10 @@ pub struct MachineLoadSample {
     pub swap_used_bytes: u64,
     /// Whole-package CPU temperature, or `None` where no sensor is readable.
     pub cpu_temp_c: Option<f64>,
+    /// Hottest DIMM temperature, or `None` — which is the *usual* answer: an
+    /// on-module sensor (`jc42`/`spd5118`) is only wired on some boards, so its
+    /// absence is a fact about the hardware, not a failed read.
+    pub mem_temp_c: Option<f64>,
 }
 
 #[tauri::command]
@@ -120,6 +124,7 @@ pub async fn machine_load_snapshot() -> Result<MachineLoadSample, String> {
             swap_total_bytes: 0,
             swap_used_bytes: 0,
             cpu_temp_c: None,
+            mem_temp_c: None,
         });
     }
 
@@ -148,6 +153,7 @@ pub async fn machine_load_snapshot() -> Result<MachineLoadSample, String> {
         swap_total_bytes: now.swap_total_kib * 1024,
         swap_used_bytes: now.swap_total_kib.saturating_sub(now.swap_free_kib) * 1024,
         cpu_temp_c: now.cpu_temp_c,
+        mem_temp_c: now.mem_temp_c,
     })
 }
 

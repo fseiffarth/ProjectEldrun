@@ -206,6 +206,13 @@ ipnet = "2"
 # whose disagreement with ours would be the bug. Already compiled in via
 # reqwest's `charset` feature, so naming it directly costs no new dependency.
 encoding_rs = "0.8"
+# CalDAV multistatus parsing (docs/caldav_plan.md). The ONE new dependency the
+# whole feature needs: whole-document DOM, no `unsafe`, tiny, actively
+# maintained. Non-streaming is right here — a multistatus is at most a few
+# hundred KB, not the multi-GB documents streaming parsers exist for — and the
+# outgoing request bodies are string templates, so no XML *writer* is pulled in
+# for six fixed shapes.
+roxmltree = "0.20"
 reqwest = { version = "0.13", default-features = false, features = [
     "rustls-no-provider",
     "http2",

@@ -58,7 +58,8 @@ export type TabKind =
   | "diskusage"
   | "calendar"
   | "browser"
-  | "printing";
+  | "printing"
+  | "skillslibrary";
 
 /**
  * SSH-sync Phase 0 — a PTY tab's locality on a REMOTE (SSH) project: does it run
@@ -246,6 +247,26 @@ export const BROWSER_TAB_CMD = "__eldrun_browser__";
  *    is cancelled, and the pane polls only while it is on screen.
  */
 export const PRINTING_TAB_CMD = "__eldrun_printing__";
+
+/**
+ * Sentinel `cmd` for the Skills Library tab (`docs/skills_plan.md`): browse a
+ * git-hosted collection of Claude Code skills (plain `<name>/SKILL.md`
+ * folders), preview one, and copy it into this project's `.claude/skills/`.
+ *
+ *  - **It carries no PTY**, like the calendar/printing panes, hence the
+ *    sentinel `cmd` so `cmdToKind` recovers its kind on restore.
+ *  - **It is a singleton per scope.** The catalog is the same regardless of
+ *    which tab opened it, and install/uninstall act on the one project the
+ *    scope names — a second tab would show exactly the same thing, hence
+ *    `ensureTab` rather than `addTab` (the bargain calendar/printing make).
+ *  - **Project-scoped only.** Unlike the calendar/print manager it needs
+ *    somewhere to install INTO, so it is offered only where `scope !== "root"`
+ *    and hidden at the root scope rather than shown disabled.
+ *  - **A restored one re-reads, it does not fetch.** Coming back costs a local
+ *    disk read (installed list + whatever catalog was already cached); no
+ *    source is cloned/pulled without an explicit Refresh click.
+ */
+export const SKILLSLIBRARY_TAB_CMD = "__eldrun_skillslibrary__";
 
 /**
  * Synthetic group id for the empty-state placeholder subwindow (rendered by
@@ -3951,6 +3972,7 @@ export function cmdToKind(cmd: string): TabKind {
   if (cmd === CALENDAR_TAB_CMD) return "calendar";
   if (cmd === BROWSER_TAB_CMD) return "browser";
   if (cmd === PRINTING_TAB_CMD) return "printing";
+  if (cmd === SKILLSLIBRARY_TAB_CMD) return "skillslibrary";
   if (AGENT_CMDS.has(cmd)) return "agent";
   return "shell";
 }
@@ -3988,7 +4010,11 @@ export function isRestorableKind(kind: TabKind): boolean {
     // The print manager holds no session and no process — it re-reads the local
     // print system when it comes back on screen. Restoring it costs one
     // `lpstat`, and nothing it can do to a queue happens without a click.
-    kind === "printing"
+    kind === "printing" ||
+    // Skills Library holds no session either — it re-reads the installed list
+    // (and whatever catalog is already cached) when it comes back; no source
+    // is cloned/pulled without an explicit Refresh click.
+    kind === "skillslibrary"
   );
 }
 

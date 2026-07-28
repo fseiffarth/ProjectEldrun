@@ -11,6 +11,8 @@ import {
   formatTempC,
   gpuAdapterTooltip,
   gpuBusy,
+  gpuHottest,
+  gpuPercent,
   gpuTone,
   gpuTotals,
   type GpuSample,
@@ -43,6 +45,9 @@ interface MachineLoad {
   swap_total_bytes: number;
   swap_used_bytes: number;
   cpu_temp_c: number | null;
+  /** Hottest DIMM, where the board wires an on-module sensor (`jc42`/`spd5118`).
+      `null` — the usual answer — is "no sensor", never a cold reading. */
+  mem_temp_c?: number | null;
 }
 
 /** Subset of the backend `AgentInfo` the menu lists (installed agent CLIs). */
@@ -65,6 +70,50 @@ const MODEL_ROLES: Array<{ key: string; labelKey: TranslationKey }> = [
   { key: "tabs", labelKey: "localModel.role.tabs" },
 ];
 
+
+/**
+ * One row of the Machine group: a fixed label, the reading, a secondary fact,
+ * and the meter under all three. The meter carries the tone (green/amber/red by
+ * *ratio*, `gpuTone` — a pure percentage function despite the name), so the text
+ * stays plain and one glance across three bars answers "will the next model fit"
+ * without reading a single number.
+ */
+function StatMeter({
+  label,
+  value,
+  note,
+  detail,
+  percent,
+  title,
+}: {
+  label: string;
+  value: string;
+  /** A sensor reading beside the value (temperature, utilization); omitted when
+      the driver won't report one, rather than shown as a zero. */
+  note?: string | null;
+  detail: string;
+  /** 0–100; drives both the bar's width and its tone. */
+  percent: number;
+  title: string;
+}) {
+  const pct = Math.min(100, Math.max(0, percent));
+  return (
+    <div className="local-model-stat" title={title}>
+      <div className="local-model-stat-head">
+        <span className="local-model-stat-label">{label}</span>
+        <span className="local-model-stat-value">{value}</span>
+        {note && <span className="local-model-stat-note">{note}</span>}
+        <span className="local-model-stat-detail">{detail}</span>
+      </div>
+      <div className="local-model-meter">
+        <div
+          className={`local-model-meter-fill ${gpuTone(pct, 100)}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  );
+}
 
 /**
  * Header button (left of the global-apps button) for the local (Ollama) models.
@@ -446,6 +495,16 @@ export function LocalModelMenu() {
   // than an idle machine — printing `0.00` there would be a made-up measurement.
   const loadShown = showMachine && machine.load_avg.some((v) => v > 0);
   const cpuTemp = formatTempC(machine?.cpu_temp_c);
+  // The two other thermal readings, each `null` wherever nothing answers: a DIMM
+  // sensor is only wired on some boards, and a GPU driver may report memory
+  // without reporting a temperature. Absent, never a zero — a fabricated 0 °C in
+  // a row that is otherwise all real measurements is worse than a missing one.
+  const memTemp = formatTempC(machine?.mem_temp_c);
+  const gpuTemp = formatTempC(gpuHottest(gpus));
+  const gpuNote =
+    [gpuBusyPct != null ? t("localModel.gpuBusy", { pct: Math.round(gpuBusyPct) }) : null, gpuTemp]
+      .filter(Boolean)
+      .join(" · ") || null;
   const cpuTitle = !showMachine
     ? ""
     : [
@@ -468,6 +527,7 @@ export function LocalModelMenu() {
               total: formatBytes(machine.swap_total_bytes),
             })
           : null,
+        memTemp ? t("localModel.ramTemp", { temp: memTemp }) : null,
       ]
         .filter(Boolean)
         .join("\n");
@@ -512,7 +572,13 @@ export function LocalModelMenu() {
         )}
       </button>
       {open && (
-        <div className="tab-new-menu">
+        <div className="tab-new-menu local-model-menu">
+          {/* Agents · Local models · Machine, in that order: the two things you
+              can *pick* first, then what is left to run them with. The section
+              headers carry their own chrome here (`.local-model-menu` in
+              themes.css) because this menu is the one that stacks four of them
+              over rows that are themselves multi-line — an 9px accent word was
+              not enough to break the list into parts. */}
           <div className="tab-new-menu-group-label">{t("localModel.agentsGroup")}</div>
           {agents.map((a) => (
             <div key={a.id} className="local-model-agent-row" title={t("localModel.agentInstalled", { label: a.label })}>
@@ -624,69 +690,6 @@ export function LocalModelMenu() {
                   </div>
                 </div>
               ))}
-            </div>
-          )}
-          {/* What the machine has left for the next model: CPU, RAM, GPU. Each
-              row is the *device's* figure, never a model's share of it — what is
-              free here is what the next model has to fit into — and each is
-              absent when it cannot be read rather than shown as a zero, which
-              would read as "no room" (no GPU on an Intel-only box; no aggregate
-              CPU/memory backend outside Linux/Windows/macOS). Every reading is
-              toned by ratio, so the row itself says how tight things are. */}
-          {(showMachine || gpus.length > 0) && (
-            <div className="local-model-stats">
-              {showMachine && (
-                <>
-                  <div
-                    className={`tab-new-menu-hint local-model-stat ${gpuTone(machine.cpu_percent, 100)}`}
-                    title={cpuTitle}
-                  >
-                    <span>{t("localModel.cpuPercent", { pct: Math.round(machine.cpu_percent) })}</span>
-                    {/* Temperature only where a sensor answers; the tooltip
-                        carries the load average, which is a three-number reading
-                        no single-line row has room for. */}
-                    {cpuTemp && <span>{t("localModel.cpuTemp", { temp: cpuTemp })}</span>}
-                    <span>{t("localModel.cpuCores", { cores: machine.num_cores })}</span>
-                  </div>
-                  <div
-                    className={`tab-new-menu-hint local-model-stat ${gpuTone(machine.mem_used_bytes, machine.mem_total_bytes)}`}
-                    title={ramTitle}
-                  >
-                    <span>
-                      {t("localModel.ramUsedTotal", {
-                        used: formatBytes(machine.mem_used_bytes),
-                        total: formatBytes(machine.mem_total_bytes),
-                      })}
-                    </span>
-                    <span>
-                      {t("localModel.ramFree", {
-                        free: formatBytes(
-                          Math.max(0, machine.mem_total_bytes - machine.mem_used_bytes),
-                        ),
-                      })}
-                    </span>
-                  </div>
-                </>
-              )}
-              {gpus.length > 0 && (
-                <div
-                  className={`tab-new-menu-hint local-model-stat local-model-gpu ${gpuTone(gpuUsed, gpuTotal)}`}
-                  title={gpus.map(gpuAdapterTooltip).join("\n")}
-                >
-                  <span>{t("localModel.gpuUsedTotal", { used: formatBytes(gpuUsed), total: formatBytes(gpuTotal) })}</span>
-                  {/* Utilization only when a driver reports it — `null` there is
-                      "the driver won't say", not an idle GPU. */}
-                  {gpuBusyPct != null && (
-                    <span>{t("localModel.gpuBusy", { pct: Math.round(gpuBusyPct) })}</span>
-                  )}
-                  <span>{t("localModel.gpuFree", { free: formatBytes(Math.max(0, gpuTotal - gpuUsed)) })}</span>
-                </div>
-              )}
-              {showMachine && (
-                <div className="local-model-stats-tag">
-                  <UntestedTag />
-                </div>
-              )}
             </div>
           )}
           {!installed ? (
@@ -852,6 +855,77 @@ export function LocalModelMenu() {
             </span>
             {installed ? t("localModel.manageLocalModels") : t("localModel.installOllamaEllipsis")}
           </button>
+          {/* Its own group, and the menu's last, because it is neither an agent
+              nor a model: it is what the machine has left for whichever of them
+              you pick above it. Each row is the *device's* figure, never a
+              model's share of it — what is free here is what the next model has
+              to fit into — and a reading that cannot be taken is absent rather
+              than zero (no GPU on an Intel-only box; no aggregate CPU/memory
+              backend outside Linux/Windows/macOS; a DIMM sensor most boards
+              don't wire), since a zero would read as "no room" or "stone cold".
+              The meter is the point: a percentage toned green/amber/red says
+              "will it fit" at a glance, which is the only question asked here. */}
+          {(showMachine || gpus.length > 0) && (
+            <>
+              <div className="tab-new-menu-group-label local-model-machine-label">
+                <span>{t("localModel.machineGroup")}</span>
+                <UntestedTag />
+              </div>
+              <div className="local-model-stats">
+                {showMachine && (
+                  <>
+                    <StatMeter
+                      label="CPU"
+                      value={t("localModel.cpuPercent", { pct: Math.round(machine.cpu_percent) })}
+                      // Temperature only where a sensor answers. The tooltip
+                      // carries the load average, a three-number reading no
+                      // single row has room for.
+                      note={cpuTemp}
+                      detail={t("localModel.cpuCores", { cores: machine.num_cores })}
+                      percent={machine.cpu_percent}
+                      title={cpuTitle}
+                    />
+                    <StatMeter
+                      label="RAM"
+                      value={t("localModel.statUsedTotal", {
+                        used: formatBytes(machine.mem_used_bytes),
+                        total: formatBytes(machine.mem_total_bytes),
+                      })}
+                      // The hottest DIMM, on the boards that wire a sensor at
+                      // all. Absent everywhere else — and absent is the common
+                      // answer here, which is exactly why it must not be a zero.
+                      note={memTemp}
+                      detail={t("localModel.ramFree", {
+                        free: formatBytes(
+                          Math.max(0, machine.mem_total_bytes - machine.mem_used_bytes),
+                        ),
+                      })}
+                      percent={gpuPercent(machine.mem_used_bytes, machine.mem_total_bytes)}
+                      title={ramTitle}
+                    />
+                  </>
+                )}
+                {gpus.length > 0 && (
+                  <StatMeter
+                    label="GPU"
+                    value={t("localModel.statUsedTotal", {
+                      used: formatBytes(gpuUsed),
+                      total: formatBytes(gpuTotal),
+                    })}
+                    // Utilization and temperature, each only when a driver
+                    // reports it — `null` there means "the driver won't say",
+                    // not an idle or a cold GPU. The free headroom keeps the
+                    // row's end either way: it is the figure that answers
+                    // whether the next model fits.
+                    note={gpuNote}
+                    detail={t("localModel.gpuFree", { free: formatBytes(Math.max(0, gpuTotal - gpuUsed)) })}
+                    percent={gpuPercent(gpuUsed, gpuTotal)}
+                    title={gpus.map(gpuAdapterTooltip).join("\n")}
+                  />
+                )}
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

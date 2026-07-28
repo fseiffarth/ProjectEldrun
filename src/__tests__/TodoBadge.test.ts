@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { todosDueCount, todosOverdue } from "../lib/todoBoard";
+import { daysLate, todosDueCount, todosOverdue, urgentTodos } from "../lib/todoBoard";
 import type { Calendar, CalendarTask } from "../types";
 
 /**
@@ -100,5 +100,81 @@ describe("todosOverdue", () => {
         at("09:00"),
       ),
     ).toBe(false);
+  });
+});
+
+/**
+ * The badge's explanation — the header's hover list.
+ *
+ * Every case here is really one question: can a row appear that the badge did
+ * not count, or a counted card fail to appear? The two are read against each
+ * other on the same button, so a disagreement between them is the whole bug.
+ */
+describe("urgentTodos", () => {
+  it("splits overdue, today and tomorrow", () => {
+    const out = urgentTodos(
+      [
+        task({ id: "late", due: "2026-07-01" }),
+        task({ id: "now", due: "2026-07-08" }),
+        task({ id: "next", due: "2026-07-09" }),
+      ],
+      CALENDARS,
+      at("09:00"),
+    );
+    expect(out.overdue.map((t) => t.id)).toEqual(["late"]);
+    expect(out.today.map((t) => t.id)).toEqual(["now"]);
+    expect(out.tomorrow.map((t) => t.id)).toEqual(["next"]);
+  });
+
+  it("shows nothing the badge would not have counted", () => {
+    // Same three filters as `todosDueCount`: open, visible, dated. A row for a
+    // card the number ignores is how the two surfaces start disagreeing.
+    const out = urgentTodos(
+      [
+        task({ id: "done", due: "2026-07-08", percent: 100 }),
+        task({ id: "hidden", calendar_id: "hidden", due: "2026-07-08" }),
+        task({ id: "someday" }),
+      ],
+      CALENDARS,
+      at("09:00"),
+    );
+    expect(out.overdue).toEqual([]);
+    expect(out.today).toEqual([]);
+    expect(out.tomorrow).toEqual([]);
+  });
+
+  it("orders a section by date, then priority, then title", () => {
+    const out = urgentTodos(
+      [
+        task({ id: "b", title: "b", due: "2026-07-08", priority: 5 }),
+        task({ id: "a", title: "a", due: "2026-07-08", priority: 5 }),
+        task({ id: "high", title: "z", due: "2026-07-08", priority: 1 }),
+        // Priority 0 is *unset*, so it sorts after an explicit low — not ahead
+        // of a high, which a plain numeric compare would do.
+        task({ id: "unset", title: "a", due: "2026-07-08", priority: 0 }),
+        task({ id: "low", title: "a", due: "2026-07-08", priority: 9 }),
+      ],
+      CALENDARS,
+      at("09:00"),
+    );
+    expect(out.today.map((t) => t.id)).toEqual(["high", "a", "b", "low", "unset"]);
+  });
+
+  it("orders overdue oldest first", () => {
+    const out = urgentTodos(
+      [task({ id: "y", due: "2026-07-07" }), task({ id: "old", due: "2026-06-20" })],
+      CALENDARS,
+      at("09:00"),
+    );
+    expect(out.overdue.map((t) => t.id)).toEqual(["old", "y"]);
+  });
+});
+
+describe("daysLate", () => {
+  it("counts whole days, and never negatively", () => {
+    expect(daysLate(task({ due: "2026-07-05" }), at("09:00"))).toBe(3);
+    expect(daysLate(task({ due: "2026-07-08" }), at("09:00"))).toBe(0);
+    expect(daysLate(task({ due: "2026-07-20" }), at("09:00"))).toBe(0);
+    expect(daysLate(task(), at("09:00"))).toBe(0);
   });
 });

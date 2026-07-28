@@ -34,6 +34,7 @@ const KIND_LABEL_KEY: Record<TabKind, TranslationKey> = {
   calendar: "newTabMenu.calendar",
   browser: "newTabMenu.browser",
   printing: "printing.title",
+  skillslibrary: "skillsLibrary.title",
 };
 
 /** Which built-in viewer a file tab renders in — "Embedded app" says nothing

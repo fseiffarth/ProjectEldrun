@@ -28,7 +28,10 @@ import { TimeGrid } from "./TimeGrid";
 import { AgendaView } from "./AgendaView";
 import { TasksView } from "./TasksView";
 import { CalendarSidebar } from "./CalendarSidebar";
+import { CalDavAccountDialog } from "./CalDavAccountDialog";
 import { EventDialog, type EditScope, type EventDialogTarget } from "./EventDialog";
+import { useCalDavStore } from "../../stores/caldav";
+import type { CalDavAccount } from "../../types/caldav";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 
 interface Props {
@@ -80,6 +83,7 @@ export function CalendarPane({ visible }: Props) {
   const updateCalendar = useCalendarStore((s) => s.updateCalendar);
   const deleteCalendar = useCalendarStore((s) => s.deleteCalendar);
   const toggleCalendarVisible = useCalendarStore((s) => s.toggleCalendarVisible);
+  const refreshCalendarFromUrl = useCalendarStore((s) => s.refreshCalendarFromUrl);
 
   const settings = useSettingsStore((s) => s.settings);
 
@@ -99,6 +103,8 @@ export function CalendarPane({ visible }: Props) {
   const [search, setSearch] = useState("");
   const [dialog, setDialog] = useState<EventDialogTarget | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** `null` = closed; `{account}` = editing (a `null` account is "add new"). */
+  const [caldavDialog, setCaldavDialog] = useState<{ account: CalDavAccount | null } | null>(null);
 
   useEffect(() => {
     if (!loaded) void load();
@@ -405,6 +411,75 @@ export function CalendarPane({ visible }: Props) {
     }
   }
 
+  async function subscribeCalendar(name: string, url: string) {
+    try {
+      // A subscribed calendar is read-only in the UI (its content comes from
+      // the feed, not from edits made here) and remembers its URL so a later
+      // click on its refresh icon knows what to re-fetch.
+      const target = await createCalendar({
+        name,
+        color: "#8d8fd6",
+        visible: true,
+        readonly: true,
+        source_url: url,
+      });
+      const result = await refreshCalendarFromUrl(target.id, url);
+      setNotice(
+        t("calendarPane.subscribedEvents", { count: result.events }) +
+          (result.tasks ? t("calendarPane.andTasks", { count: result.tasks }) : "") +
+          t("calendarPane.intoCalendar", { name: target.name }) +
+          (result.skipped ? t("calendarPane.skippedSuffix", { count: result.skipped }) : t("calendarPane.periodSuffix")),
+      );
+    } catch (err) {
+      setNotice(t("calendarPane.subscribeFailed", { error: String(err) }));
+    }
+  }
+
+  async function refreshCalendar(id: string) {
+    const cal = calendars.find((c) => c.id === id);
+    if (!cal?.source_url) return;
+    try {
+      const result = await refreshCalendarFromUrl(id, cal.source_url);
+      setNotice(
+        t("calendarPane.refreshedEvents", { count: result.events }) +
+          (result.tasks ? t("calendarPane.andTasks", { count: result.tasks }) : "") +
+          t("calendarPane.intoCalendar", { name: cal.name }) +
+          (result.skipped ? t("calendarPane.skippedSuffix", { count: result.skipped }) : t("calendarPane.periodSuffix")),
+      );
+    } catch (err) {
+      setNotice(t("calendarPane.refreshFailed", { error: String(err) }));
+    }
+  }
+
+  // ── CalDAV ────────────────────────────────────────────────────────────────
+  //
+  // Deliberately thin: everything about a sync — the ctag check, the protocol,
+  // the identity-based merge that keeps a card's board column — lives in
+  // `stores/caldav` and the backend. This is the button and the sentence.
+
+  function openCaldavDialog() {
+    // Accounts are one local file; loading them is what lets the dialog open on
+    // the existing account instead of a blank form.
+    void useCalDavStore.getState().load();
+    const accounts = useCalDavStore.getState().accounts;
+    setCaldavDialog({ account: accounts[0] ?? null });
+  }
+
+  async function syncCaldavCalendar(calendarId: string) {
+    const target = useCalDavStore.getState().accountForCalendar(calendarId);
+    if (!target) return;
+    const cal = calendars.find((c) => c.id === calendarId);
+    // `force: true` — a manual Sync skips the ctag check.
+    const status = await useCalDavStore
+      .getState()
+      .syncCalendar(target.account.id, target.href, true);
+    setNotice(
+      status.phase === "error"
+        ? t("caldav.syncFailed", { error: status.error })
+        : t("caldav.synced", { name: cal?.name ?? target.href }),
+    );
+  }
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   const gridPrefs = { use24h, dayStartHour };
@@ -482,6 +557,10 @@ export function CalendarPane({ visible }: Props) {
           }
           onUpdateCalendar={(cal) => void updateCalendar(cal)}
           onDeleteCalendar={(id) => void deleteCalendar(id)}
+          onSubscribeCalendar={(name, url) => void subscribeCalendar(name, url)}
+          onRefreshCalendar={(id) => void refreshCalendar(id)}
+          onSyncCaldav={(id) => void syncCaldavCalendar(id)}
+          onOpenCaldav={() => openCaldavDialog()}
           weekStart={weekStart}
         />
 
@@ -555,6 +634,27 @@ export function CalendarPane({ visible }: Props) {
           onClose={() => setDialog(null)}
           onSave={saveFromDialog}
           onDelete={deleteFromDialog}
+        />
+      ) : null}
+
+      {caldavDialog ? (
+        <CalDavAccountDialog
+          account={caldavDialog.account}
+          onClose={() => setCaldavDialog(null)}
+          onSaved={(accountId) => {
+            setCaldavDialog(null);
+            // Subscribing is what created the calendars; syncing them is a
+            // separate act, and doing it here is what makes the first one
+            // happen without waiting out a whole interval.
+            const account = useCalDavStore.getState().accounts.find((a) => a.id === accountId);
+            if (!account) return;
+            void (async () => {
+              for (const ref of account.calendars) {
+                await useCalDavStore.getState().syncCalendar(accountId, ref.href, true);
+              }
+              setNotice(t("caldav.syncedAccount", { name: account.label || account.base_url }));
+            })();
+          }}
         />
       ) : null}
     </div>

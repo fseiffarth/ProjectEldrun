@@ -440,6 +440,15 @@ function buildEvent(
     title: val("SUMMARY"),
     location: val("LOCATION"),
     notes: val("DESCRIPTION"),
+    // RFC 7986's `CONFERENCE` first, then Google's older `X-GOOGLE-CONFERENCE`,
+    // which is what a Meet invitation actually arrives with. Neither is trusted
+    // on sight: `conferenceLink` still refuses anything that is not `http(s)`,
+    // so a `zoommtg:` URL in an imported file cannot become a Join button. What
+    // is NOT read here is the link most invitations really carry — the one
+    // inside LOCATION or DESCRIPTION — because copying it into the field at
+    // import time would freeze a guess into the user's own data; it is derived
+    // at render time instead, where it can be corrected by editing the event.
+    conference: val("CONFERENCE") || val("X-GOOGLE-CONFERENCE"),
     // ICS allows several categories; the model holds one, so the first wins.
     category: (val("CATEGORIES").split(",")[0] ?? "").trim().toLowerCase(),
     status: STATUSES[val("STATUS").toUpperCase()] ?? "",
@@ -530,6 +539,12 @@ export function serializeIcs(
     push("SUMMARY", escapeText(e.title));
     if (e.location) push("LOCATION", escapeText(e.location));
     if (e.notes) push("DESCRIPTION", escapeText(e.notes));
+    // RFC 7986's property, with the params every reader expects: a URI value,
+    // and the features that say what kind of call it is. Not escaped — a URI is
+    // not a TEXT value, and escaping it would put backslashes in the link.
+    if (e.conference) {
+      lines.push(fold(`CONFERENCE;VALUE=URI;FEATURE=AUDIO,VIDEO:${e.conference}`));
+    }
     if (e.category) push("CATEGORIES", escapeText(e.category));
     if (e.status) push("STATUS", e.status.toUpperCase());
     if (e.rrule) push("RRULE", formatRrule(e.rrule));

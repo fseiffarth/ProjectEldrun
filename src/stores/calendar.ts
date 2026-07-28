@@ -10,8 +10,15 @@ import type {
   TaskPlacement,
 } from "../types";
 // `CalendarData` is the shape `calendar_load` returns; the store flattens it.
-import { excludeOccurrence, expandEvents, overrideOccurrence } from "../lib/recurrence";
+import {
+  excludeOccurrence,
+  expandEvents,
+  occurrencesOn,
+  overrideOccurrence,
+  sortOccurrences,
+} from "../lib/recurrence";
 import { addDays, toStamp, todayStr } from "../lib/calendarTime";
+import { parseIcs } from "../lib/ics";
 
 /**
  * The native calendar's store: one global set of calendars, events and tasks,
@@ -87,6 +94,19 @@ interface CalendarStore {
   deleteCalendar: (id: string) => Promise<void>;
   /** Toggle a calendar's checkbox in the sidebar. */
   toggleCalendarVisible: (id: string) => Promise<void>;
+
+  /**
+   * Fetch `url` (an ICS feed — TimeTree's calendar-export URL, or any other
+   * read-only subscription) and replace `calendarId`'s events/tasks with what
+   * it parses to, in one backend write. Manual, on-click only — nothing here
+   * polls. Used both to refresh an existing subscription and, on first
+   * subscribe, to populate the brand-new calendar `createCalendar` just made
+   * (whose events start empty, so "replace" behaves like "insert").
+   */
+  refreshCalendarFromUrl: (
+    calendarId: string,
+    url: string,
+  ) => Promise<{ events: number; tasks: number; skipped: number }>;
 }
 
 /** A new event carries no id — the backend mints one. */
@@ -230,6 +250,26 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
     if (!cal) return;
     await get().updateCalendar({ ...cal, visible: !cal.visible });
   },
+
+  refreshCalendarFromUrl: async (calendarId, url) => {
+    // A dedicated, SSRF-guarded backend fetch — the general reader fetch is
+    // for HTML and would sanitize an ICS body as markup instead of handing it
+    // to the parser untouched.
+    const text = await invoke<string>("calendar_fetch_ics", { url });
+    const parsed = parseIcs(text);
+    const data = await invoke<CalendarData>("calendar_replace_events", {
+      calendarId,
+      events: parsed.events,
+      tasks: parsed.tasks,
+    });
+    set({
+      calendars: data.calendars,
+      events: data.events,
+      tasks: data.tasks,
+      taskColumns: data.task_columns ?? [],
+    });
+    return { events: parsed.events.length, tasks: parsed.tasks.length, skipped: parsed.skipped };
+  },
 }));
 
 /** The ids of the calendars currently checked in the sidebar. */
@@ -240,6 +280,62 @@ export function visibleCalendarIds(calendars: Calendar[]): Set<string> {
 /** A calendar's color, falling back to the accent when it has been deleted. */
 export function calendarColor(calendars: Calendar[], id: string): string {
   return calendars.find((c) => c.id === id)?.color ?? "var(--accent)";
+}
+
+/** One day of the agenda: the date, and what is on visible calendars that day. */
+export interface DayOccurrences {
+  date: string;
+  occurrences: Occurrence[];
+}
+
+/**
+ * The next `days` days on visible calendars, a day at a time, each in start
+ * order — **the** day expansion, used by the header button's badge, its hover
+ * list, and the to-do board's agenda rail (`lib/todoBoard`'s `agendaWindow`
+ * delegates here).
+ *
+ * One implementation because these surfaces are read against each other: the
+ * hover list is the badge's explanation, and a number saying "3 left today" over
+ * a list naming four is worse than either alone. Two call sites expanding the
+ * same day with their own filters is exactly how that happens.
+ *
+ * Past occurrences are **included** — the badge skips them (`occurrenceEnded`)
+ * and the lists dim them, because "what have I already done today" is half of
+ * what a glance at the day is for, and dropping them here would make that a
+ * choice the surfaces could disagree about.
+ *
+ * A multi-day event lands under **every** day it covers, which is what someone
+ * asking "what is tomorrow" wants and what the calendar's own agenda does.
+ */
+export function dayAgenda(
+  events: CalendarEvent[],
+  calendars: Calendar[],
+  now: Date = new Date(),
+  days = 1,
+): DayOccurrences[] {
+  const first = todayStr(now);
+  // `expandEvents`' window is half-open — `[start, end)` — so a single day is
+  // today up to tomorrow, not today to today (which is the empty window).
+  const all = expandEvents(events, first, addDays(first, days), visibleCalendarIds(calendars));
+  return Array.from({ length: days }, (_, i) => {
+    const date = addDays(first, i);
+    return { date, occurrences: sortOccurrences(occurrencesOn(all, date)) };
+  });
+}
+
+/** Today's occurrences alone — the badge's set, and `dayAgenda`'s first day. */
+export function occurrencesToday(
+  events: CalendarEvent[],
+  calendars: Calendar[],
+  now: Date = new Date(),
+): Occurrence[] {
+  return dayAgenda(events, calendars, now, 1)[0].occurrences;
+}
+
+/** An occurrence that has already ended — the badge skips it, the list dims it. */
+export function occurrenceEnded(occ: Occurrence, now: Date = new Date()): boolean {
+  if (occ.allDay) return false;
+  return occ.end <= toStamp(now);
 }
 
 /**
@@ -267,14 +363,6 @@ export function eventsLeftToday(
   calendars: Calendar[],
   now: Date = new Date(),
 ): number {
-  const today = todayStr(now);
-  const stamp = toStamp(now);
-  // `expandEvents`' window is half-open — `[start, end)` — so a single day is
-  // today up to tomorrow, not today to today (which is the empty window).
-  return expandEvents(
-    events,
-    today,
-    addDays(today, 1),
-    visibleCalendarIds(calendars),
-  ).filter((occ) => occ.allDay || occ.end > stamp).length;
+  return occurrencesToday(events, calendars, now).filter((occ) => !occurrenceEnded(occ, now))
+    .length;
 }

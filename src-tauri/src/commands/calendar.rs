@@ -20,13 +20,14 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::commands::projects::uuid_v4;
+use crate::schema::caldav::CalDavParsed;
 use crate::schema::calendar::{
     Calendar, CalendarData, CalendarEvent, CalendarFile, CalendarTask, TaskColumn,
     DEFAULT_CALENDAR_ID, RANK_EPSILON, RANK_GAP,
 };
 use crate::storage;
 
-fn calendar_path() -> PathBuf {
+pub(crate) fn calendar_path() -> PathBuf {
     storage::state_dir().join("calendar.json")
 }
 
@@ -428,6 +429,261 @@ fn delete_calendar_at(path: &Path, id: &str) -> Result<(), String> {
     write_data(path, &data)
 }
 
+/// Replace every event/task filed under `calendar_id` with a fresh set —
+/// what "Refresh from URL" needs so a re-fetched subscription (TimeTree or any
+/// other read-only ICS feed) updates the calendar it was imported into rather
+/// than piling up a second copy the way re-importing the same file would.
+/// Ids are minted here, same as `create_event_at`/`create_task_at`, because a
+/// re-fetched feed carries no id of its own the store can trust — an ICS
+/// `UID` is round-tripped for the calendar's own export, but nothing pins an
+/// import's fresh id to it, so there is no stable identity to preserve across
+/// a refresh; a card dragged on the to-do board loses its column/rank the same
+/// way a plain re-import would.
+fn replace_calendar_events_at(
+    path: &Path,
+    calendar_id: &str,
+    events: Vec<CalendarEvent>,
+    tasks: Vec<CalendarTask>,
+) -> Result<CalendarData, String> {
+    let mut data = read_data(path)?;
+    if !data.calendars.iter().any(|c| c.id == calendar_id) {
+        return Err(format!("calendar '{calendar_id}' not found"));
+    }
+    data.events.retain(|e| e.calendar_id != calendar_id);
+    data.tasks.retain(|t| t.calendar_id != calendar_id);
+
+    for mut event in events {
+        event.id = fresh_id(&event_ids(&data));
+        event.calendar_id = calendar_id.to_string();
+        data.events.push(event);
+    }
+    for mut task in tasks {
+        task.id = fresh_id(&task_ids(&data));
+        task.calendar_id = calendar_id.to_string();
+        data.tasks.push(task);
+    }
+
+    data.normalize();
+    write_data(path, &data)?;
+    Ok(data)
+}
+
+// ── CalDAV reconciliation ───────────────────────────────────────────────────
+//
+// The one genuinely new piece of logic CalDAV needs beyond "speak the protocol
+// and hand text to the existing ICS parser" (`docs/caldav_plan.md`).
+//
+// `replace_calendar_events_at` above cannot be reused, and the reason is the
+// whole point: it deletes every row under a calendar and re-inserts a freshly
+// parsed set with **freshly minted ids**. That is fine for a manual click on an
+// anonymous feed. It is not fine for a sync that runs unattended on a timer,
+// because `CalendarTask::column`/`rank`/`tags`/`subtasks`/`project_id`/`mail`
+// are the to-do board's own state, have no CalDAV representation, and a
+// wholesale replace would silently evict every CalDAV-sourced card from wherever
+// the user dragged it — every time the timer fires.
+//
+// The fix is identity, not replacement. A CalDAV resource carries a URL the
+// server hands back unchanged next time (which an ICS feed has no equivalent
+// of), so rows are matched on it and merged field by field: server-owned fields
+// are overwritten, board state is left alone.
+
+/// The `extra` key holding a synced row's own resource URL — the stable key.
+pub const CALDAV_HREF_KEY: &str = "caldav_href";
+/// The `extra` key holding its last-seen ETag, for `If-Match` when push lands.
+pub const CALDAV_ETAG_KEY: &str = "caldav_etag";
+
+fn extra_str(extra: &std::collections::HashMap<String, serde_json::Value>, key: &str) -> String {
+    extra.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
+}
+
+/// Copy the local row's `extra` keys the server knows nothing about onto the
+/// incoming one, without letting them shadow anything the server sent.
+fn carry_extra(
+    incoming: &mut std::collections::HashMap<String, serde_json::Value>,
+    local: &std::collections::HashMap<String, serde_json::Value>,
+) {
+    for (k, v) in local {
+        incoming.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+}
+
+/// Merge one CalDAV fetch into `calendar_id`, in **one** atomic write.
+///
+/// Three cases, per `docs/caldav_plan.md`:
+///
+/// - **Matched** (a local row's `caldav_href` is in the incoming set): keep its
+///   id and — for a task — its board state; overwrite everything the server owns.
+/// - **New**: create it. A task with no placement is what `normalize` already
+///   handles for every newly-created task, so there is no special case here.
+/// - **Gone**: an href in `removed` (an explicit `404` from the server) deletes
+///   both events and tasks. Absence from a **full** listing deletes an *event*
+///   only — a VTODO can vanish from a `calendar-query` because it was deleted
+///   *or* because the server stopped returning completed-and-old ones by default
+///   filter, and those two are indistinguishable from here. Guessing wrong
+///   destroys a card. Absence from an **incremental** report means nothing at
+///   all: unchanged resources are simply not in it.
+///
+/// One resource may carry several components — a recurring event's master plus
+/// its `RECURRENCE-ID` overrides is exactly that shape — so rows are matched
+/// **within** an href group, by position. Positional rather than by content
+/// because the alternative is guessing which of two same-titled occurrences is
+/// which; in the overwhelmingly common one-component-per-resource case the two
+/// are the same thing.
+pub(crate) fn merge_caldav_calendar_at(
+    path: &Path,
+    calendar_id: &str,
+    parsed: Vec<CalDavParsed>,
+    removed: &[String],
+    full: bool,
+) -> Result<CalendarData, String> {
+    let mut data = read_data(path)?;
+    if !data.calendars.iter().any(|c| c.id == calendar_id) {
+        return Err(format!("calendar '{calendar_id}' not found"));
+    }
+
+    // Everything the server just told us about, grouped by resource.
+    let mut seen_hrefs: HashSet<String> = HashSet::new();
+    let gone: HashSet<&str> = removed.iter().map(|h| h.as_str()).collect();
+    // Local rows whose resource still exists but which the resource no longer
+    // contains — an occurrence override deleted upstream shrinks a resource
+    // from two components to one, and the orphan must go with it.
+    let mut stale: HashSet<String> = HashSet::new();
+
+    for group in parsed {
+        if group.href.trim().is_empty() {
+            continue;
+        }
+        seen_hrefs.insert(group.href.clone());
+
+        // ── Events in this resource ──────────────────────────────────────
+        let local_events: Vec<usize> = data
+            .events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                e.calendar_id == calendar_id && extra_str(&e.extra, CALDAV_HREF_KEY) == group.href
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let mut fresh_events: Vec<CalendarEvent> = Vec::new();
+        let incoming_events = group.events.len();
+        for (i, mut event) in group.events.into_iter().enumerate() {
+            event.calendar_id = calendar_id.to_string();
+            event.extra.insert(
+                CALDAV_HREF_KEY.to_string(),
+                serde_json::Value::String(group.href.clone()),
+            );
+            event.extra.insert(
+                CALDAV_ETAG_KEY.to_string(),
+                serde_json::Value::String(group.etag.clone()),
+            );
+            match local_events.get(i) {
+                Some(&slot) => {
+                    let local = &data.events[slot];
+                    // The store owns identity: a matched row keeps the id every
+                    // other surface already references.
+                    event.id = local.id.clone();
+                    carry_extra(&mut event.extra, &local.extra);
+                    data.events[slot] = event;
+                }
+                None => fresh_events.push(event),
+            }
+        }
+        // The resource shrank: local rows past the incoming count have no
+        // counterpart left and go with it.
+        for &slot in local_events.iter().skip(incoming_events) {
+            stale.insert(data.events[slot].id.clone());
+        }
+        for mut event in fresh_events {
+            event.id = fresh_id(&event_ids(&data));
+            data.events.push(event);
+        }
+
+        // ── Tasks in this resource ───────────────────────────────────────
+        let local_tasks: Vec<usize> = data
+            .tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                t.calendar_id == calendar_id && extra_str(&t.extra, CALDAV_HREF_KEY) == group.href
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let mut fresh_tasks: Vec<CalendarTask> = Vec::new();
+        let incoming_tasks = group.tasks.len();
+        for (i, mut task) in group.tasks.into_iter().enumerate() {
+            task.calendar_id = calendar_id.to_string();
+            task.extra.insert(
+                CALDAV_HREF_KEY.to_string(),
+                serde_json::Value::String(group.href.clone()),
+            );
+            task.extra.insert(
+                CALDAV_ETAG_KEY.to_string(),
+                serde_json::Value::String(group.etag.clone()),
+            );
+            match local_tasks.get(i) {
+                Some(&slot) => {
+                    let local = &data.tasks[slot];
+                    task.id = local.id.clone();
+                    // **The board state, kept.** These are Eldrun's own fields;
+                    // the server has never heard of them and a sync that
+                    // overwrote them would move the user's cards on a timer.
+                    task.column = local.column.clone();
+                    task.rank = local.rank;
+                    task.tags = local.tags.clone();
+                    task.subtasks = local.subtasks.clone();
+                    task.mail = local.mail.clone();
+                    task.project_id = local.project_id.clone();
+                    task.created = local.created.clone();
+                    carry_extra(&mut task.extra, &local.extra);
+                    data.tasks[slot] = task;
+                }
+                None => fresh_tasks.push(task),
+            }
+        }
+        for &slot in local_tasks.iter().skip(incoming_tasks) {
+            stale.insert(data.tasks[slot].id.clone());
+        }
+        for mut task in fresh_tasks {
+            task.id = fresh_id(&task_ids(&data));
+            data.tasks.push(task);
+        }
+    }
+
+    if !stale.is_empty() {
+        data.events.retain(|e| !stale.contains(&e.id));
+        data.tasks.retain(|t| !stale.contains(&t.id));
+    }
+
+    // Explicit deletions apply to both kinds — the server said `404` for that
+    // exact resource, which is not ambiguous.
+    if !gone.is_empty() {
+        data.events.retain(|e| {
+            !(e.calendar_id == calendar_id && gone.contains(extra_str(&e.extra, CALDAV_HREF_KEY).as_str()))
+        });
+        data.tasks.retain(|t| {
+            !(t.calendar_id == calendar_id && gone.contains(extra_str(&t.extra, CALDAV_HREF_KEY).as_str()))
+        });
+    }
+
+    // A full listing is authoritative about *events*. Rows with no href are
+    // untouched whatever happens: they were not put there by a sync, and a sync
+    // does not get to delete what it did not create.
+    if full {
+        data.events.retain(|e| {
+            if e.calendar_id != calendar_id {
+                return true;
+            }
+            let href = extra_str(&e.extra, CALDAV_HREF_KEY);
+            href.is_empty() || seen_hrefs.contains(&href)
+        });
+    }
+
+    data.normalize();
+    write_data(path, &data)?;
+    Ok(data)
+}
+
 // ── ICS file I/O ────────────────────────────────────────────────────────────
 //
 // Import/export need to touch a path *outside* any project — wherever the user
@@ -494,6 +750,27 @@ pub fn calendar_write_ics(path: String, content: String) -> Result<(), String> {
         return Err("calendar export too large".to_string());
     }
     std::fs::write(&p, content).map_err(|e| e.to_string())
+}
+
+/// Fetch an `.ics` subscription feed (e.g. TimeTree's calendar-export URL) for
+/// the frontend parser. This is the one command in this file that reaches the
+/// network, and it does so only on an explicit "Refresh from URL" click —
+/// never on a timer — through the same SSRF-guarded fetch the in-app browser's
+/// reader mode uses (`services::browser_engine::fetch_ics`).
+#[tauri::command]
+pub async fn calendar_fetch_ics(url: String) -> Result<String, String> {
+    crate::services::browser_engine::fetch_ics(&url).await
+}
+
+/// Replace `calendar_id`'s events/tasks with a freshly parsed set, in one
+/// atomic write.
+#[tauri::command]
+pub fn calendar_replace_events(
+    calendar_id: String,
+    events: Vec<CalendarEvent>,
+    tasks: Vec<CalendarTask>,
+) -> Result<CalendarData, String> {
+    replace_calendar_events_at(&calendar_path(), &calendar_id, events, tasks)
 }
 
 // ── Commands ────────────────────────────────────────────────────────────────
@@ -576,6 +853,8 @@ pub fn delete_calendar(id: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::calendar::Subtask;
+    use std::collections::HashMap;
 
     fn tmp_path() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -1151,6 +1430,289 @@ mod tests {
         let data = columns_set_at(&path, columns, None).unwrap();
         let added = data.task_columns.iter().find(|c| c.name == "Blocked").unwrap();
         assert!(!added.id.is_empty(), "a new column must be given an id");
+    }
+
+    // ── CalDAV reconciliation ────────────────────────────────────────────
+    //
+    // The property every one of these exists to protect: a sync that runs on a
+    // timer must update what the server owns and touch nothing else. A single
+    // regression here is invisible until a user finds their board reshuffled.
+
+    fn caldav_calendar(path: &Path) -> String {
+        create_calendar_at(
+            path,
+            Calendar {
+                id: String::new(),
+                name: "Work".into(),
+                color: "#4aa3df".into(),
+                visible: true,
+                readonly: true,
+                extra: HashMap::new(),
+            },
+        )
+        .unwrap()
+        .id
+    }
+
+    fn parsed_event(href: &str, etag: &str, title: &str, start: &str) -> CalDavParsed {
+        CalDavParsed {
+            href: href.into(),
+            etag: etag.into(),
+            events: vec![CalendarEvent {
+                title: title.into(),
+                start: start.into(),
+                end: format!("{start}:00").replace("::00", ":00"),
+                ..Default::default()
+            }],
+            tasks: Vec::new(),
+        }
+    }
+
+    fn parsed_task(href: &str, etag: &str, title: &str, percent: u8) -> CalDavParsed {
+        CalDavParsed {
+            href: href.into(),
+            etag: etag.into(),
+            events: Vec::new(),
+            tasks: vec![CalendarTask {
+                title: title.into(),
+                percent,
+                ..Default::default()
+            }],
+        }
+    }
+
+    #[test]
+    fn a_first_sync_creates_rows_and_stamps_their_resource_identity() {
+        let (_dir, path) = tmp_path();
+        let cal = caldav_calendar(&path);
+        let data = merge_caldav_calendar_at(
+            &path,
+            &cal,
+            vec![
+                parsed_event("https://d/e/a.ics", "\"1\"", "standup", "2026-07-08T09:00"),
+                parsed_task("https://d/e/t.ics", "\"2\"", "write it up", 0),
+            ],
+            &[],
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(data.events.len(), 1);
+        assert_eq!(data.tasks.len(), 1);
+        let event = &data.events[0];
+        assert!(!event.id.is_empty(), "the store owns identity");
+        assert_eq!(event.calendar_id, cal);
+        assert_eq!(extra_str(&event.extra, CALDAV_HREF_KEY), "https://d/e/a.ics");
+        assert_eq!(extra_str(&event.extra, CALDAV_ETAG_KEY), "\"1\"");
+        assert_eq!(extra_str(&data.tasks[0].extra, CALDAV_HREF_KEY), "https://d/e/t.ics");
+    }
+
+    #[test]
+    fn a_second_sync_updates_the_server_fields_and_keeps_the_board_placement() {
+        // THE test for this feature. `replace_calendar_events_at` would fail it,
+        // which is the whole reason this function exists.
+        let (_dir, path) = tmp_path();
+        let cal = caldav_calendar(&path);
+        merge_caldav_calendar_at(&path, &cal, vec![parsed_task("https://d/e/t.ics", "\"1\"", "draft", 0)], &[], true)
+            .unwrap();
+
+        // The user drags the card, tags it, and adds a subtask.
+        let mut task = read_data(&path).unwrap().tasks.remove(0);
+        let id = task.id.clone();
+        task.column = "doing".into();
+        task.rank = Some(2048.0);
+        task.tags = vec!["thesis".into()];
+        task.subtasks = vec![Subtask {
+            id: "s0".into(),
+            title: "outline".into(),
+            done: true,
+            ..Default::default()
+        }];
+        task.project_id = "proj-1".into();
+        task.created = "2026-07-01T08:00".into();
+        update_task_at(&path, task).unwrap();
+
+        // The server's copy is renamed and half-done.
+        let data = merge_caldav_calendar_at(
+            &path,
+            &cal,
+            vec![parsed_task("https://d/e/t.ics", "\"2\"", "draft (v2)", 50)],
+            &[],
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(data.tasks.len(), 1, "a matched row is updated, not duplicated");
+        let after = &data.tasks[0];
+        assert_eq!(after.id, id, "the id every other surface references survives");
+        assert_eq!(after.title, "draft (v2)", "the server owns the title");
+        assert_eq!(after.percent, 50);
+        assert_eq!(extra_str(&after.extra, CALDAV_ETAG_KEY), "\"2\"");
+        assert_eq!(after.column, "doing", "the board column is the user's, not the server's");
+        assert_eq!(after.rank, Some(2048.0));
+        assert_eq!(after.tags, vec!["thesis".to_string()]);
+        assert_eq!(after.subtasks.len(), 1);
+        assert_eq!(after.project_id, "proj-1");
+        assert_eq!(after.created, "2026-07-01T08:00");
+    }
+
+    #[test]
+    fn a_new_task_is_placed_by_normalize_like_any_other() {
+        let (_dir, path) = tmp_path();
+        let cal = caldav_calendar(&path);
+        // The board exists (its first write seeded the columns).
+        let seed = card(&path, "local");
+        move_tasks_at(&path, vec![place(&seed.id, "doing", 0)]).unwrap();
+
+        let data = merge_caldav_calendar_at(
+            &path,
+            &cal,
+            vec![parsed_task("https://d/e/new.ics", "\"1\"", "from the server", 0)],
+            &[],
+            true,
+        )
+        .unwrap();
+        let fresh = data.tasks.iter().find(|t| t.title == "from the server").unwrap();
+        assert!(!fresh.column.is_empty(), "an unplaced card is filed by normalize");
+        assert!(fresh.rank.is_some());
+    }
+
+    #[test]
+    fn an_explicit_deletion_removes_both_kinds() {
+        let (_dir, path) = tmp_path();
+        let cal = caldav_calendar(&path);
+        merge_caldav_calendar_at(
+            &path,
+            &cal,
+            vec![
+                parsed_event("https://d/e/a.ics", "\"1\"", "gone soon", "2026-07-08T09:00"),
+                parsed_task("https://d/e/t.ics", "\"1\"", "gone soon too", 0),
+            ],
+            &[],
+            true,
+        )
+        .unwrap();
+
+        let data = merge_caldav_calendar_at(
+            &path,
+            &cal,
+            vec![],
+            &["https://d/e/a.ics".to_string(), "https://d/e/t.ics".to_string()],
+            false,
+        )
+        .unwrap();
+        assert!(data.events.is_empty());
+        assert!(data.tasks.is_empty());
+    }
+
+    #[test]
+    fn absence_from_a_full_listing_deletes_an_event_but_never_a_task() {
+        // The ambiguity `docs/caldav_plan.md` refuses to guess at: a VTODO can
+        // vanish from a `calendar-query` because it was deleted *or* because
+        // the server stopped returning completed-and-old ones by default. An
+        // event has no such filter, so its absence is trustworthy.
+        let (_dir, path) = tmp_path();
+        let cal = caldav_calendar(&path);
+        merge_caldav_calendar_at(
+            &path,
+            &cal,
+            vec![
+                parsed_event("https://d/e/a.ics", "\"1\"", "meeting", "2026-07-08T09:00"),
+                parsed_task("https://d/e/t.ics", "\"1\"", "todo", 100),
+            ],
+            &[],
+            true,
+        )
+        .unwrap();
+
+        let data = merge_caldav_calendar_at(&path, &cal, vec![], &[], true).unwrap();
+        assert!(data.events.is_empty(), "an event absent from a full listing is gone");
+        assert_eq!(data.tasks.len(), 1, "a task absent from a full listing is NOT deleted");
+    }
+
+    #[test]
+    fn absence_from_an_incremental_report_deletes_nothing() {
+        let (_dir, path) = tmp_path();
+        let cal = caldav_calendar(&path);
+        merge_caldav_calendar_at(
+            &path,
+            &cal,
+            vec![parsed_event("https://d/e/a.ics", "\"1\"", "meeting", "2026-07-08T09:00")],
+            &[],
+            true,
+        )
+        .unwrap();
+
+        // `full: false` — unchanged resources are simply not in a sync-collection
+        // reply, so treating absence as deletion would empty the calendar on the
+        // first quiet interval.
+        let data = merge_caldav_calendar_at(&path, &cal, vec![], &[], false).unwrap();
+        assert_eq!(data.events.len(), 1);
+    }
+
+    #[test]
+    fn a_sync_never_deletes_a_row_it_did_not_create() {
+        let (_dir, path) = tmp_path();
+        let cal = caldav_calendar(&path);
+        let mut local = event("hand-made", "2026-07-08T09:00", "2026-07-08T10:00");
+        local.calendar_id = cal.clone();
+        create_event_at(&path, local).unwrap();
+
+        let data = merge_caldav_calendar_at(&path, &cal, vec![], &[], true).unwrap();
+        assert_eq!(
+            data.events.len(),
+            1,
+            "a row with no caldav_href was not put there by a sync"
+        );
+    }
+
+    #[test]
+    fn a_resource_holding_a_series_and_its_override_matches_positionally() {
+        // One CalDAV resource can hold a master VEVENT plus its RECURRENCE-ID
+        // overrides — there is no separate occurrence object to fetch — so both
+        // components arrive under one href.
+        let (_dir, path) = tmp_path();
+        let cal = caldav_calendar(&path);
+        let series = CalDavParsed {
+            href: "https://d/e/s.ics".into(),
+            etag: "\"1\"".into(),
+            events: vec![
+                CalendarEvent {
+                    title: "weekly".into(),
+                    start: "2026-07-08T09:00".into(),
+                    end: "2026-07-08T10:00".into(),
+                    ..Default::default()
+                },
+                CalendarEvent {
+                    title: "weekly (moved)".into(),
+                    start: "2026-07-15T11:00".into(),
+                    end: "2026-07-15T12:00".into(),
+                    ..Default::default()
+                },
+            ],
+            tasks: Vec::new(),
+        };
+        let data = merge_caldav_calendar_at(&path, &cal, vec![series.clone()], &[], true).unwrap();
+        assert_eq!(data.events.len(), 2);
+        let ids: Vec<String> = data.events.iter().map(|e| e.id.clone()).collect();
+
+        // Second sync, same shape: both rows keep their ids.
+        let data = merge_caldav_calendar_at(&path, &cal, vec![series], &[], true).unwrap();
+        let after: Vec<String> = data.events.iter().map(|e| e.id.clone()).collect();
+        assert_eq!(ids, after);
+
+        // The override is removed upstream: the resource shrinks to one
+        // component, and the orphaned local row goes with it.
+        let shrunk = parsed_event("https://d/e/s.ics", "\"2\"", "weekly", "2026-07-08T09:00");
+        let data = merge_caldav_calendar_at(&path, &cal, vec![shrunk], &[], true).unwrap();
+        assert_eq!(data.events.len(), 1);
+        assert_eq!(data.events[0].id, ids[0]);
+    }
+
+    #[test]
+    fn merging_into_a_calendar_that_is_gone_is_an_error_not_a_silent_write() {
+        let (_dir, path) = tmp_path();
+        assert!(merge_caldav_calendar_at(&path, "no-such-calendar", vec![], &[], true).is_err());
     }
 
     /// The mail tripwire, mirrored: no board command may take a filesystem path.

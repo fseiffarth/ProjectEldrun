@@ -52,26 +52,32 @@ import { UntestedTag } from "../common/UntestedTag";
  * The first tick is a whole interval away on purpose: checking at mount would be
  * checking at launch, and a restored window must not open a socket by existing.
  *
- * **The caret's dropdown is the way *into* a particular mailbox**, not a second
- * copy of the pane's rail. The ✉ opens mail wherever you left it, which for
- * someone with four accounts is a click on the button followed by a hunt down the
- * rail; the dropdown makes the destination the gesture — one click lands the
+ * **Hovering the button reveals the way *into* a particular mailbox**, not a
+ * second copy of the pane's rail. The ✉ opens mail wherever you left it, which
+ * for someone with four accounts is a click on the button followed by a hunt down
+ * the rail; the dropdown makes the destination the gesture — one click lands the
  * overlay on that account's inbox, or on Important/Urgent, which is why those two
  * are in the same list rather than behind the account they are not owned by (the
- * rail's reason for putting Priority above Accounts, said in a menu). Two rules
- * come with it. It is a **caret**, not the ✉ itself: turning the button into a
- * menu would take away the one-click "open mail" the rest of the header's global
- * apps have, so the button keeps its job and the dropdown is offered beside it
- * (and on a right-click, where a menu is expected anyway). And the counts it
- * shows are **refreshed when it opens** — both reads are local (`refreshUnread`,
- * `refreshPriorityCounts`), so the menu costs no socket and still cannot quote a
- * number the pane would disagree with.
+ * rail's reason for putting Priority above Accounts, said in a menu).
+ *
+ * It is **hover-opened**, the shape its header siblings already have
+ * (`LocalModelMenu`, `VpnIndicator`): no second button, and the ✉ keeps its one
+ * job — a click opens mail. That the pointer alone opens it is affordable here
+ * for the one reason it is not on `MachinesIndicator`, whose menu had to be
+ * demoted to click: revealing this list **touches no network**. Both reads behind
+ * it are local (`refreshUnread`, `refreshPriorityCounts`), so a pointer crossing
+ * the header costs nothing — and doing them on reveal rather than at mount is
+ * what stops the menu quoting a count the pane has since moved past. A click on a
+ * row is still the only thing that selects, so a menu that merely appeared under
+ * the pointer changes nothing.
  */
 export function MailIndicator() {
   const t = useT();
   const mailClient = useExperimental("mail_client");
   const [menuOpen, setMenuOpen] = useState(false);
-  const anchorRef = useRef<HTMLDivElement | null>(null);
+  // The hover menu's grace period, so crossing the 4px gap between the button and
+  // the list below it does not shut the list you are reaching for.
+  const closeTimer = useRef<number | undefined>(undefined);
   const intervalMin = useSettingsStore(
     (s) => s.settings?.mail_check_interval_min ?? DEFAULT_MAIL_CHECK_MIN,
   );
@@ -144,31 +150,22 @@ export function MailIndicator() {
     return () => clearInterval(id);
   }, [live, intervalMin]);
 
-  // Dismissal: a click outside, or Escape. Deliberately click-opened and
-  // click-closed rather than hover-opened like the VPN menu — this one's rows
-  // *navigate*, and a list that appears because the pointer crossed the header on
-  // its way somewhere else is a list you can select from by accident.
+  // Escape, for the menu that was opened by keyboard focus and therefore has no
+  // mouse-leave coming to close it. Capture + `stopPropagation` because the
+  // overlay's own Escape handler is window-level as well, and while this list is
+  // up, closing it is what the key meant.
   useEffect(() => {
     if (!menuOpen) return;
-    const onPointerDown = (e: PointerEvent) => {
-      const el = anchorRef.current;
-      if (el && e.target instanceof Node && el.contains(e.target)) return;
-      setMenuOpen(false);
-    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      // The overlay's own Escape handler is window-level too, and it must not
-      // also fire: closing the menu is what the key meant while it is open.
       e.stopPropagation();
       setMenuOpen(false);
     };
-    document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown, true);
-      document.removeEventListener("keydown", onKey, true);
-    };
+    return () => document.removeEventListener("keydown", onKey, true);
   }, [menuOpen]);
+
+  useEffect(() => () => window.clearTimeout(closeTimer.current), []);
 
   // A flag switched off with the menu open would otherwise leave it painted over
   // a feature the settings say is gone (`experimentalSweep`'s rule).
@@ -193,44 +190,54 @@ export function MailIndicator() {
   const failing = !!checkError;
 
   // Both reads are local — the accounts and their folder counts, and the two
-  // priority totals — so opening the menu costs no socket. It is done on open
-  // rather than on mount because the numbers are only *read* here: a menu that
-  // quoted a count the pane has since moved past would be worse than one that
-  // takes a moment to fill in.
-  const openMenu = () => {
+  // priority totals — so revealing the menu costs no socket. They run on reveal
+  // rather than at mount because the numbers are only *read* here: a menu quoting
+  // a count the pane has since moved past would be worse than one that takes a
+  // moment to fill in. Re-entering an already-open menu refetches nothing.
+  const reveal = () => {
+    window.clearTimeout(closeTimer.current);
+    if (menuOpen) return;
     setMenuOpen(true);
     const store = useMailStore.getState();
     void store.refreshUnread();
     void store.refreshPriorityCounts();
+  };
+  const scheduleClose = () => {
+    window.clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(() => setMenuOpen(false), 250);
   };
 
   return (
     /* Same wrapper the brain button uses. `.header-center` stretches its
        children to the full header height, so a bare 32px button would sit at the
        top of the frame instead of centered — this div is what centers it, and it
-       is also the positioning context the badge and the dropdown are anchored to. */
-    <div ref={anchorRef} className="global-apps-menu mail-indicator no-drag">
+       is also the positioning context the badge and the dropdown are anchored to.
+       The hover handlers are the WRAPPER's, not the button's: the list is a child
+       of this element, so `mouseleave` holds off while the pointer is anywhere
+       inside it — which is the whole reason a menu hanging below the button can
+       be walked into at all. */
+    <div className="global-apps-menu mail-indicator no-drag" onMouseEnter={reveal} onMouseLeave={scheduleClose}>
       <button
         type="button"
         className="global-apps-menu-btn mail-indicator-btn"
         title={label}
         aria-label={label}
         aria-pressed={overlayOpen}
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
         onClick={() => {
+          // The button's own job is unchanged — open (or close) mail. The menu
+          // goes with the click rather than staying up over the overlay it just
+          // raised; the pointer is on its way there, not back to this list.
           setMenuOpen(false);
+          window.clearTimeout(closeTimer.current);
           const store = useMailStore.getState();
           if (store.overlayOpen) store.closeOverlay();
           else store.openOverlay();
         }}
-        // The dropdown's second entrance. A right-click is where a menu is
-        // looked for, and the caret beside this button is deliberately narrow —
-        // narrow enough that offering only it would make reaching the accounts a
-        // target-acquisition problem.
-        onContextMenu={(e) => {
-          e.preventDefault();
-          if (menuOpen) setMenuOpen(false);
-          else openMenu();
-        }}
+        // Keyboard reach: tabbing to the button is the one way in that no
+        // pointer will ever open, and Escape is its way back out.
+        onFocus={reveal}
       >
         <span className="mail-indicator-icon" aria-hidden="true">
           ✉
@@ -256,19 +263,8 @@ export function MailIndicator() {
           </span>
         )}
       </button>
-      <button
-        type="button"
-        className="global-apps-menu-btn mail-indicator-caret"
-        title={t("mail.menuAria")}
-        aria-label={t("mail.menuAria")}
-        aria-haspopup="menu"
-        aria-expanded={menuOpen}
-        onClick={() => (menuOpen ? setMenuOpen(false) : openMenu())}
-      >
-        <span aria-hidden="true">▾</span>
-      </button>
       {menuOpen && (
-        <div className="tab-new-menu mail-indicator-menu" role="menu">
+        <div className="tab-new-menu mail-indicator-menu" role="menu" aria-label={t("mail.menuAria")}>
           {/* Pinned title + scrolling region: the unified menu shape (the accent
               rail and the wash live on this element, so it must not be the thing
               that scrolls). */}

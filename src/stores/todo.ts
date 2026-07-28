@@ -57,6 +57,19 @@ interface TodoStore {
   openOverlay: () => void;
   closeOverlay: () => void;
 
+  /**
+   * A card the board should open its editor on as soon as it is mounted — the
+   * header's urgent list clicking through to the card it named.
+   *
+   * A one-shot *request*, not a selection: `TodoPane` consumes it and clears it,
+   * so re-opening the board later does not re-raise a dialog the user closed. It
+   * lives here rather than being a parameter of `openOverlay` because the pane
+   * mounts a frame after the flag flips — there is nobody to hand it to yet.
+   */
+  focusTaskId: string | null;
+  openCard: (taskId: string) => void;
+  clearFocusTask: () => void;
+
   search: string;
   projectFilter: string | null | "none";
   tagFilter: string | null;
@@ -97,7 +110,11 @@ export const useTodoStore = create<TodoStore>((set, get) => ({
     // Drop any in-flight drag with the surface it was happening on: the
     // pointerdown-bound release handler survives the unmount and would otherwise
     // commit a move onto a board nobody is looking at.
-    set({ overlayOpen: false, cardDrag: null }),
+    set({ overlayOpen: false, cardDrag: null, focusTaskId: null }),
+
+  focusTaskId: null,
+  openCard: (focusTaskId) => set({ overlayOpen: true, focusTaskId }),
+  clearFocusTask: () => set({ focusTaskId: null }),
 
   search: "",
   projectFilter: null,

@@ -28,6 +28,7 @@ import { BigFolderDialogHost } from "../projects/BigFolderExcludeDialog";
 import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 import { MailOverlayHost } from "../mail/MailOverlay";
 import { CalendarOverlayHost } from "../calendar/CalendarOverlay";
+import { CalDavSyncHost } from "../calendar/CalDavSyncHost";
 import { TodoOverlayHost } from "../todo/TodoOverlay";
 import { LocalLossDialog } from "../common/LocalLossDialog";
 import { HostKeyConfirmDialog } from "../common/HostKeyConfirmDialog";
@@ -844,6 +845,13 @@ export function AppShell() {
           ordinary CalendarPane as an overlay, at the shell for the same reason —
           it covers the window and must survive a project switch. */}
       <CalendarOverlayHost />
+      {/* CalDAV's scheduled sync (docs/caldav_plan.md Phase 2). Renders nothing,
+          and starts no timer at all until an account exists — at the shell for
+          the alarm ticker's reason: the surfaces that read a synced calendar
+          (the header badge, the board's agenda rail, the reminders) are not the
+          calendar pane, so refreshing only while that pane is open would leave
+          the calendar stale exactly where it is looked at. */}
+      <CalDavSyncHost />
       {/* The todo board, third of the same family — and mounted LAST of the
           three deliberately: all three are `.modal-backdrop` at one z-index and
           nothing makes them mutually exclusive, so DOM order is the tie-break

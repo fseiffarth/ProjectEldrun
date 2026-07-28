@@ -2,11 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   DEFAULT_COLUMNS,
+  addSubtask,
   applyPending,
   bucketByColumn,
   columnOf,
   filterTasks,
+  mintSubtaskId,
   priorityBucket,
+  removeSubtask,
+  setSubtask,
+  subtaskProgress,
+  toggleSubtask,
   toggleTaskDone,
 } from "../lib/todoBoard";
 import type { CalendarTask, TaskColumn } from "../types";
@@ -179,5 +185,58 @@ describe("priorityBucket", () => {
     expect([1, 2, 3, 4].map(priorityBucket)).toEqual(["high", "high", "high", "high"]);
     expect(priorityBucket(5)).toBe("normal");
     expect([6, 9].map(priorityBucket)).toEqual(["low", "low"]);
+  });
+});
+
+describe("the checklist ops", () => {
+  it("appends a step and trims it", () => {
+    const out = addSubtask(task(), "  buy the tickets  ");
+    expect(out.subtasks).toEqual([
+      { id: "t1-s0", title: "buy the tickets", done: false },
+    ]);
+  });
+
+  it("ignores a blank title rather than adding a nameless row", () => {
+    const before = task({ subtasks: [{ id: "a", title: "one", done: false }] });
+    expect(addSubtask(before, "   ")).toBe(before);
+  });
+
+  it("never reuses the id of a deleted step", () => {
+    // The bug this exists to pin: minting `${task.id}-${length}` hands the new
+    // step the id the deleted one had, and the two rows then tick each other.
+    let card = addSubtask(addSubtask(task(), "one"), "two");
+    card = removeSubtask(card, card.subtasks![1].id);
+    card = addSubtask(card, "three");
+    const ids = card.subtasks!.map((s) => s.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(card.subtasks!.map((s) => s.title)).toEqual(["one", "three"]);
+  });
+
+  it("mints around ids the backend backfilled", () => {
+    const card = task({ subtasks: [{ id: "t1-s0", title: "kept", done: false }] });
+    expect(mintSubtaskId(card)).not.toBe("t1-s0");
+  });
+
+  it("ticks and unticks one step by id", () => {
+    const card = addSubtask(addSubtask(task(), "one"), "two");
+    const ticked = toggleSubtask(card, card.subtasks![0].id);
+    expect(ticked.subtasks!.map((s) => s.done)).toEqual([true, false]);
+    expect(toggleSubtask(ticked, card.subtasks![0].id).subtasks![0].done).toBe(false);
+  });
+
+  it("leaves the card alone for an id it does not know", () => {
+    const card = addSubtask(task(), "one");
+    expect(toggleSubtask(card, "nope").subtasks).toEqual(card.subtasks);
+    expect(removeSubtask(card, "nope").subtasks).toEqual(card.subtasks);
+    expect(setSubtask(card, "nope", { title: "x" }).subtasks).toEqual(card.subtasks);
+  });
+
+  it("never touches percent — 100% would relocate the card to Done", () => {
+    let card = addSubtask(addSubtask(task({ percent: 0 }), "one"), "two");
+    card = toggleSubtask(card, card.subtasks![0].id);
+    card = toggleSubtask(card, card.subtasks![1].id);
+    expect(subtaskProgress(card)).toEqual({ done: 2, total: 2 });
+    expect(card.percent).toBe(0);
+    expect(columnOf(card, COLUMNS)).toBe("backlog");
   });
 });

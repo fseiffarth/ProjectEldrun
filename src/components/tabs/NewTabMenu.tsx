@@ -7,6 +7,7 @@ import {
   PRINTING_TAB_CMD,
   DISKUSAGE_TAB_CMD,
   NETWORK_TAB_CMD,
+  SKILLSLIBRARY_TAB_CMD,
   type TabEntry,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
@@ -345,6 +346,27 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                 }),
             }],
           },
+          // Needs a project to install into — hidden at the root scope rather
+          // than offered disabled, the Network Traffic bargain above.
+          ...(scope !== "root"
+            ? [{
+                label: t("skillsLibrary.title"),
+                entries: [{
+                  key: "skillslibrary",
+                  label: t("skillsLibrary.title"),
+                  dot: "◧",
+                  color: TAB_ACCENT.skillslibrary,
+                  untested: true,
+                  onPick: () =>
+                    pickFixed({
+                      label: t("skillsLibrary.title"),
+                      cmd: SKILLSLIBRARY_TAB_CMD,
+                      cwd: projectCwd,
+                      kind: "skillslibrary",
+                    }),
+                }],
+              }]
+            : []),
           ...(webBrowser
             ? [{
                 label: t("newTabMenu.browser"),

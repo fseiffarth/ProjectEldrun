@@ -11,6 +11,7 @@ import { DiskUsagePane } from "../monitoring/DiskUsagePane";
 import { CalendarPane } from "../calendar/CalendarPane";
 import { BrowserPane } from "../browser/BrowserPane";
 import { PrintManagerPane } from "../printing/PrintManagerPane";
+import { SkillsLibraryTab } from "../skills/SkillsLibraryTab";
 import { RemotePaneHold } from "../projects/RemotePaneHold";
 import { effectiveTabLocation, remoteHostIdOf, type TabEntry } from "../../stores/tabs";
 
@@ -119,6 +120,11 @@ function TabPaneImpl({
           visible={visible}
         />
       );
+    case "skillslibrary":
+      // Same thin-host shape as ProjectFilesTab: resolves its own project from
+      // `scope` rather than taking a prop, since a popout has no `filesProjectDir`
+      // to hand it either.
+      return <SkillsLibraryTab scope={scope} cwd={tab.cwd} visible={visible} />;
     case "files":
       return <FileBrowser projectDir={filesProjectDir} projectId={projectId} active={visible} />;
     case "projectfiles":

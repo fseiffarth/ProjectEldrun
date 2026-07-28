@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { Calendar } from "../../types";
+import { calendarSyncStatus, useCalDavStore } from "../../stores/caldav";
 import { addMonths, datePart, monthGrid, monthName, todayStr, weekdayLabel } from "../../lib/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 
@@ -18,6 +19,16 @@ interface Props {
   onCreateCalendar: (name: string, color: string) => void;
   onUpdateCalendar: (calendar: Calendar) => void;
   onDeleteCalendar: (id: string) => void;
+  /** Create a calendar subscribed to a read-only ICS feed URL and import it. */
+  onSubscribeCalendar: (name: string, url: string) => void;
+  /** Re-fetch a subscribed calendar's feed and replace its events with it. */
+  onRefreshCalendar: (id: string) => void;
+  /** Sync a CalDAV-backed calendar now (the forcing kind — it skips the ctag
+   *  check, because a user clicking Sync after fixing something on the server
+   *  should not be told "nothing changed" by a token). */
+  onSyncCaldav: (calendarId: string) => void;
+  /** Open the CalDAV account manager. */
+  onOpenCaldav: () => void;
   weekStart: 0 | 1;
 }
 
@@ -35,9 +46,19 @@ export function CalendarSidebar({
   onCreateCalendar,
   onUpdateCalendar,
   onDeleteCalendar,
+  onSubscribeCalendar,
+  onRefreshCalendar,
+  onSyncCaldav,
+  onOpenCaldav,
   weekStart,
 }: Props) {
   const t = useT();
+  // A CalDAV-backed calendar gets its own affordance rather than the ICS feed's
+  // ↻: the two are the same *kind* of action ("go get the latest from wherever
+  // this came from") but not the same path, and a failed unattended sync has to
+  // be visible on the row rather than only inside a dialog nobody has open.
+  const caldavAccounts = useCalDavStore((s) => s.accounts);
+  const caldavStatus = useCalDavStore((s) => s.status);
   const lang = useI18nStore((s) => s.lang);
   // The mini-month browses independently of the main view's anchor, so you can
   // look ahead without moving what you are working on until you click a day.
@@ -45,6 +66,9 @@ export function CalendarSidebar({
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
+  const [subscribing, setSubscribing] = useState(false);
+  const [subName, setSubName] = useState("");
+  const [subUrl, setSubUrl] = useState("");
 
   const today = todayStr();
   const year = Number(browse.slice(0, 4));
@@ -67,6 +91,16 @@ export function CalendarSidebar({
     onCreateCalendar(name, CALENDAR_COLORS[calendars.length % CALENDAR_COLORS.length]);
     setNewName("");
     setAdding(false);
+  }
+
+  function submitSubscribe() {
+    const url = subUrl.trim();
+    if (!url) return;
+    const name = subName.trim() || url;
+    onSubscribeCalendar(name, url);
+    setSubName("");
+    setSubUrl("");
+    setSubscribing(false);
   }
 
   return (
@@ -124,6 +158,16 @@ export function CalendarSidebar({
           <button className="cal-link-btn" onClick={() => setAdding((a) => !a)}>
             {t("calendarSidebar.newButton")}
           </button>
+          <button className="cal-link-btn" onClick={() => setSubscribing((s) => !s)}>
+            {t("calendarSidebar.subscribeButton")}
+          </button>
+          <button
+            className="cal-link-btn"
+            onClick={onOpenCaldav}
+            title={t("caldav.manageAccountsTitle")}
+          >
+            {t("caldav.accountsButton")}
+          </button>
         </div>
 
         {adding ? (
@@ -144,6 +188,44 @@ export function CalendarSidebar({
               }}
             />
             <button className="cal-btn cal-btn-primary" disabled={!newName.trim()} onClick={submitNew}>
+              {t("common.add")}
+            </button>
+          </div>
+        ) : null}
+
+        {subscribing ? (
+          <div className="cal-list-add cal-list-subscribe">
+            <input
+              className="cal-input"
+              type="text"
+              placeholder={t("calendarSidebar.subscribeNamePlaceholder")}
+              autoFocus
+              value={subName}
+              onChange={(e) => setSubName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  setSubscribing(false);
+                  setSubName("");
+                  setSubUrl("");
+                }
+              }}
+            />
+            <input
+              className="cal-input"
+              type="url"
+              placeholder={t("calendarSidebar.subscribeUrlPlaceholder")}
+              value={subUrl}
+              onChange={(e) => setSubUrl(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submitSubscribe();
+                if (e.key === "Escape") {
+                  setSubscribing(false);
+                  setSubName("");
+                  setSubUrl("");
+                }
+              }}
+            />
+            <button className="cal-btn cal-btn-primary" disabled={!subUrl.trim()} onClick={submitSubscribe}>
               {t("common.add")}
             </button>
           </div>
@@ -191,6 +273,40 @@ export function CalendarSidebar({
                 {cal.name}
               </span>
             )}
+
+            {cal.source_url ? (
+              <button
+                className="cal-link-btn cal-list-refresh"
+                title={t("calendarSidebar.refreshCalendarTitle")}
+                onClick={() => onRefreshCalendar(cal.id)}
+              >
+                ↻
+              </button>
+            ) : null}
+
+            {(() => {
+              const sync = calendarSyncStatus(caldavStatus, caldavAccounts, cal.id);
+              if (!sync) return null;
+              const failed = sync.phase === "error";
+              return (
+                <button
+                  className={`cal-link-btn cal-list-refresh${failed ? " cal-list-sync-error" : ""}`}
+                  // The error is the button's own tooltip, verbatim from the
+                  // backend: an amber mark that cannot say why is a mark the
+                  // user can only respond to by opening things at random.
+                  title={
+                    failed
+                      ? t("caldav.syncFailedTitle", { error: sync.error })
+                      : sync.at
+                        ? t("caldav.syncedAtTitle", { at: sync.at })
+                        : t("caldav.syncNowTitle")
+                  }
+                  onClick={() => onSyncCaldav(cal.id)}
+                >
+                  {sync.phase === "syncing" ? "…" : failed ? "!" : "⇅"}
+                </button>
+              );
+            })()}
 
             {/* The last calendar cannot be deleted — the store always keeps one. */}
             {calendars.length > 1 ? (

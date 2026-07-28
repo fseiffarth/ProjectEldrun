@@ -761,6 +761,27 @@ export interface Calendar {
   /** Unchecked in the sidebar → its events drop out of every view. */
   visible: boolean;
   readonly: boolean;
+  /**
+   * The ICS feed URL this calendar was subscribed from (e.g. TimeTree's
+   * calendar-export URL), if any — set on first "Refresh from URL" import and
+   * read back to find which calendar a later refresh replaces. Rides the
+   * Rust schema's `#[serde(flatten)] extra` map, so an older build reading
+   * this file simply doesn't recognize the key rather than failing to parse.
+   * Absent for a calendar imported from a local file or created by hand.
+   */
+  source_url?: string;
+  /**
+   * The `CalDavAccount.id` this calendar is synced from, and the collection's
+   * own URL on that account. Both ride the Rust schema's `extra` flatten, the
+   * same way `source_url` does.
+   *
+   * Deliberately **only the pointer**: the login, the sync cursors and the
+   * keychain reference live in `caldav/accounts.json`, not here — this file is
+   * read by every calendar tab on mount and exported alongside a calendar, and
+   * account plumbing has no business in either (`docs/caldav_plan.md`).
+   */
+  caldav_account_id?: string;
+  caldav_href?: string;
 }
 
 /** How often a recurring event repeats. */
@@ -810,6 +831,11 @@ export interface CalendarEvent {
   title: string;
   location?: string;
   notes?: string;
+  /** The video call's join URL (`http(s)` only). Its own field rather than a
+   *  convention on `location`, because a Join button must not be a guess about
+   *  what a room name means — see `lib/conference.ts`, which still *derives* one
+   *  from `location`/`notes` for the imported invitations that carry it there. */
+  conference?: string;
   category?: string;
   status?: EventStatus | "";
   rrule?: Rrule | null;
@@ -817,6 +843,11 @@ export interface CalendarEvent {
   exdates?: string[];
   overrides?: EventOverride[];
   alarms?: Alarm[];
+  /** The CalDAV resource this row was synced from, and its ETag. Present only
+   *  on rows a CalDAV sync created; they are what the reconciliation matches on,
+   *  so nothing else may write them. */
+  caldav_href?: string;
+  caldav_etag?: string;
 }
 
 /** One checklist item inside a task. */
@@ -880,6 +911,11 @@ export interface CalendarTask {
   project_id?: string;
   /** Local wall-clock stamp minted at creation (`"YYYY-MM-DDTHH:MM"`). */
   created?: string;
+  /** The CalDAV resource this card was synced from, and its ETag. Everything
+   *  above from `column` down is Eldrun's own and is **never** overwritten by a
+   *  sync — that is the whole point of matching on the href. */
+  caldav_href?: string;
+  caldav_etag?: string;
 }
 
 /** One card's target position after a drag, for `todo_move_tasks`. The backend
@@ -921,6 +957,9 @@ export interface Occurrence {
   title: string;
   location: string;
   notes: string;
+  /** The master's join URL, carried onto every occurrence so a list of
+   *  occurrences can offer Join without going back to the event. */
+  conference: string;
   category: string;
   status: EventStatus | "";
   calendarId: string;
