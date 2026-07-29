@@ -81,6 +81,16 @@ you're touching; never read speculatively.
    `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`.
    Both are CI gates and both are currently at zero — keep them there.
    `cargo fmt` is deliberately **not** enforced (see group Y #163).
+
+   **A green local clippy does not mean a green CI clippy.** CI installs
+   `dtolnay/rust-toolchain@stable`, so it lints with whatever stable is *today*
+   while the local `stable` is whenever it was last `rustup update`d — and each
+   release adds lints. A stale local toolchain passed a
+   `useless_borrows_in_formatting` that 1.97 rejected, turning the lint job red
+   after the push. Either `rustup update stable`, or lint against CI's exact
+   version: `cargo +<ver> clippy --manifest-path src-tauri/Cargo.toml
+   --all-targets -- -D warnings`. `cargo clippy --version` tells you what you
+   actually ran.
 4. **Before every push** — this repo is public — the privacy/secret scan must
    pass. `.githooks/pre-push` now runs it over the commits being pushed and
    aborts on a hit, and a `privacy` CI job repeats it (a fresh clone has the

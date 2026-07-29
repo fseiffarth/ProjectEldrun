@@ -37,7 +37,7 @@ async fn main() {
                     m.name,
                     tools,
                     caps,
-                    &m.digest.chars().take(12).collect::<String>()
+                    m.digest.chars().take(12).collect::<String>()
                 );
             }
         }
