@@ -613,7 +613,6 @@ export function MachinesIndicator() {
       }
     });
     prevRects.current = next;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderKey]);
 
   // Dismissal, now that hover neither opens nor closes this menu: a click

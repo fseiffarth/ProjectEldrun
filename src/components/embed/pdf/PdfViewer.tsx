@@ -327,7 +327,6 @@ function PdfPageCanvas({
   useEffect(() => {
     if (!searchScrollNonce) return;
     searchCurrentRef.current?.scrollIntoView({ block: "center", inline: "nearest" });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchScrollNonce]);
 
   const onClick = (e: React.MouseEvent<HTMLCanvasElement>) => {

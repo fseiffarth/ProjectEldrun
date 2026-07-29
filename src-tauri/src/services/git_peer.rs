@@ -229,6 +229,11 @@ pub struct TrackedChange {
 }
 
 /// Which peer a git command runs against.
+// `Remote` is ~224 bytes wider than `Local`, and clippy suggests boxing it. It
+// stays unboxed: a `Peer` is built a handful of times per sync pass and passed
+// by reference thereafter, so the allocation and the extra indirection would
+// cost more than the stack bytes they save.
+#[allow(clippy::large_enum_variant)]
 pub enum Peer {
     Local(PathBuf),
     Remote(RemoteSpec),
@@ -415,7 +420,7 @@ pub fn changed_tracked_paths(name_status: &str) -> Vec<TrackedChange> {
             }
             let code = status.chars().next().unwrap_or(' ');
             // Renames/copies carry two paths; the last column is the current path.
-            let path = cols.last()?.trim();
+            let path = cols.next_back()?.trim();
             if path.is_empty() {
                 return None;
             }

@@ -4,13 +4,25 @@ This file is the short current-state snapshot. It should not contain generated
 time logs or long-form design notes; those belong in Eldrun runtime state and
 `DOCUMENTATION.md`.
 
-Last reviewed: 2026-06-06
+Last reviewed: 2026-07-28
 
 ## Current State
 
-- Version: `0.1.0` (Tauri 2 + React + TypeScript). Python/GTK4 code dropped.
-- Primary target: Linux desktop (X11 and KDE Wayland).
+- Version: `0.1.45` (Tauri 2 + React + TypeScript). Python/GTK4 code dropped.
+- Primary target: Linux desktop (X11 and KDE Wayland). Windows ships as an
+  alpha (CI-verified only); macOS has core parity but cannot be built on Linux.
 - All 10 migration phases from TauriRust.md are complete and merged.
+- **Landed since this file was last accurate (v0.1.0 → v0.1.45):** mount-free
+  remote/SSH projects with git lockstep + multi-host workers, per-project Docker
+  session containers, embedded IMAP/SMTP mail with a sealed local store and an
+  OpenPGP track, calendar + CalDAV accounts and a Trello-style to-do board, the
+  native "Deck" presenter, a broad viewer set (table/notebook/diff/search,
+  mermaid+katex, sqlite, media, html/svg, image annotation, xlsx), popout
+  subwindows, the Agent Skills library, HPC/SLURM support, and full 5-language
+  i18n (4130 keys).
+- **Verification status is the important caveat:** most of the above is
+  code-complete but has never been run in a live Eldrun. See `TODO.md`'s status
+  legend — Done ≠ Tested — and the `UntestedTag` pills in the UI.
 - App shell: root terminal, project terminals, agent tabs (Claude/Codex/Gemini/
   Vibe/Shell), bottom project switcher, right file tree, global app toolbar,
   hover-revealed panels, time tracking, and optional workspace management.
@@ -72,27 +84,5 @@ Last reviewed: 2026-06-06
 
 ## Time Log
 
-Total: 75h 20m
-
-| Date | Start | Duration |
-|------|-------|----------|
-| 2026-06-01 | 2026-06-01 06:31 | 0h 0m |
-| 2026-06-01 | 2026-06-01 06:31 | 0h 0m |
-| 2026-06-01 | 2026-06-01 06:31 | 0h 0m |
-| 2026-06-01 | 2026-06-01 06:31 | 0h 0m |
-| 2026-06-01 | 2026-06-01 06:31 | 0h 0m |
-| 2026-06-01 | 2026-06-01 06:31 | 0h 0m |
-| 2026-05-31 | 2026-05-31 20:40 | 9h 50m |
-| 2026-05-31 | 2026-05-31 20:39 | 0h 0m |
-| 2026-05-31 | 2026-05-31 20:39 | 0h 0m |
-| 2026-05-31 | 2026-05-31 20:37 | 0h 1m |
-| 2026-05-31 | 2026-05-31 20:24 | 0h 13m |
-| 2026-05-31 | 2026-05-31 20:23 | 0h 0m |
-| 2026-05-31 | 2026-05-31 20:23 | 0h 0m |
-| 2026-05-31 | 2026-05-31 20:18 | 0h 5m |
-| 2026-05-31 | 2026-05-31 20:18 | 0h 0m |
-| 2026-05-31 | 2026-05-31 19:58 | 0h 20m |
-| 2026-05-31 | 2026-05-31 19:58 | 0h 0m |
-| 2026-05-31 | 2026-05-31 19:58 | 0h 0m |
-| 2026-05-31 | 2026-05-31 19:58 | 0h 0m |
-| 2026-05-31 | 2026-05-31 19:58 | 0h 0m |
+Tracked in Eldrun runtime state (`~/.local/share/eldrun/time_log.json`), not here —
+see this file's header. The previous truncated raw table was removed 2026-07-28.

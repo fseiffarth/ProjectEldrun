@@ -45,6 +45,7 @@ import {
   type SlurmJob,
 } from "../../lib/slurm";
 import { useHpcJobsStore } from "../../stores/hpcJobs";
+import { useSettingsStore } from "../../stores/settings";
 import {
   wsAvailable,
   wsList,
@@ -214,13 +215,14 @@ export interface ProjectFilesViewProps {
    *  `ProjectFilesPane`. */
   mountTree: boolean;
 
-  /** Compact mode: strip only the project-name/tags/source-switch/git-bar header
-   *  row — the view-switcher toolbar (Files/Git/Search/Apps/±/sessions/jobs/
-   *  import/etc.) and every view it switches to render identically to the full
-   *  chrome. The sync + sort rows (`ProjectFilesPane`) are still stripped, so the
-   *  tree's find-files search stays topmost there. Set only by the docked
-   *  subwindow viewer (`SubwindowFilesSidebar`); the right panel and the Files
-   *  (Project) tab leave it unset and keep the full chrome. */
+  /** Compact mode: strip the project-name/tags/source-switch/git-bar header row
+   *  and the Alerts group (with its 🔔) — the view-switcher toolbar (Files/Git/
+   *  Search/Apps/±/sessions/jobs/import/etc.) and every view it switches to
+   *  render identically to the full chrome. The sync + sort rows
+   *  (`ProjectFilesPane`) are still stripped, so the tree's find-files search
+   *  stays topmost there. Set only by the docked subwindow viewer
+   *  (`SubwindowFilesSidebar`); the right panel and the Files (Project) tab
+   *  leave it unset and keep the full chrome. */
   compact?: boolean;
 
   /** Host callback for the tree's "Open in a new tab"; omitted where a tab can't
@@ -267,6 +269,23 @@ export function ProjectFilesView({
   // Toggles the Downloads section stacked below the file tree (fast-copy of
   // recent downloads into the project). Toolbar ⬇⬇ button; files view only.
   const [showDownloads, setShowDownloads] = useState(false);
+  // The Alerts group stacked below the file tree (urgent mail, the next
+  // appointments, due/overdue cards). Unlike Downloads there is no local shown
+  // flag: `files_alerts` IS the visibility, which is what lets the × stick — the
+  // group is on by default, so a close that came back at the next remount (and
+  // this viewer is mounted many times over) would be a control that doesn't work.
+  // Being the same switch the Settings dialog writes, the two can't disagree.
+  const alertsEnabled = useSettingsStore((s) => s.settings?.files_alerts ?? true);
+  // ...but never in the docked subwindow column (`compact`), whatever the
+  // setting says: that viewer is a ~300px sidebar beside a terminal, where a
+  // strip of mail/appointment/card rows takes the space the tree is there for
+  // — and it is the surface mounted many times over at once, so one alert
+  // would be repeated once per open subwindow. Its 🔔 goes with it: a toggle
+  // that writes a setting whose group can never appear here is a dead control
+  // (and would silently arm the group in the panel and every Files tab).
+  // The right panel and the Files (Project) tab are unaffected.
+  const alertsHere = alertsEnabled && !compact;
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
   // Kept here (not in the pane): the pane unmounts while the view shows Git or
   // Search, and the chosen sort must survive the trip back to Files.
   const [sortKey, setSortKey] = useState<SortKey>("name");
@@ -1394,6 +1413,26 @@ export function ProjectFilesView({
             📥
           </button>
         )}
+        {/* Always offered, never gated on the setting it writes: the button IS
+            the way back, so hiding it whenever the group is off would leave the
+            × a one-way door out of a default-on feature, reopenable only from
+            the Project Settings dialog. A box's multi-root view is excluded for
+            the Downloads group's reason — it has no single project below. */}
+        {!activeBox && !compact && (
+          <button
+            className={`tab-add-btn${alertsEnabled ? " active" : ""}`}
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            aria-pressed={alertsEnabled}
+            onClick={() => {
+              void updateSettings({ files_alerts: !alertsEnabled });
+              // The group lives in the files view; jump there when revealing it.
+              if (!alertsEnabled) setView("files");
+            }}
+            title={t("filesAlerts.toolbarTitle")}
+          >
+            🔔
+          </button>
+        )}
         {projectId && (
           <button
             className="tab-add-btn"
@@ -1959,6 +1998,8 @@ export function ProjectFilesView({
           }}
           showDownloads={showDownloads}
           onCloseDownloads={() => setShowDownloads(false)}
+          showAlerts={alertsHere}
+          onCloseAlerts={() => void updateSettings({ files_alerts: false })}
           // Right-click → "Open in a new tab": the same file view, on that
           // folder, as a Files (Project) tab in this project's scope.
           onOpenFolderTab={onOpenFolderTab}

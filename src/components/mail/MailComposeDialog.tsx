@@ -14,6 +14,7 @@ import {
   stripFormatControls,
 } from "../../lib/mail";
 import { useI18nStore, useT } from "../../lib/i18n";
+import { useUse24h } from "../../lib/timeFormat";
 import type { MailAccount, MailBody, MailDraft, MailHeader, StagedAttachment } from "../../types/mail";
 
 /**
@@ -81,6 +82,7 @@ export function MailComposeDialog({
 }: MailComposeDialogProps) {
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
+  const use24h = useUse24h();
 
   const header = source?.header;
   const initialTo =
@@ -114,7 +116,7 @@ export function MailComposeDialog({
       mode,
       header
         ? t("mail.quotedIntro", {
-            date: formatMailDate(header.date, lang),
+            date: formatMailDate(header.date, lang, use24h),
             sender: formatAddress(header.from),
           })
         : "",

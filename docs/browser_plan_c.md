@@ -361,7 +361,7 @@ cancels before any byte is written, and wry's default is documented as
 explicitly**. The default destination wry computes is `dirs::download_dir()`
 (`web_context.rs:325`), i.e. `~/Downloads` — outside any project.
 
-**Interaction with TODO #60.** `todo/group-o.md:50` records that Eldrun
+**Interaction with TODO #60.** `todo/group-o-security.md:50` records that Eldrun
 deliberately removed all browser-download-path manipulation, with the reason
 "routing a download into a project is a security risk if the file is then
 pushed with the project's git". #60 forbids touching *other apps'* config —

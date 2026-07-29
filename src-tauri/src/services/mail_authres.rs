@@ -635,6 +635,8 @@ mod tests {
     /// Whatever bytes a sender sends, parsing returns and never panics.
     #[test]
     fn parsing_is_total() {
+        // Grouped to read as "ALICE SEED", not in even nibble groups.
+        #[allow(clippy::unusual_byte_groupings)]
         let mut seed: u64 = 0xA11CE_5EED_0001;
         for _ in 0..5_000 {
             let len = {

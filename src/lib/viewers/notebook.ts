@@ -43,7 +43,6 @@ export interface ParsedNotebook {
  * which subsumes the common `\x1b[0;31m` colour form.
  */
 export function stripAnsi(s: string): string {
-  // eslint-disable-next-line no-control-regex
   return s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
 }
 

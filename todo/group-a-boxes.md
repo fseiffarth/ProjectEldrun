@@ -69,10 +69,20 @@
     > searchable), and opt-in box activation (`openBox` → `box:<id>` scope rooted
     > in the box folder). **Box scopes are session-only this pass** —
     > `switch_project_runtime` does not persist/restore them.
-    > **DEFERRED (explicit follow-on, NOT this pass):** Phase 3 merged multi-root
-    > file tree (`RightPanel.tsx`/`FileTree.tsx`); Phase 4 agent-hint seeding +
-    > relation-graph surfacing (dirty-source→dependent git markers,
-    > auto-detection). Schema groundwork for both is in place.
+    > **Phase 3 — DONE** (recorded 2026-07-28; the entry said "deferred" long
+    > after it shipped): merged multi-root file tree lives in
+    > `ProjectFilesPane.tsx:159-230` (`BoxRoot` / `useBoxRoots` /
+    > `BoxRootSection`), consumed at `ProjectFilesView.tsx:845` and
+    > `RightPanel.tsx:100-102`.
+    > **Phase 4 — agent-hint seeding DONE:** `commands/boxes.rs:118-184`
+    > (`box_links_block` / `write_box_agent_docs`), `:349`
+    > `refresh_box_agent_docs`, registered `lib.rs:711`, called from
+    > `src/stores/boxes.ts:165` — the managed CLAUDE/GEMINI/AGENTS link block is
+    > regenerated on member change.
+    > **Still deferred:** relation-graph *surfacing* (`set_box_relations` is
+    > registered at `lib.rs:712` but has **no frontend caller**; `relations`
+    > appears only in `src/types/index.ts:735`), dirty-source→dependent git
+    > markers, auto-detection.
     - [x] 🤖 Automated test — `commands/boxes.rs` cargo tests (reconcile drops
       unknown member_ids / recomputes box_id inverse / drop-on-delete, gap-spaced
       position, defaults round-trip, folder-collision suffixing); `paths.rs`

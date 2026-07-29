@@ -236,7 +236,7 @@ impl Walker<'_> {
             }
         }
 
-        kids.sort_by(|a, b| b.size.cmp(&a.size));
+        kids.sort_by_key(|k| std::cmp::Reverse(k.size));
         if kids.len() > MAX_CHILDREN {
             let rest = kids.split_off(MAX_CHILDREN);
             hidden_children += rest.len() as u32;
@@ -413,7 +413,7 @@ fn build_remote(
 
     let mut built: Vec<DuNode> =
         children.iter().map(|&c| build_remote(c, depth + 1, sizes, kids, tally, truncated)).collect();
-    built.sort_by(|a, b| b.size.cmp(&a.size));
+    built.sort_by_key(|b| std::cmp::Reverse(b.size));
     if built.len() > MAX_CHILDREN {
         let rest = built.split_off(MAX_CHILDREN);
         node.hidden_children = rest.len() as u32;

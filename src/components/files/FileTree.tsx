@@ -519,7 +519,7 @@ export function FileTree({
     );
   }, [project]);
   // SSH-sync Phase 1: the local mirror source (`syncSource === "local"`) is a
-  // plain LOCAL tree even though its project is remote — it lists/​watches the
+  // plain LOCAL tree even though its project is remote — it lists/watches the
   // local mirror dir and is never gated on the SSH pool. Only a remote-SOURCE
   // tree dispatches its listing over SFTP. `remoteListing` is the flag the
   // watch/refresh-bar/pool-gate logic below keys on.
@@ -1045,7 +1045,6 @@ export function FileTree({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [treatLocal, isRemote, remoteProbeDir, remoteSshState, relPath]);
 
   // Live updates: watch the currently-displayed directory on the backend and
@@ -1252,7 +1251,6 @@ export function FileTree({
       }
     });
     setPendingReveal(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries, pendingReveal, relPath]);
 
   function handleClick(entry: FileEntry) {

@@ -486,7 +486,7 @@ impl PgpKeyring {
         // if the user has checked one of them, that is the one they meant.
         let mut best: Option<&StoredKey> = None;
         for entry in &file.entries {
-            if !info_of(entry).addresses.iter().any(|a| *a == wanted) {
+            if !info_of(entry).addresses.contains(&wanted) {
                 continue;
             }
             if best.is_none_or(|b| !b.verified && entry.verified) {

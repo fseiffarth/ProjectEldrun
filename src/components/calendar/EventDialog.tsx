@@ -22,6 +22,7 @@ import { conferenceLink, isJoinableUrl } from "../../lib/conference";
 import { joinConference } from "../../lib/linkTarget";
 import { describeRrule } from "../../lib/recurrence";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
+import { TimeField } from "../common/TimeField";
 
 /** The reminder offsets the dropdown offers, in minutes before the start. */
 const REMINDER_CHOICE_KEYS: { labelKey: TranslationKey; minutes: number }[] = [
@@ -407,11 +408,10 @@ export function EventDialog({
                     onChange={(e) => patch({ startDate: e.target.value })}
                   />
                   {!form.allDay ? (
-                    <input
+                    <TimeField
                       className="cal-input"
-                      type="time"
                       value={form.startTime}
-                      onChange={(e) => patch({ startTime: e.target.value })}
+                      onChange={(startTime) => patch({ startTime })}
                     />
                   ) : null}
                 </div>
@@ -427,11 +427,10 @@ export function EventDialog({
                     onChange={(e) => patch({ endDate: e.target.value })}
                   />
                   {!form.allDay ? (
-                    <input
+                    <TimeField
                       className="cal-input"
-                      type="time"
                       value={form.endTime}
-                      onChange={(e) => patch({ endTime: e.target.value })}
+                      onChange={(endTime) => patch({ endTime })}
                     />
                   ) : null}
                 </div>

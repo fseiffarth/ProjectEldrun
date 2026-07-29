@@ -27,6 +27,7 @@ import { ActivityCalendar } from "./ActivityCalendar";
 import { CategoryEditor } from "./CategoryEditor";
 import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
 import { autoConnectEligibility } from "./autoConnectEligibility";
+import { describeDetectedSpecSource } from "./scaffold";
 import { useSavedCredential } from "./useSavedCredential";
 import { isHpcHost, targetOfSpec } from "../../lib/hpcHost";
 import { useRemoteMachinesStore, type DroppedGlobalMachine } from "../../stores/remoteMachines";
@@ -1278,6 +1279,7 @@ export function ProjectPill({
   const renameProject = useProjectsStore((s) => s.renameProject);
   const moveRemoteMirror = useProjectsStore((s) => s.moveRemoteMirror);
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
+  const setProjectRemoteControl = useProjectsStore((s) => s.setProjectRemoteControl);
   const [showContainerSettings, setShowContainerSettings] = useState(false);
   const openRemoteMachines = useRemoteMachinesStore((s) => s.open);
   // A global machine picked for THIS (local) project in the header's Machines
@@ -1324,8 +1326,18 @@ export function ProjectPill({
       );
       if (!ok) return;
     }
-    await setProjectSandbox(project.id, enabling);
-    if (!enabling) return;
+    let outcome = await setProjectSandbox(project.id, enabling);
+    if (outcome.outcome === "needs_confirmation") {
+      // O#143: the repo declares its own Dockerfile/devcontainer image —
+      // never adopted silently, since `docker build` runs it as root.
+      const { source } = outcome;
+      const adopt = await confirm(describeDetectedSpecSource(source), {
+        title: "Use this repo's own container?",
+        kind: "warning",
+      });
+      outcome = await setProjectSandbox(project.id, enabling, { hash: source.hash, adopt });
+    }
+    if (outcome.outcome !== "applied" || !enabling) return;
     try {
       const pf = await invoke<{ status: string; image: string; build_command: string | null }>(
         "sandbox_preflight",
@@ -1878,6 +1890,31 @@ export function ProjectPill({
                 {project.python_interpreter ? "✓ " : ""}{t("pill.pythonInterpreterEllipsis")}
               </button>
             )}
+            {/* Per-project override of the global "Claude remote control" setting
+                (O#59): absent inherits the global setting, so an untouched
+                project's behavior never changes. Click cycles inherit → off → on. */}
+            <button
+              onClick={() => {
+                setContextMenu(null);
+                void setProjectRemoteControl(
+                  project.id,
+                  project.remote_control === undefined
+                    ? false
+                    : project.remote_control === false
+                      ? true
+                      : null,
+                );
+              }}
+              title={t("pill.remoteControlMenuTitle")}
+            >
+              {t(
+                project.remote_control === undefined
+                  ? "pill.remoteControlInherit"
+                  : project.remote_control
+                    ? "pill.remoteControlOn"
+                    : "pill.remoteControlOff",
+              )}
+            </button>
             {project.remote && (
               <button
                 disabled={!autoConnectEligible}

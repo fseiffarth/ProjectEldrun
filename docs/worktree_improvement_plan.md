@@ -13,7 +13,7 @@ frontend/UX + product integration. Every git behaviour claim below was verified
 empirically against **git 2.53.0** in a scratch repo — real `worktree list
 --porcelain` output, real exit codes — not inferred from documentation.
 
-Related: `todo/group-e.md` #23, `docs/context/git_sync.md`,
+Related: `todo/group-e-worktree.md` #23, `docs/context/git_sync.md`,
 `docs/sandbox_hardening_plan.md`, `docs/context/docker_containers.md`.
 
 ---
@@ -296,7 +296,7 @@ Three things must be handled or it is a footgun:
 
 ### Rung 2 — worktree as a first-class project
 
-`todo/group-e.md` defers this as a stretch goal. It is, on the evidence, the
+`todo/group-e-worktree.md` defers this as a stretch goal. It is, on the evidence, the
 only thing that justifies the feature's existence in Eldrun — and it is a
 composition of existing parts, not a subsystem. Verified free:
 
@@ -424,7 +424,7 @@ Highest value first:
 
 ## Docs to reconcile
 
-`todo/group-e.md:4` says #23 is `[DONE]`, while `docs/Features.md:74` and
+`todo/group-e-worktree.md:4` says #23 is `[DONE]`, while `docs/Features.md:74` and
 `docs/REVIEW.md:321` still list "Git worktrees (#23)" under **Open / not
 started**. Given B1, "done" is the wrong label in either direction — Phase 0 is
 what makes it true.

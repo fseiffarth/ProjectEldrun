@@ -14,8 +14,15 @@
     `$VIBE_HOME/logs/session/` — and pass `--resume <id>` when respawning. A
     prior attempt was removed 2026-06-07 because detection was unreliable and
     **each tab must track its own distinct session ID** (not the project-global
-    latest) to work with multi-agent setups; solve per-tab session tracking
-    before relying on `--resume`.
+    latest) to work with multi-agent setups.
+    - ✅ **That blocker is gone.** #39 solved per-tab session tracking
+      (`services/agent_session.rs:39,292,503`, `services/codex_bind.rs`), so
+      "solve per-tab session tracking before relying on `--resume`" no longer
+      applies — this item is unblocked and ready to build.
+    - **Residual scope is now narrow:** only `active_session.json` startup
+      restore (active project + windows). It remains genuinely unwired —
+      `schema/active_session.rs:1-4` still says nothing reads or writes it, and
+      its only reference is `schema/mod.rs:1,18`.
 
 39. **Per-tab agent session restore — stepwise.** Concrete, incremental path to
     #24's hard part (per-tab session tracking), built one step at a time so each

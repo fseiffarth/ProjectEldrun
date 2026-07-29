@@ -7,16 +7,27 @@ KDE/X11 workspace integration in one window.
 
 ## Running
 
-Claude may launch Eldrun itself to click through the UI and verify a change
-(explicit user permission, 2026-07-28). **Two concurrent instances corrupt
-workspace state**, so this is conditional on one rule: before starting a new
-instance, first shut down whatever instance is already running. Check for a
-live one (`pgrep -fal 'tauri dev|start-eldrun-tauri-hotreload'`, or the
-packaged `eldrun` binary) and stop it — do not just assume none is running.
-Launch via `./start-eldrun-tauri-hotreload.sh` (backgrounded; logs to
-`~/.local/share/eldrun/hotreload.log`) or `npm run tauri:dev`. Shut the
-instance you started back down when you're done verifying, rather than
-leaving it running.
+**Claude must never start Eldrun** (user, 2026-07-29) — not via
+`./start-eldrun-tauri-hotreload.sh`, not via `npm run tauri:dev`, not
+backgrounded, not "just to check one thing". This revokes the earlier
+2026-07-28 permission. **Never stop an instance you did not start**, either: a
+running window holds the user's open tabs and live terminals. The app's
+lifecycle is the user's alone.
+
+To verify something live, ask the user to launch Eldrun (or to use a window
+they already have open) and report back, or hand them the exact steps to click
+through. `src/` edits hot-reload into an already-open window, so usually
+nothing needs launching at all. Otherwise report results from the automated
+gates only, and say plainly that the change was not run live.
+
+The user launches via `./start-eldrun-tauri-hotreload.sh` (backgrounded; logs
+to `~/.local/share/eldrun/hotreload.log`) or `npm run tauri:dev`. Double-starts
+are also blocked mechanically: `scripts/guard-single-instance.sh` runs from
+both the launcher and the `pretauri:dev` npm hook, so either path refuses when
+a session is live. It also refuses when port 1420 is held by an orphaned vite —
+a second `tauri dev` whose own vite loses that race carries on regardless and
+attaches to the *first* session's dev server, so the window silently renders
+that session's stale module graph and looks like an old build.
 
 `src/` changes hot-reload in the running instance; don't ask for a restart.
 Only `src-tauri/` changes need the user to rebuild/restart.
@@ -64,14 +75,23 @@ you're touching; never read speculatively.
 ## Dev workflow
 
 1. Edit `src/` (frontend) or `src-tauri/src/` (backend).
-2. `cargo test --manifest-path src-tauri/Cargo.toml`
-3. **Before every push** — this repo is public — run the privacy/secret scan on
-   staged changes and stop if it flags anything real:
-   `git add -A && scripts/privacy-check.sh` (patterns and
-   blocker-vs-expected guidance live in the script). Commits must use the
+2. `cargo test --manifest-path src-tauri/Cargo.toml` and `npm test`. Both run in
+   CI now, on all three platforms, so a failure here is a failure there.
+3. `npm run lint` (ESLint) and
+   `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`.
+   Both are CI gates and both are currently at zero — keep them there.
+   `cargo fmt` is deliberately **not** enforced (see group Y #163).
+4. **Before every push** — this repo is public — the privacy/secret scan must
+   pass. `.githooks/pre-push` now runs it over the commits being pushed and
+   aborts on a hit, and a `privacy` CI job repeats it (a fresh clone has the
+   hook off). To scan by hand at any point:
+   `git add -A && scripts/privacy-check.sh`, or
+   `scripts/privacy-check.sh <base> <head>` for a range — patterns and
+   blocker-vs-expected guidance live in the script. Commits must use the
    GitHub `noreply` author email, never the real address.
-4. Pushes are auto-patch-bumped and packaged by CI. Enable the version hook once
-   per clone: `git config core.hooksPath .githooks`. See `.githooks/pre-push`,
+5. Pushes are auto-patch-bumped and packaged by CI. Enable the hooks once
+   per clone — this is what arms **both** the version bump and the privacy
+   scan: `git config core.hooksPath .githooks`. See `.githooks/pre-push`,
    `scripts/bump-version.sh` (`minor|major` for a bigger bump), and
    `.github/workflows/ci-cd.yml`. Releases are manual: push a `v*` tag.
    `npm run package` builds the same release artifact locally.

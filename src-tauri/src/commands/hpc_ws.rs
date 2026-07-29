@@ -186,7 +186,7 @@ fn validate_token(what: &str, value: &str) -> Result<String, String> {
 /// A day count for an allocation/extension/reminder. Bounded so a typo can't ask
 /// for a decade; the site caps it further anyway.
 fn validate_days(what: &str, days: i64) -> Result<i64, String> {
-    if days < 1 || days > 3650 {
+    if !(1..=3650).contains(&days) {
         return Err(format!("{what} must be between 1 and 3650 days"));
     }
     Ok(days)
@@ -288,7 +288,7 @@ pub fn parse_ws_locations(stdout: &str) -> Vec<HpcWsFilesystem> {
 /// Lift the leading whole-day count out of a remaining-time phrase
 /// (`"89 days 23 hours"` → 89). `None` when it doesn't start with a number.
 fn leading_days(remaining: &str) -> Option<i64> {
-    let first = remaining.trim().split_whitespace().next()?;
+    let first = remaining.split_whitespace().next()?;
     first.parse::<i64>().ok()
 }
 

@@ -85,7 +85,7 @@ session-lived rather than per-tab ephemeral.
   the v1 plan. The `pty_spawn` dispatch keeps its current two-way shape
   (sandbox else ssh, `commands/terminal.rs:116-136`) — no third rewriter, so
   the "factor a target-agnostic spawn-rewrite layer first" prerequisite
-  (`todo/group-g.md`, #38 preamble) shrinks to a nice-to-have.
+  (`todo/group-g-remote.md`, #38 preamble) shrinks to a nice-to-have.
 - Lifecycle template is `services/remote.rs` (per-project connection opened on
   activation, torn down on deactivate/exit), not `ssh_mount.rs`.
 
@@ -216,7 +216,7 @@ startup sweep is what finally bounds it.
 - **Remote Docker** (container on an SSH host): compose the exec argv with
   `ssh_exec`'s wrapping (`ssh -tt <host> docker exec …`); bind-mount source
   is the remote path. Only at this point does the target-agnostic
-  spawn-rewrite refactor (`todo/group-g.md` #38 preamble) become load-bearing.
+  spawn-rewrite refactor (`todo/group-g-remote.md` #38 preamble) become load-bearing.
 - **Windows** (#86): path mapping into a Linux container + `--user` story;
   needs a Docker Desktop box; stays refused until then.
 

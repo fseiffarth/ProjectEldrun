@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { daysLate, todosDueCount, todosOverdue, urgentTodos } from "../lib/todoBoard";
+import {
+  daysLate,
+  dueDelta,
+  dueDeltaKey,
+  todosDueCount,
+  todosOverdue,
+  urgentTodos,
+} from "../lib/todoBoard";
 import type { Calendar, CalendarTask } from "../types";
 
 /**
@@ -89,6 +96,17 @@ describe("todosOverdue", () => {
     expect(todosOverdue([task({ due: "2026-07-07" })], CALENDARS, at("09:00"))).toBe(true);
   });
 
+  it("honours an hour deadline within today", () => {
+    // The point of an hour deadline: 12:00 today is late at 14:00, not at
+    // midnight. The boundary minute itself still reads as due, not missed.
+    const hour = [task({ due: "2026-07-08T12:00" })];
+    expect(todosOverdue(hour, CALENDARS, at("11:59"))).toBe(false);
+    expect(todosOverdue(hour, CALENDARS, at("12:00"))).toBe(false);
+    expect(todosOverdue(hour, CALENDARS, at("14:00"))).toBe(true);
+    // A whole-day due is owed by the end of the day, so it is never late today.
+    expect(todosOverdue([task({ due: "2026-07-08" })], CALENDARS, at("23:59"))).toBe(false);
+  });
+
   it("ignores completed and hidden cards", () => {
     expect(
       todosOverdue([task({ due: "2026-07-01", percent: 100 })], CALENDARS, at("09:00")),
@@ -160,6 +178,38 @@ describe("urgentTodos", () => {
     expect(out.today.map((t) => t.id)).toEqual(["high", "a", "b", "low", "unset"]);
   });
 
+  it("moves a card whose hour deadline has passed into Overdue", () => {
+    // The list and the badge's overdue emphasis are read against each other, so
+    // `todosOverdue` saying "yes" while this still filed the card under "Due
+    // today" is exactly the disagreement the sections exist to avoid.
+    const cards = [
+      task({ id: "missed", due: "2026-07-08T09:00" }),
+      task({ id: "later", due: "2026-07-08T17:00" }),
+    ];
+    const morning = urgentTodos(cards, CALENDARS, at("08:00"));
+    expect(morning.overdue).toEqual([]);
+    expect(morning.today.map((t) => t.id)).toEqual(["missed", "later"]);
+
+    const afternoon = urgentTodos(cards, CALENDARS, at("14:00"));
+    expect(afternoon.overdue.map((t) => t.id)).toEqual(["missed"]);
+    expect(afternoon.today.map((t) => t.id)).toEqual(["later"]);
+    expect(todosOverdue(cards, CALENDARS, at("14:00"))).toBe(true);
+  });
+
+  it("orders a day's cards by their hour, whole-day ones first", () => {
+    const out = urgentTodos(
+      [
+        task({ id: "evening", due: "2026-07-08T17:00" }),
+        task({ id: "anytime", due: "2026-07-08" }),
+        task({ id: "morning", due: "2026-07-08T10:00" }),
+      ],
+      CALENDARS,
+      at("08:00"),
+    );
+    // A deadline with no hour is owed from the start of the day, so it leads.
+    expect(out.today.map((t) => t.id)).toEqual(["anytime", "morning", "evening"]);
+  });
+
   it("orders overdue oldest first", () => {
     const out = urgentTodos(
       [task({ id: "y", due: "2026-07-07" }), task({ id: "old", due: "2026-06-20" })],
@@ -176,5 +226,99 @@ describe("daysLate", () => {
     expect(daysLate(task({ due: "2026-07-08" }), at("09:00"))).toBe(0);
     expect(daysLate(task({ due: "2026-07-20" }), at("09:00"))).toBe(0);
     expect(daysLate(task(), at("09:00"))).toBe(0);
+  });
+});
+
+/**
+ * The chip behind every "3d late" / "in 2h" readout.
+ *
+ * The split that runs through all of it is the *kind* of deadline: a whole-day
+ * `due` knows only which day, so it is read in days at every distance; a
+ * fixed-hour one is a moment, so the distance to it is given in full.
+ */
+describe("dueDelta", () => {
+  it("says nothing about a card with no deadline", () => {
+    expect(dueDelta(task(), at("14:00"))).toBeNull();
+  });
+
+  it("reads a whole-day deadline in days, both ways, and not at all today", () => {
+    expect(dueDelta(task({ due: "2026-07-05" }), at("14:00"))).toEqual({
+      late: true,
+      unit: "d",
+      count: 3,
+    });
+    expect(dueDelta(task({ due: "2026-07-11" }), at("14:00"))).toEqual({
+      late: false,
+      unit: "d",
+      count: 3,
+    });
+    // Due today with no hour: the row's own heading already says so, and there
+    // is no hour to count down to.
+    expect(dueDelta(task({ due: "2026-07-08" }), at("14:00"))).toBeNull();
+  });
+
+  it("reads an hour deadline inside the day in hours, and inside the hour in minutes", () => {
+    expect(dueDelta(task({ due: "2026-07-08T17:00" }), at("14:00"))).toEqual({
+      late: false,
+      unit: "h",
+      count: 3,
+    });
+    expect(dueDelta(task({ due: "2026-07-08T11:00" }), at("14:00"))).toEqual({
+      late: true,
+      unit: "h",
+      count: 3,
+    });
+    expect(dueDelta(task({ due: "2026-07-08T14:20" }), at("14:00"))).toEqual({
+      late: false,
+      unit: "min",
+      count: 20,
+    });
+    expect(dueDelta(task({ due: "2026-07-08T13:45" }), at("14:00"))).toEqual({
+      late: true,
+      unit: "min",
+      count: 15,
+    });
+  });
+
+  it("gives an hour deadline past a day as days AND hours", () => {
+    expect(dueDelta(task({ due: "2026-07-06T09:00" }), at("14:00"))).toEqual({
+      late: true,
+      unit: "dh",
+      count: 2,
+      hours: 5,
+    });
+    expect(dueDelta(task({ due: "2026-07-10T17:00" }), at("14:00"))).toEqual({
+      late: false,
+      unit: "dh",
+      count: 2,
+      hours: 3,
+    });
+  });
+
+  it("drops a zero hours rather than printing '2d 0h'", () => {
+    expect(dueDelta(task({ due: "2026-07-10T14:00" }), at("14:00"))).toEqual({
+      late: false,
+      unit: "d",
+      count: 2,
+    });
+  });
+
+  it("is silent on the deadline's own minute — due now is not late", () => {
+    expect(dueDelta(task({ due: "2026-07-08T14:00" }), at("14:00"))).toBeNull();
+  });
+
+  it("phrases each shape with its own key, and the two directions differently", () => {
+    const key = (due: string) => {
+      const d = dueDelta(task({ due }), at("14:00"));
+      return d ? dueDeltaKey(d) : null;
+    };
+    expect(key("2026-07-05")).toBe("todo.menuLate");
+    expect(key("2026-07-11")).toBe("todo.menuDueInDays");
+    expect(key("2026-07-06T09:00")).toBe("todo.menuLateDaysHours");
+    expect(key("2026-07-10T17:00")).toBe("todo.menuDueInDaysHours");
+    expect(key("2026-07-08T11:00")).toBe("todo.menuLateHours");
+    expect(key("2026-07-08T17:00")).toBe("todo.menuDueInHours");
+    expect(key("2026-07-08T13:45")).toBe("todo.menuLateMinutes");
+    expect(key("2026-07-08T14:20")).toBe("todo.menuDueInMinutes");
   });
 });

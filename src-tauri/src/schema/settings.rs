@@ -31,6 +31,17 @@ pub struct Settings {
     /// logic only (`lib/i18n`); the backend just round-trips the value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// App-wide clock: `true` = 24-hour, `false` = 12-hour AM/PM. Frontend logic
+    /// only (`src/lib/timeFormat.ts`); the backend just round-trips it.
+    ///
+    /// **Unset is not `false`** — it means "not chosen", and the frontend then
+    /// derives the clock from `language` (English → 12-hour, the other four →
+    /// 24-hour). That is why it is an `Option<bool>` rather than a `bool` with a
+    /// default: writing `false` on first launch would freeze one hemisphere's
+    /// convention onto everyone and make a later language switch unable to
+    /// correct it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_format_24h: Option<bool>,
     /// Global UI zoom factor for the whole interface (helps on high-DPI/4K
     /// monitors). `1.0` (or unset) is 100% — the current default look. Applied
     /// frontend-side as a CSS `zoom`; the backend only round-trips the value.
@@ -44,7 +55,11 @@ pub struct Settings {
     /// the backend just round-trips the value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar_default_view: Option<String>,
-    /// Calendar: 24-hour clock instead of AM/PM.
+    /// **Retired**, and kept declared only so it can still be read: the
+    /// calendar-only 24-hour switch, superseded by the app-wide
+    /// `time_format_24h` below. Nothing writes it any more; the frontend reads
+    /// it once as a fallback so a user who had set it keeps that clock
+    /// everywhere instead of losing it. See `lib/timeFormat.ts`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar_time_format_24h: Option<bool>,
     /// Calendar: first/last hour the day and week grids scroll to.
@@ -72,6 +87,45 @@ pub struct Settings {
     /// `mail_client`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub todo_board: Option<bool>,
+    /// Right panel: the opt-in **Alerts** group in the file viewer — urgent
+    /// mail, the calendar entries about to start, and the to-do cards whose due
+    /// date is here or past, in one time-ordered strip.
+    ///
+    /// A plain setting for `todo_board`'s reasons (it reads the stores that
+    /// already own that data and opens no socket of its own), and **absent means
+    /// on** — the group ships shown, so an existing `settings.json` needs no
+    /// migration to get it. The key is written only once the user flips it, and
+    /// a stored `false` is what a deliberate dismissal looks like; nothing here
+    /// may "normalize" that back to `None`, which would silently re-open a group
+    /// somebody closed.
+    ///
+    /// The mail half is gated again by `mail_client`; with it off the group
+    /// still shows the calendar and the to-dos.
+    ///
+    /// The backend only round-trips these three — the feed, the lookahead and
+    /// the gating all live in the frontend (`src/lib/alerts.ts`,
+    /// `src/components/files/useAlertsFeed.ts`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files_alerts: Option<bool>,
+    /// Alerts group: how many days ahead an event/task may be to still show.
+    /// Unset → the frontend's `DEFAULT_LOOKAHEAD_DAYS` (7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files_alerts_days: Option<u32>,
+    /// Alerts group: per-source opt-outs. Every field is `Option<bool>` and
+    /// **absent means on**, so an existing `settings.json` needs no migration to
+    /// see a source and the master toggle alone gives the whole picture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files_alerts_sources: Option<AlertSources>,
+    /// Alerts group: the row ids the user muted (`"{kind}:{sourceId}"`, newest
+    /// last, bounded frontend-side by `MAX_MUTED_ALERTS`).
+    ///
+    /// Round-tripped and never interpreted here — like the three fields above,
+    /// what a mute *means* is the frontend's (`src/lib/alerts.ts`). It lives in
+    /// settings rather than in the component because the file viewer is mounted
+    /// many times over at once and a mute has to hold across all of them, and
+    /// across a relaunch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files_alerts_muted: Option<Vec<String>>,
     /// Mail: the experimental gate for the embedded mail client
     /// (`src/lib/experimental.ts` — unset falls back to debug mode, so a flag
     /// still moving is invisible to someone *using* Eldrun and on by default
@@ -112,9 +166,30 @@ pub struct Settings {
     /// Mail: OS notification on new inbox mail (default on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail_notify_new: Option<bool>,
-    /// Preserved for Python rollback; not used by the Tauri app.
+    /// Where the Ollama server is, when it is not the default
+    /// `127.0.0.1:11434` — a different port (a container publishing 11435, a
+    /// second server) or, with [`Self::ollama_allow_remote_host`] set, another
+    /// machine. Accepts `host:port`, a bare `host`, a bare `:port`, and an
+    /// `http://` prefix; **`https://` is refused**, because the transport in
+    /// `commands::ollama` is plaintext HTTP/1.0 over a raw `TcpStream` and
+    /// quietly downgrading a URL the user wrote as TLS would send their prompts
+    /// in the clear. Unset means the default, which is what it has always meant.
+    ///
+    /// It was declared here for years and read by **nothing**, so anyone who
+    /// set it had a field that did nothing (group S #201a).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_host: Option<String>,
+    /// Permit [`Self::ollama_host`] to name a machine that is not this one.
+    /// **Default false**, and it is a second key rather than an implication of
+    /// the first because the two are different decisions: a non-default *port*
+    /// is still local inference, while a non-loopback *host* means every prompt,
+    /// every file an agent reads and every completion leaves this machine —
+    /// which is the opposite of what the local-model feature is for. That is a
+    /// thing to state, not a side effect of a hostname. The check is on the
+    /// literal the user typed (never on what it resolves to), so it says what
+    /// they wrote rather than what DNS answered today.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ollama_allow_remote_host: Option<bool>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_model: Option<String>,
@@ -128,6 +203,11 @@ pub struct Settings {
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_autostart: Option<bool>,
+    /// The agent Eldrun picks on its own when a feature needs exactly one and
+    /// the user hasn't chosen per-instance — an `AgentInfo.id`/`AGENT_ITEMS`
+    /// `cmd` such as `"claude"` or `"codex"`. Set from the 🧠 menu's Agents
+    /// section (each installed agent's "Default" chip); every reader falls
+    /// back to `"claude"` when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_agent_cmd: Option<String>,
     /// When true (the default), running a `.sh` from the right panel spawns it
@@ -483,6 +563,27 @@ pub struct ViewerPref {
     /// frontend default (12px).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font_size: Option<f32>,
+}
+
+/// `settings["files_alerts_sources"]` — the Alerts group's per-source opt-outs.
+///
+/// Every field is `Option<bool>` and **absent means on**, which is the whole
+/// shape: the master switch (`files_alerts`) is the opt-in, and these only ever
+/// take a source *away* once the user has one they do not want. A `bool` with
+/// `#[serde(default)]` would default to `false` and hand a freshly-enabled group
+/// three switched-off sources, i.e. an empty strip that looks broken.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AlertSources {
+    /// Priority-marked mail. Gated *again* by `mail_client` in the frontend, so
+    /// leaving this on costs nothing while the mail client is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail: Option<bool>,
+    /// Calendar occurrences inside the lookahead window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events: Option<bool>,
+    /// To-do cards by due date (overdue included).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<bool>,
 }
 
 impl Settings {

@@ -20,6 +20,116 @@ fn settings_agent_remote_control() -> bool {
         .unwrap_or(true)
 }
 
+/// Whether Claude agent tabs of `project_id` should spawn with
+/// `--remote-control` (O#59): a project's own override, from the
+/// `projects.json` entry's flattened `extra["remote_control"]` — like
+/// `services::sandbox`'s spec reads, the state-dir mirror is the ONLY trusted
+/// copy, never `project.json` (inside the project tree, and a container's own
+/// rw mount). Absent project id, missing entry, or an absent/unparseable
+/// override falls back to the global setting.
+fn resolve_agent_remote_control(project_id: Option<&str>) -> bool {
+    let list_path = storage::state_dir().join("projects.json");
+    let list = storage::read_json::<crate::schema::projects::ProjectsList>(&list_path)
+        .unwrap_or_default();
+    agent_remote_control_effective(&list, project_id, settings_agent_remote_control())
+}
+
+/// The pure O#59 decision, split out of [`resolve_agent_remote_control`] so it
+/// is testable with an in-memory `ProjectsList` — no `state_dir()`/env
+/// isolation needed. A project's own `remote_control` override wins; absent
+/// project id, missing entry, or a non-bool/absent value falls back to
+/// `global_default`.
+fn agent_remote_control_effective(
+    list: &[crate::schema::projects::ProjectEntry],
+    project_id: Option<&str>,
+    global_default: bool,
+) -> bool {
+    let Some(id) = project_id else {
+        return global_default;
+    };
+    let Some(entry) = list.iter().find(|p| p.id == id) else {
+        return global_default;
+    };
+    entry
+        .extra
+        .get("remote_control")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(global_default)
+}
+
+/// Whether `cwd` sits inside `allowed`, compared component-wise (`Path::starts_with`)
+/// so a sibling directory sharing a prefix (`…/proj2` vs `…/proj`) is never
+/// mistaken for nesting. O#149's hard gate: mirrors `services::sandbox::cwd_is_within`
+/// in shape, kept as a separate function because that one only ever *classifies*
+/// a docker mount as rw/ro, while this one refuses the spawn outright.
+fn cwd_within(cwd: &str, allowed: &std::path::Path) -> bool {
+    std::path::Path::new(cwd).starts_with(allowed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::projects::ProjectEntry;
+    use std::collections::HashMap;
+    use std::path::Path;
+
+    #[test]
+    fn cwd_within_accepts_project_dir_and_subdirs() {
+        assert!(cwd_within("/home/u/proj", Path::new("/home/u/proj")));
+        assert!(cwd_within(
+            "/home/u/proj/.eldrun/worktrees/feature-x",
+            Path::new("/home/u/proj")
+        ));
+    }
+
+    #[test]
+    fn cwd_within_rejects_sibling_and_unrelated_paths() {
+        assert!(!cwd_within("/home/u/proj2", Path::new("/home/u/proj")));
+        assert!(!cwd_within("/etc", Path::new("/home/u/proj")));
+    }
+
+    fn entry(id: &str, remote_control: Option<bool>) -> ProjectEntry {
+        let mut extra = HashMap::new();
+        if let Some(v) = remote_control {
+            extra.insert("remote_control".to_string(), serde_json::Value::Bool(v));
+        }
+        ProjectEntry {
+            id: id.to_string(),
+            name: id.to_string(),
+            status: "inactive".to_string(),
+            position: 0,
+            local_file: String::new(),
+            extra,
+        }
+    }
+
+    #[test]
+    fn no_project_id_falls_back_to_global() {
+        assert!(agent_remote_control_effective(&[], None, true));
+        assert!(!agent_remote_control_effective(&[], None, false));
+    }
+
+    #[test]
+    fn unknown_project_falls_back_to_global() {
+        let list = vec![entry("p1", Some(false))];
+        assert!(agent_remote_control_effective(&list, Some("p2"), true));
+    }
+
+    #[test]
+    fn project_override_wins_over_global_in_both_directions() {
+        let list = vec![entry("p1", Some(false)), entry("p2", Some(true))];
+        assert!(!agent_remote_control_effective(&list, Some("p1"), true));
+        assert!(agent_remote_control_effective(&list, Some("p2"), false));
+    }
+
+    #[test]
+    fn no_override_inherits_the_global_default() {
+        let list = vec![entry("p1", None)];
+        assert!(agent_remote_control_effective(&list, Some("p1"), true));
+        assert!(!agent_remote_control_effective(&list, Some("p1"), false));
+    }
+}
+
 #[tauri::command]
 pub async fn pty_spawn(
     app: AppHandle,
@@ -58,6 +168,38 @@ pub async fn pty_spawn(
                 let mirror = crate::services::remote_sync::mirror_dir(&pid);
                 let _ = std::fs::create_dir_all(&mirror);
                 opts.cwd = mirror.to_string_lossy().into_owned();
+            }
+        }
+    }
+
+    // O#149: `cwd` is caller-supplied and, unlike `sandbox`/`local_only` above,
+    // was never checked against the project it claims to belong to — a tab could
+    // carry a trusted `project_id` (which decides sandbox/local_only, and rides
+    // into the resume/remote-control logic below) next to a `cwd` naming an
+    // unrelated path, and nothing stopped it from spawning there with that
+    // project's authority. Exempt only a truly-remote, non-`local_only` tab:
+    // its `cwd` names a path on the far host, which this process has no way to
+    // check (the ssh-wrapped command below does the `cd` on that side).
+    if let Some(pid) = opts.project_id.clone() {
+        let is_remote = crate::services::remote::remote_target_for(&pid).is_some();
+        if !is_remote || opts.local_only {
+            let allowed: std::path::PathBuf = if is_remote {
+                // local_only tab of a remote project: cwd was just resolved
+                // above to exactly this, so this only ever rejects a caller
+                // that skipped that resolution and supplied its own cwd.
+                crate::services::remote_sync::mirror_dir(&pid)
+            } else {
+                crate::services::sandbox::project_dir_for(&pid)
+                    .map(std::path::PathBuf::from)
+                    .ok_or_else(|| format!("terminal: project '{pid}' has no known directory"))?
+            };
+            if !cwd_within(&opts.cwd, &allowed) {
+                return Err(format!(
+                    "terminal: refusing to spawn tab '{}' at '{}' — outside project '{pid}''s directory ({})",
+                    opts.id,
+                    opts.cwd,
+                    allowed.display()
+                ));
             }
         }
     }
@@ -110,14 +252,15 @@ pub async fn pty_spawn(
         }
     }
 
-    // Claude remote control (global setting `agent_remote_control`, default ON):
-    // spawn `claude` agent tabs with `--remote-control` so the running session can
-    // be monitored/steered from the Claude app/web. Only Claude has this flag.
-    // Applied here — after session resolution but before ssh/docker wrapping — so
-    // it rides into the wrapped command for remote/sandboxed tabs too. Guarded
-    // against duplicates so a re-spawn never stacks the flag.
+    // Claude remote control (global setting `agent_remote_control`, default ON,
+    // overridable per project — O#59): spawn `claude` agent tabs with
+    // `--remote-control` so the running session can be monitored/steered from
+    // the Claude app/web. Only Claude has this flag. Applied here — after
+    // session resolution but before ssh/docker wrapping — so it rides into the
+    // wrapped command for remote/sandboxed tabs too. Guarded against
+    // duplicates so a re-spawn never stacks the flag.
     if opts.cmd == "claude"
-        && settings_agent_remote_control()
+        && resolve_agent_remote_control(opts.project_id.as_deref())
         && !opts.args.iter().any(|a| a == "--remote-control")
     {
         opts.args.push("--remote-control".to_string());

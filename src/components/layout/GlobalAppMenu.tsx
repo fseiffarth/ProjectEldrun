@@ -1,6 +1,9 @@
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import { GlobalAppBar } from "./GlobalAppBar";
 import { useT } from "../../lib/i18n";
+import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+
+const MENU_ID = "global-apps";
 
 /**
  * Header button that reveals the global-app launcher as a hover dropdown.
@@ -9,7 +12,12 @@ import { useT } from "../../lib/i18n";
  */
 export function GlobalAppMenu() {
   const t = useT();
-  const [open, setOpen] = useState(false);
+  // `open` is shared across every header hover-menu — see stores/headerHoverMenu
+  // for why: it's what keeps switching from one menu straight into another from
+  // showing both at once for the 250ms grace period.
+  const open = useHeaderHoverMenuStore((s) => s.openId === MENU_ID);
+  const openMenu = useHeaderHoverMenuStore((s) => s.open);
+  const closeMenu = useHeaderHoverMenuStore((s) => s.close);
   const closeTimer = useRef<number | null>(null);
 
   const reveal = () => {
@@ -17,13 +25,13 @@ export function GlobalAppMenu() {
       window.clearTimeout(closeTimer.current);
       closeTimer.current = null;
     }
-    setOpen(true);
+    openMenu(MENU_ID);
   };
 
   const scheduleClose = () => {
     if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
     closeTimer.current = window.setTimeout(() => {
-      setOpen(false);
+      closeMenu(MENU_ID);
       closeTimer.current = null;
     }, 250);
   };

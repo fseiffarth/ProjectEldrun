@@ -330,6 +330,7 @@ fn askpass_refusal_raw(
 ///     (`services::ssh_common::make_askpass`) — on Windows only when OpenSSH ≥ 8.4
 ///     supports `SSH_ASKPASS_REQUIRE`, with `sshpass -e` as the legacy fallback.
 ///   - otherwise → key/agent auth in `BatchMode=yes` (the original v1 flow).
+///
 /// Returns ssh stdout on success or the trimmed stderr on failure.
 ///
 /// `pub(crate)`: also called by

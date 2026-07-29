@@ -8,7 +8,10 @@ use serde_json::Value;
 use tauri::State;
 
 use crate::paths;
-use crate::schema::project::{ComputeHost, OpenVpnSpec, Project, RemoteSpec, SandboxSpec};
+use crate::schema::project::{
+    ComputeHost, DetectedSpecKind, DetectedSpecSource, OpenVpnSpec, Project, RemoteSpec,
+    SandboxSourceDecision, SandboxSpec, SandboxToggleOutcome,
+};
 use crate::schema::projects::{ProjectEntry, ProjectsList};
 use crate::services::remote_sync::SyncManifestState;
 use crate::storage;
@@ -965,16 +968,49 @@ pub fn set_project_name(project_id: String, name: String) -> Result<String, Stri
     Ok(cleaned)
 }
 
+/// Whether a currently-detected repo source still needs a user decision:
+/// either nothing is configured yet, or what *is* configured textually
+/// matches the detected value (so it was very likely adopted from an earlier
+/// detection) but its hash has moved — the Dockerfile changed underneath an
+/// approval that no longer describes what would actually build. A `dockerfile`/
+/// `image` set to something detection would *not* produce is always a
+/// deliberate manual choice (the knobs dialog, `set_project_sandbox_spec`) and
+/// is never second-guessed here.
+fn source_needs_decision(spec: &SandboxSpec, detected: &DetectedSpecSource) -> bool {
+    if spec.spec_source_hash.as_deref() == Some(detected.hash.as_str()) {
+        return false;
+    }
+    let nothing_configured = spec.dockerfile.is_none() && spec.image.is_none();
+    let matches_current_assignment = match detected.kind {
+        DetectedSpecKind::Dockerfile => spec.dockerfile.as_deref() == Some(detected.value.as_str()),
+        DetectedSpecKind::DevcontainerImage => spec.image.as_deref() == Some(detected.value.as_str()),
+    };
+    nothing_configured || matches_current_assignment
+}
+
 /// Toggle the project container for a project in both `projects.json` (so the
 /// pill list / frontend can flag it without reading project.json) and the
 /// project's own `project.json`. **Spec-preserving**: only `enabled` is
 /// flipped — hand-tuned `image`/`memory`/`network`/… survive a disable/enable
 /// round-trip (the spec stays stored with `enabled:false` rather than being
-/// cleared). On the *first* enable (no prior spec), in-repo container sources
-/// are auto-detected (`Dockerfile`, else a devcontainer `image`). Returns the
-/// resulting spec so the frontend can mirror it verbatim.
+/// cleared).
+///
+/// **O#143**: an in-repo `Dockerfile`/devcontainer `image` is never adopted
+/// silently — `docker build` runs its `RUN` steps as root with full network,
+/// a strictly larger blast radius than the session container. On enable, if
+/// the repo currently declares a source and [`source_needs_decision`] says it
+/// hasn't been decided about yet, this returns `NeedsConfirmation` and writes
+/// nothing; the frontend shows a dialog naming the risk and calls again with
+/// `source_decision` carrying the *same* hash plus the user's yes/no. A hash
+/// that no longer matches the live detection (the file changed between the
+/// two calls, or the caller is answering a stale dialog) is refused the same
+/// way — `NeedsConfirmation` again, with the current source.
 #[tauri::command]
-pub fn set_project_sandbox(project_id: String, enabled: bool) -> Result<SandboxSpec, String> {
+pub fn set_project_sandbox(
+    project_id: String,
+    enabled: bool,
+    source_decision: Option<SandboxSourceDecision>,
+) -> Result<SandboxToggleOutcome, String> {
     let list_path = storage::state_dir().join("projects.json");
     let mut list: ProjectsList = if list_path.exists() {
         storage::read_json(&list_path).map_err(|e| e.to_string())?
@@ -997,24 +1033,64 @@ pub fn set_project_sandbox(project_id: String, enabled: bool) -> Result<SandboxS
         .extra
         .get("sandbox")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
-    let first_enable = enabled && existing.is_none();
     let mut spec = existing.unwrap_or_default();
     spec.enabled = enabled;
-    if first_enable {
-        // First enable ever: prefer what the repo itself declares as its
-        // container over the built-in default image.
+
+    if enabled {
         if let Some(dir) = entry
             .extra
             .get("directory")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
         {
-            crate::services::sandbox::detect_spec_sources(Path::new(dir), &mut spec);
+            if let Some(detected) = crate::services::sandbox::detect_spec_source(Path::new(dir)) {
+                if source_needs_decision(&spec, &detected) {
+                    match source_decision {
+                        Some(decision) if decision.hash == detected.hash => {
+                            spec.spec_source_hash = Some(detected.hash.clone());
+                            if decision.adopt {
+                                match detected.kind {
+                                    DetectedSpecKind::Dockerfile => {
+                                        spec.dockerfile = Some(detected.value.clone());
+                                        spec.image = None;
+                                    }
+                                    DetectedSpecKind::DevcontainerImage => {
+                                        spec.image = Some(detected.value.clone());
+                                        spec.dockerfile = None;
+                                    }
+                                }
+                            } else {
+                                // Explicit decline: clear a stale match so the
+                                // container falls back to the built-in default
+                                // image rather than rebuilding the declined one.
+                                match detected.kind {
+                                    DetectedSpecKind::Dockerfile
+                                        if spec.dockerfile.as_deref()
+                                            == Some(detected.value.as_str()) =>
+                                    {
+                                        spec.dockerfile = None;
+                                    }
+                                    DetectedSpecKind::DevcontainerImage
+                                        if spec.image.as_deref()
+                                            == Some(detected.value.as_str()) =>
+                                    {
+                                        spec.image = None;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {
+                            return Ok(SandboxToggleOutcome::NeedsConfirmation { source: detected });
+                        }
+                    }
+                }
+            }
         }
     }
 
     write_project_sandbox_spec(&mut list, &list_path, &project_id, &spec)?;
-    Ok(spec)
+    Ok(SandboxToggleOutcome::Applied { spec })
 }
 
 /// Replace a project's container spec (the knobs dialog's save). `enabled` is
@@ -1053,6 +1129,52 @@ pub fn set_project_sandbox_spec(
     };
     write_project_sandbox_spec(&mut list, &list_path, &project_id, &spec)?;
     Ok(spec)
+}
+
+/// Set (or clear) a project's override of the global `agent_remote_control`
+/// setting (O#59). `None` clears the override (Claude tabs of this project go
+/// back to inheriting the global setting); `Some(true)`/`Some(false)` force it
+/// on/off regardless of the global value. Mirrors `set_project_python`'s
+/// shape: written into both the `projects.json` entry's flattened
+/// `extra["remote_control"]` (the copy `commands::terminal::pty_spawn` trusts)
+/// and the project's own `project.json` (display/export only).
+#[tauri::command]
+pub fn set_project_remote_control(
+    project_id: String,
+    remote_control: Option<bool>,
+) -> Result<Option<bool>, String> {
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let entry = list
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+
+    match remote_control {
+        Some(v) => {
+            entry
+                .extra
+                .insert("remote_control".into(), serde_json::Value::Bool(v));
+        }
+        None => {
+            entry.extra.remove("remote_control");
+        }
+    }
+    let local_file = entry.local_file.clone();
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+            project.remote_control = remote_control;
+            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(remote_control)
 }
 
 /// Persist a container spec into both stores: the `projects.json` entry's

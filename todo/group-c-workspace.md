@@ -23,5 +23,9 @@
     runs and degrades gracefully where workspace backends are absent (null
     backend) and KDE works. Mostly QA + targeted fixes. OS-specific build,
     packaging, and native-window work is tracked separately in Group H (#30/#31).
+    - **Premise partly stale:** Windows and macOS no longer fall back to the
+      null backend — both have real backends (`platform/mod.rs:117,151`), with
+      `null` at `:159` for everything else. So the null-degradation half applies
+      only to other targets, and what's left here is KDE plus pure QA.
 
 ---

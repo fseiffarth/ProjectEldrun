@@ -63,16 +63,24 @@ correctness/UX work atop the same layout model #42 detaches.*
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
 
-56. **Right-click a tab → start renaming.** A right-click on a tab should
-    immediately enter inline rename mode (rather than going through a menu).
-    - [x] 🤖 Automated test
+56. **Right-click a tab → start renaming.** Shipped as **Shift+right-click**
+    (`TabBar.tsx:200,210,640`); plain right-click still opens the context menu.
+    Amend the wording or change the binding — as written the item doesn't match
+    the code.
+    - [x] 🤖 Automated test — `src/__tests__/TabInlineRename.test.tsx`
     - [ ] 🖐️ Manual test
 
-57. **Open `README.md` by default for a project with no tab.** When a project is
+57. **Open `README.md` by default for a project with no tab.** ⛔ **REVERTED —
+    was implemented, then deliberately removed.** When a project is
     opened/activated and has no tabs to restore, show its `README.md` in an
     in-app viewer tab by default (uses the Group D.14 viewer).
-    - [x] 🤖 Automated test
-    - [ ] 🖐️ Manual test
+    - `src/components/layout/CenterPanel.tsx:250` now reads: *"we no longer seed
+      a default README.md tab"* — an empty scope shows a Subwindow with a `+`
+      instead (see [Tab persistence policy]). Boxes below are stale from the
+      original implementation.
+    - [ ] 🤖 Automated test — n/a while reverted.
+    - [ ] 🖐️ Manual test — n/a while reverted.
+    - **Decide:** restore the behaviour, or close this item as withdrawn.
 
 62. **Fast keyboard navigation across projects / subwindows / tabs.** Make the
     whole app steerable from the keyboard with no mouse required. Needs design
@@ -90,6 +98,10 @@ correctness/UX work atop the same layout model #42 detaches.*
     directory, `Enter` to open the selected file in a tab, plus wheel-style fast
     scrolling so a long tree can be traversed without reaching for the mouse.
     Builds on #62 (keyboard nav) and the Group D.1 file tree.
+    - **PARTIAL, not unstarted.** `FileTree.tsx:1332 handleTreeKeyDown` already
+      handles `Enter` / `Escape` / `Delete` — but only once something has been
+      selected with the mouse. Genuinely missing: cursor movement
+      (`↑`/`↓`/`j`/`k`), `←`/`→` expand-collapse, and fast scrolling.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
 

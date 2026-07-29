@@ -337,11 +337,38 @@ pub struct TaskMailLink {
     pub priority_at_convert: String,
 }
 
+/// The appointment a task was converted from — `TaskMailLink`'s twin, and
+/// deliberately built the same way: **identifiers plus a display snapshot**.
+///
+/// It names an **occurrence**, not a series. A weekly meeting produces one card
+/// per week that needs preparing, and `occurrence_start` is what keeps the second
+/// one from being read as a duplicate of the first — the board's "this
+/// appointment already has a card" check is `event_id` + `occurrence_start`.
+///
+/// `title`/`location` are the snapshot half, for `TaskMailLink`'s reasons: the
+/// card must still read sensibly after the event is deleted or the calendar it
+/// came from is unsubscribed, and re-expanding a recurrence on every board render
+/// to relabel a card is work the board should never do.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TaskEventLink {
+    pub event_id: String,
+    /// The occurrence's local start stamp (`"YYYY-MM-DDTHH:MM"`), as the
+    /// frontend's expansion minted it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub occurrence_start: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub calendar_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub location: String,
+}
+
 /// A to-do (VTODO). `due`/`start` use the same local encoding as events; a task
 /// with no `due` simply never appears in the calendar views, only in the task list.
 ///
 /// It is also a **board card**: `column` and `rank` place it, and the remaining
-/// board fields (`tags`, `subtasks`, `mail`, `project_id`, `created`) are
+/// board fields (`tags`, `subtasks`, `mail`, `event`, `project_id`, `created`) are
 /// Eldrun's own and are not exported to ICS — see `CalendarData::normalize` for
 /// how board state and VTODO completion are kept from contradicting each other.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -401,6 +428,11 @@ pub struct CalendarTask {
     /// The mail this card was converted from, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail: Option<TaskMailLink>,
+    /// The appointment this card was converted from, if any. A card carries at
+    /// most one of the two — both conversions build the same card shape, they
+    /// just record which object it came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<TaskEventLink>,
     /// `ProjectEntry.id` this card belongs to, or empty.
     ///
     /// Deliberately **not** validated against `projects.json`: that would make
@@ -1359,6 +1391,11 @@ mod tests {
                 subject: "hi".into(),
                 ..Default::default()
             }),
+            event: Some(TaskEventLink {
+                event_id: "ev-7".into(),
+                occurrence_start: "2026-07-30T09:00".into(),
+                ..Default::default()
+            }),
             project_id: "proj".into(),
             ..task("t")
         };
@@ -1375,6 +1412,9 @@ mod tests {
         assert_eq!(back.tags, vec!["v2"]);
         assert_eq!(back.project_id, "proj");
         assert_eq!(back.mail.unwrap().message_id, "inbox-42");
+        let event = back.event.unwrap();
+        assert_eq!(event.event_id, "ev-7");
+        assert_eq!(event.occurrence_start, "2026-07-30T09:00");
     }
 
     #[test]

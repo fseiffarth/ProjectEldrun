@@ -177,6 +177,22 @@ container) — as opposed to the git **push** axis (#21/#22).*
     - **28c — Hardening & gaps (two-reviewer review, 2026-06-19).** A
       code-correctness/security pass plus an architecture pass over #28/#28b.
       Ordered by severity.
+      > **Reconciled 2026-07-28 — most of this list is no longer live.**
+      > **Fixed but never ticked:** resume-before-ssh-wrap ordering
+      > (`commands/terminal.rs:65-74`); exported-env-key validation
+      > (`services/ssh_exec.rs:189 is_valid_env_key`); host-key TOFU trust UX
+      > (`commands/ssh.rs:72,96`); OpenVPN robustness (a)+(b)+(c)
+      > (`services/openvpn.rs:1526 recv_timeout`, `:92 interactive_registry`,
+      > management-socket teardown).
+      > **Obsolete — the sshfs mechanism they describe was deleted by 28j**
+      > (`services/ssh_mount.rs` is gone): remote-command-injection in browse
+      > (superseded by #80's native SFTP), serialize `mount()`, password-auth
+      > half-state, connection-loss / stale FUSE handle, mount-detection edge
+      > cases (`/proc/mounts` parsing), project-delete teardown + startup GC,
+      > and the `sshfs` binary-detection clause.
+      > **Still genuinely open:** 28b *generalize bootstrap to other agent CLIs*
+      > — `services/remote_agents.rs:26 RECIPES` still holds only the `claude`
+      > row.
       - [ ] **[Critical] Remote command injection in the browse commands.**
         `ssh_list_dir`/`ssh_default_dir`/`ssh_connect` (`commands/ssh.rs`) hand
         remote argv tokens to `ssh`, which space-joins them into one remote
@@ -560,7 +576,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
       it proves chatty. Gates: `npx tsc --noEmit`, `cargo test` (448 lib) green;
       needs live-host QA (auto pull/push timing, orange skip, lifecycle).
 
-    - [ ] **28n — Git-aware local↔remote lockstep sync.** **Phases 1–3 ✅ Done
+    - [x] **28n — Git-aware local↔remote lockstep sync.** **Phases 1–3 ✅ Done
       (2026-07-02; opt-in per project; checkout lockstep + fast-forward-only ref
       transfer + desync detection/display · 🧪 live-host QA pending).** Phase 2
       (Use-local/Use-remote resolution + `refs/eldrun/backup/*` reset) and Phase 3

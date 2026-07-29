@@ -104,7 +104,7 @@ fn after_authority_marker(url: &str) -> Option<&str> {
 pub fn host_of(url: &str) -> String {
     let scheme = scheme_of(url);
     if scheme == "mailto" {
-        let rest = url.splitn(2, ':').nth(1).unwrap_or_default();
+        let rest = url.split_once(':').map(|x| x.1).unwrap_or_default();
         return rest
             .rsplit('@')
             .next()

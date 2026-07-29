@@ -317,7 +317,7 @@ fn icon_to_data_url(path: &Path) -> Option<String> {
 
 pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = Vec::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut out = Vec::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
@@ -531,6 +531,7 @@ pub fn is_embeddable_exec(exec: &str) -> bool {
 ///      file extension (including the leading dot, e.g. `.md`);
 ///   3. the system default via `xdg-mime query default <mime>` → the matching
 ///      `.desktop` entry's `Exec` first token.
+///
 /// Returns `None` when nothing resolves (capability then degrades to external).
 ///
 /// Pure with respect to the app maps (passed in) so it is unit-testable; only
@@ -858,7 +859,7 @@ pub fn embed_capability(
     let project_apps = project_apps_for_id(project_id.as_deref());
     let resolved_exec =
         resolve_default_handler(&path, handler.as_deref(), Some(&project_apps), &global_apps);
-    let app_embeddable = resolved_exec.as_deref().map_or(false, is_embeddable_exec);
+    let app_embeddable = resolved_exec.as_deref().is_some_and(is_embeddable_exec);
 
     EmbedCapability {
         os_embeddable,
@@ -943,7 +944,7 @@ pub fn list_installed_apps() -> Vec<InstalledApp> {
                 }
             }
         }
-        apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        apps.sort_by_key(|a| a.name.to_lowercase());
         apps
     }
 }
@@ -1654,7 +1655,7 @@ pub fn list_tracked_windows(
         .filter(|w| {
             project_id
                 .as_deref()
-                .map_or(true, |pid| w.project_id.as_deref() == Some(pid))
+                .is_none_or(|pid| w.project_id.as_deref() == Some(pid))
         })
         .cloned()
         .collect()
@@ -1986,14 +1987,12 @@ mod tests {
 
     #[test]
     fn opened_windows_are_only_project_file_ui_windows() {
-        let windows = vec![
-            tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+        let windows = [tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
             tracked(Some("p1"), ORIGIN_MIDDLE_FILE_BROWSER, Some(11)),
             tracked(Some("p1"), ORIGIN_GLOBAL_APP, Some(12)),
             tracked(Some("p1"), ORIGIN_MANUAL_LAUNCH, Some(13)),
             tracked(Some("p2"), ORIGIN_RIGHT_FILE_TREE, Some(20)),
-            tracked(None, ORIGIN_RIGHT_FILE_TREE, Some(30)),
-        ];
+            tracked(None, ORIGIN_RIGHT_FILE_TREE, Some(30))];
 
         let opened = opened_windows_for_project(windows.iter(), Some("p1"));
         let ids = opened
@@ -2116,17 +2115,15 @@ mod tests {
 
     #[test]
     fn opened_windows_returns_empty_for_wrong_project() {
-        let windows = vec![
-            tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
-            tracked(Some("p1"), ORIGIN_MIDDLE_FILE_BROWSER, Some(11)),
-        ];
+        let windows = [tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+            tracked(Some("p1"), ORIGIN_MIDDLE_FILE_BROWSER, Some(11))];
         let opened = opened_windows_for_project(windows.iter(), Some("p2"));
         assert!(opened.is_empty());
     }
 
     #[test]
     fn opened_windows_returns_empty_for_root_scope_when_all_in_project() {
-        let windows = vec![tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10))];
+        let windows = [tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10))];
         let opened = opened_windows_for_project(windows.iter(), None);
         assert!(
             opened.is_empty(),

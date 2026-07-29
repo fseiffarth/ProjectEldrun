@@ -400,14 +400,11 @@ pub fn parse_lpq_titles(out: &str) -> HashMap<u32, (String, String)> {
 /// id as a title, so no row is blank.
 fn merge_cups_jobs(mut jobs: Vec<PrintJob>, titles: &HashMap<u32, (String, String)>) -> Vec<PrintJob> {
     for job in &mut jobs {
-        match titles.get(&job.number) {
-            Some((title, state)) => {
-                if !title.is_empty() {
-                    job.title = title.clone();
-                }
-                job.state = state.clone();
+        if let Some((title, state)) = titles.get(&job.number) {
+            if !title.is_empty() {
+                job.title = title.clone();
             }
-            None => {}
+            job.state = state.clone();
         }
         if job.title.is_empty() {
             job.title = job.id.clone();

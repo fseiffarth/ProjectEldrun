@@ -22,6 +22,7 @@ import {
   type StaticMenuItem,
 } from "./newTabItems";
 import { AddTabMenuList } from "./AddTabMenuList";
+import { listLocalDrivers, type LocalDriverInfo } from "../../lib/localDrivers";
 import { useExperimental } from "../../lib/experimental";
 import { useT } from "../../lib/i18n";
 import { registerHostBoundTab } from "../../lib/hostBound";
@@ -92,17 +93,24 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   // built-in registry). `null` until resolved — custom agents render enabled
   // until a probe proves one missing.
   const [installedCustom, setInstalledCustom] = useState<Set<string> | null>(null);
-  const [localDrivers, setLocalDrivers] = useState<
-    { id: string; label: string; available: boolean }[]
-  >([]);
+  const [localDrivers, setLocalDrivers] = useState<LocalDriverInfo[]>([]);
   useEffect(() => {
     invoke<{ id: string; installed: boolean }[]>("list_agents")
       .then((list) => setInstalledAgents(new Set(list.filter((a) => a.installed).map((a) => a.id))))
       .catch(() => setInstalledAgents(new Set()));
-    invoke<{ id: string; label: string; available: boolean }[]>("list_local_drivers")
+  }, []);
+  // Re-probed whenever the active local model changes: `available` depends on
+  // it, because these are all tool-calling agents and a completion-only model
+  // (llama3 is one) can't drive one at all — Ollama refuses the first request
+  // and the tab dies on arrival. Withholding the entry is the whole guard; the
+  // backend refuses again on launch for the stale-menu case. A model that
+  // *passes* may still meet `ollama launch`'s own "Launch anyway?" prompt in
+  // the tab — left to the user on purpose (see lib/localDrivers.ts).
+  useEffect(() => {
+    listLocalDrivers(localModel)
       .then(setLocalDrivers)
       .catch(() => {});
-  }, []);
+  }, [localModel]);
   // Re-probe custom commands whenever the set changes (adding one in the dialog).
   useEffect(() => {
     const cmds = customAgents.map((a) => a.cmd);
@@ -248,17 +256,29 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                         onPick: () => void pickOllamaModel(localModel),
                       }]
                     : []),
+                  // `heavy_harness` cautions, it never withholds — see
+                  // lib/localDrivers.ts. The row stays pickable because which
+                  // local models cope is not something the backend can probe.
                   ...localDrivers.filter((d) => d.available).map((d) => ({
                     key: d.id,
                     label: d.label,
                     color: TAB_ACCENT["local_agent"],
+                    caution: d.heavy_harness
+                      ? t("newTabMenu.localDriverHeavyHarness", { agent: d.label })
+                      : undefined,
                     onPick: () => void pickLocalLaunch(d.id, d.label, localModel),
                   })),
                 ]
               : [],
-            hint: localModel
-              ? t("newTabMenu.noLocalAgentHint")
-              : t("newTabMenu.noLocalModelHint"),
+            // An empty list has two causes and they need different sentences:
+            // no agent is installed, or the model can't drive the ones that
+            // are. Without the second, withholding the entries would read as a
+            // bug — the agent is right there in the Agents group above.
+            hint: !localModel
+              ? t("newTabMenu.noLocalModelHint")
+              : localDrivers.some((d) => d.needs_tools_unsupported)
+                ? t("newTabMenu.localModelNoToolsHint", { model: localModel })
+                : t("newTabMenu.noLocalAgentHint"),
           },
           {
             label: t("newTabMenu.groupShell"),

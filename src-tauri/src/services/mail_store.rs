@@ -59,7 +59,11 @@
 //!   `mail_remote_allow.addr_key` are keyed digests (`mail_crypt::name_digest`)
 //!   that carry the constraint in cleartext beside the sealed value. They leak
 //!   equality and only equality — which is precisely what declaring the
-//!   constraint already asserts.
+//!   constraint already asserts. Because they are derived from the key rather
+//!   than from the value alone, they have to be *maintained*: sealing a store
+//!   that ran plain leaves them holding the cleartext, which is both a leak and
+//!   a constraint that has stopped matching, so every keyed open runs
+//!   [`MailStore::rekey_digest_columns`].
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -150,7 +154,13 @@ impl MailStore {
             _scratch: None,
         };
         store.migrate()?;
-        if store.seal_existing()? {
+        let sealed = store.seal_existing()?;
+        // Between the sealing pass and the vacuum, deliberately. The pass is
+        // what strands a digest — it seals a value and leaves the key column
+        // beside it untouched — and the vacuum is what stops the old cleartext
+        // key from surviving in the freelist of the file that replaces it.
+        let rekeyed = store.rekey_digest_columns()? > 0;
+        if sealed || rekeyed {
             store.vacuum_into_place()?;
         }
         Ok(store)
@@ -595,6 +605,20 @@ impl MailStore {
 
     // ── Folders ─────────────────────────────────────────────────────────────
 
+    /// Insert or update one folder row.
+    ///
+    /// Two conflict targets, because the row has two identities and they can
+    /// disagree. `(account_id, path_key)` is the keyed one this table was
+    /// rebuilt around; `id` is the caller's `sha256`-derived name for the same
+    /// folder ([`commands::mail::folder_id_for`]), and it is *unkeyed*, so it
+    /// survives changes of key that `path_key` does not. A row whose `path_key`
+    /// was computed under different keys — a store that ran plain and was
+    /// sealed later, a key that was reset — matches neither the new digest nor
+    /// nothing at all: it matches on `id` alone, and with a single conflict
+    /// clause the insert fell through to the primary key and every sync died on
+    /// *"UNIQUE constraint failed: folders.id"*. The second clause makes that
+    /// case an update that rewrites the stale key, so the row repairs itself
+    /// even if [`MailStore::rekey_digest_columns`] never ran.
     pub fn upsert_folder(&self, folder: &MailFolder) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
         conn.execute(
@@ -602,6 +626,10 @@ impl MailStore {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(account_id, path_key) DO UPDATE SET
                 path = excluded.path, name = excluded.name, kind = excluded.kind,
+                unread = excluded.unread, total = excluded.total
+             ON CONFLICT(id) DO UPDATE SET
+                path_key = excluded.path_key, path = excluded.path,
+                name = excluded.name, kind = excluded.kind,
                 unread = excluded.unread, total = excluded.total",
             params![
                 folder.id,
@@ -1081,6 +1109,66 @@ impl MailStore {
             )
             .map_err(|e| e.to_string())?;
         Ok(changed > 0)
+    }
+
+    /// The newest **unmarked** messages a filter rule could still act on.
+    ///
+    /// Backs "apply my rules to mail I already have", and its three restrictions
+    /// are the whole of that command's safety:
+    ///
+    /// - `priority = ''` — a message the user (or an earlier run) already filed
+    ///   is never re-examined, so applying rules cannot overwrite a correction.
+    /// - **`sent`/`drafts`/`trash`/`junk` are excluded**, as a fixed literal
+    ///   list. A rule watching for the word *invoice* would otherwise pull every
+    ///   invoice the user ever wrote into their alert list, and mail the server
+    ///   already judged spam is the last thing an urgency list should surface.
+    ///   Folders of *any other kind* — including `other`, i.e. everything the
+    ///   user's own server-side rules sort into — are in scope, because those are
+    ///   exactly where the interesting mail has been filed.
+    /// - `limit`, clamped, ordered newest-first. This is a decrypt-per-row scan
+    ///   on a sealed store (the `page` doc explains why nothing else is
+    ///   possible), so it is bounded for the same reason a search is, and the
+    ///   caller reports the bound rather than implying whole-mailbox coverage.
+    pub fn unmarked_headers(
+        &self,
+        account_id: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<MailHeader>, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let limit = limit.clamp(1, MAX_SEARCH_SCAN as u32);
+        // Both branches are fixed literals differing only in one bound clause;
+        // nothing a caller says is formatted into the SQL.
+        const SCOPE: &str = "priority = '' AND deleted = 0 AND folder_id NOT IN \
+             (SELECT id FROM folders WHERE kind IN ('sent','drafts','trash','junk'))";
+        let rows = match account_id {
+            Some(account) => {
+                let mut stmt = conn
+                    .prepare(&format!(
+                        "SELECT {} FROM messages WHERE {SCOPE} AND account_id = ?1 \
+                         ORDER BY date DESC, uid DESC LIMIT ?2",
+                        Self::HEADER_COLUMNS
+                    ))
+                    .map_err(|e| e.to_string())?;
+                let iter = stmt
+                    .query_map(params![account, limit], |r| self.row_to_header(r))
+                    .map_err(|e| e.to_string())?;
+                iter.collect::<Result<Vec<_>, _>>()
+            }
+            None => {
+                let mut stmt = conn
+                    .prepare(&format!(
+                        "SELECT {} FROM messages WHERE {SCOPE} \
+                         ORDER BY date DESC, uid DESC LIMIT ?1",
+                        Self::HEADER_COLUMNS
+                    ))
+                    .map_err(|e| e.to_string())?;
+                let iter = stmt
+                    .query_map(params![limit], |r| self.row_to_header(r))
+                    .map_err(|e| e.to_string())?;
+                iter.collect::<Result<Vec<_>, _>>()
+            }
+        };
+        rows.map_err(|e| e.to_string())
     }
 
     /// One page of everything carrying `priority`, **across every account and
@@ -1719,6 +1807,115 @@ impl MailStore {
         Ok(changed)
     }
 
+    /// Bring the two keyed digest columns back in step with the current keys.
+    ///
+    /// `folders.path_key` and `mail_remote_allow.addr_key` are digests of a
+    /// value that may since have been sealed, and [`MailStore::seal_existing`]
+    /// seals values without touching the keys beside them — so a store that ran
+    /// plain and was converted later kept digests that are the **cleartext**
+    /// value. Two things go wrong with that. The loud one: `upsert_folder`'s
+    /// conflict target stops matching, so every sync tried to insert a folder
+    /// that is already there and failed on its primary key
+    /// (*"UNIQUE constraint failed: folders.id"*). The quiet one is worse — the
+    /// stale key *is* the folder path, sitting in cleartext in a store whose
+    /// whole claim is that only a keyed digest of it does.
+    ///
+    /// It runs on every keyed open, not only after a conversion, because it is
+    /// also the repair for stores a build without it already converted. The
+    /// cost is one pass over a table holding one row per folder — tens, not
+    /// thousands. A row whose value will not open is **skipped**: rekeying it
+    /// would mean writing a digest of nothing over the only key that still
+    /// finds it.
+    fn rekey_digest_columns(&self) -> Result<usize, String> {
+        if self.keys.is_none() {
+            return Ok(0);
+        }
+        let mut conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+
+        // (id, account_id, stored path_key, plaintext path)
+        let folders: Vec<(String, String, String, Option<String>)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, account_id, path_key, path FROM folders")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| {
+                    let id: String = r.get(0)?;
+                    let account_id: String = r.get(1)?;
+                    let path_key: String = r.get(2)?;
+                    // The path's AAD names its row by `id`, which no rekeying
+                    // touches — so a sealed path opens here exactly as it does
+                    // on the read path.
+                    let path = self.open_text(r, 3, &account_id, "folders", "path", &id)?;
+                    Ok((id, account_id, path_key, path))
+                })
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+        };
+        // (stored addr_key, plaintext address)
+        let allowed: Vec<(String, Option<String>)> = {
+            let mut stmt = conn
+                .prepare("SELECT addr_key, address FROM mail_remote_allow")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| {
+                    let addr_key: String = r.get(0)?;
+                    let address = self.open_text(r, 1, "", "mail_remote_allow", "address", &addr_key)?;
+                    Ok((addr_key, address))
+                })
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+        };
+
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut changed = 0usize;
+        for (id, account_id, path_key, path) in &folders {
+            let Some(path) = path else { continue };
+            let expected = self.digest_of(account_id, path);
+            if &expected == path_key {
+                continue;
+            }
+            // Two rows cannot legitimately want one key — the digest is of the
+            // same (account, path) the row's own id was derived from — but a
+            // duplicate left behind by some earlier state would make the
+            // `UNIQUE` fire, and a repair that refuses to open the store would
+            // be worse than the fault it repairs. The row is left alone; the
+            // second conflict clause in `upsert_folder` still keeps the sync
+            // working.
+            if tx
+                .execute(
+                    "UPDATE folders SET path_key = ?1 WHERE id = ?2",
+                    params![expected, id],
+                )
+                .is_ok()
+            {
+                changed += 1;
+            }
+        }
+        for (addr_key, address) in &allowed {
+            let Some(address) = address else { continue };
+            let expected = self.digest_of("mail_remote_allow", address);
+            if &expected == addr_key {
+                continue;
+            }
+            // Here the key column *is* the row key the value's AAD names, so
+            // moving it means re-sealing the value under the new one — in one
+            // statement, or an interruption between the two would leave a row
+            // nothing can ever open.
+            let sealed = self.seal_text("", "mail_remote_allow", "address", &expected, address);
+            if tx
+                .execute(
+                    "UPDATE mail_remote_allow SET addr_key = ?1, address = ?2 WHERE addr_key = ?3",
+                    params![expected, sealed, addr_key],
+                )
+                .is_ok()
+            {
+                changed += 1;
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(changed)
+    }
+
     /// Seal every blob payload and move it from its bare SHA-256 name onto its
     /// keyed one, rewriting the two cleartext columns that reference it.
     fn reseal_blobs(&self) -> Result<usize, String> {
@@ -2257,7 +2454,8 @@ mod tests {
         let h = header(&inbox, 1, "x", "2026-07-01T09:00:00Z");
         store.upsert_header(&h).unwrap();
 
-        store.move_messages(&[h.id.clone()], &archive.id).unwrap();
+        store.move_messages(std::slice::from_ref(&h.id), &archive.id)
+            .unwrap();
         assert_eq!(store.headers_page(&inbox.id, 0, 10, None, MailSort::Date, true).unwrap().total, 0);
         assert_eq!(store.headers_page(&archive.id, 0, 10, None, MailSort::Date, true).unwrap().total, 1);
     }
@@ -2530,6 +2728,59 @@ mod tests {
         assert!(accounts.contains(&"a1") && accounts.contains(&"a2"));
         // Newest first, like every other list here.
         assert_eq!(page.items[0].account_id, "a2");
+    }
+
+    // ── The filter scan ─────────────────────────────────────────────────────
+
+    #[test]
+    fn the_filter_scan_skips_already_marked_mail() {
+        let (_d, store, a, _b) = two_accounts();
+        assert_eq!(store.unmarked_headers(None, 100).unwrap().len(), 2);
+        store
+            .set_priority(&format!("{}#1", a.id), Some(MailPriority::Urgent))
+            .unwrap();
+        let left = store.unmarked_headers(None, 100).unwrap();
+        assert_eq!(left.len(), 1, "a filed message is never re-examined");
+        assert_eq!(left[0].account_id, "a2");
+    }
+
+    #[test]
+    fn the_filter_scan_refuses_sent_drafts_trash_and_junk() {
+        let (_d, store) = store();
+        let inbox = folder("a1", "INBOX");
+        store.upsert_folder(&inbox).unwrap();
+        store
+            .upsert_header(&header(&inbox, 1, "arrived", "2026-07-01T09:00:00Z"))
+            .unwrap();
+        for (i, kind) in [
+            MailFolderKind::Sent,
+            MailFolderKind::Drafts,
+            MailFolderKind::Trash,
+            MailFolderKind::Junk,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut f = folder("a1", &format!("Box{i}"));
+            f.kind = kind;
+            store.upsert_folder(&f).unwrap();
+            store
+                .upsert_header(&header(&f, 1, "invoice", "2026-07-02T09:00:00Z"))
+                .unwrap();
+        }
+        let rows = store.unmarked_headers(None, 100).unwrap();
+        assert_eq!(rows.len(), 1, "only the arriving folder is in scope");
+        assert_eq!(rows[0].folder_id, inbox.id);
+    }
+
+    #[test]
+    fn the_filter_scan_can_be_narrowed_to_one_account_and_is_bounded() {
+        let (_d, store, _a, _b) = two_accounts();
+        let one = store.unmarked_headers(Some("a1"), 100).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].account_id, "a1");
+        // The bound is what the report turns into "of the most recent N".
+        assert_eq!(store.unmarked_headers(None, 1).unwrap().len(), 1);
     }
 
     #[test]
@@ -3153,6 +3404,116 @@ mod tests {
                 store.headers_page(&f.id, 0, 10, None, MailSort::Date, true).unwrap().total,
                 1
             );
+        }
+
+        /// The bug this pair of tests exists for: a store that ran **plain** and
+        /// was sealed later kept `path_key` as the cleartext path, so the next
+        /// sync's upsert matched no conflict target, fell through to the primary
+        /// key, and reported *"UNIQUE constraint failed: folders.id"* — every
+        /// time, on every folder, until the mailbox was reset.
+        #[test]
+        fn converting_a_plain_store_rekeys_its_folder_digests() {
+            let dir = tempfile::tempdir().unwrap();
+            let f = realistic_folder("a1", "INBOX/Personnel");
+            {
+                let store = MailStore::open(dir.path()).unwrap();
+                store.upsert_folder(&f).unwrap();
+                let conn = store.conn.lock().unwrap();
+                let key: String = conn
+                    .query_row("SELECT path_key FROM folders", [], |r| r.get(0))
+                    .unwrap();
+                assert_eq!(key, "INBOX/Personnel", "a plain store keys on the value itself");
+            }
+
+            let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+            // The sync that used to fail.
+            store.upsert_folder(&f).unwrap();
+            let all = store.folders("a1").unwrap();
+            assert_eq!(all.len(), 1, "the folder was updated, not duplicated");
+            assert_eq!(all[0].path, "INBOX/Personnel");
+
+            let key: String = store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row("SELECT path_key FROM folders", [], |r| r.get(0))
+                .unwrap();
+            assert_ne!(key, "INBOX/Personnel", "the key is a keyed digest now");
+            for path in walk(dir.path()) {
+                if path.is_file() {
+                    let bytes = std::fs::read(&path).unwrap();
+                    assert!(
+                        !contains(&bytes, b"INBOX/Personnel"),
+                        "the folder path survived in {}",
+                        path.display()
+                    );
+                }
+            }
+        }
+
+        /// The same fault in a store an *earlier build* already converted: its
+        /// `encrypted` marker is set, so the sealing pass returns without
+        /// looking. The repair has to be reachable from the ordinary open, and
+        /// the upsert has to survive even before it runs.
+        #[test]
+        fn a_stale_folder_digest_is_repaired_on_the_next_open() {
+            let dir = tempfile::tempdir().unwrap();
+            let f = realistic_folder("a1", "INBOX/Legal");
+            {
+                let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+                store.upsert_folder(&f).unwrap();
+                // What the build without `rekey_digest_columns` left behind.
+                store
+                    .conn
+                    .lock()
+                    .unwrap()
+                    .execute(
+                        "UPDATE folders SET path_key = ?1 WHERE id = ?2",
+                        params!["INBOX/Legal", f.id],
+                    )
+                    .unwrap();
+                // Even in that state the upsert must not fail — it is what a
+                // sync does before anything has had a chance to repair it.
+                store.upsert_folder(&f).unwrap();
+                assert_eq!(store.folders("a1").unwrap().len(), 1);
+            }
+
+            let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+            let key: String = store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row("SELECT path_key FROM folders", [], |r| r.get(0))
+                .unwrap();
+            assert_ne!(key, "INBOX/Legal", "the open repaired the stale key");
+            store.upsert_folder(&f).unwrap();
+            assert_eq!(store.folders("a1").unwrap().len(), 1);
+        }
+
+        /// A row whose value cannot be opened — the wrong key, or bytes altered
+        /// on disk — must be left exactly as it is. Rekeying it would write a
+        /// digest of nothing over the only key that still finds it.
+        #[test]
+        fn a_row_that_will_not_open_is_not_rekeyed() {
+            let dir = tempfile::tempdir().unwrap();
+            let f = realistic_folder("a1", "INBOX");
+            {
+                let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+                store.upsert_folder(&f).unwrap();
+            }
+            let before: String = {
+                let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+                let conn = store.conn.lock().unwrap();
+                conn.query_row("SELECT path_key FROM folders", [], |r| r.get(0)).unwrap()
+            };
+            let store = MailStore::open_with_keys(dir.path(), Some(keys(2))).unwrap();
+            let after: String = store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row("SELECT path_key FROM folders", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(before, after, "a row that would not open kept its key");
         }
 
         /// A store created before `path_key` existed must come back with its

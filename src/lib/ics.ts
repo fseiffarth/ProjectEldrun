@@ -25,7 +25,7 @@ import type {
   Freq,
   Rrule,
 } from "../types";
-import { addDays, datePart, parseStamp } from "./calendarTime";
+import { addDays, addMinutes, datePart, minutesBetween, parseStamp } from "./calendarTime";
 import { stripFormatControls } from "./textSafety";
 
 const ICS_WEEKDAYS = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
@@ -456,6 +456,26 @@ function buildEvent(
     exdates,
     overrides: [],
     alarms,
+    // ── The two round-trip fields (CalDAV push, `docs/caldav_plan.md` Phase 3)
+    //
+    // Neither is displayed anywhere, and both exist because a row that came from
+    // a server has to be able to go *back* as the same resource it arrived as.
+    //
+    // `UID` is the calendar object's identity everywhere except this app, and
+    // re-minting it on a write is how one appointment becomes two: the server
+    // keeps what it has under the old UID and accepts ours as something new.
+    //
+    // `RECURRENCE-ID` is the harder one. CalDAV has no separate object for an
+    // occurrence, so a "this event only" edit rides in the *same resource* as its
+    // master, as a second VEVENT naming the slot it replaces. This parser keeps
+    // those as separate rows (the href group is what holds them together — see
+    // `merge_caldav_calendar_at`), so without this field the row would remember
+    // that it is an override but not *of what*, and pushing the series back would
+    // write two masters with one UID.
+    uid: val("UID"),
+    recurrence_id: cur["RECURRENCE-ID"]?.[0]
+      ? (parseIcsDate(cur["RECURRENCE-ID"][0].value)?.stamp ?? "")
+      : "",
   };
 }
 
@@ -492,16 +512,57 @@ function buildTask(
     completed: completed?.stamp ?? (status === "COMPLETED" ? datePart(new Date().toISOString()) : null),
     category: (val("CATEGORIES").split(",")[0] ?? "").trim().toLowerCase(),
     alarms,
+    // The server's own identity for this VTODO — see `buildEvent`. A task has no
+    // recurrence-override case worth carrying (nothing in this app edits a single
+    // occurrence of a repeating to-do), so only the UID travels.
+    uid: val("UID"),
   };
 }
 
 // ── Serialize ───────────────────────────────────────────────────────────────
 
 /**
+ * The UID a row is written under.
+ *
+ * A row that came from a server keeps **its** UID; one written here derives a
+ * stable synthetic one from the row id, which never changes for the life of the
+ * row. Re-minting a UID on a write is how one appointment becomes two — the
+ * server keeps what it holds under the old identity and files ours as new.
+ */
+/**
+ * The end an override lands on when it moved the start and said nothing about
+ * the end.
+ *
+ * This is `expandEvents`' rule ("an override that moves the start but not the
+ * end keeps the duration"), applied to the serialized form. It has to be the
+ * same rule: the grid draws the occurrence from that expansion, and a file whose
+ * DTEND disagreed with what the user is looking at would be wrong in the one way
+ * nobody would think to check.
+ */
+function shiftedEnd(event: CalendarEvent, occurrenceStart: string, newStart: string): string {
+  if (event.all_day) return addDays(newStart, 1);
+  const durationMin = minutesBetween(event.start, event.end);
+  if (newStart === occurrenceStart) return addMinutes(occurrenceStart, durationMin);
+  return addMinutes(newStart, durationMin);
+}
+
+export function icsUid(row: { id: string; uid?: string }): string {
+  const uid = (row.uid ?? "").trim();
+  return uid || `${row.id}@eldrun`;
+}
+
+/**
  * Write events and tasks as an .ics file.
  *
  * `now` is injected rather than read from the clock so the output is
  * deterministic and the round-trip is testable.
+ *
+ * A recurring event's **occurrence edits** are written the only way iCalendar
+ * has to express them: extra `VEVENT` components sharing the master's UID and
+ * naming the slot they replace with `RECURRENCE-ID`. Eldrun stores those in the
+ * master's `overrides[]`, and until this existed they were simply dropped from
+ * every export — a series exported and re-imported came back with each moved
+ * occurrence silently back in its original place.
  */
 export function serializeIcs(
   events: CalendarEvent[],
@@ -520,8 +581,21 @@ export function serializeIcs(
 
   for (const e of events) {
     lines.push("BEGIN:VEVENT");
-    push("UID", `${e.id}@eldrun`);
+    push("UID", icsUid(e));
     push("DTSTAMP", stamp);
+    // A row that *is* an override (one parsed out of a CalDAV resource, where
+    // master and overrides arrive as separate rows sharing one href) names the
+    // slot it replaces. A row that merely *has* overrides emits them below, as
+    // components of its own.
+    if (e.recurrence_id) {
+      lines.push(
+        fold(
+          e.all_day
+            ? `RECURRENCE-ID;VALUE=DATE:${formatIcsDate(e.recurrence_id, true)}`
+            : `RECURRENCE-ID:${formatIcsDate(e.recurrence_id, false)}`,
+        ),
+      );
+    }
     lines.push(
       fold(
         e.all_day
@@ -565,11 +639,52 @@ export function serializeIcs(
       lines.push("END:VALARM");
     }
     lines.push("END:VEVENT");
+
+    // Each "this event only" edit, as its own component. It inherits everything
+    // the override does not restate — an occurrence moved by an hour is still
+    // the same meeting, and a reader that saw only the changed field would show
+    // it with no title.
+    for (const ov of e.overrides ?? []) {
+      const start = ov.start || ov.occurrence_start;
+      const end = ov.end || shiftedEnd(e, ov.occurrence_start, start);
+      lines.push("BEGIN:VEVENT");
+      push("UID", icsUid(e));
+      push("DTSTAMP", stamp);
+      lines.push(
+        fold(
+          e.all_day
+            ? `RECURRENCE-ID;VALUE=DATE:${formatIcsDate(ov.occurrence_start, true)}`
+            : `RECURRENCE-ID:${formatIcsDate(ov.occurrence_start, false)}`,
+        ),
+      );
+      lines.push(
+        fold(
+          e.all_day
+            ? `DTSTART;VALUE=DATE:${formatIcsDate(start, true)}`
+            : `DTSTART:${formatIcsDate(start, false)}`,
+        ),
+      );
+      lines.push(
+        fold(
+          e.all_day
+            ? `DTEND;VALUE=DATE:${formatIcsDate(end, true)}`
+            : `DTEND:${formatIcsDate(end, false)}`,
+        ),
+      );
+      push("SUMMARY", escapeText(ov.title ?? e.title));
+      const location = ov.location ?? e.location;
+      if (location) push("LOCATION", escapeText(location));
+      const notes = ov.notes ?? e.notes;
+      if (notes) push("DESCRIPTION", escapeText(notes));
+      if (e.category) push("CATEGORIES", escapeText(e.category));
+      if (e.status) push("STATUS", e.status.toUpperCase());
+      lines.push("END:VEVENT");
+    }
   }
 
   for (const t of tasks) {
     lines.push("BEGIN:VTODO");
-    push("UID", `${t.id}@eldrun`);
+    push("UID", icsUid(t));
     push("DTSTAMP", stamp);
     push("SUMMARY", escapeText(t.title));
     if (t.notes) push("DESCRIPTION", escapeText(t.notes));

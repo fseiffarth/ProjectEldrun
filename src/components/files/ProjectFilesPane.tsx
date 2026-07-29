@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { FileTree } from "./FileTree";
+import { AlertsSection } from "./AlertsSection";
 import { DownloadsSection } from "./DownloadsSection";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
@@ -283,6 +284,10 @@ interface Props {
   onSortChange: (sortKey: SortKey, descending: boolean) => void;
   showDownloads: boolean;
   onCloseDownloads: () => void;
+  /** The opt-in Alerts group below the tree. Already gated on `files_alerts` by
+   *  the host, so this is only the toggle's own state. */
+  showAlerts: boolean;
+  onCloseAlerts: () => void;
   /** Offers the tree's "Open in a new tab" action (see FileTree). Omitted where
    *  the host can't own a tab — a box's multi-root view, a detached window. */
   onOpenFolderTab?: (relPath: string) => void;
@@ -311,6 +316,8 @@ export function ProjectFilesPane({
   onSortChange,
   showDownloads,
   onCloseDownloads,
+  showAlerts,
+  onCloseAlerts,
   onOpenFolderTab,
   mountTree = true,
   compact,
@@ -546,6 +553,11 @@ export function ProjectFilesPane({
           onClose={onCloseDownloads}
         />
       )}
+      {/* Below Downloads, and with no project condition of its own: mail,
+          appointments and cards are global, so the group is the same wherever
+          the viewer is mounted. Only a box's multi-root view is excluded, and
+          that is already the toolbar button's rule. */}
+      {showAlerts && !activeBox && <AlertsSection onClose={onCloseAlerts} />}
     </>
   );
 }

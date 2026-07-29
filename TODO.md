@@ -22,8 +22,12 @@ unit.
 Exploration confirmed several ideas are partially built already — those notes
 are called out per item so we don't rebuild existing infrastructure.
 
-Numbering is **global and stable** (1–65); new ideas are appended with new
-numbers so existing references never shift. Open groups are lettered A, B, C…
+Numbering is **append-only and stable** — existing references never shift — but
+it is **not globally unique**: ten numbers were reused across group files
+(#55 in L+M, #65 in J+R, #66 in J+M+R, #80 in G+M, #82/#83/#84/#85 in G+L,
+#86 in G+O, #87 in M+O). Always qualify a reused number with its group letter
+(`L#55`, not `#55`) — a bare number is ambiguous for those ten. Code comments
+predating this note use bare numbers. Open groups are lettered A, B, C…
 (roughly in suggested sequence); completed groups are collected in
 [`todo/done.md`](todo/done.md), renumbered D.1, D.2… where that's already
 happened (a couple of done groups — N, U — are still under their original
@@ -154,25 +158,27 @@ toward broad, cloud, team-scale agent automation — and the defensibility
 
 | Group | File | Description |
 | --- | --- | --- |
-| A | [`todo/group-a.md`](todo/group-a.md) | Bottom Panel: Meta-Project Grouping — "project boxes" to group related pills into one (#13 core UI, #41 multi-project merge). |
-| C | [`todo/group-c.md`](todo/group-c.md) | Workspace Switching / Platform Stability — X11/KDE hidden-workspace hardening, window z-order, i3-style tiling mode, cross-OS verification. |
-| E | [`todo/group-e.md`](todo/group-e.md) | Git Worktree (#23) — phases 0–2 of [`docs/worktree_improvement_plan.md`](docs/worktree_improvement_plan.md) done (blocking defects, data loss, locality/containment), untested; worktree-aware tab groups and "open worktree as project" (phases 3–4) deferred. |
-| F | [`todo/group-f.md`](todo/group-f.md) | Session Restore — wire up unused `active_session.json` startup restore on top of existing terminal/tab persistence. |
-| G | [`todo/group-g.md`](todo/group-g.md) | Remote / SSH & Containerized Projects — largest net-new backend surface: work-remote axis, SSH/SFTP-native projects, Docker sandboxing, VPN. |
-| H | [`todo/group-h.md`](todo/group-h.md) | Cross-Platform: Windows & macOS Support — follow-ups on the already-landed platform foundations. |
-| I | [`todo/group-i.md`](todo/group-i.md) | Backend Runtime Follow-Ups — hardening on top of the first `services/` runtime boundary pass. |
-| J | [`todo/group-j.md`](todo/group-j.md) | Web & Mail Surfaces — URI routing to external apps (#33), plus in-app mail (#65) and browser (#61) counterparts. |
-| L | [`todo/group-l.md`](todo/group-l.md) | Center Panel: Tabs, Subwindows & Navigation — detach-to-window, tab UX fixes, keyboard nav, on top of the done tiling split model. |
-| M | [`todo/group-m.md`](todo/group-m.md) | In-App Viewers — text/TeX/image enhancements (Phase 2+) on top of the done file→tab viewer infrastructure. |
-| N | [`todo/group-n.md`](todo/group-n.md) | Internationalization (i18n) — full app-wide translation coverage. **DONE** (3716 keys, 5-language parity). Plan/history: [`docs/i18n_translation_plan.md`](docs/i18n_translation_plan.md). |
-| O | [`todo/group-o.md`](todo/group-o.md) | Project Security & Permissions — per-project policy for downloads, agent spawn, and git-push guardrails, plus the **sandbox-audit follow-ups** (#142–#151: move `.eldrun/sessions/` out of the project tree, confirm a repo-supplied Dockerfile, per-window capabilities, narrow `~/.claude/projects`, drop the env-var host-bound marker, stop the mounted `.git/config` from executing on the host). Phased plan: [`docs/sandbox_hardening_plan.md`](docs/sandbox_hardening_plan.md). |
-| R | [`todo/group-r.md`](todo/group-r.md) | Right Panel: Polish & App-Window Tracking — follow-on polish + a tracking-display bug on the done pin toggle. |
-| S | [`todo/group-s.md`](todo/group-s.md) | Local Agents via Ollama — generalize the local `vibe` model tab into a family of local Ollama-backed agent tabs. |
-| T | [`todo/group-t.md`](todo/group-t.md) | Smart / Native Shell Terminal — research done, not yet built; shell-completion via a new Ollama command. |
-| P | [`todo/group-p.md`](todo/group-p.md) | Git Hosting: Multi-Host Publishing — generalize the GitHub-only publish flow to GitLab + generic remote URLs. |
-| V | [`todo/group-v.md`](todo/group-v.md) | Native Presenter ("Deck") — post-Phase-7 hardening. **V.1 + V.2 (#93–#122) ✅ done:** both data-loss defects, the first-real-use failures, the anchoring rework (SyncTeX line anchors now exist at runtime), and real font embedding. V.3 (#123–#141 — performance and the differentiated bet) open. Follows Group M #90. |
-| W | [`todo/group-w.md`](todo/group-w.md) | Agent Skills (MVP) — browse/preview/one-click-install `SKILL.md` bundles into a project's `.claude/skills/`, Claude-only. Plan: [`docs/skills_plan.md`](docs/skills_plan.md). |
-| X | [`todo/group-x.md`](todo/group-x.md) | CalDAV Accounts — calendars synced from a server the user has an account on (typed URL + login, scheduled read-only sync, identity-based merge that preserves board placement). Phases 0–2 done/untested; Phase 3 (push) deliberately deferred. Plan: [`docs/caldav_plan.md`](docs/caldav_plan.md). |
+| A | [`todo/group-a-boxes.md`](todo/group-a-boxes.md) | Bottom Panel: Meta-Project Grouping — "project boxes" to group related pills into one (#13 core UI, #41 multi-project merge). |
+| C | [`todo/group-c-workspace.md`](todo/group-c-workspace.md) | Workspace Switching / Platform Stability — X11/KDE hidden-workspace hardening, window z-order, i3-style tiling mode, cross-OS verification. |
+| E | [`todo/group-e-worktree.md`](todo/group-e-worktree.md) | Git Worktree (#23) — phases 0–2 of [`docs/worktree_improvement_plan.md`](docs/worktree_improvement_plan.md) done (blocking defects, data loss, locality/containment), untested; worktree-aware tab groups and "open worktree as project" (phases 3–4) deferred. |
+| F | [`todo/group-f-session.md`](todo/group-f-session.md) | Session Restore — wire up unused `active_session.json` startup restore on top of existing terminal/tab persistence. |
+| G | [`todo/group-g-remote.md`](todo/group-g-remote.md) | Remote / SSH & Containerized Projects — largest net-new backend surface: work-remote axis, SSH/SFTP-native projects, Docker sandboxing, VPN. |
+| H | [`todo/group-h-crossplatform.md`](todo/group-h-crossplatform.md) | Cross-Platform: Windows & macOS Support — follow-ups on the already-landed platform foundations. |
+| I | [`todo/group-i-runtime.md`](todo/group-i-runtime.md) | Backend Runtime Follow-Ups — hardening on top of the first `services/` runtime boundary pass. |
+| J | [`todo/group-j-mail.md`](todo/group-j-mail.md) | Web & Mail Surfaces — URI routing to external apps (#33), plus in-app mail (#65) and browser (#61) counterparts, mail at-rest/OpenPGP encryption (#66), the IMAP session pool (#167) and OAuth 2.0 / `XOAUTH2` (#168). |
+| L | [`todo/group-l-tabs.md`](todo/group-l-tabs.md) | Center Panel: Tabs, Subwindows & Navigation — detach-to-window, tab UX fixes, keyboard nav, on top of the done tiling split model. |
+| M | [`todo/group-m-viewers.md`](todo/group-m-viewers.md) | In-App Viewers — text/TeX/image enhancements (Phase 2+) on top of the done file→tab viewer infrastructure. |
+| N | [`todo/group-n-i18n.md`](todo/group-n-i18n.md) | Internationalization (i18n) — full app-wide translation coverage. **DONE** (4130 keys, 5-language parity). Plan/history: [`docs/i18n_translation_plan.md`](docs/i18n_translation_plan.md). |
+| O | [`todo/group-o-security.md`](todo/group-o-security.md) | Project Security & Permissions — per-project policy for downloads, agent spawn, and git-push guardrails, plus the **sandbox-audit follow-ups** (#142–#151: move `.eldrun/sessions/` out of the project tree, confirm a repo-supplied Dockerfile, per-window capabilities, narrow `~/.claude/projects`, drop the env-var host-bound marker, stop the mounted `.git/config` from executing on the host). Phased plan: [`docs/sandbox_hardening_plan.md`](docs/sandbox_hardening_plan.md). |
+| R | [`todo/group-r-panel.md`](todo/group-r-panel.md) | Right Panel: Polish & App-Window Tracking — follow-on polish + a tracking-display bug on the done pin toggle. |
+| S | [`todo/group-s-agents.md`](todo/group-s-agents.md) | Local Agents via Ollama — generalize the local `vibe` model tab into a family of local Ollama-backed agent tabs. Also the two things the local-model stack must stop *assuming*: the GPU (#200, done) and the runtime itself (**#201** — Ollama is wired in across 33 commands and a hardcoded `127.0.0.1:11434`; the survey says keep it as the default, since `ollama launch` has no equivalent, but put a seam behind it — starting with `ollama_host`, a setting that is read by nothing). |
+| T | [`todo/group-t-shell.md`](todo/group-t-shell.md) | Smart / Native Shell Terminal — research done, not yet built; shell-completion via a new Ollama command. |
+| P | [`todo/group-p-hosting.md`](todo/group-p-hosting.md) | Git Hosting: Multi-Host Publishing — generalize the GitHub-only publish flow to GitLab + generic remote URLs. |
+| V | [`todo/group-v-presenter.md`](todo/group-v-presenter.md) | Native Presenter ("Deck") — post-Phase-7 hardening. **V.1 + V.2 (#93–#122) ✅ done:** both data-loss defects, the first-real-use failures, the anchoring rework (SyncTeX line anchors now exist at runtime), and real font embedding. V.3 (#123–#141 — performance and the differentiated bet) mostly open, but **not untouched**: #131 (deck i18n) is complete, #126 is 4/6 done, #124 partly paid. Follows Group M #90. |
+| W | [`todo/group-w-skills.md`](todo/group-w-skills.md) | Agent Skills (MVP) — browse/preview/one-click-install `SKILL.md` bundles into a project's `.claude/skills/`, Claude-only. Plan: [`docs/skills_plan.md`](docs/skills_plan.md). |
+| Y | [`todo/group-y-verification.md`](todo/group-y-verification.md) | **Verification, Release Gates & Code Health (#161–#166)** — gaps in the machinery that checks the work: the 2476-test frontend suite never runs in CI, `privacy-check.sh` is mandated but wired to nothing on a public repo, no lint/clippy gate, the first live-QA session, promoted security items, and the three god-files. Created 2026-07-28 from a full-repo evaluation; **#161–#164 outrank feature work**. #161/#162 done and #163 mostly done 2026-07-28 (CI now runs vitest, the privacy scan, ESLint and clippy); #164 needs a human at the keyboard, #166 is unblocked. |
+| X | [`todo/group-x-caldav.md`](todo/group-x-caldav.md) | CalDAV Accounts — calendars synced from a server the user has an account on (typed URL + login, scheduled read-only sync, identity-based merge that preserves board placement). Phases 0–3 done/untested — including two-way push (opt-in per account, default off), the conflict dialog, the redirect-credential fix and the pre-import `.ics` review. Plan: [`docs/caldav_plan.md`](docs/caldav_plan.md). |
+| Z | [`todo/group-z-server.md`](todo/group-z-server.md) | **Eldrun Server (#169–#199) — plan only, nothing built.** A self-hosted box (e.g. a Raspberry Pi) holding projects, the calendar and the to-do board, so several authenticated people can sync and collaborate on both. Shape: **provision a server, don't build one** — `sshd` + Radicale + bare git repos reached over the pooled SSH ControlMaster (no TLS, no PKI, no listening daemon, no ARM build); per-device Ed25519 identity so the unattended path never touches the keychain; CalDAV + a small native board overlay; shared projects as a registry + a **bare** git remote, never a shared working tree. **#169–#172 are prerequisites and pre-existing debt** (the uncommitted CalDAV push work, P#79's generic remote URL, calendar CAS, `write_json_atomic` fsync); **writable project sharing (#193–#196) is gated** on Group O #151's `.git/hooks` residual. Design: [`docs/eldrun_server_plan.md`](docs/eldrun_server_plan.md). |
 
 Completed groups (code-complete, automated tests green, manual QA pending
 across the board) live in [`todo/done.md`](todo/done.md).
@@ -182,9 +188,18 @@ across the board) live in [`todo/done.md`](todo/done.md).
 Group-wise — tackle whole groups in this order, since items within a group
 share files and context:
 
-- **Quick wins next:** J (#33 URI routing — last remaining global-apps item; the
-  in-app mail #65 / browser #61 in the same group are the larger net-new
-  surfaces, weigh security first and pair with #60).
+- **Before anything else: Y (#161–#163)** — three near-zero-effort fixes
+  (~5 lines total) that close the largest unguarded risks: the frontend suite
+  isn't in CI, and the public repo's secret scan isn't in the pre-push hook.
+  Then **Y#164**, the first live-QA session, which unblocks all 145 manual
+  boxes.
+
+- **Quick wins next:** ~~J #33 URI routing~~ — **shipped** (`src/lib/linkTarget.ts:124`
+  `routeUri`, `:341` `openRoutedUri`, tests `src/__tests__/LinkTarget.test.ts`).
+  The in-app mail J#65 / browser #61 in the same group are the larger net-new
+  surfaces, weigh security first and pair with #60. Real quick wins now:
+  R #64 (the liveness helper `commands/apps.rs:1669 check_pid_alive` already
+  exists and is simply never called from `src/`) and S #78.
 - **Then correctness/stability:** C (X11/KDE workspace switching) — the
   highest-risk area; do #15/#16/#17 together.
 - **Then larger features:**
@@ -204,10 +219,14 @@ share files and context:
 - **Project policy:** O (#58–#60) — per-project security/permission model;
   touches the create/import dialog and the agent-spawn + git-push paths.
 - **Right-panel polish:** R (#63 needle contrast, #64 app-window tracking bug).
-- **Local agents:** S (#72–#78) — generalize the vibe local-agent tab to the
-  `ollama launch` family (Claude Code, Hermes, OpenClaw, OpenCode); do the
-  registry + backend argv (#72–#74) first, then the picker (#75) and per-agent
-  verification (#76). Blocked at runtime until the local Ollama runner is fixed.
+- **Local agents:** S — **mostly shipped, never recorded.** #72 (registry,
+  `commands/ollama.rs:2211 LOCAL_DRIVERS`), #73 (`prepare_local_launch` /
+  `list_local_drivers`, `lib.rs:1103`) and #75 (picker in `TabBar.tsx:223` /
+  `NewTabMenu.tsx:190`) are done. Remaining: **#78** (nothing surfaces this in
+  the Ollama panel — the feature is invisible), **#77** (a fallback driver tab
+  carries `cmd: "codex"`/`"opencode"`, which collide with `RESUMABLE_AGENTS`
+  at `src/stores/tabs.ts:4043`), plus the #74/#76 remainders. `hermes` was
+  dropped; `codex`+`droid` added instead.
 - **Git hosting:** P (#79) — multi-host publishing (GitLab + generic remote URL)
   on top of the done GitHub-only flow (D.10 #22); self-contained, pickable anytime.
 - **Cross-platform (parallel track):** H (Windows #30 / macOS #31 follow-ups) —
@@ -216,13 +235,34 @@ share files and context:
   (PTY resurrection, `.eldrun/` promotion, durable window metadata, tests);
   pairs with F (session restore).
 
+- **Multi-person (largest net-new concept, plan only):** Z (#169–#199) — the
+  self-hosted Eldrun server. **Do not start it at #173.** Its first four items
+  are pre-existing debt worth paying regardless of whether the server is ever
+  built: **#169** is now down to *live-testing* the CalDAV push work (it is
+  code-complete with the conflict dialog, and `todo/group-x-caldav.md` #160 plus
+  `docs/context/caldav.md` describe that state — but nothing in the stack has
+  ever spoken to a real server), **#170** is Group P #79's one open bullet, and **#171/#172** fix two
+  real single-machine defects — `calendar.json` writes have no compare-and-swap,
+  so two Eldrun windows already lose an edit silently today, and
+  `write_json_atomic` has no `fsync`. Then the calendar/board track (Z.1–Z.3),
+  which is the half that actually delivers what was asked and is largely
+  configuration over the existing CalDAV client. **Read-only project sharing
+  (Z.4) is shippable; writable sharing (Z.5) is gated** and may correctly never
+  ship — see the plan's §9. Overlaps to respect rather than rebuild: G (fenced
+  off — the shared axis must not touch the work-remote axis), O (#58 should
+  *gate* the join flow, not be duplicated; #151 is the blocker; #145 gets worse),
+  P (#79 is a prerequisite), X (this feature is the answer to the question that
+  deferred #160).
+
 ## Verification approach (per item, when implemented)
 
 - Frontend changes: `npx tsc --noEmit`, plus existing/added tests under
   `src/__tests__/` (e.g. the session-restore test for Group F).
 - Backend changes: `cargo test --manifest-path src-tauri/Cargo.toml`.
-- Runtime validation: **do not** launch Eldrun from the agent — ask you to
-  restart your running instance to verify workspace/window/UI behavior.
+- Runtime validation: Claude **must not** launch Eldrun (user, 2026-07-29), and
+  must not stop an instance it did not start. The user runs the app; Claude
+  either asks them to click through and report back, or reuses an already-open
+  window (`src/` edits hot-reload into it). See `CLAUDE.md` § Running.
 
 ---
 

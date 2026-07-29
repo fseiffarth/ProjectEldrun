@@ -1,15 +1,31 @@
 # CalDAV accounts — the model, and the plan around it
 
-Status (2026-07-28): **Phases 0–2 implemented, Phase 3 deliberately not.**
-Protocol plumbing, accounts + discovery + subscribe with the identity-based
-reconciliation, and scheduled read-only sync with visible failures are on
-`develop`; two-way push is gated on this document's own open questions (write
-access against an institutional calendar, and an undesigned conflict UX) and was
-explicitly deferred rather than forgotten. **Nothing has run against a real
-CalDAV server** — the parsers and the merge are fixture- and unit-tested, the
-transport has never spoken to anything. What shipped, and the invariants worth
-knowing before touching it, is summarized in `docs/context/caldav.md`; the text
-below is the plan as written, kept as the record of the reasoning.
+Status (2026-07-29): **Phases 0–3 implemented.** Protocol plumbing, accounts +
+discovery + subscribe with the identity-based reconciliation, scheduled sync with
+visible failures, and **two-way push** are on `develop`. This document's two open
+questions were answered rather than resolved in code: write access is a per-account
+opt-in that **defaults off** (so an untouched account behaves exactly as Phases
+1–2 did), and the conflict UX is a three-answer dialog — keep mine / use the
+server's / decide later — with no "merge", built on a `412` that travels as a
+value rather than an error. **Nothing has run against a real CalDAV server** —
+the parsers, the merge, the push gate and the resource serializer are fixture-
+and unit-tested, the transport has never spoken to anything. What shipped, and
+the invariants worth knowing before touching it, is summarized in
+`docs/context/caldav.md`; the text below is the plan as written, kept as the
+record of the reasoning.
+
+Two things landed with Phase 3 that the plan below does not mention, both
+because implementing push is what exposed them:
+
+- **The password no longer follows a redirect off its own host.** This module
+  follows hops itself, which meant `reqwest`'s cross-origin header stripping was
+  not in play and `basic_auth` was re-attached on every hop. See
+  `credentials_may_follow` and the context doc.
+- **`UID` and `RECURRENCE-ID` now round-trip**, and `serializeIcs` writes a
+  series' occurrence overrides. Without the first, a push creates a second copy
+  of every appointment; without the second, it writes two masters under one UID.
+  The same change fixes the *file* export, which had been dropping occurrence
+  edits silently since it was written.
 
 Companion feature, already shipped: **`Calendar.source_url`** — a calendar can
 hold an anonymous, unauthenticated ICS feed URL and "Refresh from URL" replaces

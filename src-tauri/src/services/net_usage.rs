@@ -189,7 +189,7 @@ mod linux {
                 baselines.insert(id.clone(), cur);
             }
 
-            if disconnected || tick % FLUSH_EVERY_TICKS == 0 {
+            if disconnected || tick.is_multiple_of(FLUSH_EVERY_TICKS) {
                 flush(&mut pending).await;
             }
         }

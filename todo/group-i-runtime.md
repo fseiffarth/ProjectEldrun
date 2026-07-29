@@ -15,13 +15,23 @@ but backend-owned.*
       restart).
     - Terminal/agent transcript storage if restart recovery needs readable
       historical output rather than metadata-only restoration.
-    - Promote `.eldrun/` runtime files from optional mirrors to the primary
-      source once compatibility reads from `project.json` are validated.
+    - ⛔ ~~Promote `.eldrun/` runtime files from optional mirrors to the primary
+      source once compatibility reads from `project.json` are validated.~~
+      **OBSOLETE — superseded by the sandbox-hardening decision, which went the
+      opposite way.** The state dir is now primary and the project-tree copy is
+      export-only, enforced by `tests/project_tree_intent.rs` (see
+      `schema/session.rs:8-16`, `services/terminal_service.rs`). Promoting
+      in-tree files back to primary would reintroduce the attacker-controlled
+      -input problem that change was made to close.
     - Durable project-window metadata under `.eldrun/sessions/windows.json`
       beyond registry IDs (window role/origin, restore command, optional file
       target, future geometry/focus fields).
     - Move file-navigation runtime state backend-side once switching is stable:
       center file tabs, right-panel folder, breadcrumbs, history.
+      **Mostly done** — center file tabs and the right-panel folder now live
+      backend-side (`services/project_runtime.rs:317,352,368`,
+      `schema/session.rs:49-58` `FileTabSession`, persisted as `filetabs.json`).
+      Remaining: breadcrumbs and history.
     - Focused tests for backend runtime switching with mocked services
       (time flushing, old-project save, project-window hide/show, download
       routing, root runtime handling, no respawn of already-live tabs).

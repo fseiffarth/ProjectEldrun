@@ -33,7 +33,16 @@ import type {
   TaskColumn,
 } from "../types";
 import type { MailHeader } from "../types/mail";
-import { addDays, datePart, daysBetween, todayStr, toStamp } from "./calendarTime";
+import {
+  MINUTES_PER_DAY,
+  addDays,
+  datePart,
+  daysBetween,
+  minutesBetween,
+  timePart,
+  todayStr,
+  toStamp,
+} from "./calendarTime";
 import { dayAgenda, visibleCalendarIds } from "../stores/calendar";
 import type { TranslationKey } from "./i18n";
 
@@ -261,10 +270,28 @@ export function priorityBucket(p: number): "high" | "normal" | "low" | "none" {
   return "low";
 }
 
-/** Overdue: a due date in the past, and not complete. */
-export function isOverdue(task: CalendarTask, today: string = todayStr()): boolean {
+/**
+ * Overdue: the deadline is behind us, and the card is not complete.
+ *
+ * `now` may be a bare date (`"2026-07-31"`) or a full stamp
+ * (`"2026-07-31T14:00"`), and which one is passed decides how much this can
+ * know. A card carrying an **hour** deadline (`due` with a `T…`) is late the
+ * minute that hour passes — but only a caller holding a clock can say so, so a
+ * date-only `now` falls back to comparing days, which is the same answer the
+ * day-granular version always gave. The two never disagree in the direction that
+ * matters: a coarser clock is late in reporting, never early.
+ */
+export function isOverdue(task: CalendarTask, now: string = toStamp(new Date())): boolean {
   if (!task.due || task.percent >= 100) return false;
-  return datePart(task.due) < today;
+  const day = datePart(task.due);
+  const today = datePart(now);
+  if (day !== today) return day < today;
+  // Same day: only an hour deadline read against a clock can be late.
+  const deadline = timePart(task.due);
+  const clock = timePart(now);
+  // Strictly past, so the deadline's own minute still reads as due-now rather
+  // than as missed — `severityFor`'s boundary, and the same one on both sides.
+  return !!deadline && !!clock && deadline < clock;
 }
 
 export function subtaskProgress(
@@ -349,6 +376,49 @@ export function removeSubtask(task: CalendarTask, id: string): CalendarTask {
 }
 
 /**
+ * Move one step to `to` — **an index into the list without it**.
+ *
+ * That is the one thing worth stating, because it is the convention the drag's
+ * drop-slot arithmetic already produces (`stepDropSlot` counts the *other* rows
+ * the pointer has passed, exactly as `MachinesIndicator`'s row reorder does): a
+ * step pulled out of the list and spliced back in cannot be addressed in the
+ * coordinates of the list it is still in, and mixing the two is how a downward
+ * drag lands one row short.
+ *
+ * The index is clamped rather than refused — a pointer that left the list at the
+ * bottom means "last", not "nothing happened". An unknown id, and a move that
+ * changes nothing, both return the task unchanged so a stray drop is not a write.
+ */
+export function moveSubtask(task: CalendarTask, id: string, to: number): CalendarTask {
+  const subs = task.subtasks ?? [];
+  const from = subs.findIndex((s) => s.id === id);
+  if (from < 0) return task;
+  const rest = subs.filter((_, i) => i !== from);
+  const at = Math.max(0, Math.min(Math.trunc(to), rest.length));
+  if (at === from) return task;
+  rest.splice(at, 0, subs[from]);
+  return { ...task, subtasks: rest };
+}
+
+/**
+ * Where a dragged step would land, from the pointer's Y over the rects measured
+ * when the drag started: the number of OTHER rows whose midpoint it has passed —
+ * i.e. `moveSubtask`'s index into the list without the dragged step.
+ *
+ * Kept here rather than in either component because both checklist surfaces drag
+ * the same way, and because it is the half of the gesture that can be tested.
+ */
+export function stepDropSlot(
+  rects: { id: string; top: number; height: number }[],
+  id: string,
+  clientY: number,
+): number {
+  return rects
+    .filter((r) => r.id !== id)
+    .filter((r) => clientY > r.top + r.height / 2).length;
+}
+
+/**
  * Tick or untick a card: completion **and** placement in one edit.
  *
  * Both halves, because they are one fact seen from two surfaces — writing only
@@ -411,9 +481,11 @@ export function todosOverdue(
   calendars: Calendar[],
   now: Date = new Date(),
 ): boolean {
-  const today = todayStr(now);
+  // The full stamp, not just the day: an hour deadline that passed at lunchtime
+  // is overdue, and the badge's emphasis has to say so before midnight.
+  const stamp = toStamp(now);
   const visible = visibleCalendarIds(calendars);
-  return tasks.some((t) => visible.has(t.calendar_id) && isOverdue(t, today));
+  return tasks.some((t) => visible.has(t.calendar_id) && isOverdue(t, stamp));
 }
 
 /**
@@ -441,10 +513,17 @@ export interface UrgentTodos {
   tomorrow: CalendarTask[];
 }
 
-/** Soonest first, then priority, then title — `id` breaking the last tie. */
+/**
+ * Soonest first, then priority, then title — `id` breaking the last tie.
+ *
+ * The whole stamp, not its date half: two cards due today at 09:00 and at 17:00
+ * are not equally soon, and `"2026-07-31"` sorts before `"2026-07-31T09:00"`,
+ * which puts the whole-day card ahead of both — the right answer, since a
+ * deadline with no hour is owed from the start of the day.
+ */
 function byUrgency(a: CalendarTask, b: CalendarTask): number {
-  const ad = a.due ? datePart(a.due) : "9999";
-  const bd = b.due ? datePart(b.due) : "9999";
+  const ad = a.due ?? "9999";
+  const bd = b.due ?? "9999";
   if (ad !== bd) return ad.localeCompare(bd);
   // `|| 10` is `orderedColumn`'s rule: priority 0 means *unset*, which sorts
   // after an explicit low (9) rather than ahead of a high (1).
@@ -458,25 +537,141 @@ export function urgentTodos(
   calendars: Calendar[],
   now: Date = new Date(),
 ): UrgentTodos {
+  const stamp = toStamp(now);
   const today = todayStr(now);
   const tomorrow = addDays(today, 1);
   const visible = visibleCalendarIds(calendars);
   const open = tasks.filter(
     (t) => t.percent < 100 && visible.has(t.calendar_id) && !!t.due,
   );
+  // Overdue is `isOverdue`'s call and not a second date comparison, which is
+  // what keeps this list and the badge's overdue emphasis from disagreeing about
+  // a card whose hour deadline passed earlier today — it is in Overdue here, so
+  // "Due today" is what is *left* of today rather than all of it.
+  const late = new Set(open.filter((t) => isOverdue(t, stamp)).map((t) => t.id));
   const on = (cmp: (date: string) => boolean) =>
-    open.filter((t) => cmp(datePart(t.due!))).sort(byUrgency);
+    open.filter((t) => !late.has(t.id) && cmp(datePart(t.due!))).sort(byUrgency);
   return {
-    overdue: on((d) => d < today),
+    overdue: open.filter((t) => late.has(t.id)).sort(byUrgency),
     today: on((d) => d === today),
     tomorrow: on((d) => d === tomorrow),
   };
 }
 
-/** How many days late a card is — the "3d late" chip on an overdue row. */
+/**
+ * How many days late a card is — the "3d late" chip on an overdue row.
+ *
+ * Whole days between the two *dates*, so an hour deadline missed earlier the
+ * same day is `0` and the caller renders no chip: "0 d late" is a worse thing to
+ * print than nothing, and the row is already under an "Overdue" heading.
+ */
 export function daysLate(task: CalendarTask, now: Date = new Date()): number {
   if (!task.due) return 0;
   return Math.max(0, daysBetween(datePart(task.due), todayStr(now)));
+}
+
+/**
+ * How far a card's deadline is from now, as a **unit and a count** — the thing
+ * every "3 d late" / "in 2 h" chip is drawn from, in one place so the header
+ * list and the board card cannot say different things about one card.
+ *
+ * What decides the unit is **what the deadline actually says**, and the two
+ * kinds of `due` say different amounts:
+ *
+ * A **whole-day** deadline (`due` with no `T…`) is read in whole calendar days
+ * at every distance, counted between the two *dates* and never as minutes ÷
+ * 1440 — a card due Friday is "2d" from Wednesday whatever the hour, whereas
+ * dividing the minutes mixes the time of day into a figure that names a day and
+ * makes one deadline read as 2 in the evening and 3 in the small hours. It gets
+ * no hours at all: "in 9h" for a card due "tomorrow" is a precision it does not
+ * have, and 00:00 is not what its author meant.
+ *
+ * A **fixed-hour** deadline is a moment, so the whole distance to it is known
+ * and it is given in full: days **and** hours together past a day (`2d 5h`),
+ * hours inside a day, minutes inside an hour. Rolling that to a bare "2d" would
+ * throw away the half of the answer that decides whether the card is this
+ * afternoon's problem.
+ *
+ * `null` means there is nothing worth printing: no deadline, a whole-day one due
+ * today (the row is already under a heading saying so), or an hour deadline that
+ * is passing this very minute.
+ */
+export interface DueDelta {
+  /** The deadline is behind us — `isOverdue`'s side, on the same boundary. */
+  late: boolean;
+  unit: "d" | "dh" | "h" | "min";
+  /** Days for `d`/`dh`, hours for `h`, minutes for `min`. */
+  count: number;
+  /** The hours on top of the whole days — `dh` only. */
+  hours?: number;
+}
+
+/**
+ * The measurement itself, over a **distance** rather than a task — so a surface
+ * that already knows how far off something is (the file viewer's Alerts strip,
+ * whose rows are mail and appointments as well as cards) reads it in exactly the
+ * units a board card does, instead of a second rounding that disagrees with it.
+ *
+ * Both arguments are **future-positive**, the sense `lib/alerts` measures in:
+ * `minutesAway`/`daysAway` are negative once the moment is behind us.
+ */
+export function awayDelta(
+  minutesAway: number,
+  daysAway: number,
+  allDay: boolean,
+): DueDelta | null {
+  if (allDay) {
+    return daysAway === 0
+      ? null
+      : { late: daysAway < 0, unit: "d", count: Math.abs(daysAway) };
+  }
+  const abs = Math.abs(minutesAway);
+  // Strictly past is late, so the deadline's own minute reads as due-now rather
+  // than as missed — `isOverdue`'s boundary, and the same one on both sides.
+  if (abs < 1) return null;
+  const late = minutesAway < 0;
+  if (abs < 60) return { late, unit: "min", count: Math.round(abs) };
+  if (abs < MINUTES_PER_DAY) return { late, unit: "h", count: Math.round(abs / 60) };
+  // Past a day, and the moment names an hour, so both halves are real: whole
+  // days from the elapsed minutes (not the calendar dates — the two halves must
+  // come from one measurement or "2d 23h" can land beside a 4-day gap), then the
+  // remaining hours. Rounding those can reach 24, which is one more whole day.
+  let wholeDays = Math.floor(abs / MINUTES_PER_DAY);
+  let hours = Math.round((abs % MINUTES_PER_DAY) / 60);
+  if (hours >= 24) {
+    wholeDays += 1;
+    hours = 0;
+  }
+  // "2d 0h" is a worse way to say "2d", so the hours are dropped when there are
+  // none — which is also the whole-day deadline's shape, and prints alike.
+  return hours === 0
+    ? { late, unit: "d", count: wholeDays }
+    : { late, unit: "dh", count: wholeDays, hours };
+}
+
+export function dueDelta(task: CalendarTask, now: Date = new Date()): DueDelta | null {
+  if (!task.due) return null;
+  const stamp = toStamp(now);
+  if (!timePart(task.due)) {
+    return awayDelta(0, daysBetween(datePart(stamp), datePart(task.due)), true);
+  }
+  return awayDelta(minutesBetween(stamp, task.due), 0, false);
+}
+
+/**
+ * The phrase a `DueDelta` is printed as — the key, so the wording itself stays
+ * in `i18n` and the *choice* of wording stays here, said once for every chip
+ * that shows one (the header's hover list, the board card).
+ */
+export function dueDeltaKey(d: DueDelta): TranslationKey {
+  if (d.late) {
+    if (d.unit === "d") return "todo.menuLate";
+    if (d.unit === "dh") return "todo.menuLateDaysHours";
+    return d.unit === "h" ? "todo.menuLateHours" : "todo.menuLateMinutes";
+  }
+  if (d.unit === "d") return "todo.menuDueInDays";
+  if (d.unit === "dh") return "todo.menuDueInDaysHours";
+  return d.unit === "h" ? "todo.menuDueInHours" : "todo.menuDueInMinutes";
 }
 
 // ── The rails ───────────────────────────────────────────────────────────────
@@ -550,6 +745,171 @@ export function selectUrgentMail(
   return out;
 }
 
+// ── Converting something else into a card ───────────────────────────────────
+
+/**
+ * **One card shape for every conversion.**
+ *
+ * The two rails both turn something that is not a card into one — a marked mail,
+ * an appointment — and the temptation is to let each build the record it happens
+ * to need. That is what produces two kinds of card on one board: one that lands
+ * in the backlog and one that lands wherever, one that records where it came
+ * from and one that says so only in its title. So both go through
+ * `convertedCard`, and the fixed part is fixed here:
+ *
+ * - **the backlog** (the board's first column) — a converted card is an intake,
+ *   not a decision about when it will be done, and the drag onto Today is the
+ *   user's to make;
+ * - **open**, `percent: 0`, unranked (the first move ranks it);
+ * - **`created`** stamped from the caller's clock, as everything else that mints
+ *   a card does — this module has no business reading the clock for a write;
+ * - **a source line in `notes`**, and a **link** (`mail` / `event`) recording the
+ *   object it came from, so "why does this card exist" survives the mail being
+ *   deleted or the calendar being unsubscribed.
+ *
+ * The source line is built from **glyph + the object's own data, never a word**,
+ * which is what keeps these builders pure and out of `i18n`: a card is a stored
+ * record, and a note written in the UI language of the day it was created would
+ * be a fossil of that setting sitting in `calendar.json` forever.
+ */
+export interface CardConversion {
+  /** Calendar to file the card under — the board's default. */
+  calendarId: string;
+  /** The board's first column. Named rather than assumed, because a user can
+   *  rename or reorder the columns and "backlog" is then just a word. */
+  columnId: string;
+  /** The clock, injected: the frontend owns local wall-clock stamps. */
+  now?: Date;
+}
+
+function convertedCard(
+  conv: CardConversion,
+  fields: {
+    title: string;
+    notes: string;
+    priority: number;
+    due?: string | null;
+    start?: string | null;
+    mail?: CalendarTask["mail"];
+    event?: CalendarTask["event"];
+  },
+): Omit<CalendarTask, "id"> {
+  return {
+    calendar_id: conv.calendarId,
+    title: fields.title,
+    notes: fields.notes,
+    due: fields.due ?? null,
+    start: fields.start ?? null,
+    priority: fields.priority,
+    percent: 0,
+    column: conv.columnId,
+    created: toStamp(conv.now ?? new Date()),
+    ...(fields.mail ? { mail: fields.mail } : {}),
+    ...(fields.event ? { event: fields.event } : {}),
+  };
+}
+
+/**
+ * A marked mail as a card.
+ *
+ * `fallbackTitle` is the caller's, because "(no subject)" is the one string here
+ * that a user reads as *text* rather than as data — the mail client already
+ * translates it, and this builder must not own a second spelling of it.
+ *
+ * The mark becomes the card's priority (urgent → high, important → normal) and is
+ * *also* frozen into the link as `priority_at_convert`: the mark can be cleared
+ * on the message afterwards, and the card's own priority can be edited, so
+ * neither one is a record of why the card was made.
+ */
+export function taskFromMail(
+  header: MailHeader,
+  conv: CardConversion,
+  fallbackTitle: string,
+): Omit<CalendarTask, "id"> {
+  const from = header.from?.name || header.from?.address || "";
+  const address = header.from?.address ?? "";
+  // Both halves when the display name is not the address — an attacker-chosen
+  // name must never stand in for the identity, `MailList`'s rule.
+  const sender = from && address && from !== address ? `${from} <${address}>` : from || address;
+  return convertedCard(conv, {
+    title: header.subject || fallbackTitle,
+    notes: sender ? `✉ ${sender}` : "✉",
+    priority: header.priority === "urgent" ? 1 : 5,
+    due: null,
+    mail: {
+      message_id: header.id,
+      account_id: header.account_id,
+      folder_id: header.folder_id,
+      subject: header.subject,
+      from: address,
+      priority_at_convert: header.priority ?? "",
+    },
+  });
+}
+
+/**
+ * An appointment as a card — `taskFromMail`'s twin, through the same builder.
+ *
+ * Two decisions are the appointment's own. It is **due on the day it happens**,
+ * which is what puts the card in the header badge's count and turns it red the
+ * day after — a meeting you have not prepared for is late in exactly the way an
+ * overdue card is. And it is **one card per occurrence**: `start` is this
+ * instance's, not the series', so next week's stand-up is a card of its own
+ * rather than a duplicate the board would have to reconcile.
+ */
+export function taskFromOccurrence(
+  occ: Occurrence,
+  conv: CardConversion,
+  fallbackTitle: string,
+): Omit<CalendarTask, "id"> {
+  const when = occ.allDay
+    ? datePart(occ.start)
+    : `${datePart(occ.start)} ${timePart(occ.start)}–${timePart(occ.end)}`;
+  return convertedCard(conv, {
+    title: occ.title || fallbackTitle,
+    notes: occ.location ? `🗓 ${when} · ${occ.location}` : `🗓 ${when}`,
+    priority: 5,
+    due: datePart(occ.start),
+    start: occ.start,
+    event: {
+      event_id: occ.eventId,
+      occurrence_start: occ.occurrenceStart,
+      calendar_id: occ.calendarId,
+      title: occ.title,
+      location: occ.location,
+    },
+  });
+}
+
+/**
+ * Does an **open** card already stand for this occurrence?
+ *
+ * The agenda rail asks this per row and, unlike the mail rail, does *not* drop
+ * the row when the answer is yes — the mail rail is a list of things demanding an
+ * answer, so a converted message leaving it is the point, while this rail is
+ * *the day*: hiding the 10:00 meeting because it has a card would make the rail
+ * disagree with the calendar and with the header badge about what today holds.
+ * The row simply stops offering a second card.
+ *
+ * Matched on the event **and the occurrence**, so a weekly series carded once is
+ * not reported as carded for every future week. A completed card does not count,
+ * for `selectUrgentMail`'s reason: a finished todo is no reason not to make
+ * another one.
+ */
+export function occurrenceCardOf(
+  occ: Occurrence,
+  tasks: CalendarTask[],
+): CalendarTask | null {
+  return (
+    tasks.find(
+      (t) =>
+        t.percent < 100 &&
+        t.event?.event_id === occ.eventId &&
+        (t.event.occurrence_start ?? "") === occ.occurrenceStart,
+    ) ?? null
+  );
+}
+
 // ── Drag geometry ───────────────────────────────────────────────────────────
 
 /**
@@ -569,6 +929,28 @@ export function insertionIndex(
     if (y < top + height / 2) return i;
   }
   return rects.length;
+}
+
+/**
+ * The slot a card **already occupies** in its own column, in the same
+ * exclusive-of-itself index space `insertionIndex` and the backend's
+ * `TaskPlacement.index` are counted in.
+ *
+ * It is simply the card's position in the ordered column — removing a card at
+ * position `p` and re-inserting it at index `p` puts it back where it was — and
+ * that identity is the whole reason this is a named function rather than a
+ * `findIndex` at the call site. Two things depend on it and would be wrong in
+ * opposite directions if they disagreed: the drag opens with the placeholder in
+ * this slot (so nothing jumps at pickup and the preview is truthful from the
+ * first frame), and a drop that lands back on it is skipped instead of written
+ * (`move_tasks_at`'s own `settled` check computes the same number).
+ *
+ * A card that is not in the list at all — it was filtered out, or deleted under
+ * the drag — appends.
+ */
+export function currentSlot(ordered: CalendarTask[], taskId: string): number {
+  const at = ordered.findIndex((t) => t.id === taskId);
+  return at < 0 ? ordered.length : at;
 }
 
 /**

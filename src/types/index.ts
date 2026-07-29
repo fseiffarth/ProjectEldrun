@@ -117,6 +117,12 @@ export interface Settings {
   /** UI language for Eldrun's interface. Unset/unknown falls back to English.
    *  Applied live via `lib/i18n` (`applyLanguage`); the backend round-trips it. */
   language?: "en" | "de" | "es" | "fr" | "it";
+  /** App-wide clock: `true` = 24-hour, `false` = 12-hour AM/PM. **Unset is not
+   *  `false`** — it means "not chosen", and the clock is then derived from
+   *  `language` (English → 12-hour, the rest → 24-hour). Read through
+   *  `lib/timeFormat`'s `useUse24h()`, never off `settings` directly, or the
+   *  language default is what gets missed. */
+  time_format_24h?: boolean;
   /** The MAIN window's UI zoom factor (helps on high-DPI/4K monitors). `1` (or
    *  unset) is 100% — the default look; applied as the webview's native zoom.
    *  Clamped to [0.5, 3]. Zoom is **per window**: a detached popout persists its
@@ -126,7 +132,9 @@ export interface Settings {
   calendar_week_start?: 0 | 1;
   /** Calendar: the view a fresh calendar tab opens on. Default `"month"`. */
   calendar_default_view?: CalendarViewKind;
-  /** Calendar: 24-hour clock instead of AM/PM. Default off. */
+  /** **Retired** — the calendar-only 24-hour switch, superseded by the app-wide
+   *  `time_format_24h`. Nothing writes it; `lib/timeFormat.ts` reads it once as
+   *  a fallback so a user who had set it keeps that clock everywhere. */
   calendar_time_format_24h?: boolean;
   /** Calendar: first/last hour the day and week grids scroll to. Default 8/20. */
   calendar_day_start_hour?: number;
@@ -149,6 +157,52 @@ export interface Settings {
    *  — and `experimental()` additionally means "on in debug", which would put a
    *  third header button in every developer's window unasked. */
   todo_board?: boolean;
+  /** Right panel: the **Alerts** group in the file viewer — urgent mail, the
+   *  calendar entries about to start, and the to-do cards whose due date is here
+   *  or past, merged into one time-ordered strip. **Default true.**
+   *
+   *  A plain setting rather than an experimental flag, for `todo_board`'s
+   *  reasons: everything it shows is already on screen somewhere else, it reads
+   *  the two stores that already own that data (`calendar.json`'s events and
+   *  tasks, the local mail priority index) and it opens no socket of its own.
+   *
+   *  **This flag IS the group's visibility**, not a preference sitting above a
+   *  separate shown/hidden state, and that is what makes the default safe to
+   *  invert: the toolbar's 🔔 writes this key, so closing the group persists and
+   *  survives a relaunch instead of coming back at the next remount — and this
+   *  viewer is mounted many times over at once (the right panel, every Files
+   *  tab, every subwindow's docked column, every popout), so a per-surface flag
+   *  would have to be dismissed once per surface. The button is deliberately
+   *  rendered whether or not the group is on: it is the way back, and gating it
+   *  on the same key would make the × a one-way door.
+   *
+   *  Turning it off is therefore a real off — `useAlertsFeed` returns before
+   *  every read, arms no timer and collapses its store selectors to frozen
+   *  empties, so a hidden group costs nothing at all.
+   *
+   *  The mail half is additionally gated by the existing `mail_client`
+   *  experimental flag, checked *before* the read (opening the mail store
+   *  creates the mail database — the rule `TodoMailRail` already follows). With
+   *  mail off the group is not withdrawn: it still shows calendar entries and
+   *  to-dos, which are the two sources that cost nothing but a local file. */
+  files_alerts?: boolean;
+  /** Alerts group: how many days ahead an event/task may be to still show.
+   *  Default 7 (`lib/alerts`' `DEFAULT_LOOKAHEAD_DAYS`). A short window is what
+   *  keeps the strip an alert rather than an agenda. */
+  files_alerts_days?: number;
+  /** Alerts group: per-source opt-outs. **All default on when the group is on** —
+   *  an absent key means "show it", so an existing settings file never has to be
+   *  migrated to see a source, and turning the master switch on gives the
+   *  complete picture rather than an empty strip that has to be configured. */
+  files_alerts_sources?: { mail?: boolean; events?: boolean; tasks?: boolean };
+  /** Alerts group: the `AlertItem.id`s the user muted from a row's 🔕 (newest
+   *  last, bounded by `lib/alerts`' `MAX_MUTED_ALERTS`). Here rather than in the
+   *  component because the file viewer is mounted many times over at once — a
+   *  per-surface mute would have to be repeated once per surface — and because a
+   *  mute that came back at the next launch would be a control that doesn't
+   *  work. It hides a row and nothing else: the mail stays marked, the card
+   *  stays due, and the group's reveal (🔕 N) is how a mute is taken back. */
+  files_alerts_muted?: string[];
   /** Mail: the experimental gate for the embedded mail client (`lib/experimental`
    *  — unset means "on in debug mode", which is NOT the same as false).
    *
@@ -201,6 +255,10 @@ export interface Settings {
    *  `browser_open_live` without this, so the hidden control is the courtesy and
    *  not the boundary. */
   browser_live_pages?: boolean;
+  /** The agent Eldrun picks on its own when a feature needs exactly one and the
+   *  user hasn't chosen per-instance — an agent id/cmd from `AGENT_ITEMS`
+   *  (`"claude"`, `"codex"`, …). Set from the 🧠 menu's Agents section; every
+   *  reader falls back to `"claude"` when unset. */
   default_agent_cmd?: string;
   /** User-defined custom agents offered in the add-tab menu's Agents group,
    *  added/removed from the "＋ Add agent…" dialog. Round-trips through the
@@ -216,6 +274,23 @@ export interface Settings {
    *  per-task assignment in `ollama_roles`, and as the legacy "active model".
    *  Chosen in the 🧠 menu (click a loaded model's name). Unset = none. */
   ollama_model?: string;
+  /** Where the Ollama server is, when it is not the default `127.0.0.1:11434` —
+   *  a different port (a container publishing 11435, a second server) or, with
+   *  {@link ollama_allow_remote_host}, another machine. Accepts `host:port`, a
+   *  bare `host`, a bare `:port` or port, and an `http://` prefix; `https://` is
+   *  **refused**, because the backend transport is plaintext HTTP/1.0 over a raw
+   *  socket and downgrading a URL written as TLS would put prompts in the clear.
+   *  There is no UI for it yet — it is edited in `settings.json` (group S #201a,
+   *  which made it do something; it was declared and read by nothing for years).
+   *  Unset = the default. */
+  ollama_host?: string;
+  /** Permit {@link ollama_host} to name a machine that is not this one.
+   *  **Default false**, and separate from the host itself because the two are
+   *  different decisions: another *port* is still local inference, another
+   *  *host* means every prompt and every file an agent reads leaves this
+   *  machine — the opposite of what the local-model feature is for. Judged on
+   *  the literal that was typed, never on what it resolves to. */
+  ollama_allow_remote_host?: boolean;
   /** Per-task local-model assignments (🧠 menu role chips). Maps a task key —
    *  `"autocomplete"`, `"grammar"`, or `"tabs"` — to the model name that should
    *  serve it, so several loaded models can run different jobs in parallel. A
@@ -575,7 +650,31 @@ export interface SandboxSpec {
   network?: string;
   /** Read-only root filesystem (`--read-only` + tmpfs /tmp). Default false. */
   readonly_rootfs?: boolean;
+  /** Hash of the in-repo Dockerfile/devcontainer image last confirmed (O#143);
+   *  opaque to the frontend beyond echoing it back in a `SandboxSourceDecision`. */
+  spec_source_hash?: string;
 }
+
+/** What an in-repo Dockerfile/devcontainer declares (O#143) — detection only,
+ *  reported by `set_project_sandbox`'s `needs_confirmation` outcome. */
+export interface DetectedSpecSource {
+  kind: "dockerfile" | "devcontainer_image";
+  /** The Dockerfile path (relative) or the devcontainer `image` string. */
+  value: string;
+  /** SHA-256 hex of the deciding content — echo back verbatim in the decision. */
+  hash: string;
+}
+
+/** The answer to a `needs_confirmation` outcome: `hash` must be the detected
+ *  source's `hash` verbatim (a mismatched hash is refused, not applied). */
+export interface SandboxSourceDecision {
+  hash: string;
+  adopt: boolean;
+}
+
+export type SandboxToggleOutcome =
+  | { outcome: "applied"; spec: SandboxSpec }
+  | { outcome: "needs_confirmation"; source: DetectedSpecSource };
 
 export interface RemoteEntry {
   name: string;
@@ -617,6 +716,11 @@ export interface ProjectEntry {
    *  environments auto-detect cannot see (a conda env, a Poetry venv outside the
    *  tree, a second venv). Set from the pill's "Python interpreter…" dialog. */
   python_interpreter?: string;
+  /** Per-project override of the global "Claude remote control" setting
+   *  (O#59). `true`/`false` force it on/off for this project's Claude agent
+   *  tabs; absent inherits the global setting (`settings.agent_remote_control`,
+   *  default ON). Set from the pill's "Remote control" menu item. */
+  remote_control?: boolean;
   /** Which machine shells launched from this project run on — the persisted
    *  `RunHostPicker` choice (a `TabLocation`: "local" | "remote" | "host:<id>").
    *  Seeds the live `useRunHostPrefStore` on load so the choice survives a
@@ -848,6 +952,19 @@ export interface CalendarEvent {
    *  so nothing else may write them. */
   caldav_href?: string;
   caldav_etag?: string;
+  /** The iCalendar `UID` this row arrived with — the calendar object's identity
+   *  everywhere outside this app. Empty for a row written here, which serializes
+   *  under a stable synthetic uid instead (`lib/ics.ts`'s `icsUid`). Never
+   *  displayed; it exists so a row can go *back* to the server as the object it
+   *  came from rather than as a second copy of it. */
+  uid?: string;
+  /** Set on a row that **is** a single-occurrence override of a repeating series
+   *  — the rule-generated slot it replaces (`RECURRENCE-ID`). CalDAV has no
+   *  separate occurrence object, so master and overrides arrive as separate rows
+   *  sharing one `caldav_href`, and this is what says which is which. An event
+   *  authored here keeps its occurrence edits in `overrides` instead; the
+   *  serializer writes both shapes the same way. */
+  recurrence_id?: string;
 }
 
 /** One checklist item inside a task. */
@@ -868,6 +985,22 @@ export interface TaskMailLink {
   subject?: string;
   from?: string;
   priority_at_convert?: string;
+}
+
+/** The appointment a card was converted from — `TaskMailLink`'s twin, built the
+ *  same way and for the same reasons: identifiers plus a snapshot frozen at
+ *  conversion, so the card still reads after the event is deleted.
+ *
+ *  It names an **occurrence**, never a series: `occurrence_start` is what makes
+ *  next week's instance of a weekly meeting a card of its own rather than a
+ *  duplicate of this week's. */
+export interface TaskEventLink {
+  event_id: string;
+  /** The occurrence's local start stamp (`"YYYY-MM-DDTHH:MM"`). */
+  occurrence_start?: string;
+  calendar_id?: string;
+  title?: string;
+  location?: string;
 }
 
 /** One column of the todo board. */
@@ -906,6 +1039,10 @@ export interface CalendarTask {
   tags?: string[];
   subtasks?: Subtask[];
   mail?: TaskMailLink | null;
+  /** The appointment this card was converted from. A card carries at most one of
+   *  `mail`/`event` — both conversions build the same card, they differ only in
+   *  which object they record. */
+  event?: TaskEventLink | null;
   /** `ProjectEntry.id`, or absent. Never validated against `projects.json` — an
    *  unresolvable id still filters and renders as an unknown-project chip. */
   project_id?: string;
@@ -916,6 +1053,10 @@ export interface CalendarTask {
    *  sync — that is the whole point of matching on the href. */
   caldav_href?: string;
   caldav_etag?: string;
+  /** The iCalendar `UID` this card arrived with. See `CalendarEvent.uid`: a
+   *  push writes the object back under the identity it came with, never a fresh
+   *  one, or the server keeps the old VTODO and files ours beside it. */
+  uid?: string;
 }
 
 /** One card's target position after a drag, for `todo_move_tasks`. The backend

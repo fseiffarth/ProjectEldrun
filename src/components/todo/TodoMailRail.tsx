@@ -6,8 +6,7 @@ import { useCalendarStore } from "../../stores/calendar";
 import { useMailStore } from "../../stores/mail";
 import { useTodoStore } from "../../stores/todo";
 import { useExperimental } from "../../lib/experimental";
-import { toStamp } from "../../lib/calendarTime";
-import { selectUrgentMail } from "../../lib/todoBoard";
+import { selectUrgentMail, taskFromMail } from "../../lib/todoBoard";
 import { useT } from "../../lib/i18n";
 
 interface Props {
@@ -86,26 +85,19 @@ export function TodoMailRail({ tasks, defaultCalendarId, firstColumnId }: Props)
     mail.openOverlay();
   };
 
+  // The card's shape is `lib/todoBoard`'s, shared with the agenda rail's own
+  // conversion — one definition of what a converted card *is*, so a board cannot
+  // end up holding two kinds of them.
   const makeCard = async (header: MailHeader) => {
     await useCalendarStore
       .getState()
-      .createTask({
-        calendar_id: defaultCalendarId,
-        title: header.subject || t("mail.noSubject"),
-        due: null,
-        priority: header.priority === "urgent" ? 1 : 5,
-        percent: 0,
-        column: firstColumnId,
-        created: toStamp(new Date()),
-        mail: {
-          message_id: header.id,
-          account_id: header.account_id,
-          folder_id: header.folder_id,
-          subject: header.subject,
-          from: header.from?.address ?? "",
-          priority_at_convert: header.priority ?? "",
-        },
-      })
+      .createTask(
+        taskFromMail(
+          header,
+          { calendarId: defaultCalendarId, columnId: firstColumnId, now: new Date() },
+          t("mail.noSubject"),
+        ),
+      )
       .catch((err) => useTodoStore.getState().setError(String(err)));
   };
 

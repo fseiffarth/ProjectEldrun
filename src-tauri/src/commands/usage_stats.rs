@@ -130,10 +130,9 @@ fn git_stats_blocking(project_dir: &str, since: &str) -> Result<GitStats, String
     }
 
     // The recap runs this unattended, in a directory a project container mounts
-    // writable — so the repo's own config is untrusted (`commands::git::
-    // hardened_git_args`, Group O #151).
-    let out = crate::commands::git::hardened_git_command(&args)
-        .current_dir(project_dir)
+    // writable — so the repo's own config is untrusted (`commands::git`,
+    // Group O #151); `hardened_git_command_in` sanitizes it first.
+    let out = crate::commands::git::hardened_git_command_in(project_dir, &args)
         .output()
         .map_err(|e| e.to_string())?;
 

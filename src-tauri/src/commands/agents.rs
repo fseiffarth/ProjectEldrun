@@ -195,6 +195,15 @@ pub struct AgentInfo {
     /// directory owned by root, common on non-nvm Linux Node installs, needs a
     /// sudo prompt Eldrun cannot answer itself).
     pub uninstall_cmd: String,
+    /// `install_cmd` prefixed with `sudo`, or empty when that wouldn't make
+    /// sense (Windows, or a non-npm installer — see `sudo_variant`). Offered as
+    /// a second one-click "run with elevated rights" terminal button beside the
+    /// plain command, since the plain one is what most installs actually need
+    /// (nvm and other per-user Node installs) and forcing `sudo` into the
+    /// default one-click install would root-own files for that majority.
+    pub install_cmd_sudo: String,
+    /// `uninstall_cmd` prefixed with `sudo`, same rule as `install_cmd_sudo`.
+    pub uninstall_cmd_sudo: String,
     pub docs: String,
     pub installed: bool,
 }
@@ -295,6 +304,21 @@ pub async fn codex_hook_status() -> crate::services::agent_session::CodexHookSta
     crate::services::agent_session::codex_hook_state()
 }
 
+/// `cmd` prefixed with `sudo`, for the one-click "run with elevated rights"
+/// terminal fallback beside a plain `npm install -g`/`npm uninstall -g`
+/// command — the actual EACCES case (a system-wide, root-owned npm global
+/// directory, the default on a non-nvm Linux/macOS Node install). Empty for
+/// anything else: `sudo` doesn't exist on Windows, and a curl/irm/pip
+/// installer targets the user's own home directory, where running it as root
+/// would create root-owned files there instead of fixing anything.
+fn sudo_variant(cmd: &str) -> String {
+    if !cfg!(windows) && (cmd.starts_with("npm install -g ") || cmd.starts_with("npm uninstall -g ")) {
+        format!("sudo {cmd}")
+    } else {
+        String::new()
+    }
+}
+
 /// List every known agent CLI with its current installed status.
 #[tauri::command]
 pub async fn list_agents() -> Vec<AgentInfo> {
@@ -302,6 +326,7 @@ pub async fn list_agents() -> Vec<AgentInfo> {
         .iter()
         .map(|spec| {
             let (cmd, shell, shell_kind) = platform_install(spec);
+            let install_cmd = cmd.unwrap_or("").to_string();
             let uninstall_cmd = cmd
                 .and_then(npm_package_from_cmd)
                 .map(|pkg| format!("npm uninstall -g {pkg}"))
@@ -310,9 +335,11 @@ pub async fn list_agents() -> Vec<AgentInfo> {
                 id: spec.id.to_string(),
                 label: spec.label.to_string(),
                 bin: spec.bin.to_string(),
-                install_cmd: cmd.unwrap_or("").to_string(),
+                install_cmd_sudo: sudo_variant(&install_cmd),
+                install_cmd,
                 shell,
                 shell_kind: shell_kind.to_string(),
+                uninstall_cmd_sudo: sudo_variant(&uninstall_cmd),
                 uninstall_cmd,
                 docs: spec.docs.to_string(),
                 installed: spec_is_installed(spec),
@@ -429,14 +456,27 @@ pub async fn install_agent(app: tauri::AppHandle, id: String) -> Result<String, 
     if !status.success() {
         let tail: Vec<&str> = combined.lines().rev().take(20).collect();
         let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
-        return Err(if tail.is_empty() {
+        let mut msg = if tail.is_empty() {
             format!(
                 "installer exited unsuccessfully ({status}). Run `{}` in a terminal.",
                 manual_install_cmd(spec)
             )
         } else {
             tail
-        });
+        };
+        // EACCES on a headless install is almost always a root-owned npm global
+        // directory (system-wide Node, no nvm) — this process has no TTY to run
+        // `sudo` through, so point at the terminal fallback that can.
+        let sudo_cmd = sudo_variant(manual_install_cmd(spec));
+        if !sudo_cmd.is_empty() && is_permission_error(&msg) {
+            msg.push_str(&format!(
+                "\n\nThis needs elevated rights (a system-wide npm global directory owned by \
+                root — common when Node was installed system-wide rather than per-user). Eldrun \
+                never prompts for a password itself: use the \"Run with sudo\" button below, or \
+                run `{sudo_cmd}` yourself in a terminal."
+            ));
+        }
+        return Err(msg);
     }
 
     // The post-install check is the real source of truth.
@@ -652,6 +692,27 @@ mod tests {
         assert!(is_permission_error("Permission denied (os error 13)"));
         assert!(!is_permission_error("npm ERR! 404 Not Found"));
         assert!(!is_permission_error("command exited unsuccessfully (exit status: 1)"));
+    }
+
+    #[test]
+    fn sudo_variant_only_covers_plain_npm_commands() {
+        assert_eq!(
+            sudo_variant("npm install -g @vibe-kit/grok-cli"),
+            if cfg!(windows) { String::new() } else { "sudo npm install -g @vibe-kit/grok-cli".to_string() }
+        );
+        assert_eq!(
+            sudo_variant("npm uninstall -g @vibe-kit/grok-cli"),
+            if cfg!(windows) { String::new() } else { "sudo npm uninstall -g @vibe-kit/grok-cli".to_string() }
+        );
+        // A curl/irm/pip installer targets the user's own home directory —
+        // running it as root would create root-owned files there instead of
+        // fixing anything, so it must never get a sudo variant.
+        assert_eq!(sudo_variant("curl -fsSL https://claude.ai/install.sh | bash"), "");
+        assert_eq!(
+            sudo_variant("python -m pip install aider-install && aider-install"),
+            ""
+        );
+        assert_eq!(sudo_variant(""), "");
     }
 
     #[test]

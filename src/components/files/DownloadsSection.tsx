@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { downloadDir } from "@tauri-apps/api/path";
 import { useSettingsStore } from "../../stores/settings";
@@ -7,6 +7,7 @@ import { useDragStore } from "../../stores/drag";
 import { bindDragRelease } from "../../lib/dragPlatform";
 import { fmtModified, fmtSize, fileIcon, folderIcon, type FileEntry } from "../../lib/viewers/fileUtils";
 import { useT } from "../../lib/i18n";
+import { useResizableSection } from "./useResizableSection";
 
 /**
  * The right-panel Downloads section (fast-copy of freshly downloaded files into a
@@ -89,28 +90,7 @@ export function DownloadsSection({
 
   // Resizable height: drag the top handle to grow the section into the right
   // panel (the tree above shrinks to make room). Clamped to the panel's height.
-  const sectionRef = useRef<HTMLDivElement>(null);
-  const [heightPx, setHeightPx] = useState(220);
-  function onResizePointerDown(e: React.PointerEvent) {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    const startY = e.clientY;
-    const startH = sectionRef.current?.offsetHeight ?? heightPx;
-    const parentH =
-      sectionRef.current?.parentElement?.clientHeight ?? window.innerHeight;
-    const onMove = (ev: PointerEvent) => {
-      const delta = startY - ev.clientY; // drag up = taller
-      // Leave room for the tree above; never smaller than a couple of rows.
-      const next = Math.max(80, Math.min(parentH - 120, startH + delta));
-      setHeightPx(next);
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-  }
+  const { sectionRef, heightPx, onResizePointerDown } = useResizableSection(220);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

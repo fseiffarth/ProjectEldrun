@@ -1,7 +1,24 @@
-import type { ProjectEntry } from "../../types";
+import type { DetectedSpecSource, ProjectEntry } from "../../types";
 import { resolveProjectDirectory } from "../../types";
 
 export const TERMINAL_OPTIONS = ["claude", "codex", "gemini", "vibe"];
+
+/** O#143's confirm-dialog copy — shared by the pill's toggle and the new/import
+ *  dialog's container row, so a repo-supplied Dockerfile is never adopted with
+ *  two different explanations of what that costs. */
+export function describeDetectedSpecSource(source: DetectedSpecSource): string {
+  if (source.kind === "dockerfile") {
+    return (
+      `This project declares its own container build (${source.value}). Building it runs ` +
+      "the repository's own commands as root, with full network access — a larger blast " +
+      "radius than Eldrun's default image. Use it instead of the default?"
+    );
+  }
+  return (
+    `This project's devcontainer declares its own image ("${source.value}"). ` +
+    "The container will pull and run it directly instead of Eldrun's default image. Use it?"
+  );
+}
 
 export interface ScaffoldPreviewItem {
   path: string;

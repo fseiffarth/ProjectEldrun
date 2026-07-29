@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   calendarColor,
   dayAgenda,
@@ -8,10 +8,14 @@ import {
 } from "../../stores/calendar";
 import { useSettingsStore } from "../../stores/settings";
 import { UntestedTag } from "../common/UntestedTag";
-import { timePart } from "../../lib/calendarTime";
+import { formatTime, timePart } from "../../lib/calendarTime";
+import { useUse24h } from "../../lib/timeFormat";
 import { conferenceLink } from "../../lib/conference";
 import { joinConference } from "../../lib/linkTarget";
 import { useT } from "../../lib/i18n";
+import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+
+const MENU_ID = "calendar";
 
 /** How often the badge re-reads the clock. Events tick past on the minute, and a
  *  count that only moved when the store changed would sit on yesterday's number
@@ -51,11 +55,22 @@ const TICK_MS = 60_000;
  */
 export function CalendarIndicator() {
   const t = useT();
+  const use24h = useUse24h();
   const enabled = useSettingsStore((s) => s.settings?.calendar_global_app ?? false);
   const events = useCalendarStore((s) => s.events);
   const calendars = useCalendarStore((s) => s.calendars);
   const overlayOpen = useCalendarStore((s) => s.overlayOpen);
-  const [menuOpen, setMenuOpen] = useState(false);
+  // Shared across every header hover-menu (stores/headerHoverMenu) so switching
+  // straight from another one closes it instantly instead of racing its own
+  // close-grace timer. `setMenuOpen` mirrors the old local-state setter's
+  // boolean signature so the rest of this component reads unchanged.
+  const menuOpen = useHeaderHoverMenuStore((s) => s.openId === MENU_ID);
+  const openMenu = useHeaderHoverMenuStore((s) => s.open);
+  const closeMenu = useHeaderHoverMenuStore((s) => s.close);
+  const setMenuOpen = useCallback(
+    (v: boolean) => (v ? openMenu(MENU_ID) : closeMenu(MENU_ID)),
+    [openMenu, closeMenu],
+  );
   // The hover menu's grace period, so crossing the gap between the button and
   // the list below it does not shut the list you are reaching for.
   const closeTimer = useRef<number | undefined>(undefined);
@@ -91,7 +106,7 @@ export function CalendarIndicator() {
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [menuOpen]);
+  }, [menuOpen, setMenuOpen]);
 
   useEffect(() => () => window.clearTimeout(closeTimer.current), []);
 
@@ -99,7 +114,7 @@ export function CalendarIndicator() {
   // over a button that is gone.
   useEffect(() => {
     if (!enabled) setMenuOpen(false);
-  }, [enabled]);
+  }, [enabled, setMenuOpen]);
 
   // One `now` for the badge and the list, re-taken on the same tick: two `new
   // Date()`s a few lines apart can straddle a minute, and this is exactly the
@@ -237,7 +252,7 @@ export function CalendarIndicator() {
                             style={{ background: calendarColor(calendars, occ.calendarId) }}
                           />
                           <span className="cal-menu-time">
-                            {occ.allDay ? t("calendar.allDay") : timePart(occ.start)}
+                            {occ.allDay ? t("calendar.allDay") : formatTime(timePart(occ.start), use24h)}
                           </span>
                           <span className="cal-menu-title">
                             {occ.title || t("calendar.untitled")}

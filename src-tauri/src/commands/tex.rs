@@ -442,7 +442,7 @@ fn compile_tex_blocking(
         // bibtex resolves its aux relative to its own CWD; run it in the output
         // dir when one is set so it finds the aux written there.
         let bib_dir = out_path.as_deref().unwrap_or(dir);
-        let bib = run_in(bib_dir, "bibtex", &[stem.clone()])?;
+        let bib = run_in(bib_dir, "bibtex", std::slice::from_ref(&stem))?;
         log.push_str(&bib.text);
         for _ in 0..2 {
             log.push_str(&run_in(dir, &eng, &engine_args)?.text);
@@ -653,15 +653,14 @@ pub fn parse_synctex_pages(text: &str, want_tag: Option<u32>) -> Vec<PageLines> 
             // Box open/close-with-content, void boxes, and the glyph/kern/glue
             // records. `]` and `)` are the closers and carry no tag, so they are
             // not listed.
-            '[' | '(' | 'v' | 'h' | 'x' | 'k' | 'g' | '$' | 'r' => {
-                if page.is_some() {
+            '[' | '(' | 'v' | 'h' | 'x' | 'k' | 'g' | '$' | 'r'
+                if page.is_some() => {
                     if let Some((tag, line)) = parse_record_tag_line(&l[1..]) {
                         if want_tag.is_none_or(|w| w == tag) && line > 0 {
                             lines.insert(line);
                         }
                     }
                 }
-            }
             _ => {}
         }
     }

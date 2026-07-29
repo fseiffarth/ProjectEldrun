@@ -15,6 +15,7 @@ pub mod mail_authres;
 pub mod mail_crypt;
 pub mod mail_crypto;
 pub mod mail_engine;
+pub mod mail_filters;
 pub mod mail_pgp;
 pub mod mail_sanitize;
 pub mod mail_store;

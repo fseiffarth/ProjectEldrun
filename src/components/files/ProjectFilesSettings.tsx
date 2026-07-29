@@ -7,7 +7,8 @@ import { useSettingsStore } from "../../stores/settings";
 import { VIEWER_PREF_TYPES } from "../../lib/viewers/fileUtils";
 import { PythonInterpreterWindow } from "../projects/PythonInterpreterWindow";
 import { useT } from "../../lib/i18n";
-import type { ProjectEntry, ViewerPref } from "../../types";
+import { DEFAULT_LOOKAHEAD_DAYS } from "../../lib/alerts";
+import type { ProjectEntry, Settings, ViewerPref } from "../../types";
 
 /**
  * The file-view filters (which endings/paths a project's tree hides) and the
@@ -35,6 +36,12 @@ export function normalizeScanPath(rel: string): string {
 /** File endings that mark a project as holding Python — gates the interpreter
  *  picker, mirroring the pill's `PYTHON_ENDINGS`. */
 const PYTHON_ENDINGS = new Set([".py", ".pyw", ".pyi"]);
+
+/** Bounds on the Alerts group's lookahead, mirroring `useAlertsFeed`'s clamp.
+ *  Below 1 day the group can only ever be empty; above 60 it has stopped being
+ *  an alert strip and become an agenda. */
+const ALERT_DAYS_MIN = 1;
+const ALERT_DAYS_MAX = 60;
 
 function readStringList(project: ProjectJson | null, key: string): string[] {
   const raw = project?.[key];
@@ -213,6 +220,14 @@ export function ProjectFilesSettingsDialog({
   const { availableEndings, hiddenEndings, error, toggleHiddenEnding } = filters;
   const [showPython, setShowPython] = useState(false);
 
+  const alertsOn = settings?.files_alerts ?? true;
+  const alertSources = settings?.files_alerts_sources ?? {};
+  const mutedCount = settings?.files_alerts_muted?.length ?? 0;
+  // Merged, never replaced: each row owns one key, and writing the whole object
+  // from a single checkbox would clear the other two.
+  const patchAlertSources = (next: NonNullable<Settings["files_alerts_sources"]>) =>
+    void updateSettings({ files_alerts_sources: { ...alertSources, ...next } });
+
   // Offer the Python interpreter picker on the same terms the pill does: the
   // project holds Python files (a probed ending), or it's remote (probed on the
   // host, which may hold Python the local mirror doesn't).
@@ -360,6 +375,96 @@ export function ProjectFilesSettingsDialog({
             );
           })}
         </div>
+
+        {/* The right panel's opt-in Alerts group (global, not per-project).
+            Off by default on purpose — the file viewer is a work surface, and an
+            alert strip nobody asked for is an interruption in the one panel that
+            stays open all day. The per-source rows are greyed while the master
+            switch is off: they only ever take a source *away*, so they mean
+            nothing until there is a group to take it out of. */}
+        <div className="settings-section-title">{t("filesAlerts.enable")}</div>
+        <p className="settings-help">{t("filesAlerts.enableHint")}</p>
+        <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
+          <Toggle
+            size="sm"
+            checked={alertsOn}
+            onChange={(e) => void updateSettings({ files_alerts: e.target.checked })}
+          />
+          <span>{t("agents.enabled")}</span>
+        </label>
+        <div className="settings-row">
+          <label htmlFor="files-alerts-days">{t("filesAlerts.days")}</label>
+          <input
+            id="files-alerts-days"
+            type="number"
+            min={ALERT_DAYS_MIN}
+            max={ALERT_DAYS_MAX}
+            step={1}
+            disabled={!alertsOn}
+            placeholder={String(DEFAULT_LOOKAHEAD_DAYS)}
+            value={settings?.files_alerts_days ?? ""}
+            onChange={(e) => {
+              const v = parseInt(e.target.value, 10);
+              // Out of range clears the key rather than storing a value the hook
+              // would silently clamp — an unset field showing the default is
+              // honest about what the group will actually do.
+              void updateSettings({
+                files_alerts_days:
+                  Number.isFinite(v) && v >= ALERT_DAYS_MIN && v <= ALERT_DAYS_MAX
+                    ? v
+                    : undefined,
+              });
+            }}
+          />
+        </div>
+        <div className="viewer-prefs-list">
+          <div className="viewer-pref-row">
+            <label className="viewer-pref-toggle">
+              <Toggle
+                size="sm"
+                checked={alertSources.mail !== false}
+                disabled={!alertsOn}
+                onChange={(e) => patchAlertSources({ mail: e.target.checked })}
+              />
+              <span>{t("filesAlerts.sourceMail")}</span>
+            </label>
+            <label className="viewer-pref-toggle">
+              <Toggle
+                size="sm"
+                checked={alertSources.events !== false}
+                disabled={!alertsOn}
+                onChange={(e) => patchAlertSources({ events: e.target.checked })}
+              />
+              <span>{t("filesAlerts.sourceEvents")}</span>
+            </label>
+            <label className="viewer-pref-toggle">
+              <Toggle
+                size="sm"
+                checked={alertSources.tasks !== false}
+                disabled={!alertsOn}
+                onChange={(e) => patchAlertSources({ tasks: e.target.checked })}
+              />
+              <span>{t("filesAlerts.sourceTasks")}</span>
+            </label>
+          </div>
+        </div>
+        {/* The muted rows' escape hatch. The group's own 🔕 chip only counts
+            mutes whose row is still live, which is the right number *there* —
+            but it means a mute whose mail was unmarked or whose meeting has
+            passed has no control of its own left. This one names the raw stored
+            count, so the key can always be cleared from somewhere. */}
+        {mutedCount > 0 && (
+          <div className="settings-row">
+            <label>{t("filesAlerts.mutedStored", { count: mutedCount })}</label>
+            <button
+              className="tab-add-btn"
+              onClick={() => void updateSettings({ files_alerts_muted: [] })}
+              title={t("filesAlerts.unmuteAllTitle")}
+            >
+              {t("filesAlerts.unmuteAll")}
+            </button>
+          </div>
+        )}
 
         {settings?.debug && (
           <>

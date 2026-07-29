@@ -32,10 +32,28 @@ import { create } from "zustand";
 import type { MailHeader, MailPriority } from "../types/mail";
 import { mailPriorityPage } from "../lib/mail";
 
-/** A card drag in flight. Positions are viewport coordinates. */
+/**
+ * A card drag in flight. Positions are viewport coordinates.
+ *
+ * `overIndex` — and `fromIndex` with it — is an **exclusive-of-the-dragged-card**
+ * index: the slot in the target column counted with this card already taken out
+ * of it. That is the space `insertionIndex` measures in (it is fed the *other*
+ * cards' rects), the space `commitMove` bisects ranks in, and the space the
+ * backend's `TaskPlacement.index` is defined in. The board renders the
+ * placeholder into a list the dragged card has been removed from for exactly
+ * this reason: the one index space that reaches the backend is also the one the
+ * preview is drawn in, so what is shown and what is written cannot disagree.
+ */
 export interface CardDrag {
   taskId: string;
   fromColumn: string;
+  /**
+   * The slot the card occupied at pickup. The drag *opens* on it, so the
+   * placeholder takes the card's own place in the same frame it is lifted out of
+   * it — nothing jumps — and a drop back onto it is recognizable as the no-op it
+   * is, instead of a write that reindexes the column around an unchanged card.
+   */
+  fromIndex: number;
   title: string;
   /** Measured at pickup — sizes both the ghost and the drop placeholder. */
   width: number;
@@ -86,6 +104,26 @@ interface TodoStore {
   setCardTarget: (column: string | null, index: number | null) => void;
   endCardDrag: () => void;
 
+  /**
+   * Cards whose checklist the user has **folded away**, by id.
+   *
+   * The default is now the other way round — a card with steps shows them — so
+   * what has to be remembered is the exception, not the rule. An id in here is a
+   * decision the user made; a card absent from it is simply a card, which is why
+   * this is a set of collapses rather than a per-card open flag (that spelling
+   * would have to be seeded for every existing card, and a card gaining its first
+   * step would default to hidden).
+   *
+   * It lives in the store rather than in `TodoCard`'s own state because the card
+   * unmounts every time the overlay closes, and a fold that undid itself the next
+   * time the board opened is not a control, it is a flicker. It is still session
+   * state and deliberately reaches no disk: the board is read at a glance, and a
+   * checklist silently hidden by a decision made weeks ago is the same trap the
+   * filters are not persisted for.
+   */
+  collapsedSteps: Record<string, true>;
+  toggleSteps: (taskId: string, collapsed: boolean) => void;
+
   /** Optimistic placements, keyed by task id — the anti-snap-back overlay. */
   pendingOrder: Record<string, { column: string; rank: number }>;
   stageMove: (taskId: string, column: string, rank: number) => void;
@@ -126,6 +164,15 @@ export const useTodoStore = create<TodoStore>((set, get) => ({
   setHideDone: (hideDone) => set({ hideDone }),
   clearFilters: () =>
     set({ search: "", projectFilter: null, tagFilter: null, hideDone: false }),
+
+  collapsedSteps: {},
+  toggleSteps: (taskId, collapsed) =>
+    set((s) => {
+      const next = { ...s.collapsedSteps };
+      if (collapsed) next[taskId] = true;
+      else delete next[taskId];
+      return { collapsedSteps: next };
+    }),
 
   cardDrag: null,
   startCardDrag: (cardDrag) => set({ cardDrag }),

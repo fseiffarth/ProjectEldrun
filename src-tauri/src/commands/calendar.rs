@@ -633,6 +633,7 @@ pub(crate) fn merge_caldav_calendar_at(
                     task.tags = local.tags.clone();
                     task.subtasks = local.subtasks.clone();
                     task.mail = local.mail.clone();
+                    task.event = local.event.clone();
                     task.project_id = local.project_id.clone();
                     task.created = local.created.clone();
                     carry_extra(&mut task.extra, &local.extra);
@@ -682,6 +683,54 @@ pub(crate) fn merge_caldav_calendar_at(
     data.normalize();
     write_data(path, &data)?;
     Ok(data)
+}
+
+/// Record what a **push** made true: the resource URL a local row now lives at
+/// on the server, and the ETag the next conditional write must send.
+///
+/// This is the write half's counterpart to the merge, and it is deliberately the
+/// *only* thing the push path writes into `calendar.json`. Nothing about the row
+/// itself is touched: the bytes that went to the server were serialized from this
+/// same row moments ago, so re-deriving them here would be a second opinion about
+/// what was just sent, and the two could disagree.
+///
+/// An empty `etag` is stored as an empty string rather than skipped — that is the
+/// state "the server accepted this but named no version", which the next write
+/// has to be able to *see* in order to refuse itself (`put_resource` does), and
+/// which the next sync clears. Leaving a stale ETag in place would be worse than
+/// having none: it is a validator that no longer describes anything.
+pub(crate) fn set_caldav_identity_at(
+    path: &Path,
+    kind: &str,
+    row_id: &str,
+    href: &str,
+    etag: &str,
+) -> Result<(), String> {
+    let mut data = read_data(path)?;
+    let extra = match kind {
+        "event" => data
+            .events
+            .iter_mut()
+            .find(|e| e.id == row_id)
+            .map(|e| &mut e.extra),
+        "task" => data
+            .tasks
+            .iter_mut()
+            .find(|t| t.id == row_id)
+            .map(|t| &mut t.extra),
+        other => return Err(format!("unknown calendar row kind '{other}'")),
+    }
+    .ok_or_else(|| format!("no {kind} with id '{row_id}'"))?;
+
+    extra.insert(
+        CALDAV_HREF_KEY.to_string(),
+        serde_json::Value::String(href.to_string()),
+    );
+    extra.insert(
+        CALDAV_ETAG_KEY.to_string(),
+        serde_json::Value::String(etag.to_string()),
+    );
+    write_data(path, &data)
 }
 
 // ── ICS file I/O ────────────────────────────────────────────────────────────
@@ -1505,6 +1554,39 @@ mod tests {
         assert_eq!(extra_str(&event.extra, CALDAV_HREF_KEY), "https://d/e/a.ics");
         assert_eq!(extra_str(&event.extra, CALDAV_ETAG_KEY), "\"1\"");
         assert_eq!(extra_str(&data.tasks[0].extra, CALDAV_HREF_KEY), "https://d/e/t.ics");
+    }
+
+    #[test]
+    fn a_push_stamps_the_resource_identity_onto_a_local_row() {
+        let (_dir, path) = tmp_path();
+        let cal = caldav_calendar(&path);
+        let mut data = read_data(&path).unwrap();
+        data.events.push(CalendarEvent {
+            id: "e1".into(),
+            calendar_id: cal.clone(),
+            title: "written here".into(),
+            start: "2026-08-01T09:00".into(),
+            end: "2026-08-01T10:00".into(),
+            ..Default::default()
+        });
+        write_data(&path, &data).unwrap();
+
+        set_caldav_identity_at(&path, "event", "e1", "https://d/e/e1.ics", "\"7\"").unwrap();
+        let after = read_data(&path).unwrap().events.remove(0);
+        assert_eq!(extra_str(&after.extra, CALDAV_HREF_KEY), "https://d/e/e1.ics");
+        assert_eq!(extra_str(&after.extra, CALDAV_ETAG_KEY), "\"7\"");
+        assert_eq!(after.title, "written here", "the row itself is not rewritten");
+
+        // A server that accepted the write but named no version must clear the
+        // old validator, not keep one that no longer describes anything.
+        set_caldav_identity_at(&path, "event", "e1", "https://d/e/e1.ics", "").unwrap();
+        assert_eq!(
+            extra_str(&read_data(&path).unwrap().events[0].extra, CALDAV_ETAG_KEY),
+            ""
+        );
+
+        assert!(set_caldav_identity_at(&path, "event", "nope", "h", "e").is_err());
+        assert!(set_caldav_identity_at(&path, "sheep", "e1", "h", "e").is_err());
     }
 
     #[test]

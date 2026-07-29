@@ -86,15 +86,64 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
     - [ ] 🖐️ Manual test — including a wrong password after a relaunch, which
       is the case the amber `!` exists for.
 
-160. **Two-way sync (Phase 3) — deliberately not built.** `PUT`/`DELETE` with
-    `If-Match`, `412` as a named conflict, and whole-series serialization for
-    a recurring event's "this occurrence only". Gated on two answers the plan
-    asks for and does not have: whether write access is even wanted against an
-    institutional calendar (the blast radius of a push bug on a shared work
-    calendar is materially larger than on a personal one), and a design pass
-    for the conflict UX — "detect a 412" is a mechanism, not an answer to what
-    the user sees and does. The schema carries `read_only` per collection, and
-    the server is *asked* for its privileges, so the day this lands the answer
-    is per-collection rather than "the feature shipped".
-    - [ ] 🤖 Automated test
-    - [ ] 🖐️ Manual test
+160. **Two-way sync (Phase 3) — built, never live-tested.** `PUT`/`DELETE`
+    conditional on `If-Match` (`If-None-Match: *` to create), a `412` carried as
+    a **value** (`CalDavWrite.conflict`) rather than an error, and whole-*resource*
+    serialization so a recurring series' occurrence overrides travel with their
+    master. The plan's two open questions were answered by asking rather than
+    deciding: `CalDavAccount.allow_write` is per account and **defaults false**
+    (an untouched account behaves exactly as Phases 1–2 did), and the conflict UX
+    is `CalDavConflictDialog` — keep mine / use the server's / decide later, and
+    deliberately no *merge*. `read_only` stays per collection and is still the
+    server's answer, now re-askable via `caldav_refresh_access`.
+
+    Two things push forced elsewhere: `UID` and `RECURRENCE-ID` now round-trip
+    through `lib/ics.ts` (without the first a push creates a second copy of every
+    appointment; without the second a series pushes back as two masters), and
+    `serializeIcs` writes a locally-authored series' `overrides[]` — which fixes
+    the **file export**, silently dropping occurrence edits since it was written.
+    - [x] 🤖 Automated test — the write gate (`CalDavPushGate.test.ts`: no
+      account / no opt-in / server-side read-only all reach no network; a refused
+      **delete** rejects rather than letting the local delete through), the
+      resource body (`CalDavPush.test.ts`: one UID per resource, master-first,
+      overrides emitted, board state never serialized), the unconditional-write
+      refusal (`services::caldav::an_update_with_no_known_etag_is_refused…`), and
+      the local gate (`commands::caldav::a_write_needs_both_the_users_opt_in_and_the_servers`).
+    - [ ] 🖐️ Manual test — Radicale in a container + Thunderbird: create/edit/
+      delete an event and a task from Eldrun and see them in Thunderbird; a
+      concurrent edit from Thunderbird surfaces as a named conflict rather than
+      being overwritten; a recurring series' "this occurrence only" edit
+      round-trips. **Nothing in the CalDAV stack has ever spoken to a real
+      server**, so this is riskier than its size.
+
+161. **Look at an `.ics` before importing it — built, never live-tested.**
+    `lib/icsSafety.ts` reports what a picked file contains (`PROCEDURE`/`EMAIL`/
+    `AUDIO` alarms, `ATTACH`, non-`http(s)` links, `METHOD:REQUEST`, bidi-disguised
+    titles, endless sub-daily `RRULE`s, never-imported component kinds) and
+    `IcsImportReviewDialog` shows it before anything is written. Explicitly **not**
+    a scanner — an `.ics` cannot run anything here — but every one of those is
+    dropped or cleaned in silence today, and the dialog is the difference between
+    "Eldrun ignored it" and "you knew it was there". Raised only when there is
+    something to say, so an ordinary export still imports in one click.
+    - [x] 🤖 Automated test — `IcsSafety.test.ts`, both directions: every finding
+      is detected, and an ordinary calendar export (including a `LOCATION: Room 3:
+      Building B`) produces **none**, since a report that flags every file is a
+      dialog nobody reads.
+    - [ ] 🖐️ Manual test — import a hand-built hostile `.ics` and check the
+      dialog names each finding and says what happens to it.
+
+162. **The CalDAV password no longer follows a redirect off its own host.**
+    `dav_request` follows hops itself (reqwest's policy would turn a `PROPFIND`
+    into a `GET` on a 302), which meant reqwest's cross-origin header stripping
+    was not in play and `basic_auth` was re-attached on **every** hop — so a
+    hostile or compromised server at the configured URL could bounce the client
+    anywhere and be handed the calendar password. `credentials_may_follow` now
+    allows the same origin, or a subdomain over TLS (RFC 6764's `.well-known`
+    shape), and nothing else; an `https→http` hop is refused outright rather than
+    merely stripped.
+    - [x] 🤖 Automated test — `services::caldav::credentials_*` (same origin,
+      the well-known subdomain hop, a foreign host, a sibling host, a TLS
+      downgrade, and suffix-vs-substring matching).
+    - [ ] 🖐️ Manual test — a server that redirects `.well-known/caldav` to its
+      DAV subdomain still sets up; one redirecting to another domain refuses with
+      the "set the account's URL to that address" sentence.

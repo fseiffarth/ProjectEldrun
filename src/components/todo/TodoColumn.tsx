@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { CalendarTask, TaskColumn } from "../../types";
-import { useTodoStore } from "../../stores/todo";
 import { useT } from "../../lib/i18n";
 import { TodoCard } from "./TodoCard";
 
@@ -10,14 +9,22 @@ interface Props {
   columns: TaskColumn[];
   title: string;
   cards: CalendarTask[];
-  /** Where the drop placeholder sits in this column, or null when not the target. */
+  /**
+   * Where the drop placeholder sits in this column, or null when not the target.
+   *
+   * An index into this column's cards **with the dragged card removed** — the
+   * one index space the whole gesture counts in (see `CardDrag.overIndex`), and
+   * therefore the space this list has to be rendered in.
+   */
   placeholderIndex: number | null;
   placeholderHeight: number;
+  /** This column is the one under the pointer — tint it, so the aim is legible. */
+  dropTarget: boolean;
   draggingId: string | null;
   onCardPointerDown: (e: React.PointerEvent, task: CalendarTask, el: HTMLElement) => void;
   onEditCard: (task: CalendarTask) => void;
   onOpenMail: (task: CalendarTask) => void;
-  onAddCard: (columnId: string, title: string) => Promise<void>;
+  onAddCard: (columnId: string) => void;
   onRename: (columnId: string, name: string) => void;
   onDelete: (column: TaskColumn, count: number) => void;
   onMove: (columnId: string, delta: -1 | 1) => void;
@@ -26,14 +33,18 @@ interface Props {
 }
 
 /**
- * One column: a header, its cards, and the composer.
+ * One column: a header, its cards, and the add-a-card button.
  *
- * The composer is Trello's: **Enter creates and leaves it open**, because adding
- * five cards in a row is the gesture a board exists for, and re-clicking "Add a
- * card" four times is what makes people stop using one. Escape closes it and must
- * `stopPropagation` — the overlay host listens for Escape on `window`, and
- * `stopPropagation` does not stop *other* listeners on the same target, so every
- * text input inside the board carries this guard.
+ * **Adding a card opens the full card dialog**, the same editor a card is edited
+ * in — not an inline title composer. A title-only composer wrote the card to
+ * `calendar.json` before anything else about it was known, which is what made
+ * abandoning one impossible: the "cancel" that followed was a *delete* of a row
+ * that already existed. The dialog stages the whole card instead, so nothing is
+ * written until Save and Cancel costs nothing.
+ *
+ * Escape in the rename input must `stopPropagation` — the overlay host listens
+ * for Escape on `window`, and `stopPropagation` does not stop *other* listeners
+ * on the same target, so every text input inside the board carries this guard.
  */
 export function TodoColumn({
   column,
@@ -42,6 +53,7 @@ export function TodoColumn({
   cards,
   placeholderIndex,
   placeholderHeight,
+  dropTarget,
   draggingId,
   onCardPointerDown,
   onEditCard,
@@ -54,67 +66,61 @@ export function TodoColumn({
   canMoveRight,
 }: Props) {
   const t = useT();
-  const [composing, setComposing] = useState(false);
-  const [draft, setDraft] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(column.name);
-  const composerRef = useRef<HTMLTextAreaElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (composing) composerRef.current?.focus();
-  }, [composing]);
   useEffect(() => {
     if (renaming) nameRef.current?.focus();
   }, [renaming]);
 
-  const submit = async () => {
-    const value = draft.trim();
-    if (!value) return;
-    setDraft("");
-    await onAddCard(column.id, value).catch((err) =>
-      useTodoStore.getState().setError(String(err)),
-    );
-    composerRef.current?.focus();
-  };
-
   const overLimit = !!column.limit && column.limit > 0 && cards.length > column.limit;
 
+  /**
+   * The cards actually rendered: the dragged one is **taken out**, not left in
+   * place and faded.
+   *
+   * It is the placeholder that stands in for it, and that is what keeps the
+   * preview honest — `placeholderIndex` is measured against the other cards'
+   * rects and committed as an index into exactly this list, so leaving the card
+   * in shifted every slot below it by one and the board offered the card's own
+   * position as the new one. Nothing jumps when it goes: the drag opens with the
+   * placeholder on the slot the card is lifted from, at the height it was
+   * measured at.
+   */
+  const visible = draggingId ? cards.filter((task) => task.id !== draggingId) : cards;
+
+  const placeholder = (
+    <div
+      key="placeholder"
+      className="todo-card-placeholder"
+      style={{ height: placeholderHeight }}
+    />
+  );
+
   const rows: React.ReactNode[] = [];
-  cards.forEach((task, i) => {
-    if (placeholderIndex === i) {
-      rows.push(
-        <div
-          key="placeholder"
-          className="todo-card-placeholder"
-          style={{ height: placeholderHeight }}
-        />,
-      );
-    }
+  visible.forEach((task, i) => {
+    if (placeholderIndex === i) rows.push(placeholder);
     rows.push(
       <TodoCard
         key={task.id}
         task={task}
         columns={columns}
-        dragging={draggingId === task.id}
         onPointerDown={onCardPointerDown}
         onEdit={onEditCard}
         onOpenMail={onOpenMail}
       />,
     );
   });
-  if (placeholderIndex !== null && placeholderIndex >= cards.length) {
-    rows.push(
-      <div
-        key="placeholder"
-        className="todo-card-placeholder"
-        style={{ height: placeholderHeight }}
-      />,
-    );
+  if (placeholderIndex !== null && placeholderIndex >= visible.length) {
+    rows.push(placeholder);
   }
 
   return (
-    <section className="todo-column" data-column-id={column.id}>
+    <section
+      className={"todo-column" + (dropTarget ? " todo-column-drop" : "")}
+      data-column-id={column.id}
+    >
       <header className="todo-column-head" style={{ borderTopColor: column.color || undefined }}>
         {renaming ? (
           <input
@@ -206,56 +212,9 @@ export function TodoColumn({
       </div>
 
       <footer className="todo-column-foot">
-        {composing ? (
-          <div className="todo-composer">
-            <textarea
-              ref={composerRef}
-              className="todo-composer-input"
-              rows={2}
-              value={draft}
-              placeholder={t("todoBoard.addCardPlaceholder")}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void submit();
-                } else if (e.key === "Escape") {
-                  e.stopPropagation();
-                  setDraft("");
-                  setComposing(false);
-                }
-              }}
-              onBlur={() => {
-                if (!draft.trim()) setComposing(false);
-              }}
-            />
-            <div className="todo-composer-actions">
-              <button
-                type="button"
-                className="cal-btn cal-btn-primary"
-                disabled={!draft.trim()}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => void submit()}
-              >
-                {t("common.add")}
-              </button>
-              <button
-                type="button"
-                className="cal-link-btn"
-                onClick={() => {
-                  setDraft("");
-                  setComposing(false);
-                }}
-              >
-                {t("common.cancel")}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <button type="button" className="todo-add-card" onClick={() => setComposing(true)}>
-            + {t("todoBoard.addCard")}
-          </button>
-        )}
+        <button type="button" className="todo-add-card" onClick={() => onAddCard(column.id)}>
+          + {t("todoBoard.addCard")}
+        </button>
       </footer>
     </section>
   );

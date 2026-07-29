@@ -536,6 +536,180 @@ pub struct MailPriorityCounts {
     pub urgent_unread: u32,
 }
 
+// ── Filter rules (keyword → priority mark) ──────────────────────────────────
+
+/// Schema version of `filters.json`.
+pub const FILTERS_VERSION: u32 = 1;
+
+/// Which part of a message a rule's terms are searched in.
+///
+/// A closed set rather than a column name, for [`MailSort`]'s reason: these
+/// reach a matcher that indexes into a `MailHeader`, and an open string would
+/// mean a rule could name a field that does not exist and silently match
+/// nothing. An unrecognized value from a newer build fails to deserialize the
+/// *rule*, which the reader drops — a rule that cannot be understood must not be
+/// half-applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MailFilterField {
+    Subject,
+    /// The `From` — **both** the addr-spec and the display name, because a rule
+    /// written as "the newsletter from Acme" is nearly always aimed at the name
+    /// and one written as `@acme.example` at the address.
+    Sender,
+    /// `To` + `Cc`, names and addresses. This is what catches "mail sent to the
+    /// alias I actually care about" without a server-side rule.
+    Recipients,
+    /// The stored body **snippet**, not the body.
+    ///
+    /// The honest limit, stated here because the UI has to repeat it: a sync
+    /// stores a short plain-text preview per message and nothing else — the full
+    /// body is fetched only when a message is opened. Searching bodies at sync
+    /// time would mean downloading every message of every folder on every check.
+    /// So a term matched here is matched against the first part of the message,
+    /// and a word buried on page three does not fire the rule.
+    Preview,
+}
+
+impl MailFilterField {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MailFilterField::Subject => "subject",
+            MailFilterField::Sender => "sender",
+            MailFilterField::Recipients => "recipients",
+            MailFilterField::Preview => "preview",
+        }
+    }
+}
+
+/// One user-written rule: *when any of these words appears in these parts of a
+/// new message, mark it Important or Urgent.*
+///
+/// **A mark, not a move** — everything [`MailPriority`] says applies unchanged,
+/// because that is literally what a rule does: it sets the same local column the
+/// right-click menu sets. Nothing is uploaded, no IMAP flag is written, no
+/// message leaves the folder it arrived in. The rule is this machine's, exactly
+/// as the mark is.
+///
+/// This is the **manual** half of the feature deliberately: the terms are the
+/// user's own words, matched literally, so *why* a message ended up in the alert
+/// list is answerable by reading the rule. A model-driven classifier is a
+/// separate, later thing and must not be able to masquerade as this one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailFilterRule {
+    /// Minted by the backend when the frontend sends an empty one, exactly as an
+    /// account's is: the store owns identity.
+    #[serde(default)]
+    pub id: String,
+    /// The user's label for the rule. Purely cosmetic — it is what the report
+    /// and the message row name, so a rule can be recognized without re-reading
+    /// its terms.
+    #[serde(default)]
+    pub name: String,
+    /// The words (or phrases) to look for. Matched **case-insensitively** and,
+    /// unless [`whole_word`](Self::whole_word) is set, as substrings.
+    ///
+    /// An **empty list never matches**. That is the one degenerate case worth
+    /// naming: a rule with no terms searched with `any` semantics would match
+    /// every message ever synced and bury the alert list in one tick.
+    #[serde(default)]
+    pub terms: Vec<String>,
+    /// Where to look. **Empty never matches**, for the same reason: a rule that
+    /// searches nowhere must not quietly mean "everywhere".
+    #[serde(default)]
+    pub fields: Vec<MailFilterField>,
+    /// Which list a hit lands in.
+    pub mark: MailPriority,
+    /// Require **every** term rather than any one of them. Off by default — the
+    /// mental model of "tags to watch for" is a list of alternatives.
+    #[serde(default)]
+    pub match_all: bool,
+    /// Match only on word boundaries, so `art` stops matching *start*. Off by
+    /// default, because the common case is a fragment (`invoice`, `@acme.`) and
+    /// a boundary rule would refuse the second of those.
+    #[serde(default)]
+    pub whole_word: bool,
+    /// Restrict the rule to one account. `None` = every account, which is the
+    /// default and matches what the Important/Urgent lists themselves are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    /// Off means "keep the rule but stop applying it" — the thing a user reaches
+    /// for when a rule is too noisy, and the alternative to deleting the words
+    /// they spent time writing.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(flatten, default)]
+    pub extra: HashMap<String, Value>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// `filters.json` — the whole rule list, **in order**.
+///
+/// The order is load-bearing: the first matching rule wins, so a specific
+/// "urgent" rule placed above a broad "important" one behaves the way reading
+/// the list top-down suggests. That is also why the save command is wholesale
+/// rather than per-rule (`commands::calendar`'s `todo_columns_set` bargain): a
+/// reorder is an ordinary edit here, and it is not expressible as an upsert.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MailFilters {
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub rules: Vec<MailFilterRule>,
+    #[serde(flatten, default)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// Why one message matched: which rule, which of its words, and where it was
+/// found. Carried so the UI can say *"‘invoice’ in the subject — rule Billing"*
+/// rather than an unexplained mark, which is the difference between a filter the
+/// user can debug and one they end up switching off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MailFilterHit {
+    pub rule_id: String,
+    pub rule_name: String,
+    pub mark: MailPriority,
+    pub term: String,
+    pub field: MailFilterField,
+}
+
+/// One matched message, for the "what would this catch?" preview.
+#[derive(Debug, Clone, Serialize)]
+pub struct MailFilterSample {
+    pub message_id: String,
+    pub subject: String,
+    pub from: MailAddress,
+    pub date: String,
+    pub hit: MailFilterHit,
+}
+
+/// The outcome of running the rules over mail that is already in the local
+/// index.
+///
+/// `marked` is separate from `matched` because a dry run matches without marking
+/// — the same report shape answers "what would this do" and "what did it do",
+/// and a preview that reported a mark count it never wrote would be the worst
+/// possible confusion in a feature about automatic filing.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct MailFilterReport {
+    /// Messages examined. Bounded — see `MailStore::unmarked_headers`.
+    pub scanned: u32,
+    pub matched: u32,
+    /// Always 0 when `dry_run`.
+    pub marked: u32,
+    pub dry_run: bool,
+    /// Set when the scan bound was hit, so "12 matches" can be qualified with
+    /// *of the most recent N messages* rather than read as the whole mailbox.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capped: Option<u32>,
+    /// A capped list of what matched, newest first.
+    #[serde(default)]
+    pub samples: Vec<MailFilterSample>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct MailHeaderPage {
     pub items: Vec<MailHeader>,
@@ -720,6 +894,13 @@ pub struct MailSyncSummary {
     pub account_id: String,
     pub folders: u32,
     pub new_messages: u32,
+    /// Of those, how many a filter rule filed into Important/Urgent. Reported
+    /// because a mark the user did not make has to be visible *as it happens* —
+    /// mail quietly moving itself is exactly the behaviour that makes people
+    /// distrust a filter, and "2 new, 1 marked urgent" is the sentence that
+    /// keeps it explainable.
+    #[serde(default)]
+    pub filtered: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }

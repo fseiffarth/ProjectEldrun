@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { Calendar, CalendarTask } from "../../types";
-import { datePart, formatLongDate, todayStr, toStamp } from "../../lib/calendarTime";
+import { datePart, formatLongDate, formatTime, timePart, toStamp } from "../../lib/calendarTime";
 import { calendarColor } from "../../stores/calendar";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 
@@ -15,6 +15,9 @@ interface Props {
   onDelete: (id: string) => Promise<unknown>;
   /** The calendar a new task is filed under. */
   defaultCalendarId: string;
+  /** App-wide clock (`lib/timeFormat`), passed down like the grid views' — the
+   *  hour on a task with a timed deadline is printed in it. */
+  use24h: boolean;
 }
 
 type Filter = "open" | "all" | "done";
@@ -34,10 +37,23 @@ function priorityClass(p: number): string {
   return " cal-task-prio-low";
 }
 
-/** A task is overdue when it has a due date in the past and is not complete. */
-function isOverdue(task: CalendarTask, today: string): boolean {
+/**
+ * A task is overdue when its deadline is behind us and it is not complete.
+ *
+ * `now` is a full stamp, because a `due` may carry an **hour** (the board's card
+ * dialog can set one): such a card is late when that hour passes, not at
+ * midnight. Mirrors `lib/todoBoard`'s `isOverdue` — the same rule the board and
+ * the header badge apply, so one list cannot call a card late while another
+ * still calls it due.
+ */
+function isOverdue(task: CalendarTask, now: string): boolean {
   if (!task.due || task.percent >= 100) return false;
-  return datePart(task.due) < today;
+  const day = datePart(task.due);
+  const today = datePart(now);
+  if (day !== today) return day < today;
+  const deadline = timePart(task.due);
+  const clock = timePart(now);
+  return !!deadline && !!clock && deadline < clock;
 }
 
 /**
@@ -57,13 +73,17 @@ export function TasksView({
   onUpdate,
   onDelete,
   defaultCalendarId,
+  use24h,
 }: Props) {
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
   const [filter, setFilter] = useState<Filter>("open");
   const [title, setTitle] = useState("");
   const [due, setDue] = useState("");
-  const today = todayStr();
+  // Minute-granular rather than the bare day this used to hold, so an hour
+  // deadline passing re-sorts the list on the next render instead of waiting for
+  // midnight.
+  const now = toStamp(new Date());
 
   const shown = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -80,8 +100,8 @@ export function TasksView({
       )
       .sort((a, b) => {
         // Overdue first, then by due date (undated last), then by priority.
-        const ao = isOverdue(a, today) ? 0 : 1;
-        const bo = isOverdue(b, today) ? 0 : 1;
+        const ao = isOverdue(a, now) ? 0 : 1;
+        const bo = isOverdue(b, now) ? 0 : 1;
         if (ao !== bo) return ao - bo;
         const ad = a.due ?? "9999";
         const bd = b.due ?? "9999";
@@ -90,7 +110,7 @@ export function TasksView({
         const bp = b.priority || 10;
         return ap - bp;
       });
-  }, [tasks, visibleCalendars, filter, search, today]);
+  }, [tasks, visibleCalendars, filter, search, now]);
 
   async function addTask() {
     const t = title.trim();
@@ -161,7 +181,7 @@ export function TasksView({
         <div className="cal-tasks-list">
           {shown.map((task) => {
             const done = task.percent >= 100;
-            const overdue = isOverdue(task, today);
+            const overdue = isOverdue(task, now);
             return (
               <div
                 key={task.id}
@@ -204,6 +224,9 @@ export function TasksView({
                   <span className="cal-task-due" title={formatLongDate(datePart(task.due), lang)}>
                     {overdue ? t("tasksView.overduePrefix") : ""}
                     {datePart(task.due)}
+                    {/* Printed only when the card actually carries one, so a
+                        whole-day due is never dressed up as a 00:00 deadline. */}
+                    {timePart(task.due) ? ` ${formatTime(timePart(task.due), use24h)}` : ""}
                   </span>
                 ) : null}
 

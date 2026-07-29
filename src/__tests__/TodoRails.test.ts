@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { agendaWindow, occurrencePast, selectUrgentMail } from "../lib/todoBoard";
+import {
+  agendaWindow,
+  occurrenceCardOf,
+  occurrencePast,
+  selectUrgentMail,
+  taskFromMail,
+  taskFromOccurrence,
+} from "../lib/todoBoard";
 import type { Calendar, CalendarEvent, CalendarTask } from "../types";
 import type { MailHeader } from "../types/mail";
 
@@ -164,5 +171,106 @@ describe("selectUrgentMail", () => {
 
   it("handles empty inputs", () => {
     expect(selectUrgentMail([], [], [])).toEqual([]);
+  });
+});
+
+// ── Converting into a card ─────────────────────────────────────────────────
+
+/**
+ * The one thing these tests are really asserting: a mail card and an appointment
+ * card are the SAME card, differing only in the object they record. Two rails
+ * that each built their own record is how a board ends up with cards that land
+ * in different columns and remember different things about where they came from.
+ */
+describe("the conversions", () => {
+  const CONV = { calendarId: "work", columnId: "backlog", now: at("08:30") };
+  const occ = () => agendaWindow([ev({ id: "e1" })], CALENDARS, at("08:00")).today[0];
+
+  it("files both kinds in the board's first column, open and unranked", () => {
+    const fromMail = taskFromMail(header("u1", "urgent"), CONV, "(no subject)");
+    const fromEvent = taskFromOccurrence(occ(), CONV, "(untitled)");
+    for (const made of [fromMail, fromEvent]) {
+      expect(made.column).toBe("backlog");
+      expect(made.calendar_id).toBe("work");
+      expect(made.percent).toBe(0);
+      expect(made.rank).toBeUndefined();
+      expect(made.created).toBe("2026-07-08T08:30");
+      expect(made.notes).toBeTruthy();
+    }
+  });
+
+  it("records where the card came from, and only one of the two", () => {
+    const fromMail = taskFromMail(header("u1", "urgent"), CONV, "(no subject)");
+    expect(fromMail.mail?.message_id).toBe("u1");
+    expect(fromMail.mail?.priority_at_convert).toBe("urgent");
+    expect(fromMail.event).toBeUndefined();
+
+    const fromEvent = taskFromOccurrence(occ(), CONV, "(untitled)");
+    expect(fromEvent.event?.event_id).toBe("e1");
+    expect(fromEvent.event?.occurrence_start).toBe("2026-07-08T09:00");
+    expect(fromEvent.mail).toBeUndefined();
+  });
+
+  it("carries the mail's mark into the card's priority", () => {
+    expect(taskFromMail(header("u1", "urgent"), CONV, "x").priority).toBe(1);
+    expect(taskFromMail(header("i1", "important"), CONV, "x").priority).toBe(5);
+  });
+
+  it("falls back to the caller's title, never to an empty one", () => {
+    const blank = { ...header("u1", "urgent"), subject: "" };
+    expect(taskFromMail(blank, CONV, "(no subject)").title).toBe("(no subject)");
+    const untitled = { ...occ(), title: "" };
+    expect(taskFromOccurrence(untitled, CONV, "(untitled)").title).toBe("(untitled)");
+  });
+
+  it("makes an appointment card due on the day it happens", () => {
+    const made = taskFromOccurrence(occ(), CONV, "x");
+    expect(made.due).toBe("2026-07-08");
+    expect(made.start).toBe("2026-07-08T09:00");
+    // A mail carries no date the card should inherit.
+    expect(taskFromMail(header("u1", "urgent"), CONV, "x").due).toBeNull();
+  });
+});
+
+describe("occurrenceCardOf", () => {
+  const window_ = () =>
+    agendaWindow(
+      [
+        ev({
+          id: "e1",
+          rrule: { freq: "daily", interval: 1 },
+        }),
+      ],
+      CALENDARS,
+      at("08:00"),
+    );
+
+  it("finds an open card made from this occurrence", () => {
+    const today = window_().today[0];
+    const tasks = [
+      card({ event: { event_id: "e1", occurrence_start: today.occurrenceStart } }),
+    ];
+    expect(occurrenceCardOf(today, tasks)?.id).toBe("t");
+  });
+
+  it("does not report tomorrow's instance as carded", () => {
+    // One card per occurrence: a weekly meeting prepared for once is not
+    // prepared for every week.
+    const { today, tomorrow } = window_();
+    const tasks = [
+      card({ event: { event_id: "e1", occurrence_start: today[0].occurrenceStart } }),
+    ];
+    expect(occurrenceCardOf(tomorrow[0], tasks)).toBeNull();
+  });
+
+  it("ignores a completed card", () => {
+    const today = window_().today[0];
+    const tasks = [
+      card({
+        percent: 100,
+        event: { event_id: "e1", occurrence_start: today.occurrenceStart },
+      }),
+    ];
+    expect(occurrenceCardOf(today, tasks)).toBeNull();
   });
 });

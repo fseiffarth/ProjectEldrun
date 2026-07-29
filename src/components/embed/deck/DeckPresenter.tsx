@@ -69,6 +69,7 @@ import { gifKey } from "./deckAssets";
 import { renderPage } from "./deckBase";
 import { InterstitialView, PresentedSlide } from "./DeckSlideView";
 import { useT } from "../../../lib/i18n";
+import { useUse24h } from "../../../lib/timeFormat";
 
 export interface DeckPresenterProps {
   deck: Deck;
@@ -122,6 +123,7 @@ export function DeckPresenter({
   onClose,
 }: DeckPresenterProps) {
   const t = useT();
+  const use24h = useUse24h();
   const stops = useMemo(() => sequence(deck), [deck]);
   const [index, setIndex] = useState(() => Math.min(startAt, Math.max(0, stops.length - 1)));
   const [blank, setBlank] = useState<Blank>(null);
@@ -554,9 +556,13 @@ export function DeckPresenter({
       : target > 0 && elapsed >= target * 60 * 0.9
         ? "near"
         : "ok";
+  // The speaker's wall clock, in the app's clock (`lib/timeFormat`) rather than
+  // the locale's — the presenter is glanced at, and a format that disagrees with
+  // every other clock in the app is one more thing to parse mid-sentence.
   const wall = new Date(now).toLocaleTimeString(undefined, {
     hour: "2-digit",
     minute: "2-digit",
+    hour12: !use24h,
   });
 
   // The next DIFFERENT slide. On a slide with builds the next `kind: "slide"`

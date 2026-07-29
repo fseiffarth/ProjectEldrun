@@ -87,6 +87,29 @@ key that dies with the process. Mail syncs and reads; nothing persists. It looks
 exactly like a working mailbox until the next launch, which is why
 `MailEncryptionState` reports it and the pane shows an interrupting strip.
 
+**The sealed *files* must resolve the key themselves.** `accounts.json.enc` and
+`filters.json.enc` sit beside the database under the same master key, and they
+are read by commands that never open the database — `mail_accounts_list` is the
+first mail command a launch runs. That is where the session-key handle bit back:
+it was published only by `store_of`, so on a cold process the account read found
+no key, skipped the sealed file, looked for the plaintext one the migration had
+deleted, and answered **an empty list**. The user's configured account appeared
+to have vanished; nothing had asked for its key yet. The write half was the worse
+half — re-adding the account then wrote a *cleartext* `accounts.json` beside the
+sealed file that every later read prefers, so the fix would vanish too and leave
+an unencrypted copy of the account list on disk.
+
+Two rules close it, and both belong to the *file* layer rather than to any one
+command. `file_keys()` attempts a silent unlock itself (**once** per process — a
+locked keyring costs a bounded 4 s read, and these commands run on a timer) and
+degrades to `None` like everything else here. And a plaintext write is
+**refused** whenever a sealed twin exists without a key (`sealed_write_refusal`),
+because the alternative is a save that reports success and is then permanently
+ignored. The twin's path is derived from the file's own path, so a read against
+any directory is self-contained — it used to take the plaintext name from its
+argument and the sealed one from the global state dir, which meant a call against
+a temp directory quietly read the real mailbox's account list.
+
 **What stays readable on disk**, by design: message counts, folder structure,
 arrival dates, sizes, read/starred/priority flags — they are what paging,
 ordering and unread counts run on. One item is sharper than "folder structure"

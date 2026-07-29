@@ -303,6 +303,30 @@ export function CalDavAccountDialog({
             <span className="caldav-field-hint">{t("caldav.syncIntervalHint")}</span>
           </label>
 
+          {/* Two-way sync, opt-in and default off (`docs/caldav_plan.md` Phase
+              3). The plan's own open question — "is write access even wanted
+              against an institutional calendar?" — is answered by asking, here,
+              because nobody but the account's owner knows whether the thing on
+              the other end is a shared work calendar or their own server.
+
+              The hint says what the switch actually does in BOTH positions, and
+              the "off" half is the load-bearing one: with push off, a
+              CalDAV-backed calendar stays read-only in the grid. That is not a
+              missing feature, it is the alternative to a calendar that accepts
+              edits and silently keeps them to itself. */}
+          <label className="caldav-field caldav-field-check">
+            <span className="caldav-check-row">
+              <input
+                type="checkbox"
+                checked={form.allow_write ?? false}
+                onChange={(e) => patch({ allow_write: e.target.checked })}
+              />
+              <span>{t("caldav.allowWrite")}</span>
+              <UntestedTag />
+            </span>
+            <span className="caldav-field-hint">{t("caldav.allowWriteHint")}</span>
+          </label>
+
           <div className="caldav-discover-row">
             <button
               type="button"

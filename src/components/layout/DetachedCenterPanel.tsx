@@ -469,7 +469,6 @@ export function DetachedCenterPanel({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
     // Bind once: live state is read via kbRef; the resolver reads settings live.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Pane-region measurement (for the split-preview overlay) ───────────────
@@ -678,7 +677,6 @@ export function DetachedCenterPanel({
       if (active) useDragStore.getState().end();
     };
     // Mount once: the listeners key off our (stable) window label.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Resolve the within-popout drop target under a popout-client point and write

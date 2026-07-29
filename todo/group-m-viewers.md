@@ -158,11 +158,16 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
 
-70. **TeX viewer: `Ctrl`+`S` saves and recompiles.** In the LaTeX viewer (engine
+70. **TeX viewer: `Ctrl`+`S` saves and recompiles.** ✅ Implemented ·
+    🧪 Awaiting live QA. In the LaTeX viewer (engine
     available), `Ctrl`+`S` runs `compile()` instead of a plain save — `compile()`
     persists pending edits first, so the PDF preview tracks the source. The
     no-engine fallback keeps `Ctrl`+`S` as a plain save.
-    - [ ] 🤖 Automated test
+    - Shipped at `FileViewerPane.tsx:6348-6350` (`save={() => void compile()}`,
+      comment names this item); the no-engine fallback is at `:6156`.
+    - [ ] 🤖 Automated test — **genuinely absent**: no `key: "s"` case exists
+      anywhere under `src/__tests__/`. The empty boxes here mean "untested",
+      not "unstarted".
     - [ ] 🖐️ Manual test
 
 71. **Find in the native PDF viewer (`Ctrl`+`F`).** Add an in-document search bar
@@ -235,7 +240,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       WebKitGTK-sensitive path. Also re-check the print preview still reorders/prints
       as before, and that saving works on a **remote (SSH)** project's PDF.
 
-87. **Python in the native code viewer: Run, Debug, breakpoints, go-to-definition.**
+87. *(This is group-M's #87; group-O has a different #87.)*
+    **Python in the native code viewer: Run, Debug, breakpoints, go-to-definition.**
     Turn the text editor into a usable Python workbench for the three things a
     script actually needs, without importing an LSP or a DAP client.
 
@@ -379,7 +385,11 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       deletes in its own style, and that a file with an anchor/merge key
       (`<<: *base`) renders those rows read-only instead of offering a broken input.
 
-89. **CSV table viewer: a separator you can name, and cells you can edit.** The
+89. **CSV table viewer: a separator you can name, and cells you can edit.**
+    📄 **Doc drift:** `README.md:369` still describes the table viewer as a
+    *"Read-only grid … windowed to keep the webview responsive"*, which this item
+    replaced (editable cells, delimiter picker, `ColumnsMenu`). Update it.
+    The
     table viewer (#40) read every `.csv` as comma-delimited because that is what
     the *extension* implies — so a `;`- or `|`-delimited file (a European export,
     a database dump) split into rows but not into **columns**, and arrived as one
@@ -520,10 +530,10 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       window and is **not** mirrored to the audience one, so in dual-window mode
       the room does not see the pointer. Needs the stroke/laser stream to cross
       windows (the `DETACHED_DRAG_*` cursor stream is the precedent). *Now
-      tracked as [Group V](group-v.md) #127, with the letterbox-normalization
+      tracked as [Group V](group-v-presenter.md) #127, with the letterbox-normalization
       trap noted.*
 
-    > **⚠️ Before the manual QA below, see [Group V](group-v.md)
+    > **⚠️ Before the manual QA below, see [Group V](group-v-presenter.md)
     > (#93–#141).** A three-way static analysis of the shipped code found two
     > defects that **destroy authored work with no prompt** — the debounced
     > autosave is cancelled on unmount (#93) and a newer-version deck is
@@ -554,9 +564,9 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [ ] **Known gap:** `compile_tex` is **local-only** (no remote dispatch), so
       a remote project must compile on its local mirror. (It is also a
       *synchronous* Tauri command, so every compile freezes the window — see
-      [Group V](group-v.md) #105.)
+      [Group V](group-v-presenter.md) #105.)
 
-    **Follow-on work: [Group V](group-v.md) #93–#141** — post-Phase-7 hardening
+    **Follow-on work: [Group V](group-v-presenter.md) #93–#141** — post-Phase-7 hardening
     and gaps, organized as V.1 blockers (data loss + first-real-use failures),
     V.2 correctness and core usability, V.3 performance, polish and the
     differentiated bet.

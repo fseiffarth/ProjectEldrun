@@ -37,7 +37,12 @@ use crate::services::remote::{remote_target_for_dir, RemoteTarget};
 //
 // So Eldrun's own invocations pin the config keys that turn a read into an exec.
 // This does not need a read/write split: none of these are settings an Eldrun
-// git call wants honoured in the first place.
+// git call wants honoured in the first place. Two layers: `-c` overrides for
+// keys Eldrun knows the exact name of ([`HARDENED_CONFIG`] below), and a
+// pattern-matched strip of the repo's own `.git/config` file for keys whose
+// name the attacker picks ([`CONFIG_DENYLIST`]/[`sanitize_repo_git_config`],
+// further down) — a `-c` can only ever fix an exact key, so it cannot reach
+// `filter.<any driver name>.clean`.
 
 /// `-c <key>=<value>` overrides applied to every git call Eldrun makes.
 ///
@@ -66,13 +71,16 @@ const DIFF_DRIVER_CMDS: &[&str] = &["diff", "log", "show", "blame"];
 /// subcommand, insert the diff-driver flags straight after it. Pure, so the shape
 /// is unit-tested rather than inferred from a spawn.
 ///
-/// **Known residuals**, both the same shape — repo-controlled state naming a
-/// program git then executes:
+/// **Known residual** — repo-controlled state naming a program git then
+/// executes, of the same shape as [`HARDENED_CONFIG`] but where the attacker
+/// picks the config key's own name so no fixed `-c` can name it in advance:
 ///
-/// * a repo-local `filter.<driver>.clean` (bound by an in-tree `.gitattributes`)
-///   still runs on `git diff`/`git add`. There is no fixed `-c` that disables a
-///   *named* driver and no switch that ignores in-tree attributes, so closing
-///   that one needs the structural fix — see Group O #151.
+/// * a repo-local `filter.<driver>.clean`/`.smudge`/`.process` (bound by an
+///   in-tree `.gitattributes`), or `diff.<driver>.textconv`/`.command`, on
+///   `git diff`/`git add`/`git status`. **Closed** — for local git calls, via
+///   [`CONFIG_DENYLIST`]/[`sanitize_repo_git_config`], run by every caller
+///   that goes through [`hardened_git_command_in`] (which `run_git`'s local
+///   branch does). Remote git calls are not covered (see `run_git`'s doc).
 /// * **`.git/hooks/*`**. `core.hooksPath` is deliberately NOT pinned here: every
 ///   git call goes through this function, `git_commit` included, and a user's own
 ///   `pre-commit`/`commit-msg` hooks are the point of that one. It is pinned per
@@ -80,8 +88,10 @@ const DIFF_DRIVER_CMDS: &[&str] = &["diff", "log", "show", "blame"];
 ///   anything — see [`NO_HOOKS_CONFIG`]. The residual is every *other* command
 ///   that can fire a hook (`git_checkout`'s `post-checkout`, a push's
 ///   `pre-push`), which for a container-toggled project means a contained agent
-///   writing a hook file gets execution on the **host**. Same #151 structural
-///   fix; naming only the filter driver here made the gap look smaller than it is.
+///   writing a hook file gets execution on the **host**. Still open — a config
+///   denylist doesn't reach it, since a hook is a file in a well-known
+///   directory, not a config key naming one; deliberately out of scope for the
+///   #151 pass that closed the filter/diff residual above.
 pub(crate) fn hardened_git_args<S: AsRef<str>>(args: &[S]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(args.len() + HARDENED_CONFIG.len() * 2 + 2);
     for kv in HARDENED_CONFIG {
@@ -122,26 +132,173 @@ pub(crate) fn hardened_git_command<S: AsRef<str>>(args: &[S]) -> std::process::C
     cmd
 }
 
+// ── Config-key denylist (Group O #151) ─────────────────────────────────────
+//
+// `HARDENED_CONFIG`'s per-key `-c` overrides can only ever fix an EXACT key —
+// which closes `core.fsmonitor`/`protocol.ext.allow` because Eldrun knows those
+// names in advance, but cannot touch `filter.<driver>.clean`: the driver name is
+// the attacker's choice, so there is no finite list of `-c` flags that covers it.
+// This closes that shape instead, structurally: before any LOCAL git call, the
+// project's own `.git/config` is read (as a plain file, never as a repo — this
+// cannot itself trigger a filter/hook) and any key matching a denylisted
+// *pattern* (section + suffix, subsection wildcarded) is stripped from the file
+// in place. Unlike a `-c` override this generalizes over the attacker-chosen
+// part of the key, the same way `git help config` says an alias can never
+// override an existing subcommand name regardless of what it's called.
+
+/// A `<prefix>*<suffix>` key shape, matched against `git config --list
+/// --name-only`'s lowercase `section.subsection.key` form with the subsection
+/// wildcarded — `("filter.", ".clean")` matches `filter.lfs.clean` and
+/// `filter.anything.clean` alike.
+struct DenylistedConfigKey {
+    prefix: &'static str,
+    suffix: &'static str,
+}
+
+/// Key shapes that name a program git executes, or that launder one into a
+/// file this sanitizer never inspects. Deliberately narrow, and each entry
+/// earns its place:
+///
+/// - `filter.*.clean` / `.smudge` / `.process` — the named residual: an
+///   in-repo `.gitattributes` binds a path to this driver name, and this is
+///   the command git then runs on `status`/`diff`/`add`. **Known cost**: a
+///   repo that legitimately uses a content filter (Git LFS is the common
+///   case) loses it for every local git call this codebase makes — `status`
+///   sees unfiltered content instead of smudged/cleaned content. There is no
+///   way to keep "some filters, but not attacker-chosen ones" here; the
+///   command names *are* the entire configuration surface for a filter.
+/// - `diff.*.textconv` / `.command` — the same shape for diff drivers.
+///   Belt-and-suspenders beside the per-command `--no-textconv`/`--no-ext-diff`
+///   flags on [`DIFF_DRIVER_CMDS`]: those don't cover every subcommand that
+///   can trigger a diff (and won't cover one added later that forgets them),
+///   and the config-level strip means a future call site needs nothing extra.
+/// - `include.path` / `includeif.*.path` — **not optional**: without denying
+///   these, an attacker launders any of the above through a second file this
+///   sanitizer never reads (`git config --file` does not follow includes by
+///   default, so removing a key from the top-level file does nothing if the
+///   real definition lives in an included one) — the include directive itself
+///   is the thing that must go.
+///
+/// **Deliberately not here**, both distinct, already-documented trade-offs
+/// rather than oversights:
+/// - `.git/hooks/*` — files, not config keys; `core.hooksPath` is left live
+///   for `git_commit`/push, where a user's own hooks are the point (see this
+///   module's header). A contained agent's planted hook is a residual this
+///   pass does not close.
+/// - `alias.*` — not a vector against this codebase at all: every subcommand
+///   here is a live builtin, and `git help config` states an alias hiding an
+///   existing command "is ignored except for deprecated commands."
+/// - `credential.helper` / `credential.*.helper` — real exec capability, but
+///   blocking the *key* also breaks the legitimate case (a credential helper
+///   set from inside a container, meant to carry to the host's later push);
+///   closing it without that cost needs value-level judgment (an allowlist of
+///   known-safe helper names) this pass doesn't attempt.
+const CONFIG_DENYLIST: &[DenylistedConfigKey] = &[
+    DenylistedConfigKey { prefix: "filter.", suffix: ".clean" },
+    DenylistedConfigKey { prefix: "filter.", suffix: ".smudge" },
+    DenylistedConfigKey { prefix: "filter.", suffix: ".process" },
+    DenylistedConfigKey { prefix: "diff.", suffix: ".textconv" },
+    DenylistedConfigKey { prefix: "diff.", suffix: ".command" },
+    DenylistedConfigKey { prefix: "include.", suffix: "path" },
+    DenylistedConfigKey { prefix: "includeif.", suffix: ".path" },
+];
+
+/// Pure match against [`CONFIG_DENYLIST`], case-insensitive (git lowercases
+/// section and key names itself; only the attacker-controlled subsection may
+/// carry mixed case, and it never touches the fixed prefix/suffix ends this
+/// checks).
+fn is_denylisted_config_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    CONFIG_DENYLIST.iter().any(|d| key.starts_with(d.prefix) && key.ends_with(d.suffix))
+}
+
+/// Strip every [`CONFIG_DENYLIST`]-matching key from `project_dir`'s
+/// `.git/config`, in place, before any LOCAL git call runs against it. A
+/// no-op when there's no repo, no config, or nothing to strip.
+///
+/// **Best-effort, and deliberately non-blocking on failure**: if listing the
+/// config fails outright, that means `.git/config` is malformed badly enough
+/// that git itself cannot parse it — which the *actual* command this call is
+/// guarding would then also fail on identically (a fatal config parse error
+/// stops git before it invokes anything), so silently skipping sanitization
+/// here creates no new exposure. Each `--unset-all` is likewise independent —
+/// one failing (a key already gone, a race with a concurrent write) must not
+/// leave the rest of a poisoned config standing.
+///
+/// Reads/writes the file directly via `git config --file <path>` rather than
+/// `git -C <project_dir>` — listing or editing a config file this way cannot
+/// itself invoke a filter or hook, so this cannot be the very thing it exists
+/// to prevent.
+fn sanitize_repo_git_config(project_dir: &Path) {
+    let config_path = project_dir.join(".git").join("config");
+    let Some(config_path_str) = config_path.to_str() else {
+        return;
+    };
+    if !config_path.is_file() {
+        return;
+    }
+    let Ok(listed) = crate::paths::command_no_window("git")
+        .args(["config", "--file", config_path_str, "--name-only", "--list", "--no-includes"])
+        .output()
+    else {
+        return;
+    };
+    if !listed.status.success() {
+        return;
+    }
+    let keys: std::collections::HashSet<String> = String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(str::to_string)
+        .collect();
+    for key in keys {
+        if !is_denylisted_config_key(&key) {
+            continue;
+        }
+        let _ = crate::paths::command_no_window("git")
+            .args(["config", "--file", config_path_str, "--unset-all", &key])
+            .output();
+    }
+}
+
+/// [`hardened_git_command`] with [`sanitize_repo_git_config`] run first and
+/// `current_dir(project_dir)` already set — the one function every LOCAL git
+/// spawn in this codebase goes through, so "this project's repo config is
+/// untrusted" (Group O #151) has one definition instead of one per call site.
+pub(crate) fn hardened_git_command_in<S: AsRef<str>, P: AsRef<Path>>(
+    project_dir: P,
+    args: &[S],
+) -> std::process::Command {
+    sanitize_repo_git_config(project_dir.as_ref());
+    let mut cmd = hardened_git_command(args);
+    cmd.current_dir(project_dir.as_ref());
+    cmd
+}
+
 /// Run `git <args>` for a project, dispatching local-vs-remote on `target`.
 /// Returns the captured `Output` (stdout/stderr/exit) for both, so callers parse
 /// it identically. `target` is the resolved remoteness for `project_dir`.
 ///
 /// Both branches go through [`hardened_git_args`] — the remote one too, because a
 /// host repo's config is written by whatever runs on that host, and `git <args>`
-/// there is built from the same argument list.
+/// there is built from the same argument list. [`sanitize_repo_git_config`] is
+/// LOCAL-only, though (via [`hardened_git_command_in`]): a project container only
+/// ever mounts a local directory (`services::sandbox` refuses remote projects),
+/// so the container→host escalation this exists for has no remote counterpart —
+/// a remote host's own `.git/config` is that host's business, same as any other
+/// file a user's own SSH session could write there.
 fn run_git(
     target: Option<&RemoteTarget>,
     project_dir: &str,
     args: &[&str],
 ) -> Result<std::process::Output, String> {
-    let args = hardened_git_args(args);
     match target {
-        Some(t) => crate::services::ssh_exec::run_git_remote(&t.spec, &args),
-        None => crate::paths::command_no_window("git")
-            .args(&args)
-            .current_dir(project_dir)
-            .output()
-            .map_err(|e| e.to_string()),
+        Some(t) => {
+            let args = hardened_git_args(args);
+            crate::services::ssh_exec::run_git_remote(&t.spec, &args)
+        }
+        None => hardened_git_command_in(project_dir, args).output().map_err(|e| e.to_string()),
     }
 }
 
@@ -2202,6 +2359,137 @@ mod tests {
         // …and the hardening must leave a working diff behind, not a dead one.
         assert!(out.status.success(), "hardened diff failed: {}", String::from_utf8_lossy(&out.stderr));
         assert!(String::from_utf8_lossy(&out.stdout).contains("+b"));
+    }
+
+    #[test]
+    fn config_denylist_matches_the_named_shapes_and_nothing_else() {
+        // The residual this closes: an attacker-chosen driver name.
+        assert!(is_denylisted_config_key("filter.lfs.clean"));
+        assert!(is_denylisted_config_key("filter.anything-at-all.clean"));
+        assert!(is_denylisted_config_key("filter.x.smudge"));
+        assert!(is_denylisted_config_key("filter.x.process"));
+        assert!(is_denylisted_config_key("diff.mydriver.textconv"));
+        assert!(is_denylisted_config_key("diff.mydriver.command"));
+        // Case: git lowercases section/key itself; the checker must too.
+        assert!(is_denylisted_config_key("Filter.Weird.Clean"));
+        // The bypass this sanitizer would otherwise have: laundering a
+        // denylisted key through a file it never reads.
+        assert!(is_denylisted_config_key("include.path"));
+        assert!(is_denylisted_config_key("includeif.gitdir:/x/.path"));
+
+        // Adjacent, harmless keys must survive — this is a denylist, not a
+        // section-wide ban.
+        assert!(!is_denylisted_config_key("filter.lfs.required"));
+        assert!(!is_denylisted_config_key("user.email"));
+        assert!(!is_denylisted_config_key("user.name"));
+        assert!(!is_denylisted_config_key("core.fsmonitor"));
+        assert!(!is_denylisted_config_key("core.hookspath"));
+        assert!(!is_denylisted_config_key("remote.origin.url"));
+        assert!(!is_denylisted_config_key("branch.main.remote"));
+        // Deliberately not on the list at all (see the doc comment).
+        assert!(!is_denylisted_config_key("alias.status"));
+        assert!(!is_denylisted_config_key("credential.helper"));
+    }
+
+    /// The headline residual named in Group O #151: a repo-local
+    /// `filter.<driver>.clean` bound by an in-tree `.gitattributes`, run on
+    /// `git add`. The driver name (`evil`, here) is exactly what a fixed `-c`
+    /// override cannot cover; [`sanitize_repo_git_config`] must, because it
+    /// matches by key *shape* instead of by exact name.
+    #[cfg(unix)]
+    #[test]
+    fn sanitize_stops_a_repo_local_filter_clean_driver() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping sanitize_stops_a_repo_local_filter_clean_driver");
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        init_repo(dir);
+        let run = |args: &[&str]| {
+            crate::paths::command_no_window("git").args(args).current_dir(dir).output().expect("git")
+        };
+
+        let marker = dir.join("executed");
+        let payload = dir.join("payload.sh");
+        fs::write(&payload, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).expect("write");
+        fs::set_permissions(&payload, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let p = payload.to_str().expect("utf-8 path");
+
+        run(&["config", "filter.evil.clean", p]);
+        fs::write(dir.join(".gitattributes"), "secret.txt filter=evil\n").expect("attrs");
+        fs::write(dir.join("secret.txt"), "a\n").expect("write");
+
+        run(&["add", "secret.txt"]);
+        assert!(marker.exists(), "setup is stale: git no longer runs a repo-local filter.clean");
+        run(&["rm", "--cached", "-f", "secret.txt"]);
+        fs::remove_file(&marker).expect("clear marker");
+
+        let project_dir = dir.to_str().expect("utf-8 path");
+        run_git(None, project_dir, &["add", "secret.txt"]).expect("hardened add");
+        assert!(!marker.exists(), "filter.evil.clean executed through run_git");
+    }
+
+    /// The bypass a filter/diff-only denylist would otherwise have: an
+    /// attacker doesn't need the payload in `.git/config` itself, only an
+    /// `include.path` pointing at a second, ordinary file this sanitizer
+    /// would never look at — laundering the same `filter.<driver>.clean`
+    /// through a file `git config --file X --list` (no `--includes` by
+    /// default) never sees. Closed by denying `include.path` itself, so the
+    /// real, include-following git invocation that follows never gets there.
+    #[cfg(unix)]
+    #[test]
+    fn sanitize_closes_the_include_laundering_bypass() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping sanitize_closes_the_include_laundering_bypass");
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        init_repo(dir);
+        let run = |args: &[&str]| {
+            crate::paths::command_no_window("git").args(args).current_dir(dir).output().expect("git")
+        };
+
+        let marker = dir.join("executed");
+        let payload = dir.join("payload.sh");
+        fs::write(&payload, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).expect("write");
+        fs::set_permissions(&payload, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let p = payload.to_str().expect("utf-8 path");
+
+        // The laundering file: never touched directly by the sanitizer.
+        fs::write(
+            dir.join("laundered.gitconfig"),
+            format!("[filter \"evil\"]\n\tclean = {p}\n"),
+        )
+        .expect("write laundering file");
+        run(&["config", "--add", "include.path", "../laundered.gitconfig"]);
+        fs::write(dir.join(".gitattributes"), "secret.txt filter=evil\n").expect("attrs");
+        fs::write(dir.join("secret.txt"), "a\n").expect("write");
+
+        // Setup check: the include genuinely reaches the filter today.
+        run(&["add", "secret.txt"]);
+        assert!(marker.exists(), "setup is stale: the include-laundered filter never ran");
+        // `rm --cached -f` re-runs the clean filter too (to compare working-tree
+        // content against the index) — clear the marker *after* this, not before,
+        // or the next check would pass on a marker this line left behind.
+        run(&["rm", "--cached", "-f", "secret.txt"]);
+        fs::remove_file(&marker).expect("clear marker");
+
+        let project_dir = dir.to_str().expect("utf-8 path");
+        run_git(None, project_dir, &["add", "secret.txt"]).expect("hardened add");
+        assert!(!marker.exists(), "include-laundered filter.evil.clean executed through run_git");
+
+        // The strip must not be so blunt it takes the whole file with it.
+        let email = crate::paths::command_no_window("git")
+            .args(["config", "--file", &dir.join(".git/config").to_string_lossy(), "user.email"])
+            .output()
+            .expect("read back user.email");
+        assert_eq!(String::from_utf8_lossy(&email.stdout).trim(), "test@example.com");
     }
 
     #[test]

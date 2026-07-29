@@ -46,3 +46,22 @@
     repo detection), so those probes are genuinely per-surface.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
+
+67. **Alerts group in the file viewer.** A collapsible "Alerts" group
+    below the file tree in `ProjectFilesView` (so it lands in the right panel and
+    every Files (Project) tab alike), merging the three things that can need the
+    user *now* into one time-ordered strip: priority-marked mail, calendar entries
+    about to start, and to-do cards at or past their due date. **On by default**
+    (`files_alerts`, which *is* the group's visibility — the toolbar 🔔 writes it,
+    so a close persists rather than returning at the next remount, and the button
+    renders either way so the × is never a one-way door), with a lookahead window
+    (`files_alerts_days`) and per-source
+    opt-outs (`files_alerts_sources`); the mail source stays additionally gated by
+    the `mail_client` experimental flag. Reads only the stores that already own
+    these rows — `calendar.json`'s events/tasks and the local mail priority index
+    — so there is no fourth store and no cached copy of a deadline to go stale.
+    Pure selectors in `src/lib/alerts.ts` (clock passed in, so the boundary cases
+    are testable), the reads in `useAlertsFeed`, the chrome in `AlertsSection`.
+    Implemented 2026-07-29, **never live-tested**.
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test

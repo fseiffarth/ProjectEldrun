@@ -109,7 +109,7 @@ function despace(uri: string): string {
  *  parser-shaped regex rather than `indexOf(":")`, so `example.com:8080` (a
  *  host and a port) is not mistaken for a scheme. */
 function schemeOf(uri: string): string {
-  const m = /^([a-zA-Z][a-zA-Z0-9+.\-]*):/.exec(uri);
+  const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(uri);
   if (!m) return "";
   const rest = uri.slice(m[0].length);
   // `localhost:5173`, `example.com:8080/x` — a numeric "scheme body" is a port.

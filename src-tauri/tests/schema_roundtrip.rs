@@ -1,14 +1,14 @@
-/// Schema round-trip tests for Phase 1.
-///
-/// Each test:
-///   1. Reads a real fixture file (with an injected `_unknown_test` field).
-///   2. Deserializes into the Rust schema struct.
-///   3. Serializes back to JSON.
-///   4. Deserializes the re-serialized JSON and checks key values.
-///   5. Asserts the `_unknown_test` field was preserved.
-///
-/// These also validate that the Python app can roll back: if the round-tripped
-/// JSON parses cleanly in Python (shape unchanged), rollback is safe.
+//! Schema round-trip tests for Phase 1.
+//!
+//! Each test:
+//!   1. Reads a real fixture file (with an injected `_unknown_test` field).
+//!   2. Deserializes into the Rust schema struct.
+//!   3. Serializes back to JSON.
+//!   4. Deserializes the re-serialized JSON and checks key values.
+//!   5. Asserts the `_unknown_test` field was preserved.
+//!
+//! These also validate that the Python app can roll back: if the round-tripped
+//! JSON parses cleanly in Python (shape unchanged), rollback is safe.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -87,6 +87,10 @@ fn projects_python_rollback_shape() {
     }
 }
 
+fn parse_settings(json: &str) -> Settings {
+    serde_json::from_str(json).expect("parse settings")
+}
+
 // ── settings.json ──────────────────────────────────────────────────────────
 
 #[test]
@@ -111,6 +115,39 @@ fn settings_ollama_fields_preserved() {
     let back: Value = serde_json::from_str(&out).expect("reparse");
     // Python needs the global_apps map to be an object, not null.
     assert!(back["global_apps"].is_object(), "global_apps must be an object");
+}
+
+#[test]
+fn settings_files_alerts_roundtrip() {
+    // The right panel's opt-in Alerts group. The backend only round-trips these
+    // three, so the round-trip IS the contract.
+    let s: Settings = roundtrip(
+        r#"{
+        "files_alerts": true,
+        "files_alerts_days": 14,
+        "files_alerts_sources": { "mail": false, "tasks": true }
+    }"#,
+    );
+    assert_eq!(s.files_alerts, Some(true));
+    assert_eq!(s.files_alerts_days, Some(14));
+    let sources = s.files_alerts_sources.as_ref().expect("sources present");
+    assert_eq!(sources.mail, Some(false));
+    assert_eq!(sources.tasks, Some(true));
+    // Absent means ON — an unwritten key must stay unwritten, never become a
+    // `false` that silently switches a source off on the next read.
+    assert_eq!(sources.events, None);
+    let out = serde_json::to_string(&s).expect("serialize");
+    assert!(!out.contains("\"events\""), "absent source must not be materialized");
+}
+
+#[test]
+fn settings_files_alerts_absent_defaults_none() {
+    // An existing settings.json predating the group must load unchanged, and the
+    // group must read as off (`None`, which the frontend maps to false).
+    let s: Settings = parse_settings(r#"{"color_scheme":"dark"}"#);
+    assert!(s.files_alerts.is_none());
+    assert!(s.files_alerts_days.is_none());
+    assert!(s.files_alerts_sources.is_none());
 }
 
 #[test]

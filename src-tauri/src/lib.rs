@@ -1,3 +1,14 @@
+// `cargo clippy -- -D warnings` is a CI gate (TODO group Y #163). This is the
+// one lint turned off crate-wide, and only because it is structurally wrong for
+// this crate rather than inconvenient: a `#[tauri::command]` takes its injected
+// `AppHandle` and every `State<'_, …>` it touches as leading parameters before a
+// single one of its own arguments, so the 7-argument threshold is spent on
+// dependency injection. The functions it fires on (`remote_connect` at 11,
+// `detach_subwindow` at 9) are wide because the IPC boundary is wide — bundling
+// them into a struct would move the same fields behind one more indirection and
+// change nothing about the call site the lint is worried about.
+#![allow(clippy::too_many_arguments)]
+
 pub mod commands;
 pub mod duscan;
 pub mod gpustat;
@@ -643,6 +654,7 @@ pub fn run() {
             commands::projects::set_project_name,
             commands::projects::set_project_sandbox,
             commands::projects::set_project_sandbox_spec,
+            commands::projects::set_project_remote_control,
             commands::projects::sandbox_preflight,
             commands::python::python_interpreters,
             commands::python::python_interpreter_for,
@@ -728,7 +740,7 @@ pub fn run() {
             commands::calendar::calendar_write_ics,
             commands::calendar::calendar_fetch_ics,
             commands::calendar::calendar_replace_events,
-            // CalDAV accounts (docs/caldav_plan.md, Phases 1-2: read-only).
+            // CalDAV accounts (docs/caldav_plan.md, Phases 1-3).
             // A sync is deliberately two commands: `caldav_fetch` speaks the
             // protocol and hands back iCalendar text unparsed, the frontend
             // parses it with `src/lib/ics.ts` (the one parser that understands
@@ -745,6 +757,15 @@ pub fn run() {
             commands::caldav::caldav_discover,
             commands::caldav::caldav_fetch,
             commands::caldav::caldav_apply,
+            // The push half, same seam mirrored: `ics.ts` serializes, these
+            // speak the protocol. Every write is conditional (If-Match /
+            // If-None-Match), a 412 comes back as a *conflict value* rather
+            // than an error, and both the account's opt-in and the server's
+            // own privilege report have to allow it before either runs.
+            commands::caldav::caldav_push,
+            commands::caldav::caldav_delete,
+            commands::caldav::caldav_resource_etag,
+            commands::caldav::caldav_refresh_access,
             // Embedded mail client (docs/mail_client_plan_{a,b}.md). Every one
             // of these is `async` on purpose — a sync command runs on the main
             // thread, and an unreachable IMAP server would freeze the whole
@@ -772,6 +793,12 @@ pub fn run() {
             commands::mail::mail_priority_set,
             commands::mail::mail_priority_page,
             commands::mail::mail_priority_counts,
+            // The keyword rules that set those marks automatically. Local for
+            // the same reason: a rule writes the same column the right-click
+            // menu writes, so nothing here reaches a server either.
+            commands::mail::mail_filters_list,
+            commands::mail::mail_filters_set,
+            commands::mail::mail_filters_apply,
             commands::mail::mail_draft_save,
             commands::mail::mail_draft_send,
             commands::mail::mail_attach_pick,
@@ -1119,7 +1146,9 @@ pub fn run() {
             commands::agents::uninstall_agent,
             commands::ollama::ollama_is_running,
             commands::ollama::ollama_status,
+            commands::ollama::ollama_gpu_status,
             commands::ollama::ollama_registry_size,
+            commands::ollama::ollama_registry_details,
             commands::ollama::list_ollama_models_detailed,
             commands::ollama::stop_ollama_model,
             commands::ollama::load_ollama_model,
@@ -1131,6 +1160,8 @@ pub fn run() {
             commands::ollama::pause_ollama_pull,
             commands::ollama::delete_ollama_pull,
             commands::ollama::delete_ollama_model,
+            commands::ollama::ollama_check_updates,
+            commands::ollama::ollama_version_status,
             commands::ollama::list_installable_models,
             commands::ollama::search_ollama_registry,
             // Local code/text autocomplete (opt-in, local-only)
