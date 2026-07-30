@@ -1,7 +1,7 @@
-/// Tests for file-tree commands: list_dir, create_file, create_dir,
-/// delete_file, delete_dir, rename_path.
-///
-/// All tests use a tempdir so no real project state is touched.
+//! Tests for file-tree commands: list_dir, create_file, create_dir,
+//! delete_file, delete_dir, rename_path.
+//!
+//! All tests use a tempdir so no real project state is touched.
 
 use std::fs;
 

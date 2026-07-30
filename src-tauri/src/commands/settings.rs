@@ -20,7 +20,7 @@ pub fn get_settings() -> Result<Settings, String> {
     if settings
         .global_apps
         .as_ref()
-        .map_or(true, |apps| apps.is_empty())
+        .is_none_or(|apps| apps.is_empty())
     {
         if let Some(defaults) = default_global_apps() {
             settings.global_apps = Some(defaults);
@@ -73,7 +73,75 @@ fn default_global_apps()
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
+        detect_linux_global_apps()
+    }
+}
+
+/// Seed the global-app toolbar with common Linux desktop apps for the shared
+/// roles. Unlike Windows/macOS, a Linux app has no fixed install path, so each
+/// candidate is a binary name resolved via `PATH` (`crate::paths::resolve_executable`,
+/// which already covers the GUI-launched-process PATH gap). Mail, calendar,
+/// file-manager and system-monitor roles are deliberately absent, for the same
+/// reason as the other two platforms: Eldrun has its own of each. There is no
+/// app guaranteed present on every distro, so — unlike Windows (Notepad) or
+/// macOS (Safari) — the toolbar can still come back empty on a minimal
+/// install; a role can always be set by hand in the Global Apps settings panel.
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn detect_linux_global_apps()
+-> Option<std::collections::HashMap<String, crate::schema::settings::GlobalAppEntry>> {
+    use crate::schema::settings::GlobalAppEntry;
+    use std::collections::HashMap;
+
+    // role -> ordered candidate binary names on PATH (first found wins).
+    let candidates: [(&str, &[&str]); 6] = [
+        (
+            "browser",
+            &["firefox", "google-chrome", "chromium-browser", "chromium", "brave-browser"],
+        ),
+        ("password_manager", &["keepassxc", "bitwarden", "keepassx"]),
+        ("media_player", &["vlc", "mpv", "totem", "celluloid", "rhythmbox"]),
+        ("notes", &["gnome-text-editor", "kate", "gedit", "xed", "mousepad"]),
+        (
+            "screenshot",
+            &[
+                "spectacle",
+                "flameshot",
+                "gnome-screenshot",
+                "ksnip",
+                "shutter",
+                "xfce4-screenshooter",
+                "scrot",
+                "maim",
+            ],
+        ),
+        (
+            "screen_recorder",
+            &["kazam", "simplescreenrecorder", "vokoscreen", "peek", "obs"],
+        ),
+    ];
+
+    let detected: HashMap<String, GlobalAppEntry> = candidates
+        .into_iter()
+        .filter_map(|(role, bins)| {
+            bins.iter()
+                .find_map(|bin| crate::paths::resolve_executable(bin))
+                .map(|path| {
+                    (
+                        role.to_string(),
+                        GlobalAppEntry {
+                            exec: path.to_string_lossy().to_string(),
+                            visible: true,
+                            extra: HashMap::new(),
+                        },
+                    )
+                })
+        })
+        .collect();
+
+    if detected.is_empty() {
         None
+    } else {
+        Some(detected)
     }
 }
 

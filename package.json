@@ -1,7 +1,7 @@
 {
   "name": "eldrun",
   "private": true,
-  "version": "0.1.45",
+  "version": "0.1.47",
   "license": "MIT OR Apache-2.0",
   "type": "module",
   "scripts": {
@@ -9,13 +9,16 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "pretauri:dev": "./scripts/guard-single-instance.sh",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:bundle": "tauri build --bundles appimage,deb",
     "tauri:bundle:mac": "tauri build --bundles dmg",
     "package": "./scripts/package-local.sh",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
   },
   "dependencies": {
     "@crabnebula/tauri-plugin-drag": "^2.1.0",
@@ -48,10 +51,13 @@
     "@types/react-dom": "^18",
     "@vitejs/plugin-react": "^4",
     "autoprefixer": "^10",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
     "jsdom": "^29.1.1",
     "postcss": "^8",
     "tailwindcss": "^3",
     "typescript": "^5",
+    "typescript-eslint": "^8.65.0",
     "vite": "^5",
     "vitest": "^4.1.8"
   }

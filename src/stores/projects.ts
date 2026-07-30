@@ -11,7 +11,9 @@ import {
   type ProjectEntry,
   type PublishFrom,
   type RemoteSpec,
+  type SandboxSourceDecision,
   type SandboxSpec,
+  type SandboxToggleOutcome,
   type SshProbe,
 } from "../types";
 import {
@@ -766,13 +768,26 @@ interface ProjectsStore {
    * the empty remote root is created on the host. Returns the updated entry,
    * which is a disconnected remote project (user reconnects via the pill lamp). */
   extendProjectToRemote: (id: string, remote: RemoteSpec) => Promise<void>;
-  setProjectSandbox: (id: string, enabled: boolean) => Promise<void>;
+  /** O#143: an in-repo Dockerfile/devcontainer image is never adopted silently.
+   *  Call with no `sourceDecision` first; a `needs_confirmation` outcome means
+   *  nothing was written yet — show the caller's own confirm dialog naming the
+   *  risk, then call again with `{hash: source.hash, adopt}`. Only an `applied`
+   *  outcome updates local state. */
+  setProjectSandbox: (
+    id: string,
+    enabled: boolean,
+    sourceDecision?: SandboxSourceDecision,
+  ) => Promise<SandboxToggleOutcome>;
   /** Replace a project's container spec (the Container settings dialog's save).
    *  Backend normalizes blank fields away and stores it in both projects.json
    *  and project.json; the stored spec is mirrored into local state. */
   setProjectSandboxSpec: (id: string, spec: SandboxSpec) => Promise<void>;
   /** Pin the project's Python interpreter, or `null` to restore auto-detect (#87). */
   setProjectPython: (id: string, interpreter: string | null) => Promise<void>;
+  /** O#59: force this project's Claude agent tabs' remote-control flag on/off
+   *  (`true`/`false`), or clear the override (`null`) to inherit the global
+   *  `agent_remote_control` setting. */
+  setProjectRemoteControl: (id: string, remoteControl: boolean | null) => Promise<void>;
   /** Opt a remote project in/out of auto-connect (connect it silently on launch
    *  and activation). Only offered once the connect can complete with no prompt —
    *  a saved SSH password, or a host recorded as `key_auth`; `autoConnectRemote`
@@ -1245,17 +1260,26 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     }));
   },
 
-  setProjectSandbox: async (id, enabled) => {
+  setProjectSandbox: async (id, enabled, sourceDecision) => {
     // Backend flips `enabled` on the stored spec (preserving hand-tuned
-    // image/network/… fields, auto-detecting in-repo sources on first enable)
-    // and returns the resulting spec; mirror it into local state so the pill
-    // toggle and the spawn-time gate (CenterPanel) see it immediately.
-    const spec = await invoke<SandboxSpec>("set_project_sandbox", { projectId: id, enabled });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id ? { ...project, sandbox: spec } : project,
-      ),
-    }));
+    // image/network/… fields). O#143: an in-repo Dockerfile/devcontainer image
+    // is never adopted silently — a `needs_confirmation` outcome writes
+    // nothing, so local state (and the spawn-time gate in CenterPanel) is only
+    // updated on `applied`. The caller is responsible for re-invoking with a
+    // `sourceDecision` after showing its own confirm dialog.
+    const outcome = await invoke<SandboxToggleOutcome>("set_project_sandbox", {
+      projectId: id,
+      enabled,
+      sourceDecision: sourceDecision ?? null,
+    });
+    if (outcome.outcome === "applied") {
+      set((state) => ({
+        projects: state.projects.map((project) =>
+          project.id === id ? { ...project, sandbox: outcome.spec } : project,
+        ),
+      }));
+    }
+    return outcome;
   },
 
   setProjectSandboxSpec: async (id, spec) => {
@@ -1281,6 +1305,23 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projects: state.projects.map((project) =>
         project.id === id
           ? { ...project, python_interpreter: saved ?? undefined }
+          : project,
+      ),
+    }));
+  },
+
+  setProjectRemoteControl: async (id, remoteControl) => {
+    // Backend writes both stores (projects.json mirror + project.json) and
+    // returns what it stored — null when cleared back to inheriting the
+    // global setting.
+    const saved = await invoke<boolean | null>("set_project_remote_control", {
+      projectId: id,
+      remoteControl,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id
+          ? { ...project, remote_control: saved ?? undefined }
           : project,
       ),
     }));

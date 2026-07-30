@@ -33,8 +33,31 @@
  * different string.
  */
 export function stripFormatControls(text: string): string {
-  return text.replace(
-    /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\u00AD\u061C\u180E\uFEFF]/g,
-    "",
-  );
+  return text.replace(new RegExp(FORMAT_CONTROL_CLASS, "g"), "");
+}
+
+/**
+ * The character class, as a source string, so the strip and the *detector* below
+ * cannot come apart.
+ *
+ * They are two operations on one list, and writing the list twice is the same
+ * mistake the module header describes between TypeScript and Rust \u2014 one copy
+ * gains a character, the other silently does not, and the detector goes on
+ * reporting "nothing hidden here" about text the stripper is quietly rewriting.
+ */
+const FORMAT_CONTROL_CLASS =
+  "[\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u2069\\u00AD\\u061C\\u180E\\uFEFF]";
+
+/**
+ * Whether text contains any of them \u2014 i.e. whether [`stripFormatControls`] would
+ * change it.
+ *
+ * The strip is deliberately silent (it runs over every imported event title and
+ * every mail subject, and narrating it would be noise), which is exactly why
+ * something has to be able to *ask*. `lib/icsSafety.ts` does, so that a file
+ * whose titles are disguised can be reported before it is imported rather than
+ * cleaned without a word.
+ */
+export function hasFormatControls(text: string): boolean {
+  return new RegExp(FORMAT_CONTROL_CLASS).test(text);
 }

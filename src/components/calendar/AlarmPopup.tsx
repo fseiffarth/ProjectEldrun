@@ -4,6 +4,7 @@ import { useAlarmStore } from "../../stores/alarms";
 import { useCalendarStore } from "../../stores/calendar";
 import { describeLead } from "../../lib/alarms";
 import { formatLongDate, formatStampTime } from "../../lib/calendarTime";
+import { useUse24h } from "../../lib/timeFormat";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 
 /**
@@ -27,6 +28,7 @@ const SNOOZE_KEYS: { key: TranslationKey; minutes: number }[] = [
 
 export function AlarmPopup() {
   const t = useT();
+  const use24h = useUse24h();
   const lang = useI18nStore((s) => s.lang);
   const active = useAlarmStore((s) => s.active);
   const dismiss = useAlarmStore((s) => s.dismiss);
@@ -69,7 +71,7 @@ export function AlarmPopup() {
               <div className="cal-alarm-when">
                 {alarm.allDay
                   ? formatLongDate(alarm.start.split("T")[0], lang)
-                  : `${formatStampTime(alarm.start, true)} · ${describeLead(alarm.minutesBefore, t)}`}
+                  : `${formatStampTime(alarm.start, use24h)} · ${describeLead(alarm.minutesBefore, t)}`}
                 {alarm.location ? ` · ${alarm.location}` : ""}
               </div>
             </div>

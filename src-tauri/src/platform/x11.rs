@@ -885,8 +885,10 @@ mod tests {
     fn main_window_id_can_never_become_parkable() {
         // The single most safety-critical invariant: the MAIN window must never
         // be parked. `add_parkable` refuses its id structurally.
-        let mut state = ParkableState::default();
-        state.main_window_id = Some(7);
+        let mut state = ParkableState {
+            main_window_id: Some(7),
+            ..Default::default()
+        };
         // In debug builds add_parkable debug_asserts; call it in a way that
         // checks the *return*/effect without tripping the assert path. We test
         // the effect via release semantics: the id must not be inserted.
@@ -904,8 +906,10 @@ mod tests {
 
     #[test]
     fn other_ids_still_parkable_after_main_window_set() {
-        let mut state = ParkableState::default();
-        state.main_window_id = Some(7);
+        let mut state = ParkableState {
+            main_window_id: Some(7),
+            ..Default::default()
+        };
         assert!(state.add_parkable(8));
         assert!(state.is_parkable(8));
         assert!(!state.is_parkable(7));

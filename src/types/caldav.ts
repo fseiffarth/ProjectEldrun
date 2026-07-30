@@ -30,7 +30,10 @@ export interface CalDavCalendarRef {
   sync_token?: string | null;
   /** `VEVENT` / `VTODO`. Empty means the server did not say. */
   components?: string[];
-  /** True in this phase, always — there is no push path yet. */
+  /** **The server's own answer**, from its `current-user-privilege-set`: a
+   *  collection someone else shared with you is legitimately read-only to you.
+   *  Half of the push gate — `CalDavAccount.allow_write` is the other half, and
+   *  the server's 403 is the only one that is actually enforcement. */
   read_only: boolean;
   /** Local stamp of the last successful sync (`"YYYY-MM-DDTHH:MM"`). */
   last_sync?: string;
@@ -47,7 +50,28 @@ export interface CalDavAccount {
   save_password: boolean;
   /** Minutes between background syncs; `0`/absent means manual-only. */
   sync_interval_min?: number | null;
+  /** **Two-way sync — opt-in, default false.** The plan left "is write access
+   *  even wanted against an institutional calendar?" open; this is that question
+   *  asked rather than answered on the user's behalf. A push bug against a
+   *  shared work calendar has a materially bigger blast radius than the same bug
+   *  against a self-hosted one, and only the account's owner knows which they
+   *  are looking at. */
+  allow_write?: boolean;
   calendars: CalDavCalendarRef[];
+}
+
+/** What one write did — see `schema/caldav.rs`'s `CalDavWrite`. */
+export interface CalDavWrite {
+  href: string;
+  /** The validator for the next conditional write. Empty means the server named
+   *  none, and the next write waits for a sync rather than going unconditional. */
+  etag: string;
+  /** The server refused: the resource changed elsewhere since `etag` was read
+   *  (412), or something already exists where a create aimed. A **result**, not
+   *  an error — the user has a decision to make and needs it as a value. */
+  conflict: boolean;
+  /** A delete found nothing there. The intended end state is the actual one. */
+  gone: boolean;
 }
 
 /** What the keychain actually did — never collapsed to a bare account. */

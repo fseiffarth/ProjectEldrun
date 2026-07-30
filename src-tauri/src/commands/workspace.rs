@@ -13,6 +13,12 @@ pub struct WorkspaceState {
 
 pub type WorkspaceStateArc = Arc<Mutex<WorkspaceState>>;
 
+impl Default for WorkspaceState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WorkspaceState {
     pub fn new() -> Self {
         WorkspaceState {

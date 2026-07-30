@@ -9,6 +9,7 @@ import { MailMessageView } from "./MailMessageView";
 import { MailAccountDialog } from "./MailAccountDialog";
 import { MailComposeDialog, type ComposeMode } from "./MailComposeDialog";
 import { MailEncryptionDialog } from "./MailEncryptionDialog";
+import { MailFiltersDialog } from "./MailFiltersDialog";
 import { MailKeysDialog } from "./MailKeysDialog";
 import { mailPgpAvailable } from "../../lib/mail";
 import { mailEncryptionState } from "../../lib/mail";
@@ -73,6 +74,11 @@ export function MailPane({ visible }: MailPaneProps) {
   // decides to migrate a database.
   const [encryption, setEncryption] = useState<MailEncryptionState | null>(null);
   const [encryptionDialog, setEncryptionDialog] = useState(false);
+  // The keyword rules that file arriving mail into Important/Urgent. Opened
+  // from inside the Priority group — the only place a rule's marks can land —
+  // but on its own separated row there, and above the per-account list, since
+  // the rules span every account exactly as the two lists do.
+  const [filtersDialog, setFiltersDialog] = useState(false);
   // The key surface is offered only where it can work: the keyring needs the
   // local store encrypted, and a button that always fails with the same sentence
   // is worse than one that is not there until the precondition is met.
@@ -128,6 +134,9 @@ export function MailPane({ visible }: MailPaneProps) {
   }, []);
 
   const folders = selectedAccountId ? (foldersByAccount[selectedAccountId] ?? []) : [];
+  // Named under the Folders heading, so the account-scoped zone says whose
+  // folders these are rather than leaving it to the selection highlight.
+  const selectedAccount = accounts.find((a) => a.id === selectedAccountId);
   const selectedHeader = headers.find((h) => h.id === selectedMessageId);
   const syncState = selectedAccountId ? sync[selectedAccountId] : undefined;
   const syncing = syncState?.phase === "start" || syncState?.phase === "folder" || syncState?.phase === "headers";
@@ -159,6 +168,147 @@ export function MailPane({ visible }: MailPaneProps) {
        and leave the pane painted on top of its sibling. Same shape as
        `CalendarPane`. */
     <div className="mail-pane" style={{ display: visible === false ? "none" : undefined }}>
+      {/* ── The header band: everything that is not about one folder ───────
+          Two rows, above the action row on purpose. What sits here is *which
+          mailbox am I looking at* (the accounts) and *the two lists that belong
+          to none of them* (Important/Urgent, plus the keyword rules that fill
+          them) — questions you answer before you press Check mail, not while
+          reading a folder. Below it the toolbar acts on that selection, and the
+          rail is then free to be one thing only: this account's folders.
+
+          Horizontal rather than a rail column because both groups are
+          *switchers* with few entries and no hierarchy; stacked in the rail they
+          were read as a tree, which is what made two cross-account lists look
+          like they belonged to the first account underneath them. Side by side
+          rather than stacked for the same reason one more time: one above the
+          other still reads as an order, and neither of these two comes first.
+          Accounts left (where reading starts, and what the toolbar below acts
+          on), the cross-account lists right, with a divider between them. */}
+      <div className="mail-headerband">
+        <div className="mail-headerband-group">
+          <span className="mail-headerband-label">{t("mail.accounts")}</span>
+          {accounts.map((a) => (
+            <button
+              key={a.id}
+              type="button"
+              className={`mail-account-chip${a.id === selectedAccountId ? " selected" : ""}`}
+              title={a.address}
+              onClick={() => void useMailStore.getState().selectAccount(a.id)}
+              onDoubleClick={() => setAccountDialog({ account: a })}
+            >
+              <span className="mail-chip-name">{a.label || a.address}</span>
+              {unreadTotal(foldersByAccount[a.id]) > 0 && (
+                <span className="mail-rail-badge">{unreadTotal(foldersByAccount[a.id])}</span>
+              )}
+            </button>
+          ))}
+          <button
+            type="button"
+            className="mail-btn mail-btn-small"
+            onClick={() => setAccountDialog({ account: null })}
+          >
+            {t("mail.addAccount")}
+          </button>
+          {selectedAccountId && (
+            <button
+              type="button"
+              className="mail-btn mail-btn-small"
+              onClick={() =>
+                setAccountDialog({
+                  account: accounts.find((a) => a.id === selectedAccountId) ?? null,
+                })
+              }
+            >
+              {t("mail.editAccount")}
+            </button>
+          )}
+        </div>
+
+        <div className="mail-headerband-spacer" />
+
+        {/* Rendered unconditionally, never only when something is marked: an
+            empty Important list is where the feature is discovered, and a group
+            that appears after you have already used it cannot teach it. The
+            scope label is what keeps this group from reading as a property of
+            the account selected to its left. */}
+        <div className="mail-headerband-group mail-headerband-group-global">
+          <span className="mail-headerband-label">
+            {t("mail.priority")}
+            <span className="mail-headerband-scope">{t("mail.priorityAllAccounts")}</span>
+          </span>
+          <button
+            type="button"
+            className={`mail-priority-chip important${
+              selectedPriority === "important" ? " selected" : ""
+            }`}
+            onClick={() => void useMailStore.getState().openPriority("important")}
+          >
+            <span className="mail-rail-priority-mark" aria-hidden="true">
+              !
+            </span>
+            {/* The label goes in the same span an account chip's does. A bare
+                text node here was the whole bug: it cannot shrink or ellipsize,
+                so on a tight row the chip's content ran past its own padding
+                and the count sat outside the pill. The account chips never did
+                that because their name has always been wrapped — so this copies
+                what already works rather than inventing a second answer. */}
+            <span className="mail-chip-name">{t("mail.important")}</span>
+            {priorityCounts.important > 0 && (
+              <span
+                className={`mail-rail-badge${
+                  priorityCounts.important_unread > 0 ? " unread" : ""
+                }`}
+                /* The whole count, not the unread part: a list you file into is
+                   not an inbox and does not empty as you read it. Unread only
+                   *tones* it, and the tooltip says both numbers so the tone is
+                   never the only place a fact lives. */
+                title={t("mail.priorityBadgeTitle", {
+                  total: priorityCounts.important,
+                  unread: priorityCounts.important_unread,
+                })}
+              >
+                {priorityCounts.important}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            className={`mail-priority-chip urgent${
+              selectedPriority === "urgent" ? " selected" : ""
+            }`}
+            onClick={() => void useMailStore.getState().openPriority("urgent")}
+          >
+            <span className="mail-rail-priority-mark" aria-hidden="true">
+              !!
+            </span>
+            <span className="mail-chip-name">{t("mail.urgent")}</span>
+            {priorityCounts.urgent > 0 && (
+              <span
+                className={`mail-rail-badge${priorityCounts.urgent_unread > 0 ? " unread" : ""}`}
+                title={t("mail.priorityBadgeTitle", {
+                  total: priorityCounts.urgent,
+                  unread: priorityCounts.urgent_unread,
+                })}
+              >
+                {priorityCounts.urgent}
+              </span>
+            )}
+          </button>
+          {/* Beside the two lists it fills — a rule is the automatic version of
+              the right-click that files a message into exactly these — but as an
+              ordinary button rather than a third chip, because it opens a dialog
+              and the two beside it open a list. */}
+          <button
+            type="button"
+            className="mail-btn mail-btn-small"
+            title={t("mail.filters.title")}
+            onClick={() => setFiltersDialog(true)}
+          >
+            {t("mail.filters.open")}
+          </button>
+        </div>
+      </div>
+
       <div className="mail-toolbar">
         <span className="mail-toolbar-title">{t("tabKind.mail")}</span>
         <button
@@ -207,6 +357,13 @@ export function MailPane({ visible }: MailPaneProps) {
             {t("mail.markAllRead", { count: folderUnread })}
           </button>
         )}
+        {/* Everything to the left of this acts on the selected account or its
+            open folder; everything to the right is the mailbox as a whole (the
+            local store's key, the keyring). Same split the rail now makes, and
+            for the same reason — "Check mail" and "encryption" sitting shoulder
+            to shoulder as identical buttons is what made the toolbar read as one
+            undifferentiated row of verbs. */}
+        <span className="mail-toolbar-sep" aria-hidden="true" />
         <button
           type="button"
           className="mail-btn"
@@ -276,99 +433,32 @@ export function MailPane({ visible }: MailPaneProps) {
         </div>
       )}
 
+      {/* A mark nobody made, announced at the moment it happens. The Priority
+          group at the top of the rail is where the messages now are — and it is
+          on screen right beside this strip — so this says what happened rather
+          than offering a button to go and look. It clears itself on the next
+          check, like every other sync state. */}
+      {syncState?.phase === "done" && (syncState.filtered ?? 0) > 0 && (
+        <div className="mail-filter-strip">
+          <span>{t("mail.filters.filedNotice", { count: syncState.filtered ?? 0 })}</span>
+        </div>
+      )}
+
       <div className="mail-body-row">
+        {/* The rail is now ONE thing: the folders of the selected account. Its
+            heading names that account, because with the account switcher moved
+            up to the header band the rail no longer sits under the list that
+            says which mailbox is open — and "whose Inbox is this?" is the one
+            question this column must never leave ambiguous. */}
         <div className="mail-rail">
-          {/* Above Accounts, and outside them, because that is what these two
-              lists ARE: mail from every account in one place. Nesting them under
-              an account would say the opposite of what they do. Rendered
-              unconditionally rather than only when something is marked — an
-              empty Important list is where you learn the feature exists, and a
-              section that appears only after you have used it cannot teach it. */}
-          <div className="mail-rail-title">{t("mail.priority")}</div>
-          <button
-            type="button"
-            className={`mail-rail-folder mail-rail-priority important${
-              selectedPriority === "important" ? " selected" : ""
-            }`}
-            onClick={() => void useMailStore.getState().openPriority("important")}
-          >
-            <span className="mail-rail-folder-name">{t("mail.important")}</span>
-            {priorityCounts.important > 0 && (
-              <span
-                className={`mail-rail-badge${
-                  priorityCounts.important_unread > 0 ? " unread" : ""
-                }`}
-                /* The badge is the whole count, not the unread part: a list you
-                   file into is not an inbox and does not empty as you read it.
-                   Unread only *tones* it, and the tooltip says both numbers so
-                   the tone is never the only place a fact lives. */
-                title={t("mail.priorityBadgeTitle", {
-                  total: priorityCounts.important,
-                  unread: priorityCounts.important_unread,
-                })}
-              >
-                {priorityCounts.important}
+          <div className="mail-rail-title">
+            {t("mail.folders")}
+            {selectedAccount && (
+              <span className="mail-rail-scope">
+                {selectedAccount.label || selectedAccount.address}
               </span>
             )}
-          </button>
-          <button
-            type="button"
-            className={`mail-rail-folder mail-rail-priority urgent${
-              selectedPriority === "urgent" ? " selected" : ""
-            }`}
-            onClick={() => void useMailStore.getState().openPriority("urgent")}
-          >
-            <span className="mail-rail-folder-name">{t("mail.urgent")}</span>
-            {priorityCounts.urgent > 0 && (
-              <span
-                className={`mail-rail-badge${priorityCounts.urgent_unread > 0 ? " unread" : ""}`}
-                title={t("mail.priorityBadgeTitle", {
-                  total: priorityCounts.urgent,
-                  unread: priorityCounts.urgent_unread,
-                })}
-              >
-                {priorityCounts.urgent}
-              </span>
-            )}
-          </button>
-
-          <div className="mail-rail-title">{t("mail.accounts")}</div>
-          {accounts.map((a) => (
-            <button
-              key={a.id}
-              type="button"
-              className={`mail-rail-account${a.id === selectedAccountId ? " selected" : ""}`}
-              onClick={() => void useMailStore.getState().selectAccount(a.id)}
-              onDoubleClick={() => setAccountDialog({ account: a })}
-            >
-              <span className="mail-rail-account-name">{a.label || a.address}</span>
-              {unreadTotal(foldersByAccount[a.id]) > 0 && (
-                <span className="mail-rail-badge">{unreadTotal(foldersByAccount[a.id])}</span>
-              )}
-            </button>
-          ))}
-          <button
-            type="button"
-            className="mail-btn mail-rail-add"
-            onClick={() => setAccountDialog({ account: null })}
-          >
-            {t("mail.addAccount")}
-          </button>
-          {selectedAccountId && (
-            <button
-              type="button"
-              className="mail-btn mail-rail-add"
-              onClick={() =>
-                setAccountDialog({
-                  account: accounts.find((a) => a.id === selectedAccountId) ?? null,
-                })
-              }
-            >
-              {t("mail.editAccount")}
-            </button>
-          )}
-
-          <div className="mail-rail-title">{t("mail.folders")}</div>
+          </div>
           {folders.length === 0 && <div className="mail-rail-hint">{t("mail.noFolders")}</div>}
           {folders.map((f) => (
             <button
@@ -428,6 +518,9 @@ export function MailPane({ visible }: MailPaneProps) {
         )}
       </div>
 
+      {filtersDialog && (
+        <MailFiltersDialog accounts={accounts} onClose={() => setFiltersDialog(false)} />
+      )}
       {encryptionDialog && encryption && (
         <MailEncryptionDialog
           state={encryption}

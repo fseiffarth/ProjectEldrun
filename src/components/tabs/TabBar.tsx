@@ -51,6 +51,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { closeTabWithConfirm } from "../../lib/closeRemoteTab";
 import { registerHostBoundTab } from "../../lib/hostBound";
+import { listLocalDrivers, type LocalDriverInfo } from "../../lib/localDrivers";
 import { useActivityStore } from "../../stores/activity";
 import { useT } from "../../lib/i18n";
 
@@ -219,15 +220,18 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   );
   // Coding agents that can drive the active local model besides Mistral/vibe —
   // Claude Code, Codex, OpenCode, Droid via `ollama launch` (or a direct
-  // fallback). Loaded once; only the currently-available ones are offered.
-  const [localDrivers, setLocalDrivers] = useState<
-    { id: string; label: string; available: boolean }[]
-  >([]);
+  // fallback). Re-probed whenever the active model changes: these are all
+  // tool-calling agents, so a completion-only model (llama3 is one) can't drive
+  // any of them and they're withheld rather than offered as a tab that dies on
+  // its first request. Passing the gate isn't a promise the model is *good* at
+  // it — `ollama launch` has its own opinion and may greet the tab with a
+  // "Launch anyway?" prompt (see lib/localDrivers.ts).
+  const [localDrivers, setLocalDrivers] = useState<LocalDriverInfo[]>([]);
   useEffect(() => {
-    invoke<{ id: string; label: string; available: boolean }[]>("list_local_drivers")
+    listLocalDrivers(localModel)
       .then(setLocalDrivers)
       .catch(() => {});
-  }, []);
+  }, [localModel]);
   // Installed agent CLIs (by id == cmd). The add menu only offers agents whose
   // binary is actually present, so it never lists ones the user can't launch.
   // `null` until the probe resolves; render nothing until then to avoid a flash
@@ -1381,17 +1385,29 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                           }]
                         : []),
                       // Other agents drive the same model via `ollama launch` / fallback.
+                      // `heavy_harness` cautions, it never withholds — see
+                      // lib/localDrivers.ts. The row stays pickable because
+                      // which local models cope is not something the backend
+                      // can probe.
                       ...localDrivers.filter((d) => d.available).map((d) => ({
                         key: d.id,
                         label: d.label,
                         color: TAB_ACCENT["local_agent"],
+                        caution: d.heavy_harness
+                          ? t("newTabMenu.localDriverHeavyHarness", { agent: d.label })
+                          : undefined,
                         onPick: () => void handleLocalLaunch(d.id, d.label, localModel),
                       })),
                     ]
                   : [],
-                hint: localModel
-                  ? t("newTabMenu.noLocalAgentHint")
-                  : t("newTabMenu.noLocalModelHint"),
+                // Two causes, two sentences — see NewTabMenu: an empty list
+                // because the model can't drive tool-calling agents must not
+                // read as "you have no agents installed".
+                hint: !localModel
+                  ? t("newTabMenu.noLocalModelHint")
+                  : localDrivers.some((d) => d.needs_tools_unsupported)
+                    ? t("newTabMenu.localModelNoToolsHint", { model: localModel })
+                    : t("newTabMenu.noLocalAgentHint"),
               },
               {
                 label: t("newTabMenu.groupShell"),

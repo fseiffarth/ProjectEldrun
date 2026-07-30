@@ -35,6 +35,8 @@ import type {
   MailCryptoState,
   MailDraft,
   MailEncryptionState,
+  MailFilterReport,
+  MailFilterRule,
   MailFlag,
   MailFolder,
   MailHeaderPage,
@@ -233,6 +235,53 @@ export function mailPriorityPage(
 /** Both rail badges in one read, so they cannot disagree on screen. */
 export function mailPriorityCounts(): Promise<MailPriorityCounts> {
   return invoke<MailPriorityCounts>("mail_priority_counts");
+}
+
+// ── Filter rules (keywords → a mark) ─────────────────────────────────────────
+//
+// The automation on top of those marks, and it reaches no network either: a rule
+// writes the same local column `mailPrioritySet` writes. See `MailFilterRule`
+// for what a rule may look at and the two limits that come with it.
+
+/** Every rule, in order — and the order is data: the first match wins.
+ */
+export function mailFiltersList(): Promise<MailFilterRule[]> {
+  return invoke<MailFilterRule[]>("mail_filters_list");
+}
+
+/**
+ * Replace the whole list, and get it back with ids minted for new rules.
+ *
+ * Wholesale rather than per-rule because a **reorder** is an ordinary edit here
+ * and no upsert can express one. The consequence to know: this writes what the
+ * dialog is holding, so a rule a *newer* build wrote and this one could not
+ * parse is not preserved by a save from here.
+ */
+export function mailFiltersSet(rules: MailFilterRule[]): Promise<MailFilterRule[]> {
+  return invoke<MailFilterRule[]>("mail_filters_set", { rules });
+}
+
+/**
+ * Run rules over mail that is already in the local index.
+ *
+ * With `dryRun` it marks nothing and reports what it *would* mark — the same
+ * code path, which is the only kind of preview worth showing. `rules` overrides
+ * the saved list, so the dialog can test a rule it has not saved (and one that
+ * is still switched off, which is when "what would this catch" is actually
+ * asked). Messages that already carry a mark are never touched.
+ */
+export function mailFiltersApply(opts: {
+  dryRun: boolean;
+  accountId?: string | null;
+  rules?: MailFilterRule[] | null;
+  limit?: number;
+}): Promise<MailFilterReport> {
+  return invoke<MailFilterReport>("mail_filters_apply", {
+    dryRun: opts.dryRun,
+    accountId: opts.accountId ?? null,
+    rules: opts.rules ?? null,
+    limit: opts.limit ?? null,
+  });
 }
 
 // ── Drafts + the file boundary ───────────────────────────────────────────────
@@ -657,9 +706,17 @@ export function formatSize(bytes: number): string {
   return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
 }
 
-/** RFC 3339 → a short local stamp; an unparseable date is shown verbatim rather
- *  than as "Invalid Date" (a malformed `Date:` header is itself information). */
-export function formatMailDate(iso: string, locale?: string): string {
+/**
+ * RFC 3339 → a short local stamp; an unparseable date is shown verbatim rather
+ * than as "Invalid Date" (a malformed `Date:` header is itself information).
+ *
+ * `use24h` is passed in rather than left to the locale, because the locale is
+ * only a *guess* at the user's clock and `lib/timeFormat` holds the answer —
+ * whether they said so explicitly or it was derived from their UI language.
+ * Omitting it keeps the locale's own convention, which is what a caller with no
+ * settings in reach (a test) should get.
+ */
+export function formatMailDate(iso: string, locale?: string, use24h?: boolean): string {
   const ms = Date.parse(iso);
   if (Number.isNaN(ms)) return iso;
   const d = new Date(ms);
@@ -669,7 +726,11 @@ export function formatMailDate(iso: string, locale?: string): string {
     d.getMonth() === today.getMonth() &&
     d.getDate() === today.getDate();
   return sameDay
-    ? d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })
+    ? d.toLocaleTimeString(locale, {
+        hour: "2-digit",
+        minute: "2-digit",
+        ...(use24h === undefined ? {} : { hour12: !use24h }),
+      })
     : d.toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" });
 }
 

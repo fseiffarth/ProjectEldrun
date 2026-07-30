@@ -9,6 +9,105 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The pre-push hook runs this same scan, but the hook needs
+  # `git config core.hooksPath .githooks` per clone and a fresh clone has it
+  # off — so a public repo gets the scan here too, where nothing can forget it.
+  privacy:
+    name: privacy
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the scan needs the base commit, not just the tip
+
+      - name: Scan pushed changes for secrets / personal data
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+          # $USER/$HOME here are the runner's ("runner", "/home/runner"), not the
+          # developer's, so those two patterns would only match innocuous text.
+          PRIVACY_CHECK_SKIP_IDENTITY: '1'
+        run: |
+          set -euo pipefail
+          empty_tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+
+          if [ "$EVENT_NAME" = pull_request ]; then
+            candidate="$PR_BASE"
+          else
+            candidate="${PUSH_BEFORE:-}"
+          fi
+
+          # merge-base, not the raw candidate: it keeps a force-push or a stale
+          # PR base from widening the diff into unrelated history. Falling back
+          # through origin/main to the empty tree means a new branch or a tag
+          # push still gets scanned rather than silently skipped.
+          base=""
+          if [ -n "$candidate" ] && ! [[ "$candidate" =~ ^0+$ ]]; then
+            base="$(git merge-base "$candidate" "$HEAD_SHA" 2>/dev/null || true)"
+          fi
+          [ -n "$base" ] || base="$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || true)"
+          [ -n "$base" ] || base="$empty_tree"
+
+          echo "Scanning ${base}..${HEAD_SHA}"
+          scripts/privacy-check.sh "$base" "$HEAD_SHA"
+
+  # Mechanical quality gate (TODO group Y #163). Linux-only on purpose: neither
+  # linter's verdict is platform-dependent, so running it three times would cost
+  # three times as much to learn the same thing.
+  #
+  # `cargo fmt --check` is deliberately NOT here yet — the backend has never been
+  # rustfmt'd and differs at ~1069 sites, and raising max_width does not shrink
+  # that (rustfmt disagrees with the hand-wrapping in both directions). Adding it
+  # needs a one-off formatting commit first; see #163.
+  lint:
+    name: lint
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libappindicator3-dev \
+            libgtk-3-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Lint frontend
+        run: npm run lint
+
+      - name: Lint backend
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
   test:
     name: test
     runs-on: ubuntu-22.04
@@ -49,6 +148,9 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Run frontend tests
+        run: npm test
+
       - name: Run backend tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
@@ -79,6 +181,9 @@ jobs:
 
       - name: Build frontend
         run: npm run build
+
+      - name: Run frontend tests
+        run: npm test
 
       - name: Run backend tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
@@ -111,6 +216,9 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Run frontend tests
+        run: npm test
+
       - name: Run backend tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
@@ -118,7 +226,9 @@ jobs:
     name: package-windows
     runs-on: windows-latest
     if: github.event_name == 'push'
-    needs: test-windows
+    # `privacy` gates every package job: a build that leaks must never become a
+    # downloadable artifact, let alone a release asset.
+    needs: [test-windows, privacy]
 
     steps:
       - name: Checkout
@@ -158,7 +268,7 @@ jobs:
     name: package
     runs-on: ubuntu-22.04
     if: github.event_name == 'push'
-    needs: test
+    needs: [test, privacy]
 
     steps:
       - name: Checkout
@@ -220,7 +330,7 @@ jobs:
     name: package-macos
     runs-on: macos-latest
     if: github.event_name == 'push'
-    needs: test-macos
+    needs: [test-macos, privacy]
 
     steps:
       - name: Checkout

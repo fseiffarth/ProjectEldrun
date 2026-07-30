@@ -4,10 +4,13 @@ import type { CalendarTask, TaskColumn } from "../../types";
 import { useCalendarStore } from "../../stores/calendar";
 import { useProjectsStore } from "../../stores/projects";
 import { useTodoStore } from "../../stores/todo";
-import { datePart, todayStr, addDays } from "../../lib/calendarTime";
+import { addDays, datePart, formatTime, timePart, toStamp } from "../../lib/calendarTime";
 import {
   addSubtask,
+  dueDelta,
+  dueDeltaKey,
   isOverdue,
+  moveSubtask,
   priorityBucket,
   removeSubtask,
   subtaskProgress,
@@ -15,12 +18,12 @@ import {
   toggleTaskDone,
 } from "../../lib/todoBoard";
 import { useT } from "../../lib/i18n";
+import { useUse24h } from "../../lib/timeFormat";
+import { useStepReorder } from "./useStepReorder";
 
 interface Props {
   task: CalendarTask;
   columns: TaskColumn[];
-  /** Draw as the source of the in-flight drag (kept mounted, faded). */
-  dragging: boolean;
   onPointerDown: (e: React.PointerEvent, task: CalendarTask, el: HTMLElement) => void;
   onEdit: (task: CalendarTask) => void;
   onOpenMail: (task: CalendarTask) => void;
@@ -40,21 +43,37 @@ const MAX_TAG_CHIPS = 3;
  *
  * The **checklist** is inline for the title's reason: breaking a card into steps
  * is what you do *while* looking at the board, and routing it through the full
- * card dialog means losing sight of the column you were reasoning about. It is
- * folded away behind the progress bar (a card's checklist is its detail, not its
- * headline) and every edit writes immediately — there is no Save on a board, so
- * a staged checklist here would be a draft the user has no way to see is unsaved.
- * The composer is the column's: **Enter adds and stays open**, because steps are
- * typed in a run. Renaming a step is deliberately still the dialog's, where
- * there is room for a text field per row.
+ * card dialog means losing sight of the column you were reasoning about. Every
+ * edit writes immediately — there is no Save on a board, so a staged checklist
+ * here would be a draft the user has no way to see is unsaved. The composer is
+ * the column's: **Enter adds and stays open**, because steps are typed in a run.
+ * Renaming a step is deliberately still the dialog's, where there is room for a
+ * text field per row.
+ *
+ * A card's steps are **shown by default**, and the progress bar folds them away
+ * rather than being what reveals them. They were hidden first, on the theory that
+ * a checklist is a card's detail and its bar is the headline — but the two say
+ * different things: "2/5" is a number, and *which* two is the reason to look at
+ * the board at all. Hidden by default also made the bar the only thing that could
+ * ever disclose them, so a card whose steps were all done showed a full bar and
+ * nothing else, and reading the day meant clicking every card in the column.
+ * Folding is still there for a card broken into fifteen steps — it is just the
+ * exception now, remembered per card in `stores/todo` (which is why it survives
+ * the board being closed: this component unmounts with the overlay, and a fold
+ * that undid itself on the next open would be a flicker, not a control).
  */
-export function TodoCard({ task, columns, dragging, onPointerDown, onEdit, onOpenMail }: Props) {
+export function TodoCard({ task, columns, onPointerDown, onEdit, onOpenMail }: Props) {
   const t = useT();
+  const use24h = useUse24h();
   const projects = useProjectsStore((s) => s.projects);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task.title);
-  const [openSteps, setOpenSteps] = useState(false);
+  // The composer, opened by the head's `＋` on a card that has no steps yet —
+  // the one case where there is no checklist to show and something still has to
+  // appear. A card that HAS steps is open unless the user folded it.
+  const [composing, setComposing] = useState(false);
   const [stepDraft, setStepDraft] = useState("");
+  const collapsed = useTodoStore((s) => !!s.collapsedSteps[task.id]);
   const ref = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const stepRef = useRef<HTMLInputElement>(null);
@@ -62,18 +81,43 @@ export function TodoCard({ task, columns, dragging, onPointerDown, onEdit, onOpe
   useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing]);
+  // Focus follows the **composer**, never the panel: with checklists open by
+  // default, focusing on open would have every card on the board grab the caret
+  // as it mounted.
   useEffect(() => {
-    if (openSteps) stepRef.current?.focus();
-  }, [openSteps]);
+    if (composing) stepRef.current?.focus();
+  }, [composing]);
 
-  const today = todayStr();
+  // The whole stamp, not just the day: a card carrying an **hour** deadline goes
+  // red when that hour passes, and only a clock can say so. Re-read on every
+  // render, which is what the card already did with `todayStr()`.
+  // One clock for both readings, taken once: two `new Date()`s a line apart can
+  // straddle a minute, and this is precisely the pair where that would show —
+  // the chip saying "in 1 min" beside a card the same render calls overdue.
+  const clock = new Date();
+  const now = toStamp(clock);
+  const today = datePart(now);
   const done = task.percent >= 100;
-  const overdue = isOverdue(task, today);
+  const overdue = isOverdue(task, now);
   const dueDate = task.due ? datePart(task.due) : null;
+  const dueTime = task.due ? formatTime(timePart(task.due), use24h) : "";
   const dueToday = dueDate === today;
   const dueTomorrow = dueDate === addDays(today, 1);
+  // How long is left, or how long it has been — the header list's chip, on the
+  // card, because the date alone leaves the arithmetic to the reader exactly
+  // when it matters least. Only inside a day, and only for a **fixed-hour**
+  // deadline past that (`dueDelta`: "2d 5h" is a real measurement, a whole-day
+  // card's "2d" is what the date beside it already says).
+  const delta = dueDelta(task, clock);
+  const deltaLabel =
+    delta && delta.unit !== "d"
+      ? t(dueDeltaKey(delta), { count: delta.count, hours: delta.hours ?? 0 })
+      : "";
   const priority = priorityBucket(task.priority);
   const steps = subtaskProgress(task);
+  // Shown whenever the card has steps and the user has not folded it — plus the
+  // composer's own case, a card with no steps at all.
+  const openSteps = (!!steps && !collapsed) || composing;
   const tags = task.tags ?? [];
   const project = task.project_id ? projects.find((p) => p.id === task.project_id) : null;
 
@@ -121,6 +165,12 @@ export function TodoCard({ task, columns, dragging, onPointerDown, onEdit, onOpe
     stepRef.current?.focus();
   };
 
+  // Reordering is one more checklist edit, written like every other one — the
+  // gesture itself is `useStepReorder`'s, shared with the dialog.
+  const reorder = useStepReorder(task.subtasks ?? [], (id, to) => {
+    void editSteps((current) => moveSubtask(current, id, to));
+  });
+
   const stop = (e: React.PointerEvent) => e.stopPropagation();
 
   return (
@@ -129,8 +179,7 @@ export function TodoCard({ task, columns, dragging, onPointerDown, onEdit, onOpe
       className={
         "todo-card" +
         (done ? " todo-card-done" : "") +
-        (overdue ? " todo-card-overdue" : "") +
-        (dragging ? " todo-card-dragging" : "")
+        (overdue ? " todo-card-overdue" : "")
       }
       data-task-id={task.id}
       onPointerDown={(e) => {
@@ -191,8 +240,11 @@ export function TodoCard({ task, columns, dragging, onPointerDown, onEdit, onOpe
           onPointerDown={stop}
           onClick={() => {
             setStepDraft("");
-            setOpenSteps(true);
-            // Already open: the effect will not re-fire, so aim the caret here.
+            setComposing(true);
+            // Adding a step to a folded card unfolds it: the row about to be
+            // typed has to land somewhere the user can see it.
+            useTodoStore.getState().toggleSteps(task.id, false);
+            // Already composing: the effect will not re-fire, so aim the caret here.
             stepRef.current?.focus();
           }}
           title={t("todoCard.addStep")}
@@ -222,16 +274,25 @@ export function TodoCard({ task, columns, dragging, onPointerDown, onEdit, onOpe
                 (overdue ? " todo-chip-overdue" : dueToday ? " todo-chip-today" : "")
               }
               title={
-                overdue
+                (overdue
                   ? t("todoCard.overdue")
                   : dueToday
                     ? t("todoCard.dueToday")
                     : dueTomorrow
                       ? t("todoCard.dueTomorrow")
-                      : dueDate
+                      : dueDate) + (dueTime ? ` · ${dueDate} ${dueTime}` : "")
               }
             >
+              {/* The hour is printed only when there is one — a card due "some
+                  time on Friday" must not be dressed up as one due at 00:00. */}
               ⏰ {dueDate}
+              {dueTime ? ` ${dueTime}` : ""}
+              {/* And beside it, never instead of it: the date says *when*, the
+                  countdown says how long that leaves, and only the second is
+                  readable at a glance on the day it matters. */}
+              {deltaLabel ? (
+                <span className="todo-chip-delta"> · {deltaLabel}</span>
+              ) : null}
             </span>
           )}
           {priority !== "none" && (
@@ -261,7 +322,13 @@ export function TodoCard({ task, columns, dragging, onPointerDown, onEdit, onOpe
           type="button"
           className="todo-card-steps"
           onPointerDown={stop}
-          onClick={() => setOpenSteps((v) => !v)}
+          // The bar is the FOLD control now, not the reveal: the checklist is
+          // already on screen, and this puts it away for a card that has grown
+          // too many steps to read past.
+          onClick={() => {
+            setComposing(false);
+            useTodoStore.getState().toggleSteps(task.id, openSteps);
+          }}
           title={
             t("todoCard.subtaskProgress", { done: steps.done, total: steps.total }) +
             " — " +
@@ -278,6 +345,11 @@ export function TodoCard({ task, columns, dragging, onPointerDown, onEdit, onOpe
           <span className="todo-card-steps-text">
             {steps.done}/{steps.total}
           </span>
+          {/* The state, said rather than implied: a folded card is otherwise
+              indistinguishable from one whose steps simply have not loaded. */}
+          <span className="todo-card-steps-caret" aria-hidden>
+            {openSteps ? "⌃" : "⌄"}
+          </span>
         </button>
       )}
 
@@ -286,8 +358,29 @@ export function TodoCard({ task, columns, dragging, onPointerDown, onEdit, onOpe
         // in the middle of a card whose own pointerdown starts a drag.
         <div className="todo-card-checklist" onPointerDown={stop}>
           <ul className="todo-card-step-list">
-            {(task.subtasks ?? []).map((step) => (
-              <li key={step.id} className="todo-card-step">
+            {(task.subtasks ?? []).map((step, i) => (
+              <li
+                key={step.id}
+                ref={reorder.rowRef(step.id)}
+                className={
+                  "todo-card-step" +
+                  (reorder.isDragging(step.id)
+                    ? " todo-step-dragging"
+                    : reorder.drag
+                      ? " todo-step-parting"
+                      : "")
+                }
+                style={reorder.rowStyle(i)}
+              >
+                <button
+                  type="button"
+                  className="todo-step-grip"
+                  title={t("todoCard.stepGrip")}
+                  aria-label={t("todoCard.stepGripAria", { title: step.title })}
+                  {...reorder.gripProps(step.id)}
+                >
+                  ⠿
+                </button>
                 <input
                   type="checkbox"
                   className="todo-card-step-check"
@@ -314,31 +407,38 @@ export function TodoCard({ task, columns, dragging, onPointerDown, onEdit, onOpe
             ))}
           </ul>
 
-          <input
-            ref={stepRef}
-            className="todo-card-step-input"
-            value={stepDraft}
-            placeholder={t("todoDialog.subtaskPlaceholder")}
-            onChange={(e) => setStepDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void addStep();
-              } else if (e.key === "Escape") {
-                // Or the overlay host's window listener closes the whole board.
-                e.stopPropagation();
-                setStepDraft("");
-                setOpenSteps(false);
-              }
-            }}
-            onBlur={() => {
-              // Only fold away again if there is nothing to look at: a card with
-              // steps stays open, or every click on the board would collapse it.
-              if (!stepDraft.trim() && (task.subtasks ?? []).length === 0) {
-                setOpenSteps(false);
-              }
-            }}
-          />
+          {/* The composer appears only while something is being added. It used to
+              be permanent, which was affordable while the panel itself was the
+              rare state; with every card's checklist on screen it would put an
+              empty input under every card on the board. The head's `＋` is the
+              way back to it. */}
+          {composing && (
+            <input
+              ref={stepRef}
+              className="todo-card-step-input"
+              value={stepDraft}
+              placeholder={t("todoDialog.subtaskPlaceholder")}
+              onChange={(e) => setStepDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void addStep();
+                } else if (e.key === "Escape") {
+                  // Or the overlay host's window listener closes the whole board.
+                  // Escape abandons the *composer*, never the checklist: a card
+                  // with steps keeps showing them, which is now its normal state.
+                  e.stopPropagation();
+                  setStepDraft("");
+                  setComposing(false);
+                }
+              }}
+              onBlur={() => {
+                // Nothing typed and nothing to show: the composer was the only
+                // reason this panel was open, so it goes away with the caret.
+                if (!stepDraft.trim()) setComposing(false);
+              }}
+            />
+          )}
         </div>
       )}
 

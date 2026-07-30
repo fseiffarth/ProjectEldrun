@@ -242,8 +242,56 @@ pub struct SandboxSpec {
     /// outside the mounted dirs (e.g. `~/.cache`); opt-in hardening.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub readonly_rootfs: bool,
+    /// Hash of the in-repo `Dockerfile`/devcontainer `image` the user was last
+    /// asked to confirm (O#143): a content hash, not a boolean, so a changed
+    /// `Dockerfile` re-triggers the confirm dialog instead of silently reusing
+    /// a decision made about different `RUN` steps. Set on both an adopt and a
+    /// decline — a decline must stick until the file actually changes, or every
+    /// enable re-asks. See `services::sandbox::detect_spec_source`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spec_source_hash: Option<String>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+}
+
+/// What an in-repo `Dockerfile`/devcontainer `image` declares, reported by
+/// `services::sandbox::detect_spec_source` for the O#143 confirm dialog —
+/// detection only, never auto-applied to a `SandboxSpec`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DetectedSpecKind {
+    Dockerfile,
+    DevcontainerImage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetectedSpecSource {
+    pub kind: DetectedSpecKind,
+    /// The `Dockerfile` path (relative) or the devcontainer `image` string.
+    pub value: String,
+    /// SHA-256 hex of the deciding content (the Dockerfile's bytes, or the
+    /// image string itself) — what a re-ask compares against.
+    pub hash: String,
+}
+
+/// The frontend's answer to a `NeedsConfirmation` outcome: `hash` must match
+/// the currently detected source (a stale dialog answering about a
+/// Dockerfile that has since changed underneath it is refused, not silently
+/// applied to the new one), `adopt` is the user's yes/no.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SandboxSourceDecision {
+    pub hash: String,
+    pub adopt: bool,
+}
+
+/// `set_project_sandbox`'s result: either the spec was applied, or a detected
+/// repo-supplied container source still needs an explicit decision before
+/// anything is written.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum SandboxToggleOutcome {
+    Applied { spec: SandboxSpec },
+    NeedsConfirmation { source: DetectedSpecSource },
 }
 
 /// Per-project `project.json` file.
@@ -339,6 +387,17 @@ pub struct Project {
     /// entry's `extra["python_interpreter"]`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub python_interpreter: Option<String>,
+    /// Per-project override of the global `Settings.agent_remote_control`
+    /// (O#59): `Some(true)`/`Some(false)` force Claude agent tabs of THIS
+    /// project to spawn with/without `--remote-control`; `None` (the default)
+    /// inherits the global setting, so an untouched project's behavior never
+    /// changes. Mirrored into the `projects.json` entry's
+    /// `extra["remote_control"]`, which `commands::terminal::pty_spawn` reads
+    /// as the authoritative copy — like `sandbox`, this field is never trusted
+    /// out of `project.json` at spawn time, since that file lives inside the
+    /// project tree (and a container's own rw mount).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_control: Option<bool>,
     /// Which machine shells launched from this project run on — the choice made in
     /// the `RunHostPicker`, persisted so it survives a relaunch (a Run/Debug or a
     /// new shell tab lands on it instead of the primary). A `TabLocation` string:

@@ -2,6 +2,7 @@ import { memo, useState } from "react";
 import { createPortal } from "react-dom";
 import { formatAddress, formatMailDate, formatSize, stripFormatControls } from "../../lib/mail";
 import { useI18nStore, useT } from "../../lib/i18n";
+import { useUse24h } from "../../lib/timeFormat";
 import { UntestedTag } from "../common/UntestedTag";
 import type { MailHeader, MailPriority, MailSort } from "../../types/mail";
 
@@ -106,6 +107,7 @@ function MailListImpl({
 }: MailListProps) {
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
+  const use24h = useUse24h();
   const hasPaging = total > pageSize;
   const [menu, setMenu] = useState<RowMenu | null>(null);
 
@@ -269,7 +271,7 @@ function MailListImpl({
                   appears with its sort would move every other column sideways
                   on the click that selected it. */}
               <span className="mail-row-size">{formatSize(h.size)}</span>
-              <span className="mail-row-date">{formatMailDate(h.date, lang)}</span>
+              <span className="mail-row-date">{formatMailDate(h.date, lang, use24h)}</span>
             </div>
             <div className="mail-row-subject">
               {/* The mark is shown on the row wherever the row is — in its own

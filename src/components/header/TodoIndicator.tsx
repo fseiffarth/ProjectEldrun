@@ -1,18 +1,25 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { CalendarTask } from "../../types";
 import { calendarColor, useCalendarStore } from "../../stores/calendar";
 import { useSettingsStore } from "../../stores/settings";
 import { useTodoStore } from "../../stores/todo";
 import {
-  daysLate,
+  type DueDelta,
+  dueDelta,
+  dueDeltaKey,
   priorityBucket,
   todosDueCount,
   todosOverdue,
   urgentTodos,
 } from "../../lib/todoBoard";
+import { formatTime, timePart } from "../../lib/calendarTime";
 import { useT } from "../../lib/i18n";
+import { useUse24h } from "../../lib/timeFormat";
 import { UntestedTag } from "../common/UntestedTag";
+import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+
+const MENU_ID = "todo";
 
 /** How often the badge re-reads the clock. Cards fall due at midnight. */
 const TICK_MS = 60_000;
@@ -54,11 +61,22 @@ const SECTION_ROWS = 6;
  */
 export function TodoIndicator() {
   const t = useT();
+  const use24h = useUse24h();
   const enabled = useSettingsStore((s) => s.settings?.todo_board ?? false);
   const tasks = useCalendarStore((s) => s.tasks);
   const calendars = useCalendarStore((s) => s.calendars);
   const overlayOpen = useTodoStore((s) => s.overlayOpen);
-  const [menuOpen, setMenuOpen] = useState(false);
+  // Shared across every header hover-menu (stores/headerHoverMenu) so switching
+  // straight from another one closes it instantly instead of racing its own
+  // close-grace timer. `setMenuOpen` mirrors the old local-state setter's
+  // boolean signature so the rest of this component reads unchanged.
+  const menuOpen = useHeaderHoverMenuStore((s) => s.openId === MENU_ID);
+  const openMenu = useHeaderHoverMenuStore((s) => s.open);
+  const closeMenu = useHeaderHoverMenuStore((s) => s.close);
+  const setMenuOpen = useCallback(
+    (v: boolean) => (v ? openMenu(MENU_ID) : closeMenu(MENU_ID)),
+    [openMenu, closeMenu],
+  );
   // The hover menu's grace period, so crossing the gap between the button and
   // the list below it does not shut the list you are reaching for.
   const closeTimer = useRef<number | undefined>(undefined);
@@ -92,7 +110,7 @@ export function TodoIndicator() {
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [menuOpen]);
+  }, [menuOpen, setMenuOpen]);
 
   useEffect(() => () => window.clearTimeout(closeTimer.current), []);
 
@@ -100,7 +118,7 @@ export function TodoIndicator() {
   // over a button that is gone.
   useEffect(() => {
     if (!enabled) setMenuOpen(false);
-  }, [enabled]);
+  }, [enabled, setMenuOpen]);
 
   // One `now` for the badge and the list, re-taken on the same tick.
   const now = useMemo(() => new Date(), [tick]);
@@ -130,6 +148,19 @@ export function TodoIndicator() {
     closeTimer.current = window.setTimeout(() => setMenuOpen(false), 250);
   };
 
+  /**
+   * A deadline's distance as a phrase — the "3d late" / "in 2h" chip.
+   *
+   * Days only where the deadline really is a day or more off (`dueDelta`'s
+   * rule); inside a day it is read in hours, and inside an hour in minutes.
+   * That is the whole point of the chip: to somebody deciding what to do in the
+   * next twenty minutes, a card due at some point today and one that has been
+   * late since this morning are not the same card, and the day-granular figure
+   * called both of them "0".
+   */
+  const deltaLabel = (d: DueDelta): string =>
+    t(dueDeltaKey(d), { count: d.count, hours: d.hours ?? 0 });
+
   const section = (
     key: "todo.menuOverdue" | "todo.menuToday" | "todo.menuTomorrow",
     rows: CalendarTask[],
@@ -149,6 +180,21 @@ export function TodoIndicator() {
         <>
           {rows.slice(0, SECTION_ROWS).map((task) => {
             const bucket = priorityBucket(task.priority);
+            // How far off the deadline is, in the largest unit that is still
+            // true: days for a card that has been rotting, hours or minutes for
+            // one whose **hour** deadline passed earlier today — which the
+            // day-granular figure could only call "0", leaving the row to print
+            // a bare clock time that read as a due time rather than as lateness.
+            const delta = dueDelta(task, now);
+            const lateLabel = late && delta ? deltaLabel(delta) : "";
+            // Not late yet and inside a day: the countdown is what separates two
+            // cards due today, which two clock times do only by arithmetic. A
+            // whole-day deadline has no hour to count and gets none (`dueDelta`).
+            const soonLabel =
+              !late && delta && delta.unit !== "d" ? deltaLabel(delta) : "";
+            // A card that is not late yet but *has* an hour shows it: in a list
+            // of things due today, "17:00" is the only thing that separates them.
+            const dueHour = late ? "" : formatTime(timePart(task.due ?? ""), use24h);
             return (
               <button
                 key={task.id}
@@ -172,14 +218,15 @@ export function TodoIndicator() {
                 <span className="todo-menu-title">
                   {task.title || t("calendar.untitled")}
                 </span>
-                {/* How late, in days — the one thing a heading reading "Overdue"
-                    cannot say, and the difference between yesterday and a card
+                {/* How late — the one thing a heading reading "Overdue" cannot
+                    say, and the difference between three hours ago and a card
                     that has been rotting for three weeks. */}
-                {late && (
-                  <span className="todo-menu-late">
-                    {t("todo.menuLate", { count: daysLate(task, now) })}
-                  </span>
-                )}
+                {lateLabel && <span className="todo-menu-late">{lateLabel}</span>}
+                {/* And how long is left, beside the hour rather than instead of
+                    it: "in 2h" is what the row is asking about, "17:00" is where
+                    it sits among the others. */}
+                {soonLabel && <span className="todo-menu-time">{soonLabel}</span>}
+                {dueHour && <span className="todo-menu-time">{dueHour}</span>}
                 {bucket === "high" && (
                   <span className="todo-menu-prio" title={t("tasksView.priorityHigh")}>
                     !

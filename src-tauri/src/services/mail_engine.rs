@@ -1089,6 +1089,256 @@ async fn imap_login(
     Ok(session)
 }
 
+// ── The session pool ────────────────────────────────────────────────────────
+//
+// Every method below used to open its own connection: login, SELECT, one
+// command, logout. Reading twenty messages was twenty TLS handshakes and twenty
+// `LOGIN`s — and the cost of that is not latency, it is the *provider's opinion
+// of it*. Hosted mail rate-limits authentication attempts long before it rate-
+// limits commands, and answers a client that reauthenticates per click with
+// throttling, a temporary lock, or a "suspicious sign-in" mail to the very
+// account being read. `set_flags_bulk` was already written against exactly this
+// hazard ("a few hundred logins, and a server with any connection-rate limit
+// answers that with a ban"); this generalizes it from one method to the module.
+//
+// The pool is process-global rather than a field on `InProcessEngine`, because
+// that type is a unit struct constructed at each call site
+// (`InProcessEngine.body(…)`) — an instance field would mean threading state
+// through every caller for no gain. One app, one mailbox, one pool.
+
+/// How long a session may sit unused before it is closed rather than handed out
+/// again. Servers autologout idle connections (RFC 3501 permits it after 30
+/// minutes, and NATs are far less patient), and a pool that hands out corpses
+/// has traded logins for intermittent failures.
+const POOL_MAX_IDLE: Duration = Duration::from_secs(300);
+
+/// Above this much idle time a pooled session is probed with `NOOP` before use.
+/// Below it, the probe is skipped: a burst of flag toggles should not pay a
+/// round trip each to re-ask a question answered a second ago.
+const POOL_PROBE_AFTER: Duration = Duration::from_secs(30);
+
+/// A stale socket must fail *fast*. `COMMAND_TIMEOUT` is 60 s, which is the
+/// right budget for a real command and an absurd one for a liveness check whose
+/// failure path is simply "log in again".
+const POOL_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How many idle sessions one account may keep. Two covers the only real
+/// concurrency here (a background check while the user opens a message) without
+/// spending a provider's per-account connection budget — Gmail's is 15 — on
+/// sockets nobody is reading.
+const POOL_MAX_PER_KEY: usize = 2;
+
+/// The pool's identity for a server: everything that decides *who is
+/// authenticated*. A changed host, port or user is a different connection, and
+/// the callers that change any of them evict explicitly
+/// ([`forget_pooled_sessions`]).
+fn pool_key(server: &MailServer) -> String {
+    format!(
+        "{}:{}|{}",
+        server.host.trim().to_ascii_lowercase(),
+        server.port,
+        server.user
+    )
+}
+
+/// Too old to hand out at all.
+fn pool_entry_expired(idle: Duration) -> bool {
+    idle >= POOL_MAX_IDLE
+}
+
+/// Old enough that liveness is worth one `NOOP`.
+fn pool_entry_needs_probe(idle: Duration) -> bool {
+    idle >= POOL_PROBE_AFTER
+}
+
+/// A logged-in session waiting in the pool, with the mailbox it last selected.
+struct Idle {
+    session: ImapSession,
+    selected: Option<String>,
+    since: std::time::Instant,
+}
+
+type Pool = std::sync::Mutex<std::collections::HashMap<String, Vec<Idle>>>;
+
+fn pool() -> &'static Pool {
+    static POOL: std::sync::OnceLock<Pool> = std::sync::OnceLock::new();
+    POOL.get_or_init(Pool::default)
+}
+
+/// Pop the warmest live session for `key`, dropping expired ones on the way.
+///
+/// Dropping closes the socket without a `LOGOUT`, which is rude and harmless —
+/// it is what happens at process exit anyway, and the alternative would be
+/// awaiting an async command while holding a `std::sync::Mutex`.
+fn take_idle(key: &str) -> Option<Idle> {
+    let mut pool = pool().lock().ok()?;
+    let bucket = pool.get_mut(key)?;
+    while let Some(idle) = bucket.pop() {
+        if !pool_entry_expired(idle.since.elapsed()) {
+            return Some(idle);
+        }
+    }
+    None
+}
+
+/// Whether a caller wants a session it may share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Acquire {
+    /// Reuse a pooled session when one is live.
+    Pooled,
+    /// Log in, always. Only [`MailEngine::probe`] asks for this: a credential
+    /// test answered out of a pool tests nothing, and would report success for
+    /// a password the user had just changed to a wrong one.
+    Fresh,
+}
+
+/// A checked-out session.
+///
+/// **`keep` is `false` until [`Lease::finish`] is told the operation
+/// succeeded**, and that default is the whole safety argument. Anything that is
+/// not a clean success — an error, an early `?`, a panic, a future dropped
+/// mid-command when a sync is cancelled — therefore closes the socket instead
+/// of pooling it. The inverse default would hand the next caller a stream
+/// positioned inside somebody else's half-read response, which is a bug that
+/// presents as arbitrary mail rendering as arbitrary other mail.
+///
+/// Derefs to the session, so the protocol code below reads as it always did.
+/// The one thing not to call through that deref is `select`: use
+/// [`Lease::ensure_selected`] or [`Lease::select_now`], which keep the cached
+/// mailbox honest.
+struct Lease {
+    session: Option<ImapSession>,
+    key: String,
+    selected: Option<String>,
+    keep: bool,
+}
+
+impl std::ops::Deref for Lease {
+    type Target = ImapSession;
+    fn deref(&self) -> &ImapSession {
+        self.session.as_ref().expect("a lease holds its session")
+    }
+}
+
+impl std::ops::DerefMut for Lease {
+    fn deref_mut(&mut self) -> &mut ImapSession {
+        self.session.as_mut().expect("a lease holds its session")
+    }
+}
+
+impl Lease {
+    /// `SELECT` unless this session is already in that mailbox.
+    ///
+    /// Safe only for commands that address messages by UID — flag, bulk flag,
+    /// move, body fetch — which is every caller of this. A caller that reads
+    /// the mailbox's own counters wants [`Lease::select_now`].
+    async fn ensure_selected(&mut self, path: &str) -> Result<(), MailError> {
+        if self.selected.as_deref() == Some(path) {
+            return Ok(());
+        }
+        self.select_now(path).await.map(|_| ())
+    }
+
+    /// `SELECT` unconditionally, for a caller that needs the mailbox's own
+    /// counts (`EXISTS`) rather than merely the right mailbox.
+    async fn select_now(&mut self, path: &str) -> Result<async_imap::types::Mailbox, MailError> {
+        // Cleared *first*: a failed SELECT leaves the session in an undefined
+        // mailbox, and a cached name that survives the failure is how a UID
+        // command later runs against the previous folder.
+        self.selected = None;
+        let result = tokio::time::timeout(COMMAND_TIMEOUT, self.select(path)).await;
+        let mailbox = result
+            .map_err(|_| MailError::Timeout { op: "IMAP SELECT" })?
+            .map_err(classify_imap_error)?;
+        self.selected = Some(path.to_string());
+        Ok(mailbox)
+    }
+
+    /// Hand the outcome back, pooling the session only on a clean success.
+    fn finish<T>(mut self, out: Result<T, MailError>) -> Result<T, MailError> {
+        self.keep = out.is_ok();
+        out
+    }
+
+    /// Log out and close, pooling nothing.
+    async fn close(mut self) {
+        if let Some(session) = self.session.as_mut() {
+            let _ = tokio::time::timeout(COMMAND_TIMEOUT, session.logout()).await;
+        }
+        self.session = None;
+    }
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let Some(session) = self.session.take() else {
+            return;
+        };
+        if !self.keep {
+            return;
+        }
+        let Ok(mut pool) = pool().lock() else {
+            return;
+        };
+        let bucket = pool.entry(self.key.clone()).or_default();
+        if bucket.len() >= POOL_MAX_PER_KEY {
+            return;
+        }
+        bucket.push(Idle {
+            session,
+            selected: self.selected.take(),
+            since: std::time::Instant::now(),
+        });
+    }
+}
+
+/// The one place a session is obtained. Every IMAP operation in this module
+/// goes through it, and a test reads this file's own source to keep that true.
+async fn acquire(
+    server: &MailServer,
+    password: &Password,
+    mode: Acquire,
+) -> Result<Lease, MailError> {
+    let key = pool_key(server);
+    if mode == Acquire::Pooled {
+        while let Some(idle) = take_idle(&key) {
+            let idle_for = idle.since.elapsed();
+            let mut lease = Lease {
+                session: Some(idle.session),
+                key: key.clone(),
+                selected: idle.selected,
+                keep: false,
+            };
+            if !pool_entry_needs_probe(idle_for) {
+                return Ok(lease);
+            }
+            if let Ok(Ok(())) = tokio::time::timeout(POOL_PROBE_TIMEOUT, lease.noop()).await {
+                return Ok(lease);
+            }
+            // Dead or wedged. `keep` is false, so dropping the lease closes it;
+            // try the next pooled session, then a fresh login.
+        }
+    }
+    let session = imap_login(server, password).await?;
+    Ok(Lease {
+        session: Some(session),
+        key,
+        selected: None,
+        keep: false,
+    })
+}
+
+/// Close every pooled session for one account.
+///
+/// Called at the three moments the credential behind a live authenticated
+/// socket stops being the one the user believes is in use: the account's
+/// settings change, the account is deleted, or its password is forgotten.
+pub fn forget_pooled_sessions(server: &MailServer) {
+    if let Ok(mut pool) = pool().lock() {
+        pool.remove(&pool_key(server));
+    }
+}
+
 fn classify_imap_error(e: async_imap::error::Error) -> MailError {
     let text = e.to_string();
     let lower = text.to_ascii_lowercase();
@@ -1135,10 +1385,12 @@ impl MailEngine for InProcessEngine {
         let mut out = MailProbe::default();
         let mut errors: Vec<String> = Vec::new();
 
-        match imap_login(&account.imap, password).await {
-            Ok(mut session) => {
+        // `Fresh`, and closed rather than pooled: this is the one operation whose
+        // entire job is to answer "do these credentials work *now*".
+        match acquire(&account.imap, password, Acquire::Fresh).await {
+            Ok(session) => {
                 out.imap_ok = true;
-                let _ = tokio::time::timeout(COMMAND_TIMEOUT, session.logout()).await;
+                session.close().await;
             }
             Err(e) => errors.push(format!("IMAP: {e}")),
         }
@@ -1162,46 +1414,49 @@ impl MailEngine for InProcessEngine {
         account: &MailAccount,
         password: &Password,
     ) -> Result<Vec<FetchedFolder>, MailError> {
-        let mut session = imap_login(&account.imap, password).await?;
-        let mut out = Vec::new();
-        {
-            let mut stream = tokio::time::timeout(COMMAND_TIMEOUT, session.list(Some(""), Some("*")))
-                .await
-                .map_err(|_| MailError::Timeout { op: "IMAP LIST" })?
-                .map_err(classify_imap_error)?;
-            while let Some(name) = stream.next().await {
-                let name = name.map_err(classify_imap_error)?;
-                let path = name.name().to_string();
-                // Split on the wire form, then decode **only** the leaf for
-                // display: `path` has to stay exactly as the server said it, or
-                // `SELECT` on any folder with an umlaut in it fails. Controls
-                // are stripped from the result for the same reason they are
-                // from a subject — a server-supplied label with an RTL override
-                // in it reorders what the user reads.
-                let leaf = path.rsplit(['/', '.']).next().unwrap_or(&path);
-                let display = strip_controls(&decode_modified_utf7(leaf));
-                // A folder whose entire name was control characters would end up
-                // with no label at all; fall back to the wire form so every row
-                // is still nameable.
-                let display = if display.trim().is_empty() {
-                    leaf.to_string()
-                } else {
-                    display
-                };
-                out.push(FetchedFolder {
-                    kind: folder_kind(&path, name.attributes()),
-                    name: display,
-                    path,
-                    total: 0,
-                    unread: 0,
-                });
-                if out.len() >= 500 {
-                    break;
+        let mut session = acquire(&account.imap, password, Acquire::Pooled).await?;
+        let out: Result<Vec<FetchedFolder>, MailError> = async {
+            let mut out = Vec::new();
+            {
+                let mut stream = tokio::time::timeout(COMMAND_TIMEOUT, session.list(Some(""), Some("*")))
+                    .await
+                    .map_err(|_| MailError::Timeout { op: "IMAP LIST" })?
+                    .map_err(classify_imap_error)?;
+                while let Some(name) = stream.next().await {
+                    let name = name.map_err(classify_imap_error)?;
+                    let path = name.name().to_string();
+                    // Split on the wire form, then decode **only** the leaf for
+                    // display: `path` has to stay exactly as the server said it, or
+                    // `SELECT` on any folder with an umlaut in it fails. Controls
+                    // are stripped from the result for the same reason they are
+                    // from a subject — a server-supplied label with an RTL override
+                    // in it reorders what the user reads.
+                    let leaf = path.rsplit(['/', '.']).next().unwrap_or(&path);
+                    let display = strip_controls(&decode_modified_utf7(leaf));
+                    // A folder whose entire name was control characters would end up
+                    // with no label at all; fall back to the wire form so every row
+                    // is still nameable.
+                    let display = if display.trim().is_empty() {
+                        leaf.to_string()
+                    } else {
+                        display
+                    };
+                    out.push(FetchedFolder {
+                        kind: folder_kind(&path, name.attributes()),
+                        name: display,
+                        path,
+                        total: 0,
+                        unread: 0,
+                    });
+                    if out.len() >= 500 {
+                        break;
+                    }
                 }
             }
+            Ok(out)
         }
-        let _ = tokio::time::timeout(COMMAND_TIMEOUT, session.logout()).await;
-        Ok(out)
+        .await;
+        session.finish(out)
     }
 
     async fn headers(
@@ -1211,46 +1466,49 @@ impl MailEngine for InProcessEngine {
         folder_path: &str,
         limit: u32,
     ) -> Result<Vec<FetchedHeader>, MailError> {
-        let mut session = imap_login(&account.imap, password).await?;
-        let mailbox = tokio::time::timeout(COMMAND_TIMEOUT, session.select(folder_path))
-            .await
-            .map_err(|_| MailError::Timeout { op: "IMAP SELECT" })?
-            .map_err(classify_imap_error)?;
+        let mut session = acquire(&account.imap, password, Acquire::Pooled).await?;
+        let out: Result<Vec<FetchedHeader>, MailError> = async {
+            // `select_now`, never the cached `ensure_selected`: this is the one
+            // caller that reads the mailbox's own `EXISTS` off the response, and
+            // paging from a cached count would silently page from a stale one.
+            let mailbox = session.select_now(folder_path).await?;
 
-        let mut out = Vec::new();
-        if mailbox.exists > 0 {
-            let limit = limit.clamp(1, 500);
-            let first = mailbox.exists.saturating_sub(limit.saturating_sub(1)).max(1);
-            let set = format!("{first}:{}", mailbox.exists);
-            // BODY.PEEK — never BODY — so listing a folder cannot mark mail as
-            // read on the server (and cannot be used to tell a sender that a
-            // message was opened).
-            let query = "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])";
-            let mut stream = tokio::time::timeout(FETCH_TIMEOUT, session.fetch(set, query))
-                .await
-                .map_err(|_| MailError::Timeout { op: "IMAP FETCH" })?
-                .map_err(classify_imap_error)?;
-            while let Some(item) = stream.next().await {
-                let item = item.map_err(classify_imap_error)?;
-                let Some(uid) = item.uid else { continue };
-                let raw = item.header().unwrap_or(b"");
-                let Ok(headers) = parse_headers(raw) else {
-                    continue;
-                };
-                let mut headers = headers;
-                headers.size = item.size.unwrap_or(raw.len() as u32) as u64;
-                let flags: Vec<String> = item.flags().map(|f| format!("{f:?}")).collect();
-                out.push(FetchedHeader {
-                    uid,
-                    seen: flags.iter().any(|f| f.contains("Seen")),
-                    flagged: flags.iter().any(|f| f.contains("Flagged")),
-                    answered: flags.iter().any(|f| f.contains("Answered")),
-                    headers,
-                });
+            let mut out = Vec::new();
+            if mailbox.exists > 0 {
+                let limit = limit.clamp(1, 500);
+                let first = mailbox.exists.saturating_sub(limit.saturating_sub(1)).max(1);
+                let set = format!("{first}:{}", mailbox.exists);
+                // BODY.PEEK — never BODY — so listing a folder cannot mark mail as
+                // read on the server (and cannot be used to tell a sender that a
+                // message was opened).
+                let query = "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])";
+                let mut stream = tokio::time::timeout(FETCH_TIMEOUT, session.fetch(set, query))
+                    .await
+                    .map_err(|_| MailError::Timeout { op: "IMAP FETCH" })?
+                    .map_err(classify_imap_error)?;
+                while let Some(item) = stream.next().await {
+                    let item = item.map_err(classify_imap_error)?;
+                    let Some(uid) = item.uid else { continue };
+                    let raw = item.header().unwrap_or(b"");
+                    let Ok(headers) = parse_headers(raw) else {
+                        continue;
+                    };
+                    let mut headers = headers;
+                    headers.size = item.size.unwrap_or(raw.len() as u32) as u64;
+                    let flags: Vec<String> = item.flags().map(|f| format!("{f:?}")).collect();
+                    out.push(FetchedHeader {
+                        uid,
+                        seen: flags.iter().any(|f| f.contains("Seen")),
+                        flagged: flags.iter().any(|f| f.contains("Flagged")),
+                        answered: flags.iter().any(|f| f.contains("Answered")),
+                        headers,
+                    });
+                }
             }
+            Ok(out)
         }
-        let _ = tokio::time::timeout(COMMAND_TIMEOUT, session.logout()).await;
-        Ok(out)
+        .await;
+        session.finish(out)
     }
 
     async fn body(
@@ -1260,36 +1518,36 @@ impl MailEngine for InProcessEngine {
         folder_path: &str,
         uid: u32,
     ) -> Result<Vec<u8>, MailError> {
-        let mut session = imap_login(&account.imap, password).await?;
-        tokio::time::timeout(COMMAND_TIMEOUT, session.select(folder_path))
-            .await
-            .map_err(|_| MailError::Timeout { op: "IMAP SELECT" })?
-            .map_err(classify_imap_error)?;
+        let mut session = acquire(&account.imap, password, Acquire::Pooled).await?;
+        let out: Result<Vec<u8>, MailError> = async {
+            session.ensure_selected(folder_path).await?;
 
-        let mut bytes: Vec<u8> = Vec::new();
-        {
-            let mut stream = tokio::time::timeout(
-                FETCH_TIMEOUT,
-                session.uid_fetch(uid.to_string(), "BODY.PEEK[]"),
-            )
-            .await
-            .map_err(|_| MailError::Timeout { op: "IMAP FETCH" })?
-            .map_err(classify_imap_error)?;
-            while let Some(item) = stream.next().await {
-                let item = item.map_err(classify_imap_error)?;
-                if let Some(body) = item.body() {
-                    if body.len() > MAX_MESSAGE_BYTES {
-                        return Err(MailError::TooLarge { bytes: body.len() });
+            let mut bytes: Vec<u8> = Vec::new();
+            {
+                let mut stream = tokio::time::timeout(
+                    FETCH_TIMEOUT,
+                    session.uid_fetch(uid.to_string(), "BODY.PEEK[]"),
+                )
+                .await
+                .map_err(|_| MailError::Timeout { op: "IMAP FETCH" })?
+                .map_err(classify_imap_error)?;
+                while let Some(item) = stream.next().await {
+                    let item = item.map_err(classify_imap_error)?;
+                    if let Some(body) = item.body() {
+                        if body.len() > MAX_MESSAGE_BYTES {
+                            return Err(MailError::TooLarge { bytes: body.len() });
+                        }
+                        bytes = body.to_vec();
                     }
-                    bytes = body.to_vec();
                 }
             }
+            if bytes.is_empty() {
+                return Err(MailError::Protocol("the server returned no message".into()));
+            }
+            Ok(bytes)
         }
-        let _ = tokio::time::timeout(COMMAND_TIMEOUT, session.logout()).await;
-        if bytes.is_empty() {
-            return Err(MailError::Protocol("the server returned no message".into()));
-        }
-        Ok(bytes)
+        .await;
+        session.finish(out)
     }
 
     async fn set_flag(
@@ -1301,24 +1559,24 @@ impl MailEngine for InProcessEngine {
         flag: &str,
         value: bool,
     ) -> Result<(), MailError> {
-        let mut session = imap_login(&account.imap, password).await?;
-        tokio::time::timeout(COMMAND_TIMEOUT, session.select(folder_path))
-            .await
-            .map_err(|_| MailError::Timeout { op: "IMAP SELECT" })?
-            .map_err(classify_imap_error)?;
-        let op = if value { "+FLAGS" } else { "-FLAGS" };
-        {
-            let mut stream = tokio::time::timeout(
-                COMMAND_TIMEOUT,
-                session.uid_store(uid.to_string(), format!("{op} ({flag})")),
-            )
-            .await
-            .map_err(|_| MailError::Timeout { op: "IMAP STORE" })?
-            .map_err(classify_imap_error)?;
-            while stream.next().await.is_some() {}
+        let mut session = acquire(&account.imap, password, Acquire::Pooled).await?;
+        let out: Result<(), MailError> = async {
+            session.ensure_selected(folder_path).await?;
+            let op = if value { "+FLAGS" } else { "-FLAGS" };
+            {
+                let mut stream = tokio::time::timeout(
+                    COMMAND_TIMEOUT,
+                    session.uid_store(uid.to_string(), format!("{op} ({flag})")),
+                )
+                .await
+                .map_err(|_| MailError::Timeout { op: "IMAP STORE" })?
+                .map_err(classify_imap_error)?;
+                while stream.next().await.is_some() {}
+            }
+            Ok(())
         }
-        let _ = tokio::time::timeout(COMMAND_TIMEOUT, session.logout()).await;
-        Ok(())
+        .await;
+        session.finish(out)
     }
 
     async fn set_flags_bulk(
@@ -1333,29 +1591,29 @@ impl MailEngine for InProcessEngine {
         if uids.is_empty() {
             return Ok(());
         }
-        let mut session = imap_login(&account.imap, password).await?;
-        tokio::time::timeout(COMMAND_TIMEOUT, session.select(folder_path))
-            .await
-            .map_err(|_| MailError::Timeout { op: "IMAP SELECT" })?
-            .map_err(classify_imap_error)?;
-        let op = if value { "+FLAGS" } else { "-FLAGS" };
-        // One command per chunk, and the chunks exist because a UID set is part
-        // of a command *line*: RFC 3501 puts no ceiling on it, real servers do,
-        // and a folder with thousands of unread messages is exactly the one this
-        // is called on. Range compression usually collapses it to a handful of
-        // bytes anyway — the chunking is the guarantee, not the optimization.
-        for chunk in uid_set_chunks(uids, MAX_UID_SET_CHARS) {
-            let mut stream = tokio::time::timeout(
-                COMMAND_TIMEOUT,
-                session.uid_store(chunk, format!("{op} ({flag})")),
-            )
-            .await
-            .map_err(|_| MailError::Timeout { op: "IMAP STORE" })?
-            .map_err(classify_imap_error)?;
-            while stream.next().await.is_some() {}
+        let mut session = acquire(&account.imap, password, Acquire::Pooled).await?;
+        let out: Result<(), MailError> = async {
+            session.ensure_selected(folder_path).await?;
+            let op = if value { "+FLAGS" } else { "-FLAGS" };
+            // One command per chunk, and the chunks exist because a UID set is part
+            // of a command *line*: RFC 3501 puts no ceiling on it, real servers do,
+            // and a folder with thousands of unread messages is exactly the one this
+            // is called on. Range compression usually collapses it to a handful of
+            // bytes anyway — the chunking is the guarantee, not the optimization.
+            for chunk in uid_set_chunks(uids, MAX_UID_SET_CHARS) {
+                let mut stream = tokio::time::timeout(
+                    COMMAND_TIMEOUT,
+                    session.uid_store(chunk, format!("{op} ({flag})")),
+                )
+                .await
+                .map_err(|_| MailError::Timeout { op: "IMAP STORE" })?
+                .map_err(classify_imap_error)?;
+                while stream.next().await.is_some() {}
+            }
+            Ok(())
         }
-        let _ = tokio::time::timeout(COMMAND_TIMEOUT, session.logout()).await;
-        Ok(())
+        .await;
+        session.finish(out)
     }
 
     async fn move_messages(
@@ -1369,22 +1627,25 @@ impl MailEngine for InProcessEngine {
         if uids.is_empty() {
             return Ok(());
         }
-        let mut session = imap_login(&account.imap, password).await?;
-        tokio::time::timeout(COMMAND_TIMEOUT, session.select(folder_path))
-            .await
-            .map_err(|_| MailError::Timeout { op: "IMAP SELECT" })?
-            .map_err(classify_imap_error)?;
-        let set = uids
-            .iter()
-            .map(|u| u.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        tokio::time::timeout(COMMAND_TIMEOUT, session.uid_mv(set, dest_path))
-            .await
-            .map_err(|_| MailError::Timeout { op: "IMAP MOVE" })?
-            .map_err(classify_imap_error)?;
-        let _ = tokio::time::timeout(COMMAND_TIMEOUT, session.logout()).await;
-        Ok(())
+        let mut session = acquire(&account.imap, password, Acquire::Pooled).await?;
+        let out: Result<(), MailError> = async {
+            session.ensure_selected(folder_path).await?;
+            // Chunked for the same reason `set_flags_bulk` is, and it was the one
+            // bulk command here that was not: a UID set is part of a command *line*,
+            // real servers cap that line, and "move the 400 messages I selected" is
+            // precisely the call that reaches the cap. A chunk that fails leaves the
+            // earlier chunks moved — recoverable, because repeating the move of an
+            // already-moved message is a no-op, which an over-long line is not.
+            for chunk in uid_set_chunks(uids, MAX_UID_SET_CHARS) {
+                tokio::time::timeout(COMMAND_TIMEOUT, session.uid_mv(chunk, dest_path))
+                    .await
+                    .map_err(|_| MailError::Timeout { op: "IMAP MOVE" })?
+                    .map_err(classify_imap_error)?;
+            }
+            Ok(())
+        }
+        .await;
+        session.finish(out)
     }
 
     async fn send(
@@ -1422,7 +1683,7 @@ impl MailEngine for InProcessEngine {
         if raw.len() > MAX_OUTBOUND_BYTES {
             return Err(MailError::TooLarge { bytes: raw.len() });
         }
-        let mut session = imap_login(&account.imap, password).await?;
+        let mut session = acquire(&account.imap, password, Acquire::Pooled).await?;
         // `\Seen` because a message you wrote is not unread mail; without it a
         // Sent folder lights the unread badge for every message sent.
         let flags = "(\\Seen)";
@@ -1430,11 +1691,12 @@ impl MailEngine for InProcessEngine {
             COMMAND_TIMEOUT,
             session.append(folder_path, Some(flags), None, raw),
         )
-        .await
-        .map_err(|_| MailError::Timeout { op: "IMAP APPEND" })?
-        .map_err(classify_imap_error);
-        let _ = tokio::time::timeout(COMMAND_TIMEOUT, session.logout()).await;
-        result.map(|_| ())
+        .await;
+        let out = result
+            .map_err(|_| MailError::Timeout { op: "IMAP APPEND" })
+            .and_then(|r| r.map_err(classify_imap_error))
+            .map(|_| ());
+        session.finish(out)
     }
 }
 
@@ -1726,6 +1988,127 @@ mod tests {
         }
     }
 
+    // ── The session pool (#167) ────────────────────────────────────────────
+
+    /// The tripwire that keeps the pool from being routed around. Every IMAP
+    /// operation obtains its session from `acquire`, so `imap_login` is
+    /// *defined* once and *called* once — a method that starts logging in
+    /// directly again is a per-operation login storm, which is the whole defect
+    /// this feature exists to remove, and it would otherwise be invisible.
+    #[test]
+    fn every_imap_operation_goes_through_the_pool() {
+        let src = include_str!("mail_engine.rs");
+        // Split so this assertion does not count itself.
+        let needle = concat!("imap", "_login(");
+        let uses = src.matches(needle).count();
+        assert_eq!(
+            uses, 2,
+            "`{needle}` should appear exactly twice (its definition and the one \
+             call inside `acquire`), found {uses} — an IMAP operation is logging \
+             in for itself instead of leasing a pooled session"
+        );
+    }
+
+    /// The key is what decides *who is authenticated*, so a different host, port
+    /// or user must never share a pooled session.
+    #[test]
+    fn pool_key_separates_hosts_ports_and_users() {
+        let base = MailServer {
+            host: "imap.example.com".into(),
+            port: 993,
+            user: "a@example.com".into(),
+            security: MailSecurity::Tls,
+        };
+        let key = pool_key(&base);
+        let other_host = pool_key(&MailServer {
+            host: "imap.other.com".into(),
+            ..base.clone()
+        });
+        let other_port = pool_key(&MailServer {
+            port: 994,
+            ..base.clone()
+        });
+        let other_user = pool_key(&MailServer {
+            user: "b@example.com".into(),
+            ..base.clone()
+        });
+        assert_ne!(key, other_host);
+        assert_ne!(key, other_port);
+        assert_ne!(key, other_user);
+    }
+
+    /// A host is case-insensitive and a stray space is a typo, not an account —
+    /// both would otherwise mint a second connection to the same server.
+    #[test]
+    fn pool_key_normalizes_the_host() {
+        let a = pool_key(&MailServer {
+            host: "IMAP.Example.COM".into(),
+            port: 993,
+            user: "a@example.com".into(),
+            security: MailSecurity::Tls,
+        });
+        let b = pool_key(&MailServer {
+            host: "  imap.example.com ".into(),
+            port: 993,
+            user: "a@example.com".into(),
+            security: MailSecurity::Tls,
+        });
+        assert_eq!(a, b);
+    }
+
+    /// The two age thresholds, and the order they have to sit in: anything old
+    /// enough to be closed is also old enough to have needed a probe, or a
+    /// session could be handed out unprobed *because* it was too stale to keep.
+    #[test]
+    fn pool_entry_age_thresholds_are_ordered() {
+        assert!(POOL_PROBE_AFTER < POOL_MAX_IDLE);
+
+        assert!(!pool_entry_needs_probe(Duration::from_secs(1)));
+        assert!(!pool_entry_expired(Duration::from_secs(1)));
+
+        assert!(pool_entry_needs_probe(POOL_PROBE_AFTER));
+        assert!(!pool_entry_expired(POOL_PROBE_AFTER));
+
+        assert!(pool_entry_expired(POOL_MAX_IDLE));
+        assert!(pool_entry_needs_probe(POOL_MAX_IDLE));
+    }
+
+    /// A liveness check that could outlive the login it is meant to save must
+    /// not exist: the fallback for a failed probe is simply to log in.
+    #[test]
+    fn the_pool_probe_fails_faster_than_a_command() {
+        assert!(POOL_PROBE_TIMEOUT < COMMAND_TIMEOUT);
+    }
+
+    /// Eviction is by key, so forgetting one account's credential cannot close
+    /// another account's connection.
+    #[test]
+    fn forgetting_one_account_leaves_the_others_pooled() {
+        let a = MailServer {
+            host: "imap.a.example".into(),
+            port: 993,
+            user: "a@a.example".into(),
+            security: MailSecurity::Tls,
+        };
+        let b = MailServer {
+            host: "imap.b.example".into(),
+            port: 993,
+            user: "b@b.example".into(),
+            security: MailSecurity::Tls,
+        };
+        // No socket is involved: the buckets are keyed and emptied by name, and
+        // that naming is the whole of what eviction gets right or wrong.
+        {
+            let mut pool = pool().lock().unwrap();
+            pool.entry(pool_key(&a)).or_default();
+            pool.entry(pool_key(&b)).or_default();
+        }
+        forget_pooled_sessions(&a);
+        let pool = pool().lock().unwrap();
+        assert!(!pool.contains_key(&pool_key(&a)));
+        assert!(pool.contains_key(&pool_key(&b)));
+    }
+
     #[tokio::test]
     async fn a_non_tls_endpoint_is_refused_before_any_socket_is_opened() {
         let server = MailServer {
@@ -1817,6 +2200,8 @@ mod tests {
     /// Whatever a server sends, decoding returns and never panics.
     #[test]
     fn folder_name_decoding_is_total() {
+        // Grouped to read as "FOLDER", not in even nibble groups.
+        #[allow(clippy::unusual_byte_groupings)]
         let mut seed: u64 = 0xF01DE_1234_0001;
         for _ in 0..5_000 {
             let len = {

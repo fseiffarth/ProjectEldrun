@@ -250,6 +250,20 @@ pub fn accounts_aad() -> Vec<u8> {
     b"file:accounts.json".to_vec()
 }
 
+/// The AAD for `filters.json.enc`. A **distinct** string from
+/// [`accounts_aad`] — the two files are sealed under the same key, so without
+/// per-file AAD an attacker with disk write access could swap one for the other
+/// and have it decrypt cleanly. That is the same relocation attack the field AAD
+/// exists to stop, one level up.
+///
+/// The rule list is sealed at all because it is exactly the kind of thing the
+/// sealed store is for: the words someone watches their mail for say what they
+/// are dealing with (a lawyer's name, a diagnosis, a company they are about to
+/// leave) as plainly as a subject line does.
+pub fn filters_aad() -> Vec<u8> {
+    b"file:filters.json".to_vec()
+}
+
 // ── Keyed digests ───────────────────────────────────────────────────────────
 
 type HmacSha256 = Hmac<Sha256>;

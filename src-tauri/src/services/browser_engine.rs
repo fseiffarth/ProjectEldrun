@@ -1319,6 +1319,8 @@ mod tests {
         );
     }
 
+    // Both operands are consts; pinning their *relation* is the test.
+    #[allow(clippy::assertions_on_constants)]
     #[test]
     fn a_reader_chain_is_capped_far_below_the_browsers_own_limit() {
         assert!(MAX_READER_REDIRECTS < web_safety::MAX_REDIRECTS);

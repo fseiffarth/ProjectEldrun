@@ -633,7 +633,7 @@ fn register_hook_in_settings(settings_path: &std::path::Path) -> std::io::Result
     }));
 
     let serialized = serde_json::to_string_pretty(&root)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     std::fs::write(settings_path, serialized)?;
     Ok(())
 }
@@ -827,7 +827,7 @@ mod tests {
         let projects = projects_with_sessions(&[]);
         let out = resolve_claude_session_impl(opts, &projects, |_| Some("x".to_string()));
         assert_eq!(out.args, vec!["--session-id".to_string(), "abc-123".to_string()]);
-        assert!(out.env.get("ELDRUN_TAB_UID").is_none());
+        assert!(!out.env.contains_key("ELDRUN_TAB_UID"));
         let _ = std::fs::remove_dir_all(&projects);
     }
 

@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 #
-# Auto-bump the patch version on every push of a branch, so each pushed build
-# is a distinct version. Releases stay manual (they are cut by pushing a v* tag,
-# which this hook deliberately skips).
+# Two jobs, in this order:
+#
+#   1. Privacy scan. This repo is public, so every push is scanned for secrets
+#      and personal data first — running it before the bump means a hit aborts
+#      the push without leaving a stray version-bump commit behind.
+#   2. Auto-bump the patch version on every push of a branch, so each pushed
+#      build is a distinct version. Releases stay manual (they are cut by
+#      pushing a v* tag, which this hook deliberately skips).
 #
 # git can't add a commit to a push that is already in flight, so this hook:
 #   1. bumps package.json / Cargo.toml / tauri.conf.json / Cargo.lock,
@@ -29,6 +34,9 @@ repo_root="$(git rev-parse --show-toplevel)"
 # double-bumping.
 pkg_version() { git show "$1:package.json" 2>/dev/null | jq -r '.version // empty' 2>/dev/null; }
 
+# The empty tree — the diff base for a push with no ancestor on the remote.
+EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+
 bump=0
 while read -r local_ref local_sha _remote_ref remote_sha; do
   case "$local_ref" in
@@ -36,6 +44,29 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
     refs/*) : ;;
     *) continue ;;
   esac
+
+  # Scan exactly what this ref is about to publish. The remote tip is the base
+  # when the branch already exists there; for a brand-new remote branch, walk
+  # back to the parent of the oldest commit no remote branch has yet, so the
+  # scan covers the new commits and not the whole history.
+  if [[ "$remote_sha" =~ ^0+$ ]]; then
+    oldest_new="$(git -C "$repo_root" rev-list "$local_sha" --not --remotes="$remote" | tail -1)"
+    base="$(git -C "$repo_root" rev-parse -q --verify "${oldest_new:-$local_sha}^" 2>/dev/null || true)"
+    [ -n "$base" ] || base="$EMPTY_TREE"   # the branch reaches a root commit
+  else
+    base="$remote_sha"
+  fi
+
+  # </dev/null: this loop owns stdin (git's ref list) — a child must not eat it.
+  if [ -z "${ELDRUN_SKIP_PRIVACY_CHECK:-}" ]; then
+    if ! (cd "$repo_root" && scripts/privacy-check.sh "$base" "$local_sha") </dev/null; then
+      echo "pre-push: privacy check failed for ${local_ref} — push aborted." >&2
+      echo "          Review each match above; this repo is public." >&2
+      echo "          To override once: ELDRUN_SKIP_PRIVACY_CHECK=1 git push …" >&2
+      exit 1
+    fi
+  fi
+
   if [[ "$remote_sha" =~ ^0+$ ]]; then
     bump=1                        # new branch on the remote — give it a fresh version
   elif [ "$(pkg_version "$local_sha")" = "$(pkg_version "$remote_sha")" ]; then

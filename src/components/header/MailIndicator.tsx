@@ -1,10 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { inboxUnread, unreadTotal, useMailStore } from "../../stores/mail";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { DEFAULT_MAIL_CHECK_MIN, onMailNew } from "../../lib/mail";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
+import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+
+const MENU_ID = "mail";
 
 /**
  * The header's mail button — mail as a **global app**, and now the only way in.
@@ -74,7 +77,17 @@ import { UntestedTag } from "../common/UntestedTag";
 export function MailIndicator() {
   const t = useT();
   const mailClient = useExperimental("mail_client");
-  const [menuOpen, setMenuOpen] = useState(false);
+  // Shared across every header hover-menu (stores/headerHoverMenu) so switching
+  // straight from another one closes it instantly instead of racing its own
+  // close-grace timer. `setMenuOpen` mirrors the old local-state setter's
+  // boolean signature so the rest of this component reads unchanged.
+  const menuOpen = useHeaderHoverMenuStore((s) => s.openId === MENU_ID);
+  const openMenu = useHeaderHoverMenuStore((s) => s.open);
+  const closeMenu = useHeaderHoverMenuStore((s) => s.close);
+  const setMenuOpen = useCallback(
+    (v: boolean) => (v ? openMenu(MENU_ID) : closeMenu(MENU_ID)),
+    [openMenu, closeMenu],
+  );
   // The hover menu's grace period, so crossing the 4px gap between the button and
   // the list below it does not shut the list you are reaching for.
   const closeTimer = useRef<number | undefined>(undefined);
@@ -163,7 +176,7 @@ export function MailIndicator() {
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [menuOpen]);
+  }, [menuOpen, setMenuOpen]);
 
   useEffect(() => () => window.clearTimeout(closeTimer.current), []);
 
@@ -171,7 +184,7 @@ export function MailIndicator() {
   // a feature the settings say is gone (`experimentalSweep`'s rule).
   useEffect(() => {
     if (!live) setMenuOpen(false);
-  }, [live]);
+  }, [live, setMenuOpen]);
 
   if (!live) return null;
 
@@ -275,7 +288,10 @@ export function MailIndicator() {
             {/* Priority first and outside Accounts, exactly as the rail orders
                 them: these two lists are every account's marked mail, so putting
                 them under an account would say the opposite of what they are. */}
-            <div className="tab-new-menu-group-label">{t("mail.priority")}</div>
+            <div className="tab-new-menu-group-label mail-menu-priority-label">
+              {t("mail.priority")}
+              <span className="mail-menu-scope">{t("mail.priorityAllAccounts")}</span>
+            </div>
             {(["important", "urgent"] as const).map((p) => {
               const total = p === "important" ? priorityCounts.important : priorityCounts.urgent;
               const unreadPart =
@@ -301,6 +317,11 @@ export function MailIndicator() {
                     void useMailStore.getState().openPriorityView(p);
                   }}
                 >
+                  {/* The rail's mark, and `MailList`'s: one glyph that means the
+                      same thing on a row, in the rail and here. */}
+                  <span className="mail-menu-priority-mark" aria-hidden="true">
+                    {p === "urgent" ? "!!" : "!"}
+                  </span>
                   <span className="mail-menu-name">{name}</span>
                   {/* The whole count, toned by unread — the rail's rule: a list
                       you file into is not an inbox and does not empty as it is

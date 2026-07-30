@@ -66,6 +66,10 @@ export interface MailSyncState {
   phase: MailSyncPhase;
   folderId?: string;
   newMessages?: number;
+  /** Of those, how many a filter rule filed into Important/Urgent. Shown beside
+   *  the arrival count rather than instead of it: a mark nobody made has to be
+   *  visible at the moment it happens, or the rules stop being trustworthy. */
+  filtered?: number;
   error?: string;
 }
 
@@ -576,13 +580,22 @@ export const useMailStore = create<MailStore>((set, get) => ({
         ...s.sync,
         [accountId]: summary.error
           ? { phase: "error", error: summary.error }
-          : { phase: "done", newMessages: summary.new_messages },
+          : {
+              phase: "done",
+              newMessages: summary.new_messages,
+              filtered: summary.filtered,
+            },
       },
       ...(summary.error ? { error: summary.error } : {}),
     }));
     // The folder list's unread counts moved, and so did the open page.
     await get().loadFolders(accountId, false);
     if (get().selectedAccountId === accountId) await get().loadPage(get().headerOffset);
+    // A filter rule just moved mail into Important/Urgent. The rail badges are
+    // the only place that shows it, so they have to be re-read here — otherwise
+    // the one visible consequence of an automatic mark waits for the next thing
+    // that happens to refresh them.
+    if (summary.filtered) await get().refreshPriorityCounts();
   },
 
   cancelCheck: async (accountId) => {

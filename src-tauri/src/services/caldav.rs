@@ -35,7 +35,7 @@ use std::time::Duration;
 use reqwest::{Method, StatusCode, Url};
 use roxmltree::Document;
 
-use crate::schema::caldav::{CalDavChanges, CalDavCollection, CalDavResource};
+use crate::schema::caldav::{CalDavChanges, CalDavCollection, CalDavResource, CalDavWrite};
 
 // ── Namespaces ──────────────────────────────────────────────────────────────
 
@@ -487,6 +487,10 @@ pub fn normalize_base_url(raw: &str) -> Result<Url, String> {
 /// `404` on `.well-known/caldav` is an ordinary step in discovery, and a `403`
 /// on `sync-collection` is the documented way a server says "use a full query
 /// instead". Callers decide which ones mean failure.
+///
+/// The credential rule is [`credentials_may_follow`]'s, applied per hop against
+/// the URL the *caller* named — never against the previous hop, or a chain of
+/// small steps would walk the password anywhere.
 async fn dav_request(
     client: &reqwest::Client,
     method_name: &str,
@@ -495,18 +499,69 @@ async fn dav_request(
     depth: Option<&str>,
     body: Option<String>,
 ) -> Result<(StatusCode, String, Url), String> {
+    dav_request_with(client, method_name, url, cred, depth, body, &[]).await
+}
+
+/// [`dav_request`] plus extra headers — the conditional (`If-Match`,
+/// `If-None-Match`) and content-type headers a write needs.
+async fn dav_request_with(
+    client: &reqwest::Client,
+    method_name: &str,
+    url: &Url,
+    cred: &Credentials,
+    depth: Option<&str>,
+    body: Option<String>,
+    headers: &[(&str, String)],
+) -> Result<(StatusCode, String, Url), String> {
+    let reply = dav_reply(client, method_name, url, cred, depth, body, headers).await?;
+    Ok((reply.status, reply.body, reply.url))
+}
+
+/// One reply, plus the one header a caller ever needs off it.
+///
+/// `ETag` is here rather than a whole header map because it is the only one any
+/// call site reads — a write's new validator, which is what makes the *next*
+/// conditional write possible.
+struct DavReply {
+    status: StatusCode,
+    body: String,
+    url: Url,
+    etag: String,
+}
+
+async fn dav_reply(
+    client: &reqwest::Client,
+    method_name: &str,
+    url: &Url,
+    cred: &Credentials,
+    depth: Option<&str>,
+    body: Option<String>,
+    headers: &[(&str, String)],
+) -> Result<DavReply, String> {
+    let origin = url.clone();
     let mut url = url.clone();
     for _ in 0..=MAX_REDIRECTS {
-        let mut req = client
-            .request(method(method_name), url.clone())
-            .basic_auth(&cred.user, Some(&cred.password));
+        let authorized = credentials_may_follow(&origin, &url);
+        let mut req = client.request(method(method_name), url.clone());
+        if authorized {
+            req = req.basic_auth(&cred.user, Some(&cred.password));
+        }
         if let Some(depth) = depth {
             req = req.header("Depth", depth);
         }
+        let mut typed = false;
+        for (name, value) in headers {
+            typed |= name.eq_ignore_ascii_case("content-type");
+            req = req.header(*name, value.clone());
+        }
         if let Some(body) = body.clone() {
-            req = req
-                .header("Content-Type", "application/xml; charset=utf-8")
-                .body(body);
+            // Every *reading* body here is a WebDAV XML document; a write names
+            // its own type (`text/calendar`) and must not have this one added on
+            // top of it.
+            if !typed {
+                req = req.header("Content-Type", "application/xml; charset=utf-8");
+            }
+            req = req.body(body);
         }
 
         let resp = req.send().await.map_err(|e| {
@@ -531,15 +586,47 @@ async fn dav_request(
                     if next == url {
                         return Err("the server redirected to the same URL".to_string());
                     }
+                    // A redirect off TLS is refused outright rather than merely
+                    // stripped of credentials: everything after it — the
+                    // calendar's own contents included — would cross the network
+                    // in the clear, and a sync that silently degraded to that is
+                    // exactly the "looks like success" failure this feature is
+                    // not allowed to have.
+                    if origin.scheme() == "https" && next.scheme() != "https" {
+                        return Err(format!(
+                            "the server redirected from HTTPS to an insecure address \
+                             ({}) — refused",
+                            next.scheme()
+                        ));
+                    }
                     url = next;
                     continue;
                 }
                 // A redirect with no Location is a broken server, not a hop.
-                None => return Ok((status, String::new(), url)),
+                None => {
+                    return Ok(DavReply {
+                        status,
+                        body: String::new(),
+                        url,
+                        etag: String::new(),
+                    })
+                }
             }
         }
 
         if status == StatusCode::UNAUTHORIZED {
+            // Which of the two 401s this is matters: one is a wrong password,
+            // the other is a host we deliberately did not authenticate to, and
+            // the fix for the second is not "retype your password".
+            if !authorized {
+                return Err(format!(
+                    "the server redirected to {} and that host asked for the password. Eldrun \
+                     only sends CalDAV credentials to the server the account's URL names (or a \
+                     subdomain of it over HTTPS) — if you trust that address, set the account's \
+                     server URL to it directly.",
+                    url.host_str().unwrap_or("another host")
+                ));
+            }
             return Err(
                 "the server rejected the username or password (401). Some CalDAV servers want an \
                  app-specific password rather than your normal one — check your provider's \
@@ -548,6 +635,13 @@ async fn dav_request(
             );
         }
 
+        let etag = resp
+            .headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .trim()
+            .to_string();
         let bytes = resp
             .bytes()
             .await
@@ -559,9 +653,58 @@ async fn dav_request(
             ));
         }
         let text = String::from_utf8_lossy(&bytes).into_owned();
-        return Ok((status, text, url));
+        return Ok(DavReply {
+            status,
+            body: text,
+            url,
+            etag,
+        });
     }
     Err("too many redirects".to_string())
+}
+
+/// Whether the Basic-auth header may ride a redirect hop.
+///
+/// **This is the whole of the redirect defence, and it exists because this
+/// module follows hops itself.** `reqwest`'s own redirect policy strips
+/// sensitive headers when a hop crosses origins; [`client`] disables that policy
+/// (a `PROPFIND` must not become a `GET`), which means the re-attaching of
+/// `basic_auth` on each hop is ours to get right. Without this check a server at
+/// the URL the user typed — or anyone able to answer for it — can bounce the
+/// client to a host of their choosing and be handed the calendar password in a
+/// header it can read.
+///
+/// The rule is deliberately narrower than "same registrable domain":
+///
+/// - **same origin** (scheme, host, port) — the ordinary case, every hop inside
+///   one server's own URL space;
+/// - **a subdomain of the credential's host, over TLS** — which is exactly the
+///   shape RFC 6764 discovery has, where the user types `example.org` and
+///   `/.well-known/caldav` redirects to `caldav.example.org`.
+///
+/// Sibling hosts (`caldav.example.org` → `dav.example.org`) are **refused**,
+/// even though they are the same organization, because telling them apart from
+/// an attacker's host needs a public-suffix list this codebase does not have —
+/// `registrable()` is a two-label approximation (documented as such in
+/// `web_safety`), and under it `a.co.uk` and `evil.co.uk` are one site. A
+/// refusal here is recoverable and says so: the user sets the account's URL to
+/// the address the server named, and that address becomes the credential origin.
+pub fn credentials_may_follow(from: &Url, to: &Url) -> bool {
+    let (Some(from_host), Some(to_host)) = (from.host_str(), to.host_str()) else {
+        return false;
+    };
+    let from_host = from_host.to_ascii_lowercase();
+    let to_host = to_host.to_ascii_lowercase();
+
+    if from.scheme() == to.scheme() && from_host == to_host && from.port_or_known_default() == to.port_or_known_default() {
+        return true;
+    }
+    // A subdomain hop is only ever allowed under TLS, on both ends: over plain
+    // HTTP the header is readable by anyone on the path, so "which host" stops
+    // being the interesting question.
+    from.scheme() == "https"
+        && to.scheme() == "https"
+        && to_host.ends_with(&format!(".{from_host}"))
 }
 
 /// A 2xx/207 body, or a described failure. The status text is included because
@@ -585,6 +728,32 @@ fn absolute(base: &Url, href: &str) -> Option<String> {
 
 // ── Discovery ───────────────────────────────────────────────────────────────
 
+/// Whether the server said this collection is read-only **to this login**.
+///
+/// A collection someone else shared with you is legitimately read-only to you,
+/// and that is a fact to ask the server for rather than infer from "push
+/// shipped". The write privileges are named at RFC 3744 §3: `write` implies the
+/// others, and `write-content`/`bind` are what a calendar collection actually
+/// grants.
+///
+/// A server that does not report the property at all comes back **`false`** — an
+/// unasserted unknown, not a claim in either direction. That is deliberately the
+/// permissive side, and it is safe only because it is never the sole gate: the
+/// account's own opt-in (`CalDavAccount::allow_write`) must also be set, and the
+/// server's `403` is what actually stops a write it never meant to allow. The
+/// alternative — silence read as a refusal — would make the feature unusable
+/// against every server that does not implement the property, for no gain the
+/// server itself was not already providing.
+fn privileges_read_only(resp: &DavResponse) -> bool {
+    resp.prop(NS_DAV, "current-user-privilege-set")
+        .map(|p| {
+            !p.descendants.iter().any(|(ns, name)| {
+                ns == NS_DAV && matches!(name.as_str(), "write" | "write-content" | "bind")
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// Read one collection response into a [`CalDavCollection`].
 fn collection_from(base: &Url, resp: &DavResponse) -> Option<CalDavCollection> {
     let href = absolute(base, &resp.href)?;
@@ -598,23 +767,7 @@ fn collection_from(base: &Url, resp: &DavResponse) -> Option<CalDavCollection> {
                 .collect()
         })
         .unwrap_or_default();
-    // Privileges are advisory in this phase (every subscribed collection is
-    // read-only here regardless) and load-bearing in Phase 3: a collection
-    // someone else shared with you is legitimately read-only *to you*, and that
-    // is a fact to ask the server for rather than infer from "push shipped".
-    //
-    // A server that does not report the property at all leaves this `false` — an
-    // unasserted unknown rather than a claim in either direction. The write
-    // privileges are named at RFC 3744 §3: `write` implies the others, and
-    // `write-content`/`bind` are what a calendar collection actually grants.
-    let read_only = resp
-        .prop(NS_DAV, "current-user-privilege-set")
-        .map(|p| {
-            !p.descendants
-                .iter()
-                .any(|(ns, name)| ns == NS_DAV && matches!(name.as_str(), "write" | "write-content" | "bind"))
-        })
-        .unwrap_or(false);
+    let read_only = privileges_read_only(resp);
     Some(CalDavCollection {
         href,
         display_name: resp
@@ -907,7 +1060,7 @@ async fn fill_missing_data(
             collection,
             cred,
             Some("1"),
-            Some(body_multiget(&chunk.to_vec())),
+            Some(body_multiget(chunk)),
         )
         .await?;
         let body = require_ok(status, body, "fetching changed events")?;
@@ -1020,6 +1173,284 @@ pub async fn fetch_changes(
     let (ctag, _) = change_tokens(href, cred).await.unwrap_or_default();
     out.ctag = ctag;
     Ok(out)
+}
+
+// ── Writing (Phase 3) ───────────────────────────────────────────────────────
+//
+// Four rules carry this half, and each of them is one line of code plus a reason
+// nobody can see from the line:
+//
+// 1. **Every write is conditional.** A create sends `If-None-Match: *`, an update
+//    sends `If-Match: <etag>`, a delete sends `If-Match: <etag>`. There is no
+//    unconditional path — not even a fallback for a server that returned no
+//    validator — because the unconditional write is precisely the one that
+//    destroys an edit made from a phone between the read and the write, and does
+//    it *quietly*.
+// 2. **A `412` is a value, not an error.** See [`CalDavWrite`].
+// 3. **The client names the resource.** RFC 4791 §5.3.2 leaves the URL to the
+//    client, so a create mints `<collection>/<uid>.ics`. The uid comes from
+//    Eldrun's own row id, but it is sanitized anyway ([`resource_name`]) — a UID
+//    that arrived from an *imported* ICS file is text somebody else wrote, and it
+//    would otherwise be a path-traversal primitive aimed at the server.
+// 4. **The body is `text/calendar`.** Sent verbatim, exactly as the frontend's
+//    `lib/ics.ts` serialized it, so the one iCalendar writer in this codebase is
+//    the one whose output reaches the server.
+
+/// What a `PUT` is conditional on.
+pub enum WriteCondition {
+    /// A create: `If-None-Match: *` — succeed only if nothing is there.
+    Create,
+    /// An update: `If-Match: <etag>` — succeed only if the resource is still the
+    /// one that was read.
+    Update(String),
+}
+
+/// The last path segment for a new resource, from a UID.
+///
+/// Everything outside `[A-Za-z0-9._-]` becomes `-`, the result is capped, and an
+/// empty one is refused rather than defaulted — a resource name is a URL path
+/// segment, and a UID is text that may have come from a file somebody else wrote.
+pub fn resource_name(uid: &str) -> Result<String, String> {
+    let cleaned: String = uid
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .take(120)
+        .collect();
+    // `.` and `..` survive the character filter and are exactly the two names
+    // that must not reach a URL join. Trimming both characters in one pass (not
+    // dots then dashes) is what makes `../../x` come back as `x` rather than as
+    // a name that still opens with a dot run.
+    let trimmed = cleaned.trim_matches(|c| c == '.' || c == '-');
+    if trimmed.is_empty() {
+        return Err("this event has no usable identifier to store it under".to_string());
+    }
+    Ok(format!("{trimmed}.ics"))
+}
+
+/// The absolute URL a new resource gets inside `collection`.
+pub fn resource_url(collection: &str, uid: &str) -> Result<String, String> {
+    let base = Url::parse(collection).map_err(|e| format!("not a usable calendar URL: {e}"))?;
+    // A collection href must end in `/` for `join` to place the child *inside*
+    // it rather than beside it. Servers are inconsistent about the trailing
+    // slash, so it is added here rather than assumed.
+    let base = if base.path().ends_with('/') {
+        base
+    } else {
+        Url::parse(&format!("{base}/")).map_err(|e| format!("not a usable calendar URL: {e}"))?
+    };
+    base.join(&resource_name(uid)?)
+        .map(|u| u.to_string())
+        .map_err(|e| format!("not a usable calendar URL: {e}"))
+}
+
+/// One resource's ETag as the server holds it *now*.
+///
+/// Two callers, one shape. After a write whose reply carried no `ETag` header
+/// (allowed, and several servers do it) this is what keeps the row conditional
+/// instead of stranding it until a full sync. And it is what makes resolving a
+/// conflict an *informed* overwrite rather than an unconditional one: "keep
+/// mine" re-reads the validator and writes against that, so the write still
+/// fails if the resource moved again between the question and the answer.
+pub async fn current_etag(href: &str, cred: &Credentials) -> Result<String, String> {
+    let url = Url::parse(href).map_err(|e| format!("not a usable calendar URL: {e}"))?;
+    let client = client()?;
+    Ok(resource_etag(&client, &url, cred).await)
+}
+
+async fn resource_etag(client: &reqwest::Client, url: &Url, cred: &Credentials) -> String {
+    let body = format!(
+        r#"{XML_DECL}
+<d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>"#
+    );
+    let Ok((status, body, _)) =
+        dav_request(client, "PROPFIND", url, cred, Some("0"), Some(body)).await
+    else {
+        return String::new();
+    };
+    if !status.is_success() {
+        return String::new();
+    }
+    parse_multistatus(&body)
+        .ok()
+        .and_then(|m| {
+            m.responses
+                .first()
+                .and_then(|r| r.text(NS_DAV, "getetag"))
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_default()
+}
+
+/// `PUT` one resource's iCalendar text.
+pub async fn put_resource(
+    href: &str,
+    cred: &Credentials,
+    ics: &str,
+    condition: WriteCondition,
+) -> Result<CalDavWrite, String> {
+    let url = Url::parse(href).map_err(|e| format!("not a usable calendar URL: {e}"))?;
+    let client = client()?;
+
+    let condition_header = match &condition {
+        WriteCondition::Create => ("If-None-Match", "*".to_string()),
+        WriteCondition::Update(etag) => {
+            let etag = etag.trim();
+            if etag.is_empty() {
+                // The one place this can happen is a row whose server never
+                // returned a validator and whose collection has not been synced
+                // since. Refusing is the point: the alternative is an
+                // unconditional PUT, i.e. rule 1 with an exception.
+                return Err(
+                    "this event has no server version to compare against — sync the calendar \
+                     once, then try again"
+                        .to_string(),
+                );
+            }
+            ("If-Match", etag.to_string())
+        }
+    };
+
+    let reply = dav_reply(
+        &client,
+        "PUT",
+        &url,
+        cred,
+        None,
+        Some(ics.to_string()),
+        &[
+            ("Content-Type", "text/calendar; charset=utf-8".to_string()),
+            (condition_header.0, condition_header.1),
+        ],
+    )
+    .await?;
+
+    if reply.status == StatusCode::PRECONDITION_FAILED {
+        return Ok(CalDavWrite {
+            href: reply.url.to_string(),
+            conflict: true,
+            ..Default::default()
+        });
+    }
+    if !reply.status.is_success() {
+        return Err(write_failure(reply.status, "saving to the server"));
+    }
+
+    let etag = if reply.etag.is_empty() {
+        resource_etag(&client, &reply.url, cred).await
+    } else {
+        reply.etag
+    };
+    Ok(CalDavWrite {
+        href: reply.url.to_string(),
+        etag,
+        conflict: false,
+        gone: false,
+    })
+}
+
+/// `DELETE` one resource, conditional on the ETag that was read.
+///
+/// A `404`/`410` is **success**: the resource is gone, which is what was asked
+/// for. Reporting that as a failure would leave a local row nobody can delete
+/// without the server first inventing it again.
+pub async fn delete_resource(
+    href: &str,
+    cred: &Credentials,
+    etag: &str,
+) -> Result<CalDavWrite, String> {
+    let url = Url::parse(href).map_err(|e| format!("not a usable calendar URL: {e}"))?;
+    let client = client()?;
+    let etag = etag.trim();
+    if etag.is_empty() {
+        return Err(
+            "this event has no server version to compare against — sync the calendar once, then \
+             try again"
+                .to_string(),
+        );
+    }
+
+    let reply = dav_reply(
+        &client,
+        "DELETE",
+        &url,
+        cred,
+        None,
+        None,
+        &[("If-Match", etag.to_string())],
+    )
+    .await?;
+
+    if reply.status == StatusCode::PRECONDITION_FAILED {
+        return Ok(CalDavWrite {
+            href: reply.url.to_string(),
+            conflict: true,
+            ..Default::default()
+        });
+    }
+    if reply.status == StatusCode::NOT_FOUND || reply.status == StatusCode::GONE {
+        return Ok(CalDavWrite {
+            href: reply.url.to_string(),
+            gone: true,
+            ..Default::default()
+        });
+    }
+    if !reply.status.is_success() {
+        return Err(write_failure(reply.status, "deleting on the server"));
+    }
+    Ok(CalDavWrite {
+        href: reply.url.to_string(),
+        gone: true,
+        ..Default::default()
+    })
+}
+
+/// A failed write, said in words the user can act on.
+///
+/// `403` is the one worth naming: it is what a collection that is read-only *to
+/// this login* answers, and "HTTP 403" alone sends people to retype a password
+/// that was never the problem.
+fn write_failure(status: StatusCode, what: &str) -> String {
+    match status {
+        StatusCode::FORBIDDEN => format!(
+            "{what} failed: the server refused (403). This calendar is most likely read-only for \
+             your login — a calendar someone else shared with you usually is."
+        ),
+        StatusCode::CONFLICT => format!(
+            "{what} failed: the server reported a conflict (409). The calendar collection may \
+             have been moved or deleted on the server."
+        ),
+        other => format!("{what} failed: HTTP {}", other.as_u16()),
+    }
+}
+
+/// Re-read one collection's `current-user-privilege-set`.
+///
+/// Separate from discovery because access **changes**: a colleague grants write
+/// on a shared calendar months after it was subscribed to, and the alternative to
+/// asking again is deleting the subscription and making it afresh.
+pub async fn collection_read_only(href: &str, cred: &Credentials) -> Result<bool, String> {
+    let url = Url::parse(href).map_err(|e| format!("not a usable calendar URL: {e}"))?;
+    let client = client()?;
+    let body = format!(
+        r#"{XML_DECL}
+<d:propfind xmlns:d="DAV:"><d:prop><d:current-user-privilege-set/></d:prop></d:propfind>"#
+    );
+    let (status, body, final_url) =
+        dav_request(&client, "PROPFIND", &url, cred, Some("0"), Some(body)).await?;
+    let body = require_ok(status, body, "checking this calendar's permissions")?;
+    let parsed = parse_multistatus(&body)?;
+    let resp = parsed
+        .responses
+        .first()
+        .ok_or_else(|| "the server answered with an empty multistatus".to_string())?;
+    let _ = final_url;
+    Ok(privileges_read_only(resp))
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -1318,6 +1749,131 @@ END:VCALENDAR</C:calendar-data></D:prop>
         );
         assert!(normalize_base_url("ftp://example.org").is_err());
         assert!(normalize_base_url("   ").is_err());
+    }
+
+    fn u(s: &str) -> Url {
+        Url::parse(s).unwrap()
+    }
+
+    #[test]
+    fn credentials_ride_a_hop_inside_the_same_origin() {
+        let from = u("https://dav.example.org/dav/");
+        assert!(credentials_may_follow(&from, &u("https://dav.example.org/dav/me/")));
+        assert!(credentials_may_follow(&from, &u("https://dav.example.org/other")));
+        // A different port is a different service, whoever runs it.
+        assert!(!credentials_may_follow(&from, &u("https://dav.example.org:8443/dav/")));
+    }
+
+    #[test]
+    fn credentials_ride_the_well_known_hop_down_into_a_subdomain() {
+        // RFC 6764's own shape: the user types the bare domain, and
+        // `/.well-known/caldav` redirects to the DAV host.
+        let from = u("https://example.org/.well-known/caldav");
+        assert!(credentials_may_follow(&from, &u("https://caldav.example.org/dav/")));
+        assert!(credentials_may_follow(
+            &from,
+            &u("https://a.b.example.org/dav/")
+        ));
+    }
+
+    #[test]
+    fn credentials_never_ride_a_hop_to_another_host() {
+        let from = u("https://dav.example.org/dav/");
+        // The attack this whole check exists for.
+        assert!(!credentials_may_follow(&from, &u("https://evil.example/dav/")));
+        // A sibling host is refused too: without a public-suffix list, "same
+        // organization" is not something this can tell from "same last two
+        // labels", and `a.co.uk`/`evil.co.uk` would pass such a test.
+        assert!(!credentials_may_follow(&from, &u("https://other.example.org/dav/")));
+        // Suffix matching must not be substring matching.
+        assert!(!credentials_may_follow(
+            &from,
+            &u("https://notdav.example.org.evil.test/")
+        ));
+    }
+
+    #[test]
+    fn credentials_never_ride_a_hop_off_tls() {
+        assert!(!credentials_may_follow(
+            &u("https://example.org/.well-known/caldav"),
+            &u("http://caldav.example.org/dav/")
+        ));
+        // A self-hosted plaintext server keeps working *on its own origin* —
+        // that is the localhost/Radicale case `normalize_base_url` honours — but
+        // it earns no subdomain latitude, since the header is readable anyway.
+        let local = u("http://localhost:5232/");
+        assert!(credentials_may_follow(&local, &u("http://localhost:5232/dav/")));
+        assert!(!credentials_may_follow(&local, &u("http://sub.localhost:5232/")));
+    }
+
+    #[test]
+    fn a_resource_name_is_a_single_safe_path_segment() {
+        assert_eq!(resource_name("abc-123").unwrap(), "abc-123.ics");
+        // A UID out of an imported file is text somebody else wrote.
+        assert_eq!(resource_name("../../etc/passwd").unwrap(), "etc-passwd.ics");
+        assert_eq!(resource_name("a b?c#d").unwrap(), "a-b-c-d.ics");
+        // `..` is the name that must never reach a URL join, and the refusal has
+        // to carry a sentence rather than be a bare error.
+        assert!(!resource_name("..").unwrap_err().is_empty());
+        assert!(resource_name("").is_err());
+        assert!(resource_name("///").is_err());
+        // Bounded, so a pathological UID cannot become a pathological URL.
+        assert!(resource_name(&"x".repeat(4000)).unwrap().len() <= 124);
+    }
+
+    #[tokio::test]
+    async fn an_update_with_no_known_etag_is_refused_rather_than_sent_blind() {
+        // **The** rule of the write half, and the one a "make it work" fix would
+        // quietly remove: there is no unconditional `PUT`, not even as a fallback
+        // for a server that returned no validator. The unconditional write is
+        // precisely the one that destroys an edit made from a phone between the
+        // read and the write, and does it silently.
+        //
+        // This reaches no network: the refusal happens while building the
+        // condition header, before a client is even used.
+        let cred = Credentials {
+            user: "me".into(),
+            password: "pw".into(), // privacy-check: ok — test fixture, reaches no network
+        };
+        let err = put_resource(
+            "https://dav.example.org/dav/me/personal/e1.ics",
+            &cred,
+            "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n",
+            WriteCondition::Update(String::new()),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("sync the calendar"), "{err}");
+
+        // A delete is the same rule: no ETag, no request.
+        let err = delete_resource(
+            "https://dav.example.org/dav/me/personal/e1.ics",
+            &cred,
+            "  ",
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("sync the calendar"), "{err}");
+    }
+
+    #[test]
+    fn a_new_resource_lands_inside_its_collection() {
+        assert_eq!(
+            resource_url("https://dav.example.org/dav/me/personal/", "evt-1").unwrap(),
+            "https://dav.example.org/dav/me/personal/evt-1.ics"
+        );
+        // A collection href without the trailing slash must not put the resource
+        // *beside* the collection.
+        assert_eq!(
+            resource_url("https://dav.example.org/dav/me/personal", "evt-1").unwrap(),
+            "https://dav.example.org/dav/me/personal/evt-1.ics"
+        );
+        // And a traversal-shaped uid cannot climb out of it.
+        let out = resource_url("https://dav.example.org/dav/me/personal/", "../../x").unwrap();
+        assert!(
+            out.starts_with("https://dav.example.org/dav/me/personal/"),
+            "{out}"
+        );
     }
 
     #[test]

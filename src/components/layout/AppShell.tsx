@@ -29,6 +29,7 @@ import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 import { MailOverlayHost } from "../mail/MailOverlay";
 import { CalendarOverlayHost } from "../calendar/CalendarOverlay";
 import { CalDavSyncHost } from "../calendar/CalDavSyncHost";
+import { CalDavConflictDialog } from "../calendar/CalDavConflictDialog";
 import { TodoOverlayHost } from "../todo/TodoOverlay";
 import { LocalLossDialog } from "../common/LocalLossDialog";
 import { HostKeyConfirmDialog } from "../common/HostKeyConfirmDialog";
@@ -852,6 +853,12 @@ export function AppShell() {
           calendar pane, so refreshing only while that pane is open would leave
           the calendar stale exactly where it is looked at. */}
       <CalDavSyncHost />
+      {/* The push half's one question (Phase 3): a `412` means the resource
+          changed elsewhere, which is the user's decision and not the app's. Here
+          rather than in the calendar pane because the conflicting edit can come
+          from the board, the overlay or the header's day list — and because the
+          pane is exactly what has been closed by the time an answer is needed. */}
+      <CalDavConflictDialog />
       {/* The todo board, third of the same family — and mounted LAST of the
           three deliberately: all three are `.modal-backdrop` at one z-index and
           nothing makes them mutually exclusive, so DOM order is the tie-break

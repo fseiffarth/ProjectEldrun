@@ -252,6 +252,90 @@ export interface MailHeader {
  */
 export type MailPriority = "important" | "urgent";
 
+/**
+ * Which part of a message a filter rule's words are searched in.
+ *
+ * `preview` is the body **snippet** the sync stores, not the body: a sync
+ * fetches headers, and the full text of a message is on this machine only once
+ * it has been opened. Searching bodies at check time would mean downloading
+ * every message of every folder on every check — so a word buried on page three
+ * does not fire a rule, and the dialog says so rather than letting "body" imply
+ * a search that does not happen.
+ */
+export type MailFilterField = "subject" | "sender" | "recipients" | "preview";
+
+/**
+ * One keyword rule: *when these words appear in these parts of a newly arrived
+ * message, mark it Important or Urgent.*
+ *
+ * **A rule sets the same local column the right-click menu sets** — see
+ * {@link MailPriority}. Nothing is uploaded, no IMAP flag is written, and no
+ * message leaves the folder it arrived in, which is why there is no rule
+ * anybody can write here that another mail client could see, or that could go
+ * wrong on a server.
+ *
+ * Two limits worth stating wherever this is rendered:
+ * - Rules run on messages that **arrive** during a check, and on demand over
+ *   mail already in the index (`mailFiltersApply`). They are not a background
+ *   pass, and they never re-examine a message that already carries a mark — the
+ *   user's own filing outranks a rule, always.
+ * - Sent, Drafts, Trash and Junk are out of scope on both paths.
+ */
+export interface MailFilterRule {
+  /** Empty on a rule the dialog has just created; the backend mints it. */
+  id: string;
+  name: string;
+  /** Matched case-insensitively; substrings unless `whole_word`. An **empty
+   *  list matches nothing** — never everything. */
+  terms: string[];
+  /** Where to look. Empty matches nothing, for the same reason. */
+  fields: MailFilterField[];
+  mark: MailPriority;
+  /** Require every term rather than any one of them. */
+  match_all: boolean;
+  /** Match on word boundaries, so `art` stops matching *start*. */
+  whole_word: boolean;
+  /** Restrict to one account; absent means every account, like the lists. */
+  account_id?: string;
+  /** Off keeps the rule but stops applying it. */
+  enabled: boolean;
+}
+
+/** Why one message matched — the rule, the word, and where it was found. Carried
+ *  so a mark the user did not make can be *explained* rather than just appear. */
+export interface MailFilterHit {
+  rule_id: string;
+  rule_name: string;
+  mark: MailPriority;
+  term: string;
+  field: MailFilterField;
+}
+
+export interface MailFilterSample {
+  message_id: string;
+  subject: string;
+  from: MailAddress;
+  date: string;
+  hit: MailFilterHit;
+}
+
+/** What running the rules over stored mail would do (`dry_run`) or did.
+ *
+ *  One shape for both, because the only honest preview is the one the apply
+ *  itself produces — two code paths answering "what will this catch" and "what
+ *  did it catch" is how a filter dialog promises 3 and marks 40. */
+export interface MailFilterReport {
+  scanned: number;
+  matched: number;
+  /** Always 0 for a dry run. */
+  marked: number;
+  dry_run: boolean;
+  /** Set when the scan bound was hit, so a count can be qualified with *of the
+   *  most recent N* instead of implying the whole mailbox. */
+  capped?: number;
+  samples: MailFilterSample[];
+}
+
 /** How much marked mail there is, across every account — the rail's two badges.
  *  Read as one value so the two numbers cannot disagree on screen. */
 export interface MailPriorityCounts {
@@ -421,6 +505,10 @@ export interface MailSyncSummary {
   account_id: string;
   folders: number;
   new_messages: number;
+  /** Of those, how many a filter rule filed into Important/Urgent. Reported so a
+   *  mark nobody made is visible as it happens — mail that quietly moves itself
+   *  is what makes people distrust a filter. */
+  filtered?: number;
   error?: string;
 }
 

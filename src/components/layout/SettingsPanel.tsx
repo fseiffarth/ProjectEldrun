@@ -45,6 +45,7 @@ import {
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { useT, LANGUAGES, type Language, type TranslationKey } from "../../lib/i18n";
+import { useUse24h } from "../../lib/timeFormat";
 import { IS_MAC, IS_WINDOWS } from "../../lib/platform";
 import { useHintsStore } from "../../stores/hints";
 import { canConnectVpnSilently } from "../../lib/vpnConnect";
@@ -687,6 +688,11 @@ export function SettingsDialog({
 
   const currentTheme = (settings?.color_scheme ?? "fancy_dark") as Theme;
   const currentLang = (settings?.language ?? "en") as Language;
+  // Through the hook, never off `settings`: unset means "not chosen", and only
+  // `resolveUse24h` knows that it then follows the language. Reading the raw key
+  // with a `?? false` would show the switch off for a German user whose clock is
+  // in fact 24-hour — a control lying about the state it is controlling.
+  const use24h = useUse24h();
 
   // Live power state for the Energy Saver help line.
   const energyMode = settings?.energy_saver ?? "battery";
@@ -929,6 +935,21 @@ export function SettingsDialog({
                   onChange={(e) => void updateSettings({ show_clock_seconds: e.target.checked })}
                 />
               </label>
+              {/* App-wide, and here rather than under Calendar (where it used to
+                  live as a calendar-only switch): a clock is not a property of
+                  one feature, and reading 17:00 in the calendar beside 5:00 PM
+                  on a to-do card is one app disagreeing with itself. Unset
+                  follows the UI language, which is why the help line says what
+                  the default is rather than leaving the off position to imply
+                  it — see `lib/timeFormat.ts`. */}
+              <label className="settings-toggle-card-row">
+                <span>{t("settings.clock24")}</span>
+                <Toggle
+                  checked={use24h}
+                  onChange={(e) => void updateSettings({ time_format_24h: e.target.checked })}
+                />
+              </label>
+              <p className="settings-help">{t("settings.clock24Help")}</p>
             </div>
 
             <div className="settings-section-title">{t("settings.calendar")}</div>
@@ -994,11 +1015,6 @@ export function SettingsDialog({
                 ]}
               />
             </div>
-            <ToggleCard
-              label={t("settings.clock24")}
-              checked={settings?.calendar_time_format_24h ?? false}
-              onChange={(e) => void updateSettings({ calendar_time_format_24h: e.target.checked })}
-            />
             <div className="settings-row">
               <label>{t("settings.dayGridStart")}</label>
               <Dropdown

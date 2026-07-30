@@ -367,7 +367,6 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   // Refresh the path suggestions whenever the resolved host changes.
   useEffect(() => {
     refreshRemotePaths(suggestionHost ?? "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [suggestionHost]);
 
   // Remember a chosen remote path against the resolved host so it's offered in

@@ -1,7 +1,7 @@
-/// Tests for the Phase 1 service layer.
-///
-/// Tests that require a real filesystem use `tempfile::TempDir`.
-/// Tests that require a workspace backend use `eldrun_lib::platform::null::NullBackend`.
+//! Tests for the Phase 1 service layer.
+//!
+//! Tests that require a real filesystem use `tempfile::TempDir`.
+//! Tests that require a workspace backend use `eldrun_lib::platform::null::NullBackend`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

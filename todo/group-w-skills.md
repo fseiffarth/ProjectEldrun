@@ -19,14 +19,18 @@ scope: [`docs/skills_plan.md`](../docs/skills_plan.md).*
     `list_catalog` recursively walks the clone for `**/SKILL.md` and parses
     the YAML frontmatter (`name` + `description`). No manifest of installed
     skills, no per-skill version/commit tracking.
-    - [ ] 🤖 Automated test — catalog parser finds `SKILL.md` files at
-      arbitrary depth in a fixture repo; a malformed/missing frontmatter
-      entry is skipped, not fatal to the whole listing.
+    - **Shipped** (`src-tauri/src/services/skills.rs:113,216`, registered
+      `lib.rs:1079-1087`).
+    - [x] 🤖 Automated test — `services/skills.rs:359,368,377,419`
+      (`parse_skill_md_*`, `list_catalog_walks_nested_skill_folders`).
     - [ ] 🖐️ Manual test
 
-154. **Skills Library tab.** New `SkillsLibraryTab.tsx` / `SkillsLibraryView.tsx`
-    following `ProjectFilesTab.tsx`'s thin-host pattern, added to
-    `newTabItems.ts`'s `SHELL_ITEMS`, scoped to a project. Sources bar
+154. **Skills Library tab.** ✅ Implemented · 🧪 Awaiting live QA.
+    New `SkillsLibraryTab.tsx` / `SkillsLibraryView.tsx`
+    following `ProjectFilesTab.tsx`'s thin-host pattern, registered in
+    `TabPane.tsx:127` / `NewTabMenu.tsx:351-369` / `stores/tabs.ts:269,3975`
+    (**not** in `newTabItems.ts`'s `SHELL_ITEMS` — it got its own menu group),
+    scoped to a project. Sources bar
     (add URL / refresh), catalog list with client-side name/description
     filter and an installed-status badge (computed by checking whether
     `<project>/.claude/skills/<name>/` exists — no tracked state), preview
@@ -34,7 +38,8 @@ scope: [`docs/skills_plan.md`](../docs/skills_plan.md).*
     viewer with bundled-file/script listing. Install is reachable **only**
     from the preview panel.
     - [ ] 🤖 Automated test — installed-status badge reflects disk state,
-      not a cached flag.
+      not a cached flag. **Genuinely absent**: there is no skills test file
+      under `src/__tests__/`, unlike #153/#155 which do have Rust coverage.
     - [ ] 🖐️ Manual test
 
 155. **Install / uninstall commands.** `install_skill(project_id, source_id,
@@ -47,7 +52,11 @@ scope: [`docs/skills_plan.md`](../docs/skills_plan.md).*
     (identical-path mount already carries it); a project with no local
     mirror (pure-remote) gets the tab hidden/disabled rather than a silent
     wrong-filesystem write.
-    - [ ] 🤖 Automated test — install/overwrite/uninstall round-trip on a
-      local project; a remote project with no local mirror is correctly
-      reported as unsupported.
+    - **Shipped** (`services/skills.rs:298,317,329`, registered
+      `lib.rs:1085-1087`) — except the pure-remote case: the tab is only hidden
+      at `scope === "root"` (`NewTabMenu.tsx:351`), so a remote project with no
+      local mirror is **not** reported as unsupported. That half is still open.
+    - [x] 🤖 Automated test — `services/skills.rs:385`
+      (`install_then_list_then_uninstall_roundtrip`). The unsupported-remote
+      assertion is not covered, matching the gap above.
     - [ ] 🖐️ Manual test

@@ -19,6 +19,7 @@ import {
 } from "../lib/recurrence";
 import { addDays, toStamp, todayStr } from "../lib/calendarTime";
 import { parseIcs } from "../lib/ics";
+import { notifyCalendarWrite } from "../lib/calendarWriteHook";
 
 /**
  * The native calendar's store: one global set of calendars, events and tasks,
@@ -142,18 +143,31 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
 
   // ── Events ──────────────────────────────────────────────────────────────
 
+  // Every mutation below announces itself through `notifyCalendarWrite`. With no
+  // CalDAV account that is a resolved promise and nothing else; with one, it is
+  // where a local edit becomes a `PUT`. The *ordering* is the part that matters
+  // and is asymmetric on purpose — see `lib/calendarWriteHook.ts`: an upsert is
+  // announced after the local write (an edit made offline is still an edit), a
+  // delete before it (a refusal must be able to stop it).
+
   createEvent: async (draft) => {
     const event = await invoke<CalendarEvent>("create_event", { event: withoutId(draft) });
     set((s) => ({ events: [...s.events, event] }));
+    await notifyCalendarWrite({ op: "upsert", kind: "event", row: event });
     return event;
   },
 
   updateEvent: async (event) => {
     const updated = await invoke<CalendarEvent>("update_event", { event });
     set((s) => ({ events: s.events.map((e) => (e.id === updated.id ? updated : e)) }));
+    await notifyCalendarWrite({ op: "upsert", kind: "event", row: updated });
   },
 
   deleteEvent: async (id) => {
+    const row = get().events.find((e) => e.id === id);
+    // The row is handed over *before* it is deleted, because after the delete
+    // there is no href or ETag left to address the server's copy with.
+    if (row) await notifyCalendarWrite({ op: "delete", kind: "event", row });
     await invoke<void>("delete_event", { id });
     set((s) => ({ events: s.events.filter((e) => e.id !== id) }));
   },
@@ -177,15 +191,19 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
       task: { ...draft, id: "" } as CalendarTask,
     });
     set((s) => ({ tasks: [...s.tasks, task] }));
+    await notifyCalendarWrite({ op: "upsert", kind: "task", row: task });
     return task;
   },
 
   updateTask: async (task) => {
     const updated = await invoke<CalendarTask>("update_task", { task });
     set((s) => ({ tasks: s.tasks.map((t) => (t.id === updated.id ? updated : t)) }));
+    await notifyCalendarWrite({ op: "upsert", kind: "task", row: updated });
   },
 
   deleteTask: async (id) => {
+    const row = get().tasks.find((t) => t.id === id);
+    if (row) await notifyCalendarWrite({ op: "delete", kind: "task", row });
     await invoke<void>("delete_task", { id });
     set((s) => ({ tasks: s.tasks.filter((t) => t.id !== id) }));
   },

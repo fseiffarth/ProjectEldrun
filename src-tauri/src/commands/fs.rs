@@ -106,7 +106,7 @@ pub fn list_dir_local(project_dir: &str, rel_path: &str) -> Result<Vec<FileEntry
     let target = if rel_path.is_empty() {
         root.clone()
     } else {
-        canonical(&root.join(rel_path).to_string_lossy().to_string())?
+        canonical(root.join(rel_path).to_string_lossy().as_ref())?
     };
 
     enforce_confinement(&root, &target)?;
@@ -264,7 +264,7 @@ pub fn dir_size_local(project_dir: &str, rel_path: &str, excluded: &[String]) ->
     let target = if rel_path.is_empty() {
         root.clone()
     } else {
-        canonical(&root.join(rel_path).to_string_lossy().to_string())?
+        canonical(root.join(rel_path).to_string_lossy().as_ref())?
     };
     enforce_confinement(&root, &target)?;
     // The walk builds rel paths from `rel_path` down, so the exclusion list —
@@ -375,7 +375,7 @@ fn dir_size_breakdown_local(
     let target = if rel_path.is_empty() {
         root.clone()
     } else {
-        canonical(&root.join(rel_path).to_string_lossy().to_string())?
+        canonical(root.join(rel_path).to_string_lossy().as_ref())?
     };
     enforce_confinement(&root, &target)?;
 
@@ -407,9 +407,9 @@ fn ignored_paths_under(root: &Path, rel_path: &str) -> HashSet<String> {
         args.push(rel_path);
     }
     // Hardened: `status` in a project directory a container mounts writable, so
-    // the repo's config is untrusted (`commands::git`, Group O #151).
-    let Ok(out) = crate::commands::git::hardened_git_command(&args).current_dir(root).output()
-    else {
+    // the repo's config is untrusted (`commands::git`, Group O #151);
+    // `hardened_git_command_in` sanitizes it first.
+    let Ok(out) = crate::commands::git::hardened_git_command_in(root, &args).output() else {
         return HashSet::new();
     };
     let text = String::from_utf8_lossy(&out.stdout);
@@ -683,7 +683,7 @@ pub fn rename_path_local(project_dir: &str, old_rel: &str, new_name: &str) -> Re
     let new_name = validate_bare_name(new_name)?;
 
     let root = canonical(project_dir)?;
-    let old = canonical(&root.join(old_rel).to_string_lossy().to_string())?;
+    let old = canonical(root.join(old_rel).to_string_lossy().as_ref())?;
     enforce_confinement(&root, &old)?;
 
     let new = old.parent().ok_or("no parent")?.join(&new_name);
@@ -711,7 +711,7 @@ pub async fn delete_file(
 /// Local-fs file delete — byte-identical pre-Phase-3 body.
 pub fn delete_file_local(project_dir: &str, rel_path: &str) -> Result<(), String> {
     let root = canonical(project_dir)?;
-    let target = canonical(&root.join(rel_path).to_string_lossy().to_string())?;
+    let target = canonical(root.join(rel_path).to_string_lossy().as_ref())?;
     enforce_confinement(&root, &target)?;
 
     if target.is_dir() {
@@ -741,7 +741,7 @@ pub async fn delete_dir(
 /// Local-fs directory-tree delete — byte-identical pre-Phase-3 body.
 pub fn delete_dir_local(project_dir: &str, rel_path: &str) -> Result<(), String> {
     let root = canonical(project_dir)?;
-    let target = canonical(&root.join(rel_path).to_string_lossy().to_string())?;
+    let target = canonical(root.join(rel_path).to_string_lossy().as_ref())?;
     enforce_confinement(&root, &target)?;
 
     if target == root {
@@ -1033,7 +1033,7 @@ pub fn project_path_exists(project_dir: String, rel_path: String) -> Result<bool
 #[tauri::command]
 pub fn extract_archive(project_dir: String, rel_path: String) -> Result<String, String> {
     let root = canonical(&project_dir)?;
-    let archive = canonical(&root.join(&rel_path).to_string_lossy().to_string())?;
+    let archive = canonical(root.join(&rel_path).to_string_lossy().as_ref())?;
     enforce_confinement(&root, &archive)?;
     if !archive.is_file() {
         return Err("not a file".to_string());
@@ -1122,7 +1122,7 @@ fn resolve_transfer(
     dest_rel: &str,
 ) -> Result<(PathBuf, PathBuf), String> {
     let src_root = canonical(src_project_dir)?;
-    let src = canonical(&src_root.join(src_rel).to_string_lossy().to_string())?;
+    let src = canonical(src_root.join(src_rel).to_string_lossy().as_ref())?;
     enforce_confinement(&src_root, &src)?;
     if src == src_root {
         return Err("refusing to copy the project root".to_string());
@@ -1864,7 +1864,7 @@ pub fn list_dirs(path: String) -> Result<DirListing, String> {
             path: display_path(&e.path()),
         })
         .collect();
-    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    entries.sort_by_key(|a| a.name.to_lowercase());
 
     Ok(DirListing {
         path: display_path(&base),

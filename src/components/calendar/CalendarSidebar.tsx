@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Calendar } from "../../types";
 import { calendarSyncStatus, useCalDavStore } from "../../stores/caldav";
 import { addMonths, datePart, monthGrid, monthName, todayStr, weekdayLabel } from "../../lib/calendarTime";
@@ -9,6 +9,27 @@ const CALENDAR_COLORS = [
   "#4aa3df", "#e8663d", "#59b96a", "#c164d6",
   "#e2b93b", "#d9556b", "#4fc3c3", "#8d8fd6",
 ];
+
+/** How long a picked colour sits on the swatch before it is written. */
+const COLOR_COMMIT_MS = 250;
+
+/**
+ * A stored colour as the native swatch can render it.
+ *
+ * The grid draws `Calendar.color` as plain CSS, which accepts far more than the
+ * `#rrggbb` an `<input type="color">` does — and an unacceptable value renders
+ * as **black**, i.e. as a colour the calendar does not have. `#rgb` and the
+ * `#rrggbbaa` a CalDAV server sends are widened/trimmed rather than dropped;
+ * anything else keeps the palette's own neutral instead of black.
+ */
+function swatchColor(raw: string): string {
+  const value = (raw || "").trim();
+  if (/^#[0-9a-f]{6}$/i.test(value)) return value;
+  if (/^#[0-9a-f]{8}$/i.test(value)) return value.slice(0, 7);
+  const short = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(value);
+  if (short) return `#${short[1]}${short[1]}${short[2]}${short[2]}${short[3]}${short[3]}`;
+  return CALENDAR_COLORS[CALENDAR_COLORS.length - 1];
+}
 
 interface Props {
   calendars: Calendar[];
@@ -69,6 +90,11 @@ export function CalendarSidebar({
   const [subscribing, setSubscribing] = useState(false);
   const [subName, setSubName] = useState("");
   const [subUrl, setSubUrl] = useState("");
+  // The colour a row's swatch is *showing*, while it differs from the stored one.
+  // See `pickColor` — a picked colour has to be on the input before the store
+  // knows about it, or the picker and React fight over the element.
+  const [draftColor, setDraftColor] = useState<Record<string, string>>({});
+  const colorTimers = useRef<Record<string, number>>({});
 
   const today = todayStr();
   const year = Number(browse.slice(0, 4));
@@ -83,6 +109,49 @@ export function CalendarSidebar({
     const days = Array.from({ length: 7 }, (_, i) => weekdayLabel(lang, i, "narrow"));
     return [...days.slice(weekStart), ...days.slice(0, weekStart)];
   }, [weekStart, lang]);
+
+  // Drop a draft the moment the store agrees with it, so a colour changed
+  // elsewhere (a CalDAV sync, another window) still reaches the swatch.
+  useEffect(() => {
+    setDraftColor((drafts) => {
+      let next = drafts;
+      for (const cal of calendars) {
+        if (drafts[cal.id] === undefined || drafts[cal.id] !== cal.color) continue;
+        if (next === drafts) next = { ...drafts };
+        delete next[cal.id];
+      }
+      return next;
+    });
+  }, [calendars]);
+
+  useEffect(() => {
+    const timers = colorTimers.current;
+    return () => {
+      for (const id of Object.keys(timers)) window.clearTimeout(timers[id]);
+    };
+  }, []);
+
+  /**
+   * A colour pick is a **gesture**, not one event: the picker stays open and
+   * reports every movement, and writing the element's value back between those
+   * reports is echoed straight back as another pick. A controlled input does
+   * exactly that — the store write is a round trip through the backend, so React
+   * re-asserts the *old* colour in the gap — and the two then ping-pong until
+   * one of them lands last: the swatch showing the colour that was replaced
+   * while the calendar (and disk) keep the new one.
+   *
+   * So the swatch renders the picked colour immediately, from a local draft, and
+   * the store write trails it — which also spares `calendar.json` one write per
+   * movement of the picker.
+   */
+  function pickColor(cal: Calendar, color: string) {
+    setDraftColor((drafts) => ({ ...drafts, [cal.id]: color }));
+    window.clearTimeout(colorTimers.current[cal.id]);
+    colorTimers.current[cal.id] = window.setTimeout(() => {
+      delete colorTimers.current[cal.id];
+      onUpdateCalendar({ ...cal, color });
+    }, COLOR_COMMIT_MS);
+  }
 
   function submitNew() {
     const name = newName.trim();
@@ -243,9 +312,12 @@ export function CalendarSidebar({
             <input
               type="color"
               className="cal-color-dot"
-              value={cal.color}
+              // `<input type="color">` takes only `#rrggbb`; anything else (a
+              // CalDAV `#rrggbbaa` that slipped through, an empty string) makes
+              // it render black, which is a colour the calendar does not have.
+              value={swatchColor(draftColor[cal.id] ?? cal.color)}
               title={t("calendarSidebar.colorTitle")}
-              onChange={(e) => onUpdateCalendar({ ...cal, color: e.target.value })}
+              onChange={(e) => pickColor(cal, e.target.value)}
             />
 
             {editing === cal.id ? (

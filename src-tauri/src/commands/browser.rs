@@ -1163,6 +1163,10 @@ mod tests {
     /// were one constant, and sharing it silently extended a WebView2 permission
     /// argument to a surface that has no webview. A single assertion here would
     /// let them be merged again without a failure.
+    // The asserted values are `cfg!`-resolved constants — that they are
+    // constant is exactly the property under test, so a lint that objects to
+    // asserting on a constant has nothing to say here.
+    #[allow(clippy::assertions_on_constants)]
     #[test]
     fn the_platform_report_matches_the_cfg_gate() {
         if cfg!(target_os = "windows") {

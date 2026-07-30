@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useCalDavStore } from "../../stores/caldav";
+import { installCalDavPush, useCalDavStore } from "../../stores/caldav";
 import { DEFAULT_CALDAV_SYNC_MIN } from "../../lib/caldav";
 
 /** How often the scheduler wakes up. Each account is still synced on its own
@@ -43,6 +43,16 @@ export function CalDavSyncHost() {
   useEffect(() => {
     void useCalDavStore.getState().load();
   }, []);
+
+  // The **push** half (`docs/caldav_plan.md` Phase 3) is installed here rather
+  // than at module scope, and here rather than in the calendar pane, for this
+  // component's own two reasons: exactly one handler may answer for a row's
+  // server side (module scope in a file two roots import would install two), and
+  // an edit made from the to-do board or the header's day list must push the
+  // same way one made in the calendar tab does — none of which is that pane.
+  // With no account, or with push not opted into, the handler resolves to a
+  // no-op inside `pushRow`, so this costs nothing for everyone else.
+  useEffect(() => installCalDavPush(), []);
 
   const scheduled = accounts.filter(
     (a) => a.calendars.length > 0 && (a.sync_interval_min ?? DEFAULT_CALDAV_SYNC_MIN) > 0,

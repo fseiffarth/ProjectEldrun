@@ -39,7 +39,7 @@ use crate::commands::projects::uuid_v4;
 use crate::schema::calendar::CalendarData;
 use crate::schema::caldav::{
     CalDavAccount, CalDavAccountSaved, CalDavAccounts, CalDavChanges, CalDavCollection,
-    CalDavParsed, CalDavPasswordState, ACCOUNTS_VERSION,
+    CalDavParsed, CalDavPasswordState, CalDavWrite, ACCOUNTS_VERSION,
 };
 use crate::services::caldav::{self, Credentials};
 use crate::services::remote_credentials::{self, KeyringState};
@@ -497,6 +497,217 @@ pub async fn caldav_apply(
     .map_err(|e| e.to_string())?
 }
 
+// ── Commands: push (Phase 3) ────────────────────────────────────────────────
+//
+// The seam is the fetch path's, mirrored: `src/lib/ics.ts` serializes the row (it
+// is the one iCalendar writer here, and the one with tests for folding, escaping,
+// `RRULE`, `RECURRENCE-ID` and `VALARM`), and the backend does the protocol. What
+// this side owns is the part a serializer cannot know about — **whether the write
+// is allowed at all**, and what to record afterwards.
+//
+// Three gates stand between an edit and a `PUT`, and none of them is trusted to
+// be the only one:
+//
+// 1. `CalDavAccount::allow_write` — the user's own opt-in, default off. This is
+//    the plan's open question ("is write access even wanted against an
+//    institutional calendar?") answered by asking.
+// 2. `CalDavCalendarRef::read_only` — the *server's* answer, per collection, from
+//    its `current-user-privilege-set`.
+// 3. The server's own `403`, which is the only one that is actually enforcement.
+
+/// Both halves of the local gate, as one refusal or nothing.
+///
+/// Deliberately one function rather than a check at each call site: two call
+/// sites checking "may I write here" separately is how one of them ends up
+/// checking only half of it.
+fn writable(account: &CalDavAccount, href: &str) -> Result<(), String> {
+    if !account.allow_write {
+        return Err(
+            "this CalDAV account is read-only — turn on \"Send my changes to the server\" in its \
+             settings first"
+                .to_string(),
+        );
+    }
+    let ref_ = account
+        .calendars
+        .iter()
+        .find(|c| c.href == href)
+        .ok_or_else(|| format!("this account is not subscribed to '{href}'"))?;
+    if ref_.read_only {
+        return Err(
+            "the server reports this calendar as read-only for your login — a calendar someone \
+             else shared with you usually is"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Create or update one resource on the server.
+///
+/// `resource_href` empty means **create**: the URL is minted from the collection
+/// and the row's uid, and the write is conditional on nothing being there
+/// (`If-None-Match: *`). Otherwise it is an update, conditional on `etag`.
+///
+/// On success the local row is stamped with the resource URL and the new ETag —
+/// in that order, after the server accepted, never before. A row stamped
+/// optimistically and then refused would claim to be synced while the server had
+/// never heard of it, and the next sync would create a *second* copy.
+#[tauri::command]
+pub async fn caldav_push(
+    account_id: String,
+    href: String,
+    kind: String,
+    row_id: String,
+    uid: String,
+    ics: String,
+    resource_href: Option<String>,
+    etag: Option<String>,
+    state: State<'_, CalDavState>,
+) -> Result<CalDavWrite, String> {
+    let rt = state.inner().clone();
+    let (account, cred) = {
+        let rt2 = rt.clone();
+        let account_id = account_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let account = account_by_id(&accounts_path(), &account_id)?;
+            let cred = credentials(&rt2, &account)?;
+            Ok::<_, String>((account, cred))
+        })
+        .await
+        .map_err(|e| e.to_string())??
+    };
+    writable(&account, &href)?;
+
+    let existing = resource_href.unwrap_or_default();
+    let existing = existing.trim();
+    let (target, condition) = if existing.is_empty() {
+        (caldav::resource_url(&href, &uid)?, caldav::WriteCondition::Create)
+    } else {
+        (
+            existing.to_string(),
+            caldav::WriteCondition::Update(etag.unwrap_or_default()),
+        )
+    };
+
+    let outcome = caldav::put_resource(&target, &cred, &ics, condition).await?;
+    if outcome.conflict {
+        return Ok(outcome);
+    }
+
+    let (kind, row_id, stamp_href, stamp_etag) = (
+        kind.clone(),
+        row_id.clone(),
+        outcome.href.clone(),
+        outcome.etag.clone(),
+    );
+    tokio::task::spawn_blocking(move || {
+        crate::commands::calendar::set_caldav_identity_at(
+            &crate::commands::calendar::calendar_path(),
+            &kind,
+            &row_id,
+            &stamp_href,
+            &stamp_etag,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    Ok(outcome)
+}
+
+/// Delete one resource on the server, conditional on its ETag.
+///
+/// The local row is **not** touched here: the caller deletes it through the
+/// ordinary `delete_event`/`delete_task` after this returns, so the order is
+/// server-then-local. The other order loses the row whenever the server refuses,
+/// and there is nothing left to retry from.
+#[tauri::command]
+pub async fn caldav_delete(
+    account_id: String,
+    href: String,
+    resource_href: String,
+    etag: String,
+    state: State<'_, CalDavState>,
+) -> Result<CalDavWrite, String> {
+    let rt = state.inner().clone();
+    let (account, cred) = {
+        let rt2 = rt.clone();
+        let account_id = account_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let account = account_by_id(&accounts_path(), &account_id)?;
+            let cred = credentials(&rt2, &account)?;
+            Ok::<_, String>((account, cred))
+        })
+        .await
+        .map_err(|e| e.to_string())??
+    };
+    writable(&account, &href)?;
+    caldav::delete_resource(&resource_href, &cred, &etag).await
+}
+
+/// The ETag one resource carries on the server right now.
+///
+/// This is what makes "keep my version" a real answer to a conflict without
+/// making it a blind overwrite: the frontend reads the current validator, shows
+/// the user what they are about to replace, and the write that follows is still
+/// conditional on *that* — so an edit that lands in the seconds between the
+/// question and the answer conflicts again rather than being lost.
+#[tauri::command]
+pub async fn caldav_resource_etag(
+    account_id: String,
+    resource_href: String,
+    state: State<'_, CalDavState>,
+) -> Result<String, String> {
+    let rt = state.inner().clone();
+    let cred = tokio::task::spawn_blocking(move || {
+        let account = account_by_id(&accounts_path(), &account_id)?;
+        credentials(&rt, &account)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    caldav::current_etag(&resource_href, &cred).await
+}
+
+/// Re-ask the server what this login may do with a collection, and record it.
+///
+/// Access **changes** — a colleague grants write on a shared calendar months
+/// after it was subscribed to — and without this the only way to pick that up
+/// would be deleting the subscription and making it again, which costs the local
+/// calendar's board state. Returns the collection's new `read_only`.
+#[tauri::command]
+pub async fn caldav_refresh_access(
+    account_id: String,
+    href: String,
+    state: State<'_, CalDavState>,
+) -> Result<bool, String> {
+    let rt = state.inner().clone();
+    let cred = {
+        let rt2 = rt.clone();
+        let account_id = account_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let account = account_by_id(&accounts_path(), &account_id)?;
+            credentials(&rt2, &account)
+        })
+        .await
+        .map_err(|e| e.to_string())??
+    };
+
+    let read_only = caldav::collection_read_only(&href, &cred).await?;
+    tokio::task::spawn_blocking(move || {
+        let mut account = account_by_id(&accounts_path(), &account_id)?;
+        match account.calendars.iter_mut().find(|c| c.href == href) {
+            Some(slot) => slot.read_only = read_only,
+            None => return Err(format!("this account is not subscribed to '{href}'")),
+        }
+        upsert_account_at(&accounts_path(), account)?;
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(read_only)
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -590,6 +801,68 @@ mod tests {
             "two Eldrun accounts on one login share one saved secret"
         );
         assert!(!account_key(&a).contains("account-1"));
+    }
+
+    fn subscribed(read_only: bool, allow_write: bool) -> CalDavAccount {
+        let mut a = account("me");
+        a.allow_write = allow_write;
+        a.calendars.push(crate::schema::caldav::CalDavCalendarRef {
+            href: "https://dav.example.org/dav/me/personal/".into(),
+            calendar_id: "cal-1".into(),
+            read_only,
+            ..Default::default()
+        });
+        a
+    }
+
+    #[test]
+    fn a_write_needs_both_the_users_opt_in_and_the_servers() {
+        let href = "https://dav.example.org/dav/me/personal/";
+        // Neither half alone is enough, and each refusal says which half it is —
+        // "turn on the setting" and "the server says no" are different problems
+        // with different fixes.
+        let refused = writable(&subscribed(true, false), href).unwrap_err();
+        assert!(refused.contains("read-only"), "{refused}");
+        let refused = writable(&subscribed(true, true), href).unwrap_err();
+        assert!(refused.contains("server reports"), "{refused}");
+        assert!(writable(&subscribed(false, false), href).is_err());
+        assert!(writable(&subscribed(false, true), href).is_ok());
+    }
+
+    #[test]
+    fn a_write_to_a_collection_this_account_never_subscribed_to_is_refused() {
+        let account = subscribed(false, true);
+        assert!(writable(&account, "https://dav.example.org/dav/me/someone-elses/").is_err());
+    }
+
+    #[test]
+    fn allow_write_defaults_off_and_survives_a_round_trip() {
+        let (_dir, path) = tmp();
+        let saved = upsert_account_at(&path, account("me")).unwrap();
+        assert!(
+            !saved.allow_write,
+            "an account is read-only until its owner says otherwise"
+        );
+        let mut edited = saved.clone();
+        edited.allow_write = true;
+        upsert_account_at(&path, edited).unwrap();
+        assert!(account_by_id(&path, &saved.id).unwrap().allow_write);
+    }
+
+    #[test]
+    fn a_ref_written_before_push_existed_reads_back_read_only() {
+        // An `accounts.json` from Phases 1-2 has no `read_only` on its refs. The
+        // first launch that *can* write must not read that silence as consent.
+        let (_dir, path) = tmp();
+        std::fs::write(
+            &path,
+            r#"{"version":1,"accounts":[{"id":"a1","base_url":"https://dav.example.org/",
+               "user":"me","calendars":[{"href":"https://dav.example.org/c/","calendar_id":"c1"}]}]}"#,
+        )
+        .unwrap();
+        let account = account_by_id(&path, "a1").unwrap();
+        assert!(account.calendars[0].read_only);
+        assert!(!account.allow_write);
     }
 
     #[test]

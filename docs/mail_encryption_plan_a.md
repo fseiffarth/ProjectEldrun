@@ -1646,7 +1646,7 @@ they cross-reference Group **O** (Project Security & Permissions), whose
 sandbox-audit posture §2 and §9.5 inherit. Numbering continues the global
 sequence (highest in use today: #152).
 
-Add to `todo/group-j.md`, and add a Group-J line to `TODO.md`'s Open-groups
+Add to `todo/group-j-mail.md`, and add a Group-J line to `TODO.md`'s Open-groups
 table noting that mail encryption lives here. Each carries the two verification
 boxes in the repo's standard form.
 

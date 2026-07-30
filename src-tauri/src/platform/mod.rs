@@ -156,7 +156,7 @@ pub fn detect_backend() -> Box<dyn WorkspaceBackend> {
     // so gating this keeps it from being flagged as unreachable.
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        return Box::new(null::NullBackend);
+        Box::new(null::NullBackend)
     }
 }
 

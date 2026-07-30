@@ -22,6 +22,16 @@ import { energySaverActive, usePowerStore } from "./power";
  *   and the skip is *announced* (the 🧠 menu's notice + "Load now"), because a
  *   silent skip is indistinguishable from the feature being broken. The opt-out
  *   is `settings.ollama_autoload_in_energy_saver`.
+ * - **A skip is only announced for what is actually missing.** Not starting a
+ *   loader and having no model in memory are two different facts: Ollama is a
+ *   separate, machine-wide server, so an armed model can already be resident —
+ *   left warm by an earlier session, loaded by hand, or by something that is not
+ *   Eldrun at all. Announcing the skip over the whole armed list then put "Not
+ *   loaded at start (deepcoder)" directly above a green-lamped `deepcoder` row
+ *   in the same menu, which reads as the UI contradicting itself. So the
+ *   decision asks what is resident (`pending`), reports only that remainder, and
+ *   says nothing when there is none — and `noteResident` keeps it that way
+ *   afterwards, since the notice outlives the launch it describes.
  * - **A skip stays skipped until a click.** Unplugging later does not
  *   retroactively start the models: the run is a launch-time decision the user
  *   was told about, and a load that begins minutes afterwards, unasked, is the
@@ -43,10 +53,84 @@ const RETRY_DELAY_MS = 2500;
 
 const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms));
 
+/**
+ * Which installed models are resident in Ollama's memory *right now*.
+ *
+ * A read, never a start: `list_ollama_models_detailed` is `/api/tags` +
+ * `/api/ps` over loopback and does not bring the server up, so asking it on the
+ * Energy Saver path costs nothing the mode objects to. A server that isn't there
+ * answers "nothing is resident", which is exactly true.
+ */
+async function residentModels(): Promise<string[]> {
+  try {
+    const all = await invoke<Array<{ name: string; running: boolean }>>(
+      "list_ollama_models_detailed",
+    );
+    return Array.isArray(all) ? all.filter((m) => m?.running).map((m) => m.name) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Warm a given list of models into memory, **one at a time**, reporting after
+ * each. Shared by the launch-time autoload and the post-upgrade restore
+ * (`stores/ollamaUpgrade`) so the two cannot disagree about what loading a set
+ * of models means: same sequencing (two models at once contend for the same
+ * VRAM and can push each other back out to CPU), same `not_running` retry (a
+ * server that has just been started, or just been *replaced*, accepts requests
+ * some seconds after it exists), and same rule that any other error is final.
+ *
+ * `ensure_ollama_running` first, and a failure there is deliberately not fatal:
+ * the server may be reachable but unmanageable (no systemd, a hand-run `ollama
+ * serve`), and the loads below produce the real, actionable error if it truly
+ * is down.
+ */
+export async function loadModelsSequentially(
+  models: string[],
+  onProgress: (loaded: string[], failed: Record<string, string>) => void,
+): Promise<{ loaded: string[]; failed: Record<string, string> }> {
+  try {
+    await invoke("ensure_ollama_running");
+  } catch {
+    /* fall through to the load, which produces the actionable error */
+  }
+  const loaded: string[] = [];
+  const failed: Record<string, string> = {};
+  for (const model of models) {
+    let error: string | null = null;
+    for (let attempt = 0; attempt < RETRY_ATTEMPTS; attempt++) {
+      try {
+        await invoke("load_ollama_model", { model });
+        error = null;
+        break;
+      } catch (e) {
+        error = typeof e === "string" ? e : String(e);
+        // Only "the server isn't there yet" is worth waiting out; a model that
+        // doesn't exist, or an install missing its runner, fails identically
+        // on every retry.
+        if (error !== "not_running") break;
+        await sleep(RETRY_DELAY_MS);
+      }
+    }
+    if (error === null) loaded.push(model);
+    else failed[model] = error;
+    onProgress([...loaded], { ...failed });
+  }
+  return { loaded, failed };
+}
+
 interface OllamaAutoloadStore {
   phase: AutoloadPhase;
   /** The models this run is (or was) for — the configured list at the time. */
   models: string[];
+  /**
+   * What the notice is actually *about*: the armed models that are neither
+   * resident already nor loaded by this run. Empty means there is nothing to
+   * report, whatever `phase` says — a skip whose models turned out to be in
+   * memory anyway is not news, it is a menu arguing with its own model list.
+   */
+  pending: string[];
   /** Models now resident because of this run. */
   loaded: string[];
   /** Per-model failure text for the ones that did not make it. */
@@ -60,12 +144,26 @@ interface OllamaAutoloadStore {
   /** Load the configured models now, whatever Energy Saver says. The "Load now"
    *  button behind the skip notice, and the only way out of `skipped`. */
   loadNow: () => Promise<void>;
+  /**
+   * "These models are in memory now" — from whichever surface just observed it
+   * (the 🧠 menu's model list, a load-progress event). Drops them from the
+   * outstanding set and from `failed`, so a notice about a model the user has
+   * since loaded by hand narrows and then goes away by itself. A no-op when
+   * nothing changes, so it can be called on every poll without re-rendering.
+   *
+   * Deliberately one-way — it only ever *shrinks* the outstanding set. A model
+   * Ollama later evicts on its own (keep_alive expiring) does not re-raise a
+   * launch-time notice minutes after the fact: same reason a skip stays skipped
+   * until a click.
+   */
+  noteResident: (names: string[]) => void;
   dismiss: () => void;
 }
 
 export const useOllamaAutoloadStore = create<OllamaAutoloadStore>((set, get) => ({
   phase: "idle",
   models: [],
+  pending: [],
   loaded: [],
   failed: {},
   ran: false,
@@ -78,7 +176,13 @@ export const useOllamaAutoloadStore = create<OllamaAutoloadStore>((set, get) => 
     const models = settings?.ollama_autoload_models ?? [];
     if (models.length === 0) return; // nothing armed — stay `idle`
     if (energySaverActive() && settings?.ollama_autoload_in_energy_saver !== true) {
-      set({ phase: "skipped", models, dismissed: false });
+      // The skip stands either way — this only decides what there is to say
+      // about it. An armed model already warm in the machine-wide server is not
+      // something the user is missing, and claiming otherwise beside the row
+      // showing it loaded is the contradiction this exists to prevent.
+      const resident = await residentModels();
+      const pending = models.filter((m) => !resident.includes(m));
+      set({ phase: "skipped", models, pending, dismissed: false });
       return;
     }
     await get().loadNow();
@@ -87,45 +191,34 @@ export const useOllamaAutoloadStore = create<OllamaAutoloadStore>((set, get) => 
   loadNow: async () => {
     const models = useSettingsStore.getState().settings?.ollama_autoload_models ?? [];
     if (models.length === 0) {
-      set({ phase: "idle", models: [] });
+      set({ phase: "idle", models: [], pending: [] });
       return;
     }
-    set({ phase: "loading", models, loaded: [], failed: {}, dismissed: false });
+    set({ phase: "loading", models, pending: models, loaded: [], failed: {}, dismissed: false });
 
-    // Start the server first — "load a model at startup" is meaningless if the
-    // thing that holds models isn't up, and at launch it very often isn't yet.
-    // A failure here is not fatal on its own: the server may be reachable but
-    // unmanageable (no systemd, a user-run `ollama serve`), so the loads below
-    // are still attempted and report the real reason if it truly is down.
-    try {
-      await invoke("ensure_ollama_running");
-    } catch {
-      /* fall through to the load, which produces the actionable error */
-    }
+    const { failed } = await loadModelsSequentially(models, (loaded, failedSoFar) =>
+      set({ loaded, failed: failedSoFar }),
+    );
+    // What is left outstanding is exactly what failed: everything else is now
+    // in memory, and a notice must not keep naming it.
+    set({ phase: Object.keys(failed).length > 0 ? "error" : "done", pending: Object.keys(failed) });
+  },
 
-    const loaded: string[] = [];
-    const failed: Record<string, string> = {};
-    for (const model of models) {
-      let error: string | null = null;
-      for (let attempt = 0; attempt < RETRY_ATTEMPTS; attempt++) {
-        try {
-          await invoke("load_ollama_model", { model });
-          error = null;
-          break;
-        } catch (e) {
-          error = typeof e === "string" ? e : String(e);
-          // Only "the server isn't there yet" is worth waiting out; a model that
-          // doesn't exist, or an install missing its runner, fails identically
-          // on every retry.
-          if (error !== "not_running") break;
-          await sleep(RETRY_DELAY_MS);
-        }
-      }
-      if (error === null) loaded.push(model);
-      else failed[model] = error;
-      set({ loaded: [...loaded], failed: { ...failed } });
-    }
-    set({ phase: Object.keys(failed).length > 0 ? "error" : "done" });
+  noteResident: (names) => {
+    if (names.length === 0) return;
+    const s = get();
+    const pending = s.pending.filter((m) => !names.includes(m));
+    const failed = { ...s.failed };
+    for (const n of names) delete failed[n];
+    const failedShrank = Object.keys(failed).length !== Object.keys(s.failed).length;
+    if (pending.length === s.pending.length && !failedShrank) return; // nothing moved
+    set({
+      pending,
+      failed,
+      // A run whose every failure has since been resolved by hand is done, not
+      // failing — the amber `!` on the button has nothing left to point at.
+      phase: s.phase === "error" && Object.keys(failed).length === 0 ? "done" : s.phase,
+    });
   },
 
   dismiss: () => set({ dismissed: true }),
@@ -156,6 +249,7 @@ export function resetOllamaAutoload(): void {
   useOllamaAutoloadStore.setState({
     phase: "idle",
     models: [],
+    pending: [],
     loaded: [],
     failed: {},
     ran: false,

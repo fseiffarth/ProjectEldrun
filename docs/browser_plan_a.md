@@ -1,6 +1,6 @@
 # In-app web browser in Eldrun — Plan A (surface, integration & UX)
 
-TODO Group J #61 (`todo/group-j.md`). Scope: **where the browser lives in Eldrun
+TODO Group J #61 (`todo/group-j-mail.md`). Scope: **where the browser lives in Eldrun
 and how it behaves as part of the app.** Security architecture (profile
 isolation, navigation policy, what the security indicator *means*, cookie/JS
 policy, favicon fetch policy) is Plan B (`docs/browser_plan_b.md`); webview/engine
@@ -158,7 +158,7 @@ Explicitly **not** persisted: history stack, scroll position, form state,
 zoom, find query, per-tab cookies (the profile is machine-global and Plan B's).
 Rationale: each of those is either engine-owned (and so Plan C's), or an
 attacker-influenced blob written into `project.json`, which is a control file the
-sandbox audit already flagged for living inside the project tree (`todo/group-o.md`,
+sandbox audit already flagged for living inside the project tree (`todo/group-o-security.md`,
 sandbox-audit follow-ups). A URL string is inert, human-readable and reviewable
 in a diff; a serialized session blob is none of those.
 
@@ -580,7 +580,7 @@ silently start receiving their links.
 **Not in v1. External-browser drops keep working unchanged; in-app drops are
 Phase 5+ and engine-gated.**
 
-What #53 is today (`todo/group-m.md` #53, automated test already ✅): images and
+What #53 is today (`todo/group-m-viewers.md` #53, automated test already ✅): images and
 image/text *tabs* are OS-level drag sources via `tauri-plugin-drag`
 (`drag:default` is in `capabilities/default.json`; `src/lib/dragPlatform.ts` owns
 the per-platform gesture semantics). Dropping onto an **external** browser's

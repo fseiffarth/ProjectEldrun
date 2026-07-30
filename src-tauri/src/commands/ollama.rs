@@ -20,6 +20,18 @@ pub struct OllamaModelInfo {
     pub running: bool,
     /// VRAM bytes in use (non-zero → GPU)
     pub size_vram: u64,
+    /// Ollama's own capability list for this model — `"completion"`, `"tools"`,
+    /// `"vision"`, `"thinking"`, `"embedding"`. Empty means *we could not ask*
+    /// (server down mid-read, an Ollama too old to report them), never "none":
+    /// every consumer treats an empty list as unknown, because hiding a working
+    /// agent is a worse failure than offering one that then errors.
+    pub capabilities: Vec<String>,
+    /// The manifest digest `/api/tags` reports. Load-bearing twice over: it is
+    /// what [`model_capabilities`] caches against (capabilities are a property
+    /// of the manifest, so the cache can only go stale when this changes, i.e.
+    /// on a re-pull), and it is the *same* value the registry answers for
+    /// `<name>:<tag>`, which is what makes an update check one HEAD request.
+    pub digest: String,
 }
 
 /// An entry in the built-in catalog of installable models.
@@ -33,13 +45,201 @@ pub struct CatalogEntry {
     pub size_hint: String,
 }
 
+// ── Where the server is ───────────────────────────────────────────────────
+
+/// The endpoint every request here uses when `Settings::ollama_host` says
+/// nothing — which is what it said for every install that predates #201a.
+const DEFAULT_OLLAMA_ADDR: &str = "127.0.0.1:11434";
+const DEFAULT_OLLAMA_PORT: u16 = 11434;
+
+/// The `host:port` this module connects to, per `Settings::ollama_host`.
+///
+/// Read on every call rather than cached: a settings write is not an event this
+/// module hears, and the alternative is a stale endpoint that survives until
+/// relaunch. It is one small JSON read against a file the app already keeps hot.
+fn ollama_addr() -> Result<String, String> {
+    let settings = read_settings();
+    resolve_ollama_addr(
+        settings.as_ref().and_then(|s| s.ollama_host.as_deref()),
+        settings
+            .as_ref()
+            .and_then(|s| s.ollama_allow_remote_host)
+            .unwrap_or(false),
+    )
+}
+
+fn read_settings() -> Option<crate::schema::Settings> {
+    let path = crate::storage::state_dir().join("settings.json");
+    path.exists()
+        .then(|| crate::storage::read_json::<crate::schema::Settings>(&path).ok())
+        .flatten()
+}
+
+/// The pure core of [`ollama_addr`]: what the user wrote → what we dial.
+///
+/// Liberal about spelling (Ollama's own `OLLAMA_HOST` accepts most of these, and
+/// the value is usually copied from there) and strict about the two things that
+/// change what the feature *is*:
+///
+/// * **`https://` is an error, never a downgrade.** This transport is a raw
+///   `TcpStream` speaking HTTP/1.0; it has no TLS and cannot grow one here.
+///   Connecting in the clear to an endpoint the user wrote as TLS would put
+///   their prompts on the wire unencrypted while the setting says otherwise —
+///   the one failure worth refusing to start for.
+/// * **A non-loopback host needs `allow_remote`.** Judged on the literal, not on
+///   a resolution: the question is what the user stated, and a name that
+///   resolves to loopback today is not a promise about tomorrow. The
+///   conservative direction is the safe one — the worst it costs is an opt-in
+///   for a hostname that was local anyway.
+///
+/// `0.0.0.0`/`::` are *bind* addresses, and are the likeliest thing to be pasted
+/// in from an `OLLAMA_HOST` that was written for the server side; they are read
+/// as loopback rather than refused, since that is both what they mean here and
+/// what dialling them would do anyway.
+///
+/// The result is interpolated into a request line and a `Host:` header, so a
+/// host carrying a control character is rejected outright — this builds HTTP by
+/// string concatenation, and that is header injection.
+fn resolve_ollama_addr(raw: Option<&str>, allow_remote: bool) -> Result<String, String> {
+    let raw = raw.map(str::trim).unwrap_or("");
+    if raw.is_empty() {
+        return Ok(DEFAULT_OLLAMA_ADDR.to_string());
+    }
+
+    let rest = if let Some(r) = raw.strip_prefix("http://") {
+        r
+    } else if let Some(r) = raw.strip_prefix("https://") {
+        let _ = r;
+        return Err(format!(
+            "Ollama host `{raw}` asks for HTTPS, which Eldrun's Ollama transport \
+             cannot speak — it would have to connect in the clear instead, and \
+             sending prompts unencrypted to an address written as `https://` is \
+             not something to do quietly. Use `http://` (or drop the scheme) for \
+             a server on this machine."
+        ));
+    } else if let Some((scheme, _)) = raw.split_once("://") {
+        return Err(format!(
+            "Ollama host `{raw}` names the `{scheme}` scheme; only `http://` (or \
+             no scheme at all) is supported."
+        ));
+    } else {
+        raw
+    };
+
+    // Drop a path or trailing slash — `http://127.0.0.1:11434/` is what a browser
+    // hands you when you copy the address of a running server.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("").trim();
+
+    // A bare number is a port, not a host — `OLLAMA_HOST=11500` is a spelling
+    // Ollama itself documents, so it is the one most likely to be copied across.
+    if let Ok(port) = authority.parse::<u16>() {
+        return Ok(format!("127.0.0.1:{port}"));
+    }
+
+    let (host, port) = split_host_port(authority)
+        .ok_or_else(|| format!("Ollama host `{raw}` is not a `host:port` address."))?;
+
+    let host = match host {
+        "" => "127.0.0.1",
+        // Bind-all pasted into a connect field.
+        "0.0.0.0" => "127.0.0.1",
+        "::" => "::1",
+        h => h,
+    };
+
+    if host.is_empty()
+        || host
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+    {
+        return Err(format!("Ollama host `{raw}` contains characters a host cannot have."));
+    }
+
+    if !host_is_loopback(host) && !allow_remote {
+        return Err(format!(
+            "Ollama host `{host}` is another machine, so every prompt and every \
+             file an agent reads would leave this one. That is off by default for \
+             a local-model feature — set `ollama_allow_remote_host` to true in \
+             settings.json if it is what you want."
+        ));
+    }
+
+    Ok(if host.contains(':') {
+        // IPv6 literal — the brackets are what keep the port unambiguous.
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    })
+}
+
+/// Split an authority into host and port, understanding the bracketed IPv6 form.
+/// `None` when the port is present but not a port.
+fn split_host_port(authority: &str) -> Option<(&str, u16)> {
+    if let Some(rest) = authority.strip_prefix('[') {
+        let (host, after) = rest.split_once(']')?;
+        return match after {
+            "" => Some((host, DEFAULT_OLLAMA_PORT)),
+            p => Some((host, p.strip_prefix(':')?.parse().ok()?)),
+        };
+    }
+    // An unbracketed value with more than one colon is a bare IPv6 literal;
+    // there is no port in it to find.
+    if authority.matches(':').count() > 1 {
+        return Some((authority, DEFAULT_OLLAMA_PORT));
+    }
+    match authority.split_once(':') {
+        None => Some((authority, DEFAULT_OLLAMA_PORT)),
+        Some((host, "")) => Some((host, DEFAULT_OLLAMA_PORT)),
+        Some((host, port)) => Some((host, port.parse().ok()?)),
+    }
+}
+
+/// How long to wait for the TCP handshake. Nothing to do with the 600 s *read*
+/// timeout beside it, which covers a model pull between chunks.
+///
+/// It exists because `ollama_host` can now name another machine, and a bare
+/// `TcpStream::connect` at a host that is off, firewalled or simply mistyped
+/// blocks for the OS TCP timeout — minutes — inside a `#[tauri::command]`,
+/// which is the window-freeze this repo has already paid for twice (a locked
+/// keyring, a disconnected remote project's git reads). A loopback port that
+/// nothing is listening on refuses instantly and never reaches this bound, so
+/// the default configuration is unchanged.
+const OLLAMA_CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// Open a connection to an already-resolved `host:port`, bounded.
+fn connect_ollama(addr: &str) -> Result<TcpStream, String> {
+    use std::net::ToSocketAddrs;
+    // `not_running` for every failure, resolution included: it is the sentinel
+    // the whole 🧠 surface already branches on, and "the name does not resolve"
+    // and "nothing answers" are the same thing to a caller that wants a model.
+    addr.to_socket_addrs()
+        .ok()
+        .and_then(|mut it| {
+            it.find_map(|sa| TcpStream::connect_timeout(&sa, OLLAMA_CONNECT_TIMEOUT).ok())
+        })
+        .ok_or_else(|| "not_running".to_string())
+}
+
+/// Whether a host *literal* names this machine. Deliberately no DNS: see
+/// [`resolve_ollama_addr`].
+fn host_is_loopback(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.is_loopback() || ip.is_unspecified(),
+        // `foo.localhost` resolves to loopback by convention (RFC 6761).
+        Err(_) => host.to_ascii_lowercase().ends_with(".localhost"),
+    }
+}
+
 // ── HTTP helper ───────────────────────────────────────────────────────────
 
 /// Send a request to the local Ollama REST API and return the response body.
 /// Uses HTTP/1.0 to avoid chunked transfer encoding.
 fn ollama_http(method: &str, path: &str, json_body: Option<&str>) -> Result<String, String> {
-    let mut stream =
-        TcpStream::connect("127.0.0.1:11434").map_err(|_| "not_running".to_string())?;
+    let addr = ollama_addr()?;
+    let mut stream = connect_ollama(&addr)?;
     // 10-minute timeout accommodates large model pulls
     stream
         .set_read_timeout(Some(Duration::from_secs(600)))
@@ -47,10 +247,10 @@ fn ollama_http(method: &str, path: &str, json_body: Option<&str>) -> Result<Stri
 
     let req = match json_body {
         Some(body) => format!(
-            "{method} {path} HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-            body.as_bytes().len()
+            "{method} {path} HTTP/1.0\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
         ),
-        None => format!("{method} {path} HTTP/1.0\r\nHost: localhost\r\n\r\n"),
+        None => format!("{method} {path} HTTP/1.0\r\nHost: {addr}\r\n\r\n"),
     };
 
     stream
@@ -491,6 +691,112 @@ pub async fn vibe_install_strategy() -> VibeInstallStrategy {
     }
 }
 
+/// Capability lists keyed by *manifest digest*, not by model name. A model's
+/// capabilities are fixed by its manifest, so a digest that has been read once
+/// can never need re-reading — and a re-pull (the one thing that changes them)
+/// changes the digest, which misses the cache by construction. Without this,
+/// `list_ollama_models_detailed` — called on every hover of the 🧠 menu, by the
+/// editor's autocomplete and by the autoload store — would spend one `/api/show`
+/// round trip per installed model per call.
+static CAPABILITY_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>,
+> = std::sync::OnceLock::new();
+
+/// Ollama's capability list for `model`, cached against `digest`.
+///
+/// An empty vec is returned for every failure — an unreachable server, an
+/// Ollama predating the `capabilities` field, a malformed body. That is
+/// deliberate and every caller must honour it: **empty means "we could not
+/// ask", never "this model supports nothing"**. Treating the two alike is what
+/// would make a transient probe failure silently hide every agent in the
+/// new-tab menu.
+fn model_capabilities(model: &str, digest: &str) -> Vec<String> {
+    let cache = CAPABILITY_CACHE.get_or_init(Default::default);
+    if !digest.is_empty() {
+        if let Ok(map) = cache.lock() {
+            if let Some(hit) = map.get(digest) {
+                return hit.clone();
+            }
+        }
+    }
+
+    let body = serde_json::json!({ "model": model }).to_string();
+    let caps: Vec<String> = ollama_http("POST", "/api/show", Some(&body))
+        .ok()
+        .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["capabilities"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|c| c.as_str().map(String::from))
+        .collect();
+
+    // Only a positive answer is cached: caching an empty list would freeze a
+    // transient failure in for the rest of the session.
+    if !digest.is_empty() && !caps.is_empty() {
+        if let Ok(mut map) = cache.lock() {
+            map.insert(digest.to_string(), caps.clone());
+        }
+    }
+    caps
+}
+
+/// The installed models that *do* support tool calls, for the "pick one of
+/// these instead" half of a refusal. Read off this machine rather than a
+/// hardcoded example list, which would age as the registry moves.
+fn tool_capable_models() -> Vec<String> {
+    ollama_http("GET", "/api/tags", None)
+        .ok()
+        .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["models"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|m| {
+            let name = m["name"].as_str()?;
+            let digest = m["digest"].as_str().unwrap_or("");
+            model_capabilities(name, digest)
+                .iter()
+                .any(|c| c == "tools")
+                .then(|| name.to_string())
+        })
+        .collect()
+}
+
+/// Whether `model` carries `cap` — `Some(false)` only when Ollama positively
+/// said so. `None` is "could not tell", which every caller reads as "let it
+/// through": see [`model_capabilities`].
+fn model_has_capability(model: &str, cap: &str) -> Option<bool> {
+    let digest = ollama_http("GET", "/api/tags", None)
+        .ok()
+        .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["models"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .find(|m| m["name"].as_str() == Some(model))
+        .and_then(|m| m["digest"].as_str().map(String::from))
+        .unwrap_or_default();
+
+    let caps = model_capabilities(model, &digest);
+    if caps.is_empty() {
+        return None;
+    }
+    Some(caps.iter().any(|c| c == cap))
+}
+
+/// Whether `model` can drive tool/function calls.
+fn model_supports_tools(model: &str) -> Option<bool> {
+    model_has_capability(model, "tools")
+}
+
+/// Whether `model` can *think* — i.e. Ollama will accept a request carrying a
+/// reasoning field. A model without it is not merely non-reasoning: Ollama
+/// **rejects the whole request** with `"<model>" does not support thinking`, so
+/// an agent that sends a reasoning effort by default (Codex does — its
+/// `model_reasoning_effort` defaults to `medium`, and the user's own
+/// `~/.codex/config.toml` usually sets it explicitly) dies on its first turn.
+fn model_supports_thinking(model: &str) -> Option<bool> {
+    model_has_capability(model, "thinking")
+}
+
 /// Return detailed info for every locally installed model, cross-referenced
 /// with the running-models list from /api/ps.
 #[tauri::command]
@@ -524,6 +830,9 @@ pub async fn list_ollama_models_detailed() -> Result<Vec<OllamaModelInfo>, Strin
             let size = m["size"].as_u64().unwrap_or(0);
             let details = &m["details"];
             let size_vram = running.get(&name).copied().unwrap_or(0);
+            let digest = m["digest"].as_str().unwrap_or("").to_owned();
+            // One `/api/show` per model on a cold cache, none afterwards.
+            let capabilities = model_capabilities(&name, &digest);
             OllamaModelInfo {
                 size,
                 parameter_size: details["parameter_size"].as_str().map(String::from),
@@ -531,6 +840,8 @@ pub async fn list_ollama_models_detailed() -> Result<Vec<OllamaModelInfo>, Strin
                 family: details["family"].as_str().map(String::from),
                 running: running.contains_key(&name),
                 size_vram,
+                capabilities,
+                digest,
                 name,
             }
         })
@@ -673,7 +984,7 @@ pub async fn list_orphan_partial_blobs() -> Vec<PartialBlob> {
             });
         }
     }
-    out.sort_by(|a, b| b.size.cmp(&a.size));
+    out.sort_by_key(|m| std::cmp::Reverse(m.size));
     out
 }
 
@@ -814,9 +1125,59 @@ fn delete_partials_for_digests(digests: &[String]) {
     }
 }
 
+/// Which processor a load should put the model on.
+///
+/// The three values are genuinely three, not a bool with a default: `Auto` is
+/// *Ollama's* decision (it weighs the model against free VRAM and may split the
+/// layers), while `Gpu` and `Cpu` are the user's, and overriding a scheduler is
+/// not the same act as deferring to it. They map onto the one option llama.cpp
+/// exposes for this, `num_gpu` — the number of layers to offload:
+///
+/// * `Cpu`  → `0`, the only value that means "none of it", i.e. a real CPU run.
+/// * `Gpu`  → [`MAX_GPU_LAYERS`], "as many as there are". Ollama clamps it to
+///   the model's own layer count, so an over-large number is the documented way
+///   to say *all* without having to know how many a model has.
+/// * `Auto` → the option is **omitted**. Sending a computed number here would
+///   be this app second-guessing the scheduler with strictly less information
+///   than it has (it knows what else is resident; we do not).
+///
+/// `Gpu` is a *request*, and the honest limit is worth stating: it can only
+/// distribute layers across the devices Ollama registered at startup. If the
+/// server dropped the machine's only GPU (see [`ollama_gpu_status`]) there is no
+/// device to offload to and the load still lands on the CPU — no per-request
+/// option can undo a discovery-time decision.
+#[derive(serde::Deserialize, Clone, Copy, Default, PartialEq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum LoadDevice {
+    #[default]
+    Auto,
+    Gpu,
+    Cpu,
+}
+
+/// Stand-in for "every layer". Larger than any published model's layer count,
+/// and clamped by Ollama, which is the documented way to ask for full offload.
+const MAX_GPU_LAYERS: i64 = 999;
+
+impl LoadDevice {
+    /// The `num_gpu` option this device implies, or `None` to omit it entirely.
+    fn num_gpu(self) -> Option<i64> {
+        match self {
+            LoadDevice::Auto => None,
+            LoadDevice::Gpu => Some(MAX_GPU_LAYERS),
+            LoadDevice::Cpu => Some(0),
+        }
+    }
+}
+
 /// Load a model into memory now (an empty `/api/generate` warms it) and keep it
 /// resident until explicitly unloaded (`keep_alive: -1`), so the user controls
 /// residency by button rather than relying on first use to trigger the load.
+///
+/// `device` is optional and defaults to [`LoadDevice::Auto`], so every existing
+/// call site (the autoload store, the settings list) keeps its old meaning
+/// exactly — a missing field deserializes to the default rather than to a
+/// choice nobody made.
 ///
 /// Ollama's warm-up call returns only once the model is fully resident and streams
 /// no load percentage, so progress here is coarse: an `ollama-load-progress` event
@@ -824,14 +1185,22 @@ fn delete_partials_for_digests(digests: &[String]) {
 /// blocking call so any surface (the brain menu, the settings panel) can show a
 /// live "Loading into memory…" indicator for a load started anywhere.
 #[tauri::command]
-pub async fn load_ollama_model(app: tauri::AppHandle, model: String) -> Result<(), String> {
+pub async fn load_ollama_model(
+    app: tauri::AppHandle,
+    model: String,
+    device: Option<LoadDevice>,
+) -> Result<(), String> {
     use tauri::Emitter;
 
     let _ = app.emit(
         "ollama-load-progress",
         serde_json::json!({ "model": model, "status": "loading" }),
     );
-    let body = serde_json::json!({"model": model, "keep_alive": -1}).to_string();
+    let mut payload = serde_json::json!({"model": model, "keep_alive": -1});
+    if let Some(n) = device.unwrap_or_default().num_gpu() {
+        payload["options"] = serde_json::json!({ "num_gpu": n });
+    }
+    let body = payload.to_string();
     let result = ollama_http("POST", "/api/generate", Some(&body));
     let _ = app.emit(
         "ollama-load-progress",
@@ -856,15 +1225,16 @@ pub async fn pull_ollama_model(app: tauri::AppHandle, model: String) -> Result<(
 
     let body = serde_json::json!({"model": model, "stream": true}).to_string();
 
-    let stream = TcpStream::connect("127.0.0.1:11434").map_err(|_| "not_running".to_string())?;
+    let addr = ollama_addr()?;
+    let stream = connect_ollama(&addr)?;
     // 10-minute read timeout accommodates large model pulls between chunks.
     stream
         .set_read_timeout(Some(Duration::from_secs(600)))
         .map_err(|e| format!("set timeout: {e}"))?;
 
     let req = format!(
-        "POST /api/pull HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-        body.as_bytes().len()
+        "POST /api/pull HTTP/1.0\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
     );
     let mut writer = stream.try_clone().map_err(|e| format!("clone: {e}"))?;
     writer
@@ -954,6 +1324,308 @@ pub async fn pull_ollama_model(app: tauri::AppHandle, model: String) -> Result<(
     Ok(())
 }
 
+// ── Update checks ─────────────────────────────────────────────────────────
+//
+// Ollama has no "is there a newer version of this model" API: `ollama pull`
+// simply re-resolves the tag and downloads whatever it now points at, which
+// means the only way to *ask* without transferring gigabytes is to compare
+// manifest digests. `/api/tags` reports the digest of the manifest on disk and
+// the registry answers the same value in the `ollama-content-digest` response
+// header, so one HEAD per model settles it.
+//
+// This is the one part of the local-model feature that reaches the network
+// without a model being installed or run, so it is **on demand only** — a
+// button in the 🧠 menu. It is deliberately not run on hover, on a timer, or at
+// launch: a menu that phones a registry every time the pointer crosses the
+// header is exactly the standing background traffic Energy Saver and the HPC
+// tag exist to remove.
+
+/// What an update check found for one installed model.
+#[derive(serde::Serialize, Clone)]
+pub struct OllamaModelUpdate {
+    pub model: String,
+    /// The digest of the manifest on disk, per `/api/tags`.
+    pub local_digest: String,
+    /// The digest the registry currently serves for the same `name:tag`.
+    /// Empty when the registry could not be reached or did not answer with one.
+    pub remote_digest: String,
+    /// True only when both digests are known *and* differ. An unreachable
+    /// registry reports `false` with an `error` — "we could not tell" must never
+    /// render as an update badge the user cannot act on.
+    pub update_available: bool,
+    /// Unix seconds the registry says the current manifest was published
+    /// (`ollama-push-time`), so the UI can say *how old* the new version is.
+    pub pushed_at: Option<i64>,
+    /// Why this model could not be checked, when it could not be.
+    pub error: Option<String>,
+}
+
+/// Ask the registry for one model's current manifest digest and push time.
+/// `curl -sSI`, matching `fetch_registry_manifest`'s transport (no shell, args
+/// passed directly, `validate_model_name` already restricting the characters
+/// that reach the URL).
+fn registry_head(model: &str) -> Result<(String, Option<i64>), String> {
+    let url = registry_manifest_url(model)?;
+    let output = crate::paths::command_no_window("curl")
+        .args(["-sSI", "--max-time", "15", &url])
+        .output()
+        .map_err(|e| format!("failed to query registry: {e}"))?;
+    if !output.status.success() {
+        return Err("registry unreachable".to_string());
+    }
+    let head = String::from_utf8_lossy(&output.stdout);
+    Ok((
+        header_value(&head, "ollama-content-digest").unwrap_or_default(),
+        header_value(&head, "ollama-push-time").and_then(|v| v.parse().ok()),
+    ))
+}
+
+/// Pull one header out of a raw HTTP response head. Case-insensitive on the
+/// name (HTTP/2 lowercases them, HTTP/1.1 does not) and tolerant of the several
+/// head blocks a redirect leaves behind — the **last** occurrence wins, since
+/// that is the response that actually carried the manifest.
+fn header_value(head: &str, name: &str) -> Option<String> {
+    head.lines()
+        .filter_map(|line| {
+            let (k, v) = line.split_once(':')?;
+            k.trim()
+                .eq_ignore_ascii_case(name)
+                .then(|| v.trim().to_string())
+        })
+        .rfind(|v| !v.is_empty())
+}
+
+/// Check the given installed models for a newer published version, or every
+/// installed model when `models` is empty.
+///
+/// One HEAD request per model, run only when the user asks. A model the
+/// registry can't answer for comes back with `error` set and
+/// `update_available: false` rather than being dropped, so the menu can say
+/// "couldn't check" instead of silently implying "up to date".
+#[tauri::command]
+pub async fn ollama_check_updates(models: Vec<String>) -> Result<Vec<OllamaModelUpdate>, String> {
+    let installed = list_ollama_models_detailed().await?;
+    let wanted: Vec<(String, String)> = installed
+        .into_iter()
+        .filter(|m| models.is_empty() || models.iter().any(|w| w == &m.name))
+        .map(|m| (m.name, m.digest))
+        .collect();
+
+    tokio::task::spawn_blocking(move || wanted_updates(wanted))
+        .await
+        .map_err(|e| format!("update check failed: {e}"))
+}
+
+/// The blocking half of [`ollama_check_updates`] — `curl` per model, off the
+/// async runtime's shoulders.
+fn wanted_updates(models: Vec<(String, String)>) -> Vec<OllamaModelUpdate> {
+    models
+        .into_iter()
+        .map(|(model, local_digest)| match registry_head(&model) {
+            Ok((remote_digest, pushed_at)) if !remote_digest.is_empty() => {
+                // A local digest we never read is not evidence of anything;
+                // comparing it to a real remote one would report an update for
+                // every model.
+                let update_available =
+                    !local_digest.is_empty() && local_digest != remote_digest;
+                OllamaModelUpdate {
+                    model,
+                    local_digest,
+                    remote_digest,
+                    update_available,
+                    pushed_at,
+                    error: None,
+                }
+            }
+            Ok(_) => OllamaModelUpdate {
+                model,
+                local_digest,
+                remote_digest: String::new(),
+                update_available: false,
+                pushed_at: None,
+                error: Some("the registry didn't report a digest".to_string()),
+            },
+            Err(e) => OllamaModelUpdate {
+                model,
+                local_digest,
+                remote_digest: String::new(),
+                update_available: false,
+                pushed_at: None,
+                error: Some(e),
+            },
+        })
+        .collect()
+}
+
+// ── The Ollama server's own version ───────────────────────────────────────
+//
+// Distinct from a *model* update and worth its own surface: a server several
+// minor versions back is missing whole features rather than weights. The case
+// that prompted this — `ollama launch`, which is the only wiring that stands up
+// an Anthropic-compatible endpoint for Claude Code — simply does not exist
+// before v0.15, so on an older server that agent is absent from the new-tab
+// menu with nothing anywhere saying why.
+//
+// Same discipline as the model check: the **installed** version is free (a local
+// `ollama --version`) and read whenever the menu opens; the **latest** version
+// is a network request and happens only when the user clicks.
+
+/// Where the newest published version is read from. GitHub's release API rather
+/// than ollama.com: it is the same source the project's own installer consults,
+/// it is unauthenticated, and it answers with a plain tag we can compare.
+const OLLAMA_RELEASES_URL: &str = "https://api.github.com/repos/ollama/ollama/releases/latest";
+
+/// The installed and newest-published Ollama versions.
+#[derive(serde::Serialize, Clone, Default)]
+pub struct OllamaVersionStatus {
+    /// The installed version, e.g. `"0.14.3"`. Empty when Ollama isn't
+    /// installed, or answered something we couldn't parse.
+    pub current: String,
+    /// The newest published version, e.g. `"0.32.5"`. Empty whenever the remote
+    /// half didn't run or didn't answer — never a stand-in for `current`.
+    pub latest: String,
+    /// True only when both versions parsed *and* `latest` is genuinely newer.
+    /// An unreadable version on either side is not an update.
+    pub update_available: bool,
+    /// The one-click upgrade command. Deliberately the *install* command: both
+    /// installers (winget, `install.sh`) upgrade in place, and a second command
+    /// string would be a second thing to keep correct.
+    pub install_cmd: String,
+    /// Which shell `install_cmd` needs, for `runInstallInTab`.
+    pub shell_kind: String,
+    /// Why the newest version couldn't be read, when it couldn't.
+    pub error: Option<String>,
+}
+
+/// Parse a version out of `ollama --version` output, or out of a release tag.
+///
+/// The command prints `ollama version is 0.14.3`, and prefixes a warning line
+/// when the server isn't running — so this scans for the first token that
+/// actually looks like a version rather than trusting a field position. A tag
+/// arrives as `v0.32.5`; the `v` is stripped.
+fn parse_version(text: &str) -> Option<String> {
+    text.split(|c: char| c.is_whitespace() || c == '"' || c == ',')
+        .filter_map(|tok| {
+            let t = tok.trim().trim_start_matches('v');
+            let core = t.split('-').next().unwrap_or(t);
+            let looks_like = core.split('.').count() >= 2
+                && core.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+            looks_like.then(|| t.to_string())
+        })
+        .next()
+}
+
+/// Compare two dotted versions numerically. `None` when either side doesn't
+/// parse — which the caller reports as "couldn't tell", never as an update.
+///
+/// Numeric and not lexical, which is the entire reason this exists rather than
+/// a `<` on the strings: `"0.9.0" > "0.14.3"` as text, so a string compare
+/// would announce a *downgrade* as an update for most of Ollama's history.
+/// A pre-release suffix (`0.15.0-rc1`) is dropped before comparing rather than
+/// ranked, because we only ever compare against the *latest stable* release.
+fn version_is_newer(candidate: &str, current: &str) -> Option<bool> {
+    fn parts(v: &str) -> Option<Vec<u64>> {
+        let core = v.trim_start_matches('v').split('-').next()?;
+        core.split('.').map(|p| p.parse::<u64>().ok()).collect()
+    }
+    let (a, b) = (parts(candidate)?, parts(current)?);
+    let len = a.len().max(b.len());
+    for i in 0..len {
+        // A missing component is zero: 0.15 and 0.15.0 are the same version.
+        let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
+        if x != y {
+            return Some(x > y);
+        }
+    }
+    Some(false)
+}
+
+/// The installed Ollama version, and — only when `check_remote` — the newest
+/// published one.
+///
+/// `check_remote: false` touches no network at all, so the menu can show what is
+/// installed the moment it opens. `true` is the "Check for updates" click and
+/// costs one unauthenticated GitHub request.
+#[tauri::command]
+pub async fn ollama_version_status(check_remote: bool) -> OllamaVersionStatus {
+    tokio::task::spawn_blocking(move || {
+        // Deliberately NOT pointed at `ollama_host`: this reads the version of
+        // the **installed binary**, which is what the feature gate above is
+        // about (`ollama launch` exists from v0.15), and the whole contract of
+        // `check_remote: false` is that it touches no network. Handing it an
+        // `OLLAMA_HOST` makes the CLI try to reach that server first — which for
+        // an unreachable one blocks on the kernel's TCP retries for over two
+        // minutes, inside a command the 🧠 menu calls on every open. The
+        // server-unreachable case is already handled: `ollama --version` prints
+        // a warning line and then the client version, which is exactly what
+        // `parse_version` scans past.
+        let current = crate::paths::command_no_window("ollama")
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| {
+                let text = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                );
+                parse_version(&text)
+            })
+            .unwrap_or_default();
+
+        let mut status = OllamaVersionStatus {
+            current,
+            install_cmd: ollama_install_cmd().to_string(),
+            shell_kind: if cfg!(target_os = "windows") {
+                "powershell"
+            } else {
+                "bash"
+            }
+            .to_string(),
+            ..Default::default()
+        };
+        if !check_remote {
+            return status;
+        }
+
+        // GitHub rejects a request with no User-Agent, so one is sent. It names
+        // the app and nothing else — no token, no account, no machine detail.
+        match crate::paths::command_no_window("curl")
+            .args([
+                "-fsSL",
+                "--max-time",
+                "15",
+                "-H",
+                "User-Agent: Eldrun",
+                "-H",
+                "Accept: application/vnd.github+json",
+                OLLAMA_RELEASES_URL,
+            ])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                let tag = serde_json::from_slice::<serde_json::Value>(&out.stdout)
+                    .ok()
+                    .and_then(|v| v["tag_name"].as_str().map(String::from))
+                    .unwrap_or_default();
+                match parse_version(&tag) {
+                    Some(latest) => {
+                        status.update_available =
+                            version_is_newer(&latest, &status.current).unwrap_or(false);
+                        status.latest = latest;
+                    }
+                    None => status.error = Some("couldn't read the latest version".to_string()),
+                }
+            }
+            _ => status.error = Some("couldn't reach the release feed".to_string()),
+        }
+        status
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// Permanently delete a locally installed model.
 #[tauri::command]
 pub async fn delete_ollama_model(model: String) -> Result<(), String> {
@@ -966,7 +1638,10 @@ pub async fn delete_ollama_model(model: String) -> Result<(), String> {
 /// out to `curl` (no Rust TLS dep); `model` may be `name`, `name:tag`, or
 /// `namespace/name:tag`, with an absent tag defaulting to `latest`. Shared by the
 /// size hint and the paused-download partial-blob resolver.
-fn fetch_registry_manifest(model: &str) -> Result<serde_json::Value, String> {
+/// Split a model ref into its registry repo path and tag, applying the implicit
+/// `library/` namespace and defaulting the tag to `latest`. Shared by the
+/// manifest and config-blob fetches so both address the exact same repo.
+fn registry_repo_tag(model: &str) -> Result<(String, String), String> {
     validate_model_name(model)?;
 
     let (name, tag) = match model.split_once(':') {
@@ -979,7 +1654,16 @@ fn fetch_registry_manifest(model: &str) -> Result<serde_json::Value, String> {
     } else {
         format!("library/{name}")
     };
-    let url = format!("https://registry.ollama.ai/v2/{repo}/manifests/{tag}");
+    Ok((repo, tag.to_string()))
+}
+
+fn registry_manifest_url(model: &str) -> Result<String, String> {
+    let (repo, tag) = registry_repo_tag(model)?;
+    Ok(format!("https://registry.ollama.ai/v2/{repo}/manifests/{tag}"))
+}
+
+fn fetch_registry_manifest(model: &str) -> Result<serde_json::Value, String> {
+    let url = registry_manifest_url(model)?;
 
     // No shell — args are passed directly, and `validate_model_name` already
     // restricts the characters that reach the URL. `command_no_window` keeps
@@ -1021,11 +1705,97 @@ pub async fn ollama_registry_size(model: String) -> Result<u64, String> {
     Ok(total)
 }
 
+/// Fetch a registry blob (here: a manifest's config object) by digest. The
+/// `repo` comes from `registry_repo_tag` (already `validate_model_name`d) and the
+/// digest is checked to be a bare `sha256:<hex>`, so nothing user-typed reaches
+/// the URL unvalidated — the same no-shell, argv-only `curl` the manifest uses.
+fn fetch_registry_blob(repo: &str, digest: &str) -> Result<serde_json::Value, String> {
+    let hex = digest
+        .strip_prefix("sha256:")
+        .filter(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_hexdigit()))
+        .ok_or_else(|| "invalid config digest".to_string())?;
+    let url = format!("https://registry.ollama.ai/v2/{repo}/blobs/sha256:{hex}");
+    let output = crate::paths::command_no_window("curl")
+        .args(["-fsSL", &url])
+        .output()
+        .map_err(|e| format!("failed to query registry: {e}"))?;
+    if !output.status.success() {
+        return Err("registry returned no config blob".to_string());
+    }
+    serde_json::from_slice(&output.stdout).map_err(|e| format!("config json: {e}"))
+}
+
+/// A registry tag's headline facts, shown in the browse-registry list before a
+/// pull so a model's fit can be judged in advance: its download size, its
+/// parameter count and quantization, and whether it is a cloud model.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct RegistryDetails {
+    /// Total local download size in bytes. `0` for a cloud model, whose weights
+    /// live on Ollama's servers (its manifest carries no layers).
+    pub size_bytes: u64,
+    /// Parameter count as the registry states it, e.g. "8B", "756B". `None` when
+    /// the config blob does not name one.
+    pub params: Option<String>,
+    /// Quantization / file type, e.g. "Q4_K_M". `None`/empty on cloud models.
+    pub quant: Option<String>,
+    /// True when the model runs remotely (no local weights to download).
+    pub cloud: bool,
+}
+
+/// Size + parameter count + quantization for one installable tag, read from the
+/// registry manifest (layer sizes) and its config blob (`model_type`/`file_type`).
+/// This is what lets the browse list show the parameters and size of a model
+/// that carries no size badge on the search card — including a cloud model,
+/// whose parameter count (e.g. 756B) is the real "will it fit" answer even
+/// though it has nothing to download. Two small HTTP reads, fetched lazily.
+#[tauri::command]
+pub async fn ollama_registry_details(model: String) -> Result<RegistryDetails, String> {
+    let (repo, _tag) = registry_repo_tag(&model)?;
+    let manifest = fetch_registry_manifest(&model)?;
+
+    // Only the layer bytes are the download; the config blob is a few hundred
+    // bytes of metadata, and for a cloud model it is the *only* object — so
+    // summing it in would report ~290 B as the "size" of a 756B model.
+    let size_bytes: u64 = manifest["layers"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|l| l["size"].as_u64()).sum())
+        .unwrap_or(0);
+    let cloud = manifest["layers"]
+        .as_array()
+        .map(|a| a.is_empty())
+        .unwrap_or(false);
+
+    let (mut params, mut quant) = (None, None);
+    if let Some(digest) = manifest["config"]["digest"].as_str() {
+        if let Ok(cfg) = fetch_registry_blob(&repo, digest) {
+            params = cfg["model_type"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            quant = cfg["file_type"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+        }
+    }
+
+    Ok(RegistryDetails {
+        size_bytes,
+        params,
+        quant,
+        cloud,
+    })
+}
+
 // ── Live registry browse (ollama.com/search) ─────────────────────────────────
 //
-// Ollama exposes no JSON catalog API, but its search page is server-rendered
-// HTML carrying stable `x-test-*` hooks. We fetch it with `curl` (no TLS dep,
-// same as `ollama_registry_size`) and parse those hooks. This surfaces *every*
+// Ollama exposes no JSON catalog API, only its server-rendered search page. It
+// used to carry `x-test-*` hooks, but a 2026 redesign dropped them, so we now
+// key off the one anchor the page has always had: each result card's title
+// links to `/library/<name>`. We fetch it with `curl` (no TLS dep, same as
+// `ollama_registry_size`) and parse that. This surfaces *every*
 // model in the registry — far beyond the curated `list_installable_models` — and
 // supports Ollama's own filters: free-text query, capability filter, sort, and
 // pagination for lazy loading. NB: Ollama provides no country/year metadata, so
@@ -1084,49 +1854,91 @@ fn tag_text_after(card: &str, marker: &str) -> Option<String> {
     Some(html_unescape(after[..lt].trim()))
 }
 
-/// All text contents for a marker that repeats within a single card (e.g. the
-/// capability and size badges).
-fn all_tag_texts(card: &str, marker: &str) -> Vec<String> {
+/// The capability/size badge texts within a single card. Each badge is a
+/// `<span class="… rounded-md bg-… ">text</span>`; the exact Tailwind colour
+/// (indigo/cyan for a capability, a blue for a size) is churn we don't lean on —
+/// the text is partitioned by shape instead (`looks_like_size`).
+fn badge_texts(card: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut pos = 0;
-    while let Some(i) = card[pos..].find(marker) {
-        let start = pos + i + marker.len();
+    while let Some(i) = card[pos..].find("rounded-md bg-") {
+        let start = pos + i;
         let Some(gt) = card[start..].find('>') else {
             break;
         };
         let after = start + gt + 1;
-        if let Some(lt) = card[after..].find('<') {
-            let text = html_unescape(card[after..after + lt].trim());
-            if !text.is_empty() {
-                out.push(text);
-            }
+        let Some(lt) = card[after..].find('<') else {
+            break;
+        };
+        let text = html_unescape(card[after..after + lt].trim());
+        if !text.is_empty() {
+            out.push(text);
         }
-        pos = after;
+        pos = after + lt;
     }
     out
 }
 
-/// Parse the ollama.com/search HTML into model rows. Pure + tested: each
-/// `<li x-test-model …>` becomes one `RegistryModel`.
+/// Whether a badge is a parameter-size tag (`8b`, `1.8b`, `405b`, `e2b`, `335m`)
+/// rather than a capability word (`tools`, `vision`, `thinking`, `embedding`).
+/// Classifying by shape keeps a *new* capability from being mistaken for a size.
+fn looks_like_size(badge: &str) -> bool {
+    let t = badge.to_ascii_lowercase();
+    // Gemma-3n variants are "e2b"/"e4b"; every other size is plain digits.
+    let core = t.strip_prefix('e').unwrap_or(&t);
+    let Some(num) = core.strip_suffix('b').or_else(|| core.strip_suffix('m')) else {
+        return false;
+    };
+    !num.is_empty() && num.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
+/// Text of the value `<span>` immediately *before* a label — the "65.8K" in
+/// `<span>65.8K</span> <span>…Pulls</span>`.
+fn value_before_label(card: &str, label: &str) -> Option<String> {
+    let li = card.find(label)?;
+    let before = &card[..li];
+    let close = before.rfind("</span>")?;
+    let gt = before[..close].rfind('>')?;
+    Some(html_unescape(before[gt + 1..close].trim()))
+}
+
+/// Text of the value `<span>` immediately *after* a label — the "1 week ago" in
+/// `<span>Updated…</span> <span>1 week ago</span>`.
+fn value_after_label(card: &str, label: &str) -> Option<String> {
+    let li = card.find(label)?;
+    let after = &card[li + label.len()..];
+    let close = after.find("</span>")?;
+    let rest = &after[close + "</span>".len()..];
+    let gt = rest.find('>')?;
+    let lt = rest[gt + 1..].find('<')?;
+    Some(html_unescape(rest[gt + 1..gt + 1 + lt].trim()))
+}
+
+/// Parse the ollama.com/search HTML into model rows. Pure + tested: each result
+/// card's title links to `/library/<name>`, so we split on that href — the one
+/// anchor the page has always had, unlike the `x-test-*` hooks it dropped in a
+/// 2026 redesign. The first chunk is the page chrome before any card, so skip it.
 fn parse_search_html(html: &str) -> Vec<RegistryModel> {
-    // Each result card starts at an `x-test-model` marker; the first split chunk
-    // is the page header before any card, so skip it.
-    html.split("x-test-model")
+    html.split("href=\"/library/")
         .skip(1)
         .filter_map(|card| {
-            let name = tag_text_after(card, "x-test-search-response-title")?;
+            // The name is the href slug, up to the closing quote.
+            let name_end = card.find('"')?;
+            let name = html_unescape(card[..name_end].trim());
             if name.is_empty() {
                 return None;
             }
             // Description is the first <p> with the max-w-lg class.
             let description = tag_text_after(card, "class=\"max-w-lg").unwrap_or_default();
+            let (sizes, capabilities): (Vec<String>, Vec<String>) =
+                badge_texts(card).into_iter().partition(|b| looks_like_size(b));
             Some(RegistryModel {
                 name,
                 description,
-                capabilities: all_tag_texts(card, "x-test-capability"),
-                sizes: all_tag_texts(card, "x-test-size"),
-                pulls: tag_text_after(card, "x-test-pull-count").unwrap_or_default(),
-                updated: tag_text_after(card, "x-test-updated").unwrap_or_default(),
+                capabilities,
+                sizes,
+                pulls: value_before_label(card, "Pulls").unwrap_or_default(),
+                updated: value_after_label(card, "Updated").unwrap_or_default(),
             })
         })
         .collect()
@@ -1406,12 +2218,207 @@ pub fn total_vram_in_use() -> u64 {
         .sum()
 }
 
-fn ollama_listening() -> bool {
-    TcpStream::connect_timeout(
-        &"127.0.0.1:11434".parse().unwrap(),
-        Duration::from_millis(200),
+// ── Is Ollama actually using the GPU? ─────────────────────────────────────
+//
+// Ollama ≥0.32 **drops integrated GPUs by default**, logging "dropping
+// integrated GPU; to enable, set OLLAMA_IGPU_ENABLE=1" and then reporting `cpu`
+// as its only inference device. On a machine whose sole GPU is the APU that
+// turns every model into a CPU model on the next update, and the only trace in
+// the API is a `size_vram` of 0 — which is *also* what a model too large to fit
+// looks like. So the diagnosis is never one fact: it is a resident model with
+// nothing on the GPU, **and** a GPU that exists, **and** every GPU here being
+// integrated, **and** a server old enough to still offer the flag. Reporting on
+// less than all four would be the app blaming a setting for an ordinary
+// out-of-VRAM, which is worse than saying nothing.
+
+/// The environment variable that turns integrated GPUs back on.
+const IGPU_ENABLE_VAR: &str = "OLLAMA_IGPU_ENABLE";
+
+/// Whether Ollama is answering on the CPU while this machine holds a GPU it
+/// could be using — and, when the integrated-GPU gate explains it, how to lift
+/// it.
+#[derive(serde::Serialize, Clone, Default)]
+pub struct OllamaGpuStatus {
+    /// This machine has at least one GPU Eldrun can read (`gpustat`). The
+    /// frontend gates the whole CPU/GPU choice on this: with no GPU there is no
+    /// choice to offer.
+    pub gpu_present: bool,
+    /// Every GPU here is **integrated** — it maps its pool out of system RAM
+    /// (`shared_total > 0`), which on a discrete card is 0. False when no GPU
+    /// was found at all, so it can never stand in for `gpu_present`.
+    pub integrated_only: bool,
+    /// A model is resident and *none* of it is on the GPU. False when nothing
+    /// is loaded: an empty server is not a CPU one, and saying so would put a
+    /// warning on the menu of anyone who simply hasn't loaded a model yet.
+    pub model_on_cpu: bool,
+    /// The installed server understands [`IGPU_ENABLE_VAR`], read from its own
+    /// `ollama serve --help`. Asked rather than inferred from a version number,
+    /// which would be a guess about when the flag landed.
+    pub igpu_flag_supported: bool,
+    /// All four facts line up: this is the integrated-GPU gate, not an ordinary
+    /// out-of-VRAM. The only field the UI should raise a notice on.
+    pub igpu_dropped: bool,
+    /// The server runs as a systemd unit, so the variable has to reach *that*
+    /// unit — a shell export or a login-session variable would not be read.
+    pub systemd_service: bool,
+    /// The one-click fix, for `runInstallInTab`. Empty when we have nothing
+    /// honest to offer (no supported flag, or a server Eldrun itself spawns and
+    /// already sets the variable for), in which case the UI states the variable
+    /// rather than running something that would not help.
+    pub fix_cmd: String,
+    /// Which shell `fix_cmd` needs.
+    pub shell_kind: String,
+}
+
+/// Ask the installed server whether it still has the integrated-GPU flag.
+///
+/// `ollama serve --help` prints its environment variables, so this is the
+/// server's own answer rather than a version comparison — one small spawn, and
+/// it stays right across an Ollama update mid-session, which is precisely the
+/// situation this whole diagnosis exists for.
+fn igpu_flag_supported() -> bool {
+    let bin = crate::paths::resolve_offpath_binary("ollama")
+        .map(std::ffi::OsString::from)
+        .unwrap_or_else(|| "ollama".into());
+    crate::paths::command_no_window(&bin)
+        .args(["serve", "--help"])
+        .output()
+        .ok()
+        .map(|o| {
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            text.contains(IGPU_ENABLE_VAR)
+        })
+        .unwrap_or(false)
+}
+
+/// The systemd drop-in that puts the variable on the *service*, plus the reload
+/// and restart that make it take effect.
+///
+/// A drop-in rather than an edit of `ollama.service`: the unit file belongs to
+/// the Ollama installer and is rewritten by the next update, while a drop-in is
+/// additive, survives it, and is undone by deleting one file. It is handed to a
+/// terminal for the user to run — it needs a root password, and a command that
+/// reconfigures a system service is one they are entitled to read first.
+#[cfg(target_os = "linux")]
+fn igpu_fix_command(systemd: bool) -> (String, String) {
+    if !systemd {
+        // Eldrun's own `ollama serve` already sets the variable (see
+        // `ensure_ollama_running`), so there is nothing to install — restarting
+        // the server is the whole fix, and that is not ours to do behind the
+        // user's back while their models are resident.
+        return (String::new(), String::new());
+    }
+    (
+        format!(
+            "sudo mkdir -p /etc/systemd/system/ollama.service.d && \
+             printf '[Service]\\nEnvironment=\"{IGPU_ENABLE_VAR}=1\"\\n' | \
+             sudo tee /etc/systemd/system/ollama.service.d/eldrun-igpu.conf && \
+             sudo systemctl daemon-reload && sudo systemctl restart ollama"
+        ),
+        "bash".to_string(),
     )
-    .is_ok()
+}
+
+#[cfg(target_os = "macos")]
+fn igpu_fix_command(_systemd: bool) -> (String, String) {
+    // The macOS app reads its environment from launchd, so a shell export would
+    // not reach it; it has to be restarted afterwards to pick the value up.
+    (
+        format!("launchctl setenv {IGPU_ENABLE_VAR} 1"),
+        "bash".to_string(),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn igpu_fix_command(_systemd: bool) -> (String, String) {
+    (
+        format!("setx {IGPU_ENABLE_VAR} 1"),
+        "powershell".to_string(),
+    )
+}
+
+/// Whether the local Ollama runs as a systemd service (Linux only).
+fn ollama_under_systemd() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("systemctl")
+            .args(["is-active", "--quiet", "ollama"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+/// Report whether Ollama is running its models on the GPU, and diagnose the
+/// integrated-GPU gate when it isn't.
+///
+/// On demand only — it spawns processes (`systemctl`, `ollama serve --help`),
+/// so it belongs to a menu opening, never to a poll.
+#[tauri::command]
+pub async fn ollama_gpu_status() -> OllamaGpuStatus {
+    tokio::task::spawn_blocking(|| {
+        let gpus = crate::gpustat::snapshot();
+        let mut status = OllamaGpuStatus {
+            gpu_present: !gpus.is_empty(),
+            integrated_only: !gpus.is_empty() && gpus.iter().all(|g| g.shared_total > 0),
+            ..Default::default()
+        };
+
+        // A resident model with no GPU bytes anywhere. `/api/ps` unreachable, or
+        // an empty one, leaves this false — "nothing loaded" is not "on the CPU".
+        let loaded = ollama_http("GET", "/api/ps", None)
+            .ok()
+            .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+            .and_then(|v| v["models"].as_array().cloned())
+            .unwrap_or_default();
+        status.model_on_cpu = !loaded.is_empty()
+            && loaded
+                .iter()
+                .all(|m| m["size_vram"].as_u64().unwrap_or(0) == 0);
+
+        // Everything below costs a process spawn, so it is only paid once the
+        // symptom is actually present.
+        if !(status.model_on_cpu && status.integrated_only) {
+            return status;
+        }
+        status.igpu_flag_supported = igpu_flag_supported();
+        status.igpu_dropped = status.igpu_flag_supported;
+        if status.igpu_dropped {
+            status.systemd_service = ollama_under_systemd();
+            let (cmd, shell) = igpu_fix_command(status.systemd_service);
+            status.fix_cmd = cmd;
+            status.shell_kind = shell;
+        }
+        status
+    })
+    .await
+    .unwrap_or_default()
+}
+
+fn ollama_listening() -> bool {
+    let Ok(addr) = ollama_addr() else {
+        // A misconfigured endpoint is not a server that is down: say "not
+        // listening" and let the caller's own resolve surface the reason.
+        return false;
+    };
+    // `connect_timeout` needs a resolved `SocketAddr`, so a hostname is resolved
+    // here — unlike the loopback judgement, which is about the literal.
+    use std::net::ToSocketAddrs;
+    addr.to_socket_addrs()
+        .map(|mut it| {
+            it.any(|sa| TcpStream::connect_timeout(&sa, Duration::from_millis(200)).is_ok())
+        })
+        .unwrap_or(false)
 }
 
 /// Ensure the Ollama server is running, starting it in the background if not.
@@ -1422,14 +2429,31 @@ fn ollama_listening() -> bool {
 /// Waits up to 8 seconds for the server to become reachable.
 #[tauri::command]
 pub async fn ensure_ollama_running() -> Result<(), String> {
+    // Resolve first, so a misconfigured `ollama_host` reports *that* instead of
+    // "started but did not become reachable" eight seconds later.
+    let addr = ollama_addr()?;
+
     if ollama_listening() {
         return Ok(());
     }
 
+    // A server on another machine is not ours to start, and starting a local one
+    // would answer a question nobody asked — the caller would then talk to a
+    // second server at an address it was not pointed at.
+    if !addr_is_loopback(&addr) {
+        return Err(format!(
+            "No Ollama server is answering at {addr}. It is on another machine, \
+             so Eldrun cannot start it — start it there."
+        ));
+    }
+
     // Try the system service first (Linux only) — it runs as the ollama user and
-    // sees all system-wide models (e.g. /usr/share/ollama/.ollama/models).
+    // sees all system-wide models (e.g. /usr/share/ollama/.ollama/models). Only
+    // for the default address: the unit binds whatever *it* is configured with,
+    // so starting it to satisfy a request for port 11500 would report success
+    // for a server that is not the one being waited on.
     #[cfg(target_os = "linux")]
-    {
+    if addr == DEFAULT_OLLAMA_ADDR {
         let service_started = std::process::Command::new("systemctl")
             .args(["start", "ollama"])
             .stdout(std::process::Stdio::null())
@@ -1463,6 +2487,24 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
         cmd.env("OLLAMA_MODELS", sys_models);
     }
 
+    // Bind where we are about to look. Without this a non-default `ollama_host`
+    // spawns a server on 11434, waits 8 s for the configured port, and reports a
+    // timeout for a server that came up perfectly.
+    if addr != DEFAULT_OLLAMA_ADDR {
+        cmd.env("OLLAMA_HOST", &addr);
+    }
+
+    // Ollama ≥0.32 drops **integrated** GPUs unless this is set, and answers on
+    // the CPU instead — which on a machine whose only GPU is the APU turns every
+    // model that ran on the GPU yesterday into a CPU one after an update, with
+    // nothing but a `size_vram: 0` to say so. A server *Eldrun* starts is one we
+    // are entitled to configure, so it opts in. An explicit value in the
+    // environment is left alone: a user who set `0` meant it (an iGPU that is
+    // genuinely slower than the CPU is a real machine, just not this one).
+    if std::env::var_os(IGPU_ENABLE_VAR).is_none() {
+        cmd.env(IGPU_ENABLE_VAR, "1");
+    }
+
     crate::paths::spawn_reaped(cmd).map_err(|e| format!("failed to start ollama serve: {e}"))?;
 
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -1471,6 +2513,13 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
     }
 
     Err("ollama serve started but did not become reachable within 8 s".to_string())
+}
+
+/// Whether an already-resolved `host:port` points at this machine. Takes the
+/// output of [`resolve_ollama_addr`], so the host half is whatever survived its
+/// checks — including a bracketed IPv6 literal.
+fn addr_is_loopback(addr: &str) -> bool {
+    split_host_port(addr).is_some_and(|(host, _)| host_is_loopback(host))
 }
 
 fn wait_for_ollama(deadline: Instant) -> bool {
@@ -2204,6 +3253,62 @@ struct LocalDriver {
     /// and its args (with the `{model}` placeholder substituted). `None` means
     /// the agent can only be wired up by `ollama launch` itself.
     fallback: Option<(&'static str, &'static [&'static str])>,
+    /// True when the agent drives the model through **tool/function calls**, so
+    /// a model with no `tools` capability cannot run it at all — Ollama refuses
+    /// the very first request with `does not support tools` and the tab is dead
+    /// on arrival. Every entry below is `true`, because every entry is a coding
+    /// agent; the flag is explicit rather than assumed because `vibe` — which is
+    /// deliberately *not* in this list — takes the opposite route and turns
+    /// tools off (`enabled_tools = ["__no_tools__"]` in `prepare_local_agent`),
+    /// which is exactly why it still works on a completion-only model.
+    needs_tools: bool,
+    /// Extra **fallback** args that switch the agent's reasoning off, for the
+    /// agents that send a reasoning effort whether or not the model can take
+    /// one. `Some` carries a second meaning that matters more than the args:
+    /// this driver must **bypass `ollama launch`** on a model with no
+    /// `thinking` capability. `ollama launch <agent>` forwards nothing — it
+    /// rejects any extra flag with `unknown shorthand flag` — so the override
+    /// can only ride the direct invocation, and `launch`'s own wiring (a
+    /// generated `~/.codex/model.json` + profile) does not turn reasoning off
+    /// on the user's behalf. `None` means the agent sends no reasoning field
+    /// and runs on a non-thinking model unchanged.
+    non_thinking_args: Option<&'static [&'static str]>,
+    /// True when the agent needs a **model-metadata catalog** written for it on
+    /// the direct-invocation path — the other thing `ollama launch` was doing
+    /// (it generates `~/.codex/model.json` and points Codex at it). Without one
+    /// Codex falls back to built-in metadata and reasons about the context
+    /// window from a guess. See [`write_local_catalog`].
+    wants_local_catalog: bool,
+    /// True when the agent wraps every turn in a **large system prompt built for
+    /// a frontier model** — tool schemas, sandbox and patch policy, the user's
+    /// own `~/.codex` / `~/.claude` configuration and any MCP servers declared
+    /// there. It is not a capability the model reports and there is no probe for
+    /// it; it is a property of the *agent*, which is why it lives in this
+    /// registry beside the launch wiring rather than being derived.
+    ///
+    /// It exists because the `tools` gate above is a gate against a tab that
+    /// **cannot start**, and this is the other failure — a tab that starts and
+    /// then answers badly. Measured on `qwen3-coder:latest`, which reports
+    /// `tools` and passes every other check here: the plain Ollama chat endpoint
+    /// answers `"test"` sensibly in 27 tokens, while Codex's harness put 5128
+    /// tokens in front of the same model and it ran away past 4100 tokens
+    /// without stopping. Nothing about the model's advertised capabilities
+    /// predicts that.
+    ///
+    /// It is deliberately **not** a reason to withhold the driver. Which local
+    /// models cope is a fact about the model, the machine and the task, and the
+    /// only honest thing to do with an unprobeable risk is to say so and let the
+    /// user try it — the alternative, hiding the agent, is what the `thinking`
+    /// capability was considered for and rejected: no model on the reporting
+    /// machine carried both `tools` and `thinking`, so gating on it would have
+    /// emptied the group entirely rather than steered anyone to a better model.
+    ///
+    /// Every entry below is `true`, because every entry is a general-purpose
+    /// coding-agent CLI written against hosted frontier models. The flag is a
+    /// per-row decision anyway, so a driver added later that is built for local
+    /// models (as Mistral's `vibe` is — which is exactly why it is *not* in this
+    /// list) states that by setting it `false`.
+    heavy_harness: bool,
 }
 
 /// Registry of local-model coding agents, in picker order. `vibe` is intentionally
@@ -2217,6 +3322,10 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
         // Claude Code needs an Anthropic-compatible endpoint, which only
         // `ollama launch` stands up — no reliable hand-rolled fallback.
         fallback: None,
+        needs_tools: true,
+        non_thinking_args: None,
+        wants_local_catalog: false,
+        heavy_harness: true,
     },
     LocalDriver {
         id: "codex",
@@ -2224,7 +3333,19 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
         bin: "codex",
         launch_sub: Some("codex"),
         // `codex --oss -m <model>` talks to the local Ollama server directly.
-        fallback: Some(("codex", &["--oss", "-m", "{model}"])),
+        // `oss_provider` is named because Codex ≥0.146 refuses `--oss` with
+        // "No default OSS provider configured" unless one is set; it goes
+        // through `-c` rather than the `--local-provider` flag that error
+        // suggests, because an unknown *config key* is ignored by an older
+        // Codex while an unknown *flag* is a hard argv error.
+        fallback: Some((
+            "codex",
+            &["--oss", "-c", "oss_provider=\"ollama\"", "-m", "{model}"],
+        )),
+        needs_tools: true,
+        non_thinking_args: Some(&["-c", "model_reasoning_effort=\"none\""]),
+        wants_local_catalog: true,
+        heavy_harness: true,
     },
     LocalDriver {
         id: "opencode",
@@ -2233,6 +3354,10 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
         launch_sub: Some("opencode"),
         // OpenCode's built-in `ollama` provider; `--model ollama/<model>` selects it.
         fallback: Some(("opencode", &["--model", "ollama/{model}"])),
+        needs_tools: true,
+        non_thinking_args: None,
+        wants_local_catalog: false,
+        heavy_harness: true,
     },
     LocalDriver {
         id: "droid",
@@ -2242,6 +3367,10 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
         // Droid is configured via ~/.factory/config.json; only `ollama launch`
         // writes that wiring for us.
         fallback: None,
+        needs_tools: true,
+        non_thinking_args: None,
+        wants_local_catalog: false,
+        heavy_harness: true,
     },
     LocalDriver {
         id: "openclaw",
@@ -2253,6 +3382,10 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
         // documented standalone flag to point `openclaw` at a local server, so
         // no hand-rolled fallback.
         fallback: None,
+        needs_tools: true,
+        non_thinking_args: None,
+        wants_local_catalog: false,
+        heavy_harness: true,
     },
 ];
 
@@ -2268,13 +3401,31 @@ fn ollama_has_launch() -> bool {
         .unwrap_or(false)
 }
 
-/// Build the fallback launch spec for a driver, substituting `{model}`. Pure +
-/// tested; `prepare_local_launch` uses it only when `ollama launch` is missing.
-fn fallback_spec(driver: &LocalDriver, model: &str) -> Option<LocalLaunchSpec> {
+/// Build the fallback launch spec for a driver, substituting `{model}` and
+/// appending `extra` (the reasoning-off override, when one is needed). Pure +
+/// tested; `prepare_local_launch` uses it when `ollama launch` is missing — or
+/// when `extra` is non-empty, since `launch` cannot carry it.
+fn fallback_spec(driver: &LocalDriver, model: &str, extra: &[&str]) -> Option<LocalLaunchSpec> {
     driver.fallback.map(|(bin, args)| LocalLaunchSpec {
         cmd: bin.to_string(),
-        args: args.iter().map(|a| a.replace("{model}", model)).collect(),
+        args: args
+            .iter()
+            .chain(extra.iter())
+            .map(|a| a.replace("{model}", model))
+            .collect(),
     })
+}
+
+/// The extra args this driver needs for `model`, and whether they force the
+/// direct invocation. Pure so the rule is testable without an Ollama:
+/// `thinking` is the already-narrowed [`model_supports_thinking`] answer, so
+/// "could not tell" arrives as `None` and changes nothing — an agent that
+/// errors is recoverable, one silently stripped of reasoning is not.
+fn non_thinking_override(driver: &LocalDriver, thinking: Option<bool>) -> &[&'static str] {
+    match (driver.non_thinking_args, thinking) {
+        (Some(args), Some(false)) => args,
+        _ => &[],
+    }
 }
 
 /// One local-model driver plus whether Eldrun currently has a way to launch it.
@@ -2282,30 +3433,93 @@ fn fallback_spec(driver: &LocalDriver, model: &str) -> Option<LocalLaunchSpec> {
 pub struct LocalDriverInfo {
     pub id: String,
     pub label: String,
-    /// True when the agent's binary is installed *and* Eldrun has a way to wire
-    /// it to the local model (`ollama launch` supports it, or a direct fallback
-    /// exists). The menu hides drivers that aren't installed or are unreachable.
+    /// True when the agent's binary is installed, Eldrun has a way to wire it to
+    /// the local model (`ollama launch` supports it, or a direct fallback
+    /// exists), **and** the model given to [`list_local_drivers`] can actually
+    /// drive it. The menu hides drivers that aren't available.
     pub available: bool,
+    /// Set when the *only* thing standing in the way is the model: the agent is
+    /// installed and wireable, but the model has no `tools` capability. It
+    /// separates "you don't have this agent" from "this agent can't run on the
+    /// model you picked", which are different problems with different fixes.
+    pub needs_tools_unsupported: bool,
+    /// [`LocalDriver::heavy_harness`], passed through so the menu can caution
+    /// that this agent's prompt was built for a frontier model. Never a reason
+    /// to hide the row — `available` is the only field that withholds one.
+    pub heavy_harness: bool,
 }
 
 /// List the local-model coding agents (Claude Code, Codex, OpenCode, Droid) with
 /// their availability, so the Local Model menu can offer them alongside
 /// Mistral/vibe. Probes `ollama launch` once.
+///
+/// `model` is the local model the tab would run — the active one, as chosen in
+/// the 🧠 menu. Passing it is what lets an agent be withheld from a model that
+/// cannot drive it: these are all tool-calling agents, and Ollama answers the
+/// first request against a completion-only model (`llama3` is one) with
+/// `does not support tools`, i.e. the tab dies on arrival with an error only a
+/// reader of the raw API response could act on. Omitting `model` skips that
+/// filter entirely rather than guessing.
+///
+/// The gate is **`tools` capability and nothing else**, which is narrower than
+/// the question "will this model be any good at driving an agent". Ollama's own
+/// launcher asks the second one and has its own opinion: `ollama launch claude
+/// --model deepseek-r1` puts up an interactive "does not work well with Claude
+/// Code … Launch anyway?" menu, even though that model advertises `tools` and so
+/// passes here. Both `deepcoder` and `deepseek-r1` are in that gap — they report
+/// `tools`, this gate lets them through, and the launcher then asks. That is
+/// deliberately left alone: the prompt lands in a real PTY the user can answer,
+/// and the only lever `ollama launch` offers is a blanket `-y` that would also
+/// auto-accept its "Upgrade to use <agent>?" prompt, i.e. silently upgrade the
+/// user's agent CLI. Mirroring the launcher's list here instead would mean
+/// hardcoding models, which is the thing [`prepare_local_launch`] already
+/// refuses to do because such a list ages.
+///
+/// The filter runs on **positive knowledge only**. If Ollama is down, or too old
+/// to report capabilities, the model's list comes back empty and every driver
+/// stays offered — an agent that errors is a worse outcome than a menu that is
+/// briefly wrong, but an agent that silently vanishes because a probe timed out
+/// is worse than both.
 #[tauri::command]
-pub async fn list_local_drivers() -> Vec<LocalDriverInfo> {
+pub async fn list_local_drivers(model: Option<String>) -> Vec<LocalDriverInfo> {
     let has_launch = ollama_has_launch();
+    // `None` — no model given, or Ollama couldn't say — means "don't filter".
+    let tools = model
+        .as_deref()
+        .filter(|m| !m.trim().is_empty())
+        .and_then(model_supports_tools);
+    let model_lacks_tools = tools == Some(false);
+
     LOCAL_DRIVERS
         .iter()
-        .map(|d| LocalDriverInfo {
-            id: d.id.to_string(),
-            label: d.label.to_string(),
+        .map(|d| {
             // Both must hold: the agent itself is installed, and we have a wiring
             // path (ollama launch or a direct fallback). A driver whose binary is
             // missing (e.g. Droid) is no longer offered.
-            available: crate::commands::agents::binary_is_installed(d.bin)
-                && ((d.launch_sub.is_some() && has_launch) || d.fallback.is_some()),
+            let wireable = crate::commands::agents::binary_is_installed(d.bin)
+                && ((d.launch_sub.is_some() && has_launch) || d.fallback.is_some());
+            let (available, needs_tools_unsupported) =
+                driver_verdict(d.needs_tools, wireable, model_lacks_tools);
+            LocalDriverInfo {
+                id: d.id.to_string(),
+                label: d.label.to_string(),
+                available,
+                needs_tools_unsupported,
+                heavy_harness: d.heavy_harness,
+            }
         })
         .collect()
+}
+
+/// `(available, needs_tools_unsupported)` for one driver. Pure, so the rule the
+/// menu depends on is testable without an Ollama: an agent is withheld **only**
+/// when it is otherwise launchable and the model is positively known to lack
+/// tools — `model_lacks_tools` is already the narrowed form of
+/// [`model_supports_tools`]'s `Option`, so "couldn't tell" arrives here as
+/// `false` and changes nothing.
+fn driver_verdict(needs_tools: bool, wireable: bool, model_lacks_tools: bool) -> (bool, bool) {
+    let blocked_by_model = needs_tools && model_lacks_tools;
+    (wireable && !blocked_by_model, wireable && blocked_by_model)
 }
 
 /// The command + args to spawn for a local-model agent tab.
@@ -2328,8 +3542,42 @@ pub async fn prepare_local_launch(agent: String, model: String) -> Result<LocalL
         .find(|d| d.id == agent)
         .ok_or_else(|| format!("unknown local driver: {agent}"))?;
 
+    // The menu already withholds a tool-calling agent from a model that has no
+    // `tools` capability, but the menu is a cache: it is built once and the
+    // active model changes under it. Refusing here is what makes the guard true
+    // rather than merely usually true — and the message has to name the fix,
+    // because Ollama's own (`… does not support tools`) reaches the user as a
+    // raw JSON error inside a terminal tab that then just sits there.
+    if driver.needs_tools && model_supports_tools(&model) == Some(false) {
+        // Name the models that *would* work rather than a fixed list of ones
+        // that wouldn't: which models are tool-capable is a fact about this
+        // machine's installed set, and a hardcoded example list would age.
+        let usable = tool_capable_models();
+        let suggestion = if usable.is_empty() {
+            "None of the models installed here support them — pull one that does \
+             (its Ollama page lists `tools` under Capabilities)."
+                .to_string()
+        } else {
+            format!("Pick one of these in the 🧠 menu instead: {}.", usable.join(", "))
+        };
+        return Err(format!(
+            "{} drives a model through tool calls, and '{model}' doesn't support them. \
+             {suggestion}",
+            driver.label
+        ));
+    }
+
+    // The second thing a model can refuse. Unlike `tools` this is not a reason
+    // to withhold the agent — the agent runs fine, it just must not *ask* for
+    // reasoning — so it changes the launch line instead of raising an error.
+    let thinking = model_supports_thinking(&model);
+    let extra = non_thinking_override(driver, thinking);
+
     if let Some(sub) = driver.launch_sub {
-        if ollama_has_launch() {
+        // `ollama launch` is preferred but forwards nothing to the agent, so it
+        // cannot carry the reasoning-off override. When one is needed, the
+        // direct invocation is the *only* working path, not a downgrade.
+        if extra.is_empty() && ollama_has_launch() {
             return Ok(LocalLaunchSpec {
                 cmd: "ollama".to_string(),
                 args: vec![
@@ -2342,13 +3590,143 @@ pub async fn prepare_local_launch(agent: String, model: String) -> Result<LocalL
         }
     }
 
-    fallback_spec(driver, &model).ok_or_else(|| {
+    let mut spec = fallback_spec(driver, &model, extra).ok_or_else(|| {
         format!(
             "{} can only drive a local model through `ollama launch`, which isn't \
              available. Update Ollama (v0.15+) to enable it.",
             driver.label
         )
-    })
+    })?;
+
+    // The other half of what `ollama launch` did for us. Best-effort by
+    // construction: a catalog we could not write costs a warning and worse
+    // context accounting, so it must never turn into a refusal to open the tab.
+    if driver.wants_local_catalog {
+        spec.args.extend(local_catalog_args(&model, thinking));
+    }
+    Ok(spec)
+}
+
+/// The catalog `-c` args for a direct Codex launch, or nothing if we couldn't
+/// write one. See [`write_local_catalog`].
+fn local_catalog_args(model: &str, thinking: Option<bool>) -> Vec<String> {
+    match write_local_catalog(model, thinking) {
+        Ok(path) => vec![
+            "-c".to_string(),
+            // `model_catalog_json=<toml string>`. A JSON string literal is a
+            // valid TOML basic string, and serde does the escaping — the path
+            // is Eldrun's own but it descends from `$HOME`, which we do not get
+            // to assume is free of quotes or backslashes.
+            format!(
+                "model_catalog_json={}",
+                serde_json::Value::from(path.to_string_lossy().as_ref())
+            ),
+        ],
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Write the model-metadata catalog Codex asks for, into **Eldrun's own** state
+/// dir — never `~/.codex`, which is another application's to manage.
+///
+/// Without it Codex prints `Model metadata for '<model>' not found. Defaulting
+/// to fallback metadata` and then reasons about the context window from a
+/// built-in guess: it does not know that `qwen3-coder` holds 262 144 tokens, so
+/// it compacts against the wrong number — either throwing away context that
+/// still fit, or overrunning the model's window and getting a truncation Ollama
+/// never reports back as one. `ollama launch` generates exactly this file
+/// (`~/.codex/model.json`); the direct invocation that a non-thinking model
+/// forces us onto is what left the agent without it.
+///
+/// The field set is Ollama's own for that generated file — the shape its
+/// authors established Codex accepts — with the two model-dependent facts read
+/// off `/api/show` rather than assumed: the context window, and whether any
+/// reasoning level may be offered at all.
+fn write_local_catalog(model: &str, thinking: Option<bool>) -> Result<std::path::PathBuf, String> {
+    validate_model_name(model)?;
+    let dir = crate::paths::home_dir()
+        .join(".local")
+        .join("share")
+        .join("eldrun")
+        .join("codex_local")
+        .join(sanitize_alias(model));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("catalog dir: {e}"))?;
+    let path = dir.join("model.json");
+
+    let body = local_catalog_json(
+        model,
+        thinking,
+        model_context_length(model),
+        model_has_capability(model, "vision") == Some(true),
+    );
+    std::fs::write(&path, body).map_err(|e| format!("catalog write: {e}"))?;
+    Ok(path)
+}
+
+/// The catalog document itself — pure, so the shape Codex is handed is a unit
+/// test rather than a thing only observable by launching an agent.
+fn local_catalog_json(
+    model: &str,
+    thinking: Option<bool>,
+    context_window: Option<u64>,
+    vision: bool,
+) -> String {
+    // A model positively known to lack `thinking` gets an empty level list, so
+    // Codex has the fact rather than only the `-c model_reasoning_effort` order
+    // to obey. "Could not tell" leaves the standard levels, matching the rest
+    // of the capability rules: absence of an answer never removes a capability.
+    let levels: Vec<serde_json::Value> = if thinking == Some(false) {
+        Vec::new()
+    } else {
+        ["low", "medium", "high"]
+            .iter()
+            .map(|e| serde_json::json!({ "effort": e }))
+            .collect()
+    };
+    let mut modalities = vec!["text"];
+    if vision {
+        modalities.push("image");
+    }
+
+    let mut entry = serde_json::json!({
+        "slug": model,
+        "display_name": model,
+        "base_instructions": "",
+        "default_verbosity": "low",
+        "support_verbosity": true,
+        "experimental_supported_tools": [],
+        "input_modalities": modalities,
+        "priority": 0,
+        "shell_type": "default",
+        "supported_in_api": true,
+        "supported_reasoning_levels": levels,
+        "supports_parallel_tool_calls": false,
+        "supports_reasoning_summaries": false,
+        "truncation_policy": { "mode": "bytes", "limit": 10000 },
+        "visibility": "list",
+    });
+    // Omitted rather than guessed when Ollama won't say: a wrong context window
+    // is worse than the fallback, because it is wrong with confidence.
+    if let Some(ctx) = context_window {
+        entry["context_window"] = serde_json::json!(ctx);
+    }
+    serde_json::json!({ "models": [entry] }).to_string()
+}
+
+/// The model's trained context window, per Ollama's own `/api/show`. The key is
+/// architecture-prefixed (`qwen3moe.context_length`, `llama.context_length`, …),
+/// so it is found by suffix rather than by a table of architectures that would
+/// need an entry per new model family.
+fn model_context_length(model: &str) -> Option<u64> {
+    let body = serde_json::json!({ "model": model }).to_string();
+    let v: serde_json::Value =
+        serde_json::from_str(&ollama_http("POST", "/api/show", Some(&body)).ok()?).ok()?;
+    v["model_info"]
+        .as_object()?
+        .iter()
+        .find(|(k, _)| k.ends_with(".context_length"))
+        .and_then(|(_, v)| v.as_u64())
+        .filter(|n| *n > 0)
 }
 
 fn sanitize_alias(model: &str) -> String {
@@ -2395,8 +3773,15 @@ fn dirs_vibe_config() -> Result<std::path::PathBuf, String> {
     Ok(vibe_home.join("config.toml"))
 }
 
+/// The `vibe` provider stanza. `api_base` follows `ollama_host`, because a
+/// config file naming 11434 while Eldrun's own reads go to 11500 is the same
+/// class of bug as the setting doing nothing — it just fails one layer further
+/// out, inside the agent, where the message is somebody else's.
 fn ollama_provider_block() -> String {
-    "\n[[providers]]\nname = \"ollama\"\napi_base = \"http://localhost:11434/v1\"\napi_key_env_var = \"\"\napi_style = \"openai\"\nbackend = \"generic\"\nreasoning_field_name = \"reasoning_content\"\nproject_id = \"\"\nregion = \"\"\n\n[providers.extra_headers]\n".to_owned()
+    let base = ollama_addr().unwrap_or_else(|_| DEFAULT_OLLAMA_ADDR.to_string());
+    format!(
+        "\n[[providers]]\nname = \"ollama\"\napi_base = \"http://{base}/v1\"\napi_key_env_var = \"\"\napi_style = \"openai\"\nbackend = \"generic\"\nreasoning_field_name = \"reasoning_content\"\nproject_id = \"\"\nregion = \"\"\n\n[providers.extra_headers]\n"
+    )
 }
 
 fn ollama_model_block(model: &str, alias: &str) -> String {
@@ -2464,18 +3849,169 @@ mod tests {
 
     // ── local-driver registry (ollama launch + fallbacks) ────────────────────
 
+    // ── the tool-capability gate ─────────────────────────────────────────────
+
+    #[test]
+    fn a_completion_only_model_withholds_every_tool_calling_agent() {
+        // The bug this exists for: picking a completion-only model (`llama3`) in
+        // the 🧠 menu left Codex in the + menu, and the tab it opened died on its
+        // first request with `does not support tools`.
+        for d in LOCAL_DRIVERS {
+            let (available, blocked) = driver_verdict(d.needs_tools, true, true);
+            assert!(!available, "{} should be withheld", d.id);
+            assert!(blocked, "{} should say the model is why", d.id);
+        }
+    }
+
+    #[test]
+    fn an_unreadable_capability_list_never_hides_an_agent() {
+        // `model_supports_tools` answers `None` when Ollama is down or too old
+        // to report capabilities, which reaches the verdict as `false`. A probe
+        // failure must not empty the menu — an agent that errors is recoverable,
+        // an agent that silently vanished is not diagnosable.
+        for d in LOCAL_DRIVERS {
+            let (available, blocked) = driver_verdict(d.needs_tools, true, false);
+            assert!(available, "{} should still be offered", d.id);
+            assert!(!blocked);
+        }
+    }
+
+    #[test]
+    fn a_missing_binary_is_not_reported_as_a_model_problem() {
+        // Two different failures with two different fixes: the menu says
+        // "install the agent" for one and "pick another model" for the other,
+        // and an uninstalled agent must never claim the latter.
+        let (available, blocked) = driver_verdict(true, false, true);
+        assert!(!available);
+        assert!(!blocked);
+    }
+
+    #[test]
+    fn every_local_driver_needs_tools() {
+        // vibe is the deliberate exception and is deliberately not in this
+        // list — it turns tools off (`enabled_tools = ["__no_tools__"]`), which
+        // is exactly why it still runs on a completion-only model. If an entry
+        // here ever stops needing tools, this assertion is where to say so.
+        assert!(LOCAL_DRIVERS.iter().all(|d| d.needs_tools));
+    }
+
+    // ── update checks ────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_manifest_url_defaults_the_namespace_and_the_tag() {
+        assert_eq!(
+            registry_manifest_url("deepcoder").unwrap(),
+            "https://registry.ollama.ai/v2/library/deepcoder/manifests/latest"
+        );
+        assert_eq!(
+            registry_manifest_url("qwen3-coder:30b").unwrap(),
+            "https://registry.ollama.ai/v2/library/qwen3-coder/manifests/30b"
+        );
+        // An explicit namespace is kept rather than nested under `library/`.
+        assert_eq!(
+            registry_manifest_url("hf.co/someone/model:q4").unwrap(),
+            "https://registry.ollama.ai/v2/hf.co/someone/model/manifests/q4"
+        );
+    }
+
+    #[test]
+    fn the_digest_header_is_read_case_insensitively_and_last_wins() {
+        // HTTP/2 lowercases header names and HTTP/1.1 does not, and a redirect
+        // leaves several head blocks in curl's output — the manifest came with
+        // the last one.
+        let head = "HTTP/1.1 301 Moved\r\n\
+                    Ollama-Content-Digest: sha256:old\r\n\
+                    \r\n\
+                    HTTP/2 200\r\n\
+                    ollama-content-digest: sha256:new\r\n\
+                    ollama-push-time: 1744152652\r\n\r\n";
+        assert_eq!(
+            header_value(head, "ollama-content-digest").as_deref(),
+            Some("sha256:new")
+        );
+        assert_eq!(
+            header_value(head, "OLLAMA-PUSH-TIME").as_deref(),
+            Some("1744152652")
+        );
+        assert_eq!(header_value(head, "etag"), None);
+    }
+
+    // ── the Ollama server's own version ──────────────────────────────────────
+
+    #[test]
+    fn the_installed_version_is_found_whatever_else_the_command_printed() {
+        assert_eq!(
+            parse_version("ollama version is 0.14.3\n").as_deref(),
+            Some("0.14.3")
+        );
+        // The real output when the server isn't running: a warning line first,
+        // which is why this scans rather than taking a fixed field.
+        assert_eq!(
+            parse_version(
+                "Warning: could not connect to a running Ollama instance\n\
+                 ollama version is 0.32.5\n"
+            )
+            .as_deref(),
+            Some("0.32.5")
+        );
+        // A release tag, straight out of the API's JSON.
+        assert_eq!(parse_version("\"tag_name\": \"v0.32.5\",").as_deref(), Some("0.32.5"));
+        assert_eq!(parse_version("no version here").as_deref(), None);
+    }
+
+    #[test]
+    fn versions_compare_numerically_not_lexically() {
+        // The bug a string compare would have: "0.9.0" > "0.14.3" as text, so
+        // most of Ollama's history would have reported a downgrade as an update.
+        assert_eq!(version_is_newer("0.14.3", "0.9.0"), Some(true));
+        assert_eq!(version_is_newer("0.9.0", "0.14.3"), Some(false));
+        assert_eq!(version_is_newer("0.32.5", "0.14.3"), Some(true));
+        assert_eq!(version_is_newer("0.14.3", "0.14.3"), Some(false));
+        // A missing component is zero — 0.15 and 0.15.0 are one version.
+        assert_eq!(version_is_newer("0.15", "0.15.0"), Some(false));
+        assert_eq!(version_is_newer("0.15.1", "0.15"), Some(true));
+        // The leading `v` of a tag, and a pre-release suffix, are both handled.
+        assert_eq!(version_is_newer("v0.16.0", "0.15.9"), Some(true));
+        assert_eq!(version_is_newer("0.16.0-rc1", "0.15.9"), Some(true));
+        // Unparseable on either side is "couldn't tell", never an update.
+        assert_eq!(version_is_newer("dev", "0.14.3"), None);
+        assert_eq!(version_is_newer("0.14.3", ""), None);
+    }
+
+    #[test]
+    fn an_unreachable_registry_is_not_an_up_to_date_verdict() {
+        // The whole point of carrying `error` per model: "couldn't check" and
+        // "current" must never render the same, and neither may raise a badge.
+        let out = wanted_updates(vec![("no-such-model-xyz".into(), "sha256:local".into())]);
+        assert_eq!(out.len(), 1);
+        assert!(!out[0].update_available);
+        assert!(out[0].error.is_some(), "a failure must say so");
+    }
+
     #[test]
     fn codex_fallback_substitutes_model_for_oss_mode() {
         let d = LOCAL_DRIVERS.iter().find(|d| d.id == "codex").unwrap();
-        let spec = fallback_spec(d, "qwen2.5-coder:7b").expect("codex has a fallback");
+        let spec = fallback_spec(d, "qwen2.5-coder:7b", &[]).expect("codex has a fallback");
         assert_eq!(spec.cmd, "codex");
-        assert_eq!(spec.args, vec!["--oss", "-m", "qwen2.5-coder:7b"]);
+        // `oss_provider` rides every codex fallback, not just the non-thinking
+        // one: codex ≥0.146 refuses a bare `--oss` with "No default OSS
+        // provider configured", i.e. the tab dies before it reaches Ollama.
+        assert_eq!(
+            spec.args,
+            vec![
+                "--oss",
+                "-c",
+                "oss_provider=\"ollama\"",
+                "-m",
+                "qwen2.5-coder:7b"
+            ]
+        );
     }
 
     #[test]
     fn opencode_fallback_prefixes_the_ollama_provider() {
         let d = LOCAL_DRIVERS.iter().find(|d| d.id == "opencode").unwrap();
-        let spec = fallback_spec(d, "llama3.2").expect("opencode has a fallback");
+        let spec = fallback_spec(d, "llama3.2", &[]).expect("opencode has a fallback");
         assert_eq!(spec.cmd, "opencode");
         assert_eq!(spec.args, vec!["--model", "ollama/llama3.2"]);
     }
@@ -2486,10 +4022,116 @@ mod tests {
         for id in ["claude", "droid"] {
             let d = LOCAL_DRIVERS.iter().find(|d| d.id == id).unwrap();
             assert!(
-                fallback_spec(d, "any:model").is_none(),
+                fallback_spec(d, "any:model", &[]).is_none(),
                 "{id} must be launch-only"
             );
             assert!(d.launch_sub.is_some(), "{id} must support ollama launch");
+        }
+    }
+
+    // ── the thinking gate ────────────────────────────────────────────────────
+
+    #[test]
+    fn codex_turns_reasoning_off_only_for_a_non_thinking_model() {
+        // The bug this exists for: `qwen3-coder` reports `tools` but not
+        // `thinking`, so it passed the tool gate and then died on its first
+        // turn with `"qwen3-coder:latest" does not support thinking` — Codex
+        // sends `model_reasoning_effort` (default `medium`, and usually set
+        // outright in the user's ~/.codex/config.toml) and Ollama rejects the
+        // whole request rather than ignoring the field.
+        let d = LOCAL_DRIVERS.iter().find(|d| d.id == "codex").unwrap();
+
+        let off = non_thinking_override(d, Some(false));
+        assert_eq!(off, ["-c", "model_reasoning_effort=\"none\""]);
+        let spec = fallback_spec(d, "qwen3-coder:latest", off).expect("codex has a fallback");
+        assert_eq!(
+            spec.args.last().map(String::as_str),
+            Some("model_reasoning_effort=\"none\"")
+        );
+
+        // A thinking model keeps its reasoning: forcing it off would silently
+        // downgrade every reasoning-capable local model to a worse agent.
+        assert!(non_thinking_override(d, Some(true)).is_empty());
+        // And "could not tell" changes nothing — same rule as the tool gate.
+        assert!(non_thinking_override(d, None).is_empty());
+    }
+
+    #[test]
+    fn an_agent_that_sends_no_reasoning_is_left_alone() {
+        for id in ["claude", "opencode", "droid", "openclaw"] {
+            let d = LOCAL_DRIVERS.iter().find(|d| d.id == id).unwrap();
+            assert!(
+                non_thinking_override(d, Some(false)).is_empty(),
+                "{id} must not be rewritten for a non-thinking model"
+            );
+        }
+    }
+
+    #[test]
+    fn the_local_catalog_carries_the_two_facts_only_ollama_knows() {
+        let doc: serde_json::Value = serde_json::from_str(&local_catalog_json(
+            "qwen3-coder:latest",
+            Some(false),
+            Some(262_144),
+            false,
+        ))
+        .expect("catalog is valid JSON");
+        let m = &doc["models"][0];
+        assert_eq!(m["slug"], "qwen3-coder:latest");
+        // The whole point of writing one: Codex's fallback metadata does not
+        // know this number, so it compacts against a guess.
+        assert_eq!(m["context_window"], 262_144);
+        assert_eq!(m["supported_reasoning_levels"].as_array().unwrap().len(), 0);
+        assert_eq!(m["input_modalities"].as_array().unwrap().len(), 1);
+
+        // A thinking model keeps its levels, and a vision model its modality.
+        let doc: serde_json::Value =
+            serde_json::from_str(&local_catalog_json("m:latest", Some(true), None, true)).unwrap();
+        let m = &doc["models"][0];
+        assert!(!m["supported_reasoning_levels"].as_array().unwrap().is_empty());
+        assert!(m["input_modalities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "image"));
+        // An unknown window is absent, never a plausible-looking default.
+        assert!(m.get("context_window").is_none());
+
+        // "Could not tell" must not strip a capability, same as the tool gate.
+        let doc: serde_json::Value =
+            serde_json::from_str(&local_catalog_json("m:latest", None, None, false)).unwrap();
+        assert!(!doc["models"][0]["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn only_a_driver_with_a_fallback_asks_for_a_catalog() {
+        // The catalog rides the direct invocation's argv; `ollama launch`
+        // generates its own and forwards nothing, so a launch-only driver
+        // asking for one would silently get nothing.
+        for d in LOCAL_DRIVERS {
+            if d.wants_local_catalog {
+                assert!(d.fallback.is_some(), "{} needs a fallback", d.id);
+            }
+        }
+    }
+
+    #[test]
+    fn a_reasoning_override_requires_a_fallback_to_ride() {
+        // `ollama launch` forwards nothing — it rejects an extra flag with
+        // `unknown shorthand flag` — so a driver that needs the override and
+        // has no direct invocation would report the launch-only error message,
+        // which names the wrong problem and an update that wouldn't fix it.
+        for d in LOCAL_DRIVERS {
+            if d.non_thinking_args.is_some() {
+                assert!(
+                    d.fallback.is_some(),
+                    "{} needs a fallback to carry its reasoning override",
+                    d.id
+                );
+            }
         }
     }
 
@@ -2610,29 +4252,49 @@ mod tests {
     // ── registry search HTML parsing ─────────────────────────────────────────
 
     // Trimmed-down but structurally faithful fixture of two ollama.com/search
-    // result cards (same `x-test-*` hooks the live page emits).
+    // result cards, matching the post-2026-redesign markup (no `x-test-*`
+    // hooks): the title links to `/library/<name>`, badges are colour-coded
+    // `rounded-md bg-…` spans, and the pull count / updated label sit in the
+    // meta row. nomic deliberately carries no size badge (embedding models omit
+    // one on the live page), exercising the empty-sizes path.
     const SEARCH_FIXTURE: &str = r#"
       <ul role="list">
-      <li x-test-model class="flex">
-        <a href="/library/glm-5.2">
-          <h2><span x-test-search-response-title>glm-5.2</span></h2>
-          <p class="max-w-lg break-words text-md">GLM-5.2 is Z.ai&#39;s flagship model &amp; more.</p>
-          <span x-test-capability class="...">tools</span>
-          <span x-test-capability class="...">thinking</span>
-          <span x-test-size class="...">8b</span>
-          <span x-test-size class="...">355b</span>
-          <span x-test-pull-count>65.8K</span>
-          <span x-test-updated>1 week ago</span>
+      <li  class="flex items-baseline border-b border-neutral-200 py-6">
+        <a href="/library/glm-5.2" class="group w-full">
+          <div class="flex flex-col mb-1" title="glm-5.2">
+            <h2 class="truncate text-xl"><span >glm-5.2</span></h2>
+            <p class="max-w-lg break-words text-neutral-800 text-md">GLM-5.2 is Z.ai&#39;s flagship model &amp; more.</p>
+          </div>
+          <div class="flex flex-col">
+            <div class="flex flex-wrap space-x-2">
+              <span  class="inline-flex my-1 items-center rounded-md bg-indigo-50 px-2 py-[2px] text-xs text-indigo-600">tools</span>
+              <span  class="inline-flex my-1 items-center rounded-md bg-indigo-50 px-2 py-[2px] text-xs text-indigo-600">thinking</span>
+              <span  class="inline-flex my-1 items-center rounded-md bg-[#ddf4ff] px-2 py-[2px] text-xs text-blue-600">8b</span>
+              <span  class="inline-flex my-1 items-center rounded-md bg-[#ddf4ff] px-2 py-[2px] text-xs text-blue-600">355b</span>
+            </div>
+            <p class="my-1 flex space-x-5 text-[13px] text-neutral-500">
+              <span class="flex items-center"><svg></svg><span >65.8K</span><span class="hidden sm:flex">&nbsp;Pulls</span></span>
+              <span class="flex items-center"><svg></svg><span >93</span><span class="hidden sm:flex">&nbsp;Tags</span></span>
+              <span class="flex items-center" title="Sep 30, 2026 10:34 PM UTC"><svg></svg><span class="hidden sm:flex">Updated&nbsp;</span><span >1 week ago</span></span>
+            </p>
+          </div>
         </a>
       </li>
-      <li x-test-model class="flex">
-        <a href="/library/nomic-embed-text">
-          <h2><span x-test-search-response-title>nomic-embed-text</span></h2>
-          <p class="max-w-lg break-words text-md">High-quality text embeddings.</p>
-          <span x-test-capability class="...">embedding</span>
-          <span x-test-size class="...">latest</span>
-          <span x-test-pull-count>30M</span>
-          <span x-test-updated>1 year ago</span>
+      <li  class="flex items-baseline border-b border-neutral-200 py-6">
+        <a href="/library/nomic-embed-text" class="group w-full">
+          <div class="flex flex-col mb-1" title="nomic-embed-text">
+            <h2 class="truncate text-xl"><span >nomic-embed-text</span></h2>
+            <p class="max-w-lg break-words text-neutral-800 text-md">High-quality text embeddings.</p>
+          </div>
+          <div class="flex flex-col">
+            <div class="flex flex-wrap space-x-2">
+              <span  class="inline-flex my-1 items-center rounded-md bg-indigo-50 px-2 py-[2px] text-xs text-indigo-600">embedding</span>
+            </div>
+            <p class="my-1 flex space-x-5 text-[13px] text-neutral-500">
+              <span class="flex items-center"><svg></svg><span >30M</span><span class="hidden sm:flex">&nbsp;Pulls</span></span>
+              <span class="flex items-center" title="Feb 21, 2024 5:26 PM UTC"><svg></svg><span class="hidden sm:flex">Updated&nbsp;</span><span >1 year ago</span></span>
+            </p>
+          </div>
         </a>
       </li>
       </ul>"#;
@@ -2654,7 +4316,9 @@ mod tests {
         let nomic = &models[1];
         assert_eq!(nomic.name, "nomic-embed-text");
         assert_eq!(nomic.capabilities, vec!["embedding"]);
-        assert_eq!(nomic.sizes, vec!["latest"]);
+        assert!(nomic.sizes.is_empty());
+        assert_eq!(nomic.pulls, "30M");
+        assert_eq!(nomic.updated, "1 year ago");
     }
 
     #[test]
@@ -3077,6 +4741,102 @@ mod tests {
         assert!(linux.contains(&std::path::PathBuf::from(
             "/usr/share/ollama/.ollama/models"
         )));
+    }
+
+    // ── #201a: `ollama_host` actually reaches the transport ──────────────────
+
+    fn addr(raw: &str) -> Result<String, String> {
+        resolve_ollama_addr(Some(raw), false)
+    }
+
+    #[test]
+    fn unset_ollama_host_is_the_address_it_always_was() {
+        // The whole compatibility promise: every install that predates this
+        // change keeps dialling exactly what it dialled before.
+        assert_eq!(resolve_ollama_addr(None, false).unwrap(), DEFAULT_OLLAMA_ADDR);
+        assert_eq!(addr("").unwrap(), DEFAULT_OLLAMA_ADDR);
+        assert_eq!(addr("   ").unwrap(), DEFAULT_OLLAMA_ADDR);
+    }
+
+    #[test]
+    fn a_port_is_the_case_this_exists_for() {
+        assert_eq!(addr("127.0.0.1:11500").unwrap(), "127.0.0.1:11500");
+        assert_eq!(addr(":11500").unwrap(), "127.0.0.1:11500");
+        // Ollama's own documented bare-port spelling.
+        assert_eq!(addr("11500").unwrap(), "127.0.0.1:11500");
+        assert_eq!(addr("localhost").unwrap(), "localhost:11434");
+    }
+
+    #[test]
+    fn spellings_that_get_copied_in_are_understood() {
+        assert_eq!(addr("http://127.0.0.1:11434").unwrap(), "127.0.0.1:11434");
+        assert_eq!(addr("http://localhost:11500/").unwrap(), "localhost:11500");
+        assert_eq!(addr("http://localhost:11500/v1").unwrap(), "localhost:11500");
+        // `0.0.0.0` is what you write to make the *server* listen everywhere; as
+        // a connect address it means this machine.
+        assert_eq!(addr("0.0.0.0:11500").unwrap(), "127.0.0.1:11500");
+        assert_eq!(addr("::").unwrap(), "[::1]:11434");
+        assert_eq!(addr("::1").unwrap(), "[::1]:11434");
+        assert_eq!(addr("[::1]:11500").unwrap(), "[::1]:11500");
+    }
+
+    #[test]
+    fn https_is_refused_rather_than_downgraded() {
+        // The transport is plaintext HTTP/1.0 over a raw TcpStream. Connecting
+        // in the clear to an address written as TLS is the one outcome that must
+        // not be silent.
+        let err = addr("https://127.0.0.1:11434").unwrap_err();
+        assert!(err.contains("HTTPS"), "{err}");
+        assert!(addr("ftp://127.0.0.1").is_err());
+    }
+
+    #[test]
+    fn another_machine_needs_saying_so() {
+        // RFC 5737 documentation addresses, not RFC 1918 ones: these are
+        // guaranteed unroutable and reserved for exactly this, and the privacy
+        // scan still flags a real `10.x`/`192.168.x` so a leaked internal
+        // address cannot hide among test fixtures.
+        for host in ["192.0.2.9:11434", "nas.example:11434", "203.0.113.5"] {
+            assert!(
+                resolve_ollama_addr(Some(host), false).is_err(),
+                "{host} must not be reachable without the opt-in"
+            );
+            assert!(
+                resolve_ollama_addr(Some(host), true).is_ok(),
+                "{host} must be reachable with it"
+            );
+        }
+        // Loopback never needs the opt-in, whatever it is spelled as.
+        for host in ["127.0.0.1", "127.1.2.3", "localhost", "dev.localhost", "::1"] {
+            assert!(resolve_ollama_addr(Some(host), false).is_ok(), "{host}");
+        }
+    }
+
+    #[test]
+    fn a_host_that_could_inject_a_header_is_refused() {
+        // The result is interpolated into a request line and a `Host:` header.
+        assert!(addr("local\r\nX-Evil: 1").is_err());
+        assert!(addr("local host").is_err());
+        assert!(addr("127.0.0.1:not-a-port").is_err());
+        assert!(addr("127.0.0.1:99999").is_err());
+    }
+
+    #[test]
+    fn ensure_running_only_starts_a_server_it_could_own() {
+        assert!(addr_is_loopback("127.0.0.1:11434"));
+        assert!(addr_is_loopback("localhost:11500"));
+        assert!(addr_is_loopback("[::1]:11434"));
+        assert!(!addr_is_loopback("192.0.2.9:11434"));
+    }
+
+    #[test]
+    fn the_vibe_provider_points_at_the_same_server() {
+        // Not a strong assertion about the address (that depends on this
+        // machine's settings.json) — only that the stanza is still well-formed
+        // and names an `http://` base, which is what the agent parses.
+        let block = ollama_provider_block();
+        assert!(block.contains("api_base = \"http://"), "{block}");
+        assert!(block.ends_with("/v1\"\napi_key_env_var = \"\"\napi_style = \"openai\"\nbackend = \"generic\"\nreasoning_field_name = \"reasoning_content\"\nproject_id = \"\"\nregion = \"\"\n\n[providers.extra_headers]\n"), "{block}");
     }
 
     /// Integration test: only runs when Ollama is reachable and has models.

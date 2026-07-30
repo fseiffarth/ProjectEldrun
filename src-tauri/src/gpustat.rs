@@ -570,7 +570,7 @@ pub fn process_snapshot() -> Vec<GpuProc> {
 
     let mut procs = amd_fdinfo_procs();
     procs.extend(nvidia_proc_sample());
-    procs.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes));
+    procs.sort_by_key(|p| std::cmp::Reverse(p.mem_bytes));
 
     if let Ok(mut cache) = PROC_CACHE.lock() {
         *cache = Some((Instant::now(), procs.clone()));

@@ -46,9 +46,9 @@ use tauri_plugin_dialog::DialogExt;
 use crate::commands::projects::uuid_v4;
 use crate::schema::mail::{
     MailAccount, MailAccountSaved, MailAccounts, MailBody, MailDraft, MailEncryptionState,
-    MailCryptoInfo, MailFlag, MailFolder, MailFolderKind, MailHeader, MailHeaderPage, MailKeyringState, MailLink, MailPasswordState, MailPreviewBlob,
+    MailCryptoInfo, MailFilterReport, MailFilterRule, MailFilterSample, MailFilters, MailFlag, MailFolder, MailFolderKind, MailHeader, MailHeaderPage, MailKeyringState, MailLink, MailPasswordState, MailPreviewBlob,
     MailPriority, MailPriorityCounts, MailProbe, MailSendResult, MailSort, MailSyncEvent,
-    MailSyncSummary, StagedAttachment, ACCOUNTS_VERSION,
+    MailSyncSummary, StagedAttachment, ACCOUNTS_VERSION, FILTERS_VERSION,
 };
 use crate::services::mail_crypt::{self, MailKeys};
 use crate::services::mail_crypto::{self, CryptoKind, DecryptError};
@@ -57,6 +57,7 @@ use crate::services::mail_engine::{
     self, InProcessEngine, MailEngine, OutboundAttachment, Password,
 };
 use crate::services::mail_authres;
+use crate::services::mail_filters;
 use crate::services::mail_sanitize::{self, SANITIZER_VERSION};
 use crate::services::mail_store::MailStore;
 use crate::services::remote_credentials::{self, KeyringState, MailProto};
@@ -82,7 +83,22 @@ fn accounts_path() -> PathBuf {
 /// store is in, and a half-finished migration is visible rather than a file
 /// whose contents have to be sniffed.
 fn accounts_enc_path() -> PathBuf {
-    mail_dir().join("accounts.json.enc")
+    sealed_twin(&accounts_path())
+}
+
+/// The sealed twin of a state file: `<name>.json` → `<name>.json.enc`, **beside
+/// it**.
+///
+/// Derived from the path the caller passed rather than from `mail_dir()`, which
+/// is what makes `read_accounts(&some_dir)` a self-contained operation on
+/// `some_dir`. It used to mix the two — the plaintext file came from the
+/// argument and the sealed one from the global state directory — so a call
+/// against any other directory silently read the *real* mailbox's account list.
+/// In production the two are the same directory and nothing changes.
+fn sealed_twin(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".enc");
+    PathBuf::from(name)
 }
 
 /// How many headers one sync pulls per folder. Bounded because "sync" on a
@@ -166,6 +182,86 @@ fn session_keys() -> Option<Arc<MailKeys>> {
     SESSION_KEYS.read().ok().and_then(|k| k.clone())
 }
 
+/// Has the one silent unlock attempt below already been made?
+#[cfg(not(test))]
+static FILE_KEYS_TRIED: AtomicBool = AtomicBool::new(false);
+
+/// The store key **for the sealed files beside the database** — the account list
+/// and the filter rules.
+///
+/// This exists because of a bug it is worth naming precisely. [`SESSION_KEYS`]
+/// is published by `store_of`, i.e. by *opening the database*. But the files are
+/// read by commands that never touch the database: `mail_accounts_list` is the
+/// first mail command a launch runs (the header badge calls it), and on an
+/// encrypted install it would find no keys, skip `accounts.json.enc`, look for
+/// the plaintext `accounts.json` that the migration deleted — and answer **an
+/// empty list**. The user's account had not vanished; nothing had asked for the
+/// key yet. Worse was the write half: re-adding the account in that state sealed
+/// nothing and wrote a *plaintext* file beside the sealed one, which every later
+/// read (once something had opened the database) then ignored in favour of the
+/// sealed twin. Twice-vanished, and the second time with a stray cleartext copy
+/// of the account list on disk.
+///
+/// So the files resolve the key themselves rather than depending on an unrelated
+/// command having run first. Two properties keep that cheap and honest:
+///
+/// - **At most one attempt per process.** A locked keyring costs a bounded (4 s)
+///   read in `remote_credentials`, and these commands run on a timer — retrying
+///   per call would turn a locked collection into a periodic stall. Once
+///   `SESSION_KEYS` is set by anything (this, `store_of`, or the user typing a
+///   passphrase into `adopt_keys`) that answer is used from then on.
+/// - **It degrades, never fails.** Every non-`Ready` outcome answers `None`, and
+///   the caller then behaves exactly as it did before: `read_*` falls back to the
+///   plaintext file, `write_*` refuses rather than shadowing a sealed one
+///   ([`sealed_write_refusal`]). Reporting *why* stays `mail_encryption_state`'s
+///   job, which is the surface built for it.
+fn file_keys() -> Option<Arc<MailKeys>> {
+    session_keys().or_else(silent_unlock)
+}
+
+/// **Not under `cargo test`.** The silent unlock reads the *developer's own*
+/// keychain and the real state directory, so a unit test that resolved a key
+/// this way would be reading the machine's actual mailbox — passing or failing
+/// depending on whose laptop it ran on. The two halves that *can* be reasoned
+/// about are tested instead: the refusal rule (`sealed_write_refusal`), and,
+/// structurally, that the readers go through [`file_keys`] at all.
+#[cfg(test)]
+fn silent_unlock() -> Option<Arc<MailKeys>> {
+    None
+}
+
+#[cfg(not(test))]
+fn silent_unlock() -> Option<Arc<MailKeys>> {
+    if FILE_KEYS_TRIED.swap(true, Ordering::Relaxed) {
+        return None;
+    }
+    match mail_crypt::unlock(&mail_dir()) {
+        mail_crypt::Unlock::Ready(keys) => {
+            let keys = Arc::new(keys);
+            set_session_keys(Some(keys.clone()));
+            Some(keys)
+        }
+        _ => None,
+    }
+}
+
+/// Why a plaintext write must not happen: there is a sealed file and no key.
+///
+/// Returned as a message rather than performed silently, because both other
+/// options are worse. Writing plaintext beside a sealed file produces a save
+/// that *reports success* and is then permanently ignored — the read prefers the
+/// sealed twin — while also dropping unencrypted what the user encrypted.
+/// Writing nothing at all and claiming success is the same lie without the file.
+///
+/// Pure, so the rule is testable without a keyring or a state directory.
+fn sealed_write_refusal(sealed_exists: bool, have_keys: bool) -> Option<String> {
+    (sealed_exists && !have_keys).then(|| {
+        "this mailbox is encrypted and its key is not available right now — unlock the OS \
+         keyring (or enter the mail passphrase) and try again. Nothing was changed."
+            .to_string()
+    })
+}
+
 /// The outcome of opening the store: the handle, the keys behind it, and — when
 /// the store is *not* the real one — why.
 struct OpenedStore {
@@ -199,6 +295,7 @@ fn open_store(dir: &Path) -> Result<OpenedStore, String> {
             let keys = Arc::new(keys);
             let store = Arc::new(MailStore::open_with_keys(dir, Some(keys.clone()))?);
             migrate_accounts_file(Some(&keys))?;
+            migrate_filters_file(Some(&keys))?;
             Ok(OpenedStore {
                 store,
                 keys: Some(keys),
@@ -244,6 +341,7 @@ fn open_unencrypted_or_enable(dir: &Path) -> Result<OpenedStore, String> {
             let keys = Arc::new(keys);
             let store = Arc::new(MailStore::open_with_keys(dir, Some(keys.clone()))?);
             migrate_accounts_file(Some(&keys))?;
+            migrate_filters_file(Some(&keys))?;
             set_encrypt_preference(Some(true));
             return Ok(OpenedStore {
                 store,
@@ -419,8 +517,8 @@ async fn sent_folder_for(rt: &MailState, account: &MailAccount) -> Option<String
 /// sealed file wins — and if only the plaintext one is there, it is read and
 /// then converted by [`migrate_accounts_file`].
 fn read_accounts(path: &Path) -> Result<MailAccounts, String> {
-    if let Some(keys) = session_keys() {
-        let enc = accounts_enc_path();
+    if let Some(keys) = file_keys() {
+        let enc = sealed_twin(path);
         if enc.exists() {
             let raw = std::fs::read(&enc).map_err(|e| e.to_string())?;
             let plain = mail_crypt::open(&keys.field, &mail_crypt::accounts_aad(), &raw)
@@ -438,12 +536,15 @@ fn read_accounts(path: &Path) -> Result<MailAccounts, String> {
 }
 
 fn write_accounts(path: &Path, data: &MailAccounts) -> Result<(), String> {
-    let Some(keys) = session_keys() else {
+    let Some(keys) = file_keys() else {
+        if let Some(why) = sealed_write_refusal(sealed_twin(path).exists(), false) {
+            return Err(why);
+        }
         return storage::write_json_atomic(path, data).map_err(|e| e.to_string());
     };
     let json = serde_json::to_vec(data).map_err(|e| e.to_string())?;
     let sealed = mail_crypt::seal(&keys.field, &mail_crypt::accounts_aad(), &json);
-    mail_crypt::write_bytes_atomic(&accounts_enc_path(), &sealed)?;
+    mail_crypt::write_bytes_atomic(&sealed_twin(path), &sealed)?;
     // Only after the sealed copy is safely on disk. The other order loses every
     // configured account if the process dies between the two calls.
     let _ = std::fs::remove_file(path);
@@ -467,6 +568,132 @@ fn migrate_accounts_file(keys: Option<&MailKeys>) -> Result<(), String> {
     mail_crypt::write_bytes_atomic(&accounts_enc_path(), &sealed)?;
     let _ = std::fs::remove_file(&plain);
     Ok(())
+}
+
+// ── filters.json ────────────────────────────────────────────────────────────
+//
+// The keyword rules, stored beside the accounts and sealed the same way (its own
+// AAD — see `mail_crypt::filters_aad`). Everything the account file's three
+// helpers do, these three do, deliberately as a copy of that shape rather than a
+// generalization: two files with slightly different migration timing behind one
+// abstraction is how a half-converted store happens.
+
+fn filters_path() -> PathBuf {
+    mail_dir().join("filters.json")
+}
+
+fn filters_enc_path() -> PathBuf {
+    sealed_twin(&filters_path())
+}
+
+/// Read the rule list. A missing file is an empty list, not an error.
+///
+/// A rule the running build cannot parse — a `field` a newer version added — is
+/// **dropped rather than guessed at**, which is why `rules` deserializes through
+/// a permissive `Vec<Value>` first. Half-understanding a rule would mean filing
+/// mail by a condition nobody wrote; the rest of the list still works, and the
+/// dropped rule reappears the moment the newer build runs again, because a save
+/// from here rewrites only what it could read (stated in the dialog).
+fn read_filters(path: &Path) -> Result<MailFilters, String> {
+    let raw: Option<Vec<u8>> = if let Some(keys) = file_keys() {
+        let enc = sealed_twin(path);
+        if enc.exists() {
+            let sealed = std::fs::read(&enc).map_err(|e| e.to_string())?;
+            let plain = mail_crypt::open(&keys.field, &mail_crypt::filters_aad(), &sealed)
+                .map_err(|e| format!("the mail filter list could not be decrypted: {e}"))?;
+            Some(plain.to_vec())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let bytes = match raw {
+        Some(b) => b,
+        None => {
+            if !path.exists() {
+                return Ok(MailFilters {
+                    version: FILTERS_VERSION,
+                    ..Default::default()
+                });
+            }
+            std::fs::read(path).map_err(|e| e.to_string())?
+        }
+    };
+    Ok(parse_filters(&bytes))
+}
+
+/// The lenient half of [`read_filters`], split out so it is testable without a
+/// state directory. A file that is not JSON at all reads as an empty list: the
+/// alternative is a mail client that refuses to open because a rule file is
+/// corrupt, and there is nothing in here that cannot be retyped.
+fn parse_filters(bytes: &[u8]) -> MailFilters {
+    #[derive(serde::Deserialize, Default)]
+    struct Loose {
+        #[serde(default)]
+        version: u32,
+        #[serde(default)]
+        rules: Vec<serde_json::Value>,
+    }
+    let loose: Loose = serde_json::from_slice(bytes).unwrap_or_default();
+    MailFilters {
+        version: if loose.version == 0 {
+            FILTERS_VERSION
+        } else {
+            loose.version
+        },
+        rules: loose
+            .rules
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<MailFilterRule>(v).ok())
+            .collect(),
+        extra: Default::default(),
+    }
+}
+
+fn write_filters(path: &Path, data: &MailFilters) -> Result<(), String> {
+    let Some(keys) = file_keys() else {
+        if let Some(why) = sealed_write_refusal(sealed_twin(path).exists(), false) {
+            return Err(why);
+        }
+        return storage::write_json_atomic(path, data).map_err(|e| e.to_string());
+    };
+    let json = serde_json::to_vec(data).map_err(|e| e.to_string())?;
+    let sealed = mail_crypt::seal(&keys.field, &mail_crypt::filters_aad(), &json);
+    mail_crypt::write_bytes_atomic(&sealed_twin(path), &sealed)?;
+    // Sealed copy first, plaintext removed second — `write_accounts`' order, for
+    // its reason.
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+/// Convert a plaintext `filters.json` into its sealed twin, once. Runs beside
+/// [`migrate_accounts_file`] at store-open.
+fn migrate_filters_file(keys: Option<&MailKeys>) -> Result<(), String> {
+    let Some(keys) = keys else { return Ok(()) };
+    let plain = filters_path();
+    if !plain.exists() || filters_enc_path().exists() {
+        return Ok(());
+    }
+    let bytes = std::fs::read(&plain).map_err(|e| e.to_string())?;
+    let data = parse_filters(&bytes);
+    let json = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
+    let sealed = mail_crypt::seal(&keys.field, &mail_crypt::filters_aad(), &json);
+    mail_crypt::write_bytes_atomic(&filters_enc_path(), &sealed)?;
+    let _ = std::fs::remove_file(&plain);
+    Ok(())
+}
+
+/// The enabled rules, or an empty list if the file cannot be read.
+///
+/// **A failure here must never fail a sync.** The rules are an enhancement to
+/// mail arriving; a locked keyring or a corrupt file means mail lands unmarked,
+/// which is the state every install starts in, not an error worth aborting a
+/// fetch for.
+fn active_rules() -> Vec<MailFilterRule> {
+    read_filters(&filters_path())
+        .map(|f| f.rules.into_iter().filter(|r| r.enabled).collect())
+        .unwrap_or_default()
 }
 
 /// Insert or replace one account, minting an id when the caller has none.
@@ -686,7 +913,16 @@ pub async fn mail_account_upsert(
     let rt = state.inner().clone();
     let remember = remember_arg(remember);
     tokio::task::spawn_blocking(move || {
+        // A pooled IMAP session is an *authenticated* socket, and these are the
+        // settings it was authenticated with. Evict on both sides of the write:
+        // either the old server tuple or the new one may be the key holding a
+        // live connection, and leaving one behind means the next read silently
+        // uses the login the user just replaced.
+        if let Ok(previous) = account_by_id(&accounts_path(), &account.id) {
+            mail_engine::forget_pooled_sessions(&previous.imap);
+        }
         let mut account = upsert_account_at(&accounts_path(), account)?;
+        mail_engine::forget_pooled_sessions(&account.imap);
 
         // An empty password field means "use whatever is already there", never
         // "authenticate with nothing".
@@ -931,6 +1167,7 @@ fn adopt_keys(rt: &MailState, dir: &Path, keys: Arc<MailKeys>) -> Result<(), Str
     let store = Arc::new(MailStore::open_with_keys(dir, Some(keys.clone()))?);
     set_session_keys(Some(keys.clone()));
     migrate_accounts_file(Some(&keys))?;
+    migrate_filters_file(Some(&keys))?;
     let mut guard = rt.lock().map_err(|_| "mail state is poisoned")?;
     guard.store = Some(store);
     guard.unlock_note = None;
@@ -1139,6 +1376,11 @@ pub async fn mail_account_delete(
             guard.passwords.remove(&account_id);
             guard.cancel.remove(&account_id);
         }
+        // Read before the delete: after it there is nothing left to name the
+        // server whose pooled connection is still open and logged in.
+        if let Ok(account) = account_by_id(&accounts_path(), &account_id) {
+            mail_engine::forget_pooled_sessions(&account.imap);
+        }
         delete_account_at(&accounts_path(), &account_id)
     })
     .await
@@ -1211,6 +1453,10 @@ pub async fn mail_forget_password(
         if let Ok(mut guard) = rt.lock() {
             guard.passwords.remove(&account_id);
         }
+        // Forgetting the password has to close the connection it opened, or the
+        // mailbox keeps reading over an authenticated socket the user believes
+        // they just revoked — an already-open session outlives the credential.
+        mail_engine::forget_pooled_sessions(&account.imap);
         let mut account = account;
         account.save_password = false;
         upsert_account_at(&accounts_path(), account)?;
@@ -1413,7 +1659,15 @@ async fn sync_inner(
             .collect(),
     };
 
+    // The user's keyword rules, read ONCE for the whole sync rather than per
+    // folder: it is a file read (and a decrypt), and an edit made while a sync is
+    // running should not have half this fetch judged by the old list and half by
+    // the new one. A failure to read them is not a failure to sync — see
+    // `active_rules`.
+    let rules = active_rules();
+
     let mut new_messages = 0u32;
+    let mut filtered = 0u32;
     let folder_count = targets.len() as u32;
     for folder in targets {
         if cancel.load(Ordering::Relaxed) {
@@ -1436,8 +1690,26 @@ async fn sync_inner(
 
         let store3 = store.clone();
         let folder2 = folder.clone();
-        let added: u32 = tokio::task::spawn_blocking(move || {
+        // The rules apply to mail that *arrives*, so Sent and Drafts are out —
+        // a rule watching for "invoice" must not file the invoices the user
+        // wrote — as are Trash and Junk, where a message has already been
+        // judged. Same list as `MailStore::unmarked_headers`, for the same
+        // reason: the live path and the re-run must agree about scope, or a
+        // "apply to existing mail" would file things the sync never would.
+        let rules2: Vec<MailFilterRule> = if matches!(
+            folder2.kind,
+            MailFolderKind::Sent
+                | MailFolderKind::Drafts
+                | MailFolderKind::Trash
+                | MailFolderKind::Junk
+        ) {
+            Vec::new()
+        } else {
+            rules.clone()
+        };
+        let (added, filed): (u32, u32) = tokio::task::spawn_blocking(move || {
             let mut added = 0u32;
+            let mut filed = 0u32;
             for h in headers {
                 let row = crate::schema::mail::MailHeader {
                     id: message_id_for(&folder2.id, h.uid),
@@ -1474,14 +1746,27 @@ async fn sync_inner(
                 };
                 if store3.upsert_header(&row)? {
                     added += 1;
+                    // **New messages only.** A re-sync re-visits every message
+                    // in the folder, so applying rules to all of them would
+                    // re-file mail the user had unmarked by hand, every check —
+                    // `mark_for` refuses an already-marked message, but an
+                    // *unmarked* one the user deliberately cleared looks
+                    // identical to one that never matched. The user's own
+                    // decision is only safe if the automatic pass happens once.
+                    if let Some((mark, _hit)) = mail_filters::mark_for(&rules2, &row) {
+                        if store3.set_priority(&row.id, Some(mark))? {
+                            filed += 1;
+                        }
+                    }
                 }
             }
             store3.refresh_counts(&folder2.id)?;
-            Ok::<_, String>(added)
+            Ok::<_, String>((added, filed))
         })
         .await
         .map_err(|e| e.to_string())??;
 
+        filtered += filed;
         new_messages += added;
         emit_sync(
             app,
@@ -1509,6 +1794,7 @@ async fn sync_inner(
         account_id: account_id.to_string(),
         folders: folder_count,
         new_messages,
+        filtered,
         error: None,
     })
 }
@@ -1906,6 +2192,139 @@ pub async fn mail_priority_counts(
     tokio::task::spawn_blocking(move || store_of(&rt)?.priority_counts())
         .await
         .map_err(|e| e.to_string())?
+}
+
+// ── Commands: filter rules (keywords → a priority mark) ─────────────────────
+//
+// The automation on top of the marks above, and it inherits every one of their
+// properties because it *is* them: a rule sets the same local column the
+// right-click menu sets. No socket, no IMAP flag, nothing leaves the folder it
+// arrived in — so there is no rule anyone can write here that has an effect on a
+// server, and none that can be wrong in a way another mail client would see.
+//
+// Two deliberate limits, both surfaced in the UI rather than hidden:
+//
+// - Rules run on **newly arrived** messages during a sync, and on demand over
+//   mail already in the index. They are not a background pass; nothing here ever
+//   re-examines a message the user has filed by hand.
+// - They match the stored header plus the body **snippet**. The full body is not
+//   on this machine until the message is opened (`services::mail_filters`).
+
+/// Every rule, in order. Local read; no network, and no database.
+///
+/// The rule file is sealed under the store's key, and `read_filters` resolves
+/// that key itself (`file_keys`) rather than relying on some other command
+/// having opened the database first — the ordering bug that made an encrypted
+/// install's *account* list read empty at launch is described in full there.
+#[tauri::command]
+pub async fn mail_filters_list() -> Result<Vec<MailFilterRule>, String> {
+    tokio::task::spawn_blocking(|| Ok(read_filters(&filters_path())?.rules))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Replace the whole rule list.
+///
+/// Wholesale rather than an upsert/delete pair, for the reason
+/// `schema::mail::MailFilters` documents: **the order is data** (the first
+/// matching rule wins), so a reorder is an ordinary edit that no per-rule verb
+/// can express. Ids are minted here for rules that arrive without one — the
+/// store owns identity, exactly as it does for an account.
+#[tauri::command]
+pub async fn mail_filters_set(rules: Vec<MailFilterRule>) -> Result<Vec<MailFilterRule>, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut rules = rules;
+        for rule in rules.iter_mut() {
+            if rule.id.trim().is_empty() {
+                rule.id = uuid_v4();
+            }
+            // Trimmed once, here, so the matcher never has to wonder and the
+            // dialog's "  invoice" is the same rule as "invoice".
+            rule.terms = rule
+                .terms
+                .iter()
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+        }
+        let data = MailFilters {
+            version: FILTERS_VERSION,
+            rules: rules.clone(),
+            extra: Default::default(),
+        };
+        write_filters(&filters_path(), &data)?;
+        Ok(rules)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// How many messages this many rules would (or did) file — the same command for
+/// both, distinguished by `dry_run`.
+///
+/// One command rather than a preview and an apply, because the *only* honest
+/// preview is the one the apply itself would produce: two code paths answering
+/// "what will this catch" and "what did it catch" is how a filter dialog ends up
+/// promising 3 and marking 40.
+///
+/// Bounded by `limit` over the newest unmarked mail (see
+/// `MailStore::unmarked_headers` for the folder kinds it refuses and why), and
+/// the bound is **reported** — `capped` is what lets the UI say *of the most
+/// recent N* instead of implying the whole mailbox was considered.
+#[tauri::command]
+pub async fn mail_filters_apply(
+    dry_run: bool,
+    account_id: Option<String>,
+    rules: Option<Vec<MailFilterRule>>,
+    limit: Option<u32>,
+    state: State<'_, MailState>,
+) -> Result<MailFilterReport, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        // An explicit list is the dialog testing a rule it has not saved yet;
+        // otherwise the saved, enabled ones. A rule under test is honoured even
+        // when disabled — "what would this catch" is asked *before* switching it
+        // on, which is the whole point of asking.
+        let rules = match rules {
+            Some(list) => list,
+            None => active_rules(),
+        };
+        let limit = limit.unwrap_or(2_000).clamp(1, 50_000);
+        let store = store_of(&rt)?;
+        let mut headers = store.unmarked_headers(account_id.as_deref(), limit)?;
+        let scanned = headers.len() as u32;
+        // The auth verdicts are not used by matching, but these rows are handed
+        // back as samples and every path that shows a header must go through it.
+        serve_auth_state(&mut headers);
+
+        let mut report = MailFilterReport {
+            scanned,
+            dry_run,
+            capped: (scanned >= limit).then_some(limit),
+            ..Default::default()
+        };
+        for header in &headers {
+            let Some((mark, hit)) = mail_filters::mark_for(&rules, header) else {
+                continue;
+            };
+            report.matched += 1;
+            if report.samples.len() < 25 {
+                report.samples.push(MailFilterSample {
+                    message_id: header.id.clone(),
+                    subject: header.subject.clone(),
+                    from: header.from.clone(),
+                    date: header.date.clone(),
+                    hit,
+                });
+            }
+            if !dry_run && store.set_priority(&header.id, Some(mark))? {
+                report.marked += 1;
+            }
+        }
+        Ok(report)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -2577,6 +2996,142 @@ mod tests {
         for banned in ["password\":\"", "secret", "token", "passphrase"] {
             assert!(!raw.contains(banned), "found `{banned}` in {raw}");
         }
+    }
+
+    // ── The sealed-file key, and the write that must not happen ─────────────
+
+    /// The regression this pins: an encrypted install whose account list read as
+    /// **empty** because nothing had opened the database yet, and whose re-added
+    /// account was then written in cleartext beside the sealed file that every
+    /// later read preferred. `sealed_write_refusal` is the second half of the
+    /// fix — the first (`file_keys`) cannot be unit-tested without a keyring.
+    #[test]
+    fn a_plaintext_write_is_refused_while_a_sealed_file_exists() {
+        // Sealed file present, no key: the only safe answer is "not now".
+        let refusal = sealed_write_refusal(true, false).expect("must refuse");
+        assert!(
+            refusal.contains("Nothing was changed"),
+            "the refusal has to say the write did not happen: {refusal}"
+        );
+        // Every other combination is an ordinary write.
+        assert!(sealed_write_refusal(true, true).is_none(), "we hold the key");
+        assert!(
+            sealed_write_refusal(false, false).is_none(),
+            "an unencrypted store writes plaintext by design"
+        );
+        assert!(sealed_write_refusal(false, true).is_none());
+    }
+
+    /// The account list is what a launch reads first, so it must not depend on
+    /// something else having opened the database. Guarded structurally, because
+    /// the failure is invisible in a plain-store test: `read_accounts` must go
+    /// through `file_keys`, never `session_keys`.
+    #[test]
+    fn the_sealed_files_resolve_their_own_key() {
+        let src = include_str!("mail.rs");
+        for reader in ["fn read_accounts", "fn read_filters"] {
+            let start = src.find(reader).expect(reader);
+            let body = &src[start..start + 900];
+            assert!(
+                body.contains("file_keys()"),
+                "{reader} must resolve the key itself"
+            );
+            assert!(
+                !body.contains("session_keys()"),
+                "{reader} must not depend on the database having been opened"
+            );
+        }
+    }
+
+    // ── filters.json ────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_missing_filters_file_is_an_empty_list() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("filters.json");
+        let f = read_filters(&path).unwrap();
+        assert!(f.rules.is_empty());
+        assert_eq!(f.version, FILTERS_VERSION);
+    }
+
+    #[test]
+    fn a_rule_this_build_cannot_understand_is_dropped_not_guessed_at() {
+        // The `fields` value is one a future version added. Reading it as "some
+        // field" would file mail by a condition nobody wrote, so the rule goes
+        // and its neighbours stay.
+        let raw = br#"{
+            "version": 1,
+            "rules": [
+              {"id":"a","name":"Known","terms":["invoice"],"fields":["subject"],"mark":"urgent"},
+              {"id":"b","name":"Future","terms":["x"],"fields":["attachment_name"],"mark":"urgent"},
+              {"id":"c","name":"Also known","terms":["y"],"fields":["sender"],"mark":"important"}
+            ]
+        }"#;
+        let parsed = parse_filters(raw);
+        let ids: Vec<&str> = parsed.rules.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "c"]);
+    }
+
+    #[test]
+    fn a_corrupt_filters_file_reads_as_no_rules_rather_than_failing_the_mailbox() {
+        let parsed = parse_filters(b"this is not json");
+        assert!(parsed.rules.is_empty());
+        assert_eq!(parsed.version, FILTERS_VERSION);
+    }
+
+    #[test]
+    fn a_rule_defaults_to_enabled_and_to_any_term() {
+        let parsed = parse_filters(
+            br#"{"rules":[{"id":"a","name":"n","terms":["x"],"fields":["subject"],"mark":"urgent"}]}"#,
+        );
+        let r = &parsed.rules[0];
+        assert!(r.enabled, "a saved rule with no flag is an active rule");
+        assert!(!r.match_all);
+        assert!(!r.whole_word);
+        assert!(r.account_id.is_none(), "every account by default");
+    }
+
+    #[test]
+    fn the_rule_list_round_trips_through_the_file_in_order() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("filters.json");
+        let rules = vec![
+            MailFilterRule {
+                id: "one".into(),
+                name: "Urgent".into(),
+                terms: vec!["outage".into()],
+                fields: vec![crate::schema::mail::MailFilterField::Subject],
+                mark: MailPriority::Urgent,
+                match_all: false,
+                whole_word: false,
+                account_id: None,
+                enabled: true,
+                extra: Default::default(),
+            },
+            MailFilterRule {
+                id: "two".into(),
+                name: "Billing".into(),
+                terms: vec!["invoice".into()],
+                fields: vec![crate::schema::mail::MailFilterField::Sender],
+                mark: MailPriority::Important,
+                match_all: false,
+                whole_word: false,
+                account_id: Some("acct".into()),
+                enabled: false,
+                extra: Default::default(),
+            },
+        ];
+        write_filters(
+            &path,
+            &MailFilters {
+                version: FILTERS_VERSION,
+                rules: rules.clone(),
+                extra: Default::default(),
+            },
+        )
+        .unwrap();
+        let back = read_filters(&path).unwrap();
+        assert_eq!(back.rules, rules, "order and every flag survive");
     }
 
     // ── Authentication-Results trust, applied at the serve boundary ─────────

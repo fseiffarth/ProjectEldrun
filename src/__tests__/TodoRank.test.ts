@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   RANK_STEP,
   autoscrollDelta,
+  currentSlot,
   insertionIndex,
   orderedColumn,
   provisionalRank,
@@ -113,6 +114,58 @@ describe("insertionIndex", () => {
 
   it("puts anything into an empty column at 0", () => {
     expect(insertionIndex([], 123)).toBe(0);
+  });
+});
+
+describe("currentSlot", () => {
+  const column = [task({ id: "a" }), task({ id: "b" }), task({ id: "c" })];
+
+  it("is the card's own position in the column", () => {
+    expect(currentSlot(column, "a")).toBe(0);
+    expect(currentSlot(column, "b")).toBe(1);
+    expect(currentSlot(column, "c")).toBe(2);
+  });
+
+  it("appends a card the column does not hold", () => {
+    expect(currentSlot(column, "gone")).toBe(3);
+    expect(currentSlot([], "a")).toBe(0);
+  });
+
+  /**
+   * The identity the whole gesture rests on: the drag's indices are counted with
+   * the dragged card removed, so re-inserting a card at its own slot has to put
+   * it back exactly where it was. If this ever stopped holding, the board would
+   * open its drag on the wrong placeholder AND write a move for a drop that
+   * changed nothing.
+   */
+  it("round-trips: removing a card and re-inserting it at its slot is a no-op", () => {
+    for (const id of ["a", "b", "c"]) {
+      const slot = currentSlot(column, id);
+      const siblings = column.filter((t) => t.id !== id);
+      const back = [...siblings];
+      back.splice(slot, 0, column.find((t) => t.id === id)!);
+      expect(back.map((t) => t.id)).toEqual(["a", "b", "c"]);
+    }
+  });
+
+  /**
+   * And the reason the dragged card is rendered *out* of its column: with it
+   * left in, `insertionIndex` (measured against the other cards) and the
+   * rendered list disagree by one for every slot below it — which is exactly the
+   * "the placeholder is offering the card's current position" symptom.
+   */
+  it("indexes the same list the placeholder is drawn into", () => {
+    const rects = [
+      { top: 0, height: 40 }, // a
+      { top: 40, height: 40 }, // c — b is the one being dragged
+    ];
+    const visible = column.filter((t) => t.id !== "b");
+    // Below c's midpoint: the card goes last, after both siblings.
+    const index = insertionIndex(rects, 70);
+    expect(index).toBe(2);
+    expect(index).toBe(visible.length);
+    // And it is NOT b's own slot, so the drop is a real move.
+    expect(index).not.toBe(currentSlot(column, "b"));
   });
 });
 

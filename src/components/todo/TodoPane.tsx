@@ -47,9 +47,11 @@ export function TodoPane() {
 
   // The dialog edits a snapshot; when the store's copy changes underneath (a
   // write-through, or a reconcile that moved the card) follow it rather than
-  // saving a stale record back over it.
+  // saving a stale record back over it. A card being *added* has no copy to
+  // follow — an empty id means the row does not exist yet, and reading that as
+  // "deleted underneath me" would close the dialog on the frame it opened.
   useEffect(() => {
-    if (!editing) return;
+    if (!editing || !editing.id) return;
     const fresh = tasks.find((task) => task.id === editing.id);
     if (!fresh) setEditing(null);
   }, [tasks, editing]);
@@ -207,7 +209,14 @@ export function TodoPane() {
         />
 
         <aside className="todo-rails">
-          <TodoAgendaRail />
+          {/* Both rails convert into the SAME column — the board's first — and
+              they are handed it rather than assuming "backlog", which a renamed
+              or reordered board turns into just a word. */}
+          <TodoAgendaRail
+            tasks={tasks}
+            defaultCalendarId={defaultCalendarId}
+            firstColumnId={columns[0]?.id ?? "backlog"}
+          />
           <TodoMailRail
             tasks={tasks}
             defaultCalendarId={defaultCalendarId}
@@ -218,7 +227,11 @@ export function TodoPane() {
 
       {editing && (
         <TodoCardDialog
-          task={tasks.find((task) => task.id === editing.id) ?? editing}
+          task={
+            // A draft (empty id) is only ever itself; an existing card follows
+            // the store's copy so a write-through is not edited over.
+            editing.id ? (tasks.find((task) => task.id === editing.id) ?? editing) : editing
+          }
           columns={columns}
           onClose={() => setEditing(null)}
           onOpenMail={(task) => void openMail(task)}

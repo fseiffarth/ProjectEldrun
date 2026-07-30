@@ -14,7 +14,8 @@ resumable plan: [`docs/i18n_translation_plan.md`](../docs/i18n_translation_plan.
     task lessons/~130 steps) — those needed a `titleKey`/`bodyKey`
     (`TranslationKey`) restructuring instead of a direct `useT()` call, same
     shape as the `tabs/`-style label-key pattern below. `src/lib/i18n.ts`
-    holds **3716 keys**, full 5-language parity verified, `tsc`/vitest green
+    holds **4130 keys** (verified 2026-07-28; was 3716 when written), full
+    5-language parity verified, `tsc`/vitest green
     throughout (2201 tests). A few reusable lessons from the whole effort:
     (1) a file already using `t()` throughout can still be silently
     English-only in the other 4 languages if whoever wired it forgot those

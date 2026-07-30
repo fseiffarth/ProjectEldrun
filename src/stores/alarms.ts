@@ -14,6 +14,7 @@ import {
 } from "../lib/alarms";
 import { expandEvents } from "../lib/recurrence";
 import { formatStampTime } from "../lib/calendarTime";
+import { readUse24h } from "../lib/timeFormat";
 import { translate, useI18nStore } from "../lib/i18n";
 import { useCalendarStore } from "./calendar";
 
@@ -91,7 +92,9 @@ async function notifyOs(alarm: DueAlarm) {
       translate(lang, key, params);
     const when = alarm.allDay
       ? t("alarms.today")
-      : formatStampTime(alarm.start, true) || describeLead(alarm.minutesBefore, t);
+      // The imperative read, not the hook — this runs outside React, and the
+      // notification is one string built once rather than a subscription.
+      : formatStampTime(alarm.start, readUse24h()) || describeLead(alarm.minutesBefore, t);
     sendNotification({
       title: alarm.title || t("alarms.defaultEventTitle"),
       body: [when, alarm.location].filter(Boolean).join(" · "),

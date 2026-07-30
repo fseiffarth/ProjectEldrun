@@ -30,6 +30,18 @@ const loadedCalls = () =>
     .filter(([cmd]) => cmd === "load_ollama_model")
     .map(([, args]) => (args as { model: string }).model);
 
+/** Every command the store invoked, in order. */
+const calledCommands = () => invoke.mock.calls.map(([cmd]) => cmd as string);
+
+/** Answer the residency read with these models already in Ollama's memory. */
+function resident(names: string[]) {
+  invoke.mockImplementation((cmd: string) =>
+    cmd === "list_ollama_models_detailed"
+      ? Promise.resolve(names.map((name) => ({ name, running: true })))
+      : Promise.resolve(),
+  );
+}
+
 beforeEach(() => {
   resetOllamaAutoload();
   invoke.mockReset();
@@ -89,12 +101,43 @@ describe("Energy Saver", () => {
   it("suppresses the load and reports the skip rather than doing it silently", async () => {
     given({ ollama_autoload_models: ["a:7b"], energy_saver: "battery" }, true);
     await useOllamaAutoloadStore.getState().autorun();
-    expect(invoke).not.toHaveBeenCalled();
+    // Nothing was *started*: no server, no load. The one call it does make is a
+    // read of what is already in memory (below).
+    expect(calledCommands()).not.toContain("ensure_ollama_running");
+    expect(loadedCalls()).toEqual([]);
     const s = useOllamaAutoloadStore.getState();
     expect(s.phase).toBe("skipped");
     // The menu's notice needs the names, so the skip carries what it skipped.
     expect(s.models).toEqual(["a:7b"]);
+    expect(s.pending).toEqual(["a:7b"]);
     expect(s.dismissed).toBe(false);
+  });
+
+  it("says nothing about a model the server already holds — the notice must not contradict the menu's own loaded row", async () => {
+    given({ ollama_autoload_models: ["a:7b"], energy_saver: "battery" }, true);
+    resident(["a:7b"]);
+    await useOllamaAutoloadStore.getState().autorun();
+    const s = useOllamaAutoloadStore.getState();
+    // The skip is still what happened — it is what there is to *report* that
+    // changed, and an empty `pending` is the menu's cue to stay quiet.
+    expect(s.phase).toBe("skipped");
+    expect(s.pending).toEqual([]);
+  });
+
+  it("names only the armed models that are actually missing", async () => {
+    given({ ollama_autoload_models: ["a:7b", "b:3b"], energy_saver: "battery" }, true);
+    resident(["b:3b"]);
+    await useOllamaAutoloadStore.getState().autorun();
+    expect(useOllamaAutoloadStore.getState().pending).toEqual(["a:7b"]);
+  });
+
+  it("a residency read that fails reports the whole armed list — unreachable means nothing is resident", async () => {
+    given({ ollama_autoload_models: ["a:7b"], energy_saver: "battery" }, true);
+    invoke.mockImplementation((cmd: string) =>
+      cmd === "list_ollama_models_detailed" ? Promise.reject("not_running") : Promise.resolve(),
+    );
+    await useOllamaAutoloadStore.getState().autorun();
+    expect(useOllamaAutoloadStore.getState().pending).toEqual(["a:7b"]);
   });
 
   it("honours the explicit opt-out", async () => {
@@ -129,6 +172,43 @@ describe("Energy Saver", () => {
     await useOllamaAutoloadStore.getState().loadNow();
     expect(loadedCalls()).toEqual(["a:7b"]);
     expect(useOllamaAutoloadStore.getState().phase).toBe("done");
+  });
+});
+
+describe("noteResident — the notice outlives the launch it describes", () => {
+  it("drops a skipped model the user has since loaded by hand", async () => {
+    given({ ollama_autoload_models: ["a:7b", "b:3b"], energy_saver: "battery" }, true);
+    await useOllamaAutoloadStore.getState().autorun();
+    expect(useOllamaAutoloadStore.getState().pending).toEqual(["a:7b", "b:3b"]);
+    useOllamaAutoloadStore.getState().noteResident(["b:3b"]);
+    expect(useOllamaAutoloadStore.getState().pending).toEqual(["a:7b"]);
+    useOllamaAutoloadStore.getState().noteResident(["a:7b"]);
+    expect(useOllamaAutoloadStore.getState().pending).toEqual([]);
+  });
+
+  it("clears a failure that has since been resolved, and the phase with it", async () => {
+    given({ ollama_autoload_models: ["gone:7b"] });
+    invoke.mockImplementation((cmd: string) =>
+      cmd === "load_ollama_model" ? Promise.reject("model not found") : Promise.resolve(),
+    );
+    await useOllamaAutoloadStore.getState().autorun();
+    expect(useOllamaAutoloadStore.getState().phase).toBe("error");
+    useOllamaAutoloadStore.getState().noteResident(["gone:7b"]);
+    const s = useOllamaAutoloadStore.getState();
+    expect(s.failed).toEqual({});
+    expect(s.pending).toEqual([]);
+    expect(s.phase).toBe("done");
+  });
+
+  it("is a no-op when nothing moved — it runs on every model-list read", async () => {
+    given({ ollama_autoload_models: ["a:7b"], energy_saver: "battery" }, true);
+    await useOllamaAutoloadStore.getState().autorun();
+    const before = useOllamaAutoloadStore.getState();
+    useOllamaAutoloadStore.getState().noteResident(["something:else"]);
+    useOllamaAutoloadStore.getState().noteResident([]);
+    // Same object identities, so no subscriber re-renders.
+    expect(useOllamaAutoloadStore.getState().pending).toBe(before.pending);
+    expect(useOllamaAutoloadStore.getState().failed).toBe(before.failed);
   });
 });
 

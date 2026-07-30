@@ -23,6 +23,7 @@ import {
   stripFormatControls,
 } from "../../lib/mail";
 import { useI18nStore, useT } from "../../lib/i18n";
+import { useUse24h } from "../../lib/timeFormat";
 import { UntestedTag } from "../common/UntestedTag";
 import type {
   MailAttachmentMeta,
@@ -75,6 +76,7 @@ export function MailMessageView({
 }: MailMessageViewProps) {
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
+  const use24h = useUse24h();
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [confirmLink, setConfirmLink] = useState<MailLink | null>(null);
 
@@ -126,7 +128,7 @@ export function MailMessageView({
         )}
         <div className="mail-message-meta">
           <span className="mail-meta-label">{t("mail.date")}</span>
-          <span className="mail-meta-value">{formatMailDate(header.date, lang)}</span>
+          <span className="mail-meta-value">{formatMailDate(header.date, lang, use24h)}</span>
         </div>
         <MailAuthPanel auth={header.auth} />
         {/* Beside the sender checks, not instead of them: they answer different

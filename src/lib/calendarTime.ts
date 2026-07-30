@@ -437,14 +437,24 @@ export function layoutOverlaps(items: Placeable[]): Placement[] {
 
 // ── Display ─────────────────────────────────────────────────────────────────
 
-/** `"09:00"` → `"9:00 AM"` when `use24h` is false; unchanged when it is true. */
+/**
+ * `"09:00"` → `"9:00 AM"` when `use24h` is false; unchanged when it is true.
+ *
+ * Anything that is not an `HH:MM` comes back untouched — including the empty
+ * string, which is what `timePart` returns for a date-only stamp and therefore
+ * the single most common argument at the call sites that print an *optional*
+ * hour (a to-do card's deadline, an all-day row). It has to be checked as a
+ * shape rather than with `isNaN(h)`: `"".split(":")` is `[""]`, and `Number("")`
+ * is `0`, not `NaN`, so a laxer guard renders an absent time as "12:undefined AM".
+ */
 export function formatTime(hhmm: string, use24h: boolean): string {
   if (use24h) return hhmm;
-  const [h, m] = hhmm.split(":").map(Number);
-  if (Number.isNaN(h)) return hhmm;
-  const suffix = h < 12 ? "AM" : "PM";
-  const hour12 = h % 12 === 0 ? 12 : h % 12;
-  return `${hour12}:${String(m).padStart(2, "0")} ${suffix}`;
+  const m = /^(\d{1,2}):(\d{2})/.exec(hhmm);
+  if (!m) return hhmm;
+  const hour = Number(m[1]);
+  if (hour > 23) return hhmm;
+  const suffix = hour < 12 ? "AM" : "PM";
+  return `${hour % 12 === 0 ? 12 : hour % 12}:${m[2]} ${suffix}`;
 }
 
 /** The clock label for a stamp, or `""` for an all-day one. */

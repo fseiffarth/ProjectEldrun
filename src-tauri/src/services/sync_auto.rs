@@ -21,6 +21,7 @@
 //!   - local moved, host unchanged  → PUSH local→host (guarded by `push_decision`)
 //!   - both moved (AMBER/orange)    → SKIP, left for manual resolution
 //!   - neither moved (green)        → no-op
+//!
 //! Deletions are intentionally NOT propagated in v1 (a gone host side reads as
 //! "couldn't check" and a gone local side's push errors out and is skipped) —
 //! the conservative "never destructive automatically" stance.

@@ -6,10 +6,12 @@ use std::sync::{Mutex, OnceLock};
 use eldrun_lib::commands::projects::{
     archive_project, create_project, delete_archived_project, get_projects, import_project,
     list_archived_projects, load_project, restore_archived_project, set_project_auto_connect,
-    set_project_description, set_project_sandbox, set_project_sandbox_spec, CreateProjectRequest,
-    ImportProjectRequest,
+    set_project_description, set_project_remote_control, set_project_sandbox,
+    set_project_sandbox_spec, CreateProjectRequest, ImportProjectRequest,
 };
-use eldrun_lib::schema::project::{RemoteSpec, SandboxSpec};
+use eldrun_lib::schema::project::{
+    RemoteSpec, SandboxSourceDecision, SandboxSpec, SandboxToggleOutcome,
+};
 use tempfile::{Builder, TempDir};
 
 const SCAFFOLDS: &[(&str, &str)] = &[
@@ -541,7 +543,7 @@ fn set_project_description_writes_both_projects_json_and_project_json() {
         assert!(cleared.is_none());
         let listed = get_projects().expect("get projects");
         let found = listed.iter().find(|p| p.id == entry.id).expect("entry present");
-        assert!(found.extra.get("description").is_none());
+        assert!(!found.extra.contains_key("description"));
         let project = load_project(entry.local_file.clone()).expect("load project");
         assert!(project.description.is_none());
     });
@@ -626,23 +628,63 @@ fn permanent_delete_removes_archived_project() {
 /// Project containers, Phase 0: the toggle must be **spec-preserving** —
 /// re-enabling used to write `SandboxSpec::default()`, wiping hand-tuned
 /// `image`/`memory`/`network`/…. Only `enabled` flips now; the knobs survive a
-/// disable/enable round-trip in BOTH stores. And the *first* enable
-/// auto-detects an in-repo `Dockerfile` as the container source (Phase 4).
+/// disable/enable round-trip in BOTH stores. And an in-repo `Dockerfile` is
+/// never adopted silently (O#143): the first enable must come back
+/// `NeedsConfirmation`, and only an explicit matching decision writes it.
 #[test]
-fn set_project_sandbox_preserves_spec_and_detects_dockerfile() {
+fn set_project_sandbox_preserves_spec_and_confirms_dockerfile() {
     with_isolated_home("sandbox-home", |_| {
         let target = tempdir_in_test_projects("sandbox-target");
         let entry = new_local_project("sandbox-project", target.path());
         let id = entry.id.clone();
 
-        // The project carries a root Dockerfile → the first enable adopts it.
+        // The project carries a root Dockerfile → enabling must ask first,
+        // not adopt it — `docker build` would run its `RUN` steps as root.
         fs::write(target.path().join("Dockerfile"), "FROM debian:stable\n").expect("dockerfile");
-        let spec = set_project_sandbox(id.clone(), true).expect("enable");
+        let outcome = set_project_sandbox(id.clone(), true, None).expect("enable");
+        let source = match outcome {
+            SandboxToggleOutcome::NeedsConfirmation { source } => source,
+            SandboxToggleOutcome::Applied { .. } => {
+                panic!("a detected Dockerfile must not be adopted without a decision")
+            }
+        };
+        assert_eq!(source.value, "Dockerfile");
+
+        // A decision naming the wrong hash (stale dialog / changed file) is
+        // refused the same way, not silently applied.
+        let stale = set_project_sandbox(
+            id.clone(),
+            true,
+            Some(SandboxSourceDecision {
+                hash: "not-the-real-hash".to_string(),
+                adopt: true,
+            }),
+        )
+        .expect("stale decision");
+        assert!(matches!(stale, SandboxToggleOutcome::NeedsConfirmation { .. }));
+
+        // The matching decision applies it.
+        let spec = match set_project_sandbox(
+            id.clone(),
+            true,
+            Some(SandboxSourceDecision {
+                hash: source.hash.clone(),
+                adopt: true,
+            }),
+        )
+        .expect("confirmed enable")
+        {
+            SandboxToggleOutcome::Applied { spec } => spec,
+            SandboxToggleOutcome::NeedsConfirmation { .. } => {
+                panic!("a matching decision must apply")
+            }
+        };
         assert!(spec.enabled);
         assert_eq!(spec.dockerfile.as_deref(), Some("Dockerfile"));
 
         // Hand-tune the knobs, then flip the toggle off and back on: every
-        // field must survive; only `enabled` may change.
+        // field must survive; only `enabled` may change. Re-enabling must not
+        // re-ask — the same content was already decided about.
         let tuned = SandboxSpec {
             enabled: true,
             image: None,
@@ -652,15 +694,24 @@ fn set_project_sandbox_preserves_spec_and_detects_dockerfile() {
             cpus: None,
             network: Some("none".to_string()),
             readonly_rootfs: true,
+            spec_source_hash: Some(source.hash.clone()),
             extra: Default::default(),
         };
         set_project_sandbox_spec(id.clone(), tuned).expect("store tuned spec");
 
-        let off = set_project_sandbox(id.clone(), false).expect("disable");
+        let off = match set_project_sandbox(id.clone(), false, None).expect("disable") {
+            SandboxToggleOutcome::Applied { spec } => spec,
+            SandboxToggleOutcome::NeedsConfirmation { .. } => panic!("disable never asks"),
+        };
         assert!(!off.enabled);
         assert_eq!(off.memory.as_deref(), Some("4g"), "disable must not wipe the spec");
 
-        let on = set_project_sandbox(id.clone(), true).expect("re-enable");
+        let on = match set_project_sandbox(id.clone(), true, None).expect("re-enable") {
+            SandboxToggleOutcome::Applied { spec } => spec,
+            SandboxToggleOutcome::NeedsConfirmation { .. } => {
+                panic!("an already-decided, unchanged Dockerfile must not re-ask")
+            }
+        };
         assert!(on.enabled);
         assert_eq!(on.pids_limit, Some(256));
         assert_eq!(on.memory.as_deref(), Some("4g"));
@@ -689,6 +740,109 @@ fn set_project_sandbox_preserves_spec_and_detects_dockerfile() {
         let stored = project.sandbox.expect("project.json carries the spec");
         assert!(stored.enabled && stored.readonly_rootfs);
         assert_eq!(stored.network.as_deref(), Some("none"));
+    });
+}
+
+/// A decline must stick until the file actually changes (or every enable
+/// would re-ask forever), and a changed `Dockerfile` must re-ask even though
+/// the earlier content was already decided about.
+#[test]
+fn set_project_sandbox_decline_sticks_until_dockerfile_changes() {
+    with_isolated_home("sandbox-decline-home", |_| {
+        let target = tempdir_in_test_projects("sandbox-decline-target");
+        let entry = new_local_project("sandbox-decline-project", target.path());
+        let id = entry.id.clone();
+
+        fs::write(target.path().join("Dockerfile"), "FROM debian:stable\n").expect("dockerfile");
+        let source = match set_project_sandbox(id.clone(), true, None).expect("enable") {
+            SandboxToggleOutcome::NeedsConfirmation { source } => source,
+            SandboxToggleOutcome::Applied { .. } => panic!("must ask first"),
+        };
+
+        let declined = match set_project_sandbox(
+            id.clone(),
+            true,
+            Some(SandboxSourceDecision {
+                hash: source.hash.clone(),
+                adopt: false,
+            }),
+        )
+        .expect("decline")
+        {
+            SandboxToggleOutcome::Applied { spec } => spec,
+            SandboxToggleOutcome::NeedsConfirmation { .. } => panic!("a decision must apply"),
+        };
+        assert!(declined.enabled);
+        assert_eq!(
+            declined.dockerfile, None,
+            "a decline must fall back to the default image, not build the declined file"
+        );
+
+        // Disable and re-enable: the decline is unchanged content, so no re-ask.
+        set_project_sandbox(id.clone(), false, None).expect("disable");
+        let still_declined = set_project_sandbox(id.clone(), true, None).expect("re-enable");
+        assert!(
+            matches!(still_declined, SandboxToggleOutcome::Applied { .. }),
+            "an unchanged decline must not re-ask"
+        );
+
+        // Now the Dockerfile's content changes — even though the container is
+        // already enabled, the next enable cycle must ask again.
+        set_project_sandbox(id.clone(), false, None).expect("disable again");
+        fs::write(target.path().join("Dockerfile"), "FROM debian:stable\nRUN echo hi\n")
+            .expect("rewrite dockerfile");
+        let reasked = set_project_sandbox(id.clone(), true, None).expect("re-enable after change");
+        match reasked {
+            SandboxToggleOutcome::NeedsConfirmation { source: new_source } => {
+                assert_ne!(new_source.hash, source.hash, "content changed, hash must move");
+            }
+            SandboxToggleOutcome::Applied { .. } => {
+                panic!("a changed Dockerfile must re-ask, not reuse the old decision")
+            }
+        }
+    });
+}
+
+/// O#59: a project's remote-control override writes into both stores (the
+/// `projects.json` mirror `commands::terminal` reads, and `project.json` for
+/// display/export) and clears cleanly back to "inherit the global setting".
+#[test]
+fn set_project_remote_control_writes_both_stores_and_clears() {
+    with_isolated_home("remote-control-home", |_| {
+        let target = tempdir_in_test_projects("remote-control-target");
+        let entry = new_local_project("remote-control-project", target.path());
+        let id = entry.id.clone();
+
+        let off = set_project_remote_control(id.clone(), Some(false)).expect("force off");
+        assert_eq!(off, Some(false));
+
+        let mirrored = get_projects()
+            .expect("list")
+            .into_iter()
+            .find(|p| p.id == id)
+            .expect("entry");
+        assert_eq!(
+            mirrored.extra.get("remote_control").and_then(|v| v.as_bool()),
+            Some(false),
+            "the projects.json mirror is what the spawn path reads"
+        );
+        let project: eldrun_lib::schema::project::Project = serde_json::from_str(
+            &fs::read_to_string(&mirrored.local_file).expect("read project.json"),
+        )
+        .expect("parse project.json");
+        assert_eq!(project.remote_control, Some(false));
+
+        let cleared = set_project_remote_control(id.clone(), None).expect("clear override");
+        assert_eq!(cleared, None);
+        let mirrored = get_projects()
+            .expect("list")
+            .into_iter()
+            .find(|p| p.id == id)
+            .expect("entry");
+        assert!(
+            !mirrored.extra.contains_key("remote_control"),
+            "clearing must remove the field, not store null"
+        );
     });
 }
 

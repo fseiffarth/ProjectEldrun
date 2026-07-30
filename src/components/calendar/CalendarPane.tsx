@@ -23,6 +23,8 @@ import {
 } from "../../lib/calendarTime";
 import { expandEvents } from "../../lib/recurrence";
 import { parseIcs, serializeIcs } from "../../lib/ics";
+import { inspectIcs, type IcsReport } from "../../lib/icsSafety";
+import { IcsImportReviewDialog } from "./IcsImportReviewDialog";
 import { MonthView } from "./MonthView";
 import { TimeGrid } from "./TimeGrid";
 import { AgendaView } from "./AgendaView";
@@ -30,9 +32,10 @@ import { TasksView } from "./TasksView";
 import { CalendarSidebar } from "./CalendarSidebar";
 import { CalDavAccountDialog } from "./CalDavAccountDialog";
 import { EventDialog, type EditScope, type EventDialogTarget } from "./EventDialog";
-import { useCalDavStore } from "../../stores/caldav";
+import { isCalDavConflict, useCalDavStore } from "../../stores/caldav";
 import type { CalDavAccount } from "../../types/caldav";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
+import { useUse24h } from "../../lib/timeFormat";
 
 interface Props {
   /** Whether this pane's tab is the visible one in its group. */
@@ -88,7 +91,9 @@ export function CalendarPane({ visible }: Props) {
   const settings = useSettingsStore((s) => s.settings);
 
   const weekStart = (settings?.calendar_week_start ?? 0) as 0 | 1;
-  const use24h = settings?.calendar_time_format_24h ?? false;
+  // App-wide now, not the calendar's own switch — the grid, the header clock,
+  // the to-do cards and the reminder popup are one app's idea of the time.
+  const use24h = useUse24h();
   const dayStartHour = settings?.calendar_day_start_hour ?? 8;
   const defaultReminder = settings?.calendar_default_reminder_minutes ?? 0;
 
@@ -103,6 +108,14 @@ export function CalendarPane({ visible }: Props) {
   const [search, setSearch] = useState("");
   const [dialog, setDialog] = useState<EventDialogTarget | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** A picked `.ics` waiting on the review dialog. The text is held here rather
+   *  than re-read on confirm: re-reading would inspect one file and import
+   *  whatever is at that path a moment later. */
+  const [pendingImport, setPendingImport] = useState<{
+    name: string;
+    text: string;
+    report: IcsReport;
+  } | null>(null);
   /** `null` = closed; `{account}` = editing (a `null` account is "add new"). */
   const [caldavDialog, setCaldavDialog] = useState<{ account: CalDavAccount | null } | null>(null);
 
@@ -289,11 +302,19 @@ export function CalendarPane({ visible }: Props) {
   async function deleteFromDialog(event: CalendarEvent, scope: EditScope) {
     const target = dialog;
     setDialog(null);
-    if (scope === "this" && target?.occurrence) {
-      await deleteOccurrence(event.id, target.occurrence.occurrenceStart);
-      return;
+    try {
+      if (scope === "this" && target?.occurrence) {
+        await deleteOccurrence(event.id, target.occurrence.occurrenceStart);
+        return;
+      }
+      await deleteEvent(event.id);
+    } catch (err) {
+      // A CalDAV delete the server refused **rejects on purpose**, so the row is
+      // still here rather than gone locally and present for everyone else. The
+      // conflict dialog is already asking about that one, so it is the only
+      // failure this does not repeat as a notice.
+      if (!isCalDavConflict(err)) setNotice(String(err));
     }
-    await deleteEvent(event.id);
   }
 
   /** A drag in the time grid created a span. */
@@ -349,6 +370,15 @@ export function CalendarPane({ visible }: Props) {
 
   // ── ICS ───────────────────────────────────────────────────────────────────
 
+  /**
+   * Read the file, look at what is in it, and import — pausing for the review
+   * dialog only when there is something to say.
+   *
+   * The pause is deliberately conditional. An ordinary calendar export produces
+   * no findings and imports in one click, which is what keeps the dialog worth
+   * reading on the file that *does* carry a `PROCEDURE` alarm or a `zoommtg:`
+   * location. A dialog raised every time is a dialog nobody reads.
+   */
   async function importIcs() {
     const path = await openDialog({
       multiple: false,
@@ -360,11 +390,25 @@ export function CalendarPane({ visible }: Props) {
       // A dedicated, extension-guarded command — the general file-read command is
       // confined to the current project and would refuse a path in ~/Downloads.
       const text = await invoke<string>("calendar_read_ics", { path });
+      const report = inspectIcs(text);
+      if (report.notable) {
+        setPendingImport({ name: fileStem(path) || path, text, report });
+        return;
+      }
+      await commitImport(text, fileStem(path));
+    } catch (err) {
+      setNotice(t("calendarPane.importFailed", { error: String(err) }));
+    }
+  }
+
+  /** The import itself, once it is going ahead. */
+  async function commitImport(text: string, stem: string) {
+    try {
       const parsed = parseIcs(text);
 
       // Imported items land in their own calendar, so an import is easy to undo by
       // deleting that one calendar — and can never silently mix into "Personal".
-      const name = fileStem(path);
+      const name = stem;
       const target = await createCalendar({
         name: name || t("calendarPane.importedCalendarName"),
         color: "#8d8fd6",
@@ -575,6 +619,7 @@ export function CalendarPane({ visible }: Props) {
               onUpdate={updateTask}
               onDelete={deleteTask}
               defaultCalendarId={defaultCalendarId}
+              use24h={use24h}
             />
           ) : view === "agenda" ? (
             <AgendaView
@@ -655,6 +700,19 @@ export function CalendarPane({ visible }: Props) {
               setNotice(t("caldav.syncedAccount", { name: account.label || account.base_url }));
             })();
           }}
+        />
+      ) : null}
+
+      {pendingImport ? (
+        <IcsImportReviewDialog
+          name={pendingImport.name}
+          report={pendingImport.report}
+          onImport={() => {
+            const { text, name } = pendingImport;
+            setPendingImport(null);
+            void commitImport(text, name);
+          }}
+          onCancel={() => setPendingImport(null)}
         />
       ) : null}
     </div>

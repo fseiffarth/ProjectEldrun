@@ -798,7 +798,7 @@ pub fn walk_mirror_files(project_id: &str, rel: &str) -> Result<Vec<String>, Str
             if let Some(r) = rel_under(&root, &start) {
                 out.push(r);
             }
-            return Ok(out);
+            Ok(out)
         }
         Ok(m) if m.file_type().is_dir() => {
             walk_mirror_inner(&root, &start, &mut out)?;

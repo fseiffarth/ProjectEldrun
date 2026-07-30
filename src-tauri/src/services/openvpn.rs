@@ -22,6 +22,7 @@
 //! out:
 //!   - an `auth-user-pass` account (username + password) → `--auth-user-pass`, and
 //!   - an encrypted private key's passphrase → `--askpass`.
+//!
 //! Which ones a config needs is read off the config itself
 //! ([`config_requires_userpass`] / [`config_requires_key_passphrase`]). Neither
 //! secret is persisted here: callers pass them in, we write them to owner-only
@@ -370,7 +371,7 @@ pub fn list_configs() -> Vec<StoredConfig> {
             },
         ));
     }
-    items.sort_by(|a, b| b.0.cmp(&a.0));
+    items.sort_by_key(|i| std::cmp::Reverse(i.0));
     items.into_iter().map(|(_, c)| c).collect()
 }
 
@@ -1816,18 +1817,18 @@ pub fn win_cmdline_quote(arg: &str) -> String {
         match ch {
             '\\' => backslashes += 1,
             '"' => {
-                out.extend(std::iter::repeat('\\').take(backslashes * 2 + 1));
+                out.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
                 out.push('"');
                 backslashes = 0;
             }
             _ => {
-                out.extend(std::iter::repeat('\\').take(backslashes));
+                out.extend(std::iter::repeat_n('\\', backslashes));
                 out.push(ch);
                 backslashes = 0;
             }
         }
     }
-    out.extend(std::iter::repeat('\\').take(backslashes * 2));
+    out.extend(std::iter::repeat_n('\\', backslashes * 2));
     out.push('"');
     out
 }

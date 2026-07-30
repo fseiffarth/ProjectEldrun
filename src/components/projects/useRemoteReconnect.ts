@@ -462,7 +462,6 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
       un?.();
     };
     // vpnTerm is ref-held; re-run when its identity changes via the force tick.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vpnTermRef.current?.id, projectId, vpnConfig]);
 
   // Bring the OpenVPN tunnel up in an embedded terminal. The connect command

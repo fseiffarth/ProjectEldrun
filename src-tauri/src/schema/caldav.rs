@@ -60,10 +60,15 @@ pub struct CalDavCalendarRef {
     /// the server did not say, and both are asked for.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub components: Vec<String>,
-    /// **True in Phases 1–2, always.** The local calendar is server-authoritative
-    /// and has no push path yet; the field exists so the day push lands, the
-    /// answer is per-collection and comes from the server's own
-    /// `current-user-privilege-set` rather than from "the feature shipped".
+    /// **The server's own answer**, from its `current-user-privilege-set` — a
+    /// collection someone else shared with you is legitimately read-only *to
+    /// you*, so this is asked for rather than inferred from "push shipped".
+    ///
+    /// The serde default is `true` because that is what an *older* `accounts.json`
+    /// means: every ref Phases 1–2 wrote was read-only, and a missing field must
+    /// not read as "writable" on the first launch that can write.
+    /// [`CalDavAccount::allow_write`] is the other half of the gate, and the
+    /// server's 403 is the third — nothing here is trusted to be the only one.
     #[serde(default = "default_true")]
     pub read_only: bool,
     /// UTC-ish local stamp of the last successful sync, as the frontend minted
@@ -98,6 +103,20 @@ pub struct CalDavAccount {
     /// Minutes between background syncs. `None` or `0` means manual-only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_interval_min: Option<u32>,
+    /// **Two-way sync — opt-in, default false** (`docs/caldav_plan.md` Phase 3).
+    ///
+    /// The plan left "is write access even wanted against an institutional
+    /// calendar?" open, and this field is the answer: it is the *user's* to give,
+    /// per account, and the default is the read-only behaviour Phases 1–2
+    /// shipped. A push bug against a shared work calendar has a materially bigger
+    /// blast radius than the same bug against a self-hosted one, and nobody but
+    /// the account's owner knows which they are looking at.
+    ///
+    /// It is only ever half the gate: [`CalDavCalendarRef::read_only`] is the
+    /// server's own answer, and a collection that says read-only stays read-only
+    /// however this is set.
+    #[serde(default)]
+    pub allow_write: bool,
     #[serde(default)]
     pub calendars: Vec<CalDavCalendarRef>,
     #[serde(flatten, default)]
@@ -202,6 +221,36 @@ pub struct CalDavParsed {
     pub events: Vec<crate::schema::calendar::CalendarEvent>,
     #[serde(default)]
     pub tasks: Vec<crate::schema::calendar::CalendarTask>,
+}
+
+/// What one **write** did (`docs/caldav_plan.md` Phase 3).
+///
+/// A conflict is a *result*, not an error, and that is the whole shape of it: a
+/// `412` means someone else changed the resource since this app last read it,
+/// which the user has to decide about, so it must arrive as a value the frontend
+/// can render a choice from rather than as an error string one surface happens to
+/// pattern-match. The rule it serves is mail encryption's, verbatim — a silent
+/// downgrade is the worst thing a sync feature can do, because it looks exactly
+/// like success.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CalDavWrite {
+    /// The resource's absolute URL after the write — minted by the client for a
+    /// create, echoed back for an update.
+    pub href: String,
+    /// The validator for the *next* conditional write. Empty means the server
+    /// returned none and the follow-up `PROPFIND` could not get one either, in
+    /// which case the next write has to wait for a sync — an unconditional
+    /// overwrite is exactly what this feature does not do.
+    #[serde(default)]
+    pub etag: String,
+    /// The server refused: the resource changed elsewhere since `etag` was read
+    /// (`412`), or — on a create — something already exists at that URL.
+    #[serde(default)]
+    pub conflict: bool,
+    /// A delete found nothing there. Reported rather than treated as failure:
+    /// the intended end state is the actual one.
+    #[serde(default)]
+    pub gone: bool,
 }
 
 /// What one fetch of a collection found.

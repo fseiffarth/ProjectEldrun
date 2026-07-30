@@ -21,6 +21,9 @@ import {
 import { keyringState, unlockKeyring, type KeyringState } from "../../lib/keyring";
 import type { StoredVpnConfig } from "../../types";
 import { useT } from "../../lib/i18n";
+import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+
+const MENU_ID = "vpn";
 
 /**
  * Bound a backend call so it can never strand the connect at amber. The silent-connect
@@ -93,7 +96,17 @@ export function VpnIndicator() {
   // so this machine-wide tunnel control stays out of the header until asked for.
   const enabled = useSettingsStore((s) => s.settings?.vpn_enabled ?? false);
 
-  const [open, setOpen] = useState(false);
+  // Shared across every header hover-menu (stores/headerHoverMenu) so switching
+  // straight from another one closes it instantly instead of racing its own
+  // close-grace timer. `setOpen` mirrors the old local-state setter's boolean
+  // signature so the rest of this component reads unchanged.
+  const open = useHeaderHoverMenuStore((s) => s.openId === MENU_ID);
+  const openMenu = useHeaderHoverMenuStore((s) => s.open);
+  const closeMenu = useHeaderHoverMenuStore((s) => s.close);
+  const setOpen = useCallback(
+    (v: boolean) => (v ? openMenu(MENU_ID) : closeMenu(MENU_ID)),
+    [openMenu, closeMenu],
+  );
   const [configs, setConfigs] = useState<StoredVpnConfig[]>([]);
   const [error, setError] = useState("");
   // Per config: can it be brought up with no prompt at all? Only then may it be armed
@@ -350,7 +363,7 @@ export function VpnIndicator() {
         if (!/cancel|superseded/i.test(msg)) setError(msg);
       }
     },
-    [headless, requestPassword, setVpnState, t],
+    [headless, requestPassword, setOpen, setVpnState, t],
   );
 
   /**

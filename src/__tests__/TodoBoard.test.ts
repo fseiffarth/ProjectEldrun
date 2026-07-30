@@ -8,9 +8,11 @@ import {
   columnOf,
   filterTasks,
   mintSubtaskId,
+  moveSubtask,
   priorityBucket,
   removeSubtask,
   setSubtask,
+  stepDropSlot,
   subtaskProgress,
   toggleSubtask,
   toggleTaskDone,
@@ -238,5 +240,69 @@ describe("the checklist ops", () => {
     expect(subtaskProgress(card)).toEqual({ done: 2, total: 2 });
     expect(card.percent).toBe(0);
     expect(columnOf(card, COLUMNS)).toBe("backlog");
+  });
+});
+
+describe("reordering a step", () => {
+  const listed = (card: CalendarTask) => (card.subtasks ?? []).map((s) => s.title);
+  const three = () => addSubtask(addSubtask(addSubtask(task(), "a"), "b"), "c");
+
+  it("moves a step to an index in the list WITHOUT it", () => {
+    const card = three();
+    const first = card.subtasks![0].id;
+    // "a" pulled out leaves [b, c]; slot 1 is between them.
+    expect(listed(moveSubtask(card, first, 1))).toEqual(["b", "a", "c"]);
+    expect(listed(moveSubtask(card, first, 2))).toEqual(["b", "c", "a"]);
+  });
+
+  it("moves a step upwards", () => {
+    const card = three();
+    expect(listed(moveSubtask(card, card.subtasks![2].id, 0))).toEqual(["c", "a", "b"]);
+  });
+
+  it("clamps a drag that left the list, and never drops a step", () => {
+    const card = three();
+    const id = card.subtasks![1].id;
+    expect(listed(moveSubtask(card, id, -4))).toEqual(["b", "a", "c"]);
+    expect(listed(moveSubtask(card, id, 99))).toEqual(["a", "c", "b"]);
+  });
+
+  it("is a no-op for a move that changes nothing, and for an unknown id", () => {
+    const card = three();
+    expect(moveSubtask(card, card.subtasks![1].id, 1)).toBe(card);
+    expect(moveSubtask(card, "nope", 0)).toBe(card);
+  });
+
+  it("carries the step's own done state and id with it", () => {
+    let card = three();
+    card = toggleSubtask(card, card.subtasks![2].id);
+    const moved = moveSubtask(card, card.subtasks![2].id, 0);
+    expect(moved.subtasks![0]).toEqual(card.subtasks![2]);
+  });
+
+  it("never touches percent — reordering is not progress", () => {
+    const card = three();
+    expect(moveSubtask(card, card.subtasks![0].id, 2).percent).toBe(0);
+  });
+});
+
+describe("stepDropSlot", () => {
+  // Three 20px rows starting at y=0, the middle one being dragged.
+  const rects = [
+    { id: "a", top: 0, height: 20 },
+    { id: "b", top: 20, height: 20 },
+    { id: "c", top: 40, height: 20 },
+  ];
+
+  it("counts the OTHER rows whose midpoint the pointer has passed", () => {
+    expect(stepDropSlot(rects, "b", 5)).toBe(0);
+    expect(stepDropSlot(rects, "b", 15)).toBe(1);
+    expect(stepDropSlot(rects, "b", 55)).toBe(2);
+  });
+
+  it("ignores the dragged row's own midpoint", () => {
+    // Crossing y=30 is crossing the dragged row itself, which must not count.
+    expect(stepDropSlot(rects, "b", 25)).toBe(1);
+    expect(stepDropSlot(rects, "b", 35)).toBe(1);
   });
 });

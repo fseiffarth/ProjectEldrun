@@ -8,7 +8,9 @@ import { toStamp, todayStr } from "../../lib/calendarTime";
 import {
   autoscrollDelta,
   bucketByColumn,
+  columnOf,
   columnTitle,
+  currentSlot,
   doneColumnId,
   insertionIndex,
   orderedColumn,
@@ -51,6 +53,19 @@ const DRAG_THRESHOLD = 5;
  * to be safe under a target the user never really chose. With no column under the
  * pointer it does nothing and the card stays where it was; "no target" is never
  * mapped to a default column, and never to a delete.
+ *
+ * **One index space, from the hit-test to the backend.** Every index in this
+ * gesture is counted with the dragged card taken *out* of its column
+ * (`CardDrag.overIndex`) — that is what `insertionIndex` measures, what
+ * `commitMove` bisects ranks in, and what `TaskPlacement.index` means on the
+ * wire. The preview therefore has to be drawn in that space too, so `TodoColumn`
+ * renders the dragged card out of its list rather than leaving it in place,
+ * faded: with it left in, the placeholder landed one slot high for every drop
+ * below the card's own position, which reads as the board offering the card's
+ * *current* place as the new one. The card is not simply hidden late either —
+ * the drag **opens** with the target set to the slot it was lifted from
+ * (`fromIndex`), so the placeholder replaces it in the same frame and the column
+ * never changes height at pickup.
  */
 export function TodoBoard({
   columns,
@@ -89,8 +104,11 @@ export function TodoBoard({
     const rects = Array.from(
       columnEl!.querySelectorAll<HTMLElement>(".todo-card"),
     )
-      // The dragged card is still mounted (faded) so the column does not jump;
-      // it must not be one of the slots the drop is measured against.
+      // The measured slots are the OTHER cards' — that is what makes the result
+      // an exclusive-of-the-dragged-card index. The source column no longer
+      // renders it at all, so this filter only still matters for the first move
+      // of a gesture, which is hit-tested against the DOM of the frame before
+      // the drag started.
       .filter((node) => node.dataset.taskId !== drag?.taskId)
       .map((node) => {
         const r = node.getBoundingClientRect();
@@ -184,6 +202,12 @@ export function TodoBoard({
     const captureEl = document.documentElement;
     let dragging = false;
 
+    // Where the card is being lifted *from*, in the one index space this
+    // gesture counts in. Read from the same buckets the columns render, so the
+    // opening placeholder lands exactly on the card it replaces.
+    const fromColumn = columnOf(task, columns);
+    const fromIndex = currentSlot(buckets.get(fromColumn) ?? [], task.id);
+
     const onMove = (ev: PointerEvent) => {
       pointerRef.current = { x: ev.clientX, y: ev.clientY };
       if (!dragging) {
@@ -198,7 +222,8 @@ export function TodoBoard({
         }
         useTodoStore.getState().startCardDrag({
           taskId: task.id,
-          fromColumn: task.column || columns[0]?.id || "",
+          fromColumn,
+          fromIndex,
           title: task.title,
           width: rect.width,
           height: rect.height,
@@ -206,8 +231,10 @@ export function TodoBoard({
           grabDy: startY - rect.top,
           pointerX: ev.clientX,
           pointerY: ev.clientY,
-          overColumn: null,
-          overIndex: null,
+          // Opens on the card's own slot: the placeholder takes its place in the
+          // frame it leaves the column, so nothing below it moves at pickup.
+          overColumn: fromColumn,
+          overIndex: fromIndex,
         });
         startAutoscroll();
       }
@@ -235,6 +262,20 @@ export function TodoBoard({
       // No target — including every `pointercancel` WebKitGTK turned into a
       // commit — leaves the card exactly where it was.
       if (!drag.overColumn || drag.overIndex === null) return;
+      // Nor is putting a card back where it was picked up a move. The backend
+      // recognizes the replay and holds the rank, but the write still rewrites
+      // `calendar.json` and pushes a store update through every open surface,
+      // and a drag abandoned by dropping the card on its own slot is the common
+      // way this gesture ends. Skipped only for a card that HAS a placement:
+      // an unranked one — everything the calendar's Tasks view and ICS import
+      // create — is merely *displayed* in that slot, and the drop is what gives
+      // it a real one.
+      const settled =
+        drag.overColumn === drag.fromColumn &&
+        drag.overIndex === drag.fromIndex &&
+        task.rank != null &&
+        task.column === drag.fromColumn;
+      if (settled) return;
       void commitMove(task, drag.overColumn, drag.overIndex);
     };
 
@@ -250,13 +291,31 @@ export function TodoBoard({
 
   // ── Column edits ────────────────────────────────────────────────────────
 
-  const addCard = async (columnId: string, title: string) => {
+  /**
+   * Open the full card editor on a *draft* — an unsaved card carrying only what
+   * the column already decides (its placement, the calendar, the filtered
+   * project). Nothing is written here: the dialog creates the row on Save, which
+   * is what makes Cancel free. The empty `id` is the marker for "not yet in the
+   * store", and it is the same one `createTask` sends over the wire.
+   */
+  const addCard = (columnId: string) => {
     const column = buckets.get(columnId) ?? [];
     const top = orderedColumn(column, today)[0]?.rank ?? null;
-    await useCalendarStore.getState().createTask({
+    onEditCard({
+      id: "",
       calendar_id: defaultCalendarId,
-      title,
-      due: null,
+      title: "",
+      // Dated **today** by default. The board is a what-am-I-doing-now surface,
+      // so today is the overwhelmingly common answer — and an undated card is
+      // the one that appears in none of the surfaces built to surface work:
+      // not the header badge, not its Overdue/Due-today sections, not the
+      // alerts feed. It is a default, not a rule: this draft opens straight
+      // into the dialog with the date field on it, so clearing it is one click
+      // *before* anything is written. Deliberately not applied to the rails'
+      // conversions — `taskFromMail` stays undated (a mail arriving is not a
+      // thing due today) and `taskFromOccurrence` already carries the
+      // appointment's own date.
+      due: today,
       priority: 0,
       percent: 0,
       column: columnId,
@@ -314,6 +373,22 @@ export function TodoBoard({
   // simply where `position` puts it.
   const doneId = doneColumnId(columns);
 
+  // What the ghost says about the drop, and the whole reason it says anything:
+  // the pointer is over a *column*, but the card's landing slot is drawn inside
+  // that column's body, which for a drop near the bottom of a long board is
+  // scrolled somewhere off screen. The ghost is the one thing guaranteed to be
+  // under the eye, so it carries the answer — the target column's name when the
+  // card is crossing into another one, and the fact that releasing here does
+  // nothing when the pointer has left the columns entirely.
+  const overColumn = cardDrag?.overColumn
+    ? (columns.find((c) => c.id === cardDrag.overColumn) ?? null)
+    : null;
+  const crossingTo =
+    cardDrag && overColumn && overColumn.id !== cardDrag.fromColumn
+      ? columnTitle(overColumn, t, storedColumns)
+      : null;
+  const noDrop = !!cardDrag && (!cardDrag.overColumn || cardDrag.overIndex === null);
+
   return (
     <div
       className={"todo-board" + (cardDrag ? " dragging" : "")}
@@ -330,6 +405,7 @@ export function TodoBoard({
             cardDrag?.overColumn === column.id ? cardDrag.overIndex : null
           }
           placeholderHeight={cardDrag?.height ?? 0}
+          dropTarget={cardDrag?.overColumn === column.id}
           draggingId={cardDrag?.taskId ?? null}
           onCardPointerDown={onCardPointerDown}
           onEditCard={onEditCard}
@@ -354,14 +430,22 @@ export function TodoBoard({
            proved fast under WebKitGTK — and `pointer-events: none`, or the ghost
            becomes `elementFromPoint`'s answer and the drop targets itself. */
         <div
-          className="todo-drag-ghost"
+          className={"todo-drag-ghost" + (noDrop ? " todo-drag-ghost-nodrop" : "")}
           style={{
             left: cardDrag.pointerX - cardDrag.grabDx,
             top: cardDrag.pointerY - cardDrag.grabDy,
             width: cardDrag.width,
           }}
         >
-          {cardDrag.title}
+          <span className="todo-drag-ghost-title">{cardDrag.title}</span>
+          {crossingTo && (
+            /* Glyph + the column's own name, never a translated sentence: the
+               one word here is data the user typed. */
+            <span className="todo-drag-ghost-to">→ {crossingTo}</span>
+          )}
+          {noDrop && (
+            <span className="todo-drag-ghost-to">{t("todoBoard.dropNowhere")}</span>
+          )}
         </div>
       )}
     </div>

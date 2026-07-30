@@ -268,7 +268,16 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      - [ ] 🤖 Automated test — none: a second OS window and a monitor unplug
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
 
-104. ✅ **Undo is per-keystroke, and the history updaters are impure.**
+104. ⚠️ **PARTIAL — the ✅ overstates it.** The StrictMode/impure-updater half is
+     genuinely fixed (coalescing + push moved outside the updater,
+     `HISTORY_MAX=400`, `DeckView.tsx:501-551`). But the per-keystroke half is
+     **only fixed on the stage**: the sole keyed caller is `DeckStage`'s
+     `onTextChange` (`DeckView.tsx:1846`). Still one undo step per keystroke —
+     `DeckInspector.tsx:27` (its `onChange: (next: ObjectList) => void` prop has
+     no key parameter at all), `DeckNotes.tsx:28-31` → `patchSlide` → `commit`
+     (`DeckView.tsx:554,957-962`), and `DeckAnimate.tsx:38-39`. Route those
+     three through a key before ticking this.
+     Original text: **Undo is per-keystroke, and the history updaters are impure.**
      Every inspector `onChange` calls `setObjects` → `commit` → one history
      snapshot (`DeckInspector.tsx:69`, `DeckView.tsx:294-303`). Typing a
      40-character title is 40 undo steps; typing 100 characters of speaker notes
@@ -581,7 +590,17 @@ annotation plus animation (already built, and unique), and then #133–#138.*
      `tauri::ipc::Response` on `read_file_bytes` fixes the asset side — and
      benefits the PDF and image viewers too, not just the deck.
 
-124. **Editor render and load pass.** Concretely: failed asset reads are never
+124. **Editor render and load pass.** **The GIF failed-decode cache is already
+     done** (`deckAssets.ts:149-154,185`) — the sentence below claiming a failed
+     GIF is "re-read *and re-decoded* every time" is stale. Everything else in
+     this item is verbatim still true: uncached failed image reads
+     (`deckAssets.ts:76-87`), per-frame marquee (`DeckStage.tsx:322`),
+     unmemoized `wrapText` and no `memo()` on `DeckObjectView`
+     (`DeckObjectView.tsx:277`), the rail rendering every slide with no
+     `IntersectionObserver` (`DeckView.tsx:1690-1802`), serial `loadBase`
+     (`deckBase.ts:58-64`), and one-at-a-time export asset reads
+     (`DeckView.tsx:906-915`).
+     Original text: Concretely: failed asset reads are never
      cached as failed, so a missing image re-issues its disk read on **every
      edit**, and a GIF that fails to decode is re-read *and re-decoded* every
      time (`deckAssets.ts:65-71, 97, 141-166`). Marquee selection calls
@@ -607,7 +626,14 @@ annotation plus animation (already built, and unique), and then #133–#138.*
      (duplicate/delete/skip), and `IntersectionObserver` thumbnail
      virtualization.
 
-126. **Presenter console polish.** Don't blank the *speaker's* stage in dual
+126. **Presenter console polish.** **PARTIAL — 4 of 6 sub-items already shipped**
+     (recorded 2026-07-28): speaker stage no longer blanked in dual mode
+     (`DeckPresenter.tsx:628`), real grid thumbnails (`:92-111,649`), timer
+     pause/reset/target with amber/red tone (`:134-138,240-248,550-556,692-714`),
+     notes font-size stepper (`:139,708-713`). **Remaining two:** a freeze/hold
+     key distinct from blackout, and an audience-window health check
+     (`openAudience` `:263-279` still trusts the resolved `invoke`).
+     Original text: Don't blank the *speaker's* stage in dual
      mode — the blank overlay renders inside `.deck-presenter-main`
      (`DeckPresenter.tsx:420`), so blanking the room also blanks the speaker's
      view of the slide (notes survive; the slide doesn't). Render real
@@ -656,11 +682,14 @@ annotation plus animation (already built, and unique), and then #133–#138.*
      (`model.ts:157-211`), surfaced in the inspector; write a structure tree plus
      document title and language on export.
 
-131. **Route deck strings through i18n.** Every deck string is hardcoded English;
-     the only key today is `viewerLabel.eldeck`. Mechanical, ~150 strings across
-     `DeckView`, `DeckInspector`, `DeckAnimate`, `DeckPresenter`, `DeckTexPanel`,
-     `DeckNotes`. Nominally in scope for **Group N #92**, which already lists
-     `embed/deck/` — do it there or here, but do it once.
+131. **Route deck strings through i18n.** ✅ **DONE** (likely landed under
+     Group N #92). All 13 deck components call `useT()` and route their literals
+     through `deckView.*` / `deckPresenter.*` keys — `DeckView.tsx:123,231`,
+     `DeckInspector.tsx:22`, `DeckAnimate.tsx:33`, `DeckPresenter.tsx:71`,
+     `DeckTexPanel.tsx:12`, `DeckNotes.tsx:12`, `DeckAudienceApp.tsx:53`,
+     `DeckStage.tsx:49`, `DeckObjectView.tsx:25`, `DeckSlideView.tsx:19`,
+     `DeckThemePanel.tsx:32`, `FontField.tsx:24`, `IconPicker.tsx:18`.
+     The old claim that "the only key today is `viewerLabel.eldeck`" is false.
 
 132. **Stage zoom and pan.** `DeckStage` always fits the pane
      (`DeckStage.tsx:144-166`); precise work at 14 pt in a split pane has no

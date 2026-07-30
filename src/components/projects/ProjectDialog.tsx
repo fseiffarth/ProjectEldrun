@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
-import { open } from "@tauri-apps/plugin-dialog";
-import type { ProjectEntry, SandboxSpec } from "../../types";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
+import type { ProjectEntry, SandboxToggleOutcome } from "../../types";
 import { resolveProjectDirectory } from "../../types";
 import { basename } from "../../lib/paths";
 import { cmdToKind, useTabsStore } from "../../stores/tabs";
@@ -15,6 +15,7 @@ import {
   buildDescriptionFillPrompt,
   buildScaffoldFillPrompt,
   collectScaffoldAgentFills,
+  describeDetectedSpecSource,
   isCloneUrl,
   joinRemotePath,
   providerFromCloneUrl,
@@ -553,11 +554,27 @@ export function ProjectDialog({
       let created = project;
       if (runInContainer) {
         try {
-          const spec = await invoke<SandboxSpec>("set_project_sandbox", {
+          let outcome = await invoke<SandboxToggleOutcome>("set_project_sandbox", {
             projectId: project.id,
             enabled: true,
+            sourceDecision: null,
           });
-          created = { ...project, sandbox: spec };
+          if (outcome.outcome === "needs_confirmation") {
+            // O#143: the repo declares its own Dockerfile/devcontainer image —
+            // never adopted silently, since `docker build` runs it as root.
+            const { source } = outcome;
+            const adopt = await confirm(describeDetectedSpecSource(source), {
+              title: "Use this repo's own container?",
+              kind: "warning",
+            });
+            outcome = await invoke<SandboxToggleOutcome>("set_project_sandbox", {
+              projectId: project.id,
+              enabled: true,
+              sourceDecision: { hash: source.hash, adopt },
+            });
+          }
+          const spec = outcome.outcome === "applied" ? outcome.spec : undefined;
+          created = spec ? { ...project, sandbox: spec } : project;
           // Same preflight the pill's toggle runs: a missing image becomes a
           // one-click build in a fresh tab rather than an error at the first
           // spawn (house convention — never a copy-it-yourself message).

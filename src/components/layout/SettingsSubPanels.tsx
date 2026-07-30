@@ -39,6 +39,39 @@ interface RegistryModel {
   updated: string;
 }
 
+/** A tag's headline facts (mirrors backend RegistryDetails), fetched lazily so a
+ *  row that carries no size badge on the search card can still show its
+ *  parameters and download size. */
+interface RegistryDetails {
+  size_bytes: number;
+  params: string | null;
+  quant: string | null;
+  cloud: boolean;
+}
+/** Cached per-tag details, "loading" while the two registry reads are in flight,
+ *  "error" when they could not be reached. */
+type TagInfo = RegistryDetails | "loading" | "error";
+
+/** Approximate age in days from a registry row's relative "updated" label
+ *  ("yesterday", "3 weeks ago", …), for the client-side "newest" reorder that
+ *  stands in when a text query is present — ollama.com returns nothing for a
+ *  query combined with its own `o=newest` sort. Unrecognized → Infinity, so a
+ *  row with no readable label sorts last rather than first. */
+function updatedAgeDays(updated: string): number {
+  const s = updated.trim().toLowerCase();
+  if (!s) return Infinity;
+  if (s === "today" || s === "just now") return 0;
+  if (s === "yesterday") return 1;
+  if (s === "last week") return 7;
+  if (s === "last month") return 30;
+  if (s === "last year") return 365;
+  const m = /(\d+)\s*(hour|day|week|month|year)/.exec(s);
+  if (!m) return Infinity;
+  const n = parseInt(m[1], 10);
+  const per: Record<string, number> = { hour: 1 / 24, day: 1, week: 7, month: 30, year: 365 };
+  return n * (per[m[2]] ?? 1);
+}
+
 /** Capability filters, mapped to Ollama's `c=` search param. */
 const REGISTRY_TYPES = ["tools", "vision", "thinking", "embedding", "audio"] as const;
 
@@ -414,6 +447,11 @@ interface AgentInfo {
   shell_kind: InstallShellKind;
   /** `npm uninstall -g <pkg>` for an npm-installed agent; empty otherwise. */
   uninstall_cmd: string;
+  /** `install_cmd` prefixed with `sudo`; empty when that wouldn't apply
+   *  (Windows, or a non-npm installer). See backend `sudo_variant`. */
+  install_cmd_sudo: string;
+  /** `uninstall_cmd` prefixed with `sudo`; same emptiness rule. */
+  uninstall_cmd_sudo: string;
   docs: string;
   installed: boolean;
 }
@@ -768,7 +806,8 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
                       npm's global dir is root-owned on a system-wide Linux
                       Node install, so Remove can fail with EACCES — the same
                       run-in-a-terminal escape hatch the install flow offers,
-                      so the user can prefix `sudo` themselves. */}
+                      plus a one-click sudo-prefixed variant for that exact
+                      case (uninstall_cmd_sudo, empty on Windows). */}
                   {a.uninstall_cmd !== "" && (
                     <>
                       <p className="settings-help">
@@ -787,6 +826,18 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
                         >
                           {t("agents.runInTerminal")}
                         </button>
+                        {a.uninstall_cmd_sudo !== "" && (
+                          <button
+                            type="button"
+                            className="ollama-action-btn"
+                            title={t("agents.runWithSudoTitle")}
+                            onClick={() =>
+                              runInstallInTab(`Remove ${a.label}`, a.uninstall_cmd_sudo, a.shell_kind)
+                            }
+                          >
+                            {t("agents.runWithSudo")}
+                          </button>
+                        )}
                       </div>
                     </>
                   )}
@@ -846,6 +897,23 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
                         >
                           {t("agents.runInTerminal")}
                         </button>
+                        {/* npm-based installers only (install_cmd_sudo empty
+                            otherwise — Windows, or a curl/pip installer that
+                            targets the user's own home directory): the actual
+                            EACCES fix when npm's global directory is root-owned,
+                            the default on a non-nvm Linux/macOS Node install. */}
+                        {a.install_cmd_sudo !== "" && (
+                          <button
+                            type="button"
+                            className="ollama-action-btn"
+                            title={t("agents.runWithSudoTitle")}
+                            onClick={() =>
+                              runInstallInTab(`Install ${a.label}`, a.install_cmd_sudo, a.shell_kind)
+                            }
+                          >
+                            {t("agents.runWithSudo")}
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="ollama-action-btn"
@@ -937,8 +1005,10 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
   // global `ollama-load-progress` events so a load started from the brain menu
   // shows here too; Ollama streams no load percentage, so it's indeterminate.
   const [loadingMem, setLoadingMem] = useState<Record<string, boolean>>({});
-  // Per-tag download size from the registry, fetched lazily on hover and cached.
-  const [tagSizes, setTagSizes] = useState<Record<string, number | "loading" | "error">>({});
+  // Per-tag registry facts (size, parameters, quantization, cloud), fetched
+  // lazily and cached. The parameter count and size are what the search card
+  // omits for a model with no size badge, so it is fetched from the manifest.
+  const [tagInfo, setTagInfo] = useState<Record<string, TagInfo>>({});
   // Free-text "pull any model" field — accepts any registry ref the catalog omits.
   const [pullName, setPullName] = useState("");
   // Live download progress per model ref, keyed by the exact ref passed to
@@ -971,13 +1041,40 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const loadMoreRef = useRef<() => void>(() => {});
 
-  // Fetch a tag's registry size once, when the user first hovers it.
-  const fetchTagSize = (fullName: string) => {
-    if (fullName in tagSizes) return;
-    setTagSizes((p) => ({ ...p, [fullName]: "loading" }));
-    invoke<number>("ollama_registry_size", { model: fullName })
-      .then((bytes) => setTagSizes((p) => ({ ...p, [fullName]: bytes })))
-      .catch(() => setTagSizes((p) => ({ ...p, [fullName]: "error" })));
+  // Fetch a tag's registry facts (size + parameters + quantization) once. Called
+  // on hover for a tag button, and eagerly for a row with no size badge (below),
+  // where the parameters and size would otherwise be invisible.
+  const fetchTagInfo = (fullName: string) => {
+    if (fullName in tagInfo) return;
+    setTagInfo((p) => ({ ...p, [fullName]: "loading" }));
+    invoke<RegistryDetails>("ollama_registry_details", { model: fullName })
+      .then((d) => setTagInfo((p) => ({ ...p, [fullName]: d })))
+      .catch(() => setTagInfo((p) => ({ ...p, [fullName]: "error" })));
+  };
+
+  // The " — 4.7 GB" suffix a tag button's tooltip carries once its size is known
+  // (empty for a cloud model, which downloads nothing, and while still loading).
+  const tagSizeSuffix = (info: TagInfo | undefined): string => {
+    if (info === undefined) return "";
+    if (info === "loading") return t("ollama.sizeLoadingSuffix");
+    if (info === "error" || info.size_bytes <= 0) return "";
+    return ` — ${fmtBytes(info.size_bytes)}`;
+  };
+
+  // The visible parameter/quantization/size chips for a registry row that has no
+  // size badge on its search card — so a bare "pull"/cloud model still shows what
+  // it is and whether it fits. Cloud-ness is already shown by the capability row,
+  // so a cloud model shows its parameter count (e.g. 756B) and no size.
+  const tagFactChips = (info: TagInfo | undefined) => {
+    if (info === "loading") return <span className="ollama-catalog-hint">…</span>;
+    if (!info || info === "error") return null;
+    return (
+      <>
+        {info.params && <span className="ollama-badge">{info.params}</span>}
+        {info.quant && <span className="ollama-badge">{info.quant}</span>}
+        {info.size_bytes > 0 && <span className="ollama-badge">{fmtBytes(info.size_bytes)}</span>}
+      </>
+    );
   };
 
   const refresh = async () => {
@@ -1067,7 +1164,6 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
     return () => {
       void un.then((f) => f());
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Drop a model's progress once its pull settles (success or error).
@@ -1259,7 +1355,11 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
   // ── Live registry browser ────────────────────────────────────────────────
   // Only "popular"/"newest" are server-side (Ollama's `o=`); the name/size/pulls
   // sorts reorder loaded rows client-side, so they fetch in popular order.
-  const serverSort = sortBy === "newest" ? "newest" : "popular";
+  // "newest" is server-side ONLY when there is no text query: ollama.com returns
+  // an empty result set for `q=…&o=newest`, so a searched "newest" fetches the
+  // query's relevance results and is reordered by recency client-side (below).
+  const hasRegQuery = regQueryLive.trim().length > 0;
+  const serverSort = sortBy === "newest" && !hasRegQuery ? "newest" : "popular";
 
   // Fetch one page of ollama.com/search results. `reset` replaces the list
   // (new query/sort); otherwise it appends, de-duping by name across pages.
@@ -1351,10 +1451,27 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
       );
     } else if (sortBy === "pulls") {
       out.sort((a, b) => parsePulls(b.pulls) - parsePulls(a.pulls));
+    } else if (sortBy === "newest" && hasRegQuery) {
+      // A searched "newest" cannot be honoured server-side (see `serverSort`),
+      // so reorder the query's results by their relative "updated" label.
+      out.sort((a, b) => updatedAgeDays(a.updated) - updatedAgeDays(b.updated) || a.name.localeCompare(b.name));
     }
-    // "popular"/"newest": keep the server's fetch order.
+    // "popular"/"newest" without a query: keep the server's fetch order.
     return out;
-  }, [regModels, regTypes, regSizes, sortBy]);
+  }, [regModels, regTypes, regSizes, sortBy, hasRegQuery]);
+
+  // Rows with no size badge on their search card (cloud models, single-variant
+  // models) carry their parameter count and size only in the registry manifest,
+  // not the search HTML — so fetch those few eagerly, or the card would show a
+  // bare "pull"/"cloud" button with no parameters and no size to judge fit by.
+  useEffect(() => {
+    for (const m of shownRegistry) {
+      if (m.sizes.length === 0) {
+        fetchTagInfo(`${m.name}:${m.capabilities.includes("cloud") ? "cloud" : "latest"}`);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shownRegistry]);
 
   // "Load on Eldrun start" — which models `stores/ollamaAutoload` warms into
   // memory at launch. The per-model switches write straight through (the same
@@ -2000,32 +2117,34 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
             <div className="ollama-catalog-tags">
               {m.sizes.length === 0 ? (
                 (() => {
-                  const isInstalled = installedNames.has(`${m.name}:latest`);
-                  const sz = tagSizes[m.name];
-                  const sizeLabel =
-                    sz === undefined
-                      ? ""
-                      : sz === "loading"
-                        ? t("ollama.sizeLoadingSuffix")
-                        : sz === "error"
-                          ? ""
-                          : ` — ${fmtBytes(sz)}`;
+                  // No size badge on the search card: a cloud model (its tag is
+                  // `:cloud`) or a single-variant model (`:latest`). Either way the
+                  // parameters + size come from the manifest, fetched eagerly above
+                  // and shown as chips beside the pull button.
+                  const isCloud = m.capabilities.includes("cloud");
+                  const fullName = `${m.name}:${isCloud ? "cloud" : "latest"}`;
+                  const isInstalled = installedNames.has(fullName);
+                  const busyKey = `${fullName}:pull`;
+                  const info = tagInfo[fullName];
                   return (
-                    <button
-                      type="button"
-                      className={`ollama-tag-btn${isInstalled ? " installed" : ""}`}
-                      disabled={!!busy[`${m.name}:pull`]}
-                      title={t(isInstalled ? "ollama.tagUpdateTitle" : "ollama.tagDownloadTitle", { name: m.name, size: sizeLabel })}
-                      onMouseEnter={() => fetchTagSize(m.name)}
-                      onFocus={() => fetchTagSize(m.name)}
-                      onClick={() =>
-                        void withBusy(`${m.name}:pull`, () =>
-                          invoke("pull_ollama_model", { model: m.name }),
-                        )
-                      }
-                    >
-                      {busy[`${m.name}:pull`] ? pullText(m.name, "…") : t("ollama.pullLower")}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        className={`ollama-tag-btn${isInstalled ? " installed" : ""}`}
+                        disabled={!!busy[busyKey]}
+                        title={t(isInstalled ? "ollama.tagUpdateTitle" : "ollama.tagDownloadTitle", { name: fullName, size: tagSizeSuffix(info) })}
+                        onMouseEnter={() => fetchTagInfo(fullName)}
+                        onFocus={() => fetchTagInfo(fullName)}
+                        onClick={() =>
+                          void withBusy(busyKey, () =>
+                            invoke("pull_ollama_model", { model: fullName }),
+                          )
+                        }
+                      >
+                        {busy[busyKey] ? pullText(fullName, "…") : t("ollama.pullLower")}
+                      </button>
+                      {tagFactChips(info)}
+                    </>
                   );
                 })()
               ) : (
@@ -2033,24 +2152,15 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                   const fullName = `${m.name}:${tag}`;
                   const isInstalled = installedNames.has(fullName);
                   const isBusy = busy[`${fullName}:pull`];
-                  const sz = tagSizes[fullName];
-                  const sizeLabel =
-                    sz === undefined
-                      ? ""
-                      : sz === "loading"
-                        ? t("ollama.sizeLoadingSuffix")
-                        : sz === "error"
-                          ? ""
-                          : ` — ${fmtBytes(sz)}`;
                   return (
                     <button
                       key={tag}
                       type="button"
                       className={`ollama-tag-btn${isInstalled ? " installed" : ""}`}
                       disabled={!!isBusy}
-                      title={t(isInstalled ? "ollama.tagUpdateTitle" : "ollama.tagDownloadTitle", { name: fullName, size: sizeLabel })}
-                      onMouseEnter={() => fetchTagSize(fullName)}
-                      onFocus={() => fetchTagSize(fullName)}
+                      title={t(isInstalled ? "ollama.tagUpdateTitle" : "ollama.tagDownloadTitle", { name: fullName, size: tagSizeSuffix(tagInfo[fullName]) })}
+                      onMouseEnter={() => fetchTagInfo(fullName)}
+                      onFocus={() => fetchTagInfo(fullName)}
                       onClick={() =>
                         void withBusy(`${fullName}:pull`, () =>
                           invoke("pull_ollama_model", { model: fullName }),

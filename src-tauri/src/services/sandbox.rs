@@ -118,7 +118,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::Serialize;
 
 use crate::paths;
-use crate::schema::project::SandboxSpec;
+use crate::schema::project::{DetectedSpecKind, DetectedSpecSource, SandboxSpec};
 use crate::storage;
 use crate::terminal::PtyOptions;
 
@@ -1181,32 +1181,71 @@ fn project_entry_value(project_id: &str, key: &str) -> Option<serde_json::Value>
     entry.extra.get(key).cloned()
 }
 
-/// Detect in-repo container sources for a project whose toggle is being enabled
-/// for the first time: a root `Dockerfile` wins, else a
-/// `.devcontainer/devcontainer.json` `image` field. Leaves `spec` untouched
-/// when neither is present (the default image applies).
-pub fn detect_spec_sources(project_dir: &Path, spec: &mut SandboxSpec) {
+/// Detect in-repo container sources for a project: a root `Dockerfile` wins,
+/// else a `.devcontainer/devcontainer.json` `image` field. Returns `None` when
+/// neither is present. Pure detection — reports what the repo declares, never
+/// applies it (O#143: `commands::projects::set_project_sandbox` is the only
+/// caller allowed to write a detected source into a spec, and only after an
+/// explicit user decision).
+pub fn detect_spec_source(project_dir: &Path) -> Option<DetectedSpecSource> {
     if project_dir.join("Dockerfile").is_file() {
-        spec.dockerfile = Some("Dockerfile".to_string());
-        return;
+        // Reuse the traversal-safe resolver so a symlinked/escaping Dockerfile
+        // is refused here too rather than only at build time.
+        let path = resolve_spec_dockerfile(project_dir, "Dockerfile").ok()?;
+        let bytes = std::fs::read(&path).ok()?;
+        return Some(DetectedSpecSource {
+            kind: DetectedSpecKind::Dockerfile,
+            value: "Dockerfile".to_string(),
+            hash: sha256_hex(&bytes),
+        });
     }
     let devcontainer = project_dir.join(".devcontainer").join("devcontainer.json");
-    if let Ok(text) = std::fs::read_to_string(&devcontainer) {
-        // devcontainer.json is JSONC; strip line comments so serde can parse
-        // the common case. (A devcontainer that only names a Dockerfile/compose
-        // setup has no `image` and is simply not auto-detected.)
-        let stripped: String = text
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&stripped) {
-            if let Some(image) = v.get("image").and_then(|i| i.as_str()) {
-                if !image.is_empty() {
-                    spec.image = Some(image.to_string());
-                }
-            }
-        }
+    let text = std::fs::read_to_string(&devcontainer).ok()?;
+    // devcontainer.json is JSONC; strip line comments so serde can parse the
+    // common case. (A devcontainer that only names a Dockerfile/compose setup
+    // has no `image` and is simply not detected.)
+    let stripped: String = text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let v: serde_json::Value = serde_json::from_str(&stripped).ok()?;
+    let image = v
+        .get("image")
+        .and_then(|i| i.as_str())
+        .filter(|s| !s.is_empty())?;
+    Some(DetectedSpecSource {
+        kind: DetectedSpecKind::DevcontainerImage,
+        value: image.to_string(),
+        hash: sha256_hex(image.as_bytes()),
+    })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+/// Test/back-compat shim over [`detect_spec_source`]: writes straight into a
+/// `SandboxSpec` the way the pre-#143 auto-adopt path did. Production code
+/// no longer calls this — `commands::projects::set_project_sandbox` calls
+/// `detect_spec_source` directly and gates the write on a user decision.
+#[cfg(test)]
+fn detect_spec_sources(project_dir: &Path, spec: &mut SandboxSpec) {
+    match detect_spec_source(project_dir) {
+        Some(DetectedSpecSource {
+            kind: DetectedSpecKind::Dockerfile,
+            value,
+            ..
+        }) => spec.dockerfile = Some(value),
+        Some(DetectedSpecSource {
+            kind: DetectedSpecKind::DevcontainerImage,
+            value,
+            ..
+        }) => spec.image = Some(value),
+        None => {}
     }
 }
 

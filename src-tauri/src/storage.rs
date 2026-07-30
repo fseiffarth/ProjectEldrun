@@ -70,7 +70,7 @@ pub fn state_dir() -> std::path::PathBuf {
         let base = std::env::var("APPDATA")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| paths::home_dir());
-        std::path::PathBuf::from(base).join("eldrun")
+        base.join("eldrun")
     } else if cfg!(target_os = "macos") {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         std::path::PathBuf::from(home)
@@ -199,7 +199,7 @@ pub(crate) fn epoch_to_utc(secs: u64) -> (u64, u64, u64, u64, u64, u64) {
 }
 
 pub(crate) fn is_leap_year(y: u64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────

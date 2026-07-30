@@ -4,7 +4,7 @@
 implemented and unit-tested; nothing has run against a real server, a real
 correspondent, or a real keychain prompt. The §7 table now carries per-phase
 outcomes, and the deviations from this document are recorded in §12 rather than
-left for a reader to discover by diffing. Tracking item: `todo/group-j.md` #66.
+left for a reader to discover by diffing. Tracking item: `todo/group-j-mail.md` #66.
 Design rationale that outlived the plan lives in `docs/context/mail_encryption.md`.
 **Supersedes:** nothing. **Merges:** `docs/mail_encryption_plan_a.md` (OpenPGP-first,
 1796 lines) and `docs/mail_encryption_plan_b.md` (S/MIME-first, 1967 lines), which
@@ -511,7 +511,7 @@ Answers change the work. Recommendations included so silence is still a decision
 ## 10. TODO entries
 
 Both plans proposed numbering that collides (A: #153–#160; B: 65a–65i). The tree
-uses per-group files, so these belong in `todo/group-j.md` (verified present)
+uses per-group files, so these belong in `todo/group-j-mail.md` (verified present)
 renumbered from its current tail — to be assigned when the group file is opened,
 not guessed here.
 

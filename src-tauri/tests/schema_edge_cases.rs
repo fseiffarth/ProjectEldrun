@@ -1,8 +1,8 @@
-/// Edge-case and invariant tests for the Eldrun schema types.
-///
-/// These complement schema_roundtrip.rs (which tests real fixtures) by
-/// covering degenerate inputs, default values, and Python-rollback invariants
-/// that can be constructed inline without fixture files.
+//! Edge-case and invariant tests for the Eldrun schema types.
+//!
+//! These complement schema_roundtrip.rs (which tests real fixtures) by
+//! covering degenerate inputs, default values, and Python-rollback invariants
+//! that can be constructed inline without fixture files.
 
 use eldrun_lib::schema::{
     ActiveSession, DefaultApps, Project, ProjectEntry, Settings, TerminalSession,
@@ -31,8 +31,10 @@ fn settings_default_color_scheme_is_fancy_dark() {
 
 #[test]
 fn settings_explicit_color_scheme_is_returned() {
-    let mut s = Settings::default();
-    s.color_scheme = Some("light".to_string());
+    let s = Settings {
+        color_scheme: Some("light".to_string()),
+        ..Default::default()
+    };
     assert_eq!(s.color_scheme(), "light");
 }
 

@@ -25,6 +25,7 @@ import type {
   CalDavCollection,
   CalDavParsed,
   CalDavPasswordState,
+  CalDavWrite,
 } from "../types/caldav";
 
 /**
@@ -115,6 +116,59 @@ export function caldavApply(args: {
   lastSync: string;
 }): Promise<CalendarData> {
   return invoke<CalendarData>("caldav_apply", args);
+}
+
+// ── Push (Phase 3) ──────────────────────────────────────────────────────────
+
+/**
+ * Create or update one resource on the server.
+ *
+ * `resourceHref` null means **create** — the backend mints the URL from the
+ * collection and `uid`, and writes conditional on nothing being there. Otherwise
+ * it is an update conditional on `etag`; there is no unconditional path, which is
+ * the point (`services/caldav.rs`'s write rules).
+ *
+ * A `412` comes back as `conflict: true`, **not** as a rejection: the caller has
+ * a question to put to the user, not an error to report.
+ */
+export function caldavPush(args: {
+  accountId: string;
+  href: string;
+  kind: "event" | "task";
+  rowId: string;
+  uid: string;
+  ics: string;
+  resourceHref: string | null;
+  etag: string | null;
+}): Promise<CalDavWrite> {
+  return invoke<CalDavWrite>("caldav_push", args);
+}
+
+/**
+ * Delete one resource, conditional on its ETag. The local row is the caller's to
+ * remove **after** this resolves — the other order loses the row whenever the
+ * server refuses.
+ */
+export function caldavDelete(args: {
+  accountId: string;
+  href: string;
+  resourceHref: string;
+  etag: string;
+}): Promise<CalDavWrite> {
+  return invoke<CalDavWrite>("caldav_delete", args);
+}
+
+/** The ETag one resource carries on the server right now — what makes resolving
+ *  a conflict an informed overwrite rather than an unconditional one. */
+export function caldavResourceEtag(accountId: string, resourceHref: string): Promise<string> {
+  return invoke<string>("caldav_resource_etag", { accountId, resourceHref });
+}
+
+/** Re-ask the server what this login may do with a collection; returns the new
+ *  `read_only`. Access changes — a colleague grants write months later — and the
+ *  alternative would be re-subscribing, which costs the calendar's board state. */
+export function caldavRefreshAccess(accountId: string, href: string): Promise<boolean> {
+  return invoke<boolean>("caldav_refresh_access", { accountId, href });
 }
 
 /**

@@ -5,14 +5,26 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$HOME/.local/share/eldrun"
 LOG_FILE="$LOG_DIR/hotreload.log"
+LOG_MAX_BYTES=$((64 * 1024 * 1024))
 
 mkdir -p "$LOG_DIR"
+
+# `tauri dev` streams every cargo build bar and vite HMR line in here, so the
+# log grows without bound (it reached 2 GB once). Keep one generation.
+if [ -f "$LOG_FILE" ] && [ "$(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0)" -gt "$LOG_MAX_BYTES" ]; then
+  mv -f "$LOG_FILE" "$LOG_FILE.1"
+fi
+
 exec >>"$LOG_FILE" 2>&1
 
 printf '\n=== HOTRELOAD START %s ===\n' "$(date -Is)"
 trap 'status=$?; printf "=== HOTRELOAD EXIT %s status=%s ===\n" "$(date -Is)" "$status"' EXIT
 
 cd "$ROOT"
+
+# Refuse to become a second instance. Also runs again via the `pretauri:dev`
+# npm hook below, which is what covers a bare `npm run tauri:dev`.
+"$ROOT/scripts/guard-single-instance.sh"
 
 # Desktop entries don't source ~/.bashrc, so Rust tools may not be in PATH.
 export PATH="$HOME/.cargo/bin:$PATH"
