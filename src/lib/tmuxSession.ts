@@ -22,8 +22,9 @@ function sanitizeForTmuxName(id: string): string {
 }
 
 /**
- * Mint a fresh, stable tmux session name for a shell tab. Minted **once** at tab
- * creation and **persisted** on the tab (`TabEntry.tmuxSession`), because the tab's
+ * Mint a fresh, stable tmux session name for a shell tab or a remote agent tab.
+ * Minted **once** at tab creation and **persisted** on the tab
+ * (`TabEntry.tmuxSession`), because the tab's
  * PTY id (`<scope>:<tab-key>`) is NOT stable — `loadFromLayout` regenerates the key
  * on every restart — so deriving the name from the id would create a *second*
  * session on relaunch instead of reattaching. A uuid is inherently tmux-safe
@@ -51,9 +52,19 @@ export function persistSessionsEnabled(remote: RemoteSpec | undefined | null): b
 
 /**
  * Whether THIS tab should be tmux-wrapped: a **shell** tab (interactive shells and
- * Python/script runs, which open a shell tab) running on a **remote host**
- * (`hostId` non-null) of a persist-enabled remote project. Agent tabs are excluded
- * — they resume via their own session — as are files/embed/monitor panes (no PTY).
+ * Python/script runs, which open a shell tab) or an **agent** tab (Claude, Codex,
+ * any SSH-hosted agent CLI) running on a **remote host** (`hostId` non-null) of a
+ * persist-enabled remote project. files/embed/monitor panes (no PTY) are excluded,
+ * as is a **local** agent (`local_agent`, host-bound Ollama — `hostId` is null,
+ * and its local path is not persisted here either).
+ *
+ * An agent tab now gets a persisted tmux name in addition to its `--resume` restore,
+ * and the two **compose** via `tmux new-session -A`: on relaunch, if the host session
+ * is still alive it reattaches the still-running agent (the `--resume` target is
+ * ignored); if it is gone, `-A` creates a fresh session that runs `--resume` and the
+ * conversation resumes as before. The name must be persisted across relaunch (a name
+ * derived from the regenerated PTY id would fork a second session instead of
+ * reattaching) — exactly the reason shell tabs persist their minted name.
  *
  * `ephemeral` is the per-tab opt-out (`TabEntry.ephemeral`): a tab whose work is
  * re-openable and not worth a daemon on the host. It exists because the project
@@ -68,7 +79,12 @@ export function shouldPersistTab(
   remote: RemoteSpec | undefined | null,
   ephemeral?: boolean,
 ): boolean {
-  return kind === "shell" && hostId !== null && !ephemeral && persistSessionsEnabled(remote);
+  return (
+    (kind === "shell" || kind === "agent") &&
+    hostId !== null &&
+    !ephemeral &&
+    persistSessionsEnabled(remote)
+  );
 }
 
 /**

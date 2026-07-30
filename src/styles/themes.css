@@ -4941,6 +4941,10 @@ select option {
   padding: 16px 22px;
   font-size: 13px;
   line-height: 1.65;
+  /* The app shell disables selection to keep its chrome from highlighting;
+     documents are content, so allow normal copy/select interactions here. */
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .markdown-body > :first-child { margin-top: 0; }
@@ -5084,6 +5088,7 @@ select option {
   margin: 0.32em 0 0;
   accent-color: var(--accent);
   flex: 0 0 auto;
+  cursor: pointer;
 }
 
 .markdown-body hr {
@@ -10235,13 +10240,17 @@ select option {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Lifted out of the row button so the Join can sit before it (see AlertsSection):
+   right-aligned by the row's `flex:1`, severity-toned on the span itself now that
+   `.alerts-row` no longer wraps it. */
 .alerts-when {
   font-size: 10px;
   color: var(--text-muted, var(--text-secondary));
   white-space: nowrap;
   flex: 0 0 auto;
+  padding-right: 2px;
 }
-.alerts-row.overdue .alerts-when {
+.alerts-when.overdue {
   color: var(--danger, #f85149);
 }
 
@@ -10263,6 +10272,66 @@ select option {
 .alerts-row-wrap:hover,
 .alerts-row-wrap:focus-within {
   background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+}
+/* The door. Accent-tinted and always visible (never hover-revealed like the
+   mute), because a meeting two minutes off is the one alert whose whole point is
+   the direct join — the same treatment the calendar menu's Join gets, sized down
+   for the strip. */
+.alerts-join {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  margin-right: 2px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  transition: background-color var(--transition);
+}
+.alerts-join:hover {
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+.alerts-done {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin-left: 5px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--success, #3fb950) 72%, transparent);
+  border-radius: 2px;
+  background:
+    linear-gradient(135deg, transparent 3px, color-mix(in srgb, var(--success, #3fb950) 10%, transparent) 0)
+    top left;
+  color: var(--success, #3fb950);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  box-shadow:
+    2px 2px 0 color-mix(in srgb, var(--success, #3fb950) 22%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--success, #3fb950) 8%, transparent);
+}
+.alerts-done:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--success, #3fb950) 22%, transparent);
+  border-color: var(--success, #3fb950);
+}
+.alerts-done:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+/* The narrow strip drops the word first — the 📹 and the service-naming tooltip
+   still say what the button is, and the row's title is worth more than "Join". */
+@media (max-width: 360px) {
+  .alerts-join-text {
+    display: none;
+  }
 }
 .alerts-mute {
   flex: 0 0 auto;
@@ -21976,29 +22045,43 @@ select option {
 /* An entry = the row plus, when the event has a video call, its Join. Siblings
    rather than a button inside a button (invalid markup, and the two go to
    genuinely different places: the calendar, and out of the app). */
+/* Row + Join are ONE white entry: no gap, a shared rounded outline the two
+   segments are clipped to, so the door reads as the right end of the same bar
+   rather than a chip floating beside it. */
 .cal-menu-entry {
   display: flex;
   align-items: stretch;
-  gap: 3px;
+  gap: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
 }
 .cal-menu-entry > .cal-menu-row {
   flex: 1;
   min-width: 0;
+  border-radius: 0;
+}
+/* Hovering either segment lights the whole entry, so the two never look like
+   two separately-hoverable things. */
+.cal-menu-entry:hover > .cal-menu-row,
+.cal-menu-entry:hover > .cal-menu-join {
+  background: var(--control-hover-bg);
 }
 
-/* Direct connection. Accent-tinted, because it is the one control in this menu
-   that *does* something rather than navigating — and the whole reason to read
-   the day from the header two minutes before the hour. */
+/* Direct connection — the one control in the menu that *does* something rather
+   than navigating. It sits inside the white entry now (a hairline divides it
+   from the title), keeping only accent *text* + the 📹 as the affordance, since
+   the whole reason to read the day from the header is to reach this door. */
 .cal-menu-join {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 0 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
-  color: var(--text-primary);
+  padding: 0 10px;
+  border: none;
+  border-left: 1px solid var(--border-color);
+  border-radius: 0;
+  background: var(--control-bg);
+  color: var(--accent);
   cursor: pointer;
   font-size: 11px;
   font-weight: 600;
@@ -22006,7 +22089,7 @@ select option {
   transition: background-color var(--transition);
 }
 .cal-menu-join:hover {
-  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  background: color-mix(in srgb, var(--accent) 20%, var(--control-hover-bg));
 }
 /* The label is what a narrow menu drops first — the 📹 plus the tooltip (which
    names the service) still say what the button is, and the row's title is worth
@@ -22080,14 +22163,16 @@ select option {
    extra room either. */
 .mail-overlay,
 .calendar-overlay,
-.todo-overlay {
+.todo-overlay,
+.skills-overlay {
   width: min(1680px, calc(100vw - 24px));
   height: min(93vh, calc(100vh - 24px));
   max-height: min(93vh, calc(100vh - 24px));
 }
 .mail-overlay-body,
 .calendar-overlay-body,
-.todo-overlay-body {
+.todo-overlay-body,
+.skills-overlay-body {
   position: relative;
   flex: 1;
   min-height: 0;
@@ -22099,8 +22184,10 @@ select option {
    title would be the word "Mail" twice, one line apart. Hidden only inside the
    overlay — in a tab the toolbar title is the only label there is. The calendar
    needs no equivalent: `.cal-toolbar-title` is the visible date range, not the
-   app's name, so it says something the band does not. */
-.mail-overlay .mail-toolbar-title {
+   app's name, so it says something the band does not. The skills library has the
+   same duplication as mail, and the same fix. */
+.mail-overlay .mail-toolbar-title,
+.skills-overlay .skills-title {
   display: none;
 }
 
@@ -22982,72 +23069,15 @@ handle — it swallows the pointer before the card ever sees it. */
   display: flex;
   gap: 10px;
 }
-/* The due date and its optional hour: one field, two inputs. The time is sized
-   to its content rather than sharing the row equally — it is the optional half,
-   and a date that shrank to make room for an empty time would read as the
-   smaller of the two.
+/* The due date and its optional hour are laid out with the **same** container
+   the calendar's event dialog uses (`.cal-datetime`), so the date input and the
+   `common/TimeField` clock share the row equally and look identical to the
+   calendar's start/end fields — one deadline, two inputs, one visual treatment.
 
-   It stays **one line, never wrapping**: the hour/minute lists are a fixed size
-   and the date is the only flexible control, so the date is what gives when the
-   column is tight (it shrinks — WebKitGTK clips its native field — rather than
-   the time lists dropping below it). `nowrap` is deliberate: an earlier `wrap`
-   here put the time group on a second row at ordinary widths, because flex wraps
-   an overflowing item *before* it shrinks a flexible one, and the native date
-   input claims a wide intrinsic size that pushed the group down. Letting the
-   date shrink instead also cures the original "intersecting fields" — nothing
-   overflows the column into the priority select, so there is nothing to wrap
-   around in the first place. */
-.todo-due-inputs {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 4px;
-  min-width: 0;
-}
-/* The due field holds three controls where the priority beside it holds one, so
+   The due field holds two controls where the priority beside it holds one, so
    it takes the larger share of the row rather than half of it. */
 .todo-field-due {
   flex: 2;
-}
-.todo-due-inputs > input[type="date"] {
-  /* `auto` basis, not `0`: WebKitGTK does not reliably grow a native date input
-     from a zero basis, so it collapsed to a clipped stub. Starting from its own
-     intrinsic width shows the whole `yyyy-mm-dd`; grow fills any leftover, shrink
-     (with `min-width: 0`) gives it up first when the row is tight. */
-  flex: 1 1 auto;
-  min-width: 0;
-}
-/* The hour list, colon and minute list travel as one fixed block beside the
-   date — it neither shrinks nor grows, so the date is the one control that gives
-   when the column is tight, and the colon stays snug between the two lists. */
-.todo-due-time-group {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-  min-width: 0;
-}
-/* The hour and minute lists: just the two digits, centred. The native `<select>`
-   widget has a hard minimum width on WebKitGTK (room for its own dropdown arrow)
-   that ignores a smaller CSS `width`, so the two lists stayed fat and squeezed
-   the date until its year clipped. `appearance: none` drops that native widget,
-   after which the CSS `width` is honoured; it still opens as a dropdown on click. */
-.todo-due-time {
-  flex: 0 0 auto;
-  width: 40px;
-  min-width: 0;
-  -webkit-appearance: none;
-  appearance: none;
-  text-align: center;
-  padding: 0 4px;
-}
-
-.todo-due-sep {
-  align-self: center;
-  /* The colon belongs to the pair, so it pulls the row's gap back in around
-     itself rather than sitting as a third item spaced like a control. */
-  margin: 0 -3px;
-  opacity: 0.75;
-  user-select: none;
 }
 .todo-tag-editor {
   display: flex;
@@ -23483,13 +23513,6 @@ handle — it swallows the pointer before the card ever sees it. */
    labelled row say "switcher", which is what they are. What survives here is
    the `!`/`!!` mark — the same glyph `MailList` prints on a filed row, which is
    what makes the two ends of the feature recognisably one thing. */
-.mail-rail-scope {
-  text-transform: none;
-  letter-spacing: 0;
-  font-size: 10px;
-  font-weight: 500;
-  color: var(--text-muted);
-}
 .mail-rail-priority-mark {
   flex: 0 0 auto;
   text-align: center;
@@ -23896,6 +23919,142 @@ handle — it swallows the pointer before the card ever sees it. */
   color: var(--text-muted);
   line-height: 1.5;
 }
+
+/* ── Local-model mail assistant (Group Q #204–#208) ─────────────────────────
+   On-device summarize / extract / classify surfaces. Toned with --accent-secondary
+   so the "runs on a local model" affordances read as one distinct family, apart
+   from the sender/crypto panels above them. */
+.mail-ai-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.mail-ai-actions-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mail-ai-summary,
+.mail-ai-task-review,
+.mail-ai-report {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--accent-secondary, var(--accent));
+  background: color-mix(in srgb, var(--accent-secondary, var(--accent)) 8%, transparent);
+}
+.mail-ai-summary-head,
+.mail-ai-report-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.mail-ai-summary-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.mail-ai-summary-close:hover {
+  color: var(--text-primary);
+}
+.mail-ai-summary-list {
+  margin: 2px 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.mail-ai-summary-list li {
+  margin: 2px 0;
+}
+.mail-ai-task-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.mail-ai-task-actions,
+.mail-ai-notes-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mail-ai-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.mail-field-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.mail-field-inline .mail-input {
+  width: auto;
+}
+.mail-ai-provenance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--accent-secondary, var(--accent));
+  background: color-mix(in srgb, var(--accent-secondary, var(--accent)) 8%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.mail-ai-provenance-lead {
+  font-weight: 600;
+}
+.mail-ai-provenance-reason {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.mail-ai-report-list {
+  margin: 2px 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mail-ai-report-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+.mail-ai-report-mark {
+  flex: none;
+  font-weight: 700;
+}
+.mail-ai-report-mark.urgent {
+  color: var(--danger, #f85149);
+}
+.mail-ai-report-mark.important {
+  color: var(--warning, #e3b341);
+}
+.mail-ai-report-reason {
+  color: var(--text-secondary);
+}
+.mail-ai-unavailable {
+  font-style: italic;
+}
+.mail-ai-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+
 .mail-unsafe-card {
   padding: 12px;
   border-radius: var(--radius);
@@ -25439,6 +25598,56 @@ handle — it swallows the pointer before the card ever sees it. */
   min-width: 0;
 }
 
+/* The install scope. Its own row under the toolbar rather than another control
+   inside it: it is not a way of choosing a source, it is what the install button
+   means, so it reads as a statement about the next install rather than as more
+   chrome. The note wraps onto its own line at narrow widths — it is a sentence
+   about where files land, and truncating that is exactly what it exists to
+   prevent. */
+.skills-scope-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+}
+.skills-scope-label {
+  color: var(--text-muted);
+}
+.skills-scope-choices {
+  display: inline-flex;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.skills-scope-btn {
+  background: var(--bg-input);
+  color: var(--text-secondary, var(--text-muted));
+  border: none;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.skills-scope-btn + .skills-scope-btn {
+  border-left: 1px solid var(--border-color);
+}
+.skills-scope-btn:hover {
+  color: var(--text-primary);
+}
+.skills-scope-btn.on {
+  background: var(--accent);
+  color: var(--bg-panel);
+  font-weight: 600;
+}
+.skills-scope-note {
+  flex: 1;
+  min-width: 220px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 .skills-strip {
   padding: 6px 10px;
   font-size: 12px;
@@ -25559,6 +25768,14 @@ handle — it swallows the pointer before the card ever sees it. */
   border-radius: 999px;
   border: 1px solid var(--accent);
   color: var(--accent);
+}
+/* Installed personally, i.e. usable in this project without being its own copy.
+   Muted rather than accented because it answers a different question from the
+   accented badge beside it: "available here" is not "installed here", and giving
+   the two one appearance is what would make the distinction pointless. */
+.skills-badge.personal {
+  border-color: var(--border-color);
+  color: var(--text-muted);
 }
 /* A skill bundling scripts/ can execute code on install — flagged as a plain
    dot on the row (the preview panel states it in full) rather than hidden. */

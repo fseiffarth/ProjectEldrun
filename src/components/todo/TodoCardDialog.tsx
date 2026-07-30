@@ -11,6 +11,7 @@ import { addSubtask, moveSubtask, removeSubtask, setSubtask } from "../../lib/to
 import { datePart, formatTime, timePart } from "../../lib/calendarTime";
 import { useUse24h } from "../../lib/timeFormat";
 import { useT } from "../../lib/i18n";
+import { TimeField } from "../common/TimeField";
 import { useStepReorder } from "./useStepReorder";
 
 interface Props {
@@ -44,32 +45,18 @@ interface Props {
  * as a button instead.
  */
 /**
- * A new due **date**, keeping whatever hour the card already had.
+ * The stored `due` from the three controls that make it — the same shape the
+ * calendar's event dialog builds `start`/`end` from (a date, an optional hour,
+ * a whole-day switch), rather than editing the string in place per keystroke.
  *
- * Clearing the date clears the whole deadline: an hour with no day is not a
- * deadline, and `due` has no way to express one.
+ * No date → no deadline (`null`). A date with the time switch off, or on but
+ * blank, is a **whole-day** deadline (`"YYYY-MM-DD"`, overdue at midnight). A
+ * date with an hour is a fixed-hour one (`"YYYY-MM-DDTHH:MM"`).
  */
-function withDueDate(due: string | null | undefined, date: string): string | null {
+function combineDue(date: string, time: string, withTime: boolean): string | null {
   if (!date) return null;
-  const time = due ? timePart(due) : "";
-  return time ? `${date}T${time}` : date;
+  return withTime && time ? `${date}T${time}` : date;
 }
-
-/**
- * A new due **time** on the day the card already has, or the bare date back when
- * the time is cleared — which is how an hour deadline is turned back into a
- * whole-day one, the only way out of the field there is.
- */
-function withDueTime(due: string | null | undefined, time: string): string | null {
-  if (!due) return null;
-  const date = datePart(due);
-  return time ? `${date}T${time}` : date;
-}
-
-/** The two lists the hour is picked from — 24-hour by construction. */
-const pad2 = (n: number) => String(n).padStart(2, "0");
-const HOURS = Array.from({ length: 24 }, (_, h) => pad2(h));
-const MINUTES = Array.from({ length: 60 }, (_, m) => pad2(m));
 
 export function TodoCardDialog({ task, columns, onClose, onOpenMail }: Props) {
   const t = useT();
@@ -84,11 +71,33 @@ export function TodoCardDialog({ task, columns, onClose, onOpenMail }: Props) {
   const [tagInput, setTagInput] = useState("");
   const [stepInput, setStepInput] = useState("");
   const [clearMark, setClearMark] = useState(false);
+  // The deadline as the calendar edits its start/end: a date and an optional
+  // hour held as their **own** plain fields (so `TimeField` binds to a stable
+  // string exactly as the event dialog's does), plus a whole-day-vs-hour switch.
+  // Off (default) is a whole-day deadline — a date-only `due`, overdue at
+  // midnight — and on reveals the clock field. Seeded from the card, so one
+  // already due at an hour opens with the hour shown.
+  const [dueDate, setDueDate] = useState(() => (task.due ? datePart(task.due) : ""));
+  const [dueTime, setDueTime] = useState(() => (task.due ? timePart(task.due) : ""));
+  const [showTime, setShowTime] = useState(() => !!(task.due && timePart(task.due)));
   const dueInputRef = useRef<HTMLInputElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const dueTypedRef = useRef(false);
 
-  useEffect(() => setDraft(task), [task]);
+  useEffect(() => {
+    setDraft(task);
+    setDueDate(task.due ? datePart(task.due) : "");
+    setDueTime(task.due ? timePart(task.due) : "");
+    setShowTime(!!(task.due && timePart(task.due)));
+  }, [task]);
+
+  // The three due controls fold back into `draft.due` — one place, so the field
+  // never edits the stored string per keystroke (the round-trip that broke it).
+  // Guarded, or writing an unchanged value would re-render every keystroke.
+  useEffect(() => {
+    const due = combineDue(dueDate, dueTime, showTime);
+    setDraft((d) => (d.due === due ? d : { ...d, due }));
+  }, [dueDate, dueTime, showTime]);
 
   // A card being added opens on its title: it is the one field that must be
   // filled in, and the dialog is the composer now.
@@ -116,12 +125,6 @@ export function TodoCardDialog({ task, columns, onClose, onOpenMail }: Props) {
 
   const patch = (changes: Partial<CalendarTask>) =>
     setDraft((d) => ({ ...d, ...changes }));
-
-  // The stored `"HH:MM"` split across the two lists — read off the draft rather
-  // than held beside it, so the pair cannot drift from what will be saved.
-  const dueTime = draft.due ? timePart(draft.due) : "";
-  const dueHour = dueTime.slice(0, 2);
-  const dueMinute = dueTime.slice(3, 5) || "00";
 
   const canSave = !isNew || !!draft.title.trim();
 
@@ -257,31 +260,35 @@ export function TodoCardDialog({ task, columns, onClose, onOpenMail }: Props) {
           </label>
 
           <div className="todo-field-row">
-            <label className="todo-field todo-field-due">
+            {/* A div, not a label: this field holds several controls (the date,
+                the clock, the time toggle), so a wrapping label would bind its
+                text to only the first and let the toggle's own label nest inside
+                it — invalid. The toggle is its own `.cal-check-row` label. */}
+            <div className="todo-field todo-field-due">
               <span>{t("todoDialog.dueDate")}</span>
-              {/* Date and time are two inputs over **one** field, because they
-                  are one deadline: the time is meaningless without the date, so
-                  it is disabled until there is one and clearing the date clears
-                  it. Leaving the time empty is the ordinary case and keeps `due`
-                  a bare date, which every surface still reads as "some time that
-                  day" — filling it in turns the card into an hour deadline that
-                  goes overdue at that hour rather than at midnight. */}
-              <div className="todo-due-inputs">
+              {/* Date and time are one deadline. A whole-day card is a date-only
+                  `due` and is the default (overdue at midnight); the "Set a time"
+                  toggle below reveals the calendar's own clock field to turn it
+                  into an hour deadline instead. Clearing the date clears the whole
+                  thing — an hour with no day is not a deadline `due` can hold. */}
+              <div className="cal-datetime">
                 <input
                   ref={dueInputRef}
                   className="cal-input"
                   type="date"
-                  value={draft.due ? datePart(draft.due) : ""}
+                  value={dueDate}
                   onPointerDown={() => (dueTypedRef.current = false)}
                   onKeyDown={(e) => {
                     dueTypedRef.current = true;
                     stopEscape(e);
                   }}
                   onChange={(e) => {
-                    // The hour survives a change of day — re-picking the date on
-                    // a card due at 17:00 means a different day, not a different
-                    // kind of deadline.
-                    patch({ due: withDueDate(draft.due, e.target.value) });
+                    // Its own field, folded into `due` by the effect above — the
+                    // hour is kept across a change of day, and clearing the date
+                    // takes the time switch with it (an hour with no day is not a
+                    // deadline `due` can hold).
+                    setDueDate(e.target.value);
+                    if (!e.target.value) setShowTime(false);
                     // A change with no keystroke behind it is the popover
                     // reporting a picked day — and the click that picked it was
                     // swallowed by the widget's own grab, so this is the only
@@ -293,74 +300,39 @@ export function TodoCardDialog({ task, columns, onClose, onOpenMail }: Props) {
                     if (!dueTypedRef.current) e.currentTarget.blur();
                   }}
                 />
-                {/* The hour, picked rather than typed — two plain selects, the
-                    same control the priority row below uses.
-
-                    Both alternatives were tried here and both were worse. A
-                    native `<input type="time">` takes its 12-vs-24-hour face
-                    from the engine locale and cannot be told otherwise, so it
-                    printed `05:30 PM` under a 24-hour setting. `common/TimeField`
-                    draws the segments itself to fix exactly that, but two 2ch
-                    boxes are a small target that reads as broken chrome beside
-                    the date input, and a segment you can't see your digits land
-                    in is worse than no keyboard entry at all.
-
-                    A list of hours 00–23 has neither problem: it is always
-                    24-hour whatever the locale says, there is nothing to mistype,
-                    and the value on the wire is still `"HH:MM"`. Clearing the
-                    hour clears the time and leaves a whole-day deadline, which
-                    is the way back out of an hour deadline.
-
-                    The two lists and their colon are ONE flex child, so that
-                    when the row is too narrow to hold the date beside them they
-                    wrap to the next line **together** rather than the minute list
-                    breaking off below its own hour (see `.todo-due-inputs`). */}
-                <div className="todo-due-time-group">
-                  <select
-                    className="cal-input todo-due-time"
-                    disabled={!draft.due}
+                {/* The hour, entered in the **same** field the calendar's event
+                    dialog uses (`common/TimeField`) and bound the **same** way —
+                    a plain `value`/`onChange` over its own state, not a string
+                    edited in place per keystroke. It draws its own segments so it
+                    honours `Settings.time_format_24h`, which the native
+                    `<input type="time">` cannot (that reads its 12-vs-24-hour
+                    face off the engine locale, so it printed `05:30 PM` under a
+                    24-hour setting). Shown only while the toggle is on. */}
+                {showTime ? (
+                  <TimeField
+                    className="cal-input"
                     title={t("todoDialog.dueTimeTitle")}
                     aria-label={t("todoDialog.dueTime")}
-                    value={dueHour}
+                    value={dueTime}
                     onKeyDown={stopEscape}
-                    onChange={(e) =>
-                      patch({
-                        due: withDueTime(
-                          draft.due,
-                          e.target.value ? `${e.target.value}:${dueMinute || "00"}` : "",
-                        ),
-                      })
-                    }
-                  >
-                    <option value="">--</option>
-                    {HOURS.map((h) => (
-                      <option key={h} value={h}>
-                        {h}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="todo-due-sep">:</span>
-                  <select
-                    className="cal-input todo-due-time"
-                    // Minutes with no hour is not a time, so the second list waits
-                    // for the first — the same rule the date already imposes on both.
-                    disabled={!draft.due || !dueHour}
-                    aria-label={t("todoDialog.dueMinute")}
-                    value={dueMinute}
-                    onKeyDown={stopEscape}
-                    onChange={(e) =>
-                      patch({ due: withDueTime(draft.due, `${dueHour}:${e.target.value}`) })
-                    }
-                  >
-                    {MINUTES.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                    onChange={setDueTime}
+                  />
+                ) : null}
               </div>
-            </label>
+              {/* The whole-day-vs-hour switch, the calendar's `.cal-check-row`
+                  chrome. Disabled without a date, since the hour it reveals has
+                  nowhere to live until then. */}
+              <label className="cal-check-row">
+                <input
+                  type="checkbox"
+                  checked={showTime}
+                  disabled={!dueDate}
+                  onChange={(e) => setShowTime(e.target.checked)}
+                  onKeyDown={stopEscape}
+                />
+                <span>{t("todoDialog.setTime")}</span>
+              </label>
+            </div>
 
             <label className="todo-field">
               <span>{t("todoDialog.priority")}</span>

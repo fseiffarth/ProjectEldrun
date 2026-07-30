@@ -490,6 +490,28 @@ describe("selectAlerts — titles and details", () => {
     expect(item.id).toBe("task:t1");
     expect(item.source).toEqual({ taskId: "t1", calendarId: "work", projectId: "eldrun" });
   });
+
+  it("carries an event's video-call link + provider for the Join button", () => {
+    const item = one(
+      selectAlerts({ now: NOW, events: [ev({ conference: "https://zoom.us/j/42" })] }),
+    );
+    expect(item.source.conferenceUrl).toBe("https://zoom.us/j/42");
+    expect(item.source.conferenceProvider).toBe("Zoom");
+  });
+
+  it("derives the link from a location that is a bare meeting URL", () => {
+    const item = one(
+      selectAlerts({ now: NOW, events: [ev({ location: "https://meet.google.com/abc-def" })] }),
+    );
+    expect(item.source.conferenceUrl).toBe("https://meet.google.com/abc-def");
+    expect(item.source.conferenceProvider).toBe("Google Meet");
+  });
+
+  it("leaves an event with no joinable link without a conference url", () => {
+    const item = one(selectAlerts({ now: NOW, events: [ev({ location: "Room 2" })] }));
+    expect(item.source.conferenceUrl).toBeUndefined();
+    expect(item.source.conferenceProvider).toBeUndefined();
+  });
 });
 
 describe("selectAlerts — ordering", () => {

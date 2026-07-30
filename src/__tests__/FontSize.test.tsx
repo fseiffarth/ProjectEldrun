@@ -190,4 +190,46 @@ describe("editor text-size control", () => {
     expect(mockSetViewerState).toHaveBeenCalledWith(TAB_KEY, { fontSize: 13 });
     expect(mockUpdate).not.toHaveBeenCalled();
   });
+
+  it("copies a selection contained by the markdown preview on mouse release", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    await renderMarkdownView();
+    const preview = await waitFor(() => {
+      const el = document.querySelector(".markdown-body");
+      expect(el).not.toBeNull();
+      return el as HTMLDivElement;
+    });
+    const textNode = preview.querySelector("p")?.firstChild;
+    expect(textNode).toBeTruthy();
+    const selection: {
+      anchorNode: Node | null;
+      focusNode: Node | null;
+      isCollapsed: boolean;
+      toString: () => string;
+    } = {
+      anchorNode: textNode,
+      focusNode: textNode,
+      isCollapsed: false,
+      toString: () => "hello",
+    };
+    const getSelection = vi.spyOn(window, "getSelection").mockReturnValue(
+      selection as unknown as Selection,
+    );
+
+    fireEvent.mouseUp(preview);
+
+    expect(writeText).toHaveBeenCalledOnce();
+    expect(writeText).toHaveBeenCalledWith("hello");
+
+    // A selection extending outside this preview belongs to broader window
+    // interaction and must not overwrite the clipboard a second time.
+    selection.focusNode = preview.parentElement;
+    fireEvent.mouseUp(preview);
+    expect(writeText).toHaveBeenCalledOnce();
+    getSelection.mockRestore();
+  });
 });

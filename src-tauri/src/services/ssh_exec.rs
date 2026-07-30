@@ -920,10 +920,13 @@ pub fn wrap_pty_options(opts: &mut PtyOptions) -> Result<(), String> {
 
     // Persistent-session (tmux) wrap, TODO #85. An explicit attach (Sessions view /
     // restored attach tab) wins; otherwise a per-tab `tmux_session` name — minted
-    // and persisted by the frontend for shell/script tabs of a persist-enabled
-    // remote project (so it is stable across a relaunch, unlike the PTY id) — spawns
-    // or reattaches that session. Absent (agent tabs, persistence off, local) →
-    // today's plain exec.
+    // and persisted by the frontend for shell/script AND remote agent tabs of a
+    // persist-enabled remote project (so it is stable across a relaunch, unlike the
+    // PTY id) — spawns or reattaches that session. For an agent tab the name composes
+    // with its `--resume`: this wrap nests the whole `$SHELL -lc '<bootstrap; exec cli
+    // --resume …>'` target inside `new-session -A`, which reattaches the live agent
+    // (ignoring the target) when the host session survived, or runs it fresh (resuming
+    // the conversation) when it is gone. Absent (persistence off, local) → plain exec.
     let tmux = match (&opts.tmux_attach, &opts.tmux_session) {
         (Some(name), _) => Some(TmuxWrap::Attach(name.clone())),
         (None, Some(name)) => Some(TmuxWrap::Session(name.clone())),
@@ -1102,6 +1105,35 @@ mod tests {
         // …and the whole `$SHELL -lc '<prelude; exec claude>'` line is tmux's
         // (quoted) command argument on the persistent session.
         assert!(cmd.contains("exec tmux new-session -A -D -s 'eldrun-p1_a1' "));
+    }
+
+    #[test]
+    fn remote_command_tmux_wraps_agent_resume_tab_preserving_resume_and_prelude() {
+        // A remote agent tab now persists too (Claude/Codex/…): its `cli --resume …`
+        // target, with the bootstrap prelude, is nested INSIDE `new-session -A` on the
+        // frontend-minted per-tab name. `-A` reattaches the live agent on relaunch
+        // (ignoring this target) or, if the session is gone, runs it — resuming the
+        // conversation as before.
+        let wrap = TmuxWrap::Session("eldrun-p1--agent-uuid".to_string());
+        let cmd = remote_command(
+            "claude",
+            &["--resume".to_string(), "sess-abc".to_string()],
+            &HashMap::new(),
+            "/srv/p",
+            Some(&wrap),
+        );
+        // The cd prefix is preserved verbatim before the tmux launch.
+        assert!(cmd.starts_with("cd '/srv/p' && "));
+        // The bootstrap prelude is nested inside the tmux target unchanged…
+        assert!(cmd.contains("command -v claude >/dev/null 2>&1"));
+        assert!(cmd.contains("npm install -g @anthropic-ai/claude-code"));
+        // …the resume args survive into the nested exec (run only on a fresh create)…
+        assert!(cmd.contains("--resume"));
+        assert!(cmd.contains("sess-abc"));
+        // …and the whole thing is tmux's command argument on the persistent session.
+        assert!(cmd.contains("exec tmux new-session -A -D -s 'eldrun-p1--agent-uuid' "));
+        // tmux-absent still runs the plain exec fallback.
+        assert!(cmd.contains("session persistence is OFF"));
     }
 
     #[test]

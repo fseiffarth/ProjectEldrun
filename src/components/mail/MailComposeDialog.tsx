@@ -5,13 +5,16 @@ import {
   formatAddress,
   formatMailDate,
   formatSize,
+  mailAiErrorKey,
   mailAttachPick,
   mailAttachRemove,
   mailDraftSave,
   mailDraftSend,
+  mailFormalizeReply,
   mailPgpAvailable,
   mailPgpRecipientsReady,
   stripFormatControls,
+  useMailAiFeature,
 } from "../../lib/mail";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
@@ -135,6 +138,48 @@ export function MailComposeDialog({
   const [encrypt, setEncrypt] = useState(false);
   const [pgpReady, setPgpReady] = useState(false);
   const [missingKeys, setMissingKeys] = useState<string[]>([]);
+
+  // #206 — draft a formal reply from rough notes, on a **loopback** model. It
+  // only ever fills the body below; it never sends. Gated by `mail_ai_formalize`
+  // plus a resolvable mail-role model.
+  const canFormalize = useMailAiFeature("mail_ai_formalize");
+  const [notes, setNotes] = useState("");
+  const [tone, setTone] = useState("");
+  const [drafting, setDrafting] = useState(false);
+
+  async function draftFromNotes() {
+    if (!notes.trim()) return;
+    setDrafting(true);
+    setError("");
+    setStatus("");
+    try {
+      const reply = await mailFormalizeReply(notes, {
+        accountId: from,
+        messageId: header?.id ?? null,
+        tone: tone || null,
+      });
+      // Fill the body with the drafted reply, keeping any quoted original below
+      // it. **Never sends** — the user reviews and sends explicitly.
+      const tail = quotedBody(
+        source,
+        mode,
+        header
+          ? t("mail.quotedIntro", {
+              date: formatMailDate(header.date, lang, use24h),
+              sender: formatAddress(header.from),
+            })
+          : "",
+        t("mail.forwardedIntro"),
+      );
+      setText(reply + tail);
+      setStatus(t("mailAi.draftDone"));
+    } catch (err) {
+      const key = mailAiErrorKey(err);
+      setError(key ? t(key) : typeof err === "string" ? err : String(err));
+    } finally {
+      setDrafting(false);
+    }
+  }
 
   useEffect(() => {
     void mailPgpAvailable().then(setPgpReady);
@@ -331,6 +376,45 @@ export function MailComposeDialog({
               onChange={(e) => setSubject(e.target.value)}
             />
           </label>
+          {canFormalize && (
+            <div className="mail-ai-notes">
+              <label className="mail-field">
+                <span className="mail-field-label">
+                  {t("mailAi.notesLabel")} <UntestedTag />
+                </span>
+                <textarea
+                  className="mail-input mail-textarea"
+                  rows={3}
+                  spellCheck={false}
+                  placeholder={t("mailAi.notesPlaceholder")}
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                />
+              </label>
+              <div className="mail-ai-notes-row">
+                <label className="mail-field-inline">
+                  <span className="mail-field-label">{t("mailAi.toneLabel")}</span>
+                  <select
+                    className="mail-input"
+                    value={tone}
+                    onChange={(e) => setTone(e.target.value)}
+                  >
+                    <option value="">{t("mailAi.toneNeutral")}</option>
+                    <option value="formal">{t("mailAi.toneFormal")}</option>
+                    <option value="friendly">{t("mailAi.toneFriendly")}</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="mail-btn"
+                  disabled={drafting || !notes.trim()}
+                  onClick={() => void draftFromNotes()}
+                >
+                  {drafting ? t("mailAi.drafting") : t("mailAi.draftFromNotes")}
+                </button>
+              </div>
+            </div>
+          )}
           <textarea
             className="mail-input mail-compose-body"
             rows={14}

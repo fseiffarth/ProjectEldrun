@@ -1257,7 +1257,13 @@ fn detect_spec_sources(project_dir: &Path, spec: &mut SandboxSpec) {
 /// routes straight back to **host** code execution and to every project's history:
 /// - `shell-snapshots/` — Claude sources a snapshot for each host Bash call, so one
 ///   appended line runs on the host the next time an *uncontained* session does;
-/// - `plugins/`, `agents/` — register hook commands / steer every future session;
+/// - `plugins/`, `agents/`, `skills/` — register hook commands / steer every future
+///   session. `skills/` is the personal half of the Skills Library
+///   (`docs/skills_plan.md`): a `SKILL.md` is instructions every project on this
+///   machine lazily loads, and a skill folder may bundle a `scripts/` directory,
+///   so a contained agent that could write here would be writing code and
+///   standing orders for every *uncontained* session of every other project —
+///   the `agents/` hole exactly, one directory over;
 /// - `backups/`, `file-history/` — copies of the config the staged shadow protects,
 ///   and a rewrite target with the same effect;
 /// - `history.jsonl`, `sessions/`, `session-env/`, `stats-cache.json`, `daemon.*` —
@@ -1278,6 +1284,7 @@ const CLAUDE_UNMOUNTED: &[&str] = &[
     "shell-snapshots",
     "plugins",
     "agents",
+    "skills",
     "backups",
     "file-history",
     "telemetry",
@@ -2185,6 +2192,11 @@ mod tests {
     fn unmounted_entry_matching_is_exact_with_a_star_prefix() {
         assert!(is_unmounted_entry("shell-snapshots", CLAUDE_UNMOUNTED));
         assert!(is_unmounted_entry("plugins", CLAUDE_UNMOUNTED));
+        assert!(is_unmounted_entry("agents", CLAUDE_UNMOUNTED));
+        // Personal skills are instructions + optional `scripts/` that every
+        // *uncontained* session of every project loads — the `agents/` hole one
+        // directory over, and the reason the personal install scope exists at all.
+        assert!(is_unmounted_entry("skills", CLAUDE_UNMOUNTED));
         assert!(is_unmounted_entry("history.jsonl", CLAUDE_UNMOUNTED));
         // `daemon.*` is a prefix pattern.
         assert!(is_unmounted_entry("daemon.log", CLAUDE_UNMOUNTED));

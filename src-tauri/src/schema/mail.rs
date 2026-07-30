@@ -64,8 +64,13 @@ pub enum MailAuthKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MailAccount {
     pub id: String,
+    /// The dialog's **Name**, and the *sending* identity: `mail_send` writes it
+    /// as the `From:` display name, so of the two names on an account this is
+    /// the one that leaves the machine. Empty means send the bare address.
     pub label: String,
     pub address: String,
+    /// The dialog's **Display name** — local only, and read by exactly one
+    /// surface: the accounts badge. Never written to a header.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub imap: MailServer,
@@ -472,6 +477,60 @@ pub struct MailHeader {
     /// state, and the cross-account list itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<MailPriority>,
+    /// **Who** set [`Self::priority`] — the user by hand, a keyword filter rule,
+    /// or the local model (#205). Sealed at rest; recomputed onto the header on
+    /// every read from its own column. `None` when there is no mark, or when the
+    /// column predates this feature.
+    ///
+    /// It exists so the model classifier can never masquerade as a keyword
+    /// filter, which `docs/context/mail_encryption.md` makes a hard requirement:
+    /// the UI says *"marked Urgent by the local model: '…'"* only because this
+    /// field distinguishes it from the filter's *"rule Billing"*.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_source: Option<MailPrioritySource>,
+    /// The one-line reason behind [`Self::priority`] — a filter's rule name, or
+    /// the model's own sentence. Sealed at rest (a model's reason quotes the
+    /// message, which says as much as the subject). `None`/empty when there is no
+    /// mark or the mark carries no stated reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_reason: Option<String>,
+}
+
+/// **Who** applied a message's priority mark. The provenance that keeps the
+/// model classifier from being mistaken for a keyword filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MailPrioritySource {
+    /// The user marked it by hand (the right-click menu / `mail_priority_set`).
+    User,
+    /// A keyword filter rule marked it (`services::mail_filters`).
+    Filter,
+    /// The local model marked it (`services::mail_ai`, #205).
+    Model,
+}
+
+impl MailPrioritySource {
+    /// The literal stored in the `priority_source` column — fixed per variant,
+    /// never anything caller-supplied.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MailPrioritySource::User => "user",
+            MailPrioritySource::Filter => "filter",
+            MailPrioritySource::Model => "model",
+        }
+    }
+
+    /// Read one back. An unrecognized value reads as `None` (no provenance) for
+    /// the same reason [`MailPriority::parse`] does: a wrong guess would be worse
+    /// than an honest blank.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "user" => Some(MailPrioritySource::User),
+            "filter" => Some(MailPrioritySource::Filter),
+            "model" => Some(MailPrioritySource::Model),
+            _ => None,
+        }
+    }
 }
 
 /// A message's local priority mark: **Important** or **Urgent**.
@@ -708,6 +767,77 @@ pub struct MailFilterReport {
     /// A capped list of what matched, newest first.
     #[serde(default)]
     pub samples: Vec<MailFilterSample>,
+}
+
+// ── Local-model extraction (Group Q, #205/#207/#208) ────────────────────────
+
+/// A calendar event the local model read out of a message (#207).
+///
+/// The wire contract's `MailExtractedEvent`. Field-for-field the TS interface:
+/// `start` is an ISO-8601 **local** wall-clock string (`2026-08-04T15:00`), and
+/// `confidence` is `0..1`. The command returns `null` (not this) when the model
+/// gave nothing usable, so every field here is one a caller may trust to be set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MailExtractedEvent {
+    pub title: String,
+    /// ISO-8601 local, e.g. `2026-08-04T15:00`.
+    pub start: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<String>,
+    pub all_day: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// `0.0..=1.0`. Below the command's floor the extraction is discarded.
+    pub confidence: f64,
+}
+
+/// A to-do card the local model read out of a message (#208). The wire
+/// contract's `MailExtractedTask`; `priority` matches the board's vocabulary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MailExtractedTask {
+    pub title: String,
+    /// ISO date, e.g. `2026-08-04`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+}
+
+/// The manual "what would the local model file?" report (#205).
+///
+/// Deliberately a **different shape** from [`MailFilterReport`]: it carries a
+/// fixed `source: "model"` tag and its matches name the model's own reason, so a
+/// UI can never render a model verdict as though a keyword rule produced it.
+#[derive(Debug, Clone, Serialize)]
+pub struct MailAiClassifyReport {
+    /// Always `"model"`. The tag that makes this visibly distinct from the
+    /// filter report; set once, here, and nowhere caller-controlled.
+    pub source: String,
+    pub scanned: u32,
+    pub matched: Vec<MailAiClassifyMatch>,
+    pub dry_run: bool,
+}
+
+impl MailAiClassifyReport {
+    /// A fresh report with the fixed `"model"` source tag.
+    pub fn new(dry_run: bool) -> Self {
+        MailAiClassifyReport {
+            source: "model".to_string(),
+            scanned: 0,
+            matched: Vec::new(),
+            dry_run,
+        }
+    }
+}
+
+/// One message the local model would file, and why.
+#[derive(Debug, Clone, Serialize)]
+pub struct MailAiClassifyMatch {
+    pub message_id: String,
+    /// `"important"` or `"urgent"` — [`MailPriority::as_str`].
+    pub priority: String,
+    /// The model's one-line reason.
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

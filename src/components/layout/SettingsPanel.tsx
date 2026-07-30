@@ -26,6 +26,7 @@ import { THEMES } from "../../types";
 import type { LinkOpenTarget } from "../../types/browser";
 import { summarizeScaffoldRepair, type ProjectScaffoldRepair } from "../projects/scaffold";
 import { Toggle } from "../common/Toggle";
+import { MailAiSettings } from "../mail/MailAiSettings";
 import { OPEN_STATS_EVENT } from "../stats/StatsRecapHost";
 import {
   SHORTCUT_DEFS,
@@ -903,6 +904,11 @@ export function SettingsDialog({
                 </>
               }
             />
+
+            {/* Mail AI (local) — Group Q #203. Only meaningful when the mail
+                client is on, and each toggle is additionally gated inside the
+                section by a resolvable loopback mail-role model. */}
+            {experimentalEnabled(settings, "mail_client") && <MailAiSettings />}
 
             <div className="settings-section-title">{t("settings.resourceMonitor")}</div>
             <div className="settings-toggle-card">

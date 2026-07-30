@@ -31,6 +31,7 @@ import { CalendarOverlayHost } from "../calendar/CalendarOverlay";
 import { CalDavSyncHost } from "../calendar/CalDavSyncHost";
 import { CalDavConflictDialog } from "../calendar/CalDavConflictDialog";
 import { TodoOverlayHost } from "../todo/TodoOverlay";
+import { SkillsOverlayHost } from "../skills/SkillsOverlay";
 import { LocalLossDialog } from "../common/LocalLossDialog";
 import { HostKeyConfirmDialog } from "../common/HostKeyConfirmDialog";
 import { HpcGuardDialog } from "../common/HpcGuardDialog";
@@ -864,6 +865,11 @@ export function AppShell() {
           nothing makes them mutually exclusive, so DOM order is the tie-break
           and the surface opened most recently should be the one on top. */}
       <TodoOverlayHost />
+      {/* The 🧠 menu's Skills Library — the machine-level door into the library
+          the project tab hosts. At the shell for the family's reason (it covers
+          the window and must survive a project switch), and after the three
+          above because it is opened from a header menu that sits over them. */}
+      <SkillsOverlayHost />
       {/* Fires once per connect (manual or silent auto-connect): warns that the
           host's load/memory/logged-in sessions suggest it's already in use. */}
       <RemoteUsageWarningDialog />

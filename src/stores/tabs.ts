@@ -13,15 +13,19 @@ import { useRunHostPrefStore } from "./runHostPref";
 import { experimentalEnabled, withdrawnTabKinds } from "../lib/experimental";
 import { useSettingsStore } from "./settings";
 
-/** A shell tab gets a stable persisted tmux session name at creation (TODO #85),
- *  so a persistent remote run reattaches after a relaunch instead of forking a
- *  second session. Non-shell tabs, and shell tabs that already carry one (or an
- *  explicit attach), are left untouched. */
+/** A shell tab, or a remote agent tab (Claude/Codex/…), gets a stable persisted
+ *  tmux session name at creation (TODO #85), so a persistent remote run reattaches
+ *  after a relaunch instead of forking a second session. For an agent tab this
+ *  composes with `--resume`: `tmux new-session -A` reattaches the live agent when the
+ *  host session survives, else creates a fresh one that runs the resume. The name is
+ *  inert until `shouldPersistTab` decides to pass it, so minting it on a local agent
+ *  costs nothing. Tabs that already carry a name (or an explicit attach), and pane
+ *  kinds with no PTY, are left untouched. */
 function withTmuxSession(
   tab: Omit<TabEntry, "key">,
   scope: string,
 ): Omit<TabEntry, "key"> {
-  if (tab.kind === "shell" && !tab.tmuxSession && !tab.tmuxAttach) {
+  if ((tab.kind === "shell" || tab.kind === "agent") && !tab.tmuxSession && !tab.tmuxAttach) {
     return { ...tab, tmuxSession: newTmuxSessionName(scope) };
   }
   return tab;
@@ -3685,11 +3689,12 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         url: t.url,
         // Persistent sessions (TODO #85): keep the stable session name so the
         // reattach targets the SAME host session after a relaunch. Mint one for a
-        // shell tab persisted before this feature existed (it then reattaches on
-        // every subsequent restart).
+        // shell tab — or a resumable agent tab (only restorable tabs reach here) —
+        // persisted before this feature existed (it then reattaches on every
+        // subsequent restart).
         tmuxSession:
           t.tmuxSession ??
-          (kind === "shell" && !t.tmuxAttach
+          ((kind === "shell" || kind === "agent") && !t.tmuxAttach
             ? newTmuxSessionName(targetScope ?? get().scope)
             : undefined),
         // A Sessions-view attach tab reattaches to its tmux session on restart.

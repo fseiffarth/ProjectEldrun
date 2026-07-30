@@ -799,6 +799,15 @@ pub fn run() {
             commands::mail::mail_filters_list,
             commands::mail::mail_filters_set,
             commands::mail::mail_filters_apply,
+            // Local-model mail assistant (Group Q, #203–#208). Every one runs a
+            // prompt against a loopback Ollama via `services::mail_ai`, which
+            // refuses a remote host even with `ollama_allow_remote_host` on —
+            // nothing about a message ever leaves this machine.
+            commands::mail::mail_summarize,
+            commands::mail::mail_formalize_reply,
+            commands::mail::mail_extract_event,
+            commands::mail::mail_extract_task,
+            commands::mail::mail_ai_classify_apply,
             commands::mail::mail_draft_save,
             commands::mail::mail_draft_send,
             commands::mail::mail_attach_pick,
@@ -1147,6 +1156,7 @@ pub fn run() {
             commands::ollama::ollama_is_running,
             commands::ollama::ollama_status,
             commands::ollama::ollama_gpu_status,
+            commands::ollama::ollama_models_dir_plan,
             commands::ollama::ollama_registry_size,
             commands::ollama::ollama_registry_details,
             commands::ollama::list_ollama_models_detailed,

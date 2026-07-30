@@ -34,6 +34,7 @@ function setupInvoke(
   // Override what `resolve_tex_root` returns (defaults to the file itself, i.e.
   // not a child). Lets a test exercise the subtex→parent redirect.
   resolveRoot?: (path: string) => string,
+  syncRects: Array<{ page: number; x: number; y: number; w: number; h: number }> = [],
 ) {
   mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
     if (cmd === "tex_capability") {
@@ -54,7 +55,7 @@ function setupInvoke(
         shell_escape: false,
       });
     }
-    if (cmd === "synctex_view") return Promise.resolve([]); // no records → forward-search miss
+    if (cmd === "synctex_view") return Promise.resolve(syncRects);
     if (cmd === "synctex_edit") return Promise.resolve(null);
     if (cmd === "file_mtime") return Promise.reject(new Error("no synctex"));
     if (cmd === "read_file_bytes") return Promise.resolve([37, 80, 68, 70]); // %PDF
@@ -211,5 +212,39 @@ describe("TexView", () => {
         expect.objectContaining({ pdf: "/p/paper.pdf", input: "/p/paper.tex" }),
       ),
     );
+  });
+
+  it("Ctrl+S recompiles and reveals the live editor cursor after the fresh PDF loads", async () => {
+    setupInvoke(
+      true,
+      ["pdflatex"],
+      undefined,
+      [{ page: 2, x: 10, y: 20, w: 100, h: 12 }],
+    );
+    await renderTexView();
+
+    const textarea = (await screen.findByRole("textbox")) as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea.value).toBe(TEX_SOURCE));
+    const caret = TEX_SOURCE.indexOf("Hi") + 1;
+    textarea.focus();
+    textarea.setSelectionRange(caret, caret);
+
+    await act(async () => {
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "synctex_view",
+        expect.objectContaining({ line: 3, column: 2 }),
+      ),
+    );
+    const { usePdfSyncStore } = await import("../stores/pdfSync");
+    expect(usePdfSyncStore.getState().byPath["/p/paper.pdf"]).toMatchObject({
+      rect: { page: 2, x: 10, y: 20, w: 100, h: 12 },
+      afterReload: true,
+    });
   });
 });

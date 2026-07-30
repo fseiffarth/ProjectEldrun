@@ -118,7 +118,13 @@ export function MailKeysDialog({ account, onClose }: MailKeysDialogProps) {
                     void run(() =>
                       mailPgpGenerate(
                         account.id,
-                        account.display_name ?? account.label,
+                        // The key's UID has to name the *sending* identity —
+                        // `label`, the same string the From: header carries —
+                        // not the local nickname on the accounts badge: a
+                        // correspondent compares the UID against the mail they
+                        // received, and a key naming something they never saw
+                        // reads as the wrong key.
+                        account.label || account.address,
                         account.address,
                       ),
                     )

@@ -1942,9 +1942,10 @@ export function ProjectPill({
                 )}
               </button>
             )}
-            {/* Persistent remote sessions (TODO #85): shell/script tabs run inside a
-                tmux session on the host, so a long run survives an SSH drop, a
-                laptop sleep, or Eldrun quitting. Default ON — this opts out. */}
+            {/* Persistent remote sessions (TODO #85): shell/script AND agent tabs run
+                inside a tmux session on the host, so a long run (or a live agent)
+                survives an SSH drop, a laptop sleep, or Eldrun quitting. Default ON —
+                this opts out. */}
             {project.remote && (
               <button
                 onClick={() => {

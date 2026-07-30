@@ -134,9 +134,6 @@ export function MailPane({ visible }: MailPaneProps) {
   }, []);
 
   const folders = selectedAccountId ? (foldersByAccount[selectedAccountId] ?? []) : [];
-  // Named under the Folders heading, so the account-scoped zone says whose
-  // folders these are rather than leaving it to the selection highlight.
-  const selectedAccount = accounts.find((a) => a.id === selectedAccountId);
   const selectedHeader = headers.find((h) => h.id === selectedMessageId);
   const syncState = selectedAccountId ? sync[selectedAccountId] : undefined;
   const syncing = syncState?.phase === "start" || syncState?.phase === "folder" || syncState?.phase === "headers";
@@ -196,7 +193,14 @@ export function MailPane({ visible }: MailPaneProps) {
               onClick={() => void useMailStore.getState().selectAccount(a.id)}
               onDoubleClick={() => setAccountDialog({ account: a })}
             >
-              <span className="mail-chip-name">{a.label || a.address}</span>
+              {/* The two names are not interchangeable: `display_name` is this
+                  machine's own nickname for the mailbox and belongs on the
+                  badge, `label` is the *sending* identity (the From: a
+                  recipient reads) and is only the fallback here. The folders
+                  heading below deliberately stays on `label` — the rail names
+                  the account you send as, and giving it the nickname too would
+                  make the nickname the only name in the pane. */}
+              <span className="mail-chip-name">{a.display_name || a.label || a.address}</span>
               {unreadTotal(foldersByAccount[a.id]) > 0 && (
                 <span className="mail-rail-badge">{unreadTotal(foldersByAccount[a.id])}</span>
               )}
@@ -445,20 +449,14 @@ export function MailPane({ visible }: MailPaneProps) {
       )}
 
       <div className="mail-body-row">
-        {/* The rail is now ONE thing: the folders of the selected account. Its
-            heading names that account, because with the account switcher moved
-            up to the header band the rail no longer sits under the list that
-            says which mailbox is open — and "whose Inbox is this?" is the one
-            question this column must never leave ambiguous. */}
+        {/* The rail is ONE thing: the folders of the selected account. Its
+            heading deliberately does NOT name that account — the header band's
+            accounts row above it already carries the selection, and the mailbox
+            whose folders these are is the chip that is lit there. A second
+            copy of the name here was one more place it could be read from and
+            one more place it could disagree. */}
         <div className="mail-rail">
-          <div className="mail-rail-title">
-            {t("mail.folders")}
-            {selectedAccount && (
-              <span className="mail-rail-scope">
-                {selectedAccount.label || selectedAccount.address}
-              </span>
-            )}
-          </div>
+          <div className="mail-rail-title">{t("mail.folders")}</div>
           {folders.length === 0 && <div className="mail-rail-hint">{t("mail.noFolders")}</div>}
           {folders.map((f) => (
             <button

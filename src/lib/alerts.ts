@@ -1,5 +1,6 @@
 import type { CalendarEvent, CalendarTask } from "../types";
 import type { MailHeader } from "../types/mail";
+import { conferenceLink } from "./conference";
 import {
   MINUTES_PER_DAY,
   addDays,
@@ -91,6 +92,15 @@ export interface AlertSource {
   mailPriority?: "urgent" | "important";
   /** `kind === "event"`: `CalendarEvent.id`. */
   eventId?: string;
+  /**
+   * `kind === "event"`: the event's video-call link and the service behind it,
+   * when it has one. Computed once here through `lib/conference`'s
+   * `conferenceLink` — the same verdict the header's 🗓 dropdown and the event
+   * dialog reach — so the row's Join button cannot disagree with theirs about
+   * the same meeting. Absent when the event has no joinable link.
+   */
+  conferenceUrl?: string;
+  conferenceProvider?: string;
   /** `kind === "task"`: `CalendarTask.id`. */
   taskId?: string;
   /** Calendar owning the event/task, for the colour chip. */
@@ -389,6 +399,14 @@ function buildAlerts(input: AlertInput): AlertItem[] {
       const at = allDay ? datePart(event.start) : event.start;
       const { minutesAway, daysAway, inWindow } = timing(at, allDay);
       if (!inWindow) continue;
+      // The video call, if any, is derived the one way every Join button reaches
+      // it — the explicit field, else a location/notes link from a recognized
+      // meeting host — so the strip's door and the calendar's are the same door.
+      const call = conferenceLink({
+        conference: event.conference,
+        location: event.location,
+        notes: event.notes,
+      });
       rows.push({
         id: `event:${event.id}`,
         kind: "event",
@@ -399,7 +417,12 @@ function buildAlerts(input: AlertInput): AlertItem[] {
         allDay,
         minutesAway,
         daysAway,
-        source: { eventId: event.id, calendarId: event.calendar_id },
+        source: {
+          eventId: event.id,
+          calendarId: event.calendar_id,
+          conferenceUrl: call?.url,
+          conferenceProvider: call?.provider,
+        },
       });
     }
   }

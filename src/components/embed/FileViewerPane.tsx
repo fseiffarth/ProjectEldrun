@@ -28,7 +28,7 @@ import { Dropdown } from "../common/Dropdown";
 import { CompareView } from "./CompareView";
 import { PresentationOverlay } from "./PresentationOverlay";
 import { usePresentationStore } from "../../stores/presentation";
-import { renderMarkdown } from "../../lib/viewers/markdown";
+import { renderMarkdown, toggleTaskCheckbox } from "../../lib/viewers/markdown";
 import { enrichMarkdownDom } from "../../lib/viewers/markdownEnrich";
 import { highlight, languageForPath, escapeHtml } from "../../lib/viewers/highlight";
 import { useOllamaStatus } from "../../lib/ollamaStatus";
@@ -5599,8 +5599,49 @@ function MarkdownView({
     setLinkTip({ left: r.left, top: r.top });
   }, []);
 
+  // Copy-on-select for the rendered preview, matching the native terminal.
+  // Mouse-up covers drag and double/triple-click selection while keeping the
+  // clipboard write inside the user gesture required by WebKit. Both endpoints
+  // must belong to this preview so a selection crossing into adjacent chrome or
+  // another tiled pane cannot replace the clipboard unexpectedly.
+  const onPreviewMouseUp = useCallback(() => {
+    const root = previewRef.current;
+    const selection = window.getSelection();
+    if (
+      !root ||
+      !selection ||
+      selection.isCollapsed ||
+      !selection.anchorNode ||
+      !selection.focusNode ||
+      !root.contains(selection.anchorNode) ||
+      !root.contains(selection.focusNode)
+    ) return;
+    const text = selection.toString();
+    if (text) navigator.clipboard?.writeText(text).catch(() => {});
+  }, []);
+
   const onPreviewClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
+      // Task-list checkboxes toggle the underlying `- [ ]`/`- [x]` in the draft.
+      // The clicked box's position among all task checkboxes in the preview is its
+      // document order — exactly toggleTaskCheckbox's index — so we count them and
+      // flip the matching source line. The native toggle stands until the re-render
+      // reconciles it from the (now-updated) source, so there is no flicker.
+      const box = (e.target as HTMLElement).closest?.(
+        "li.task-item > input[data-md-task]",
+      ) as HTMLInputElement | null;
+      if (box) {
+        const root = previewRef.current;
+        if (!root) return;
+        const boxes = Array.from(
+          root.querySelectorAll<HTMLInputElement>("li.task-item > input[data-md-task]"),
+        );
+        const index = boxes.indexOf(box);
+        if (index < 0) return;
+        const nextSrc = toggleTaskCheckbox(draft, index);
+        if (nextSrc != null) setDraft(nextSrc);
+        return;
+      }
       const a = (e.target as HTMLElement).closest?.("a.file-link") as HTMLAnchorElement | null;
       if (!a) return;
       // Always stop the anchor's own navigation (it carries target="_blank"); only
@@ -5615,7 +5656,7 @@ function MarkdownView({
         label: basename(target),
       });
     },
-    [path, tabKey],
+    [path, tabKey, draft, setDraft],
   );
 
   return (
@@ -5710,6 +5751,7 @@ function MarkdownView({
             // then drive the base font-size so headings (em-based) scale with it.
             style={font.isCustom ? { fontSize: `${font.fontSize}px` } : undefined}
             onMouseMove={onPreviewMove}
+            onMouseUp={onPreviewMouseUp}
             onMouseLeave={() => setLinkTip(null)}
             onClick={onPreviewClick}
             dangerouslySetInnerHTML={{ __html: html }}
@@ -6076,7 +6118,12 @@ function TexView({
         if (rect)
           usePdfSyncStore
             .getState()
-            .requestReveal(res.pdf_path, rect, phraseAt(draftRef.current, caretAtCompile) ?? undefined);
+            .requestReveal(
+              res.pdf_path,
+              rect,
+              phraseAt(draftRef.current, caretAtCompile) ?? undefined,
+              true,
+            );
         // No SyncTeX answer for the caret → the PDF stays where it was. Flag it so
         // the user knows the jump-to-cursor was skipped (a miss, not a failure).
         else setSyncMiss(true);
@@ -6086,7 +6133,7 @@ function TexView({
     } finally {
       setCompiling(false);
     }
-  }, [compiling, save, path, engine, outDir, extraFlags, openPdf, t]);
+  }, [compiling, save, path, engine, outDir, extraFlags, openPdf, rootDir, t]);
 
   // Auto-dismiss the forward-search miss notice a few seconds after it appears.
   useEffect(() => {

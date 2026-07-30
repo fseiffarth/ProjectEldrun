@@ -18,6 +18,22 @@ fields CalDAV cannot represent. Collaborative projects means a shared registry +
 a shared **bare** git remote — never a shared working tree, because the lockstep
 engine's correctness arguments all assume one human.*
 
+> 📌 **Scope note (2026-07-30).** This group is **strictly the multi-person
+> case.** *Solo* use of a Raspberry Pi — register it and run Claude/shells on it
+> yourself — is **already shipped** by the work-remote (SSH) axis and needs
+> **none** of Group Z: a remote project (`RemoteSpec`, tree on the host, tabs over
+> `ssh -tt`, files over SFTP, git over SSH — `docs/context/remote_projects.md`) or
+> the Pi as a registered global machine / worker host (`host:<id>` tab locality —
+> `docs/context/multi_host_remote.md`). The server earns its keep **only** when
+> several authenticated people sync the *same* projects + a shared calendar/board.
+> If that is not wanted, read-only project sharing may be the end state and the
+> server track may correctly never be built. One caveat that *is* real for the
+> solo Pi and is **not** a Group Z item: **a remote agent (Claude) tab is not
+> tmux-wrapped** — `ssh_exec::wrap_pty_options` excludes agent tabs (only
+> shell/script tabs persist), so shutting the laptop kills the remote agent
+> *process*; only the *conversation* resumes via `--resume`. A long autonomous run
+> that must outlive the laptop has to be launched from a persistent **shell** tab.
+
 > ⚠️ **Sequencing rule.** Items #169–#172 are **prerequisites and pre-existing
 > debt** — all four are worth doing on their own merits and #169 is blocking.
 > **Writable project sharing (#193–#196) must not ship** until the three gates

@@ -247,6 +247,8 @@ mod tests {
             malformed_headers: None,
             auth: None,
             priority: None,
+            priority_source: None,
+            priority_reason: None,
         }
     }
 

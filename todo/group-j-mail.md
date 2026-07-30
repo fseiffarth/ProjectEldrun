@@ -385,4 +385,33 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
 
+202. **The local model a mail task runs on — the tag exists, the task does not.**
+    The 🧠 menu's role chips gained a **Mail** tag (2026-07-30), stored at
+    `settings.ollama_roles.mail` beside `autocomplete`/`grammar`/`tabs`, and
+    **nothing reads it yet**. Only the tag shipped, deliberately: which model may
+    see someone's mail is the user's statement, and the honest order is to let
+    them make it in the same menu they assign every other local job in, rather
+    than bolt a model picker onto whatever mail feature lands first.
+    - What would read it: an **importance/urgency classifier** — the model-driven
+      half of the filing #65's keyword filters do by hand — plus summaries or a
+      draft reply. The filters' rule stands and must not be blurred: a keyword
+      rule is answerable by *reading the rule*, a model's verdict is not, so a
+      classifier is a **separate** mark path and may never present itself as a
+      filter hit. (The stale `#169` reference in #65's filter note above meant
+      exactly this item; that number belongs to Group Z's CalDAV push.)
+    - Prerequisites it inherits rather than invents: the model has to be
+      **resident** to answer unattended, which is what `ollama_autoload_models`
+      (the "On start" chip) already exists for; the mail store may be **locked**
+      (`Unlock::Unavailable`), in which case there is nothing to classify and the
+      absence must read as "locked", never as "nothing important"; and mail is off
+      by default (`mail_client`), so no timer here may run before that gate and
+      the tag are both set.
+    - The chip's tooltip and the lesson text say **nothing reads this yet**, in
+      all five languages. Both come out when the consumer lands (the `pending`
+      flag on `MODEL_ROLES` in `LocalModelMenu.tsx` is the single switch), and the
+      fallback chain is the existing one: no tag ⇒ `ollama_model` ⇒ any loaded
+      model — an unassigned tag must not mean "never run".
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
 ---

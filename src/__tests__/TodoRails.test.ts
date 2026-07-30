@@ -223,12 +223,17 @@ describe("the conversions", () => {
     expect(taskFromOccurrence(untitled, CONV, "(untitled)").title).toBe("(untitled)");
   });
 
-  it("makes an appointment card due on the day it happens", () => {
+  it("carries a timed appointment's hour onto the card's due", () => {
     const made = taskFromOccurrence(occ(), CONV, "x");
-    expect(made.due).toBe("2026-07-08");
+    expect(made.due).toBe("2026-07-08T09:00");
     expect(made.start).toBe("2026-07-08T09:00");
     // A mail carries no date the card should inherit.
     expect(taskFromMail(header("u1", "urgent"), CONV, "x").due).toBeNull();
+  });
+
+  it("gives an all-day appointment a whole-day (timeless) due", () => {
+    const allDay = { ...occ(), allDay: true, start: "2026-07-08", end: "2026-07-08" };
+    expect(taskFromOccurrence(allDay, CONV, "x").due).toBe("2026-07-08");
   });
 });
 

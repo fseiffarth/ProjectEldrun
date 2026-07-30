@@ -6,7 +6,13 @@ import { useMailStore } from "../../stores/mail";
 import { useProjectsStore } from "../../stores/projects";
 import { useTodoStore } from "../../stores/todo";
 import { useExperimental } from "../../lib/experimental";
-import { allTags, applyPending, boardColumns, filterTasks } from "../../lib/todoBoard";
+import {
+  allTags,
+  applyPending,
+  archivedColumnIds,
+  boardColumns,
+  filterTasks,
+} from "../../lib/todoBoard";
 import { useT } from "../../lib/i18n";
 import { TodoAgendaRail } from "./TodoAgendaRail";
 import { TodoBoard } from "./TodoBoard";
@@ -70,6 +76,7 @@ export function TodoPane() {
   }, [focusTaskId, tasks]);
 
   const columns = useMemo(() => boardColumns(storedColumns), [storedColumns]);
+  const archived = useMemo(() => archivedColumnIds(columns), [columns]);
   const withPending = useMemo(
     () => applyPending(tasks, pendingOrder),
     [tasks, pendingOrder],
@@ -83,8 +90,9 @@ export function TodoPane() {
         tag: tagFilter,
         hideDone,
         visibleCalendars: visible,
+        archived,
       }),
-    [withPending, search, projectFilter, tagFilter, hideDone, visible],
+    [withPending, search, projectFilter, tagFilter, hideDone, visible, archived],
   );
   const tags = useMemo(() => allTags(tasks), [tasks]);
 

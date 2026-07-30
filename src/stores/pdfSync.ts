@@ -25,6 +25,8 @@ export interface RevealRequest {
    *  `rect` (a SyncTeX line box) to the exact clicked word, using the phrase to
    *  disambiguate which occurrence of a common word to highlight. */
   phrase?: CaretPhrase;
+  /** A compile just replaced the PDF bytes, so load them before revealing. */
+  afterReload?: boolean;
 }
 
 /** Tauri event carrying a reveal across the main/detached window boundary. */
@@ -36,6 +38,7 @@ export interface PdfRevealEnvelope {
   pdf: string;
   rect: SyncRect;
   phrase?: CaretPhrase;
+  afterReload?: boolean;
   from: string;
 }
 
@@ -54,10 +57,20 @@ interface PdfSyncStore {
    *  is given, the view refines `rect` down to the clicked word on the target
    *  page. Applies locally AND broadcasts so a PDF hosted in another (detached)
    *  window reveals too (#42). */
-  requestReveal: (pdf: string, rect: SyncRect, phrase?: CaretPhrase) => void;
+  requestReveal: (
+    pdf: string,
+    rect: SyncRect,
+    phrase?: CaretPhrase,
+    afterReload?: boolean,
+  ) => void;
   /** Record a reveal in THIS window's store (the local half of requestReveal, and
    *  what `listenPdfReveal` calls for a reveal broadcast from another window). */
-  applyReveal: (pdf: string, rect: SyncRect, phrase?: CaretPhrase) => void;
+  applyReveal: (
+    pdf: string,
+    rect: SyncRect,
+    phrase?: CaretPhrase,
+    afterReload?: boolean,
+  ) => void;
   /** Clear the pending reveal for `pdf` once the view has applied it. */
   consume: (pdf: string) => void;
 }
@@ -71,12 +84,15 @@ let revealSeq = 0;
 
 export const usePdfSyncStore = create<PdfSyncStore>((set, get) => ({
   byPath: {},
-  applyReveal: (pdf, rect, phrase) =>
+  applyReveal: (pdf, rect, phrase, afterReload) =>
     set((s) => ({
-      byPath: { ...s.byPath, [pdf]: { rect, nonce: ++revealSeq, phrase } },
+      byPath: {
+        ...s.byPath,
+        [pdf]: { rect, nonce: ++revealSeq, phrase, afterReload },
+      },
     })),
-  requestReveal: (pdf, rect, phrase) => {
-    get().applyReveal(pdf, rect, phrase);
+  requestReveal: (pdf, rect, phrase, afterReload) => {
+    get().applyReveal(pdf, rect, phrase, afterReload);
     // Broadcast to the other window(s) in case the PDF is popped out there (#42).
     // Best-effort: a non-Tauri env (tests) simply skips the broadcast.
     try {
@@ -84,6 +100,7 @@ export const usePdfSyncStore = create<PdfSyncStore>((set, get) => ({
         pdf,
         rect,
         phrase,
+        afterReload,
         from: currentLabel(),
       } satisfies PdfRevealEnvelope).catch(() => {});
     } catch {
@@ -110,9 +127,9 @@ export async function listenPdfReveal(): Promise<() => void> {
   const self = currentLabel();
   try {
     return await listen<PdfRevealEnvelope>(PDF_REVEAL_EVENT, (ev) => {
-      const { pdf, rect, phrase, from } = ev.payload;
+      const { pdf, rect, phrase, afterReload, from } = ev.payload;
       if (from === self) return; // we already applied our own reveal locally
-      usePdfSyncStore.getState().applyReveal(pdf, rect, phrase);
+      usePdfSyncStore.getState().applyReveal(pdf, rect, phrase, afterReload);
     });
   } catch {
     return () => {};

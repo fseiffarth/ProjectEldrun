@@ -6,8 +6,13 @@
  *
  * There is deliberately no manifest and no install-state tracking on this
  * side either — `installedSkills` is a plain read of what is actually on disk
- * under a project's `.claude/skills/`, so a hand-authored skill shows up the
+ * under a target's `.claude/skills/`, so a hand-authored skill shows up the
  * same as one this UI installed.
+ *
+ * The install trio is addressed by a {@link SkillTarget}, never by a path, and
+ * `PERSONAL_SKILLS` is a frozen constant rather than a function for that
+ * reason: there is one way to name the personal scope and it takes no argument,
+ * so no call site can turn it into a path this side chose.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -16,7 +21,17 @@ import type {
   SkillCatalogEntry,
   SkillDetail,
   SkillSource,
+  SkillTarget,
 } from "../types/skills";
+
+/** `~/.claude/skills/` — read by every project on this machine, and by no
+ *  other machine. */
+export const PERSONAL_SKILLS: SkillTarget = Object.freeze({ kind: "personal" });
+
+/** `<dir>/.claude/skills/` — this project's own, travelling with its tree. */
+export function projectSkills(dir: string): SkillTarget {
+  return { kind: "project", dir };
+}
 
 export function listSkillSources(): Promise<SkillSource[]> {
   return invoke<SkillSource[]>("skills_list_sources");
@@ -46,21 +61,21 @@ export function getSkillDetail(sourceId: string, relPath: string): Promise<Skill
   return invoke<SkillDetail>("skills_get_detail", { sourceId, relPath });
 }
 
-/** Copy the skill folder into `<projectDir>/.claude/skills/<name>/`, overwriting
+/** Copy the skill folder into the target's `.claude/skills/<name>/`, overwriting
  *  an existing install of the same name. Callers confirm the overwrite first. */
 export function installSkill(
-  projectDir: string,
+  target: SkillTarget,
   sourceId: string,
   relPath: string,
 ): Promise<void> {
-  return invoke<void>("skills_install", { projectDir, sourceId, relPath });
+  return invoke<void>("skills_install", { target, sourceId, relPath });
 }
 
-export function uninstallSkill(projectDir: string, name: string): Promise<void> {
-  return invoke<void>("skills_uninstall", { projectDir, name });
+export function uninstallSkill(target: SkillTarget, name: string): Promise<void> {
+  return invoke<void>("skills_uninstall", { target, name });
 }
 
-/** Every skill folder actually on disk under the project's `.claude/skills/`. */
-export function listInstalledSkills(projectDir: string): Promise<InstalledSkill[]> {
-  return invoke<InstalledSkill[]>("skills_list_installed", { projectDir });
+/** Every skill folder actually on disk under the target's `.claude/skills/`. */
+export function listInstalledSkills(target: SkillTarget): Promise<InstalledSkill[]> {
+  return invoke<InstalledSkill[]>("skills_list_installed", { target });
 }

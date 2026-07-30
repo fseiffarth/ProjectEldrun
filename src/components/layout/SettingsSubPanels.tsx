@@ -29,6 +29,16 @@ interface OllamaModelInfo {
   size_vram: number;
 }
 
+/** How a chosen models-download location would be applied (mirrors backend
+ *  `OllamaModelsDirPlan`). `service_cmd` is empty unless the running server is a
+ *  systemd unit *and* the path is safe to embed in a drop-in. */
+interface OllamaModelsDirPlan {
+  default_dir: string;
+  systemd_service: boolean;
+  service_cmd: string;
+  shell_kind: string;
+}
+
 /** One row from the live Ollama registry search (mirrors backend RegistryModel). */
 interface RegistryModel {
   name: string;
@@ -998,6 +1008,11 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
   const vibeInstallLogRef = useRef<HTMLPreElement>(null);
   const [models, setModels] = useState<OllamaModelInfo[]>([]);
   const [serverRunning, setServerRunning] = useState<boolean | null>(null);
+  // Where Ollama downloads models (`settings.ollama_models_path`) and how the
+  // chosen path would reach the running server. The plan is re-read whenever the
+  // path changes — an empty path asks only for the default + systemd facts.
+  const modelsPath = settings?.ollama_models_path ?? "";
+  const [modelsDirPlan, setModelsDirPlan] = useState<OllamaModelsDirPlan | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
@@ -1313,6 +1328,54 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
     } catch (e) {
       setError(String(e));
     }
+  };
+
+  // Read the download-location plan on mount and whenever the chosen path
+  // changes, so the default placeholder and the systemd apply-to-service command
+  // (which depends on the exact path) stay in step with the setting.
+  useEffect(() => {
+    let cancelled = false;
+    invoke<OllamaModelsDirPlan>("ollama_models_dir_plan", { path: modelsPath || null })
+      .then((p) => {
+        if (!cancelled) setModelsDirPlan(p);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [modelsPath]);
+
+  const chooseModelsDir = async () => {
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      defaultPath: modelsPath || undefined,
+    });
+    if (typeof picked === "string") {
+      // Trailing slashes off so the stored value matches what the drop-in and
+      // the placeholder show (mirrors the project-location picker).
+      await updateSettings({ ollama_models_path: picked.replace(/\/+$/, "") });
+    }
+  };
+
+  // Back to Ollama's own default — `null`, never `""`: the backend field is
+  // skipped when absent, and a stored empty string would be a second spelling of
+  // "unset" for every reader to special-case.
+  const clearModelsDir = () => {
+    void updateSettings({ ollama_models_path: null });
+  };
+
+  // Point the *running* server at the chosen folder (systemd drop-in), in a
+  // visible terminal — it needs a root password and rewrites a service the user
+  // is entitled to read first. The setting alone already covers a server Eldrun
+  // starts itself.
+  const applyModelsDirToService = () => {
+    if (!modelsDirPlan?.service_cmd) return;
+    runInstallInTab(
+      t("ollama.modelLocationApplyTabLabel"),
+      modelsDirPlan.service_cmd,
+      (modelsDirPlan.shell_kind || "bash") as InstallShellKind,
+    );
   };
 
   const withBusy = async (key: string, fn: () => Promise<void>) => {
@@ -1719,6 +1782,48 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
       </div>
 
       {error && <div className="project-dialog-error">{error}</div>}
+
+      <div className="settings-section-title">
+        {t("ollama.modelLocationTitle")} <UntestedTag />
+      </div>
+      <p className="settings-help">{t("ollama.modelLocationHelp")}</p>
+      <div className="ollama-install-cmd-row">
+        <code className="ollama-install-cmd">
+          {modelsPath ||
+            (modelsDirPlan
+              ? t("ollama.modelLocationDefaultHint", { path: modelsDirPlan.default_dir })
+              : "…")}
+        </code>
+        <button
+          type="button"
+          className="ollama-action-btn"
+          onClick={() => void chooseModelsDir()}
+        >
+          {t("ollama.modelLocationBrowse")}
+        </button>
+        {modelsPath && (
+          <button type="button" className="ollama-action-btn" onClick={clearModelsDir}>
+            {t("ollama.modelLocationReset")}
+          </button>
+        )}
+      </div>
+      {modelsDirPlan?.systemd_service && (
+        <>
+          <p className="settings-help">{t("ollama.modelLocationSystemdHelp")}</p>
+          {modelsDirPlan.service_cmd && (
+            <div className="ollama-install-cmd-row">
+              <button
+                type="button"
+                className="ollama-action-btn primary"
+                title={modelsDirPlan.service_cmd}
+                onClick={applyModelsDirToService}
+              >
+                {t("ollama.modelLocationApply")}
+              </button>
+            </div>
+          )}
+        </>
+      )}
 
       {vibeSection}
 

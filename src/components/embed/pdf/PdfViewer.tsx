@@ -211,6 +211,7 @@ function PdfPageCanvas({
   onSyncClick,
   syncArmed,
   highlight,
+  onReveal,
   searchMatches,
   searchScrollNonce,
 }: {
@@ -236,6 +237,8 @@ function PdfPageCanvas({
    *  `phrase`, when set, narrows the box to the clicked word via the page's text
    *  content (using the surrounding words to disambiguate). */
   highlight?: { rect: SyncRect; nonce: number; phrase?: CaretPhrase } | null;
+  /** Explicit navigation supersedes a same-path reload's scroll restoration. */
+  onReveal?: () => void;
   /** Ctrl+F search hits on THIS page: each match is its constituent boxes (big
    *  points), and `current` marks the one the find bar is parked on (#71).
    *  Painted as translucent overlays over the canvas. */
@@ -317,6 +320,7 @@ function PdfPageCanvas({
   // far from page-center, which is what made the jump feel imprecise.
   useEffect(() => {
     if (!highlight) return;
+    onReveal?.();
     (boxRef.current ?? wrapRef.current)?.scrollIntoView({ block: "center", inline: "nearest" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlight?.nonce]);
@@ -843,6 +847,9 @@ function PdfCanvas({
   const pendingScroll = useRef<{ top: number; left: number } | null>(null);
   // Bumped whenever the file's mtime advances on disk, forcing a byte reload.
   const [diskVersion, setDiskVersion] = useState(0);
+  // The diskVersion that produced `doc`. Compile-triggered forward search waits
+  // for this to reach the requested fresh version before it scrolls.
+  const [loadedDiskVersion, setLoadedDiskVersion] = useState(-1);
   const lastMtime = useRef<number | null>(null);
   // The path the currently-loaded document came from. A reload that keeps the
   // same path (a recompile bumped `diskVersion`) should preserve the reader's
@@ -885,12 +892,48 @@ function PdfCanvas({
   const reveal = usePdfSyncStore((s) => s.byPath[path] ?? null);
   const consumeReveal = usePdfSyncStore((s) => s.consume);
   const [highlight, setHighlight] = useState<{ rect: SyncRect; nonce: number; phrase?: CaretPhrase } | null>(null);
+  const [reloadReveal, setReloadReveal] = useState<{
+    rect: SyncRect;
+    nonce: number;
+    phrase?: CaretPhrase;
+    targetVersion: number;
+  } | null>(null);
   useEffect(() => {
     if (!reveal) return;
-    setHighlight({ rect: reveal.rect, nonce: reveal.nonce, phrase: reveal.phrase });
+    if (reveal.afterReload) {
+      // An already-open PDF must read the bytes the compiler just replaced.
+      // A newly mounted PDF is already loading those bytes, so wait on its
+      // current version instead of starting a redundant second read.
+      const targetVersion = doc ? diskVersion + 1 : diskVersion;
+      setReloadReveal({
+        rect: reveal.rect,
+        nonce: reveal.nonce,
+        phrase: reveal.phrase,
+        targetVersion,
+      });
+      if (doc) {
+        // Keep the ordinary mtime poll from noticing the same compiler write
+        // afterward and performing a duplicate reload.
+        void fileMtime(path, scope)
+          .then((mtime) => { lastMtime.current = mtime; })
+          .catch(() => {});
+        setDiskVersion(targetVersion);
+      }
+    } else {
+      setHighlight({ rect: reveal.rect, nonce: reveal.nonce, phrase: reveal.phrase });
+    }
     consumeReveal(path);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal?.nonce]);
+  useEffect(() => {
+    if (!doc || !reloadReveal || loadedDiskVersion < reloadReveal.targetVersion) return;
+    setHighlight({
+      rect: reloadReveal.rect,
+      nonce: reloadReveal.nonce,
+      phrase: reloadReveal.phrase,
+    });
+    setReloadReveal(null);
+  }, [doc, loadedDiskVersion, reloadReveal]);
 
   // A SyncTeX reveal names a page of the FILE, but the reader shows an arrangement —
   // that page may have been moved, or dropped. Resolve it to the sheet currently
@@ -1416,6 +1459,7 @@ function PdfCanvas({
         setFuture([]);
         setStaleOnDisk(false);
         setEditError(null);
+        setLoadedDiskVersion(diskVersion);
         setDoc(src.doc);
       } catch (e) {
         if (!cancelled) setError(String(e));
@@ -2067,6 +2111,7 @@ function PdfCanvas({
                     onSyncClick={syncable && ref.src === SELF ? onSyncClick : undefined}
                     syncArmed={syncArmed}
                     highlight={highlight && i === syncSheetIndex ? highlight : null}
+                    onReveal={() => { restoreScroll.current = null; }}
                     searchMatches={searchByPage.get(i + 1)}
                     searchScrollNonce={currentPage === i + 1 ? searchScrollNonce : 0}
                   />

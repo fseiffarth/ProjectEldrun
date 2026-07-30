@@ -25,6 +25,7 @@ import {
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
 import { UntestedTag } from "../common/UntestedTag";
+import { MailAiMessageActions, MailAiProvenance } from "./MailAiMessageActions";
 import type {
   MailAttachmentMeta,
   MailAuthResults,
@@ -130,6 +131,9 @@ export function MailMessageView({
           <span className="mail-meta-label">{t("mail.date")}</span>
           <span className="mail-meta-value">{formatMailDate(header.date, lang, use24h)}</span>
         </div>
+        {/* Who set the priority mark, read-only (#205) — a model classifier must
+            not pass for a keyword rule the user wrote. */}
+        <MailAiProvenance header={header} />
         <MailAuthPanel auth={header.auth} />
         {/* Beside the sender checks, not instead of them: they answer different
             questions. `Authentication-Results` is what YOUR server concluded
@@ -149,6 +153,9 @@ export function MailMessageView({
             {t("mail.composeForward")}
           </button>
         </div>
+        {/* Local-model actions (#204/#207/#208): summarize, extract an event,
+            extract a to-do — each gated by its own toggle and a loopback model. */}
+        <MailAiMessageActions header={header} />
         {!!header.malformed_headers?.length && (
           <div className="mail-warning-strip">
             {t("mail.malformedHeaders")} {header.malformed_headers.join(", ")}

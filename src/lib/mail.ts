@@ -25,7 +25,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { stripFormatControls } from "./textSafety";
 import type { TranslationKey } from "./i18n";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { useSettingsStore } from "../stores/settings";
+import { experimentalEnabled } from "./experimental";
+import type { Settings } from "../types";
 import type {
+  MailAiClassifyReport,
+  MailExtractedEvent,
+  MailExtractedTask,
   MailAccount,
   MailAccountSaved,
   MailAuthMethod,
@@ -282,6 +288,153 @@ export function mailFiltersApply(opts: {
     rules: opts.rules ?? null,
     limit: opts.limit ?? null,
   });
+}
+
+// ── Local-model mail assistant (Group Q, #204–#208) ──────────────────────────
+//
+// One wrapper per `mail_*` AI command, in this file's usual style. **None takes
+// a path**, like every other wrapper here. The backend runs each prompt against
+// a **loopback** Ollama and refuses a non-loopback host even when
+// `ollama_allow_remote_host` is set — the AI path never touches the internet, so
+// nothing here adds a network path. An unreachable server comes back as the
+// existing `not_running` sentinel every 🧠 surface already branches on.
+
+/** ≤N plain-text bullet points summarizing a message body. **Ephemeral** — the
+ *  caller holds it in component state and never persists it (decrypted plaintext
+ *  to disk is forbidden; see `docs/context/mail_encryption.md`). */
+export function mailSummarize(messageId: string): Promise<string> {
+  return invoke<string>("mail_summarize", { messageId });
+}
+
+/** A formal reply body drafted from rough notes, optionally with the original as
+ *  context (#206). **Never sends** — the composer drops the text into its
+ *  `body_text` for explicit review and send. */
+export function mailFormalizeReply(
+  notes: string,
+  opts: { accountId: string; messageId?: string | null; tone?: string | null },
+): Promise<string> {
+  return invoke<string>("mail_formalize_reply", {
+    notes,
+    messageId: opts.messageId ?? null,
+    accountId: opts.accountId,
+    tone: opts.tone ?? null,
+  });
+}
+
+/** A calendar event read out of a message, or `null` when the model found none /
+ *  was too unsure (#207). `null` is "nothing to create", not an error. */
+export function mailExtractEvent(messageId: string): Promise<MailExtractedEvent | null> {
+  return invoke<MailExtractedEvent | null>("mail_extract_event", { messageId });
+}
+
+/** A to-do read out of a message, or `null` when there is nothing to make (#208). */
+export function mailExtractTask(messageId: string): Promise<MailExtractedTask | null> {
+  return invoke<MailExtractedTask | null>("mail_extract_task", { messageId });
+}
+
+/**
+ * Run the local-model classifier over stored mail — the manual counterpart to
+ * the sync-time pass (#205). With `dryRun` it marks nothing and reports what it
+ * *would* mark; the report is source-labelled (`source: "model"`) and never the
+ * keyword-filter's shape, so the two can be shown side by side without one
+ * passing for the other.
+ */
+export function mailAiClassifyApply(
+  dryRun: boolean,
+  opts: { accountId?: string | null; limit?: number | null } = {},
+): Promise<MailAiClassifyReport> {
+  return invoke<MailAiClassifyReport>("mail_ai_classify_apply", {
+    dryRun,
+    accountId: opts.accountId ?? null,
+    limit: opts.limit ?? null,
+  });
+}
+
+/**
+ * Whether the Ollama host the mail AI would dial is **loopback**.
+ *
+ * The mail-AI helper is deliberately stricter than `ollama_allow_remote_host`:
+ * classifying mail on someone else's box defeats the point, so a remote host
+ * disables the feature outright. This mirrors the backend's `host_is_loopback`
+ * refusal so the UI gates on the same answer rather than offering a control that
+ * the backend will only refuse. Unset (the default `127.0.0.1:11434`), a bare
+ * port and a `:port` all read as loopback.
+ */
+export function mailAiHostIsLoopback(host?: string | null): boolean {
+  const raw = (host ?? "").trim();
+  if (!raw) return true;
+  const h = raw.replace(/^https?:\/\//i, "");
+  if (/^:?\d+$/.test(h)) return true; // bare port or ":port" → default host
+  let hostname: string;
+  if (h.startsWith("[")) {
+    const end = h.indexOf("]");
+    hostname = end >= 0 ? h.slice(1, end) : h.slice(1);
+  } else {
+    hostname = h.split(":")[0];
+  }
+  hostname = hostname.toLowerCase();
+  return (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "::1" ||
+    hostname === "0.0.0.0" ||
+    hostname.endsWith(".localhost")
+  );
+}
+
+/** The model the mail role resolves to (`ollama_roles.mail ?? ollama_model`), or
+ *  `undefined` when none is assigned. */
+export function mailAiModelName(settings: Settings | null | undefined): string | undefined {
+  return settings?.ollama_roles?.mail || settings?.ollama_model || undefined;
+}
+
+/** Is the mail-AI path usable at all: `mail_client` on, a mail-role model
+ *  assigned, and its host loopback. The per-feature gate is {@link mailAiFeatureOn}. */
+export function mailAiResolvable(settings: Settings | null | undefined): boolean {
+  return (
+    experimentalEnabled(settings, "mail_client") &&
+    !!mailAiModelName(settings) &&
+    mailAiHostIsLoopback(settings?.ollama_host)
+  );
+}
+
+/** The `Settings` keys that turn one mail-AI feature on. */
+export type MailAiFeature =
+  | "mail_ai_summarize"
+  | "mail_ai_autoclassify"
+  | "mail_ai_formalize"
+  | "mail_ai_calendar"
+  | "mail_ai_todo";
+
+/** Whether a specific mail-AI feature should be offered: its toggle is on AND the
+ *  path is resolvable ({@link mailAiResolvable}). */
+export function mailAiFeatureOn(
+  settings: Settings | null | undefined,
+  feature: MailAiFeature,
+): boolean {
+  return settings?.[feature] === true && mailAiResolvable(settings);
+}
+
+/** {@link mailAiFeatureOn} as a store subscription — the call site for a component. */
+export function useMailAiFeature(feature: MailAiFeature): boolean {
+  return useSettingsStore((s) => mailAiFeatureOn(s.settings, feature));
+}
+
+/**
+ * A backend mail-AI error string → an i18n key. The backend speaks in machine
+ * sentinels so the wording lives in `i18n` ×5; an unrecognized value returns
+ * `null` and the caller shows the raw string (a real error is information).
+ */
+export function mailAiErrorKey(err: unknown): TranslationKey | null {
+  const s = typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
+  if (s === "not_running" || s.includes("not_running")) return "mailAi.errNotRunning";
+  // REMOTE_REFUSED — the loopback-only refusal (mail_ai.rs). Checked before the
+  // absent-model case so its own sentence never falls through to raw English.
+  if (s.includes("remote host")) return "mailAi.errRemote";
+  // NO_MODEL is the full sentence "no local mail model is set …" (no `no_model`
+  // token in it), and the embedding-only refusal names "embedding".
+  if (s.includes("no local mail model") || s.includes("embedding")) return "mailAi.errNoModel";
+  return null;
 }
 
 // ── Drafts + the file boundary ───────────────────────────────────────────────

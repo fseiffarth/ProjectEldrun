@@ -166,6 +166,37 @@ pub struct Settings {
     /// Mail: OS notification on new inbox mail (default on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail_notify_new: Option<bool>,
+    // ── Local-model mail assistant (Group Q, #203–#208) ─────────────────────
+    //
+    // Six opt-in switches, **all default off/absent**, for the on-device mail
+    // features driven by the loopback `mail`-role Ollama model. Each is gated in
+    // the UI additionally by `mail_client` and a resolvable loopback model. Two
+    // of them — `mail_ai_autoclassify` and `mail_ai_auto_create` — are read in
+    // the **backend** as well (a background sync has no UI in the loop to gate
+    // it); the other four gate frontend surfaces only, matching the `mail_client`
+    // precedent that a renderer able to invoke a command could equally flip the
+    // setting, so a second backend gate would buy nothing.
+    /// Offer the on-demand "Summarize (local)" control in the message view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_ai_summarize: Option<bool>,
+    /// Let a sync ask the local model to file **new inbox** messages into
+    /// Important/Urgent, after the keyword-filter pass. Read in `sync_inner`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_ai_autoclassify: Option<bool>,
+    /// Offer the composer's "Draft from notes" control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_ai_formalize: Option<bool>,
+    /// Offer "Add to calendar" extraction on a message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_ai_calendar: Option<bool>,
+    /// Offer "Add to-do" extraction on a message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_ai_todo: Option<bool>,
+    /// The "no review step" opt-in for the calendar/to-do extractors: with it on,
+    /// a high-confidence event/task is created without the confirming dialog.
+    /// **Default off** — mail must never quietly write to the user's own data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_ai_auto_create: Option<bool>,
     /// Where the Ollama server is, when it is not the default
     /// `127.0.0.1:11434` — a different port (a container publishing 11435, a
     /// second server) or, with [`Self::ollama_allow_remote_host`] set, another
@@ -190,14 +221,31 @@ pub struct Settings {
     /// they wrote rather than what DNS answered today.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ollama_allow_remote_host: Option<bool>,
+    /// Where Ollama saves the models it downloads — its `OLLAMA_MODELS`
+    /// directory. `None`/empty means Ollama's own default (`~/.ollama/models`,
+    /// or the system-service dir when one holds models).
+    ///
+    /// It reaches only a server **Eldrun starts itself** (`ensure_ollama_running`
+    /// passes it as `OLLAMA_MODELS`): an already-running or systemd-managed
+    /// server keeps whatever location it was launched with, which is why the
+    /// Settings panel offers a one-click systemd drop-in
+    /// (`ollama_models_dir_plan`) to point *that* server at the same folder. The
+    /// path is also folded into the partial-blob scan (`ollama_blob_dirs`) so a
+    /// resumable download in the custom dir is still found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ollama_models_path: Option<String>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_model: Option<String>,
     /// Per-task local-model assignments set from the 🧠 menu's role chips. Maps a
-    /// task key (`"autocomplete"`, `"grammar"`, `"tabs"`) to the model name that
-    /// serves it, so several loaded models can run different jobs in parallel.
-    /// Optional + flat so older settings files round-trip cleanly; a task absent
-    /// here falls back to `ollama_model`. Frontend logic only — persisted here.
+    /// task key (`"autocomplete"`, `"grammar"`, `"tabs"`, `"mail"`) to the model
+    /// name that serves it, so several loaded models can run different jobs in
+    /// parallel. Optional + flat so older settings files round-trip cleanly; a
+    /// task absent here falls back to `ollama_model`. Frontend logic only —
+    /// persisted here. An open map rather than a struct of known keys, which is
+    /// what lets `"mail"` be stored before the mail task that will read it exists:
+    /// adding a role is a frontend edit, and this file keeps round-tripping one it
+    /// has never heard of.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ollama_roles: Option<HashMap<String, String>>,
     /// Preserved for Python rollback; not used by the Tauri app.
@@ -739,5 +787,41 @@ mod tests {
         let back: Settings =
             serde_json::from_str(&serde_json::to_string(&s).unwrap()).expect("round trip");
         assert_eq!(back.browser_link_target.as_deref(), Some("in_app"));
+    }
+
+    /// The six local-model mail flags (Group Q) are **absent by default** — a
+    /// fresh `settings.json` omits them, so nobody inherits a feature that runs a
+    /// model over their mail without ticking it. They are real named fields (not
+    /// `extra` passengers), so `mail_ai_autoclassify`, read in the backend sync,
+    /// can be gated on at all.
+    #[test]
+    fn the_mail_ai_flags_default_absent_and_are_real_fields() {
+        let raw = serde_json::to_string(&Settings::default()).unwrap();
+        for key in [
+            "mail_ai_summarize",
+            "mail_ai_autoclassify",
+            "mail_ai_formalize",
+            "mail_ai_calendar",
+            "mail_ai_todo",
+            "mail_ai_auto_create",
+        ] {
+            assert!(!raw.contains(key), "default settings must omit {key}: {raw}");
+        }
+
+        let json = r#"{"mail_ai_summarize":true,"mail_ai_autoclassify":true,
+            "mail_ai_formalize":true,"mail_ai_calendar":true,"mail_ai_todo":true,
+            "mail_ai_auto_create":true}"#;
+        let s: Settings = serde_json::from_str(json).expect("parse");
+        assert_eq!(s.mail_ai_summarize, Some(true));
+        assert_eq!(s.mail_ai_autoclassify, Some(true));
+        assert_eq!(s.mail_ai_formalize, Some(true));
+        assert_eq!(s.mail_ai_calendar, Some(true));
+        assert_eq!(s.mail_ai_todo, Some(true));
+        assert_eq!(s.mail_ai_auto_create, Some(true));
+        assert!(
+            s.extra.is_empty(),
+            "a mail-AI flag fell through to `extra`: {:?}",
+            s.extra.keys().collect::<Vec<_>>()
+        );
     }
 }

@@ -253,6 +253,11 @@ export function MailAccountDialog({
               value={form.label}
               onChange={(e) => patch({ label: e.target.value })}
             />
+            {/* The two name fields are one field apart and go to opposite
+                places — one leaves the machine on every message, the other
+                never does — so each says which it is rather than leaving the
+                user to find out from a sent mail. */}
+            <span className="mail-field-hint">{t("mail.accountNameHint")}</span>
           </label>
           <label className="mail-field">
             <span className="mail-field-label">{t("mail.accountAddress")}</span>
@@ -282,6 +287,7 @@ export function MailAccountDialog({
               value={form.display_name ?? ""}
               onChange={(e) => patch({ display_name: e.target.value })}
             />
+            <span className="mail-field-hint">{t("mail.accountDisplayNameHint")}</span>
           </label>
 
           <ServerFields
