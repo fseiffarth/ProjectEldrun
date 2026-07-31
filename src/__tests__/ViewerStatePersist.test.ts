@@ -124,4 +124,79 @@ describe("viewerState round-trips through save/load", () => {
     expect(tabs).toHaveLength(1);
     expect(tabs[0].viewerState).toEqual({ scale: 1.8, scrollTop: 320 });
   });
+
+  it("round-trips the TeX workspace layout fields (active file, PDF pane, widths)", async () => {
+    const store = useTabsStore.getState();
+    store.setScope("p");
+    const tab = store.addTab({
+      label: "paper.tex",
+      cmd: "",
+      cwd: "/p",
+      kind: "embed",
+      embedPath: "/p/paper.tex",
+      viewer: "texworkspace",
+    });
+    useTabsStore.getState().setViewerState(tab.key, {
+      texActivePath: "/p/chap.tex",
+      texPdfOpen: true,
+      texPdfSplit: 0.55,
+      texSidebarWidth: 260,
+    });
+
+    // A no-op re-write of the same workspace fields keeps the array identity
+    // (the debounced saveLayout isn't woken for nothing).
+    const before = useTabsStore.getState().tabs;
+    useTabsStore.getState().setViewerState(tab.key, {
+      texActivePath: "/p/chap.tex",
+      texPdfOpen: true,
+      texPdfSplit: 0.55,
+      texSidebarWidth: 260,
+    });
+    expect(useTabsStore.getState().tabs).toBe(before);
+
+    await useTabsStore.getState().saveLayout("/p/project.json");
+    const call = invokeMock.mock.calls.find((c) => c[0] === "save_tab_layout");
+    const arg = call![1] as {
+      tabs: { label: string; viewerState?: Record<string, unknown> }[];
+    };
+    const saved = arg.tabs.find((t) => t.label === "paper.tex");
+    expect(saved?.viewerState).toEqual({
+      texActivePath: "/p/chap.tex",
+      texPdfOpen: true,
+      texPdfSplit: 0.55,
+      texSidebarWidth: 260,
+    });
+
+    // …and they come back on the rebuilt tab.
+    useTabsStore.getState().loadFromLayout(
+      [
+        {
+          key: "embed-9",
+          label: "paper.tex",
+          cmd: "",
+          cwd: "/p",
+          kind: "embed",
+          embedPath: "/p/paper.tex",
+          viewer: "texworkspace",
+          viewerState: {
+            texActivePath: "/p/chap.tex",
+            texPdfOpen: true,
+            texPdfSplit: 0.55,
+            texSidebarWidth: 260,
+          },
+        },
+      ],
+      "/p2",
+      "p2",
+    );
+    const restored = useTabsStore.getState().tabsByScope["p2"];
+    expect(restored).toHaveLength(1);
+    expect(restored[0].viewer).toBe("texworkspace");
+    expect(restored[0].viewerState).toEqual({
+      texActivePath: "/p/chap.tex",
+      texPdfOpen: true,
+      texPdfSplit: 0.55,
+      texSidebarWidth: 260,
+    });
+  });
 });

@@ -61,6 +61,56 @@ pub enum MailAuthKind {
     Oauth2,
 }
 
+/// Per-account **Mail AI (local)** feature toggles (Group Q, #203–#208).
+///
+/// These live on the account rather than in `Settings` because the decision is
+/// per mailbox: a work account may want auto-filing and extraction while a
+/// personal one wants none of it, and a single global switch could not say so.
+/// All are opt-in and **default off/absent**; the whole feature is additionally
+/// gated by the one *global* master switch `Settings::mail_ai_allow` and by a
+/// resolvable loopback mail-role model (see `src/lib/mail.ts`'s
+/// `mailAiResolvable`). `autoclassify` is the only field read in the **backend**
+/// (a background sync has no UI in the loop); the rest gate frontend surfaces.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MailAiPrefs {
+    /// Offer the on-demand "Summarize (local)" control in the message view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summarize: Option<bool>,
+    /// Let a sync ask the local model to file **new inbox** messages into
+    /// Important/Urgent, after the keyword-filter pass. Read in `sync_inner`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autoclassify: Option<bool>,
+    /// Offer the composer's "Draft from notes" control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formalize: Option<bool>,
+    /// Offer "Add to calendar" extraction on a message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar: Option<bool>,
+    /// Offer "Add to-do" extraction on a message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo: Option<bool>,
+    /// The "no review step" opt-in for the calendar/to-do extractors.
+    /// **Default off** — mail must never quietly write to the user's own data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_create: Option<bool>,
+    #[serde(flatten, default)]
+    pub extra: HashMap<String, Value>,
+}
+
+impl MailAiPrefs {
+    /// True when no field is set — used to store `None` rather than an empty
+    /// `{}` object, keeping an account that never touched Mail AI clean.
+    pub fn is_empty(&self) -> bool {
+        self.summarize.is_none()
+            && self.autoclassify.is_none()
+            && self.formalize.is_none()
+            && self.calendar.is_none()
+            && self.todo.is_none()
+            && self.auto_create.is_none()
+            && self.extra.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MailAccount {
     pub id: String,
@@ -92,6 +142,10 @@ pub struct MailAccount {
     /// worse than showing nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authserv_id: Option<String>,
+    /// Per-account **Mail AI (local)** toggles. Absent for an account that never
+    /// opened the feature; see [`MailAiPrefs`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai: Option<MailAiPrefs>,
     #[serde(flatten, default)]
     pub extra: HashMap<String, Value>,
 }

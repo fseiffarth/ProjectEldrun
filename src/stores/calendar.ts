@@ -357,6 +357,36 @@ export function occurrenceEnded(occ: Occurrence, now: Date = new Date()): boolea
 }
 
 /**
+ * How long a finished occurrence stays on the header's day list before it is
+ * dropped altogether.
+ *
+ * Dimming a past occurrence answers "what have I already done today", and for
+ * the hour after a meeting that is genuinely the question — it is the one you
+ * might still be writing up, or checking the room of. A day's worth of them is
+ * not: by late afternoon the dimmed rows are most of a list whose whole job is
+ * to say what is still coming, and the thing you opened it for has been pushed
+ * off the bottom.
+ */
+export const PAST_OCCURRENCE_GRACE_MIN = 60;
+
+/**
+ * An occurrence finished long enough ago to drop from a day list
+ * (`PAST_OCCURRENCE_GRACE_MIN`) — the *hiding* rule, where `occurrenceEnded` is
+ * the dimming one, so the two states a past row can be in are decided in one
+ * place rather than by two comparisons that could drift apart.
+ *
+ * An all-day event is never stale: it has no hour to be an hour past.
+ */
+export function occurrenceStale(
+  occ: Occurrence,
+  now: Date = new Date(),
+  graceMin = PAST_OCCURRENCE_GRACE_MIN,
+): boolean {
+  if (occ.allDay) return false;
+  return occ.end <= toStamp(new Date(now.getTime() - graceMin * 60_000));
+}
+
+/**
  * The number in the header button's badge: **events left today**.
  *
  * Deliberately *derived*, where the mail badge's number is *acknowledged*. Mail

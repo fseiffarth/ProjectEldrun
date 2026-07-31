@@ -140,9 +140,11 @@ export function MailComposeDialog({
   const [missingKeys, setMissingKeys] = useState<string[]>([]);
 
   // #206 — draft a formal reply from rough notes, on a **loopback** model. It
-  // only ever fills the body below; it never sends. Gated by `mail_ai_formalize`
-  // plus a resolvable mail-role model.
-  const canFormalize = useMailAiFeature("mail_ai_formalize");
+  // only ever fills the body below; it never sends. Gated by the **sending
+  // account's** `formalize` toggle plus the global master switch and a resolvable
+  // mail-role model — `from` is the account this reply goes out as.
+  const fromAccount = accounts.find((a) => a.id === from);
+  const canFormalize = useMailAiFeature(fromAccount, "formalize");
   const [notes, setNotes] = useState("");
   const [tone, setTone] = useState("");
   const [drafting, setDrafting] = useState(false);

@@ -745,7 +745,16 @@ export function printHtmlBody(bodyHtml: string, css: string, title?: string): Pr
  * sharpness (~2× ≈ good on paper).
  */
 export async function renderPdfPagesToImages(
-  refs: readonly { src: string; page: number; rot: number }[],
+  refs: readonly {
+    src: string;
+    page: number;
+    rot: number;
+    /** Pending blackouts (#pdf-redact), in big points in the sheet's rotated space.
+     *  Printing an arrangement prints what is on screen, and on a marked sheet that
+     *  includes the black areas — a print that leaked the text a save would have
+     *  destroyed would be the same failure by another route. */
+    marks?: readonly { x: number; y: number; w: number; h: number }[];
+  }[],
   docFor: (src: string) => PDFDocumentProxy | undefined,
   scale = 2,
 ): Promise<string[]> {
@@ -766,6 +775,10 @@ export async function renderPdfPagesToImages(
     const ctx = canvas.getContext("2d");
     if (!ctx) continue;
     await page.render({ canvasContext: ctx, viewport }).promise;
+    if (ref.marks?.length) {
+      ctx.fillStyle = "#000000";
+      for (const m of ref.marks) ctx.fillRect(m.x * scale, m.y * scale, m.w * scale, m.h * scale);
+    }
     urls.push(canvas.toDataURL("image/png"));
   }
   return urls;

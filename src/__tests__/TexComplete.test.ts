@@ -69,13 +69,39 @@ describe("findTexComplAt", () => {
 });
 
 describe("parseTexLabels", () => {
-  it("extracts every \\label key", () => {
+  it("extracts every \\label key, tagged with its enclosing section", () => {
     const src = "\\section{A}\\label{sec:a}\ntext \\label{eq:1} more";
-    expect(parseTexLabels(src)).toEqual(["sec:a", "eq:1"]);
+    expect(parseTexLabels(src)).toEqual([
+      { key: "sec:a", section: "A" },
+      { key: "eq:1", section: "A" },
+    ]);
   });
 
   it("returns nothing when there are no labels", () => {
     expect(parseTexLabels("no labels at all")).toEqual([]);
+  });
+
+  it("leaves section undefined for a label before any sectioning command", () => {
+    const src = "\\label{x}\n\\section{Later}\n\\label{y}";
+    expect(parseTexLabels(src)).toEqual([
+      { key: "x", section: undefined },
+      { key: "y", section: "Later" },
+    ]);
+  });
+
+  it("tracks the nearest section across subsections", () => {
+    const src =
+      "\\section{Intro}\\label{a}\\subsection{Details}\\label{b}\\section{Next}\\label{c}";
+    expect(parseTexLabels(src)).toEqual([
+      { key: "a", section: "Intro" },
+      { key: "b", section: "Details" },
+      { key: "c", section: "Next" },
+    ]);
+  });
+
+  it("brace-matches a title with nested formatting and strips it", () => {
+    const src = "\\section{Results for \\texttt{foo}}\\label{sec:r}";
+    expect(parseTexLabels(src)).toEqual([{ key: "sec:r", section: "Results for foo" }]);
   });
 });
 
@@ -126,7 +152,7 @@ describe("gatherTexCompletions", () => {
     });
 
     const { labels, cites } = await gatherTexCompletions(main);
-    expect(labels.sort()).toEqual(["eq:euler", "sec:intro"]);
+    expect(labels.map((l) => l.key).sort()).toEqual(["eq:euler", "sec:intro"]);
     expect(cites.map((c) => c.key).sort()).toEqual(["a", "b"]);
   });
 
@@ -139,7 +165,7 @@ describe("gatherTexCompletions", () => {
       return Promise.reject(new Error("missing"));
     });
     const { labels, cites } = await gatherTexCompletions(main);
-    expect(labels).toEqual(["x"]);
+    expect(labels).toEqual([{ key: "x", section: undefined }]);
     expect(cites).toEqual([]);
   });
 });

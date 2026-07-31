@@ -13,6 +13,7 @@ import {
   loadOutline,
   detectHeadings,
   flattenOutline,
+  outlineIsNavigable,
   type OutlineNode,
   type HeadingRun,
 } from "../components/embed/pdf/outline";
@@ -199,5 +200,24 @@ describe("flattenOutline", () => {
       ["A.1", 1],
       ["B", 0],
     ]);
+  });
+});
+
+describe("outlineIsNavigable", () => {
+  const leaf = (id: string, title: string): OutlineNode => ({ id, title, page: 1, children: [] });
+
+  it("rejects a lone title bookmark (the LaTeX-template degenerate case)", () => {
+    // getOutline() shipping only the paper's title, no children — DS_ShareGNN's paper.pdf.
+    expect(outlineIsNavigable([leaf("0", "A Paper Title")])).toBe(false);
+    expect(outlineIsNavigable([])).toBe(false);
+  });
+
+  it("accepts a real contents: two entries, or one with children", () => {
+    expect(outlineIsNavigable([leaf("0", "Summary"), leaf("1", "Details")])).toBe(true);
+    expect(
+      outlineIsNavigable([
+        { id: "0", title: "Part I", page: 1, children: [leaf("0.0", "Chapter 1")] },
+      ]),
+    ).toBe(true);
   });
 });

@@ -5,6 +5,7 @@ import {
 } from "../../lib/viewers/fileUtils";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { useWindowsStore } from "../../stores/windows";
+import { openTexWorkspace } from "../embed/openTexWorkspace";
 
 /**
  * The single open-a-file policy shared by every file listing (the FileTree in
@@ -47,6 +48,14 @@ export function openFileEntry(opts: {
       .getState()
       .openFile(entry.path, undefined, projectId, origin)
       .catch((e) => console.error(e));
+    return;
+  }
+
+  // A `.tex` opens (or focuses) the single TeX workspace tab for its document
+  // instead of a bare editor tab — resolving the build root is async, so this is
+  // fire-and-forget. `placeTab` threads the popout/drop seam straight through.
+  if (viewer === "tex") {
+    void openTexWorkspace(entry.path, placeTab);
     return;
   }
 

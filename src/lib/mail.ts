@@ -33,6 +33,7 @@ import type {
   MailExtractedEvent,
   MailExtractedTask,
   MailAccount,
+  MailAiPrefs,
   MailAccountSaved,
   MailAuthMethod,
   MailAuthResults,
@@ -107,6 +108,17 @@ export function mailAccountUpsert(
 
 export function mailAccountDelete(accountId: string): Promise<void> {
   return invoke("mail_account_delete", { accountId });
+}
+
+/**
+ * Patch just the per-account **Mail AI (local)** toggles, returning the updated
+ * account. Deliberately separate from {@link mailAccountUpsert}: that command
+ * carries a password + a keychain intent, and a quick feature toggle (the
+ * toolbar tags, the per-account settings dialog) must never be able to disturb a
+ * saved secret. The backend stores an all-off preference set as absent.
+ */
+export function mailAccountSetAi(accountId: string, ai: MailAiPrefs): Promise<MailAccount> {
+  return invoke<MailAccount>("mail_account_set_ai", { accountId, ai });
 }
 
 /** Probe IMAP + SMTP with the (possibly unsaved) credentials in the dialog. */
@@ -388,36 +400,48 @@ export function mailAiModelName(settings: Settings | null | undefined): string |
   return settings?.ollama_roles?.mail || settings?.ollama_model || undefined;
 }
 
-/** Is the mail-AI path usable at all: `mail_client` on, a mail-role model
- *  assigned, and its host loopback. The per-feature gate is {@link mailAiFeatureOn}. */
+/**
+ * Whether Mail AI is switched on at the machine level: `mail_client` on **and**
+ * the global master switch `mail_ai_allow` on. This is what the toolbar's
+ * quick-toggle tags are gated on — with the master switch off, no per-account
+ * feature is offered at all.
+ */
+export function mailAiAllowed(settings: Settings | null | undefined): boolean {
+  return experimentalEnabled(settings, "mail_client") && settings?.mail_ai_allow === true;
+}
+
+/** Is the mail-AI path usable at all: {@link mailAiAllowed}, a mail-role model
+ *  assigned, and its host loopback. The per-account gate is {@link mailAiFeatureOn}. */
 export function mailAiResolvable(settings: Settings | null | undefined): boolean {
   return (
-    experimentalEnabled(settings, "mail_client") &&
+    mailAiAllowed(settings) &&
     !!mailAiModelName(settings) &&
     mailAiHostIsLoopback(settings?.ollama_host)
   );
 }
 
-/** The `Settings` keys that turn one mail-AI feature on. */
-export type MailAiFeature =
-  | "mail_ai_summarize"
-  | "mail_ai_autoclassify"
-  | "mail_ai_formalize"
-  | "mail_ai_calendar"
-  | "mail_ai_todo";
+/** The per-account {@link MailAiPrefs} keys that turn one mail-AI feature on. */
+export type MailAiFeature = "summarize" | "autoclassify" | "formalize" | "calendar" | "todo";
 
-/** Whether a specific mail-AI feature should be offered: its toggle is on AND the
- *  path is resolvable ({@link mailAiResolvable}). */
+/** Whether a specific mail-AI feature should be offered for this account: the
+ *  **account's** toggle is on AND the path is resolvable ({@link mailAiResolvable}). */
 export function mailAiFeatureOn(
   settings: Settings | null | undefined,
+  account: MailAccount | null | undefined,
   feature: MailAiFeature,
 ): boolean {
-  return settings?.[feature] === true && mailAiResolvable(settings);
+  return account?.ai?.[feature] === true && mailAiResolvable(settings);
 }
 
-/** {@link mailAiFeatureOn} as a store subscription — the call site for a component. */
-export function useMailAiFeature(feature: MailAiFeature): boolean {
-  return useSettingsStore((s) => mailAiFeatureOn(s.settings, feature));
+/** {@link mailAiFeatureOn} as a store subscription — the call site for a
+ *  component. The account is passed in (it lives in the mail store, not
+ *  settings), and only the global resolvability is subscribed here. */
+export function useMailAiFeature(
+  account: MailAccount | null | undefined,
+  feature: MailAiFeature,
+): boolean {
+  const resolvable = useSettingsStore((s) => mailAiResolvable(s.settings));
+  return resolvable && account?.ai?.[feature] === true;
 }
 
 /**
@@ -488,6 +512,27 @@ export function mailAttachmentSave(
   partId: string,
 ): Promise<string | null> {
   return invoke<string | null>("mail_attachment_save", { messageId, partId });
+}
+
+/**
+ * OUT (mail → project): save the attachment into the given project's `emails/`
+ * folder, creating it if absent, and resolve the full path written (for a
+ * toast). The project is named by its **opaque id**, never a path — the backend
+ * resolves that id to the project's own directory and fixes the `emails/`
+ * subfolder — so this wrapper honours the same boundary as the rest of the
+ * surface. Rejects (never resolves a truthy path for a write that did not
+ * happen) when the project has no local directory.
+ */
+export function mailAttachmentSaveToProject(
+  messageId: string,
+  partId: string,
+  projectId: string,
+): Promise<string> {
+  return invoke<string>("mail_attachment_save_to_project", {
+    messageId,
+    partId,
+    projectId,
+  });
 }
 
 /** Bounded bytes for an in-pane preview. Nothing touches the filesystem. */

@@ -54,6 +54,8 @@ correctness/UX work atop the same layout model #42 detaches.*
     - [ ] 🖐️ Manual test — needs backend rebuild + live run (pop-out spawns &
       seeds, PTY attaches without respawn, X11 park + Tauri hide on switch,
       Wayland hide fallback, dock-back & dock-on-close, main window never parked).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 55. **[Bug] Fix tab→project mapping leak.** A tab can show up under the wrong
     project — e.g. the ProjectEldrun main window showing a `TODO.md` tab that
@@ -62,6 +64,8 @@ correctness/UX work atop the same layout model #42 detaches.*
     `tab_groups`, scope ids) so tabs are strictly bound to their owning project.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 56. **Right-click a tab → start renaming.** Shipped as **Shift+right-click**
     (`TabBar.tsx:200,210,640`); plain right-click still opens the context menu.
@@ -69,6 +73,8 @@ correctness/UX work atop the same layout model #42 detaches.*
     the code.
     - [x] 🤖 Automated test — `src/__tests__/TabInlineRename.test.tsx`
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 57. **Open `README.md` by default for a project with no tab.** ⛔ **REVERTED —
     was implemented, then deliberately removed.** When a project is
@@ -80,6 +86,8 @@ correctness/UX work atop the same layout model #42 detaches.*
       original implementation.
     - [ ] 🤖 Automated test — n/a while reverted.
     - [ ] 🖐️ Manual test — n/a while reverted.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
     - **Decide:** restore the behaviour, or close this item as withdrawn.
 
 62. **Fast keyboard navigation across projects / subwindows / tabs.** Make the
@@ -91,6 +99,8 @@ correctness/UX work atop the same layout model #42 detaches.*
     all keyboard-driven.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 82. **Native keyboard file-tree navigation (no mouse).** Make the right-panel
     file tree (`FileTree.tsx`) fully steerable from the keyboard — arrow/`j`/`k`
@@ -104,6 +114,8 @@ correctness/UX work atop the same layout model #42 detaches.*
       (`↑`/`↓`/`j`/`k`), `←`/`→` expand-collapse, and fast scrolling.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 83. **One key shows the radial "pie" project view (as in the root project).**
     A single keypress brings up the same radial/pie project-blob view used by the
@@ -112,6 +124,8 @@ correctness/UX work atop the same layout model #42 detaches.*
     Builds on #62.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 84. **Keyboard navigation within the pie view.** Once the radial/pie view (#83)
     is open, additional keys step the selection around the pie (e.g. arrows /
@@ -120,6 +134,8 @@ correctness/UX work atop the same layout model #42 detaches.*
     Builds on #83.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 85. **Keyboard tab/subwindow management (split, detach, move).** Drive the whole
     Group D.11 tiling layout from the keyboard with no mouse: split the focused
@@ -133,5 +149,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     `src/App.tsx` (global key handlers).*
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---

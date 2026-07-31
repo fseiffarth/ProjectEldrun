@@ -158,7 +158,7 @@ describe("TexView", () => {
   });
 
   it("shows a forward-search miss notice when SyncTeX can't locate the cursor", async () => {
-    // setupInvoke's synctex_view resolves [] → forward search finds no spot.
+    // setupInvoke's synctex_view resolves [] → SyncTeX ran but matched nothing.
     setupInvoke(true, ["pdflatex"]);
     await renderTexView();
 
@@ -170,8 +170,43 @@ describe("TexView", () => {
       await userEvent.click(compileBtn);
     });
 
-    // A successful compile whose forward search returns null surfaces the notice.
+    // A successful compile whose forward search finds no box surfaces the miss
+    // notice — worded so it reads as a SyncTeX outcome, not a build failure.
     await screen.findByText(/couldn't locate the cursor/i);
+    // …and it must NOT claim SyncTeX was unavailable (that is the other cause).
+    expect(screen.queryByText(/didn't run/i)).toBeNull();
+  });
+
+  it("distinguishes 'SyncTeX unavailable' from a real miss when the command errors", async () => {
+    // The synctex_view command itself REJECTS (a backend not yet rebuilt for it,
+    // or the `synctex` tool absent) — this used to look identical to a miss.
+    setupInvoke(true, ["pdflatex"]);
+    mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "tex_capability")
+        return Promise.resolve({ available: true, engines: ["pdflatex"], bibtex: false, latexmk: false });
+      if (cmd === "read_file_text") return Promise.resolve(TEX_SOURCE);
+      if (cmd === "write_file_text") return Promise.resolve(null);
+      if (cmd === "resolve_tex_root") return Promise.resolve((args?.path as string) ?? "");
+      if (cmd === "compile_tex")
+        return Promise.resolve({ success: true, pdf_path: "/p/paper.pdf", engine: "pdflatex", log: "ok", shell_escape: false });
+      if (cmd === "synctex_view") return Promise.reject(new Error("no such command"));
+      if (cmd === "synctex_edit") return Promise.resolve(null);
+      if (cmd === "file_mtime") return Promise.reject(new Error("no synctex"));
+      if (cmd === "read_file_bytes") return Promise.resolve([37, 80, 68, 70]);
+      return Promise.resolve(null);
+    });
+    await renderTexView();
+
+    const compileBtn = await screen.findByRole("button", { name: /compile/i });
+    await act(async () => {
+      await userEvent.click(compileBtn);
+    });
+
+    // The notice names the real cause (SyncTeX didn't run) rather than a miss, and
+    // still confirms the PDF was updated (compile did NOT fail).
+    await screen.findByText(/didn't run/i);
+    await screen.findByText(/PDF updated/i);
+    expect(screen.queryByText(/couldn't locate the cursor/i)).toBeNull();
   });
 
   it("#56: a child file compiles its resolved parent and labels the button", async () => {

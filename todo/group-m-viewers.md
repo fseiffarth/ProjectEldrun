@@ -14,11 +14,15 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     or poll on the open file's mtime/hash.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 44. **TeX viewer: preview off by default.** Default the TeX viewer to the source
     editor rather than auto-rendering a preview; make preview an explicit toggle.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 45. **Auto-complete in native text viewers (pre-defined model).** Add code/text
     auto-completion across all native text viewers, driven by a pre-defined
@@ -35,11 +39,15 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     ghosted (walk word-by-word); `Esc` dismisses.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 46. **Undo/redo in native text/TeX viewers.** Add an undo/redo history to the
     in-app text and TeX editors (keyboard `Ctrl+Z`/`Ctrl+Shift+Z` plus buttons).
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 47. **Save icon instead of "save/saved" text (+ optional autosave).** Replace the
     textual save/saved status in the text/TeX viewer with a save icon that
@@ -47,6 +55,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     diff-aware reload as the counterpart for external changes).
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 48. **Per-file-type native-viewer settings + document supported types.** A single
     settings surface to configure native-viewer behavior keyed by file type, and
@@ -54,6 +64,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     Ties into #44 (per-type preview defaults) and #45 (per-type completion).
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 49. **Make file links in text/TeX viewers visibly clickable.** Render links that
     point at files with a clear affordance (underline / dotted underline) so they
@@ -61,6 +73,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     governs *where* a clicked link opens.)
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 50. **Link-open routing: same subwindow, or drag-to-set-default.** When a file
     link (#49) is clicked, open the target in the **same** subwindow by default;
@@ -70,23 +84,31 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     linked file(s) with it).
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 51. **Native `.odt` / `.xlsx` viewer.** Add an in-app viewer for OpenDocument /
     spreadsheet files. First decide whether it's worth it / already feasible via
     an existing Tauri-side renderer before building one.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 52. **Image viewer: zoom/scroll to the cursor.** Improve image-viewer scrolling so
     zoom centers on the mouse cursor rather than the viewport origin.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 53. **Drag images (and their tabs) out as drop sources.** Make images in the image
     viewer — and image tabs — draggable as drop sources, e.g. drag an image/text
     tab and drop it into a browser file-upload field.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 54. **TeX compile output → PDF in a new tab + compiler options.** Open the
     compiled PDF as its own tab (it is a real file), and add compiler options to
@@ -94,6 +116,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     `compile_tex` affordance from Group D.14.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 55. **Adjustable text size in the text/TeX/Markdown editors.** Add an `A−`/`A+`
     control (and `Ctrl` +/−, `Ctrl`+0 to reset) that scales the editor font. In
@@ -104,6 +128,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     (alongside #45's autocomplete).
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 66. **SyncTeX PDF↔source navigation + subtex→main compile wiring.** Make the
     compiled PDF and its `.tex` source navigable both ways, and let a child file
@@ -117,8 +143,16 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     `resolve_tex_root` (magic `% !TEX root` comment → stored map → self) redirects
     a child's Compile to its main document. Adds a compile run animation
     (`.is-compiling` button sheen + header progress strip, reduced-motion aware).
+    *Reverse search resolves natively* (`commands/synctex.rs`): `synctex edit`
+    sent a click that was not squarely on a glyph — the left margin, a paragraph
+    indent, the slack after a short line — into the **wrong `.tex` file**, because
+    pdfTeX tags a line's box with wherever `\par` fired and the CLI falls back to
+    that tag. The `.synctex(.gz)` is now read directly and the answer taken from
+    the leaf records; the CLI stays as the fallback for a PDF with no map.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 67. **Find in the text/TeX viewers.** Add an in-editor search bar to the shared
     `CodeEditor` (so it covers both the text and TeX viewers). `Ctrl`/`Cmd`+`F`
@@ -132,6 +166,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     and scrolls the match into view. Pure helpers `findMatches`/`decorateSearchRanges`.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 68. **Image viewer: auto-reload on disk change.** Give the image viewer the same
     diff-aware reload as the editors/PDF (#43): `useBlobUrl` polls `file_mtime`
@@ -142,6 +178,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     dimensions change.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 69. **Persist viewer scroll/zoom across reopen + restart.** The in-app PDF, text,
     and image viewers remember the reader's position so reopening a file — or
@@ -157,6 +195,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     unchanged write never churns the saveLayout debounce.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 70. **TeX viewer: `Ctrl`+`S` saves and recompiles.** ✅ Implemented ·
     🧪 Awaiting live QA. In the LaTeX viewer (engine
@@ -169,6 +209,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       anywhere under `src/__tests__/`. The empty boxes here mean "untested",
       not "unstarted".
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 71. **Find in the native PDF viewer (`Ctrl`+`F`).** Add an in-document search bar
     to the pdf.js-backed PDF viewer (the counterpart to #67's editor search).
@@ -185,6 +227,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     view. Pure helper `pdfPageMatches`.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 80. **PDF page arranging + merging, on ONE code base with the print preview.**
     Turn the read-only PDF viewer into a page organiser: reorder, delete, turn,
@@ -239,6 +283,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [ ] 🖐️ Manual test — **the cross-window drag is the one to watch**: it is the
       WebKitGTK-sensitive path. Also re-check the print preview still reorders/prints
       as before, and that saving works on a **remote (SSH)** project's PDF.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 87. *(This is group-M's #87; group-O has a different #87.)*
     **Python in the native code viewer: Run, Debug, breakpoints, go-to-definition.**
@@ -318,6 +364,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       **remote (SSH)** project runs on the host with the *host's* interpreter, and
       that Ctrl+Click into a package (`from .pkg import thing` re-exported by its
       `__init__`) lands on the real definition.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 88. **Native YAML/JSON viewer: an editable structure tree.** Give `.yaml`/`.yml`/
     `.json` the same shape markdown has — a rendered half and a source half behind
@@ -384,6 +432,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       that `Ctrl`+`Z` walks it back. Check a flow/JSON-formatted file adds and
       deletes in its own style, and that a file with an anchor/merge key
       (`<<: *base`) renders those rows read-only instead of offering a broken input.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 89. **CSV table viewer: a separator you can name, and cells you can edit.**
     📄 **Doc drift:** `README.md:369` still describes the table viewer as a
@@ -449,6 +499,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       Columns list, confirm they come back on a second click and survive a reopen,
       and that editing a cell to the *right* of a hidden one still writes the right
       field.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
     - [ ] **Deferred:** inserting/deleting a **column** (a row op is one splice; a
       column op is one splice per row, and every splice invalidates the offsets
       after it — the same constraint `moveNodeTo` faces in `yaml.ts`). Editing an
@@ -553,6 +605,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       resize and rotate objects and confirm the guides name the right reason;
       recompile the `.tex` with a slide inserted and confirm layers follow their
       slides; confirm the autosave lands (there is no save button by design).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
     - [ ] 🖐️ Manual test (dual-window, **on real hardware with a projector or
       second monitor**) — `D` opens the audience window fullscreen on the *other*
       display, not over the notes; advancing on either window moves both; `←`
@@ -561,6 +615,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       ending the talk; `Esc` ends the talk and takes the audience window with it;
       opening the second display twice re-uses one window. With **one** monitor
       it opens windowed and decorated, draggable onto the projector.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
     - [ ] **Known gap:** `compile_tex` is **local-only** (no remote dispatch), so
       a remote project must compile on its local mirror. (It is also a
       *synchronous* Tauri command, so every compile freezes the window — see
@@ -570,3 +626,212 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     and gaps, organized as V.1 blockers (data loss + first-real-use failures),
     V.2 correctness and core usability, V.3 performance, polish and the
     differentiated bet.
+
+91. **Native `.bib` viewer: one card per bibliography entry.** ✅ Implemented ·
+    🖐️ untested. Give `.bib`/`.bibtex` the same two-halves shape `.yaml` has — a
+    structured half and a Source half behind one toggle — but as a **flat list of
+    cards**, one per `@article{…}`, each holding its `field = {value}` pairs as
+    key/value rows. Cards is the default; Source is the unchanged code editor, so
+    a `.bib` keeps everything it had (highlighting, find/replace, blame, compare,
+    autocomplete, the save/undo path).
+
+    - **The cards edit the TEXT** (`lib/viewers/bib.ts`), the #88 bargain applied
+      to a second format: every action is a splice, so field order, the alignment
+      somebody sorted by hand, brace-protected `{LaTeX}` capitalization, an older
+      file's `"…"` quoting and the `%` comments all survive an edit, and a card
+      edit is an ordinary dirty/undoable/saveable change on the draft Source
+      shows. Ops: retype a value, rename a field, rename the citation key, change
+      the entry type, add/delete a field, delete an entry, add a new `@misc`.
+    - **It is NOT a drill** — that is the one place it parts with `YamlGrid`. A
+      `.bib` has no nesting: it is a few thousand records at one level, so the
+      value is the list itself. What that needs instead is a **filter** across
+      every key, type and field value, and a **per-card fold** (persisted per tab
+      in `ViewerState.bibCollapsed`; the filter deliberately is not, or a reopen
+      would hide most of the file with no visible cause).
+    - **What it refuses to touch is visible.** A value that is a `@string` macro
+      reference or a `#` concatenation renders read-only, in full — rewriting
+      `journal = jml` as `{jml}` would silently change the rendered bibliography.
+      Text belonging to no record (the `%` comments) is reported in a note rather
+      than hidden, since a card view that quietly omits part of a file is worse
+      than none. Duplicate citation keys — silently wrong, the processor keeps one
+      — are flagged on the card.
+    - **One parser for the format**: `tex.ts`'s `parseBibEntries`, which feeds the
+      `\cite` completion dropdown, is now an adapter over the same parse, so the
+      card view and the completion list cannot disagree about what is in a `.bib`.
+      Ctrl+clicking `\bibliography{refs}` in a `.tex` now lands in the cards.
+    - Tested in `src/__tests__/BibViewer.test.ts` (21 cases: the tolerant parse,
+      the delimiter/locked-value rules, and every op's splice-not-rewrite
+      guarantee).
+    - [ ] 🖐️ Manual test — open a real `.bib` (a Zotero/Mendeley export, ideally
+      one with `@string` macros and a `%` header): confirm the entry count, that a
+      value edit lands in Source byte-identical apart from that value, that
+      `Ctrl+Z` undoes it as one step, that the filter finds an entry by author and
+      by title, that a fold survives closing and reopening the tab, and that
+      deleting a field leaves no blank line behind.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+92. **The PDF's own hyperlinks (`hyperref` cross-references and URLs).** ✅
+    Implemented · 🖐️ untested. A PDF carries its links as *link annotations* — a
+    rectangle on a page plus an action — and the native viewer painted the page
+    without them, so every `\ref`, `\eqref`, `\cite`, `\autoref`, footnote mark
+    and table-of-contents row in a LaTeX document was inert text. The reader had
+    the contents sidebar (#pdf-outline) and go-to-page and nothing else: following
+    a citation meant reading its number, opening go-to-page and typing it.
+
+    - **Two actions are honoured and nothing else.** A **GoTo** (an internal
+      destination — the overwhelming majority in an academic PDF) scrolls; a
+      **URI** leaves the app. A form widget, a `Launch` naming a local program, a
+      `GoToR` into another file and a named action (`NextPage`) are **not
+      rendered at all**, because a box that highlights under the cursor and then
+      does nothing reads as a bug, and a rendered box that starts a program is a
+      hole. `pdf/links.ts` is the whole model, pure but for the destination
+      lookup.
+    - **The jump lands ON the target**, not at the top of its page: a destination
+      names a y anchor (`/XYZ`, `/FitH`, `/FitR` — each in a different argument
+      slot), so `destTop` reads it, `destTopInBigPoints` converts it through the
+      *target* sheet's own viewport (which is why `PdfDest.top` stays in the
+      file's units until the jump — only the jump knows the turn the viewer has
+      applied), and a band marks where it landed. A whole-page `/Fit` names no
+      line and falls back to the page top.
+    - **There is a way back.** Following a `\cite` is only useful if returning is
+      one gesture, so the scroll position is pushed on a bounded stack and a `←`
+      toolbar button (and `Alt`+`←`) pops it. The button appears only once there
+      is somewhere to go back to.
+    - **An external link is confirmed, and the confirm is `MailMessageView`'s.** A
+      PDF is untrusted content the moment it was not written by the reader, and
+      `\href` *defines* the display text and the address as independent — so the
+      host is called out and the full address shown, monospace, wrapping, never
+      ellipsis-truncated. Opening goes through `lib/linkTarget`'s routing with
+      `origin: "viewer"`, so it can never become a live in-app page in one click,
+      and `routeUri` re-checks the scheme pdf.js already refused. There is
+      deliberately no "always open links from PDFs".
+    - **One destination resolver for the whole viewer**: `outline.ts`'s
+      `resolveDest` now serves both the contents sidebar and the links, so a
+      chapter and a `\ref` to the same anchor cannot disagree about where it is.
+      Resolutions are cached per document (weakly), since a bibliography page
+      points a hundred links at a handful of anchors.
+    - **Ctrl/⌘-click still means SyncTeX.** The link layer sits over the canvas,
+      so the modifier is checked first and the reverse-search click is measured
+      against the canvas rather than the event's own target; the boxes take the
+      crosshair cursor while it is armed. Only pages of the file itself carry a
+      link layer — a merged-in page's destinations point into *its* document.
+    - Tested in `src/__tests__/PdfLinks.test.ts` (the geometry, the destination
+      slot rules, and every annotation shape that must be dropped).
+    - [ ] 🖐️ Manual test — open a `hyperref` PDF (any LaTeX paper with citations):
+      confirm a `\cite` jumps to the bibliography entry and `←` comes back, that a
+      `\ref` lands on the equation rather than the page top, that the boxes follow
+      a zoom and a page turn, that a `\url` raises the confirm and Cancel opens
+      nothing, and that Ctrl+click on a link still reverse-searches into the
+      source.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+93. **Black out text in a PDF, securely (#pdf-redact).** ✅ Implemented ·
+    🖐️ untested. The viewer could rearrange a PDF but not remove anything *from* a
+    page, so the one thing people actually need before sending a document out —
+    covering a name, an address, a reviewer's identity, a key — had to be done in
+    another application, or was done in this one by drawing a black box in an
+    annotation tool and shipping the text underneath it.
+
+    - **A black rectangle is not a redaction, so the feature never draws one.**
+      Covering a word leaves every glyph in the content stream: select-all, copy,
+      `pdftotext`, or deleting the annotation gives it straight back, and that is
+      the standard way redactions leak. A mark here names an *area to destroy*.
+      At save, each sheet carrying one is rendered to pixels, the marked areas are
+      painted out of *those*, and the image becomes the page (`pdfDoc.ts`'s
+      `flattenPage`). What is destroyed with the text is the rest of that page's
+      text, vectors, links and tagging — a real cost, which is why **only marked
+      sheets are flattened** and every other page is copied across intact.
+    - **The content-stream surgery alternative is deliberately not on offer.**
+      Dropping just the glyphs inside each box keeps the page, but doing it
+      correctly means tracking text state, font metrics and form XObjects well
+      enough to know where every glyph lands — and a redaction that is subtly
+      wrong is worse than one that is heavy-handed.
+    - **Marks are ordinary arrangement edits.** They ride on the entry
+      (`PageRef.marks`, big points in the sheet's rotated space — the space the
+      search hits and link boxes already use), so they follow zoom and rotation
+      for free, travel with a page that is moved, are copied by a duplicate, are
+      covered by the existing undo/redo and dirty flag, and touch the file only at
+      Save. `lib/viewers/redact.ts` is the whole pure model.
+    - **Two ways to mark, and the fast one is the point.** A drag over the page
+      marks an area (**snapped out to the words it touches**, on by default — a
+      box drawn by eye clips ascenders and word ends, and the burn-in is
+      pixel-exact, so an unsnapped mark is how a legible sliver of the redacted
+      word survives). And "black out all N matches" marks every Ctrl+F hit in the
+      document from the same measurement the highlight is drawn from: a name out
+      of a 200-page report is a search and one click, not 300 drags. Re-running it
+      stacks no duplicates, and a mark that merely *clips* a hit does not count as
+      covering it.
+    - **The irreversible step is confirmed and priced.** Save raises a banner
+      naming both numbers (areas, and pages that become images) and what is
+      removed permanently — never the silent half of a Save pressed to reorder two
+      pages. Quality is Draft/Standard/Sharp (150/200/300 dpi), JPEG, with the
+      raster capped at 40 MP so an outsized page loses resolution rather than
+      content.
+    - **Every route out of the viewer carries the blackouts.** Printing paints
+      them onto the rasters it prints, and a page dragged into another viewer or
+      window is exported *burned in* — a mark that travelled as an editable
+      overlay would arrive as a page whose text is still there under a box.
+    - Tested in `src/__tests__/PdfRedact.test.ts` — including end to end through
+      pdf-lib: a real PDF with real text is marked, saved, and its decoded content
+      streams are searched for the word that was supposed to be destroyed.
+    - [ ] 🖐️ Manual test — open a PDF, arm ▮, drag over a line (confirm the box
+      snaps to the words and the rail thumbnail shows it too), search for a word
+      and "black out all matches", then Save: confirm the banner names the right
+      counts, that the saved page renders identically minus the blacked areas, and
+      that selecting/copying that page — or `pdftotext` over the file — returns
+      none of the redacted text.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+94. **Delete a PDF's metadata (#pdf-meta).** ✅ Implemented · 🖐️ untested.
+    The blackout tool covers what is *on* the page; nothing covered what the file
+    says about *itself*. A PDF out of Word, LaTeX or a scanner carries an author,
+    the machine account that wrote it, which software and version produced it, and
+    the minute it was made — none of it visible in any reader, all of it going out
+    with the file. Sending a document out therefore meant a round trip through
+    `exiftool` or another application, after doing the redaction here.
+
+    - **The fields are shown before the deletion is offered.** A bare "Delete all
+      metadata" button acts on something the reader can neither see beforehand nor
+      verify afterwards, which makes it indistinguishable from a button that does
+      nothing. The 🏷 panel lists what is actually there — the `/Info` fields that
+      are filled in, any non-standard ones the producer invented, and whether an
+      XMP packet is present — read through pdf.js (`readPdfMetadata`) so the panel
+      and the document in front of the reader cannot disagree. It reads **on
+      open**, not at load, so nobody pays for it on the reload of every recompile.
+    - **It is pending, not immediate.** One flag on the save rather than an
+      arrangement edit — there is no page it belongs to — so it is as cancellable
+      as every other edit here, one Save writes the lot, and the armed state shows
+      on the toolbar button with the panel closed. It is also the only thing that
+      makes Save reachable on an otherwise untouched file, which `dirty` reads.
+    - **Three stores, three answers.** The `/Info` dict is never *created*:
+      pdf-lib stamps its own Producer, Creator and a `CreationDate` of **now**
+      onto every `PDFDocument.create()`, so a strip declines it at the source
+      (`updateMetadata: false`) instead of deleting it afterwards. The catalog's
+      XMP never comes across, the output being a fresh document. The **page**
+      level genuinely does — `copyPages` brings each page dict over as it stands —
+      so `/Metadata`, `/PieceInfo` (Illustrator and Word keep whole working
+      documents in there) and `/LastModified` are deleted from it.
+    - **Deleting the key is not enough, and that is the real work.** pdf-lib
+      serializes every object registered in the context, reachable or not, so an
+      XMP stream whose last reference has just been removed would still be written
+      into the file in full: gone from the structure, perfectly readable in the
+      bytes — the same shape of failure as a rectangle drawn over live text.
+      `collectGarbage` is a mark-and-sweep from the trailer, run before `save()`,
+      safe by construction (anything the catalog reaches is kept) and early enough
+      that a redacted sheet's images are not yet registered.
+    - **The deletion travels with a page dragged out**, for the blackouts' reason:
+      those bytes are what lands in the other viewer.
+    - Tested in `src/__tests__/PdfSave.test.ts`, asserting against the **saved
+      bytes** rather than the object model — the failure being guarded against is
+      precisely a field that survives in the file after the model says it is gone.
+    - [ ] 🖐️ Manual test — open a PDF with a real author/producer (anything out of
+      Word or `pdflatex`), open 🏷 and confirm the listed fields match what
+      `exiftool` reports, click "Delete all metadata", Save, then re-run
+      `exiftool` on the file: confirm it reports no Title/Author/Creator/Producer
+      and no dates, that `strings` over the file finds none of the old values, and
+      that the pages still render and their text still selects.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

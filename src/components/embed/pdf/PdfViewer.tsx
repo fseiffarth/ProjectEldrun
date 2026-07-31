@@ -27,7 +27,7 @@ import {
 import { useExperimental } from "../../../lib/experimental";
 import { emptyDeck } from "../../../lib/viewers/deck/model";
 import { deckPathForPdf, serializeDeck } from "../../../lib/viewers/deck/sidecar";
-import { jumpToSource, useViewerState } from "../FileViewerPane";
+import { jumpToSource, SaveButton, useViewerState } from "../FileViewerPane";
 import {
   renderPdfPagesToImages,
   printHtmlBody,
@@ -41,16 +41,44 @@ import {
   pagesOf,
   isPristine,
   type PageList,
+  type RedactRect,
 } from "../../../lib/viewers/pageModel";
-import { openSource, newSourceId, buildPdf, type PdfSources } from "./pdfDoc";
+import {
+  rectFromDrag,
+  isDraggedFar,
+  snapToText,
+  addMark,
+  removeMark,
+  clearMarks,
+  markMatches,
+  markCount,
+  markedSheetCount,
+  type Rect,
+} from "../../../lib/viewers/redact";
+import {
+  openSource,
+  newSourceId,
+  buildPdf,
+  readPdfMetadata,
+  REDACT_DEFAULT_DPI,
+  type PdfSources,
+  type PdfMetadata,
+} from "./pdfDoc";
 import {
   loadOutline,
   detectHeadings,
   flattenOutline,
+  outlineIsNavigable,
   type OutlineNode,
   type HeadingRun,
+  type PdfDest,
 } from "./outline";
+import { loadPageLinks, destTopInBigPoints, type PdfLink } from "./links";
+import { PdfLinkConfirmDialog } from "./PdfLinkDialog";
+import { openRoutedUri } from "../../../lib/linkTarget";
+import { useSettingsStore } from "../../../stores/settings";
 import { PageStrip } from "../../common/PageStrip";
+import { PrinterIcon } from "../../common/PrinterIcon";
 import { UntestedTag } from "../../common/UntestedTag";
 import { subscribePageDragActive, type PageTransfer } from "../../../stores/pdfDrag";
 import { ContextFilePicker } from "../ContextFilePicker";
@@ -62,12 +90,14 @@ import {
   pdfPointToBigPoints,
   bigPointsToCssRect,
   synctexEdit,
+  resolveTexRoot,
   refineToWord,
   type SyncRect,
+  type SyncSource,
   type TextItemBox,
   type CaretPhrase,
 } from "../../../lib/viewers/tex";
-import { useT } from "../../../lib/i18n";
+import { useT, type TranslationKey } from "../../../lib/i18n";
 
 // pdf.js renders pages on a worker; point it at the bundled worker asset. Vite
 // emits a hashed URL that resolves in both dev and the packaged Tauri build.
@@ -78,10 +108,33 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
  *  other viewers' poll interval. */
 const RELOAD_POLL_MS = 1500;
 
+/** A recompile rewrites the PDF in place, so a reload can catch the file
+ *  mid-write and pdf.js throws `InvalidPDFException: Invalid PDF structure` on
+ *  the truncated bytes. That is transient — the write finishes in well under a
+ *  second — so a failed parse is retried a few times before it counts as a real
+ *  error, at this spacing, while the last good document stays on screen. */
+const RELOAD_RETRY_MS = 250;
+const RELOAD_MAX_RETRIES = 12;
+
 const PDF_MIN_SCALE = 0.1;
 const PDF_MAX_SCALE = 8;
 const PDF_ZOOM_STEP = 1.2;
 const clampPdfScale = (s: number) => Math.min(PDF_MAX_SCALE, Math.max(PDF_MIN_SCALE, s));
+
+/** The eight standard `/Info` field names, bound to their wording (#pdf-meta). A
+ *  map rather than a derived key, because these are the only names in the dict that
+ *  belong to the format: everything else is the producer's own invention, and the
+ *  lookup missing is how the panel knows to print the raw name instead. */
+const META_FIELD_KEYS: Record<string, TranslationKey> = {
+  Title: "pdfMeta.field.Title",
+  Author: "pdfMeta.field.Author",
+  Subject: "pdfMeta.field.Subject",
+  Keywords: "pdfMeta.field.Keywords",
+  Creator: "pdfMeta.field.Creator",
+  Producer: "pdfMeta.field.Producer",
+  CreationDate: "pdfMeta.field.CreationDate",
+  ModDate: "pdfMeta.field.ModDate",
+};
 
 /**
  * Extract a PDF page's positioned text runs as {@link TextItemBox}es in big
@@ -138,10 +191,14 @@ function PdfThumb({
   doc,
   page,
   rot,
+  marks,
 }: {
   doc?: PDFDocumentProxy;
   page: number;
   rot: number;
+  /** Pending blackouts on this sheet (#pdf-redact) — painted onto the thumbnail so
+   *  the rail shows the same page the reader does. */
+  marks?: readonly RedactRect[];
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [near, setNear] = useState(false);
@@ -186,12 +243,22 @@ function PdfThumb({
       } catch {
         /* superseded by a newer render — ignore */
       }
+      if (cancelled || !marks?.length) return;
+      ctx.fillStyle = "#000000";
+      for (const m of marks) {
+        ctx.fillRect(
+          m.x * viewport.scale,
+          m.y * viewport.scale,
+          m.w * viewport.scale,
+          m.h * viewport.scale,
+        );
+      }
     })();
     return () => {
       cancelled = true;
       task?.cancel();
     };
-  }, [near, doc, page, rot]);
+  }, [near, doc, page, rot, marks]);
 
   // pdf.js has ALREADY painted this canvas at the sheet's rotation, so the card must
   // not turn it again in CSS — that is why the strip's rotate transform is scoped to
@@ -214,6 +281,15 @@ function PdfPageCanvas({
   onReveal,
   searchMatches,
   searchScrollNonce,
+  onLink,
+  destMark,
+  marks,
+  redacting,
+  copySelecting,
+  textItems,
+  onRedactAdd,
+  onRedactRemove,
+  onCopySelection,
 }: {
   doc: PDFDocumentProxy;
   pageNumber: number;
@@ -246,7 +322,33 @@ function PdfPageCanvas({
   /** Bumped when the current search match lands on this page, so the current
    *  match's box scrolls into view (mirrors the SyncTeX reveal). */
   searchScrollNonce?: number;
+  /** A link on this page was clicked (#pdf-links). Without a handler the page
+   *  carries no link layer at all — the rule the rest of this viewer follows for
+   *  an action its host cannot honour. */
+  onLink?: (link: PdfLink) => void;
+  /** A band marking where an internal link just landed, in big points from the
+   *  page top; `nonce` re-triggers the fade for a repeat jump to the same spot. */
+  destMark?: { top: number; nonce: number } | null;
+  /** Areas already marked for blacking out on this sheet (#pdf-redact), in big
+   *  points. Drawn solid black whether or not the tool is armed: a mark is what the
+   *  saved page will look like, and showing it only in an editing mode would hide
+   *  from the reader exactly what is about to be destroyed. */
+  marks?: readonly RedactRect[];
+  /** The blackout tool is armed: a drag over the page marks an area. */
+  redacting?: boolean;
+  /** The image-copy tool is armed: a drag copies that page region as a PNG. */
+  copySelecting?: boolean;
+  /** This page's text runs (big points), so a drag can be snapped out to whole
+   *  words. Absent = mark exactly what was dragged. */
+  textItems?: readonly TextItemBox[];
+  /** A drag finished: `rect` is in big points, already snapped. */
+  onRedactAdd?: (rect: Rect) => void;
+  /** A mark was clicked while the tool is armed. */
+  onRedactRemove?: (markId: string) => void;
+  /** A selected page region has been rasterised into a PNG. */
+  onCopySelection?: (png: Uint8Array) => void;
 }) {
+  const t = useT();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -262,7 +364,42 @@ function PdfPageCanvas({
   const clickTimer = useRef<number | null>(null);
   useEffect(() => () => { if (clickTimer.current != null) window.clearTimeout(clickTimer.current); }, []);
 
+  // Rasterise LAZILY, the way the page rail's PdfThumb already does. Every page
+  // is MOUNTED (so search/scroll-restore/syncTeX can address any of them), but a
+  // full-resolution page canvas is several MB of backing store — painting all of
+  // a 300-page document at once holds gigabytes and hands the compositor hundreds
+  // of large layers to juggle on every scroll frame, which is the scroll jank
+  // (and the renderer-memory blowup). An IntersectionObserver paints each page
+  // only while it is near the viewport; the wrapper's box stays reserved by
+  // `cssSize`, so scroll height, search scroll-into-view and link jumps are
+  // unaffected. In jsdom (tests) there is no observer, so it renders eagerly as
+  // before.
+  const [near, setNear] = useState(typeof IntersectionObserver === "undefined");
   useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      (entries) => setNear(entries.some((e) => e.isIntersecting)),
+      // A generous margin paints a page a screenful or two before it scrolls into
+      // view (no blank flash in normal scrolling) and drops it once well past.
+      { root: null, rootMargin: "150% 0px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+
+  useEffect(() => {
+    // Scrolled well away: release the backing store (keeping the reserved CSS
+    // box) so a long document holds only the pages around the viewport. Repainted
+    // on return.
+    if (!near) {
+      const canvas = canvasRef.current;
+      if (canvas && canvas.width > 0) {
+        canvas.width = 0;
+        canvas.height = 0;
+      }
+      return;
+    }
     let cancelled = false;
     let task: { cancel: () => void; promise: Promise<void> } | null = null;
     (async () => {
@@ -291,7 +428,33 @@ function PdfPageCanvas({
       cancelled = true;
       task?.cancel();
     };
-  }, [doc, pageNumber, rot, scale]);
+  }, [doc, pageNumber, rot, scale, near]);
+
+  // The page's own hyperlinks (#pdf-links). Keyed off the sheet and its turn but
+  // NOT off `scale` — the boxes are stored in big points and multiplied into CSS
+  // pixels at render, exactly as the search hits are, so zooming never re-reads
+  // the annotations.
+  const [links, setLinks] = useState<PdfLink[]>([]);
+  useEffect(() => {
+    // Gated on `near` for the render effect's reason: reading every page's
+    // annotations on load is wasted work, and a link can't be clicked on a page
+    // that isn't near the viewport anyway.
+    if (!onLink || !near) {
+      setLinks([]);
+      return;
+    }
+    let cancelled = false;
+    setLinks([]);
+    void loadPageLinks(doc, pageNumber, rot).then((ls) => {
+      if (!cancelled) setLinks(ls);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // `onLink` is only read for its presence; a caller re-creating it must not
+    // re-read every page's annotations.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, pageNumber, rot, onLink == null, near]);
 
   // Narrow the SyncTeX line box to the clicked word: pull this page's text runs
   // (big points, top-left origin, at viewport scale 1) and find the word nearest
@@ -333,23 +496,164 @@ function PdfPageCanvas({
     searchCurrentRef.current?.scrollIntoView({ block: "center", inline: "nearest" });
   }, [searchScrollNonce]);
 
-  const onClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    // Reverse search is a Ctrl/⌘-click affordance; plain clicks stay free for
-    // text selection in the PDF.
-    if (!onSyncClick || !(e.ctrlKey || e.metaKey)) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const { x, y } = pdfPointToBigPoints(rect, e.clientX, e.clientY, scale);
+  // Reverse search, by client coordinates rather than by the event's own target:
+  // the link layer sits ON TOP of the canvas, so a Ctrl-click that lands on a
+  // link box must still map to the same point on the page. Measuring the canvas
+  // explicitly is what lets both callers share one implementation.
+  const syncClickAt = (clientX: number, clientY: number) => {
+    const canvas = canvasRef.current;
+    if (!onSyncClick || !canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const { x, y } = pdfPointToBigPoints(rect, clientX, clientY, scale);
     // Mark the clicked point so the source-jump has feedback on the PDF side; the
     // canvas sits flush at the wrapper's top-left, so canvas-local offsets are
     // wrapper-local. Clear any prior marker's timer and fade out after ~2s.
     setClickMark((m) => ({
-      left: e.clientX - rect.left,
-      top: e.clientY - rect.top,
+      left: clientX - rect.left,
+      top: clientY - rect.top,
       nonce: (m?.nonce ?? 0) + 1,
     }));
     if (clickTimer.current != null) window.clearTimeout(clickTimer.current);
     clickTimer.current = window.setTimeout(() => setClickMark(null), 2000);
     onSyncClick(pageNumber, x, y);
+  };
+
+  const onClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    // Reverse search is a Ctrl/⌘-click affordance; plain clicks stay free for
+    // text selection in the PDF.
+    if (!onSyncClick || !(e.ctrlKey || e.metaKey)) return;
+    syncClickAt(e.clientX, e.clientY);
+  };
+
+  // ── Blacking an area out (#pdf-redact) ──────────────────────────────────
+  // The gesture is a plain drag over the page, tracked in big points so the box the
+  // reader is drawing means the same thing at any zoom. Pointer events, not HTML5
+  // DnD (WebKitGTK), with the capture taken by the layer itself — it is mounted for
+  // the whole gesture, unlike the canvas underneath, which re-renders on zoom.
+  const [dragBox, setDragBox] = useState<Rect | null>(null);
+  const dragStart = useRef<{ x: number; y: number } | null>(null);
+
+  const pointInPage = (clientX: number, clientY: number) => {
+    const el = wrapRef.current ?? canvasRef.current;
+    const rect = el?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return { x: (clientX - rect.left) / scale, y: (clientY - rect.top) / scale };
+  };
+
+  const onRedactDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!redacting || e.button !== 0) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const start = pointInPage(e.clientX, e.clientY);
+    dragStart.current = start;
+    setDragBox({ ...start, w: 0, h: 0 });
+  };
+
+  const onRedactMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragStart.current) return;
+    setDragBox(rectFromDrag(dragStart.current, pointInPage(e.clientX, e.clientY)));
+  };
+
+  // `pointercancel` commits as well as `pointerup`: on this engine a gesture can end
+  // with either (the same trap the tab and card drags document), and a drag that
+  // silently did nothing would leave the reader believing an area is covered. The
+  // commit is safe under both — a box that was not wanted is one click away from
+  // gone, and Ctrl+Z covers it too.
+  const onRedactUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const start = dragStart.current;
+    dragStart.current = null;
+    setDragBox(null);
+    if (!start) return;
+    const drawn = rectFromDrag(start, pointInPage(e.clientX, e.clientY));
+    // The threshold is in CSS pixels, so "that was a click, not a drag" means the
+    // same thing whether the page is at 40% or 400%.
+    if (!isDraggedFar(drawn, 3 / scale)) return;
+    onRedactAdd?.(textItems ? snapToText(drawn, textItems) : drawn);
+  };
+
+  // ── Select a region and copy it as an image ──────────────────────────────
+  // Geometry stays in big points while dragging, just like redaction, but the
+  // copied pixels come from the already-rendered page canvas. That makes the
+  // clipboard image exactly as sharp as the visible page (including DPR) without
+  // asking pdf.js to render a second full page for every selection.
+  const [copyBox, setCopyBox] = useState<Rect | null>(null);
+  const copyStart = useRef<{ x: number; y: number } | null>(null);
+
+  const pointInCanvas = (clientX: number, clientY: number) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return {
+      x: Math.min(Math.max(clientX - rect.left, 0), rect.width) / scale,
+      y: Math.min(Math.max(clientY - rect.top, 0), rect.height) / scale,
+    };
+  };
+
+  const selectionPng = async (selected: Rect): Promise<Uint8Array | null> => {
+    const canvas = canvasRef.current;
+    if (!canvas || canvas.width === 0 || canvas.height === 0) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const pxX = canvas.width / rect.width;
+    const pxY = canvas.height / rect.height;
+    const sx = Math.max(0, Math.floor(selected.x * scale * pxX));
+    const sy = Math.max(0, Math.floor(selected.y * scale * pxY));
+    const sw = Math.min(canvas.width - sx, Math.max(1, Math.ceil(selected.w * scale * pxX)));
+    const sh = Math.min(canvas.height - sy, Math.max(1, Math.ceil(selected.h * scale * pxY)));
+    if (sw <= 0 || sh <= 0) return null;
+
+    const out = document.createElement("canvas");
+    out.width = sw;
+    out.height = sh;
+    const ctx = out.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+
+    // Pending blackouts are overlays rather than canvas pixels. Burn their
+    // intersection into the clipboard crop so copying a page that visibly hides
+    // sensitive text cannot reveal that text in the pasted image.
+    if (marks?.length) {
+      ctx.fillStyle = "#000000";
+      for (const mark of marks) {
+        const left = Math.max(mark.x, selected.x);
+        const top = Math.max(mark.y, selected.y);
+        const right = Math.min(mark.x + mark.w, selected.x + selected.w);
+        const bottom = Math.min(mark.y + mark.h, selected.y + selected.h);
+        if (right <= left || bottom <= top) continue;
+        ctx.fillRect(
+          (left - selected.x) * scale * pxX,
+          (top - selected.y) * scale * pxY,
+          (right - left) * scale * pxX,
+          (bottom - top) * scale * pxY,
+        );
+      }
+    }
+
+    const blob = await new Promise<Blob | null>((resolve) => out.toBlob(resolve, "image/png"));
+    return blob ? new Uint8Array(await blob.arrayBuffer()) : null;
+  };
+
+  const onCopyDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!copySelecting || e.button !== 0) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const start = pointInCanvas(e.clientX, e.clientY);
+    copyStart.current = start;
+    setCopyBox({ ...start, w: 0, h: 0 });
+  };
+  const onCopyMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!copyStart.current) return;
+    setCopyBox(rectFromDrag(copyStart.current, pointInCanvas(e.clientX, e.clientY)));
+  };
+  const onCopyUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const start = copyStart.current;
+    copyStart.current = null;
+    setCopyBox(null);
+    if (!start) return;
+    const selected = rectFromDrag(start, pointInCanvas(e.clientX, e.clientY));
+    if (!isDraggedFar(selected, 3 / scale)) return;
+    void selectionPng(selected).then((png) => {
+      if (png) onCopySelection?.(png);
+    });
   };
 
   const box = highlight ? bigPointsToCssRect(refined ?? highlight.rect, scale) : null;
@@ -381,6 +685,55 @@ function PdfPageCanvas({
           );
         }),
       )}
+      {/* The link layer (#pdf-links), above the canvas and below the highlights.
+          Each box is a real <button>, so a link is reachable by keyboard and
+          announced as an action — a bare <div> with an onClick would be neither.
+          A Ctrl/⌘-click on one still performs SyncTeX reverse search rather than
+          following the link: the modifier is the reverse-search gesture over the
+          WHOLE page, and a `\ref` sitting where the user clicked must not steal
+          it.
+
+          The boxes are PAINTED, not invisible-until-hovered: a link nobody can
+          see is a link nobody clicks, and a reader looking for the equation a
+          `\ref` points at should not have to sweep the pointer across the page
+          to find out that the number is one. The class carries the link's *role*
+          (`ref` / `cite` / external) because that is what the colour says —
+          the same three-way split `hyperref`'s own `colorlinks` makes. */}
+      {links.map((l) => {
+        const css = bigPointsToCssRect(l.rect, scale);
+        return (
+          <button
+            key={l.id}
+            type="button"
+            className={`file-viewer-pdf-link is-${l.kind}${
+              l.kind === "internal" ? ` is-${l.role}` : ""
+            }`}
+            style={{ left: css.left, top: css.top, width: css.width, height: css.height }}
+            title={
+              l.kind === "external"
+                ? t("pdfLinks.externalTitle", { url: l.url })
+                : t(l.role === "cite" ? "pdfLinks.citeTitle" : "pdfLinks.internalTitle", {
+                    page: l.dest.page,
+                  })
+            }
+            onClick={(e) => {
+              if ((e.ctrlKey || e.metaKey) && onSyncClick) {
+                syncClickAt(e.clientX, e.clientY);
+                return;
+              }
+              onLink?.(l);
+            }}
+          />
+        );
+      })}
+      {destMark && (
+        <div
+          key={`dest-${destMark.nonce}`}
+          className="file-viewer-pdf-dest-mark"
+          style={{ top: destMark.top * scale }}
+          aria-hidden="true"
+        />
+      )}
       {box && (
         <div
           key={highlight!.nonce}
@@ -396,6 +749,71 @@ function PdfPageCanvas({
           style={{ left: clickMark.left, top: clickMark.top }}
         />
       )}
+      {/* The blackout surface (#pdf-redact), under the marks so an armed click on an
+          existing one removes it rather than starting a drag on top of it. */}
+      {redacting && (
+        <div
+          className="file-viewer-pdf-redact-layer"
+          onPointerDown={onRedactDown}
+          onPointerMove={onRedactMove}
+          onPointerUp={onRedactUp}
+          onPointerCancel={onRedactUp}
+        >
+          {dragBox && (
+            <div
+              className="file-viewer-pdf-redact-draft"
+              style={{
+                left: dragBox.x * scale,
+                top: dragBox.y * scale,
+                width: dragBox.w * scale,
+                height: dragBox.h * scale,
+              }}
+            />
+          )}
+        </div>
+      )}
+      {copySelecting && (
+        <div
+          className="file-viewer-pdf-copy-layer"
+          style={cssSize ? { width: cssSize.w * scale, height: cssSize.h * scale } : undefined}
+          onPointerDown={onCopyDown}
+          onPointerMove={onCopyMove}
+          onPointerUp={onCopyUp}
+          onPointerCancel={onCopyUp}
+        >
+          {copyBox && (
+            <div
+              className="file-viewer-pdf-copy-draft"
+              style={{
+                left: copyBox.x * scale,
+                top: copyBox.y * scale,
+                width: copyBox.w * scale,
+                height: copyBox.h * scale,
+              }}
+            />
+          )}
+        </div>
+      )}
+      {marks?.map((m) => {
+        const css = bigPointsToCssRect({ page: pageNumber, ...m }, scale);
+        const style = { left: css.left, top: css.top, width: css.width, height: css.height };
+        // Armed, a mark is a real <button> so it is removable by keyboard as well as
+        // by pointer; otherwise it is inert paint — the page underneath must stay
+        // clickable for links and reverse search.
+        return redacting ? (
+          <button
+            key={m.id}
+            type="button"
+            className="file-viewer-pdf-redact-box is-armed"
+            style={style}
+            title={t("pdfRedact.removeMarkTitle")}
+            aria-label={t("pdfRedact.removeMarkTitle")}
+            onClick={() => onRedactRemove?.(m.id)}
+          />
+        ) : (
+          <div key={m.id} className="file-viewer-pdf-redact-box" style={style} aria-hidden="true" />
+        );
+      })}
       <div className="file-viewer-pdf-page-gap" aria-hidden="true">
         {pageNumber} / {doc.numPages}
       </div>
@@ -677,6 +1095,7 @@ function PdfCanvas({
   onOpenExternally,
   tabKey,
   groupId,
+  onReverseSource,
 }: {
   path: string;
   /** When set, an "Open externally" button is shown at the end of the toolbar.
@@ -686,6 +1105,13 @@ function PdfCanvas({
   tabKey?: string;
   /** Hosting subwindow (group) id, for proportional scroll-linking (scrollSync). */
   groupId?: string | null;
+  /** SyncTeX reverse-search host seam. When present, a Ctrl/⌘-click on a page
+   *  routes the resolved source location here (with the PDF's main-`.tex`
+   *  `anchor`) INSTEAD of the module `jumpToSource` — the TeX workspace uses it
+   *  to switch its own center to the producing child rather than open a tab.
+   *  Absent ⇒ today's standalone behavior (a real source tab), so the plain PDF
+   *  tab and its tests are unaffected. */
+  onReverseSource?: (src: SyncSource, anchor: string) => void;
 }) {
   const t = useT();
   const scope = useFileScope();
@@ -695,6 +1121,11 @@ function PdfCanvas({
   // unless the flag is on. Creating the sidecar is deliberately non-destructive:
   // the PDF is untouched, and an existing deck is opened rather than replaced.
   const deckEnabled = useExperimental("deck_presenter");
+  // What an external link in the PDF is routed by (#33). Read here rather than at
+  // the click so the routing sees the same settings the rest of the app does.
+  const settings = useSettingsStore((s) => s.settings);
+  const browserEnabled = useExperimental("web_browser");
+  const mailEnabled = useExperimental("mail_client");
   const [makingDeck, setMakingDeck] = useState(false);
   const openAsDeck = useCallback(async () => {
     setMakingDeck(true);
@@ -788,12 +1219,106 @@ function PdfCanvas({
   // them away, so ask instead of silently clobbering either side.
   const [staleOnDisk, setStaleOnDisk] = useState(false);
 
-  /** Unsaved edits: the arrangement no longer describes the file on disk. */
-  const dirty = doc != null && pages.length > 0 && !isPristine(pages, doc.numPages);
+  // ── Blacking text out (#pdf-redact) ──────────────────────────────────────
+  // Marks live ON the arrangement (`PageRef.marks`), so they are edits like any
+  // other: undoable, carried by a page that is moved or duplicated, and nothing at
+  // all until Save. These four are only the tool's own state.
+  /** The blackout tool is armed — a drag over a page marks an area. */
+  const [redacting, setRedacting] = useState(false);
+  /** The image-copy tool is armed — a drag over a page writes that crop to the
+   *  native system clipboard. Mutually exclusive with redaction because both
+   *  tools own the same plain drag gesture. */
+  const [copySelecting, setCopySelecting] = useState(false);
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [copyNotice, setCopyNotice] = useState<string | null>(null);
+  const copyNoticeTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (copyNoticeTimer.current != null) window.clearTimeout(copyNoticeTimer.current);
+    },
+    [],
+  );
+  const copySelection = useCallback(
+    async (png: Uint8Array) => {
+      setCopyBusy(true);
+      setCopyNotice(null);
+      try {
+        await invoke("copy_png_bytes_to_clipboard", { png: Array.from(png) });
+        setCopyNotice(t("pdfViewer.copySelectionDone"));
+        if (copyNoticeTimer.current != null) window.clearTimeout(copyNoticeTimer.current);
+        copyNoticeTimer.current = window.setTimeout(() => setCopyNotice(null), 2500);
+      } catch (e) {
+        setEditError(t("pdfViewer.copySelectionFailed", { msg: String(e) }));
+      } finally {
+        setCopyBusy(false);
+      }
+    },
+    [t],
+  );
+  /** Grow each drawn box out to the words it touches. On by default: a box drawn by
+   *  eye clips ascenders and word ends, and the burn-in is pixel-exact, so an
+   *  unsnapped mark is how a legible sliver of the redacted word survives. */
+  const [snap, setSnap] = useState(true);
+  /** Resolution the flattened sheets are rendered at. */
+  const [redactDpi, setRedactDpi] = useState(REDACT_DEFAULT_DPI);
+  /** The save that would burn the marks in is waiting to be confirmed. Flattening
+   *  is irreversible and takes the page's text with it, so it is never the silent
+   *  half of a Save the user pressed for a page reorder. */
+  const [confirmRedact, setConfirmRedact] = useState(false);
+  /** How much is pending: areas, and the sheets a save would flatten. Both are
+   *  quoted wherever the price is named, because they are different numbers — 40
+   *  boxes on one page costs one page's text, and one box on 40 pages costs forty. */
+  const marksTotal = markCount(pages);
+  const markedSheets = markedSheetCount(pages);
+
+  // ── Deleting the metadata (#pdf-meta) ────────────────────────────────────
+  // Unlike a blackout, this is not an edit to the arrangement — there is no page it
+  // belongs to — so it rides beside it as one flag on the save. It is deliberately
+  // *pending* rather than immediate: nothing is written until Save, so it is as
+  // cancellable as every other edit in this viewer, and one Save writes the lot.
+  /** The metadata panel is open. */
+  const [metaOpen, setMetaOpen] = useState(false);
+  /** A save would write the file with no metadata at all. */
+  const [stripMeta, setStripMeta] = useState(false);
+  /** What the loaded document says about itself, read once per load. `null` while
+   *  the read is still out — "nothing found" and "not asked yet" are different
+   *  answers, and only the first may be reported as an empty list. */
+  const [meta, setMeta] = useState<PdfMetadata | null>(null);
+
+  /** Unsaved edits: the arrangement no longer describes the file on disk, or the
+   *  metadata is pending deletion — which is an edit with no page to sit on, and
+   *  the only reason Save is reachable at all on an otherwise untouched file. */
+  const dirty =
+    doc != null && pages.length > 0 && (stripMeta || !isPristine(pages, doc.numPages));
   // The mtime poll runs on an interval that closes over its own scope; it needs
   // the LIVE dirty flag to decide whether an on-disk change may auto-reload.
   const dirtyRef = useRef(false);
   dirtyRef.current = dirty;
+
+  /** A metadata field's name. Only the eight standard `/Info` keys are translated —
+   *  everything else is a name the producer invented, and printing an i18n key back
+   *  at the reader is worse than printing the producer's own word. */
+  const metaFieldLabel = useCallback(
+    (key: string) => {
+      const label = META_FIELD_KEYS[key];
+      return label ? t(label) : key;
+    },
+    [t],
+  );
+
+  // Read what the document says about itself, on demand rather than at load: the
+  // panel is the only thing that shows it, and pdf.js has to be asked, so a reader
+  // who never opens it pays nothing — including on the reload of every recompile.
+  useEffect(() => {
+    if (!metaOpen || !doc || meta) return;
+    let cancelled = false;
+    void readPdfMetadata(doc).then((m) => {
+      if (!cancelled) setMeta(m);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [metaOpen, doc, meta]);
 
   /** Record an arrangement edit, making it undoable. */
   const applyEdit = useCallback((next: PageList) => {
@@ -827,6 +1352,22 @@ function PdfCanvas({
       return f.slice(1);
     });
   }, []);
+
+  // Marking, unmarking and clearing are ordinary arrangement edits — which is the
+  // whole reason marks were put on the entries: undo/redo, the dirty flag and the
+  // page rail all cover redaction without knowing anything about it.
+  const addRedactMark = useCallback(
+    (entryId: string, rect: Rect) => applyEdit(addMark(pagesRef.current, entryId, rect)),
+    [applyEdit],
+  );
+  const removeRedactMark = useCallback(
+    (entryId: string, markId: string) => applyEdit(removeMark(pagesRef.current, entryId, markId)),
+    [applyEdit],
+  );
+  const clearAllMarks = useCallback(
+    () => applyEdit(clearMarks(pagesRef.current)),
+    [applyEdit],
+  );
   // Restore the saved zoom if there is one; otherwise the load effect fits the
   // page width. `1.2` is only the pre-load placeholder.
   const [scale, setScale] = useState(viewPos.initial?.scale ?? 1.2);
@@ -986,12 +1527,25 @@ function PdfCanvas({
    * identity, clears the history and frees any merged-in sources. `lastMtime` is
    * advanced first so our OWN write can't also trip the external-change poll.
    */
-  const handleSave = useCallback(async () => {
+  const handleSave = useCallback(async (redactConfirmed = false) => {
     if (!dirty || saving) return;
+    // Blackouts are burned in by rasterising the sheets that carry them, which
+    // destroys their text for good. Ask first — the same Save also writes ordinary
+    // page moves, and "I reordered two pages" must not silently flatten a page.
+    if (!redactConfirmed && markCount(pagesRef.current) > 0) {
+      setConfirmRedact(true);
+      return;
+    }
+    setConfirmRedact(false);
     setSaving(true);
     setEditError(null);
     try {
-      const bytes = await buildPdf(pages, sources, t("pdfViewer.pdfBuildEmpty"), t("pdfViewer.pdfSourceClosed"));
+      const bytes = await buildPdf(pages, sources, {
+        emptyMsg: t("pdfViewer.pdfBuildEmpty"),
+        sourceClosedMsg: t("pdfViewer.pdfSourceClosed"),
+        redactDpi,
+        stripMetadata: stripMeta,
+      });
       await writeFileBytes(path, bytes, scope);
       const m = await fileMtime(path, scope).catch(() => null);
       if (m != null) lastMtime.current = m;
@@ -1002,7 +1556,7 @@ function PdfCanvas({
     } finally {
       setSaving(false);
     }
-  }, [dirty, saving, pages, sources, path, scope, t]);
+  }, [dirty, saving, pages, sources, path, scope, redactDpi, stripMeta, t]);
 
   // ── Merge: splice another PDF's pages into this arrangement ──────────────
   // The project the viewed file belongs to (the longest project directory that is a
@@ -1070,7 +1624,20 @@ function PdfCanvas({
       const picked = pagesRef.current.filter((r) => ids.includes(r.id));
       if (picked.length === 0) return null;
       try {
-        const bytes = await buildPdf(picked, sourcesRef.current, t("pdfViewer.pdfBuildEmpty"), t("pdfViewer.pdfSourceClosed"));
+        // A dragged-out page carries its blackouts BURNED IN, not as pending marks:
+        // the bytes are what lands in the other viewer (or the other window), and a
+        // mark that travelled as an editable overlay would arrive as a page whose
+        // text is still there under a black box.
+        // Pending metadata deletion travels with the pages for the blackouts'
+        // reason: these bytes are what lands in the other viewer, and a page that
+        // arrived carrying the XMP packet its reader had just asked to be rid of
+        // would put it back into a document they never associated it with.
+        const bytes = await buildPdf(picked, sourcesRef.current, {
+          emptyMsg: t("pdfViewer.pdfBuildEmpty"),
+          sourceClosedMsg: t("pdfViewer.pdfSourceClosed"),
+          redactDpi,
+          stripMetadata: stripMeta,
+        });
         const token = await invoke<string>("pdf_clip_set", { bytes: Array.from(bytes) });
         return { token, count: picked.length };
       } catch (e) {
@@ -1080,7 +1647,7 @@ function PdfCanvas({
         return null;
       }
     },
-    [t],
+    [redactDpi, stripMeta, t],
   );
 
   /** Take pages dragged out of another viewer and splice them in at `index`. */
@@ -1152,9 +1719,18 @@ function PdfCanvas({
   // actually looking at once pages have been moved, deleted or merged in. Each
   // sheet is read from its own source document, at its own rotation.
   const [pageText, setPageText] = useState<TextItemBox[][] | null>(null);
-  useEffect(() => { setPageText(null); }, [pages]);
+  // Invalidated by what the text actually depends on — which sheet, from which
+  // document, at which turn — and NOT by the arrangement object itself. Marking an
+  // area produces a new `pages` array, and dropping the cache on that would re-read
+  // every page's text content once per box drawn, exactly while the tool that needs
+  // it most is in use.
+  const textKey = useMemo(() => pages.map((r) => `${r.src}:${r.page}:${r.rot}`).join("|"), [pages]);
+  useEffect(() => { setPageText(null); }, [textKey]);
+  // Read while the find bar is open OR the blackout tool is armed: snapping a drawn
+  // box out to whole words needs exactly the boxes the search already measures, so
+  // arming the tool warms the same cache rather than a second one.
   useEffect(() => {
-    if (!findOpen || pageText || pages.length === 0) return;
+    if ((!findOpen && !redacting) || pageText || pages.length === 0) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -1170,7 +1746,7 @@ function PdfCanvas({
       }
     })();
     return () => { cancelled = true; };
-  }, [pages, sources, findOpen, pageText]);
+  }, [pages, sources, findOpen, redacting, pageText]);
 
   // Flat list of matches across all pages, in document order; each carries its
   // 1-based page and the big-point boxes covering it.
@@ -1184,6 +1760,27 @@ function PdfCanvas({
     });
     return out;
   }, [findOpen, query, caseSensitive, pageText]);
+
+  /**
+   * Black out every hit of the current search, across the whole document — the fast
+   * path the feature is really for. Redacting a name out of a 200-page report by
+   * hand is 300 drags; here it is a search and one click, and because the boxes come
+   * from the same measurement the overlay is drawn from, what gets covered is
+   * exactly what was highlighted.
+   *
+   * Marks already covering a hit are left alone (`markMatches`), so running it again
+   * after refining the query does not stack duplicates.
+   */
+  const redactAllMatches = useCallback(() => {
+    if (matches.length === 0) return;
+    const byPage = new Map<number, SyncRect[][]>();
+    for (const m of matches) {
+      const list = byPage.get(m.page) ?? [];
+      list.push(m.rects);
+      byPage.set(m.page, list);
+    }
+    applyEdit(markMatches(pagesRef.current, byPage));
+  }, [matches, applyEdit]);
 
   // Bumped to ask the page holding the current match to scroll it into view.
   const [searchScrollNonce, setSearchScrollNonce] = useState(0);
@@ -1320,6 +1917,130 @@ function PdfCanvas({
     closePageJump();
   }, [pageJumpValue, jumpToArrangementIndex, closePageJump]);
 
+  // ── The document's own hyperlinks (#pdf-links) ────────────────────────────
+  // A `hyperref` PDF is full of them — every `\ref`, `\cite`, `\autoref` and
+  // contents row is a GoTo annotation — so following one has to feel like part of
+  // reading, not like navigation: the jump lands ON the target rather than at the
+  // top of its page, marks where it landed, and leaves a way back.
+
+  /** Where the reader was before each followed internal link (newest last). */
+  const [linkBack, setLinkBack] = useState<{ top: number; left: number }[]>([]);
+  /** The landing band: which sheet, how far down it (big points), and a nonce so
+   *  a repeat jump to the same anchor flashes again. */
+  const [destMark, setDestMark] = useState<{ index: number; top: number; nonce: number } | null>(null);
+  const destMarkTimer = useRef<number | null>(null);
+  /** The external address awaiting the confirm, or null. */
+  const [linkConfirm, setLinkConfirm] = useState<string | null>(null);
+  useEffect(
+    () => () => {
+      if (destMarkTimer.current != null) window.clearTimeout(destMarkTimer.current);
+    },
+    [],
+  );
+  // A different file is a different document: its back stack and its landing mark
+  // are positions in a page stack that no longer exists.
+  useEffect(() => {
+    setLinkBack([]);
+    setDestMark(null);
+    setLinkConfirm(null);
+  }, [path]);
+
+  /** How far below the viewport top an internal link's target is parked, so the
+   *  landing line is not flush against the edge (and, on a `\ref`, the line above
+   *  it is readable as context). */
+  const DEST_PAD = 24;
+
+  /** Scroll to a resolved destination. Returns false when nothing was moved —
+   *  the arrangement may no longer contain the target page at all (it was
+   *  deleted), and a back entry must not be pushed for a jump that did nothing. */
+  const jumpToDest = useCallback(
+    async (dest: PdfDest): Promise<boolean> => {
+      const list = pagesRef.current;
+      const idx = list.findIndex((r) => r.src === SELF && r.page === dest.page);
+      if (idx < 0) return false;
+      const scroller = scrollRef.current;
+      const wrap = contentRef.current?.children[idx] as HTMLElement | undefined;
+      if (!scroller || !wrap) return false;
+      // Explicit navigation supersedes a same-path reload's scroll restoration —
+      // the rule `onReveal` already applies to a SyncTeX jump.
+      restoreScroll.current = null;
+      const srcDoc = sourcesRef.current.get(SELF)?.doc;
+      const top = srcDoc ? await destTopInBigPoints(srcDoc, dest, list[idx].rot ?? 0) : null;
+      if (top == null) {
+        // A whole-page destination (`/Fit`) names no line to land on.
+        wrap.scrollIntoView({ block: "start", inline: "nearest" });
+        return true;
+      }
+      // Measured rather than read off `offsetTop`: the page stack's offset parent
+      // is not guaranteed to be the scroller, and a rect delta is right either way.
+      const delta = wrap.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      scroller.scrollTop += delta + top * scale - DEST_PAD;
+      setDestMark((m) => ({ index: idx, top, nonce: (m?.nonce ?? 0) + 1 }));
+      if (destMarkTimer.current != null) window.clearTimeout(destMarkTimer.current);
+      destMarkTimer.current = window.setTimeout(() => setDestMark(null), 2200);
+      return true;
+    },
+    [scale],
+  );
+
+  /** Step back to where the last internal link was followed from. */
+  const linkGoBack = useCallback(() => {
+    setLinkBack((s) => {
+      const last = s[s.length - 1];
+      if (!last) return s;
+      const el = scrollRef.current;
+      if (el) {
+        restoreScroll.current = null;
+        el.scrollTop = last.top;
+        el.scrollLeft = last.left;
+      }
+      return s.slice(0, -1);
+    });
+  }, []);
+
+  const onPdfLink = useCallback(
+    (link: PdfLink) => {
+      if (link.kind === "external") {
+        setLinkConfirm(link.url);
+        return;
+      }
+      const el = scrollRef.current;
+      const from = el ? { top: el.scrollTop, left: el.scrollLeft } : null;
+      void jumpToDest(link.dest).then((moved) => {
+        // Bounded: the stack is a way back from a chain of citations, not a
+        // history of the session.
+        if (moved && from) setLinkBack((s) => [...s.slice(-19), from]);
+      });
+    },
+    [jumpToDest],
+  );
+
+  /** Open a confirmed external address through the app's ONE routing table
+   *  (#33). `origin: "viewer"` is the load-bearing argument: a URL that came out
+   *  of a file the user is looking at is untrusted, so it can never become a live
+   *  in-app page in one click. No `openBrowserTab` hook is passed — this viewer
+   *  does not own a tab store — so an in-app target degrades to the user's real
+   *  browser rather than to a click that goes nowhere. */
+  const openPdfLink = useCallback(
+    (url: string) => {
+      openRoutedUri(
+        url,
+        {
+          setting: settings?.browser_link_target,
+          browserEnabled,
+          mailEnabled,
+          origin: "viewer",
+          browserRoleConfigured: !!settings?.global_apps?.browser?.exec,
+        },
+        {
+          globalApps: settings?.global_apps,
+          onRefuse: (reason) => setEditError(t("pdfLinks.refused", { reason })),
+        },
+      );
+    },
+    [settings, browserEnabled, mailEnabled, t],
+  );
+
   // Ctrl/Cmd+F opens the find bar, Ctrl/Cmd+G opens go-to-page; Esc closes
   // whichever is open. Bound on the host so it fires wherever focus sits within
   // the PDF pane (the scroll area is focusable).
@@ -1342,15 +2063,42 @@ function PdfCanvas({
       } else if (mod && (key === "y" || (key === "z" && e.shiftKey))) {
         e.preventDefault();
         redo();
+      } else if (e.altKey && e.key === "ArrowLeft") {
+        // The browser's own "back" gesture, for the same thing it means here:
+        // return from the link you just followed.
+        e.preventDefault();
+        linkGoBack();
       } else if (e.key === "Escape" && pageJumpOpen) {
         e.preventDefault();
         closePageJump();
       } else if (e.key === "Escape" && findOpen) {
         e.preventDefault();
         closeFind();
+      } else if (e.key === "Escape" && redacting) {
+        // Last of the Escape branches: putting the blackout tool away matters less
+        // than closing whatever was opened on top of it, and disarming while the
+        // find bar is up would leave the bar with nothing to close it.
+        e.preventDefault();
+        setRedacting(false);
+      } else if (e.key === "Escape" && copySelecting) {
+        e.preventDefault();
+        setCopySelecting(false);
       }
     },
-    [openFind, closeFind, findOpen, openPageJump, closePageJump, pageJumpOpen, handleSave, undo, redo],
+    [
+      openFind,
+      closeFind,
+      findOpen,
+      openPageJump,
+      closePageJump,
+      pageJumpOpen,
+      handleSave,
+      undo,
+      redo,
+      redacting,
+      copySelecting,
+      linkGoBack,
+    ],
   );
   const onFindKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
@@ -1376,12 +2124,24 @@ function PdfCanvas({
   }, [path, scope, diskVersion]);
 
   // Reverse search: a click on a page → which source line produced it → jump.
+  // Resolve the clicked source's root (the main `.tex` that produces this PDF) and
+  // pass it as the routing anchor, so a subfile with no tab yet opens in the
+  // subwindow that already holds the main `.tex` rather than the focused group.
   const onSyncClick = useCallback(
     async (page: number, x: number, y: number) => {
       const src = await synctexEdit(path, page, x, y);
-      if (src) jumpToSource(src.input, src.line, src.column);
+      if (!src) return;
+      const anchor = await resolveTexRoot(src.input).catch(() => src.input);
+      // In a TeX workspace the host handles reverse search itself (it switches
+      // the docked editor's center to the producing child); standalone falls
+      // back to the module jump (open/focus the source tab).
+      if (onReverseSource) {
+        onReverseSource(src, anchor);
+        return;
+      }
+      jumpToSource(src.input, src.line, src.column, anchor);
     },
-    [path],
+    [path, onReverseSource],
   );
 
   // Poll mtime; on an advance (e.g. a recompile wrote a new PDF), bump
@@ -1431,55 +2191,127 @@ function PdfCanvas({
     const samePathReload = loadedPath.current === path;
     restoreScroll.current =
       firstRestore ??
-      (samePathReload && el
-        ? { top: el.scrollTop, left: el.scrollLeft }
+      (samePathReload
+        ? // A same-path re-run that lands while a restore is still PENDING must
+          // keep that target rather than recapture the live position — because
+          // the target was never reached, so `el.scrollTop` is still 0 and
+          // capturing it would silently replace the persisted position with the
+          // top of the document. This fires on React StrictMode's dev-mode
+          // double-mount (the hot-reload build wraps the app in <StrictMode>) and
+          // on a disk-change reload arriving mid-restore, and was "the PDF forgot
+          // where I was" on every dev restart. Once the pending restore has been
+          // applied and cleared, a genuine same-path reload (a recompile) falls
+          // through to capturing where the reader actually is.
+          (restoreScroll.current ??
+            (el ? { top: el.scrollTop, left: el.scrollLeft } : null))
         : null);
     reloadKeepZoom.current = samePathReload;
     loadedPath.current = path;
-    setDoc(null);
-    setError(null);
+    // The documents the on-screen arrangement is currently drawn from — the file
+    // itself AND any merged-in PDFs. Freed once the fresh load has swapped in,
+    // not up front: keeping them alive is what lets a same-path reload (a
+    // recompile) leave the old pages painted until the new ones are ready.
+    const prevSources = sourcesRef.current;
+    const freePrev = () => {
+      for (const s of prevSources.values()) s.doc.destroy();
+    };
+    // A same-path reload keeps the current document on screen while the fresh
+    // bytes load — blanking it would flash the page (and, on a truncated
+    // mid-compile read, an error) on every poll of a multi-second compile. A
+    // genuine file switch shows the loading state as before.
+    if (!samePathReload) {
+      setDoc(null);
+      setError(null);
+    }
+    const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+    // Safety net: stop re-applying the restore target once the pages have had
+    // time to lay out, so a target the (re)loaded PDF can't reach — a recompile
+    // shortened it, or the file changed on disk while Eldrun was closed — never
+    // keeps yanking the scroll back and fighting the reader. Armed only AFTER
+    // the document loads (below), not here at effect start: the byte read +
+    // parse can itself take seconds for a large PDF (a LaTeX thesis on a busy
+    // restart), and a clock started before that would expire before the content
+    // ever reached its full height — dropping the restore for exactly the big
+    // documents where a remembered position matters most.
+    let restoreDeadline: ReturnType<typeof setTimeout> | null = null;
     (async () => {
-      try {
-        const bytes = await readFileBytes(path, scope);
-        if (cancelled) return;
-        // `openSource` keeps a pristine copy of the bytes for pdf-lib: pdf.js
-        // DETACHES the buffer it is handed, so a save could not reuse them.
-        const src = await openSource(new Uint8Array(bytes));
-        if (cancelled) {
-          src.doc.destroy();
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const bytes = await readFileBytes(path, scope);
+          if (cancelled) return;
+          // `openSource` keeps a pristine copy of the bytes for pdf-lib: pdf.js
+          // DETACHES the buffer it is handed, so a save could not reuse them.
+          const src = await openSource(new Uint8Array(bytes));
+          if (cancelled) {
+            src.doc.destroy();
+            return;
+          }
+          // A load is a fresh start: one source, the identity arrangement, no
+          // history. Swap in the new document, THEN free the one it replaces —
+          // freeing after the swap is what keeps the old pages painted through
+          // the change instead of flashing empty.
+          sourcesRef.current = new Map([[SELF, src]]);
+          setSources(sourcesRef.current);
+          setPages(initialPages(src.doc.numPages));
+          setPast([]);
+          setFuture([]);
+          // The metadata is a property of the bytes, so a reload re-reads it and
+          // disarms the pending deletion — after a save that performed one, the
+          // panel must show the (now empty) file rather than still offering to
+          // strip what has already gone.
+          setStripMeta(false);
+          setMeta(null);
+          setStaleOnDisk(false);
+          setError(null);
+          setEditError(null);
+          setLoadedDiskVersion(diskVersion);
+          setDoc(src.doc);
+          freePrev();
+          // Start the give-up clock now that the pages are about to lay out —
+          // see the note where `restoreDeadline` is declared.
+          if (restoreScroll.current) {
+            restoreDeadline = setTimeout(() => {
+              restoreScroll.current = null;
+            }, 4000);
+          }
+          return;
+        } catch (e) {
+          if (cancelled) return;
+          // A truncated read while the compiler is still writing is transient:
+          // retry a few times before treating it as a real error.
+          if (attempt < RELOAD_MAX_RETRIES) {
+            await sleep(RELOAD_RETRY_MS);
+            if (cancelled) return;
+            continue;
+          }
+          // Out of retries. On a reload there is a last good document to keep
+          // showing (the next mtime poll will try the fresh file again), so say
+          // nothing; on a first load there is nothing to fall back on.
+          if (!samePathReload) {
+            freePrev();
+            setError(String(e));
+          }
           return;
         }
-        // A load is a fresh start: one source, the identity arrangement, no history.
-        // The ref is the authoritative map (the cleanup below frees from it, and it
-        // is correct even if a teardown beats React's re-render).
-        sourcesRef.current = new Map([[SELF, src]]);
-        setSources(sourcesRef.current);
-        setPages(initialPages(src.doc.numPages));
-        setPast([]);
-        setFuture([]);
-        setStaleOnDisk(false);
-        setEditError(null);
-        setLoadedDiskVersion(diskVersion);
-        setDoc(src.doc);
-      } catch (e) {
-        if (!cancelled) setError(String(e));
       }
     })();
-    // Safety net: stop trying to restore after the pages have had time to lay
-    // out, so a target the reloaded PDF can't reach never re-applies later
-    // (e.g. fighting a subsequent zoom).
-    const restoreDeadline = restoreScroll.current
-      ? setTimeout(() => { restoreScroll.current = null; }, 2000)
-      : null;
     return () => {
       cancelled = true;
-      // Release every document the outgoing arrangement drew from — the file itself
-      // AND any merged-in PDFs — not just the one this effect opened.
-      for (const s of sourcesRef.current.values()) s.doc.destroy();
-      sourcesRef.current = new Map();
       if (restoreDeadline) clearTimeout(restoreDeadline);
     };
   }, [path, scope, diskVersion]);
+
+  // Release the open source documents when the viewer unmounts. This is its own
+  // effect (not the load effect's cleanup) because the load effect now hands its
+  // outgoing sources to the next load to free on success — so a same-path reload
+  // never tears down the document that is still on screen.
+  useEffect(
+    () => () => {
+      for (const s of sourcesRef.current.values()) s.doc.destroy();
+      sourcesRef.current = new Map();
+    },
+    [],
+  );
 
   // Intrinsic (scale-1) CSS dimensions of every page, computed once per document
   // load. Lets each PdfPageCanvas reserve its true size before rendering so the
@@ -1621,7 +2453,9 @@ function PdfCanvas({
   // reads every page's text content, which is far heavier than `getOutline`.
   useEffect(() => {
     if (!outlineOpen || !doc) return;
-    if (outline == null || outline.length > 0) return; // embedded outline present/pending
+    // A lone title bookmark (some LaTeX templates ship exactly that) is not real
+    // navigation, so scan for headings as if the outline were absent.
+    if (outline == null || outlineIsNavigable(outline)) return; // usable outline present/pending
     if (headings != null) return; // already scanned
     let cancelled = false;
     void (async () => {
@@ -1652,9 +2486,12 @@ function PdfCanvas({
   // The chapters actually shown: the embedded outline if the PDF has one, else
   // the inferred headings. `activeOutline` is null while its source is still
   // loading/scanning; `outlineDerived` says the fallback is in use.
-  const outlineDerived = outline != null && outline.length === 0;
+  // A present-but-degenerate outline (a lone title bookmark) is treated as absent:
+  // the fallback headings stand in, and the sidebar labels them as derived.
+  const outlineUsable = outline != null && outlineIsNavigable(outline);
+  const outlineDerived = outline != null && !outlineUsable;
   const activeOutline: OutlineNode[] | null =
-    outline == null ? null : outline.length > 0 ? outline : headings;
+    outline == null ? null : outlineUsable ? outline : headings;
   const outlinePlaceholder =
     activeOutline && activeOutline.length > 0
       ? null
@@ -1798,6 +2635,21 @@ function PdfCanvas({
         >
           ☰
         </button>
+        {/* Back to where the last link was followed from (#pdf-links). Rendered
+            only once there is somewhere to go back to: a permanently disabled
+            arrow in a viewer whose links most documents don't have would be
+            chrome that never does anything. */}
+        {linkBack.length > 0 && (
+          <button
+            className="file-viewer-zoom-btn"
+            onClick={linkGoBack}
+            title={t("pdfLinks.backTitle")}
+            aria-label={t("pdfLinks.backLabel")}
+          >
+            ←
+          </button>
+        )}
+        {linkBack.length > 0 && <UntestedTag />}
         <span className="file-viewer-pdf-toolbar-sep" aria-hidden="true" />
         <button
           className="file-viewer-zoom-btn"
@@ -1875,6 +2727,50 @@ function PdfCanvas({
         >
           🔍
         </button>
+        {/* Black out text (#pdf-redact). Beside the find button because the two work
+            as a pair — search for the name, black out every hit. */}
+        <button
+          className={`file-viewer-zoom-btn${redacting ? " active" : ""}`}
+          onClick={() => {
+            setRedacting((v) => !v);
+            setCopySelecting(false);
+          }}
+          disabled={!doc}
+          title={t("pdfRedact.toolTitle")}
+          aria-label={t("pdfRedact.toolLabel")}
+          aria-pressed={redacting}
+        >
+          ▮
+        </button>
+        <UntestedTag />
+        <button
+          className={`file-viewer-zoom-btn${copySelecting ? " active" : ""}`}
+          onClick={() => {
+            setCopySelecting((v) => !v);
+            setRedacting(false);
+            setCopyNotice(null);
+          }}
+          disabled={!doc || copyBusy}
+          title={t("pdfViewer.copySelectionTitle")}
+          aria-label={t("pdfViewer.copySelectionLabel")}
+          aria-pressed={copySelecting}
+        >
+          ✂
+        </button>
+        {/* Delete the metadata (#pdf-meta). Beside the blackout tool because the two
+            are the same job on the file's two halves — what is on the page, and what
+            the file says about itself off it. */}
+        <button
+          className={`file-viewer-zoom-btn${metaOpen ? " active" : ""}${stripMeta ? " is-armed" : ""}`}
+          onClick={() => setMetaOpen((v) => !v)}
+          disabled={!doc}
+          title={t("pdfMeta.toolTitle")}
+          aria-label={t("pdfMeta.toolLabel")}
+          aria-pressed={metaOpen}
+        >
+          🏷
+        </button>
+        <UntestedTag />
         {/* ── Page arranging (#page-arrange) ────────────────────────────────
             Edits live in memory until Save, so a stray delete is always one Ctrl+Z
             away and never touches the file. */}
@@ -1919,18 +2815,12 @@ function PdfCanvas({
         >
           ↷
         </button>
-        <button
-          className={`file-viewer-zoom-btn file-viewer-zoom-text${dirty ? " is-dirty" : ""}`}
-          onClick={() => void handleSave()}
-          disabled={!dirty || saving}
+        <SaveButton
+          isDirty={dirty}
+          saving={saving}
+          save={() => void handleSave()}
           title={dirty ? t("pdfViewer.saveDirtyTitle") : t("pdfViewer.saveCleanTitle")}
-        >
-          {saving ? (
-            <span className="file-viewer-save-spinner" aria-hidden="true" />
-          ) : (
-            `${t("pdfViewer.saveButton")}${dirty ? " •" : ""}`
-          )}
-        </button>
+        />
         <button
           className={`file-viewer-print file-viewer-pdf-print${printing ? " is-busy" : ""}`}
           onClick={() => void handlePrint()}
@@ -1938,16 +2828,20 @@ function PdfCanvas({
           title={printing ? t("pdfViewer.preparing") : t("pdfViewer.printLabel")}
           aria-label={t("pdfViewer.printLabel")}
         >
-          {printing ? <span className="file-viewer-save-spinner" aria-hidden="true" /> : "🖨"}
+          {printing ? (
+            <span className="file-viewer-save-spinner" aria-hidden="true" />
+          ) : (
+            <PrinterIcon />
+          )}
         </button>
         {deckEnabled && (
           <button
-            className="file-viewer-zoom-text"
+            className="file-viewer-zoom-btn file-viewer-zoom-text"
             onClick={() => void openAsDeck()}
             disabled={!doc || makingDeck}
             title={t("pdfViewer.presentTitle")}
           >
-            {makingDeck ? "…" : t("pdfViewer.presentButton")}
+            {makingDeck ? "…" : `▶ ${t("pdfViewer.presentButton")}`}
           </button>
         )}
         {onOpenExternally && (
@@ -1961,6 +2855,121 @@ function PdfCanvas({
           </button>
         )}
       </div>
+      {redacting && (
+        // The blackout tool's own strip. It says what the tool does, what it will
+        // cost at save, and offers the two bulk actions — never a "redact" button
+        // that silently rewrites the file, which is the shape this feature must not
+        // have.
+        <div className="file-viewer-pdf-redact-bar" role="group" aria-label={t("pdfRedact.toolLabel")}>
+          <span className="file-viewer-pdf-redact-hint">{t("pdfRedact.dragHint")}</span>
+          <label className="file-viewer-pdf-redact-opt">
+            <input type="checkbox" checked={snap} onChange={(e) => setSnap(e.target.checked)} />
+            {t("pdfRedact.snapToText")}
+          </label>
+          <label className="file-viewer-pdf-redact-opt">
+            {t("pdfRedact.quality")}
+            <select
+              value={redactDpi}
+              onChange={(e) => setRedactDpi(Number(e.target.value))}
+              aria-label={t("pdfRedact.quality")}
+            >
+              <option value={150}>{t("pdfRedact.qualityDraft")}</option>
+              <option value={REDACT_DEFAULT_DPI}>{t("pdfRedact.qualityStandard")}</option>
+              <option value={300}>{t("pdfRedact.qualitySharp")}</option>
+            </select>
+          </label>
+          <span className="file-viewer-pdf-toolbar-sep" aria-hidden="true" />
+          {/* Search-driven bulk marking. Offered only with hits on screen: a button
+              that can only report "nothing matched" is chrome, and the find bar is
+              where the query it would use lives. */}
+          {findOpen && matches.length > 0 ? (
+            <button className="file-viewer-zoom-btn file-viewer-zoom-text" onClick={redactAllMatches}>
+              {t("pdfRedact.blackOutMatches", { n: matches.length })}
+            </button>
+          ) : (
+            <button
+              className="file-viewer-zoom-btn file-viewer-zoom-text"
+              onClick={openFind}
+              title={t("pdfRedact.searchFirstTitle")}
+            >
+              {t("pdfRedact.searchFirstButton")}
+            </button>
+          )}
+          <span className="file-viewer-pdf-redact-count">
+            {marksTotal > 0
+              ? t("pdfRedact.pending", { areas: marksTotal, pages: markedSheets })
+              : t("pdfRedact.pendingNone")}
+          </span>
+          <button
+            className="file-viewer-zoom-btn file-viewer-zoom-text"
+            onClick={clearAllMarks}
+            disabled={marksTotal === 0}
+          >
+            {t("pdfRedact.clearAll")}
+          </button>
+          <span className="file-viewer-pdf-redact-warn">{t("pdfRedact.flattenWarning")}</span>
+        </div>
+      )}
+      {copySelecting && (
+        <div
+          className="file-viewer-pdf-copy-bar"
+          role="status"
+          aria-live="polite"
+        >
+          <span>{t("pdfViewer.copySelectionHint")}</span>
+          {copyBusy && <span>{t("pdfViewer.copySelectionWorking")}</span>}
+          {copyNotice && <span className="file-viewer-pdf-copy-success">{copyNotice}</span>}
+        </div>
+      )}
+      {metaOpen && doc && (
+        // The metadata panel — the blackout tool's strip, wearing the same class so
+        // the two read as the pair they are. It shows the fields BEFORE it offers to
+        // delete them, which is the whole point: none of this is on the page, so a
+        // bare "Delete all metadata" button would be a control whose effect the
+        // reader could neither see beforehand nor verify afterwards.
+        <div className="file-viewer-pdf-redact-bar" role="group" aria-label={t("pdfMeta.toolLabel")}>
+          <span className="file-viewer-pdf-redact-hint">{t("pdfMeta.hint")}</span>
+          <span className="file-viewer-pdf-toolbar-sep" aria-hidden="true" />
+          {meta == null ? (
+            <span className="file-viewer-pdf-redact-count">{t("pdfMeta.reading")}</span>
+          ) : meta.entries.length === 0 && !meta.xmp ? (
+            <span className="file-viewer-pdf-redact-count">{t("pdfMeta.none")}</span>
+          ) : (
+            <span className={`file-viewer-pdf-meta-list${stripMeta ? " is-doomed" : ""}`}>
+              {meta.entries.map((e) => (
+                <span key={e.key} className="file-viewer-pdf-meta-entry">
+                  <span className="file-viewer-pdf-meta-key">{metaFieldLabel(e.key)}</span>
+                  <span className="file-viewer-pdf-meta-value">{e.value}</span>
+                </span>
+              ))}
+              {/* The XMP packet has no value worth printing — it is a whole XML
+                  document — so it is named as a presence rather than quoted. */}
+              {meta.xmp && (
+                <span className="file-viewer-pdf-meta-entry">
+                  <span className="file-viewer-pdf-meta-key">{t("pdfMeta.xmp")}</span>
+                </span>
+              )}
+            </span>
+          )}
+          <span className="file-viewer-pdf-toolbar-sep" aria-hidden="true" />
+          {/* Arms a pending deletion; it is Save that writes it, exactly as a
+              blackout is. Offered even for a file with nothing listed, because the
+              list is what pdf.js can see — the per-page packets and the private
+              scratch space an editor left behind are cleared by the same save and
+              are not in it. */}
+          <button
+            className={`file-viewer-zoom-btn file-viewer-zoom-text${stripMeta ? " active" : ""}`}
+            onClick={() => setStripMeta((v) => !v)}
+            aria-pressed={stripMeta}
+            title={t("pdfMeta.deleteAllTitle")}
+          >
+            {stripMeta ? t("pdfMeta.keepButton") : t("pdfMeta.deleteAllButton")}
+          </button>
+          {stripMeta && (
+            <span className="file-viewer-pdf-redact-warn">{t("pdfMeta.pendingSave")}</span>
+          )}
+        </div>
+      )}
       {findOpen && (
         <div className="file-viewer-find file-viewer-find-pdf" role="search">
           <div className="file-viewer-find-row">
@@ -2016,6 +3025,16 @@ function PdfCanvas({
           </div>
         </div>
       )}
+      {confirmRedact && (
+        // The one gate in front of an irreversible write. It names both numbers and
+        // says plainly what is destroyed — a "this cannot be undone" with no subject
+        // is what gets clicked through.
+        <div className="file-viewer-banner is-warn" role="alert">
+          <span>{t("pdfRedact.confirmMessage", { areas: marksTotal, pages: markedSheets })}</span>
+          <button onClick={() => void handleSave(true)}>{t("pdfRedact.confirmSaveButton")}</button>
+          <button onClick={() => setConfirmRedact(false)}>{t("common.cancel")}</button>
+        </div>
+      )}
       {staleOnDisk && (
         // The file changed underneath our unsaved edits. Reloading would throw them
         // away and saving would overwrite the newer file, so neither happens on its
@@ -2066,7 +3085,12 @@ function PdfCanvas({
               onImport={importPages}
               onMovedOut={dropMovedPages}
               renderThumb={(ref) => (
-                <PdfThumb doc={sources.get(ref.src)?.doc} page={ref.page} rot={ref.rot} />
+                <PdfThumb
+                  doc={sources.get(ref.src)?.doc}
+                  page={ref.page}
+                  rot={ref.rot}
+                  marks={ref.marks}
+                />
               )}
               badgeFor={(_ref, i) => String(i + 1)}
               titleFor={(ref) =>
@@ -2114,6 +3138,19 @@ function PdfCanvas({
                     onReveal={() => { restoreScroll.current = null; }}
                     searchMatches={searchByPage.get(i + 1)}
                     searchScrollNonce={currentPage === i + 1 ? searchScrollNonce : 0}
+                    // Only pages of the file itself carry a link layer for now:
+                    // a merged-in page's GoTo destinations point into ITS
+                    // document, and following one into this arrangement would
+                    // land on whatever happens to sit at that page number here.
+                    onLink={ref.src === SELF ? onPdfLink : undefined}
+                    destMark={destMark && destMark.index === i ? destMark : null}
+                    marks={ref.marks}
+                    redacting={redacting}
+                    copySelecting={copySelecting && !copyBusy}
+                    textItems={snap ? pageText?.[i] : undefined}
+                    onRedactAdd={(rect) => addRedactMark(ref.id, rect)}
+                    onRedactRemove={(markId) => removeRedactMark(ref.id, markId)}
+                    onCopySelection={copySelection}
                   />
                 );
               })}
@@ -2132,6 +3169,13 @@ function PdfCanvas({
           </div>
         )}
       </div>
+      {linkConfirm && (
+        <PdfLinkConfirmDialog
+          url={linkConfirm}
+          onOpen={() => openPdfLink(linkConfirm)}
+          onClose={() => setLinkConfirm(null)}
+        />
+      )}
       {pickerOpen && (
         // Deliberately the project-scoped picker rather than an OS file dialog: the
         // backend confines every read to the scope's tree, so a path from outside it
@@ -2160,18 +3204,28 @@ export function PdfView({
   onOpenExternally,
   tabKey,
   groupId,
+  onReverseSource,
 }: {
   path: string;
   onOpenExternally: () => void;
   tabKey?: string;
   groupId?: string | null;
+  /** SyncTeX reverse-search host seam (see `PdfCanvas`). The TeX workspace passes
+   *  it to keep a reverse click inside its own tab; a standalone PDF omits it. */
+  onReverseSource?: (src: SyncSource, anchor: string) => void;
 }) {
   // No ViewerHeader: the tab already shows the file name, so a filename row would
   // be redundant. The "Open externally" action lives in the PdfCanvas toolbar.
   return (
     <div className="file-viewer">
       <div className="file-viewer-body">
-        <PdfCanvas path={path} onOpenExternally={onOpenExternally} tabKey={tabKey} groupId={groupId} />
+        <PdfCanvas
+          path={path}
+          onOpenExternally={onOpenExternally}
+          tabKey={tabKey}
+          groupId={groupId}
+          onReverseSource={onReverseSource}
+        />
       </div>
     </div>
   );

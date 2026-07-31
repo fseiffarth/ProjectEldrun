@@ -46,6 +46,41 @@ pub async fn debug_app_resource_usage() -> Result<AppResourceUsage, String> {
     })
 }
 
+/// Resident size (KiB) of the largest webview *renderer* process under the app.
+///
+/// The renderer (WebKitWebProcess on Linux) holds the whole UI's JS heap in a
+/// child process, and WebKitGTK does not implement `performance.memory`, so the
+/// renderer cannot measure its own heap — the memory watchdog
+/// (`src/lib/rendererWatchdog.ts`) reads it from here and reloads before it
+/// OOMs. Returns the MAX rather than the sum: the failure mode is one runaway
+/// renderer growing without bound (a 44 GB JS-heap leak observed 2026-07-31 in
+/// a long HMR-heavy dev session, which then OOM-aborted and got amplified by
+/// apport into a multi-GB core dump). `0` means no renderer was found — an
+/// unsupported platform, or a tree not yet resolvable — which the caller treats
+/// as "nothing to act on", never as "healthy".
+#[tauri::command]
+pub fn webview_rss_kib() -> u64 {
+    let root = eldrun_process_root(std::process::id());
+    crate::sysstat::descendant_pids(&[root])
+        .into_iter()
+        .filter(|&pid| is_webview_renderer(pid))
+        .map(|pid| crate::sysstat::sum_rss_kib(&[pid]))
+        .max()
+        .unwrap_or(0)
+}
+
+/// A webview *content* process, across the engines Eldrun ships on: WebKitGTK
+/// (Linux), WebKit (macOS: `com.apple.WebKit.WebContent`), WebView2 (Windows:
+/// `msedgewebview2`). Matched on the command line, not `comm` — Linux truncates
+/// the latter to 15 bytes (`WebKitWebProces`), so a `comm` match would miss it.
+fn is_webview_renderer(pid: u32) -> bool {
+    crate::sysstat::cmdline(pid).is_some_and(|cmd| {
+        cmd.contains("WebKitWebProcess")
+            || cmd.contains("WebContent")
+            || cmd.contains("msedgewebview2")
+    })
+}
+
 /// Walk up to the process that owns the running app. In `tauri dev` the useful
 /// total is the npm/tauri/vite tree, so we climb to the highest ancestor whose
 /// command line names the dev runner. Where the backend can't read command lines

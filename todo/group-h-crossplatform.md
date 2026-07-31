@@ -43,6 +43,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       extensions (`.exe`/`.cmd`/`.bat`/`.ps1`).
       - [x] 🤖 Automated test — `paths::path_finder_is_where_on_windows_which_elsewhere`
       - [ ] 🖐️ Manual test — "Manage agents" lists installed agents on Windows
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [x] **30b — Cross-platform per-process CPU/RSS sampling.** ✅ Done. `sysstat`
       was entirely `#![cfg(target_os = "linux")]`, so `project_cpu_percent` and
       `debug_app_resource_usage` returned 0 on Windows. Refactored into a shared
@@ -57,6 +59,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `sysstat` tests now run on Windows too
         (`sum_jiffies`/`sum_rss_kib` against the live process, tree walk, cache)
       - [ ] 🖐️ Manual test — pill popup shows live CPU/RSS on Windows
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [x] **30c — Native PID liveness.** ✅ Done. `check_pid_alive`
       (`commands/apps.rs`) no longer shells out to `tasklist` on Windows; it uses
       `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess`,
@@ -66,6 +70,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — covered by `cargo build --lib` compile + existing
         callers; no behavioral unit test (needs a live pid)
       - [ ] 🖐️ Manual test
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [x] **30d — App discovery + launching on Windows.** ✅ Done. Linux XDG
       `.desktop` discovery is gated behind `cfg(not(windows))`; Windows now enumerates
       Start-Menu `.lnk` shortcuts (`%ProgramData%` + `%APPDATA%`, recursive, deduped
@@ -79,6 +85,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `cargo test --lib apps` (incl. a Windows-gated
         interpreter-selection test) passes
       - [ ] 🖐️ Manual test
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [x] **30e — Screenshot capture on Windows.** ✅ Done. `commands/screenshot.rs`
       refactored to a cfg-selected `platform` submodule (Linux tool-spawn unchanged).
       Windows uses native Win32 GDI — `GetSystemMetrics(SM_*VIRTUALSCREEN)` for the
@@ -88,6 +96,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       freed on success and error paths. Added `Win32_Graphics_Gdi`.
       - [x] 🤖 Automated test — shared filename/date tests retained; build verified
       - [ ] 🖐️ Manual test
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [x] **30f — VPN-gated projects on Windows.** ✅ Done — and since upgraded
       twice: first from the original graceful-degradation stub to a **real
       backend** (direct `openvpn.exe` spawn — worked only from an elevated
@@ -110,6 +120,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [ ] 🖐️ Manual test — connect a VPN-gated project from an *unelevated*
         Eldrun with `OpenVPNServiceInteractive` running (expect the group-
         membership refusal first if not in "OpenVPN Administrators")
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [x] **30g — Windows crash hook** (2026-07-11; ✅ Done · 🧪 CI-unverified).
       The native-fault analog of the Unix signal handlers: `install_seh_filter`
       (`lib.rs`) opens crash.log at startup, keeps the raw HANDLE in
@@ -121,6 +133,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `format_crash_line_*` (4 tests, run on Linux)
       - [ ] 🖐️ Manual test — force a native crash on Windows; crash.log gains a
         `=== CRASH:` line with the exception code
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [x] **30h — Windows whole-system monitor** (2026-07-11; ✅ Done · 🧪
       CI-unverified). `sysstat.rs` Windows backend fills a real
       `SystemSnapshot`: aggregate CPU via `GetSystemTimes` (kernel includes
@@ -135,6 +149,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         `decode_ansi_nul_*` (run on Linux)
       - [ ] 🖐️ Manual test — System Monitor pane shows live CPU/mem/processes
         on Windows
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [x] **30i — Windows local network snapshot** (2026-07-11; ✅ Done · 🧪
       CI-unverified). `commands/network.rs` Windows `local_snapshot` via
       `GetIfTable2`: alias name (UTF-16, `utf16_nul_to_string`), octet
@@ -145,6 +161,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `utf16_alias_decoding_stops_at_nul` (Linux-run)
       - [ ] 🖐️ Manual test — Network pane lists adapters with live byte counts
         on Windows
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [x] **30j — Windows SSH password auth via askpass** (2026-07-11; ✅ Done ·
       🧪 CI-unverified). Password auth no longer hard-requires `sshpass`: when
       the installed OpenSSH honors `SSH_ASKPASS_REQUIRE` (≥ 8.4 —
@@ -162,6 +180,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         `windows_askpass_shim_echoes_env_without_cmd_interpolation` (Linux-run)
       - [ ] 🖐️ Manual test — password-SSH project connects without sshpass on
         Win11 (OpenSSH ≥ 8.4) and via sshpass on Win10 1903
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [x] **30k — Windows position_window + popout occlusion** (2026-07-11; ✅
       Done · 🧪 CI-unverified). `platform/windows.rs` overrides
       `position_window` (`SetWindowPos` with `SWP_NOSIZE|SWP_NOZORDER|
@@ -173,6 +193,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         x86_64-pc-windows-msvc`); the pure occlusion logic is X11/macOS-side
       - [ ] 🖐️ Manual test — file drop places the app on the drop monitor; a
         popout behind the main window refuses the drop-merge
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
 
     - [x] **30l — Windows panel-toggle key: F9, not the Win key** (2026-07-15;
       ✅ Done). The lone-Meta panel toggle was enabled on Windows, but the lone
@@ -186,6 +208,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         a fixed key branch
       - [ ] 🖐️ Manual test — F9 toggles panels on Windows; Win+X no longer
         flickers them
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [x] **30m — Windows one-click agent install** (2026-07-15; ✅ Done).
       `install_agent` hard-refused off Linux/macOS even though the registry
       already carried `install_cmd_windows` for most agents. Now
@@ -199,6 +223,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         `windows_installer_command_picks_interpreter_per_command` (Windows-run)
       - [ ] 🖐️ Manual test — one-click install of an agent on Windows streams
         its log and flips to "installed"
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [x] **30n — Windows disk-capacity probe** (2026-07-15; ✅ Done).
       `duscan::capacity_of` returned `None` on Windows, silently dropping the
       disk-usage pane's total/free capacity bar. Added a `#[cfg(windows)]` arm
@@ -207,12 +233,16 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `capacity_of_home_reports_a_plausible_volume`
         (runs on every OS)
       - [ ] 🖐️ Manual test — disk-usage pane shows the capacity bar on Windows
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [x] **30o — no docker spawn at Windows startup** (2026-07-15; ✅ Done).
       Containers are Unix-only, but `sandbox::sweep_orphans` ran unconditionally
       at startup, spawning `docker --version` (and `docker ps` when Docker
       Desktop exists) for nothing on Windows. Now gated on `cfg!(unix)`.
       - [x] 🤖 Automated test — compile-covered; behavior is an early return
       - [ ] 🖐️ Manual test — n/a
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
 
 31. **macOS support follow-ups.** macOS has initial cross-platform code (state
     paths, default shell, browser profiles, network detection, Unix symlinks),
@@ -238,6 +268,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [ ] 🖐️ Manual test — needs a real macOS build to confirm the libc bindings
         (`proc_taskinfo`/`proc_bsdinfo`/`proc_listallpids`) resolve in pinned
         `libc 0.2`; if any is absent, add a minimal `extern "C"`/`#[repr(C)]` decl.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [~] **31b — macOS workspace backend** (2026-07-11; ✅ Code-complete, ⚠️
       **unverified** — compile-blind on Linux, no macOS SDK). macOS no longer
       falls to `NullBackend`: `platform/macos.rs` implements `WorkspaceBackend`
@@ -259,6 +291,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         round-trip, `frontmost_at_point` occlusion cases)
       - [ ] 🖐️ Manual test — on a mac: project switch hides/shows foreign apps;
         Eldrun/Finder/Dock never hidden; quitting Eldrun unhides everything
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [~] **31c — macOS whole-system monitor** (2026-07-11; ✅ Code-complete, ⚠️
       **unverified**, compile-blind). `sysstat.rs` macOS `system_snapshot`:
       per-core CPU via `host_processor_info` (ticks → **nanoseconds** so units
@@ -273,6 +307,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         `bsd_process_state_*` (Linux-run)
       - [ ] 🖐️ Manual test — System Monitor pane populates on a mac; CPU% of a
         busy process roughly matches Activity Monitor
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [~] **31d — macOS local network snapshot** (2026-07-11; ✅ Code-complete,
       ⚠️ **unverified**, compile-blind). `network.rs` spawns `netstat -ibn`
       (chosen over the raw `NET_RT_IFLIST2` sysctl — hand-declared
@@ -284,6 +320,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         real-shaped fixture)
       - [ ] 🖐️ Manual test — Network pane lists en0/lo0/utun* with live byte
         counts on a mac
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [~] **31e — macOS OpenVPN backend** (2026-07-11; ✅ Code-complete, ⚠️
       **unverified**, compile-blind). Replaces the "not yet supported" stubs:
       `osascript -e 'do shell script … with administrator privileges'` starts
@@ -302,6 +340,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [ ] 🖐️ Manual test — VPN project on a mac: admin prompt → lamp green →
         disconnect (second prompt) → lamp red; interactive mode types
         `sudo openvpn …` into the root tab
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [ ] **31f — macOS ssh-link traffic via nettop** (design note, no code).
       ControlMaster exists on macOS, so remote projects mux fine; what's
       missing is per-socket byte counters for the ssh-link monitor +

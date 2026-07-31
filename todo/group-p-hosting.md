@@ -36,3 +36,5 @@ profile (URL + token).*
     - [ ] 🖐️ Manual test — publish a local project to GitLab and to a custom
       remote URL; confirm the repo is created/pushed and `git_type` flips to
       `remote-<visibility>`.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

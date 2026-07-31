@@ -8,7 +8,7 @@ import { useTodoStore } from "../../stores/todo";
 import { mailPrioritySet } from "../../lib/mail";
 import { useExperimental } from "../../lib/experimental";
 import { addSubtask, moveSubtask, removeSubtask, setSubtask } from "../../lib/todoBoard";
-import { datePart, formatTime, timePart } from "../../lib/calendarTime";
+import { datePart, formatTime, timePart, toDateStr } from "../../lib/calendarTime";
 import { useUse24h } from "../../lib/timeFormat";
 import { useT } from "../../lib/i18n";
 import { TimeField } from "../common/TimeField";
@@ -259,6 +259,11 @@ export function TodoCardDialog({ task, columns, onClose, onOpenMail }: Props) {
             />
           </label>
 
+          {/* The deadline gets its **own full-width row**, exactly as the
+              calendar's event dialog gives Starts/Ends a row — not a half-row
+              squeezed beside another field, which left the date and clock too
+              narrow to read as the calendar's do. Priority moves to its own row
+              below. */}
           <div className="todo-field-row">
             {/* A div, not a label: this field holds several controls (the date,
                 the clock, the time toggle), so a wrapping label would bind its
@@ -320,20 +325,26 @@ export function TodoCardDialog({ task, columns, onClose, onOpenMail }: Props) {
                 ) : null}
               </div>
               {/* The whole-day-vs-hour switch, the calendar's `.cal-check-row`
-                  chrome. Disabled without a date, since the hour it reveals has
-                  nowhere to live until then. */}
+                  chrome — always usable, like the calendar's own time fields.
+                  Turning it on with no date yet lands on **today**, so an hour
+                  always has a day to live on; the field never needs a date to be
+                  picked first. */}
               <label className="cal-check-row">
                 <input
                   type="checkbox"
                   checked={showTime}
-                  disabled={!dueDate}
-                  onChange={(e) => setShowTime(e.target.checked)}
+                  onChange={(e) => {
+                    if (e.target.checked && !dueDate) setDueDate(toDateStr(new Date()));
+                    setShowTime(e.target.checked);
+                  }}
                   onKeyDown={stopEscape}
                 />
                 <span>{t("todoDialog.setTime")}</span>
               </label>
             </div>
+          </div>
 
+          <div className="todo-field-row">
             <label className="todo-field">
               <span>{t("todoDialog.priority")}</span>
               <select

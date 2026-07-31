@@ -14,6 +14,7 @@ import {
 import { boardColumns, taskFromMail } from "../../lib/todoBoard";
 import { toDate, toStamp } from "../../lib/calendarTime";
 import { useCalendarStore } from "../../stores/calendar";
+import { useMailStore } from "../../stores/mail";
 import { useSettingsStore } from "../../stores/settings";
 import type { CalendarEvent } from "../../types";
 import type { MailExtractedEvent, MailExtractedTask, MailHeader } from "../../types/mail";
@@ -30,16 +31,19 @@ import type { MailExtractedEvent, MailExtractedTask, MailHeader } from "../../ty
  *    (unmounting) discards it.
  *  - **Review before create is the default.** An extracted event prefills the
  *    real `EventDialog` for one confirming click; an extracted to-do is shown in
- *    a small review panel before it becomes a card. Only `mail_ai_auto_create`
- *    skips the review step.
+ *    a small review panel before it becomes a card. Only the account's
+ *    `ai.auto_create` toggle skips the review step.
  */
 export function MailAiMessageActions({ header }: { header: MailHeader }) {
   const t = useT();
 
-  const canSummarize = useMailAiFeature("mail_ai_summarize");
-  const canEvent = useMailAiFeature("mail_ai_calendar");
-  const canTask = useMailAiFeature("mail_ai_todo");
-  const autoCreate = useSettingsStore((s) => s.settings?.mail_ai_auto_create === true);
+  // The Mail AI toggles are per account now, so the gate reads the account this
+  // message belongs to — `header.account_id` — from the mail store.
+  const account = useMailStore((s) => s.accounts.find((a) => a.id === header.account_id));
+  const canSummarize = useMailAiFeature(account, "summarize");
+  const canEvent = useMailAiFeature(account, "calendar");
+  const canTask = useMailAiFeature(account, "todo");
+  const autoCreate = account?.ai?.auto_create === true;
   const defaultReminder = useSettingsStore(
     (s) => s.settings?.calendar_default_reminder_minutes ?? 0,
   );

@@ -15,6 +15,7 @@ import { nextWindowState } from "../../lib/windowState";
 import { notePtyOutput, useActivityStore } from "../../stores/activity";
 import { usePowerStore, useEnergySaver, saverInterval } from "../../stores/power";
 import { useOllamaAutoloadOnLaunch } from "../../stores/ollamaAutoload";
+import { useRendererWatchdog } from "../../lib/rendererWatchdog";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
@@ -149,6 +150,9 @@ export function AppShell() {
   // Load the armed local (Ollama) models into memory at launch — main window
   // only, and skipped (loudly) while Energy Saver is on. See stores/ollamaAutoload.
   useOllamaAutoloadOnLaunch();
+  // Reload the renderer if its JS heap runs away, before it OOM-crashes the
+  // webview (a 44 GB leak was observed 2026-07-31). See lib/rendererWatchdog.
+  useRendererWatchdog();
   const [panelsHidden, setPanelsHidden] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [rightPinned, setRightPinned] = useState(false);

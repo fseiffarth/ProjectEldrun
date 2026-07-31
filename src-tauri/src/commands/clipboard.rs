@@ -4,9 +4,10 @@
 //!   file inside the project ([`clipboard_has_image`] / [`save_clipboard_image`]).
 //!   The path side reuses `fs`'s relative-path confinement so a paste can only
 //!   ever land inside the project root.
-//! - **Out:** [`copy_image_to_clipboard`] / [`copy_png_file_to_clipboard`] put an
-//!   image *on* the clipboard, so a screenshot Eldrun files into the project is
-//!   also pasteable straight into a chat, an editor, or an agent tab.
+//! - **Out:** [`copy_image_to_clipboard`] / [`copy_png_file_to_clipboard`] /
+//!   [`copy_png_bytes_to_clipboard`] put an image *on* the clipboard, so a
+//!   screenshot Eldrun files into the project — or a region selected in the PDF
+//!   viewer — is pasteable straight into a chat, an editor, or an agent tab.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -105,13 +106,30 @@ pub fn copy_png_file_to_clipboard(path: &Path) -> Result<(), String> {
     copy_image_to_clipboard(width, height, rgba)
 }
 
+/// Put an in-memory PNG on the system clipboard as an image.
+///
+/// The PDF viewer renders a selected rectangle into a small PNG in the webview
+/// and sends those compressed bytes here. Keeping the IPC payload compressed is
+/// important: a moderately sized selection can contain several million RGBA
+/// bytes, while the PNG is normally a fraction of that size.
+#[tauri::command]
+pub fn copy_png_bytes_to_clipboard(png: Vec<u8>) -> Result<(), String> {
+    let (width, height, rgba) = decode_png_bytes_rgba(&png)?;
+    copy_image_to_clipboard(width, height, rgba)
+}
+
 /// Decode a PNG file to RGBA8. Capture tools emit whatever color type they like
 /// (grayscale, palette, RGB, 16-bit), while the clipboard wants plain RGBA8:
 /// `normalize_to_color8` folds palette/16-bit/sub-byte-gray down to 8-bit
 /// channels, leaving only the four channel layouts expanded below.
 fn decode_png_rgba(path: &Path) -> Result<(usize, usize, Vec<u8>), String> {
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    decode_png_bytes_rgba(&bytes)
+}
+
+/// Decode PNG bytes to the one pixel layout `arboard` accepts.
+fn decode_png_bytes_rgba(bytes: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; reader.output_buffer_size()];
@@ -214,6 +232,14 @@ mod tests {
         std::fs::write(&path, encode_png(2, 1, &rgba).unwrap()).unwrap();
 
         assert_eq!(decode_png_rgba(&path).unwrap(), (2, 1, rgba));
+    }
+
+    #[test]
+    fn decode_png_bytes_round_trips_rgba() {
+        let rgba = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+        let png = encode_png(2, 1, &rgba).unwrap();
+
+        assert_eq!(decode_png_bytes_rgba(&png).unwrap(), (2, 1, rgba));
     }
 
     #[test]

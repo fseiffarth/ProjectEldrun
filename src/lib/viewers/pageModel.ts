@@ -29,6 +29,28 @@ export const SELF: SourceId = "self";
 /** A quarter-turn multiple. Anything else is not representable in a PDF's /Rotate. */
 export type Rotation = 0 | 90 | 180 | 270;
 
+/**
+ * An area of a sheet to black out, in big points at scale 1 in the sheet's *rotated*
+ * space (top-left origin) — the same coordinates the Ctrl+F hits, the SyncTeX
+ * highlight and the link boxes are stored in, so one `bigPointsToCssRect` positions
+ * all of them and a mark follows zoom and rotation for free.
+ *
+ * A mark is a *pending* redaction: it is drawn over the page while the arrangement
+ * is being edited and only becomes real at save, where the sheet carrying it is
+ * flattened (see `pdf/pdfDoc`'s `buildPdf`). Covering text with a black rectangle
+ * is the classic redaction failure — the glyphs stay in the content stream and come
+ * straight back out of any copy/extract — so nothing here ever draws a box *into* a
+ * PDF.
+ */
+export interface RedactRect {
+  /** Unique within its sheet — the key a click removes one by. */
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 /** One sheet in an arrangement: a 1-based page of some source, at some rotation. */
 export interface PageRef {
   /** Unique within its list, and stable across moves — selection keys off it. */
@@ -37,6 +59,12 @@ export interface PageRef {
   /** 1-based page number *within `src`*. */
   page: number;
   rot: Rotation;
+  /** Areas to black out. Absent (not `[]`) on a sheet nobody has redacted, so an
+   *  untouched arrangement stays byte-identical to what it always was. Marks ride
+   *  ON the entry rather than in a side map so they travel with the sheet through
+   *  every op here — a moved page keeps its blackouts, a duplicate gets its own
+   *  copy of them, and undo/redo needs no second history. */
+  marks?: RedactRect[];
 }
 
 /** An arrangement: the sheets, in order. The single source of truth. */
@@ -115,7 +143,12 @@ export function rotatePages(list: PageList, ids: readonly string[], by = 90): Pa
 export function duplicatePages(list: PageList, ids: readonly string[]): PageList {
   const copying = new Set(ids);
   return list.flatMap((r) =>
-    copying.has(r.id) ? [r, { ...r, id: newPageId() }] : [r],
+    // The copy gets its OWN marks array: the ops in `lib/viewers/redact` are all
+    // pure, so sharing it would be safe today, but a shared array is exactly the
+    // kind of aliasing that makes a later in-place edit black out two sheets.
+    copying.has(r.id)
+      ? [r, { ...r, id: newPageId(), ...(r.marks ? { marks: [...r.marks] } : {}) }]
+      : [r],
   );
 }
 
@@ -132,12 +165,15 @@ export function insertPages(list: PageList, refs: PageList, atIndex: number): Pa
 
 /**
  * True when `list` is still the untouched identity arrangement over a `pageCount`-page
- * document: same length, original order, nothing turned, nothing merged in. Drives
- * the "Reset pages" affordance and the viewer's dirty marker.
+ * document: same length, original order, nothing turned, nothing merged in, nothing
+ * marked for blacking out. Drives the "Reset pages" affordance and the viewer's dirty
+ * marker.
  */
 export function isPristine(list: PageList, pageCount: number): boolean {
   return (
     list.length === pageCount &&
-    list.every((r, i) => r.src === SELF && r.page === i + 1 && r.rot === 0)
+    list.every(
+      (r, i) => r.src === SELF && r.page === i + 1 && r.rot === 0 && !r.marks?.length,
+    )
   );
 }

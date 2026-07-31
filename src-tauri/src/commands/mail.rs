@@ -18,11 +18,13 @@
 //!
 //! **2. No `mail_*` command takes a filesystem path, glob or directory.** That
 //! is the whole statement of the sandbox boundary. Everything the mail
-//! subsystem reads or writes resolves under [`mail_dir`], internally, never
-//! from the frontend. Files cross only through [`mail_attach_pick`] and
+//! subsystem reads or writes resolves internally — under [`mail_dir`], or under
+//! a project directory the backend looks up from an opaque id — never from a
+//! path the frontend hands in. Files cross only through [`mail_attach_pick`] and
 //! [`mail_attachment_save`], both of which raise the **OS dialog inside Rust**
 //! (via `tauri_plugin_dialog`'s `DialogExt`, bridged to a `oneshot` — never
-//! `blocking_pick_*`, which would be rule 1 all over again). Consequence worth
+//! `blocking_pick_*`, which would be rule 1 all over again), plus
+//! [`mail_attachment_save_to_project`] (see below). Consequence worth
 //! stating: an attacker who fully controls a message's bytes, its HTML, and any
 //! script that somehow escaped the render iframe still has no reachable IPC verb
 //! that names a path — there is nothing to path-traverse, because there is no
@@ -31,8 +33,18 @@
 //!
 //! Deliberately absent, each of which would be an ambient hole: no "open
 //! attachment with the system app" (arbitrary-file-write plus exec), no
-//! attachment drag-out, no "save all attachments" into a directory, no writing
-//! anything into the active project's tree.
+//! attachment drag-out, and no "save all attachments" into a directory.
+//!
+//! **One write into a project tree exists, and it is the exception that keeps
+//! the rule legible.** [`mail_attachment_save_to_project`] drops a single
+//! attachment into `<project>/emails/`, creating that folder on demand. It still
+//! names **no path**: the project is an opaque `project_id` the backend resolves
+//! to that project's own directory, the `emails/` subfolder is fixed, and the
+//! filename is sanitized exactly as the OS-dialog path pre-fills it — so the
+//! message's bytes can neither choose the folder nor traverse out of it. It is
+//! reached only from an explicit, per-file confirmation in the UI (which also
+//! offers [`mail_attachment_save`]'s pick-any-location dialog), never
+//! automatically.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -45,7 +57,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::projects::uuid_v4;
 use crate::schema::mail::{
-    MailAccount, MailAccountSaved, MailAccounts, MailAddress, MailAiClassifyMatch,
+    MailAccount, MailAccountSaved, MailAccounts, MailAddress, MailAiClassifyMatch, MailAiPrefs,
     MailAiClassifyReport, MailBody, MailDraft, MailEncryptionState,
     MailCryptoInfo, MailExtractedEvent, MailExtractedTask, MailFilterReport, MailFilterRule, MailFilterSample, MailFilters, MailFlag, MailFolder, MailFolderKind, MailHeader, MailHeaderPage, MailKeyringState, MailLink, MailPasswordState, MailPreviewBlob,
     MailPriority, MailPriorityCounts, MailPrioritySource, MailProbe, MailSendResult, MailSort, MailSyncEvent,
@@ -732,6 +744,28 @@ fn account_by_id(path: &Path, id: &str) -> Result<MailAccount, String> {
         .ok_or_else(|| format!("mail account '{id}' not found"))
 }
 
+/// Patch just the per-account **Mail AI (local)** toggles, without touching the
+/// account's credentials.
+///
+/// A dedicated write rather than routing through `mail_account_upsert`, because
+/// that command carries a password + a keychain intent, and a quick feature
+/// toggle (from the toolbar tags, or the per-account settings dialog) must never
+/// be able to disturb a saved secret. An empty preference set is stored as
+/// `None`, keeping an account that turned everything back off clean.
+fn set_account_ai_at(path: &Path, id: &str, ai: MailAiPrefs) -> Result<MailAccount, String> {
+    let mut data = read_accounts(path)?;
+    data.version = ACCOUNTS_VERSION;
+    let slot = data
+        .accounts
+        .iter_mut()
+        .find(|a| a.id == id)
+        .ok_or_else(|| format!("mail account '{id}' not found"))?;
+    slot.ai = if ai.is_empty() { None } else { Some(ai) };
+    let updated = slot.clone();
+    write_accounts(path, &data)?;
+    Ok(updated)
+}
+
 // ── Identity ────────────────────────────────────────────────────────────────
 
 /// A stable, opaque folder id. Derived rather than stored so a re-listed folder
@@ -886,6 +920,18 @@ fn blank_save_error(already_saved: bool, store_readable: bool) -> Option<String>
 #[tauri::command]
 pub async fn mail_accounts_list() -> Result<Vec<MailAccount>, String> {
     tokio::task::spawn_blocking(|| Ok(read_accounts(&accounts_path())?.accounts))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Set the per-account **Mail AI (local)** toggles for one account, returning
+/// the updated account. Touches no credential — see `set_account_ai_at`.
+#[tauri::command]
+pub async fn mail_account_set_ai(
+    account_id: String,
+    ai: MailAiPrefs,
+) -> Result<MailAccount, String> {
+    tokio::task::spawn_blocking(move || set_account_ai_at(&accounts_path(), &account_id, ai))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -1669,10 +1715,16 @@ async fn sync_inner(
     let rules = active_rules();
 
     // #205: whether the local model may file new inbox mail, read once for the
-    // whole sync. Off by default; when on, the classifier runs AFTER the keyword
-    // pass and only over still-unmarked new inbox messages, so an explicit rule
-    // always wins. A model failure never fails a sync (best-effort below).
-    let autoclassify = read_settings().mail_ai_autoclassify.unwrap_or(false);
+    // whole sync. **Per account** now, plus the global master switch: off by
+    // default; when on, the classifier runs AFTER the keyword pass and only over
+    // still-unmarked new inbox messages, so an explicit rule always wins. A model
+    // failure never fails a sync (best-effort below).
+    let autoclassify = read_settings().mail_ai_allow.unwrap_or(false)
+        && account
+            .ai
+            .as_ref()
+            .and_then(|a| a.autoclassify)
+            .unwrap_or(false);
     // How many messages the model may look at per sync, and how long each may
     // take — the classifier is best-effort filing, not a sync precondition.
     let mut classify_budget: u32 = 20;
@@ -3069,6 +3121,83 @@ pub async fn mail_attachment_save(
     .map_err(|e| e.to_string())?
 }
 
+/// Save an attachment into a project's `emails/` folder, creating that folder if
+/// it does not exist yet, and return the full path written (for a toast).
+///
+/// The exception to rule 2, kept honest by naming **no path**: the project is an
+/// opaque `project_id` the backend resolves to that project's own `directory`
+/// (via [`crate::services::remote::project_directory`]), the destination is
+/// fixed at `<project>/emails/`, and the filename is sanitized exactly as the
+/// OS-dialog path pre-fills it. An attacker who controls the bytes and the
+/// filename can neither choose the folder nor traverse out of it. The
+/// pick-any-location path stays [`mail_attachment_save`]'s OS dialog, offered
+/// beside this one in the same confirmation.
+#[tauri::command]
+pub async fn mail_attachment_save_to_project(
+    message_id: String,
+    part_id: String,
+    project_id: String,
+    state: State<'_, MailState>,
+) -> Result<String, String> {
+    let rt = state.inner().clone();
+    let (mid, pid) = (message_id.clone(), part_id.clone());
+    let (meta, bytes) = tokio::task::spawn_blocking(move || {
+        let store = store_of(&rt)?;
+        let (meta, blob) = store
+            .attachment(&mid, &pid)?
+            .ok_or_else(|| "attachment not found".to_string())?;
+        let bytes = store.get_blob(&blob)?;
+        Ok::<_, String>((meta, bytes))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    tokio::task::spawn_blocking(move || {
+        let dir = crate::services::remote::project_directory(&project_id)
+            .filter(|d| !d.is_empty())
+            .ok_or_else(|| "no such project".to_string())?;
+        let emails = PathBuf::from(dir).join("emails");
+        std::fs::create_dir_all(&emails).map_err(|e| e.to_string())?;
+
+        // The filename is the message's, so it is sanitized (no path component,
+        // no traversal, no control/bidi trickery) before being joined under the
+        // fixed `emails/` subfolder.
+        let safe = mail_sanitize::sanitize_attachment_name(&meta.filename).value;
+        let target = unique_in_dir(&emails, &safe);
+
+        std::fs::write(&target, &bytes).map_err(|e| e.to_string())?;
+        Ok(target.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// A path in `dir` for `name` that will not clobber an existing file: `name`
+/// itself if free, else `name (2)`, `name (3)`, … with the extension preserved.
+/// A save into a project tree must never silently overwrite a file already
+/// sitting there — two mails can carry an `invoice.pdf`.
+fn unique_in_dir(dir: &Path, name: &str) -> PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let path = Path::new(name);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
+    let ext = path.extension().and_then(|s| s.to_str());
+    for n in 2..10_000 {
+        let candidate = match ext {
+            Some(ext) => format!("{stem} ({n}).{ext}"),
+            None => format!("{stem} ({n})"),
+        };
+        let p = dir.join(candidate);
+        if !p.exists() {
+            return p;
+        }
+    }
+    // 10k collisions is pathological; fall back to the base rather than loop.
+    first
+}
+
 /// Bounded bytes for in-pane preview. Nothing is written to disk; the pane
 /// renders them with the existing viewers, inside the capability boundary.
 #[tauri::command]
@@ -3317,6 +3446,7 @@ mod tests {
             "mail_attach_pick",
             "mail_attach_remove",
             "mail_attachment_save",
+            "mail_attachment_save_to_project",
             "mail_attachment_preview",
         ] {
             assert!(

@@ -20,7 +20,7 @@ import { WindowControls } from "../header/WindowControls";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { GlobalAppMenu } from "./GlobalAppMenu";
 import { LocalModelMenu } from "./LocalModelMenu";
-import { LogoIcon } from "./LogoIcon";
+import { StarIcon } from "./StarIcon";
 import { useProjectsStore } from "../../stores/projects";
 import { useT } from "../../lib/i18n";
 // Single source of truth for the displayed version: read package.json (kept in
@@ -130,7 +130,7 @@ export function HeaderBar() {
           aria-label={t("header.rootTerminal")}
           onClick={() => void setActive(null)}
         >
-          <LogoIcon className="app-logo" />
+          <StarIcon className="app-logo" />
         </button>
         <div className="app-version-stack">
           {isDev && <span className="debug-badge">DEBUG</span>}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
+import { PrinterIcon } from "../common/PrinterIcon";
 import {
   formatSize,
   jobStateLabelKey,
@@ -112,6 +113,7 @@ export function PrintManagerPane({ visible = true }: PrintManagerPaneProps) {
     <div className="print-pane">
       <div className="print-toolbar">
         <span className="print-title">
+          <PrinterIcon className="print-title-icon" />
           {t("printing.title")} <UntestedTag />
         </span>
         <span className="print-toolbar-spacer" />

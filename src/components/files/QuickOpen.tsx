@@ -18,6 +18,7 @@ import { fuzzyMatch, fuzzyRank } from "../../lib/fuzzy";
 import { basename, resolvePath } from "../../lib/paths";
 import { IS_MAC } from "../../lib/platform";
 import { openLinkedFile, viewerForPath } from "../embed/FileViewerPane";
+import { openTexWorkspace } from "../embed/openTexWorkspace";
 import { useT } from "../../lib/i18n";
 import "./QuickOpen.css";
 
@@ -142,11 +143,17 @@ export function QuickOpen() {
       const projectDir = activeProjectDir();
       if (!projectDir) return;
       const absPath = resolvePath(projectDir, rel);
-      openLinkedFile(undefined, projectDir, {
-        path: absPath,
-        viewer: viewerForPath(absPath),
-        label: basename(absPath),
-      });
+      // A `.tex` opens (or focuses) the single TeX workspace for its document,
+      // consistent with the FileTree; every other type opens its viewer tab.
+      if (viewerForPath(absPath) === "tex") {
+        void openTexWorkspace(absPath);
+      } else {
+        openLinkedFile(undefined, projectDir, {
+          path: absPath,
+          viewer: viewerForPath(absPath),
+          label: basename(absPath),
+        });
+      }
       close();
     },
     [activeProjectDir, close],

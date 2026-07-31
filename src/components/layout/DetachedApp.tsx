@@ -36,6 +36,7 @@ import {
   type TabKind,
 } from "../../stores/tabs";
 import { withdrawnTabKinds } from "../../lib/experimental";
+import { PLATFORM } from "../../lib/platform";
 import { useTabLandStore } from "../../stores/tabLand";
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenEditorJump } from "../../stores/editorJump";
@@ -94,6 +95,27 @@ export function DetachedApp({ param }: Props) {
   useEffect(() => {
     void loadSettings({ skipZoom: true });
   }, [loadSettings]);
+
+  // Clear a stray OS fullscreen, exactly as `restore_main_window` does for the
+  // main window and for its reason: a `_NET_WM_STATE_FULLSCREEN` window loses
+  // `_NET_WM_ACTION_MOVE`, so the WM refuses the `_NET_WM_MOVERESIZE` that
+  // `startDragging` sends and this popout can no longer be moved by its titlebar
+  // or by a tab bar's grip. Nothing here fullscreens a popout any more (F11
+  // maximizes — see `DetachedCenterPanel`), so this is the net under that: a
+  // window already stuck in the state when this build loads, or any future path
+  // into it, is released rather than left immovable with no visible cause. macOS
+  // is excluded for the same reason it is there — its own Space is the expected
+  // behaviour and `DeckPresenter`/F11 opt into it deliberately.
+  useEffect(() => {
+    if (PLATFORM === "macos") return;
+    const win = getCurrentWindow();
+    win
+      .isFullscreen()
+      .then((fs) => {
+        if (fs) return win.setFullscreen(false);
+      })
+      .catch(() => {});
+  }, []);
 
   // Per-window zoom via Ctrl +/- / Ctrl+0, handled before any editable-target
   // guard (like F11) so it works from a focused terminal too — the browser-zoom

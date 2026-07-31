@@ -28,6 +28,8 @@ backend new `src-tauri/src/services/skills.rs` +
     - [x] 🤖 Automated test — `services/skills.rs:359,368,377,419`
       (`parse_skill_md_*`, `list_catalog_walks_nested_skill_folders`).
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 154. **Skills Library tab.** ✅ Implemented · 🧪 Awaiting live QA.
     New `SkillsLibraryTab.tsx` / `SkillsLibraryView.tsx`
@@ -45,6 +47,8 @@ backend new `src-tauri/src/services/skills.rs` +
       not a cached flag. **Genuinely absent**: there is no skills test file
       under `src/__tests__/`, unlike #153/#155 which do have Rust coverage.
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 155. **Install / uninstall commands.** `install_skill(project_id, source_id,
     skill_path)` copies the folder verbatim into
@@ -73,6 +77,8 @@ backend new `src-tauri/src/services/skills.rs` +
       `target_skills_dir_refuses_an_empty_project_dir`). The unsupported-remote
       assertion is not covered, matching the gap above.
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 156. **Personal install scope + the 🧠 menu's door.** ✅ Implemented ·
     🧪 Awaiting live QA. Two thirds of this feature were never project-scoped —
@@ -111,3 +117,5 @@ backend new `src-tauri/src/services/skills.rs` +
     - [ ] 🖐️ Manual test — install personally from the 🧠 menu, confirm it shows
       as inherited in a project tab, and confirm a container no longer sees
       `~/.claude/skills`.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

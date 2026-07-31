@@ -45,6 +45,8 @@
       - [ ] 🤖 Automated test — none yet (trivial frontend tooltip; covered by
         manual)
       - [ ] 🖐️ Manual test
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
     - [x] **39b — Persist agent tabs with their session id.** ✅ Done.
       Resumable agent tabs (Claude with a `sessionId`) are now persisted in
       `tab_layout` (carrying `sessionId`) and restored on relaunch; other agent

@@ -75,6 +75,7 @@ const GIT_ICON_TITLE_KEY: Record<GitDirtyState, TranslationKey> = {
   dirty: "pill.gitDirty",
   staged: "pill.gitStaged",
   unpushed: "pill.gitUnpushed",
+  broken: "pill.gitBroken",
 };
 
 /** Most status bars the pill will draw. A project with more busy tabs than this

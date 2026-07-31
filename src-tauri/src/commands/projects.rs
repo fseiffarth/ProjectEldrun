@@ -2525,7 +2525,7 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
     };
     let directory = dir.to_string_lossy().to_string();
 
-    let git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
+    let mut git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
 
     // Remote projects mirror into `<name>` under the chosen "Local location"
     // (`mirror_parent`), defaulting to the top-level `eldrun/projects-ssh/` root;
@@ -2556,6 +2556,27 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
         scaffold_project(&dir, git_type != "none").map_err(|e| e.to_string())?;
     } else {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+
+    // The git label must reflect reality. `scaffold_project`'s `git init` is
+    // best-effort (its exit status is swallowed), so a project can be scaffolded
+    // with `git_type` `local`/`remote-*` while no repo actually got created (git
+    // missing, permission denied, a read-only tree). Mirror the remote branch of
+    // `finish_import`: if git was requested but no `.git` exists after scaffolding,
+    // downgrade to `none` rather than label the project git — least of all
+    // `remote-private`, whose pill shows a hosting badge — with no repo on disk.
+    // `.exists()` (not `is_dir`) is deliberate: `.git` is a *file* in a linked
+    // worktree. `skip_scaffold` never runs `git init`, so it is left untouched.
+    if git_type != "none" && !req.skip_scaffold {
+        let git_target = mirror.as_deref().map(Path::new).unwrap_or(dir.as_path());
+        if !git_target.join(".git").exists() {
+            eprintln!(
+                "create_project: git init in '{}' failed; recording git_type=none so the \
+                 project is not labeled git (or remote-private) without a repo",
+                git_target.display()
+            );
+            git_type = "none".to_string();
+        }
     }
 
     let now = chrono_now();
@@ -2811,6 +2832,18 @@ fn finish_import(
     // already exists on the host, so no local scaffold is written there.
     if remote.is_none() && !req.skip_scaffold {
         scaffold_project(&target, git_type != "none").map_err(|e| e.to_string())?;
+        // Same honesty rule as the remote branch below: `scaffold_project`'s
+        // `git init` is best-effort, so a failed one must downgrade the label
+        // rather than leave the project tagged git (or remote-private) with no
+        // repo on disk. `.exists()` covers a linked worktree's `.git` *file*.
+        if git_type != "none" && !target.join(".git").exists() {
+            eprintln!(
+                "finish_import: git init in '{}' failed; recording git_type=none so the \
+                 project is not labeled git (or remote-private) without a repo",
+                target.display()
+            );
+            git_type = "none".to_string();
+        }
     }
 
     // A remote import keeps the host tree as the git authority (it pre-exists on

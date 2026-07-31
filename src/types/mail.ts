@@ -66,6 +66,34 @@ export interface MailAccount {
    * at all** — an unchecked header is sender-controlled text.
    */
   authserv_id?: string;
+  /** Per-account **Mail AI (local)** toggles (Group Q). Absent for an account
+   *  that never opened the feature. Gated globally by `Settings.mail_ai_allow`
+   *  and a resolvable loopback mail-role model — see `lib/mail`'s
+   *  `mailAiResolvable`/`mailAiFeatureOn`. */
+  ai?: MailAiPrefs;
+}
+
+/**
+ * The per-account Mail AI (local) feature toggles — all opt-in, all **default
+ * off/absent**. Per account rather than in `Settings`, because whether a mailbox
+ * wants summaries, auto-filing and extraction is a per-mailbox decision. The one
+ * thing that stays global is the master switch `Settings.mail_ai_allow`.
+ */
+export interface MailAiPrefs {
+  /** Offer the on-demand "Summarize (local)" control in the message view. */
+  summarize?: boolean;
+  /** Let a sync ask the local model to file new inbox mail into Important /
+   *  Urgent, after the keyword-filter pass. Read in the **backend** sync. */
+  autoclassify?: boolean;
+  /** Offer the composer's "Draft from notes" control. */
+  formalize?: boolean;
+  /** Offer "Add to calendar" extraction on a message. */
+  calendar?: boolean;
+  /** Offer "Add to-do" extraction on a message. */
+  todo?: boolean;
+  /** Skip the review step for extracted events / to-do cards. **Default off** —
+   *  mail must never quietly write to the user's own data. */
+  auto_create?: boolean;
 }
 
 /**

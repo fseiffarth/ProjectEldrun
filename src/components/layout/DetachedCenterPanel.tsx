@@ -72,6 +72,7 @@ import {
   type LocalityMenuState,
 } from "../tabs/TabLocalityBadges";
 import { useT } from "../../lib/i18n";
+import { StarIcon } from "./StarIcon";
 
 /** Pixel coordinates of a group body, relative to the detached center panel. */
 interface Rect {
@@ -386,17 +387,32 @@ export function DetachedCenterPanel({
   useEffect(() => {
     const win = getCurrentWindow();
     const onKeyDown = async (e: KeyboardEvent) => {
-      // F11 — OS fullscreen (Windows: maximize toggle, matching the main window,
-      // since real fullscreen strips the styles native dragging relies on).
-      // Handled before the editable-target guard so it works from a terminal too.
+      // F11 — fill the screen, by MAXIMIZING rather than by real OS fullscreen
+      // on every platform but macOS. Handled before the editable-target guard so
+      // it works from a terminal too.
+      //
+      // Real fullscreen is a trap on a popout specifically, and it is the same
+      // one `restore_main_window` guards the main window against: a window the
+      // WM has put into `_NET_WM_STATE_FULLSCREEN` loses `_NET_WM_ACTION_MOVE`,
+      // so it refuses the `_NET_WM_MOVERESIZE` that `startDragging` sends and the
+      // titlebar/grip drag silently no-ops (observed under Muffin; KWin does the
+      // same, and Windows strips the styles native dragging relies on). A popout
+      // has no OS title bar, so nothing on screen distinguishes a fullscreen one
+      // from a merely large one — the window just stops being movable, with F11
+      // the only way back and no hint that it is the way back. Maximizing fills
+      // the monitor identically and stays draggable and edge-snappable.
+      //
+      // macOS keeps real fullscreen: its own Space is the platform-expected
+      // behaviour there, the same exclusion `restore_main_window` makes.
       if (e.key === "F11") {
         e.preventDefault();
-        if (PLATFORM === "windows") {
-          if (await win.isMaximized()) void win.unmaximize();
-          else void win.maximize();
-        } else {
+        if (PLATFORM === "macos") {
           const isFs = await win.isFullscreen();
           void win.setFullscreen(!isFs);
+        } else if (await win.isMaximized()) {
+          void win.unmaximize();
+        } else {
+          void win.maximize();
         }
         return;
       }
@@ -1543,6 +1559,15 @@ export function DetachedCenterPanel({
           the popout was split; an outer frame keeps them pinned. The empty strip
           is a drag handle for moving / docking the whole window. */}
       <div className="detached-titlebar detached-drag-handle" onPointerDown={onTitlebarPointerDown}>
+        {/* The brand mark alone — no move grip. The strip IS the handle (every
+            pixel of it that isn't the window controls starts the drag), so a ⠿
+            marking one corner of it only pointed at a smaller part of what was
+            already grabbable. The star lives HERE and nowhere else — it marks
+            the window frame, which is why it was taken back off every
+            subwindow's tab bar. */}
+        <span className="detached-titlebar-logo" aria-hidden="true">
+          <StarIcon />
+        </span>
         {PLATFORM !== "macos" && (
           <div className="detached-titlebar-controls no-drag">
             <WindowControls />

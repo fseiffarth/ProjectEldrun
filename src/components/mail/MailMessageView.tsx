@@ -12,6 +12,7 @@ import {
   mailLinkNeedsAttention,
   mailAttachmentPreview,
   mailAttachmentSave,
+  mailAttachmentSaveToProject,
   mailAuthDmarcCarried,
   mailAuthPanelTone,
   mailAuthShown,
@@ -23,6 +24,7 @@ import {
   stripFormatControls,
 } from "../../lib/mail";
 import { useI18nStore, useT } from "../../lib/i18n";
+import { useProjectsStore } from "../../stores/projects";
 import { useUse24h } from "../../lib/timeFormat";
 import { UntestedTag } from "../common/UntestedTag";
 import { MailAiMessageActions, MailAiProvenance } from "./MailAiMessageActions";
@@ -513,10 +515,14 @@ function LinkConfirmDialog({
  * Attachment rows. Exactly two things can happen to an attachment, and both are
  * bounded by the capability boundary:
  *
- *  - **Save** calls `mail_attachment_save`, and the *backend* raises the OS save
- *    dialog. The frontend supplies no destination and constructs no path; a
- *    cancelled dialog writes nothing. There is no "save all" — one dialog per
- *    file is deliberate friction at the point the boundary is crossed.
+ *  - **Save** opens a per-file confirmation offering two destinations, neither
+ *    of which is a path this component constructs. *Save to emails folder* calls
+ *    `mail_attachment_save_to_project` with the active project's **opaque id**
+ *    (the backend resolves it to `<project>/emails/`, creating that folder);
+ *    *Choose another location…* calls `mail_attachment_save`, whose OS save
+ *    dialog the backend raises. The emails-folder option is only shown while a
+ *    project is active. There is no "save all" — one confirmation per file is
+ *    deliberate friction at the point the boundary is crossed.
  *  - **Preview** calls `mail_attachment_preview`, which returns bounded bytes
  *    over IPC. Nothing touches the filesystem.
  *
@@ -534,16 +540,23 @@ function MailAttachments({
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string>("");
   const [preview, setPreview] = useState<{ partId: string; blob: MailPreviewBlob } | null>(null);
+  const [confirm, setConfirm] = useState<MailAttachmentMeta | null>(null);
+  // Mail is a global surface with no project of its own, so "the project" is the
+  // active one; its opaque id — never its path — is what crosses to the backend.
+  const activeProject = useProjectsStore(
+    (s) => s.projects.find((p) => p.id === s.activeId) ?? null,
+  );
 
   if (attachments.length === 0) return null;
 
-  const doSave = async (part: MailAttachmentMeta) => {
+  // A rejection must not be handed on as if it were a path: returning the
+  // message from `catch` makes it truthy, and the pane then reports "saved to
+  // <the error text>" for a write that never happened.
+  const runSave = async (part: MailAttachmentMeta, save: () => Promise<string | null>) => {
+    setConfirm(null);
     setBusy(part.part_id);
     setNote(t("mail.attachmentSaving"));
-    // A rejection must not be handed on as if it were a path: returning the
-    // message from `catch` makes it truthy, and the pane then reports "saved
-    // to <the error text>" for a write that never happened.
-    const result = await mailAttachmentSave(messageId, part.part_id).then(
+    const result = await save().then(
       (path) => ({ ok: true as const, path }),
       (err) => ({ ok: false as const, error: typeof err === "string" ? err : String(err) }),
     );
@@ -556,6 +569,16 @@ function MailAttachments({
           : t("mail.attachmentNotSaved"),
     );
   };
+
+  const saveToEmails = (part: MailAttachmentMeta) => {
+    if (!activeProject) return;
+    void runSave(part, () =>
+      mailAttachmentSaveToProject(messageId, part.part_id, activeProject.id),
+    );
+  };
+
+  const saveElsewhere = (part: MailAttachmentMeta) =>
+    void runSave(part, () => mailAttachmentSave(messageId, part.part_id));
 
   const doPreview = async (part: MailAttachmentMeta) => {
     if (preview?.partId === part.part_id) {
@@ -590,7 +613,7 @@ function MailAttachments({
             type="button"
             className="mail-btn"
             disabled={busy === part.part_id}
-            onClick={() => void doSave(part)}
+            onClick={() => setConfirm(part)}
           >
             {t("mail.attachmentSave")}
           </button>
@@ -606,7 +629,86 @@ function MailAttachments({
       ))}
       <div className="mail-note">{t("mail.attachmentNoOpen")}</div>
       {note && <div className="mail-note">{note}</div>}
+      {confirm && (
+        <AttachmentSaveDialog
+          part={confirm}
+          project={activeProject}
+          onSaveToEmails={() => saveToEmails(confirm)}
+          onSaveElsewhere={() => saveElsewhere(confirm)}
+          onClose={() => setConfirm(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * The per-file save confirmation. Two destinations, neither a path this
+ * component builds: *Save to emails folder* (only while a project is active —
+ * the backend resolves the project's opaque id to `<project>/emails/`) and
+ * *Choose another location…* (the backend's OS save dialog). Wears the mail
+ * client's canonical dialog chrome, exactly as `LinkConfirmDialog` does.
+ */
+function AttachmentSaveDialog({
+  part,
+  project,
+  onSaveToEmails,
+  onSaveElsewhere,
+  onClose,
+}: {
+  part: MailAttachmentMeta;
+  project: { directory?: string } | null;
+  onSaveToEmails: () => void;
+  onSaveElsewhere: () => void;
+  onClose: () => void;
+}) {
+  const t = useT();
+  // A project with no local directory (never expected, but the type allows it)
+  // is treated as "no emails folder": only the pick-a-location path is offered.
+  const emailsFolder = project?.directory
+    ? `${project.directory.replace(/[/\\]+$/, "")}/emails`
+    : "";
+
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="settings-dialog mail-link-dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>{t("mail.attachmentSaveTitle")}</h2>
+          <UntestedTag />
+          <button type="button" className="dialog-close-btn" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        <div className="dialog-scroll">
+          <div className="mail-link-detail">
+            <div className="mail-link-detail-label">{t("mail.attachmentSaveNameLabel")}</div>
+            <div className="mail-link-detail-host">{stripFormatControls(part.filename)}</div>
+            {emailsFolder ? (
+              <>
+                <div className="mail-link-detail-label">{t("mail.attachmentSaveFolderLabel")}</div>
+                <div className="mail-link-detail-url">{emailsFolder}</div>
+              </>
+            ) : (
+              <div className="mail-note">{t("mail.attachmentNoProject")}</div>
+            )}
+          </div>
+          <div className="mail-dialog-actions">
+            <button type="button" className="mail-btn" autoFocus onClick={onClose}>
+              {t("common.cancel")}
+            </button>
+            <button type="button" className="mail-btn" onClick={onSaveElsewhere}>
+              {t("mail.attachmentChooseLocation")}
+            </button>
+            {emailsFolder && (
+              <button type="button" className="mail-btn mail-btn-primary" onClick={onSaveToEmails}>
+                {t("mail.attachmentSaveToEmails")}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
 

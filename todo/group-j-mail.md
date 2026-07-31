@@ -80,6 +80,8 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
     - [ ] 🖐️ Manual test — write a rule, check mail, confirm the arrival lands in
       the named list and the strip says how many were filed; then "Apply to mail
       I already have" and confirm the count matches the dry run
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
     - **The rail is two zones now** (2026-07-29): account-*independent* above
       (Important/Urgent + the filter rules that fill them), account-*dependent*
       below (the accounts, and the selected one's folders, whose heading now
@@ -111,6 +113,8 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       refused_while_a_sealed_file_exists, the_sealed_files_resolve_their_own_key}`
     - [ ] 🖐️ Manual test — launch with the mail overlay closed, open it, confirm
       the account is listed on the first paint.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 61. **Include a browser in Eldrun. (BUILT — reader mode; live pages opt-in.)**
     Shipped as two surfaces, because the obvious third one is not buildable:
@@ -130,6 +134,8 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
     - [ ] 🖐️ Manual test — **nothing here has been runtime-verified.** The
       gating check: from a live page's devtools, `invoke('list_projects')` must
       reject naming the ACL. If it resolves, stop.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 61a. **Containerise live pages. (DEFERRED — do not build without new evidence.)**
     Plan, kept for reference: `docs/browser_sandbox_plan.md`. It would run the
@@ -165,6 +171,8 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
     mode kept.
     - [ ] 🤖 Automated test — n/a while deferred
     - [ ] 🖐️ Manual test — n/a while deferred
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 61b. **Readability extraction for reader mode.** The change that would make the
     reader tab a *reading* surface rather than a sanitized document dump, and the
@@ -207,6 +215,8 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
     reintroduce a tag or attribute the sanitizer would have removed.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---
 
@@ -260,6 +270,8 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       real server or a real correspondent: interop with Thunderbird and Outlook,
       unlock latency on the slowest machine, keychain-locked behaviour, and the
       migration of a store that actually holds mail.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---
 
@@ -313,6 +325,8 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       the provider's "recent activity" page shows **one** sign-in, not ten; then
       leave the app idle 10 min and read another to confirm the stale-session
       path recovers rather than erroring.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 168. **OAuth 2.0 / `XOAUTH2` for the big providers.** Not built, and the plan is
     mostly *not* about IMAP. Today `imap_login` sends `LOGIN user pass`, which
@@ -384,6 +398,8 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       is the wrong thing to build against a client that has never met a server.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 202. **The local model a mail task runs on — the tag exists, the task does not.**
     The 🧠 menu's role chips gained a **Mail** tag (2026-07-30), stored at
@@ -413,5 +429,7 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       model — an unassigned tag must not mean "never run".
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---

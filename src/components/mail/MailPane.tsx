@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { MAIL_PAGE_SIZE, unreadTotal, useMailStore } from "../../stores/mail";
 import { useSettingsStore } from "../../stores/settings";
-import { onMailSync } from "../../lib/mail";
+import { onMailSync, mailAiAllowed } from "../../lib/mail";
 import { useT } from "../../lib/i18n";
+import { Toggle } from "../common/Toggle";
 import type { MailAccount, MailHeader, MailPriority } from "../../types/mail";
 import { MailList } from "./MailList";
 import { MailMessageView } from "./MailMessageView";
@@ -11,6 +12,8 @@ import { MailComposeDialog, type ComposeMode } from "./MailComposeDialog";
 import { MailEncryptionDialog } from "./MailEncryptionDialog";
 import { MailFiltersDialog } from "./MailFiltersDialog";
 import { MailKeysDialog } from "./MailKeysDialog";
+import { MailAiSettingsDialog } from "./MailAiSettingsDialog";
+import { MailAiQuickTags } from "./MailAiSettings";
 import { mailPgpAvailable } from "../../lib/mail";
 import { mailEncryptionState } from "../../lib/mail";
 import type { MailEncryptionState } from "../../types/mail";
@@ -44,6 +47,7 @@ export interface MailPaneProps {
 export function MailPane({ visible }: MailPaneProps) {
   const t = useT();
   const settings = useSettingsStore((s) => s.settings);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
 
   const accounts = useMailStore((s) => s.accounts);
   const accountsLoaded = useMailStore((s) => s.accountsLoaded);
@@ -83,6 +87,10 @@ export function MailPane({ visible }: MailPaneProps) {
   // local store encrypted, and a button that always fails with the same sentence
   // is worse than one that is not there until the precondition is met.
   const [keysDialog, setKeysDialog] = useState(false);
+  // The per-account Mail AI (local) settings dialog, keyed by the account it is
+  // configuring (the selected one from the toolbar, or a freshly created one).
+  // Reachable only because the pane itself is gated by `mail_client`.
+  const [aiAccountId, setAiAccountId] = useState<string | null>(null);
   const [pgpReady, setPgpReady] = useState(false);
   useEffect(() => {
     if (visible === false) return;
@@ -134,6 +142,8 @@ export function MailPane({ visible }: MailPaneProps) {
   }, []);
 
   const folders = selectedAccountId ? (foldersByAccount[selectedAccountId] ?? []) : [];
+  const selectedAccount = accounts.find((a) => a.id === selectedAccountId) ?? null;
+  const aiAccount = aiAccountId ? (accounts.find((a) => a.id === aiAccountId) ?? null) : null;
   const selectedHeader = headers.find((h) => h.id === selectedMessageId);
   const syncState = selectedAccountId ? sync[selectedAccountId] : undefined;
   const syncing = syncState?.phase === "start" || syncState?.phase === "folder" || syncState?.phase === "headers";
@@ -386,6 +396,32 @@ export function MailPane({ visible }: MailPaneProps) {
             🔑
           </button>
         )}
+        {/* The Mail AI (local) region: a bordered group holding the global
+            master switch and — only when it is on — the per-account quick-toggle
+            tags plus the ✨ full-settings button. The master switch is the one
+            global control; every feature toggle behind the tags is per account. */}
+        <div className="mail-ai-toolbar">
+          <label className="mail-ai-allow" title={t("mailAi.allowHint")}>
+            <span>{t("mailAi.allowToggle")}</span>
+            <Toggle
+              checked={settings?.mail_ai_allow === true}
+              onChange={(e) => void updateSettings({ mail_ai_allow: e.target.checked })}
+            />
+          </label>
+          {mailAiAllowed(settings) && selectedAccount && (
+            <>
+              <MailAiQuickTags account={selectedAccount} />
+              <button
+                type="button"
+                className="mail-btn"
+                title={t("mailAi.settingsTitle")}
+                onClick={() => setAiAccountId(selectedAccount.id)}
+              >
+                ✨
+              </button>
+            </>
+          )}
+        </div>
         <div className="mail-toolbar-spacer" />
         {/* The sort is NOT here. It lives on the list's own header row
             (`MailList`), where each control sits above the column it orders —
@@ -541,13 +577,27 @@ export function MailPane({ visible }: MailPaneProps) {
         />
       )}
 
+      {aiAccount && (
+        <MailAiSettingsDialog account={aiAccount} onClose={() => setAiAccountId(null)} />
+      )}
+
       {accountDialog && (
         <MailAccountDialog
           account={accountDialog.account}
           onClose={() => setAccountDialog(null)}
           onSaved={(id) => {
+            // Creating a new account? Offer its Mail AI (local) settings right
+            // away — the toggles are per account, so a fresh mailbox starts with
+            // none set, and the moment to ask is now rather than never. Only when
+            // the whole feature is switched on; otherwise there is nothing to set.
+            const isNew = accountDialog.account === null;
             setAccountDialog(null);
-            void useMailStore.getState().reloadAccounts(id);
+            void useMailStore
+              .getState()
+              .reloadAccounts(id)
+              .then(() => {
+                if (isNew && mailAiAllowed(settings)) setAiAccountId(id);
+              });
           }}
           onDelete={(id) => {
             setAccountDialog(null);

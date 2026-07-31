@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { internalViewerFor, type FileEntry, type InternalViewer } from "./fileUtils";
+import { bibPlainValue, parseBib } from "./bib";
 import { basename, dirname, isAbsolute, normalizePath, resolvePath } from "../paths";
 
 /** Which TeX tools are on PATH; mirrors the backend `TexCapability`. */
@@ -135,14 +136,19 @@ export function synctexEdit(
 }
 
 /** Forward search: every SyncTeX record (`input:line:column` → the line's
- *  constituent boxes / wrapped rows). Resolves to `[]` on any error / no hit. */
+ *  constituent boxes / wrapped rows). Resolves to `[]` when the query *ran* but
+ *  matched nothing, and to `null` when the backend command itself errored — i.e.
+ *  SyncTeX could not run at all (the `synctex` tool absent, or a backend not yet
+ *  rebuilt for it). Keeping the two apart is what lets the caller tell an honest
+ *  "no match on that line" from "jump-to-cursor is unavailable" (they used to
+ *  read identically as a miss). */
 export function synctexView(
   pdf: string,
   input: string,
   line: number,
   column: number,
-): Promise<SyncRect[]> {
-  return invoke<SyncRect[]>("synctex_view", { pdf, input, line, column }).catch(() => []);
+): Promise<SyncRect[] | null> {
+  return invoke<SyncRect[]>("synctex_view", { pdf, input, line, column }).catch(() => null);
 }
 
 /**
@@ -153,8 +159,13 @@ export function synctexView(
  * compiles with the bare filename, so an absolute `-i` often fails to match. This
  * tries the absolute path, the path relative to the build dir, and the basename
  * (deduped, in that order) and returns the first spelling that yields records —
- * so forward search works regardless of which spelling SyncTeX stored. Returns
- * `[]` only when none match.
+ * so forward search works regardless of which spelling SyncTeX stored.
+ *
+ * Propagates {@link synctexView}'s two failure modes so the caller can tell them
+ * apart: `[]` when SyncTeX ran but no spelling matched (a genuine miss), `null`
+ * when *every* attempt errored — i.e. SyncTeX could not run at all (unavailable).
+ * A single spelling that runs (even to an empty result) counts as "ran", so a
+ * mismatched spelling never masquerades as unavailable.
  */
 export async function synctexViewBest(
   pdf: string,
@@ -162,12 +173,15 @@ export async function synctexViewBest(
   rootDir: string,
   line: number,
   column: number,
-): Promise<SyncRect[]> {
+): Promise<SyncRect[] | null> {
+  let ran = false;
   for (const cand of forwardInputCandidates(input, rootDir)) {
     const recs = await synctexView(pdf, cand, line, column);
-    if (recs.length) return recs;
+    if (recs === null) continue; // this attempt errored — the next spelling may run
+    ran = true;
+    if (recs.length) return recs; // first spelling that matched wins
   }
-  return [];
+  return ran ? [] : null;
 }
 
 /**
@@ -657,6 +671,463 @@ export function refineToWord(
   return best ? best.rect : refineSingle(target, pw[ci], items);
 }
 
+// --- Math/environment delimiter matching (bracket-match, LaTeX extras) ------
+//
+// The editor's plain ()[]{} matcher (`FileViewerPane.findMatchingBracket`)
+// covers group braces and optional-arg brackets, but LaTeX has three more
+// delimiter families worth the same "highlight the matching one" affordance:
+// math-mode toggles (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`) and `\begin{env}…
+// \end{env}` structure blocks. Kept here rather than in FileViewerPane
+// because they're LaTeX syntax, not generic code-editor behaviour — the
+// caller only tries these when the open file's language is "tex".
+//
+// `TexDelimiterMatch` is structurally identical to FileViewerPane's
+// `BracketMatch` ({open,close} ranges) on purpose, so `decorateBracketMatch`
+// can render either without either module importing the other's type
+// (importing FileViewerPane's type back into this module, which
+// FileViewerPane already imports from, would be a cycle).
+
+/** One side of a matched delimiter: a `[start, end)` source range — mirrors
+ *  FileViewerPane's `BracketSide`. */
+export interface TexDelimiterSide {
+  start: number;
+  end: number;
+}
+
+/** A matched math/environment delimiter pair — mirrors FileViewerPane's
+ *  `BracketMatch` (see the section comment above for why it's a separate,
+ *  structurally-identical type rather than an import). */
+export interface TexDelimiterMatch {
+  open: TexDelimiterSide;
+  close: TexDelimiterSide;
+}
+
+/** Builds a clean `{start,end}`-only pair from whatever token objects the two
+ *  scanners pass in (both carry an extra `kind` field the caller has no use
+ *  for once matched) — stripped explicitly rather than relying on TS's
+ *  structural typing to hide it, since excess properties on a plain object
+ *  survive at runtime regardless of what the parameter type says. */
+function texDelimiterPair(open: TexDelimiterSide, close: TexDelimiterSide): TexDelimiterMatch {
+  return {
+    open: { start: open.start, end: open.end },
+    close: { start: close.start, end: close.end },
+  };
+}
+
+/**
+ * How closely `caret` "touches" `side` — the same test the plain bracket
+ * matcher applies to a single character, generalised to a multi-character
+ * token (`\[`, `$$`, a whole `\begin{itemize}`): anywhere in the token counts,
+ * not just its two ends. Returns a rank rather than a boolean so a caller
+ * choosing among several candidate tokens can prefer the closer touch —
+ * `0` (caret sits right before the token, at its `start`) beats `1` (right
+ * after, at its `end`) beats `2` (strictly inside it); `null` when caret
+ * doesn't touch it at all. The rank matters when two tokens are directly
+ * adjacent with nothing between them (`\end{a}\begin{b}`): the boundary caret
+ * sits at BOTH `\end{a}`'s `end` and `\begin{b}`'s `start`, and rank prefers
+ * `\begin{b}` — the same "check the token starting right at the caret before
+ * the one ending there" priority `FileViewerPane.findMatchingBracket` uses
+ * for `()[]{}`. */
+function touchRank(side: TexDelimiterSide, caret: number): number | null {
+  if (side.start === caret) return 0;
+  if (side.end === caret) return 1;
+  if (caret > side.start && caret < side.end) return 2;
+  return null;
+}
+
+/** One recognised math-delimiter token in source order. `$$` is matched
+ *  before a lone `$` (checked first in the scanner below) so display math
+ *  isn't split into two bogus inline-math tokens. */
+interface MathToken {
+  kind: "dollar" | "ddollar" | "pOpen" | "pClose" | "bOpen" | "bClose";
+  start: number;
+  end: number;
+}
+
+/** True when the run of backslashes immediately before `pos` has odd length —
+ *  i.e. the character AT `pos` is itself escaped (`\$` is a literal dollar
+ *  sign, not a math toggle; `\\$` is a literal backslash followed by a real
+ *  toggle, so it is NOT escaped). The standard TeX parity rule. */
+function isBackslashEscaped(text: string, pos: number): boolean {
+  let n = 0;
+  for (let i = pos - 1; i >= 0 && text[i] === "\\"; i--) n++;
+  return n % 2 === 1;
+}
+
+/**
+ * Blank every TeX line comment — an unescaped `%` to the end of its line — with
+ * spaces, leaving the string the SAME length (offsets, and every `\n`, are
+ * preserved) so a caller can keep scanning it with the module's offset-based
+ * regexes and still map a match back onto the real source. This is what makes the
+ * structure sidebar and the editor's link layer ignore a commented-out
+ * `\input{…}`/`\includegraphics{…}` rather than list it, underline it or follow it
+ * on Ctrl+click. `\%` (an escaped literal percent) is not a comment. Deliberately
+ * shallow like the rest of this module — it does not skip `verbatim`/`\verb` bodies
+ * (a `%` there is treated as a comment), which at worst hides a reference nested
+ * inside verbatim, never a real one. Pure.
+ */
+export function blankTexComments(source: string): string {
+  let out = "";
+  let i = 0;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === "%" && !isBackslashEscaped(source, i)) {
+      // Blank from here to (not including) the next newline.
+      let j = i;
+      while (j < source.length && source[j] !== "\n") j++;
+      out += " ".repeat(j - i);
+      i = j;
+    } else {
+      out += ch;
+      i++;
+    }
+  }
+  return out;
+}
+
+/**
+ * Every math-delimiter token in `text`, in source order: `$`/`$$` (skipping an
+ * escaped `\$`) and the literal 2-character sequences `\(`/`\)`/`\[`/`\]`. Not
+ * TeX-verbatim/comment-aware (a `%` comment or a verbatim block can contain a
+ * bare `$` that isn't really math) — the same "plain scan, no deep parsing"
+ * level the rest of this module's regex-based helpers work at. Pure.
+ */
+function texMathTokens(text: string): MathToken[] {
+  const out: MathToken[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const two = text.slice(i, i + 2);
+    if (two === "\\(") { out.push({ kind: "pOpen", start: i, end: i + 2 }); i++; continue; }
+    if (two === "\\)") { out.push({ kind: "pClose", start: i, end: i + 2 }); i++; continue; }
+    if (two === "\\[") { out.push({ kind: "bOpen", start: i, end: i + 2 }); i++; continue; }
+    if (two === "\\]") { out.push({ kind: "bClose", start: i, end: i + 2 }); i++; continue; }
+    if (text[i] === "$") {
+      if (isBackslashEscaped(text, i)) continue;
+      if (text[i + 1] === "$") { out.push({ kind: "ddollar", start: i, end: i + 2 }); i++; continue; }
+      out.push({ kind: "dollar", start: i, end: i + 1 });
+    }
+  }
+  return out;
+}
+
+/**
+ * Pair up a token stream from {@link texMathTokens}: `\(`/`\)` and `\[`/`\]`
+ * nest like ordinary brackets (a stack per kind), while `$` and `$$` are the
+ * SAME token on both sides, so they pair by toggling (first one open, next one
+ * of the same kind closes it) rather than by a stack. An unmatched opener
+ * (odd count, or a `\)`/`\]` with nothing open) is simply dropped, matching
+ * this codebase's other bracket matchers' "unbalanced source → no match"
+ * behaviour. Pure.
+ */
+function pairTexMathTokens(tokens: MathToken[]): TexDelimiterMatch[] {
+  const pairs: TexDelimiterMatch[] = [];
+  const parenStack: MathToken[] = [];
+  const bracketStack: MathToken[] = [];
+  let openDollar: MathToken | null = null;
+  let openDDollar: MathToken | null = null;
+  for (const tok of tokens) {
+    switch (tok.kind) {
+      case "pOpen":
+        parenStack.push(tok);
+        break;
+      case "pClose": {
+        const open = parenStack.pop();
+        if (open) pairs.push(texDelimiterPair(open, tok));
+        break;
+      }
+      case "bOpen":
+        bracketStack.push(tok);
+        break;
+      case "bClose": {
+        const open = bracketStack.pop();
+        if (open) pairs.push(texDelimiterPair(open, tok));
+        break;
+      }
+      case "ddollar":
+        if (openDDollar) {
+          pairs.push(texDelimiterPair(openDDollar, tok));
+          openDDollar = null;
+        } else {
+          openDDollar = tok;
+        }
+        break;
+      case "dollar":
+        if (openDollar) {
+          pairs.push(texDelimiterPair(openDollar, tok));
+          openDollar = null;
+        } else {
+          openDollar = tok;
+        }
+        break;
+    }
+  }
+  return pairs;
+}
+
+/**
+ * The math-delimiter pair (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`) the caret is
+ * touching, if any — for the bracket-match overlay's LaTeX extras. `null` when
+ * the caret touches none, or touches an unmatched one. Pure / unit-tested.
+ */
+export function findTexMathDelimiterMatch(text: string, caret: number): TexDelimiterMatch | null {
+  const pairs = pairTexMathTokens(texMathTokens(text));
+  let best: TexDelimiterMatch | null = null;
+  let bestRank = Infinity;
+  for (const p of pairs) {
+    for (const side of [p.open, p.close]) {
+      const rank = touchRank(side, caret);
+      if (rank != null && rank < bestRank) {
+        bestRank = rank;
+        best = p;
+      }
+    }
+  }
+  return best;
+}
+
+/** Every `\begin{name}`/`\end{name}` occurrence, whole-token ranges (the
+ *  environment name is not captured — matching ignores it, see
+ *  {@link findTexEnvDelimiterMatch}). */
+const TEX_ENV_TOKEN_RE = /\\(begin|end)\s*\{[^{}]*\}/g;
+
+interface EnvToken {
+  kind: "begin" | "end";
+  start: number;
+  end: number;
+}
+
+function texEnvTokens(text: string): EnvToken[] {
+  const out: EnvToken[] = [];
+  TEX_ENV_TOKEN_RE.lastIndex = 0;
+  for (let m = TEX_ENV_TOKEN_RE.exec(text); m; m = TEX_ENV_TOKEN_RE.exec(text)) {
+    out.push({ kind: m[1] === "begin" ? "begin" : "end", start: m.index, end: m.index + m[0].length });
+  }
+  return out;
+}
+
+/**
+ * The `\begin{…}`/`\end{…}` pair straddling `caret`, if any — the "begin/end
+ * structure" counterpart of bracket-match, for `\begin{itemize}…\end{itemize}`
+ * blocks. Matching is by NESTING DEPTH ONLY, deliberately ignoring the
+ * environment name: a well-formed LaTeX document's environments always nest
+ * properly regardless of name (you cannot legally open `itemize` inside
+ * `enumerate` and close them out of order), so a name-agnostic depth count
+ * finds the right partner for any well-formed document — the same "plain
+ * nesting count" `FileViewerPane`'s ()[]{} matcher uses, just applied to a
+ * multi-character token instead of a single character. Returns `null` when
+ * the caret touches neither a `\begin`/`\end`, or the one it touches has no
+ * partner (unbalanced source). Pure / unit-tested.
+ */
+export function findTexEnvDelimiterMatch(text: string, caret: number): TexDelimiterMatch | null {
+  const tokens = texEnvTokens(text);
+  let idx = -1;
+  let bestRank = Infinity;
+  for (let i = 0; i < tokens.length; i++) {
+    const rank = touchRank(tokens[i], caret);
+    if (rank != null && rank < bestRank) {
+      bestRank = rank;
+      idx = i;
+    }
+  }
+  if (idx < 0) return null;
+  const tok = tokens[idx];
+  if (tok.kind === "begin") {
+    let depth = 1;
+    for (let i = idx + 1; i < tokens.length; i++) {
+      if (tokens[i].kind === "begin") depth++;
+      else {
+        depth--;
+        if (depth === 0) return texDelimiterPair(tok, tokens[i]);
+      }
+    }
+  } else {
+    let depth = 1;
+    for (let i = idx - 1; i >= 0; i--) {
+      if (tokens[i].kind === "end") depth++;
+      else {
+        depth--;
+        if (depth === 0) return texDelimiterPair(tokens[i], tok);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The bracket-match overlay's full LaTeX extras: math delimiters first (the
+ * more common case), falling back to `\begin`/`\end`. The caller
+ * (`FileViewerPane`'s `CodeEditor`) tries this only after its own plain
+ * ()[]{} matcher comes up empty, and only for a `.tex` file. Pure.
+ */
+export function findTexDelimiterMatch(text: string, caret: number): TexDelimiterMatch | null {
+  return findTexMathDelimiterMatch(text, caret) ?? findTexEnvDelimiterMatch(text, caret);
+}
+
+/** A whole `\begin{…}`/`\end{…}` token with its environment name located inside
+ *  it — `{start,end}` is the token, `[nameStart,nameEnd)` the name between the
+ *  braces (empty for `\begin{}`, which is what a half-typed one looks like). */
+interface EnvNameToken {
+  kind: "begin" | "end";
+  start: number;
+  end: number;
+  nameStart: number;
+  nameEnd: number;
+}
+
+/** `\begin{env}`/`\end{env}` with the name captured — the same token shape
+ *  {@link TEX_ENV_TOKEN_RE} matches, split so the name can be addressed. */
+const TEX_ENV_NAME_RE = /\\(begin|end)(\s*)\{([^{}]*)\}/g;
+
+function texEnvNameTokens(text: string): EnvNameToken[] {
+  const out: EnvNameToken[] = [];
+  TEX_ENV_NAME_RE.lastIndex = 0;
+  for (let m = TEX_ENV_NAME_RE.exec(text); m; m = TEX_ENV_NAME_RE.exec(text)) {
+    const nameStart = m.index + 1 + m[1].length + m[2].length + 1; // `\` + kw + ws + `{`
+    out.push({
+      kind: m[1] === "begin" ? "begin" : "end",
+      start: m.index,
+      end: m.index + m[0].length,
+      nameStart,
+      nameEnd: nameStart + m[3].length,
+    });
+  }
+  return out;
+}
+
+/**
+ * The environment name's range when `caret` sits between the braces of a
+ * `\begin{…}`/`\end{…}` — for the editor's "click into the braces, get the name
+ * selected" gesture, so retyping an environment is one gesture rather than a
+ * drag across a word the double-click rules split at `:` and `*` anyway.
+ * Inclusive at both ends (clicking just after `{` or just before `}` counts);
+ * `null` anywhere else, and a zero-length range for an empty `\begin{}`, which a
+ * caller may treat as nothing to select. Pure / unit-tested.
+ */
+export function texEnvNameRangeAt(text: string, caret: number): TexDelimiterSide | null {
+  for (const t of texEnvNameTokens(text)) {
+    if (caret >= t.nameStart && caret <= t.nameEnd) return { start: t.nameStart, end: t.nameEnd };
+  }
+  return null;
+}
+
+/**
+ * The two environment NAMES of a `\begin{…}…\end{…}` pair, as a delimiter match,
+ * when `caret` sits inside either of them — so the bracket-match overlay marks
+ * the partner's name while you are in one, which is what says *which* `\end` a
+ * rename is about to carry with it. The whole-token match
+ * ({@link findTexEnvDelimiterMatch}) still answers a caret on the `\begin`
+ * keyword itself; this is the finer reading inside the braces.
+ *
+ * Deliberately does NOT require the two names to agree: mid-rename they don't,
+ * and that is exactly when the marker earns its place. Pairing is the same
+ * name-agnostic depth count everything else here uses. A name that is currently
+ * empty (`\begin{}`) yields a zero-length side — nothing to paint on that end,
+ * while the partner is still marked. Pure / unit-tested.
+ */
+export function findTexEnvNameMatch(text: string, caret: number): TexDelimiterMatch | null {
+  const tokens = texEnvNameTokens(text);
+  const here = tokens.find((t) => caret >= t.nameStart && caret <= t.nameEnd);
+  if (!here) return null;
+  const pair = findTexEnvDelimiterMatch(text, here.start);
+  if (!pair) return null;
+  const partnerSide = here.kind === "begin" ? pair.close : pair.open;
+  const partner = tokens.find((t) => t.start === partnerSide.start);
+  if (!partner || partner.start === here.start) return null;
+  const name = (t: EnvNameToken) => ({ start: t.nameStart, end: t.nameEnd });
+  return here.kind === "begin"
+    ? { open: name(here), close: name(partner) }
+    : { open: name(partner), close: name(here) };
+}
+
+/** The single changed run between two versions of a document — the common
+ *  prefix/suffix pared off, so `[start, prevEnd)` in `prev` was replaced by
+ *  `[start, nextEnd)` in `next`. `null` when nothing changed. A multi-caret or
+ *  find-and-replace edit collapses to one wide run here, which is exactly what
+ *  the caller wants: a run wider than the environment name is not a rename. */
+function texEditSpan(
+  prev: string,
+  next: string,
+): { start: number; prevEnd: number; nextEnd: number } | null {
+  if (prev === next) return null;
+  let start = 0;
+  const max = Math.min(prev.length, next.length);
+  while (start < max && prev[start] === next[start]) start += 1;
+  let tail = 0;
+  while (
+    tail < prev.length - start &&
+    tail < next.length - start &&
+    prev[prev.length - 1 - tail] === next[next.length - 1 - tail]
+  ) {
+    tail += 1;
+  }
+  return { start, prevEnd: prev.length - tail, nextEnd: next.length - tail };
+}
+
+/** The result of mirroring an environment rename: the document with BOTH names
+ *  changed, and where the caret belongs in it (mirroring into a `\begin` that
+ *  sits before the caret shifts everything after it). */
+export interface TexEnvRename {
+  text: string;
+  caret: number;
+}
+
+/**
+ * Keep `\begin{env}` and `\end{env}` spelled the same while one of them is being
+ * edited: given the draft before (`prev`) and after (`next`) a keystroke, plus
+ * the caret in `next`, return `next` with the PARTNER's name changed the same
+ * way. `null` — the ordinary case — means the edit was not an environment
+ * rename and the caller should take `next` as it stands.
+ *
+ * Three conditions, each of which exists to stop this from rewriting text the
+ * user did not aim at:
+ *
+ *  - the whole changed run lies inside one environment name's braces, and the
+ *    caret is in there too (a paste spanning the braces, or a find-and-replace
+ *    across the file, widens the run past the name and is left alone);
+ *  - the token has a partner at all, by the same name-agnostic depth count
+ *    {@link findTexEnvDelimiterMatch} uses — a `\begin` still waiting for its
+ *    `\end` has nothing to keep in step;
+ *  - the partner still spells the name the edited token spelled BEFORE the
+ *    keystroke. A pair that already disagreed is not a pair somebody is
+ *    renaming, and depth-matching an unbalanced document can pick the wrong
+ *    partner — this is what keeps such a mistake from being written into it.
+ *
+ * Pure / unit-tested.
+ */
+export function syncTexEnvRename(prev: string, next: string, caret: number): TexEnvRename | null {
+  const span = texEditSpan(prev, next);
+  if (!span) return null;
+  const delta = next.length - prev.length;
+
+  const tokens = texEnvNameTokens(next);
+  const edited = tokens.find(
+    (t) =>
+      span.start >= t.nameStart &&
+      span.nextEnd <= t.nameEnd &&
+      caret >= t.nameStart &&
+      caret <= t.nameEnd,
+  );
+  if (!edited) return null;
+
+  // The token's own text before the edit: its start is inside the untouched
+  // prefix, so only its end moved — by exactly the length the document did.
+  const oldName = prev.slice(edited.nameStart, edited.nameEnd - delta);
+  const newName = next.slice(edited.nameStart, edited.nameEnd);
+  if (oldName === newName) return null;
+
+  const pair = findTexEnvDelimiterMatch(next, edited.start);
+  if (!pair) return null;
+  const partnerSide = edited.kind === "begin" ? pair.close : pair.open;
+  if (partnerSide.start === edited.start) return null;
+  const partner = tokens.find((t) => t.start === partnerSide.start);
+  if (!partner) return null;
+  if (next.slice(partner.nameStart, partner.nameEnd) !== oldName) return null;
+
+  const text =
+    next.slice(0, partner.nameStart) + newName + next.slice(partner.nameEnd);
+  const shift = partner.nameStart < caret ? newName.length - oldName.length : 0;
+  return { text, caret: caret + shift };
+}
+
 // --- Cross-file references (Ctrl/Cmd+Click to open) -------------------------
 //
 // LaTeX commands whose brace argument names another file the viewer can open in
@@ -696,6 +1167,9 @@ export interface TexRefTarget {
  * falling back to the first.
  */
 export function findTexRefAt(source: string, caret: number): TexRefTarget | null {
+  // Scan with comments blanked (same length, so `caret` and every offset still
+  // line up) — a commented-out `\input{…}` is not a link to follow.
+  source = blankTexComments(source);
   TEX_REF_RE.lastIndex = 0;
   for (let m = TEX_REF_RE.exec(source); m; m = TEX_REF_RE.exec(source)) {
     const start = m.index;
@@ -740,6 +1214,10 @@ export interface TexRefRange {
  */
 export function texRefRanges(source: string): TexRefRange[] {
   const ranges: TexRefRange[] = [];
+  // Blanking comments keeps every offset stable (so the emitted ranges still
+  // index the real source) while dropping a commented-out `\input{…}` from the
+  // underlined-link set.
+  source = blankTexComments(source);
   TEX_REF_RE.lastIndex = 0;
   for (let m = TEX_REF_RE.exec(source); m; m = TEX_REF_RE.exec(source)) {
     const braceStart = m.index + m[0].lastIndexOf("{") + 1;
@@ -790,13 +1268,23 @@ export function resolveTexRef(
   if (rel == null) return null;
 
   const dir = dirname(currentPath);
-  const abs = resolvePath(dir, rel);
-  const name = basename(abs);
+  return viewerRefFor(resolvePath(dir, rel), disabled);
+}
+
+/** An absolute path as something openable: the viewer that renders it plus the
+ *  tab label. Null when no built-in viewer handles the type. Shared by the file
+ *  references above and the `\ref`/`\cite` jump below, so a target opens the
+ *  same way however it was named. */
+function viewerRefFor(
+  path: string,
+  disabled?: ReadonlySet<InternalViewer>,
+): ResolvedTexRef | null {
+  const name = basename(path);
   const lastDot = name.lastIndexOf(".");
   const extension = lastDot > 0 ? name.slice(lastDot).toLowerCase() : null;
   const entry: FileEntry = {
     name,
-    path: abs,
+    path,
     is_dir: false,
     size: 0,
     extension,
@@ -804,7 +1292,7 @@ export function resolveTexRef(
   };
   const viewer = internalViewerFor(entry, disabled);
   if (!viewer) return null;
-  return { path: abs, viewer, label: name };
+  return { path, viewer, label: name };
 }
 
 // Graphics extensions `\includegraphics` resolves a bare argument against, in
@@ -951,14 +1439,81 @@ export function findTexComplAt(source: string, caret: number): TexComplContext |
   };
 }
 
-/** Every `\label{…}` key in a TeX source, in document order (duplicates kept;
- *  the caller dedupes when merging across files). */
-export function parseTexLabels(source: string): string[] {
-  const out: string[] = [];
+/** A `\label{…}` key plus the title of the sectioning command it falls under,
+ *  when one precedes it in the same file — the `\ref`/`\cref` dropdown's "which
+ *  section is this in" detail. */
+export interface TexLabelEntry {
+  key: string;
+  section?: string;
+}
+
+/** Sectioning commands (article/report/book classes) whose title is read for
+ *  a label's `section`. Matched with an optional trailing `*` (unnumbered
+ *  variants) and an optional `[short title]`, which is skipped in favour of
+ *  the full `{…}` title. */
+const SECTIONING_CMDS = ["part", "chapter", "section", "subsection", "subsubsection"];
+
+/**
+ * Index of the brace matching the one at `open` (a backslash-escaped `{`/`}`
+ * does not count), or `text.length` when unterminated.
+ */
+function matchTexBrace(text: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\\") { i++; continue; }
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return text.length;
+}
+
+/** Compact, human-readable form of a section title: inline-formatting
+ *  commands (`\textbf{…}`, `\emph{…}`, accents, …) and braces dropped,
+ *  whitespace collapsed. Best-effort, like {@link bibPlainValue} — a display
+ *  string, never round-tripped. */
+function texPlainTitle(value: string): string {
+  return value
+    .replace(/\\[a-zA-Z]+\*?\s*/g, "")
+    .replace(/[{}]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Every sectioning command's position and title, in document order —
+ *  `parseTexLabelEntries`'s lookup table for "which section is this label
+ *  in". A title is brace-matched, so `\section{Results for \texttt{foo}}`
+ *  reads its whole title rather than stopping at the nested brace. */
+export function parseTexSections(source: string): Array<{ pos: number; title: string }> {
+  const out: Array<{ pos: number; title: string }> = [];
+  const re = new RegExp(`\\\\(?:${SECTIONING_CMDS.join("|")})\\*?\\s*(?:\\[[^\\]]*\\])?\\s*\\{`, "g");
+  for (let m = re.exec(source); m; m = re.exec(source)) {
+    const open = m.index + m[0].length - 1;
+    const close = matchTexBrace(source, open);
+    const title = texPlainTitle(source.slice(open + 1, close));
+    if (title) out.push({ pos: m.index, title });
+  }
+  return out;
+}
+
+/** Every `\label{…}` key in a TeX source, each with the title of the nearest
+ *  preceding sectioning command (if any), in document order (duplicates
+ *  kept; the caller dedupes when merging across files). */
+export function parseTexLabels(source: string): TexLabelEntry[] {
+  const sections = parseTexSections(source);
+  let secIdx = 0;
+  const out: TexLabelEntry[] = [];
   const re = /\\label\s*\{([^{}]+)\}/g;
   for (let m = re.exec(source); m; m = re.exec(source)) {
     const k = m[1].trim();
-    if (k) out.push(k);
+    if (!k) continue;
+    while (secIdx + 1 < sections.length && sections[secIdx + 1].pos < m.index) secIdx++;
+    const section =
+      sections.length && sections[secIdx].pos < m.index ? sections[secIdx].title : undefined;
+    out.push({ key: k, section });
   }
   return out;
 }
@@ -972,68 +1527,34 @@ export interface BibEntry {
   year?: string;
 }
 
-/** Pull a single field value out of a bib entry body, handling `{…}` (brace-
- *  balanced), `"…"`, and bare/number values. Strips braces and collapses
- *  whitespace for display. */
-function bibField(body: string, name: string): string | undefined {
-  const m = new RegExp(`\\b${name}\\s*=\\s*`, "i").exec(body);
-  if (!m) return undefined;
-  let i = m.index + m[0].length;
-  const open = body[i];
-  let val = "";
-  if (open === "{") {
-    let depth = 0;
-    for (; i < body.length; i++) {
-      const ch = body[i];
-      if (ch === "{") { depth++; if (depth === 1) continue; }
-      else if (ch === "}") { depth--; if (depth === 0) break; }
-      val += ch;
-    }
-  } else if (open === '"') {
-    for (i++; i < body.length && body[i] !== '"'; i++) val += body[i];
-  } else {
-    for (; i < body.length; i++) {
-      const ch = body[i];
-      if (ch === "," || ch === "\n") break;
-      val += ch;
-    }
-  }
-  const cleaned = val.replace(/[{}]/g, "").replace(/\s+/g, " ").trim();
-  return cleaned || undefined;
-}
-
 /**
- * Parse a `.bib` file into its entries. Tolerant rather than strict: it finds
- * each `@type{key,` header, skips `@comment/@preamble/@string`, brace-matches to
- * the entry's end, and extracts title/author/year for the dropdown's display.
- * Not a full BibTeX parser — good enough to list keys and a label.
+ * The `.bib` entries of a bibliography, for the `\cite` dropdown: the citation
+ * key plus the three fields it displays.
+ *
+ * A thin adapter over `lib/viewers/bib`'s parser rather than a second reading of
+ * the format — the bibliography card view and this dropdown must not be able to
+ * disagree about what is in a `.bib` (which entries exist, what a field's value
+ * is), and the parser that has to survive being *edited* through is the stricter
+ * of the two. `@string`/`@preamble`/`@comment` carry no citation key, so they
+ * drop out here.
  */
 export function parseBibEntries(bib: string): BibEntry[] {
-  const out: BibEntry[] = [];
-  const re = /@(\w+)\s*\{\s*([^,\s}]+)\s*,/g;
-  for (let m = re.exec(bib); m; m = re.exec(bib)) {
-    const type = m[1].toLowerCase();
-    if (type === "comment" || type === "preamble" || type === "string") continue;
-    const key = m[2].trim();
-    if (!key) continue;
-    const braceOpen = bib.indexOf("{", m.index);
-    let depth = 0;
-    let end = bib.length;
-    for (let i = braceOpen; i < bib.length; i++) {
-      const c = bib[i];
-      if (c === "{") depth++;
-      else if (c === "}") { depth--; if (depth === 0) { end = i; break; } }
-    }
-    const body = bib.slice(braceOpen + 1, end);
-    out.push({
-      key, type,
-      title: bibField(body, "title"),
-      author: bibField(body, "author"),
-      year: bibField(body, "year"),
+  return parseBib(bib)
+    .records.filter((r) => r.kind === "entry" && r.key)
+    .map((r) => {
+      const field = (name: string): string | undefined => {
+        const hit = r.fields.find((f) => f.key === name);
+        const value = hit ? bibPlainValue(hit.value) : "";
+        return value || undefined;
+      };
+      return {
+        key: r.key,
+        type: r.type,
+        title: field("title"),
+        author: field("author"),
+        year: field("year"),
+      };
     });
-    re.lastIndex = end; // resume past this entry so nested @ in a field is ignored
-  }
-  return out;
 }
 
 /** Brace tokens (comma-split, trimmed) of the given commands in `source`. Used
@@ -1069,26 +1590,35 @@ const TEX_BIB_CMDS = ["bibliography", "addbibresource"];
 /** Candidate keys for the ref/cite dropdown: `\label` keys across the document
  *  and bib entries from the connected `.bib` file(s). */
 export interface TexCompletions {
-  labels: string[];
+  labels: TexLabelEntry[];
   cites: BibEntry[];
 }
 
 /**
- * Gather completion candidates for `currentPath`'s document. Resolves the build
- * root, walks `\input`/`\include` to collect every reachable `.tex` file
- * (bounded), unions their `\label` keys, and reads every `.bib` referenced via
- * `\bibliography`/`\addbibresource` for its entry keys. All file reads are
- * best-effort: a missing/unreadable file is skipped. Pure parsing is delegated
- * to the tested helpers above.
+ * **The** walk of a document's `.tex` files, and the one place that walk is
+ * defined: resolve the build root, follow `\input`/`\include`/`\subfile` from
+ * there, hand each file's text to `visit`, and collect every `.bib` the document
+ * names on the way. Bounded at 60 files and best-effort throughout — a missing or
+ * unreadable file is skipped rather than thrown over, because this runs behind a
+ * click that has to answer either way.
+ *
+ * Two callers share it and must not drift apart: the ref/cite **completion** list
+ * (what keys exist) and the ref/cite **jump** (where one is defined). A dropdown
+ * offering a key the click cannot then reach is the failure a second copy of this
+ * walk would eventually produce.
+ *
+ * `visit` returning true ends the walk — a definition search is done the moment it
+ * has found the definition, whereas gathering candidates reads everything.
  */
-export async function gatherTexCompletions(
+async function walkTexSources(
   currentPath: string,
-  projectId: string | null = null,
-): Promise<TexCompletions> {
+  projectId: string | null,
+  visit: (file: string, text: string) => boolean | void,
+  options: { currentFirst?: boolean; currentText?: string } = {},
+): Promise<Set<string>> {
   const root = await resolveTexRoot(currentPath);
   const seenTex = new Set<string>();
-  const queue = [root, currentPath];
-  const labels: string[] = [];
+  const queue = options.currentFirst ? [currentPath, root] : [root, currentPath];
   const bibPaths = new Set<string>();
 
   while (queue.length && seenTex.size < 60) {
@@ -1096,19 +1626,48 @@ export async function gatherTexCompletions(
     if (seenTex.has(file)) continue;
     seenTex.add(file);
     let text: string;
-    try {
-      text = await invoke<string>("read_file_text", { path: file, projectId });
-    } catch {
-      continue;
+    // The file being edited is read from the caller's DRAFT when it offers one:
+    // a `\label` typed a minute ago is not on disk yet, and a jump that cannot
+    // find the label you are looking at reads as a broken feature.
+    if (options.currentText != null && file === currentPath) {
+      text = options.currentText;
+    } else {
+      try {
+        text = await invoke<string>("read_file_text", { path: file, projectId });
+      } catch {
+        continue;
+      }
     }
-    for (const l of parseTexLabels(text)) labels.push(l);
     for (const t of texCommandTokens(text, TEX_INPUT_CMDS)) {
       queue.push(resolveSibling(file, t, ".tex"));
     }
     for (const t of texCommandTokens(text, TEX_BIB_CMDS)) {
       bibPaths.add(resolveSibling(file, t, ".bib"));
     }
+    if (visit(file, text) === true) break;
   }
+  return bibPaths;
+}
+
+/**
+ * Gather completion candidates for `currentPath`'s document: every reachable
+ * `.tex` file's `\label` keys, plus the entry keys of every `.bib` the document
+ * references. The walk and its bounds are {@link walkTexSources}'; pure parsing is
+ * the tested helpers'.
+ */
+export async function gatherTexCompletions(
+  currentPath: string,
+  projectId: string | null = null,
+): Promise<TexCompletions> {
+  const labels: TexLabelEntry[] = [];
+  const seenLabel = new Set<string>();
+  const bibPaths = await walkTexSources(currentPath, projectId, (_file, text) => {
+    for (const l of parseTexLabels(text)) {
+      if (seenLabel.has(l.key)) continue;
+      seenLabel.add(l.key);
+      labels.push(l);
+    }
+  });
 
   const cites: BibEntry[] = [];
   const seenKey = new Set<string>();
@@ -1126,5 +1685,309 @@ export async function gatherTexCompletions(
     }
   }
 
-  return { labels: Array.from(new Set(labels)), cites };
+  return { labels, cites };
+}
+
+// --- \ref / \cite jump-to-definition (#tex-ref-jump) ------------------------
+//
+// The other half of the cross-reference. `\input{…}` has been Ctrl-clickable
+// since #49 and `\ref{`/`\cite{` have offered a key dropdown since
+// #cite-ref-complete, which between them left the one question a reader actually
+// asks — "what IS equation (3), what IS [12]?" — as the only one the editor could
+// not answer: the key was typed here and defined somewhere in a 40-file document.
+//
+// A key reference is not a file reference and resolves nothing like one: the
+// target is a POSITION, found by searching the document's own sources for the
+// `\label{…}` (or the `.bib` record) that defines the key, and reached through the
+// existing editor-jump channel rather than by opening anything new when the
+// definition is in the file already on screen.
+
+/** A `\ref`/`\cite`-family key under the caret: which family, and the single
+ *  comma-separated key the caret falls on (`\cite{a,b}` picks one). */
+export interface TexKeyRef {
+  kind: TexComplKind;
+  key: string;
+}
+
+/** Any `\command[opt]{body}` whose body holds no braces — the shape every
+ *  reference and citation command takes. The command is classified afterwards
+ *  (`classifyComplCmd`), so this stays one regex rather than one per family, and
+ *  `\textbf{\ref{x}}` matches the inner command because the outer body has
+ *  braces in it. */
+const TEX_KEYREF_RE = /\\([a-zA-Z]+)\*?\s*(?:\[[^\]]*\]\s*)*\{([^{}]*)\}/g;
+
+/**
+ * The `\ref`/`\cite` key the caret sits on, if any. A click anywhere on the
+ * command counts as on the reference, exactly as it does for `\input` — the
+ * command word is part of the link, not a lead-in to it. Comments are blanked
+ * first (same length, so offsets still line up): a commented-out `\ref` is not
+ * something to follow. Pure.
+ */
+export function findTexKeyRefAt(source: string, caret: number): TexKeyRef | null {
+  source = blankTexComments(source);
+  TEX_KEYREF_RE.lastIndex = 0;
+  for (let m = TEX_KEYREF_RE.exec(source); m; m = TEX_KEYREF_RE.exec(source)) {
+    const start = m.index;
+    const end = m.index + m[0].length;
+    if (caret < start || caret > end) continue;
+    const kind = classifyComplCmd(m[1]);
+    if (!kind) return null;
+    const braceStart = m.index + m[0].lastIndexOf("{") + 1;
+    const key = pickToken(m[2], caret - braceStart);
+    return key ? { kind, key } : null;
+  }
+  return null;
+}
+
+/**
+ * Every `\ref{…}`/`\cite{…}` key range in the source, so the editor underlines a
+ * cross-reference as the link it now is — the same decoration `texRefRanges`
+ * gives a `\input`, and for the same reason: an affordance that only appears
+ * under the pointer is one nobody knows to look for. One range per key, so
+ * `\cite{a,b}` underlines two. Pure.
+ */
+export function texKeyRefRanges(source: string): TexRefRange[] {
+  const ranges: TexRefRange[] = [];
+  source = blankTexComments(source);
+  TEX_KEYREF_RE.lastIndex = 0;
+  for (let m = TEX_KEYREF_RE.exec(source); m; m = TEX_KEYREF_RE.exec(source)) {
+    if (!classifyComplCmd(m[1])) continue;
+    const braceStart = m.index + m[0].lastIndexOf("{") + 1;
+    let pos = 0;
+    for (const part of m[2].split(",")) {
+      const lead = part.length - part.trimStart().length;
+      const trimmed = part.trim();
+      if (trimmed) {
+        const start = braceStart + pos + lead;
+        ranges.push({ start, end: start + trimmed.length });
+      }
+      pos += part.length + 1; // account for the comma
+    }
+  }
+  return ranges;
+}
+
+/** Where a key is defined: the file to open (as something openable, so the
+ *  caller reuses one open path) plus the 1-based line/column of the definition. */
+export interface TexKeyLocation extends ResolvedTexRef {
+  kind: TexComplKind;
+  key: string;
+  line: number;
+  column: number;
+}
+
+/** The offset of the `\label{key}` defining `key`, or null. Comments blanked, so
+ *  a commented-out label is not a definition; the key is compared trimmed, since
+ *  `\label{ eq:1 }` and `\ref{eq:1}` are the same label to TeX. */
+function findTexLabelOffset(text: string, key: string): number | null {
+  const scan = blankTexComments(text);
+  const re = /\\label\s*\{([^{}]+)\}/g;
+  for (let m = re.exec(scan); m; m = re.exec(scan)) {
+    if (m[1].trim() === key) return m.index;
+  }
+  return null;
+}
+
+/**
+ * Find where a `\ref`/`\cite` key is defined, across the whole document.
+ *
+ * A **ref** is looked for in the document's `.tex` sources ({@link
+ * walkTexSources}), starting with the file the click came from — both because
+ * that is where a label usually is and because it is the one file whose *draft*
+ * can be handed in, so a label typed a minute ago and not yet saved is still
+ * found. A **cite** is looked for in the `.bib` files the document names, at the
+ * record's own first line.
+ *
+ * Null when nothing defines the key — a `\ref` to a label that does not exist is
+ * an ordinary state of a document being written, so the caller must leave the
+ * click alone rather than report an error over it.
+ */
+export async function resolveTexKeyRef(
+  currentPath: string,
+  ref: TexKeyRef,
+  options: {
+    projectId?: string | null;
+    /** The unsaved buffer for `currentPath`, when the caller has one. */
+    currentText?: string;
+    disabled?: ReadonlySet<InternalViewer>;
+  } = {},
+): Promise<TexKeyLocation | null> {
+  const { projectId = null, currentText, disabled } = options;
+  const key = ref.key.trim();
+  if (!key) return null;
+
+  let hit: TexKeyLocation | null = null;
+  const bibPaths = await walkTexSources(
+    currentPath,
+    projectId,
+    (file, text) => {
+      if (ref.kind !== "ref") return;
+      const at = findTexLabelOffset(text, key);
+      if (at == null) return;
+      const open = viewerRefFor(file, disabled);
+      if (!open) return;
+      const { line, column } = offsetToLineCol(text, at);
+      hit = { ...open, kind: ref.kind, key, line, column };
+      return true;
+    },
+    { currentFirst: true, currentText },
+  );
+  if (hit || ref.kind === "ref") return hit;
+
+  for (const bib of bibPaths) {
+    let text: string;
+    try {
+      text = await invoke<string>("read_file_text", { path: bib, projectId });
+    } catch {
+      continue;
+    }
+    const record = parseBib(text).records.find((r) => r.kind === "entry" && r.key === key);
+    if (!record) continue;
+    const open = viewerRefFor(bib, disabled);
+    if (!open) continue;
+    return { ...open, kind: ref.kind, key, line: record.line, column: 1 };
+  }
+  return null;
+}
+
+// --- Document structure (the TeX workspace's left sidebar) ------------------
+//
+// The single main `.tex` a workspace tab is opened on, enumerated as a tree of
+// its inputted children (`\input`/`\include`/`\subfile`) and its graphics
+// (`\includegraphics`), so the sidebar can list what makes up the document and
+// let a click switch the center view to any of it. Built entirely on the tested
+// helpers above (`texCommandTokens`/`resolveSibling` for children,
+// `resolveTexRefAsync` for graphics, `parseTexSections` for the heading a node
+// sits under) — this is only the bounded, best-effort walk that stitches them
+// into a tree, matching `gatherTexCompletions`' conventions (≤60-file cap,
+// missing/unreadable files skipped, no throw).
+
+/** A `\includegraphics` target of one file: the resolved absolute path, its
+ *  basename label, the viewer that renders it (image/pdf/…), and the nearest
+ *  preceding section heading in the referencing file (if any). */
+export interface TexGraphicNode {
+  path: string;
+  label: string;
+  viewer: InternalViewer;
+  section?: string;
+}
+
+/** One `.tex` file in the document tree: its inputted children in document
+ *  order, its graphics, and the heading it sits under in its parent. */
+export interface TexFileNode {
+  path: string;
+  label: string;
+  /** The nearest preceding sectioning heading in the PARENT file, when this node
+   *  was reached via an `\input`/`\include` under one. Absent for the root. */
+  section?: string;
+  graphics: TexGraphicNode[];
+  children: TexFileNode[];
+}
+
+/** The parsed structure of a main document, rooted at the build root. */
+export interface TexStructure {
+  root: TexFileNode;
+}
+
+// `\cmd[opts]{arg}` for the child-file commands AND `\includegraphics`, captured
+// WITH position so each referenced node can be attributed to the section it sits
+// under (document order preserved by the global scan). Kept local to the walk
+// below rather than folded into TEX_REF_RE, which also matches bibliography
+// commands the sidebar does not list.
+const TEX_STRUCT_RE = new RegExp(
+  `\\\\(${[...TEX_INPUT_CMDS, "includegraphics"].join("|")})\\b\\s*(?:\\[[^\\]]*\\])?\\s*\\{([^{}]*)\\}`,
+  "g",
+);
+
+/** The title of the last sectioning heading at or before `pos`, or undefined. */
+function sectionAt(sections: Array<{ pos: number; title: string }>, pos: number): string | undefined {
+  let title: string | undefined;
+  for (const s of sections) {
+    if (s.pos > pos) break;
+    title = s.title;
+  }
+  return title;
+}
+
+/**
+ * Enumerate `rootPath`'s document structure for the workspace sidebar: the tree
+ * of inputted `.tex` children and the `\includegraphics` graphics of each, each
+ * attributed to the sectioning heading it sits under. Bounded (≤60 files) and
+ * best-effort — an unreadable or missing file becomes a leaf node rather than an
+ * error, and a bare `\includegraphics{fig}` is resolved by probing its directory
+ * (via `resolveTexRefAsync`) exactly as Ctrl+click does. `projectId` scopes the
+ * file reads like `gatherTexCompletions`.
+ */
+export async function gatherTexStructure(
+  rootPath: string,
+  projectId: string | null = null,
+  disabled?: ReadonlySet<InternalViewer>,
+): Promise<TexStructure> {
+  const seen = new Set<string>();
+
+  const build = async (filePath: string, section: string | undefined): Promise<TexFileNode> => {
+    seen.add(filePath);
+    const node: TexFileNode = {
+      path: filePath,
+      label: basename(filePath),
+      section,
+      graphics: [],
+      children: [],
+    };
+    let text: string;
+    try {
+      text = await invoke<string>("read_file_text", { path: filePath, projectId });
+    } catch {
+      return node; // missing/unreadable → a leaf, still shown
+    }
+    // Scan a comment-blanked copy (same length, so section offsets still line
+    // up): a commented-out `\input{…}`/`\includegraphics{…}` — or a commented
+    // `\section` — must not plant a phantom entry in the sidebar.
+    const scan = blankTexComments(text);
+    const sections = parseTexSections(scan);
+    // One document-order pass over both kinds, so children and graphics are
+    // gathered in the order they appear and can be attributed to their heading.
+    const childJobs: Array<{ token: string; section?: string }> = [];
+    const graphicJobs: Array<{ token: string; section?: string }> = [];
+    TEX_STRUCT_RE.lastIndex = 0;
+    for (let m = TEX_STRUCT_RE.exec(scan); m; m = TEX_STRUCT_RE.exec(scan)) {
+      const cmd = m[1];
+      const sec = sectionAt(sections, m.index);
+      for (const part of m[2].split(",")) {
+        const token = part.trim();
+        if (!token) continue;
+        if (cmd === "includegraphics") graphicJobs.push({ token, section: sec });
+        else childJobs.push({ token, section: sec });
+      }
+    }
+    // Resolve graphics (async — a bare stem lists its directory). Skipped when
+    // nothing resolves, so a stale/removed figure never plants a dead entry.
+    for (const g of graphicJobs) {
+      const resolved = await resolveTexRefAsync(
+        filePath,
+        { command: "includegraphics", token: g.token },
+        disabled,
+      );
+      if (resolved) {
+        node.graphics.push({
+          path: resolved.path,
+          label: resolved.label,
+          viewer: resolved.viewer,
+          section: g.section,
+        });
+      }
+    }
+    // Recurse into inputted children in document order, honouring the cap and
+    // skipping anything already visited (a cycle, or a file inputted twice).
+    for (const c of childJobs) {
+      if (seen.size >= 60) break;
+      const childPath = resolveSibling(filePath, c.token, ".tex");
+      if (seen.has(childPath)) continue;
+      node.children.push(await build(childPath, c.section));
+    }
+    return node;
+  };
+
+  const root = await build(rootPath, undefined);
+  return { root };
 }

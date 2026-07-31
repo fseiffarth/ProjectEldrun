@@ -26,7 +26,6 @@ import { THEMES } from "../../types";
 import type { LinkOpenTarget } from "../../types/browser";
 import { summarizeScaffoldRepair, type ProjectScaffoldRepair } from "../projects/scaffold";
 import { Toggle } from "../common/Toggle";
-import { MailAiSettings } from "../mail/MailAiSettings";
 import { OPEN_STATS_EVENT } from "../stats/StatsRecapHost";
 import {
   SHORTCUT_DEFS,
@@ -905,10 +904,10 @@ export function SettingsDialog({
               }
             />
 
-            {/* Mail AI (local) — Group Q #203. Only meaningful when the mail
-                client is on, and each toggle is additionally gated inside the
-                section by a resolvable loopback mail-role model. */}
-            {experimentalEnabled(settings, "mail_client") && <MailAiSettings />}
+            {/* Mail AI (local) — Group Q #203 — is configured **per account**
+                now, from the mail toolbar (a bordered group with the global
+                master switch and per-account quick-toggle tags), not here. There
+                are deliberately no global per-feature toggles in this panel. */}
 
             <div className="settings-section-title">{t("settings.resourceMonitor")}</div>
             <div className="settings-toggle-card">
@@ -934,6 +933,12 @@ export function SettingsDialog({
                 />
               </label>
               <p className="settings-help">{t("settings.resourceMonitorHelp")}</p>
+            </div>
+
+            {/* The clock lives in its own section, not under Resource monitor:
+                seconds and the 12/24-hour face are time, not CPU/RAM/GPU. */}
+            <div className="settings-section-title">{t("settings.clock")}</div>
+            <div className="settings-toggle-card">
               <label className="settings-toggle-card-row">
                 <span>{t("settings.showClockSeconds")}</span>
                 <Toggle

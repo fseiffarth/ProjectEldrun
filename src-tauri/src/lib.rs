@@ -773,6 +773,7 @@ pub fn run() {
             // cross the boundary only through `mail_attach_pick` /
             // `mail_attachment_save`, which raise the OS dialog inside Rust.
             commands::mail::mail_accounts_list,
+            commands::mail::mail_account_set_ai,
             commands::mail::mail_account_upsert,
             commands::mail::mail_account_delete,
             commands::mail::mail_account_test,
@@ -813,6 +814,7 @@ pub fn run() {
             commands::mail::mail_attach_pick,
             commands::mail::mail_attach_remove,
             commands::mail::mail_attachment_save,
+            commands::mail::mail_attachment_save_to_project,
             commands::mail::mail_attachment_preview,
             // Encryption at rest (docs/mail_encryption_plan.md). Four verbs
             // rather than a toggle, because the states are not symmetric: a
@@ -982,6 +984,7 @@ pub fn run() {
             commands::fs::extract_archive,
             commands::clipboard::clipboard_has_image,
             commands::clipboard::save_clipboard_image,
+            commands::clipboard::copy_png_bytes_to_clipboard,
             commands::screenshot::capture_project_screenshot,
             commands::fs::delete_file,
             commands::fs::delete_dir,
@@ -1132,6 +1135,7 @@ pub fn run() {
             commands::crash::report_frontend_error,
             // Debug diagnostics
             commands::debug::debug_app_resource_usage,
+            commands::debug::webview_rss_kib,
             // Ollama local models
             commands::ollama::list_ollama_models,
             commands::ollama::ensure_vibe_ollama_model,

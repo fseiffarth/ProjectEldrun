@@ -203,7 +203,7 @@ describe("editor text-size control", () => {
       expect(el).not.toBeNull();
       return el as HTMLDivElement;
     });
-    const textNode = preview.querySelector("p")?.firstChild;
+    const textNode = preview.querySelector("p")?.firstChild ?? null;
     expect(textNode).toBeTruthy();
     const selection: {
       anchorNode: Node | null;
@@ -224,6 +224,7 @@ describe("editor text-size control", () => {
 
     expect(writeText).toHaveBeenCalledOnce();
     expect(writeText).toHaveBeenCalledWith("hello");
+    expect(await screen.findByText("Copied to clipboard")).toBeTruthy();
 
     // A selection extending outside this preview belongs to broader window
     // interaction and must not overwrite the clipboard a second time.

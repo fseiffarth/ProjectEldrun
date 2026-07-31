@@ -307,21 +307,14 @@ export interface Settings {
    *  mail — and is the kind of thing to have answered before the feature runs,
    *  not after; the chip's tooltip says nothing reads it so far. */
   ollama_roles?: Record<string, string>;
-  /** **Mail AI (local)** feature toggles (Group Q, #203–#208) — all default
-   *  **off** and each gated in the UI by `mail_client` *and* a resolvable
-   *  loopback mail-role model (`lib/mail`'s `mailAiFeatureOn`). The AI path is
-   *  loopback-only and stricter than {@link ollama_allow_remote_host}: nothing
-   *  about a message ever leaves this machine. `mail_ai_autoclassify` and
-   *  `mail_ai_auto_create` are the two a background sync reads (there is no UI in
-   *  the loop to gate them); the rest gate user-triggered controls. */
-  mail_ai_summarize?: boolean;
-  mail_ai_autoclassify?: boolean;
-  mail_ai_formalize?: boolean;
-  mail_ai_calendar?: boolean;
-  mail_ai_todo?: boolean;
-  /** Skip the review step for extracted calendar events / to-do cards (#207/#208).
-   *  Default off — extraction otherwise prefills a dialog for one confirming click. */
-  mail_ai_auto_create?: boolean;
+  /** The **Mail AI (local)** global master switch (Group Q, #203–#208) —
+   *  "Allow Mail AI features", **default off**. The per-feature toggles now live
+   *  **per account** (`MailAiPrefs` in `types/mail`); this one global flag gates
+   *  them all. The AI path is loopback-only and stricter than
+   *  {@link ollama_allow_remote_host}: nothing about a message ever leaves this
+   *  machine. Read in the backend sync (it gates per-account autoclassify) and in
+   *  the UI via `lib/mail`'s `mailAiResolvable`. */
+  mail_ai_allow?: boolean;
   /** Local models to load into memory when Eldrun starts (🧠 menu "on start"
    *  chip / Ollama settings). Loading is what makes a model *usable* without a
    *  manual step, so a feature that wants one waiting — mail-importance scoring,

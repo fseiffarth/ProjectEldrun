@@ -168,35 +168,18 @@ pub struct Settings {
     pub mail_notify_new: Option<bool>,
     // ── Local-model mail assistant (Group Q, #203–#208) ─────────────────────
     //
-    // Six opt-in switches, **all default off/absent**, for the on-device mail
-    // features driven by the loopback `mail`-role Ollama model. Each is gated in
-    // the UI additionally by `mail_client` and a resolvable loopback model. Two
-    // of them — `mail_ai_autoclassify` and `mail_ai_auto_create` — are read in
-    // the **backend** as well (a background sync has no UI in the loop to gate
-    // it); the other four gate frontend surfaces only, matching the `mail_client`
-    // precedent that a renderer able to invoke a command could equally flip the
-    // setting, so a second backend gate would buy nothing.
-    /// Offer the on-demand "Summarize (local)" control in the message view.
+    // The per-feature switches (summarize / autoclassify / formalize / calendar /
+    // todo / auto-create) now live **per account** (`schema::mail`'s
+    // `MailAiPrefs`), because whether a given mailbox wants summaries, auto-filing
+    // and extraction is a per-mailbox decision a single global switch could not
+    // express. What stays global here is exactly one thing: a **master switch**.
+    /// The global "Allow Mail AI features" master switch. **Default off/absent**,
+    /// so nobody inherits a model reading their mail without turning it on. With
+    /// it off no Mail AI feature runs anywhere, and the mail toolbar does not even
+    /// offer the per-account quick-toggle tags. Read in the backend sync (it gates
+    /// per-account `autoclassify`) and everywhere in the UI via `mailAiResolvable`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mail_ai_summarize: Option<bool>,
-    /// Let a sync ask the local model to file **new inbox** messages into
-    /// Important/Urgent, after the keyword-filter pass. Read in `sync_inner`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mail_ai_autoclassify: Option<bool>,
-    /// Offer the composer's "Draft from notes" control.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mail_ai_formalize: Option<bool>,
-    /// Offer "Add to calendar" extraction on a message.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mail_ai_calendar: Option<bool>,
-    /// Offer "Add to-do" extraction on a message.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mail_ai_todo: Option<bool>,
-    /// The "no review step" opt-in for the calendar/to-do extractors: with it on,
-    /// a high-confidence event/task is created without the confirming dialog.
-    /// **Default off** — mail must never quietly write to the user's own data.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mail_ai_auto_create: Option<bool>,
+    pub mail_ai_allow: Option<bool>,
     /// Where the Ollama server is, when it is not the default
     /// `127.0.0.1:11434` — a different port (a container publishing 11435, a
     /// second server) or, with [`Self::ollama_allow_remote_host`] set, another
@@ -789,38 +772,24 @@ mod tests {
         assert_eq!(back.browser_link_target.as_deref(), Some("in_app"));
     }
 
-    /// The six local-model mail flags (Group Q) are **absent by default** — a
-    /// fresh `settings.json` omits them, so nobody inherits a feature that runs a
-    /// model over their mail without ticking it. They are real named fields (not
-    /// `extra` passengers), so `mail_ai_autoclassify`, read in the backend sync,
-    /// can be gated on at all.
+    /// The global Mail AI master switch (Group Q) is **absent by default** — a
+    /// fresh `settings.json` omits it, so nobody inherits a feature that runs a
+    /// model over their mail without turning it on. It is a real named field (not
+    /// an `extra` passenger), so `mail_ai_allow`, read in the backend sync, can be
+    /// gated on at all. The per-feature toggles moved to `schema::mail`.
     #[test]
-    fn the_mail_ai_flags_default_absent_and_are_real_fields() {
+    fn the_mail_ai_master_switch_defaults_absent_and_is_a_real_field() {
         let raw = serde_json::to_string(&Settings::default()).unwrap();
-        for key in [
-            "mail_ai_summarize",
-            "mail_ai_autoclassify",
-            "mail_ai_formalize",
-            "mail_ai_calendar",
-            "mail_ai_todo",
-            "mail_ai_auto_create",
-        ] {
-            assert!(!raw.contains(key), "default settings must omit {key}: {raw}");
-        }
+        assert!(
+            !raw.contains("mail_ai_allow"),
+            "default settings must omit mail_ai_allow: {raw}"
+        );
 
-        let json = r#"{"mail_ai_summarize":true,"mail_ai_autoclassify":true,
-            "mail_ai_formalize":true,"mail_ai_calendar":true,"mail_ai_todo":true,
-            "mail_ai_auto_create":true}"#;
-        let s: Settings = serde_json::from_str(json).expect("parse");
-        assert_eq!(s.mail_ai_summarize, Some(true));
-        assert_eq!(s.mail_ai_autoclassify, Some(true));
-        assert_eq!(s.mail_ai_formalize, Some(true));
-        assert_eq!(s.mail_ai_calendar, Some(true));
-        assert_eq!(s.mail_ai_todo, Some(true));
-        assert_eq!(s.mail_ai_auto_create, Some(true));
+        let s: Settings = serde_json::from_str(r#"{"mail_ai_allow":true}"#).expect("parse");
+        assert_eq!(s.mail_ai_allow, Some(true));
         assert!(
             s.extra.is_empty(),
-            "a mail-AI flag fell through to `extra`: {:?}",
+            "mail_ai_allow fell through to `extra`: {:?}",
             s.extra.keys().collect::<Vec<_>>()
         );
     }
