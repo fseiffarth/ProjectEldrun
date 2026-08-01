@@ -71,6 +71,16 @@ describe("columnOf", () => {
     const columns: TaskColumn[] = COLUMNS.filter((c) => !c.done);
     expect(columnOf(task({ column: "doing", percent: 100 }), columns)).toBe("doing");
   });
+
+  it("keeps a completed card in the archive instead of Done", () => {
+    // The archive outranks completion: a finished card filed there is the whole
+    // reason to archive, so it must not snap back to Done.
+    expect(columnOf(task({ column: "archived", percent: 100 }), COLUMNS)).toBe("archived");
+  });
+
+  it("keeps an incomplete card in the archive too", () => {
+    expect(columnOf(task({ column: "archived", percent: 0 }), COLUMNS)).toBe("archived");
+  });
 });
 
 describe("bucketByColumn", () => {
@@ -107,6 +117,14 @@ describe("toggleTaskDone", () => {
     expect(out.completed).toBeNull();
     expect(out.column).toBe("backlog");
   });
+
+  it("leaves an archived card in the archive when toggled", () => {
+    // Ticking a card that is resting in the archive completes it but must not
+    // relocate it — that would defeat the point of having archived it.
+    const out = toggleTaskDone(task({ column: "archived" }), COLUMNS);
+    expect(out.percent).toBe(100);
+    expect(out.column).toBe("archived");
+  });
 });
 
 describe("filterTasks", () => {
@@ -126,6 +144,21 @@ describe("filterTasks", () => {
   it("hides done cards on request", () => {
     const tasks = [task({ id: "a" }), task({ id: "b", percent: 100 })];
     expect(filterTasks(tasks, { ...base, hideDone: true }).map((t) => t.id)).toEqual(["a"]);
+  });
+
+  it("hides archived cards under 'hide done', even when not complete", () => {
+    const tasks = [
+      task({ id: "a" }),
+      task({ id: "b", column: "archived", percent: 0 }),
+    ];
+    const archived = new Set(["archived"]);
+    expect(
+      filterTasks(tasks, { ...base, hideDone: true, archived }).map((t) => t.id),
+    ).toEqual(["a"]);
+    // …but they stay visible when 'hide done' is off.
+    expect(
+      filterTasks(tasks, { ...base, archived }).map((t) => t.id),
+    ).toEqual(["a", "b"]);
   });
 
   it("filters by project, including 'no project'", () => {

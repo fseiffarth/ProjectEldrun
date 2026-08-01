@@ -15,6 +15,7 @@ import { nextWindowState } from "../../lib/windowState";
 import { notePtyOutput, useActivityStore } from "../../stores/activity";
 import { usePowerStore, useEnergySaver, saverInterval } from "../../stores/power";
 import { useOllamaAutoloadOnLaunch } from "../../stores/ollamaAutoload";
+import { useRendererWatchdog } from "../../lib/rendererWatchdog";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
@@ -31,6 +32,7 @@ import { CalendarOverlayHost } from "../calendar/CalendarOverlay";
 import { CalDavSyncHost } from "../calendar/CalDavSyncHost";
 import { CalDavConflictDialog } from "../calendar/CalDavConflictDialog";
 import { TodoOverlayHost } from "../todo/TodoOverlay";
+import { SkillsOverlayHost } from "../skills/SkillsOverlay";
 import { LocalLossDialog } from "../common/LocalLossDialog";
 import { HostKeyConfirmDialog } from "../common/HostKeyConfirmDialog";
 import { HpcGuardDialog } from "../common/HpcGuardDialog";
@@ -148,6 +150,9 @@ export function AppShell() {
   // Load the armed local (Ollama) models into memory at launch — main window
   // only, and skipped (loudly) while Energy Saver is on. See stores/ollamaAutoload.
   useOllamaAutoloadOnLaunch();
+  // Reload the renderer if its JS heap runs away, before it OOM-crashes the
+  // webview (a 44 GB leak was observed 2026-07-31). See lib/rendererWatchdog.
+  useRendererWatchdog();
   const [panelsHidden, setPanelsHidden] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [rightPinned, setRightPinned] = useState(false);
@@ -864,6 +869,11 @@ export function AppShell() {
           nothing makes them mutually exclusive, so DOM order is the tie-break
           and the surface opened most recently should be the one on top. */}
       <TodoOverlayHost />
+      {/* The 🧠 menu's Skills Library — the machine-level door into the library
+          the project tab hosts. At the shell for the family's reason (it covers
+          the window and must survive a project switch), and after the three
+          above because it is opened from a header menu that sits over them. */}
+      <SkillsOverlayHost />
       {/* Fires once per connect (manual or silent auto-connect): warns that the
           host's load/memory/logged-in sessions suggest it's already in use. */}
       <RemoteUsageWarningDialog />

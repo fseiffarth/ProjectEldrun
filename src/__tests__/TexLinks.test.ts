@@ -38,6 +38,22 @@ describe("findTexRefAt", () => {
     expect(findTexRefAt(src, src.length - 1)).toBeNull();
   });
 
+  it("ignores a commented-out \\input (a % line is not a link to follow)", () => {
+    const src = "% \\input{chapters/old}\n\\input{chapters/intro}\n";
+    // Caret on the commented reference resolves to nothing…
+    expect(findTexRefAt(src, src.indexOf("chapters/old"))).toBeNull();
+    // …while the live one below it is still found at its real offset.
+    expect(findTexRefAt(src, src.indexOf("chapters/intro"))).toEqual({
+      command: "input",
+      token: "chapters/intro",
+    });
+  });
+
+  it("still follows an \\input after an escaped \\% on the same line", () => {
+    const src = "50\\% done \\input{body}";
+    expect(findTexRefAt(src, src.indexOf("body"))).toEqual({ command: "input", token: "body" });
+  });
+
   it("skips an optional bracket group (\\includegraphics[width=...]{fig})", () => {
     const src = "\\includegraphics[width=0.5\\textwidth]{figs/plot}";
     const caret = src.indexOf("plot");
@@ -83,6 +99,13 @@ describe("texRefRanges (#49 clickable-link decoration)", () => {
   it("returns nothing for source with no references", () => {
     expect(texRefRanges("just \\section{Title} text")).toEqual([]);
   });
+
+  it("does not underline a commented-out reference", () => {
+    const src = "% \\input{old}\n\\input{live}\n";
+    const ranges = texRefRanges(src);
+    // Only the live \input is decorated, and at its real source offset.
+    expect(ranges.map((r) => src.slice(r.start, r.end))).toEqual(["live"]);
+  });
 });
 
 describe("resolveTexRef", () => {
@@ -102,10 +125,10 @@ describe("resolveTexRef", () => {
     });
   });
 
-  it("appends .bib for \\bibliography and opens it as text", () => {
+  it("appends .bib for \\bibliography and opens it in the bibliography card view", () => {
     expect(resolveTexRef(MAIN, { command: "bibliography", token: "refs" })).toEqual({
       path: "/home/u/proj/refs.bib",
-      viewer: "text",
+      viewer: "bib",
       label: "refs.bib",
     });
   });

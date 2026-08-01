@@ -773,6 +773,7 @@ pub fn run() {
             // cross the boundary only through `mail_attach_pick` /
             // `mail_attachment_save`, which raise the OS dialog inside Rust.
             commands::mail::mail_accounts_list,
+            commands::mail::mail_account_set_ai,
             commands::mail::mail_account_upsert,
             commands::mail::mail_account_delete,
             commands::mail::mail_account_test,
@@ -799,11 +800,21 @@ pub fn run() {
             commands::mail::mail_filters_list,
             commands::mail::mail_filters_set,
             commands::mail::mail_filters_apply,
+            // Local-model mail assistant (Group Q, #203–#208). Every one runs a
+            // prompt against a loopback Ollama via `services::mail_ai`, which
+            // refuses a remote host even with `ollama_allow_remote_host` on —
+            // nothing about a message ever leaves this machine.
+            commands::mail::mail_summarize,
+            commands::mail::mail_formalize_reply,
+            commands::mail::mail_extract_event,
+            commands::mail::mail_extract_task,
+            commands::mail::mail_ai_classify_apply,
             commands::mail::mail_draft_save,
             commands::mail::mail_draft_send,
             commands::mail::mail_attach_pick,
             commands::mail::mail_attach_remove,
             commands::mail::mail_attachment_save,
+            commands::mail::mail_attachment_save_to_project,
             commands::mail::mail_attachment_preview,
             // Encryption at rest (docs/mail_encryption_plan.md). Four verbs
             // rather than a toggle, because the states are not symmetric: a
@@ -973,6 +984,7 @@ pub fn run() {
             commands::fs::extract_archive,
             commands::clipboard::clipboard_has_image,
             commands::clipboard::save_clipboard_image,
+            commands::clipboard::copy_png_bytes_to_clipboard,
             commands::screenshot::capture_project_screenshot,
             commands::fs::delete_file,
             commands::fs::delete_dir,
@@ -1123,6 +1135,7 @@ pub fn run() {
             commands::crash::report_frontend_error,
             // Debug diagnostics
             commands::debug::debug_app_resource_usage,
+            commands::debug::webview_rss_kib,
             // Ollama local models
             commands::ollama::list_ollama_models,
             commands::ollama::ensure_vibe_ollama_model,
@@ -1147,6 +1160,7 @@ pub fn run() {
             commands::ollama::ollama_is_running,
             commands::ollama::ollama_status,
             commands::ollama::ollama_gpu_status,
+            commands::ollama::ollama_models_dir_plan,
             commands::ollama::ollama_registry_size,
             commands::ollama::ollama_registry_details,
             commands::ollama::list_ollama_models_detailed,

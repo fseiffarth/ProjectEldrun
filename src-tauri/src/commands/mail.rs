@@ -18,11 +18,13 @@
 //!
 //! **2. No `mail_*` command takes a filesystem path, glob or directory.** That
 //! is the whole statement of the sandbox boundary. Everything the mail
-//! subsystem reads or writes resolves under [`mail_dir`], internally, never
-//! from the frontend. Files cross only through [`mail_attach_pick`] and
+//! subsystem reads or writes resolves internally — under [`mail_dir`], or under
+//! a project directory the backend looks up from an opaque id — never from a
+//! path the frontend hands in. Files cross only through [`mail_attach_pick`] and
 //! [`mail_attachment_save`], both of which raise the **OS dialog inside Rust**
 //! (via `tauri_plugin_dialog`'s `DialogExt`, bridged to a `oneshot` — never
-//! `blocking_pick_*`, which would be rule 1 all over again). Consequence worth
+//! `blocking_pick_*`, which would be rule 1 all over again), plus
+//! [`mail_attachment_save_to_project`] (see below). Consequence worth
 //! stating: an attacker who fully controls a message's bytes, its HTML, and any
 //! script that somehow escaped the render iframe still has no reachable IPC verb
 //! that names a path — there is nothing to path-traverse, because there is no
@@ -31,8 +33,18 @@
 //!
 //! Deliberately absent, each of which would be an ambient hole: no "open
 //! attachment with the system app" (arbitrary-file-write plus exec), no
-//! attachment drag-out, no "save all attachments" into a directory, no writing
-//! anything into the active project's tree.
+//! attachment drag-out, and no "save all attachments" into a directory.
+//!
+//! **One write into a project tree exists, and it is the exception that keeps
+//! the rule legible.** [`mail_attachment_save_to_project`] drops a single
+//! attachment into `<project>/emails/`, creating that folder on demand. It still
+//! names **no path**: the project is an opaque `project_id` the backend resolves
+//! to that project's own directory, the `emails/` subfolder is fixed, and the
+//! filename is sanitized exactly as the OS-dialog path pre-fills it — so the
+//! message's bytes can neither choose the folder nor traverse out of it. It is
+//! reached only from an explicit, per-file confirmation in the UI (which also
+//! offers [`mail_attachment_save`]'s pick-any-location dialog), never
+//! automatically.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -45,9 +57,10 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::projects::uuid_v4;
 use crate::schema::mail::{
-    MailAccount, MailAccountSaved, MailAccounts, MailBody, MailDraft, MailEncryptionState,
-    MailCryptoInfo, MailFilterReport, MailFilterRule, MailFilterSample, MailFilters, MailFlag, MailFolder, MailFolderKind, MailHeader, MailHeaderPage, MailKeyringState, MailLink, MailPasswordState, MailPreviewBlob,
-    MailPriority, MailPriorityCounts, MailProbe, MailSendResult, MailSort, MailSyncEvent,
+    MailAccount, MailAccountSaved, MailAccounts, MailAddress, MailAiClassifyMatch, MailAiPrefs,
+    MailAiClassifyReport, MailBody, MailDraft, MailEncryptionState,
+    MailCryptoInfo, MailExtractedEvent, MailExtractedTask, MailFilterReport, MailFilterRule, MailFilterSample, MailFilters, MailFlag, MailFolder, MailFolderKind, MailHeader, MailHeaderPage, MailKeyringState, MailLink, MailPasswordState, MailPreviewBlob,
+    MailPriority, MailPriorityCounts, MailPrioritySource, MailProbe, MailSendResult, MailSort, MailSyncEvent,
     MailSyncSummary, StagedAttachment, ACCOUNTS_VERSION, FILTERS_VERSION,
 };
 use crate::services::mail_crypt::{self, MailKeys};
@@ -56,6 +69,7 @@ use crate::services::mail_pgp::{self, PgpKeyInfo, PgpKeyring, SealOpts};
 use crate::services::mail_engine::{
     self, InProcessEngine, MailEngine, OutboundAttachment, Password,
 };
+use crate::services::mail_ai;
 use crate::services::mail_authres;
 use crate::services::mail_filters;
 use crate::services::mail_sanitize::{self, SANITIZER_VERSION};
@@ -730,6 +744,28 @@ fn account_by_id(path: &Path, id: &str) -> Result<MailAccount, String> {
         .ok_or_else(|| format!("mail account '{id}' not found"))
 }
 
+/// Patch just the per-account **Mail AI (local)** toggles, without touching the
+/// account's credentials.
+///
+/// A dedicated write rather than routing through `mail_account_upsert`, because
+/// that command carries a password + a keychain intent, and a quick feature
+/// toggle (from the toolbar tags, or the per-account settings dialog) must never
+/// be able to disturb a saved secret. An empty preference set is stored as
+/// `None`, keeping an account that turned everything back off clean.
+fn set_account_ai_at(path: &Path, id: &str, ai: MailAiPrefs) -> Result<MailAccount, String> {
+    let mut data = read_accounts(path)?;
+    data.version = ACCOUNTS_VERSION;
+    let slot = data
+        .accounts
+        .iter_mut()
+        .find(|a| a.id == id)
+        .ok_or_else(|| format!("mail account '{id}' not found"))?;
+    slot.ai = if ai.is_empty() { None } else { Some(ai) };
+    let updated = slot.clone();
+    write_accounts(path, &data)?;
+    Ok(updated)
+}
+
 // ── Identity ────────────────────────────────────────────────────────────────
 
 /// A stable, opaque folder id. Derived rather than stored so a re-listed folder
@@ -884,6 +920,18 @@ fn blank_save_error(already_saved: bool, store_readable: bool) -> Option<String>
 #[tauri::command]
 pub async fn mail_accounts_list() -> Result<Vec<MailAccount>, String> {
     tokio::task::spawn_blocking(|| Ok(read_accounts(&accounts_path())?.accounts))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Set the per-account **Mail AI (local)** toggles for one account, returning
+/// the updated account. Touches no credential — see `set_account_ai_at`.
+#[tauri::command]
+pub async fn mail_account_set_ai(
+    account_id: String,
+    ai: MailAiPrefs,
+) -> Result<MailAccount, String> {
+    tokio::task::spawn_blocking(move || set_account_ai_at(&accounts_path(), &account_id, ai))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -1666,6 +1714,21 @@ async fn sync_inner(
     // `active_rules`.
     let rules = active_rules();
 
+    // #205: whether the local model may file new inbox mail, read once for the
+    // whole sync. **Per account** now, plus the global master switch: off by
+    // default; when on, the classifier runs AFTER the keyword pass and only over
+    // still-unmarked new inbox messages, so an explicit rule always wins. A model
+    // failure never fails a sync (best-effort below).
+    let autoclassify = read_settings().mail_ai_allow.unwrap_or(false)
+        && account
+            .ai
+            .as_ref()
+            .and_then(|a| a.autoclassify)
+            .unwrap_or(false);
+    // How many messages the model may look at per sync, and how long each may
+    // take — the classifier is best-effort filing, not a sync precondition.
+    let mut classify_budget: u32 = 20;
+
     let mut new_messages = 0u32;
     let mut filtered = 0u32;
     let folder_count = targets.len() as u32;
@@ -1707,9 +1770,16 @@ async fn sync_inner(
         } else {
             rules.clone()
         };
-        let (added, filed): (u32, u32) = tokio::task::spawn_blocking(move || {
+        // Only the inbox feeds the model classifier, and only when it is on.
+        let collect_for_model = autoclassify
+            && classify_budget > 0
+            && folder2.kind == MailFolderKind::Inbox;
+        #[allow(clippy::type_complexity)]
+        let (added, filed, candidates): (u32, u32, Vec<ClassifyCandidate>) =
+            tokio::task::spawn_blocking(move || {
             let mut added = 0u32;
             let mut filed = 0u32;
+            let mut candidates: Vec<ClassifyCandidate> = Vec::new();
             for h in headers {
                 let row = crate::schema::mail::MailHeader {
                     id: message_id_for(&folder2.id, h.uid),
@@ -1743,6 +1813,11 @@ async fn sync_inner(
                     // message in the folder on every check — cannot wipe a mark
                     // the user made. The mark is the user's, not the server's.
                     priority: None,
+                    // Provenance is never written by a sync — it is set only
+                    // when something *marks* the message (a rule below, the user,
+                    // or the model), so a re-sync cannot overwrite it.
+                    priority_source: None,
+                    priority_reason: None,
                 };
                 if store3.upsert_header(&row)? {
                     added += 1;
@@ -1753,18 +1828,43 @@ async fn sync_inner(
                     // *unmarked* one the user deliberately cleared looks
                     // identical to one that never matched. The user's own
                     // decision is only safe if the automatic pass happens once.
-                    if let Some((mark, _hit)) = mail_filters::mark_for(&rules2, &row) {
-                        if store3.set_priority(&row.id, Some(mark))? {
+                    if let Some((mark, hit)) = mail_filters::mark_for(&rules2, &row) {
+                        // Provenance `filter`, so the model classifier below can
+                        // never be mistaken for a keyword rule (#205). The reason
+                        // is the rule's own name, which is what the UI shows.
+                        if store3.set_priority_ex(
+                            &row.id,
+                            Some(mark),
+                            crate::schema::mail::MailPrioritySource::Filter,
+                            &hit.rule_name,
+                        )? {
                             filed += 1;
                         }
+                    } else if collect_for_model {
+                        // Still unmarked after the keyword pass: a candidate for
+                        // the model. Subject + sender + preview ONLY — never a
+                        // body download.
+                        candidates.push(ClassifyCandidate {
+                            id: row.id.clone(),
+                            subject: row.subject.clone(),
+                            from: from_display(&row.from),
+                            preview: row.preview.clone(),
+                        });
                     }
                 }
             }
             store3.refresh_counts(&folder2.id)?;
-            Ok::<_, String>((added, filed))
+            Ok::<_, String>((added, filed, candidates))
         })
         .await
         .map_err(|e| e.to_string())??;
+
+        // #205 classify hook: run the local model over the still-unmarked new
+        // inbox messages this folder produced, bounded and best-effort. A model
+        // down / slow / absent skips silently — it NEVER fails the sync.
+        if autoclassify && !candidates.is_empty() {
+            classify_new_inbox(&store, &candidates, &mut classify_budget).await;
+        }
 
         filtered += filed;
         new_messages += added;
@@ -2327,6 +2427,364 @@ pub async fn mail_filters_apply(
     .map_err(|e| e.to_string())?
 }
 
+// ── Local-model mail assistant (Group Q, #203–#208) ─────────────────────────
+//
+// Every command here runs a prompt against the **loopback** mail model through
+// `services::mail_ai`, which refuses a non-loopback host even with
+// `ollama_allow_remote_host` on. Nothing about a message ever leaves the
+// machine, and no prompt fetches a web page, image or link — the only input is
+// what the local store already holds. Following the `mail_client` precedent, the
+// user-triggered commands are NOT refused when their settings flag is off: a
+// renderer able to invoke them could equally flip the setting.
+
+/// Byte caps on the decoded body handed to a prompt. Bounded because a whole
+/// message is unbounded and a model's context is not; the head of a message
+/// carries the summary/appointment/task nearly always.
+const SUMMARIZE_BODY_CAP: usize = 8_000;
+const FORMALIZE_BODY_CAP: usize = 6_000;
+const EXTRACT_BODY_CAP: usize = 6_000;
+
+/// One still-unmarked new inbox message the model may triage (#205). Carries the
+/// header fields the classifier reads — **subject, sender and preview only**,
+/// never a body — so the sync loop can gather them under its store lock and run
+/// the model afterwards, off that lock.
+struct ClassifyCandidate {
+    id: String,
+    subject: String,
+    from: String,
+    preview: String,
+}
+
+/// A sender rendered for a prompt: `Name <addr>` when a display name is present,
+/// else the bare address.
+fn from_display(a: &MailAddress) -> String {
+    match a.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        Some(name) => format!("{name} <{}>", a.address),
+        None => a.address.clone(),
+    }
+}
+
+/// A crude HTML→text fallback for a message with no `text/plain` part: strip
+/// tags and collapse whitespace. Good enough to feed a prompt (it does not
+/// decode entities, which a summary does not need); never rendered to the user.
+fn html_to_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                out.push(' ');
+            }
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Truncate to at most `cap` bytes on a char boundary.
+fn truncate_bytes(s: &str, cap: usize) -> String {
+    if s.len() <= cap {
+        return s.to_string();
+    }
+    let mut end = cap;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
+/// Fetch a message's body as plain text for the local-model features.
+///
+/// **Ephemeral by design.** The decoded (and, for end-to-end mail, decrypted)
+/// text is returned to the caller and **never written to disk** — not to the
+/// body cache, not to a blob. Persisting decrypted plaintext is exactly what
+/// `docs/context/mail_encryption.md` forbids, so summarize/extract re-fetch each
+/// time rather than leave a cleartext copy behind.
+async fn fetch_message_text(
+    rt: &MailState,
+    message_id: &str,
+    byte_cap: usize,
+) -> Result<(MailHeader, String), String> {
+    let rt3 = rt.clone();
+    let id = message_id.to_string();
+    let (account, folder, header) = tokio::task::spawn_blocking(move || {
+        let store = store_of(&rt3)?;
+        let header = store
+            .header(&id)?
+            .ok_or_else(|| format!("message '{id}' is not in the local index"))?;
+        let folder = store
+            .folder(&header.folder_id)?
+            .ok_or_else(|| "the message's folder is not in the local index".to_string())?;
+        let account = account_by_id(&accounts_path(), &header.account_id)?;
+        Ok::<_, String>((account, folder, header))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let Some(pw) = resolve_password(rt, &account, MailProto::Imap) else {
+        return Err(no_password_message());
+    };
+    let raw = InProcessEngine
+        .body(&account, &pw, &folder.path, header.uid)
+        .await
+        .map_err(String::from)?;
+
+    let rt4 = rt.clone();
+    let from_address = header.from.address.clone();
+    let text = tokio::task::spawn_blocking(move || {
+        // Decrypt → parse, the same ordering `mail_body` uses; the plaintext is
+        // used here and dropped, never stored.
+        let (raw, _crypto) = apply_crypto(&rt4, raw, &from_address);
+        let parsed = mail_engine::parse_message(&raw).map_err(String::from)?;
+        let text = parsed
+            .text
+            .clone()
+            .or_else(|| parsed.html.as_deref().map(html_to_text))
+            .unwrap_or_default();
+        Ok::<_, String>(truncate_bytes(&text, byte_cap))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    Ok((header, text))
+}
+
+/// Run the local model over the still-unmarked new inbox messages a sync just
+/// produced, bounded by `budget` and per-message timeout. **Best-effort**: a
+/// model down / slow / absent skips silently and NEVER fails the sync.
+async fn classify_new_inbox(
+    store: &Arc<MailStore>,
+    candidates: &[ClassifyCandidate],
+    budget: &mut u32,
+) {
+    for c in candidates {
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
+        let subject = c.subject.clone();
+        let from = c.from.clone();
+        let preview = c.preview.clone();
+        let verdict = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            tokio::task::spawn_blocking(move || mail_ai::classify(&subject, &from, &preview)),
+        )
+        .await;
+        // Timed out, or the blocking task panicked: skip this one.
+        let verdict = match verdict {
+            Ok(Ok(v)) => v,
+            _ => continue,
+        };
+        match verdict {
+            Ok(Some((mark, reason))) => {
+                let store = store.clone();
+                let id = c.id.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    store.set_priority_ex(&id, Some(mark), MailPrioritySource::Model, &reason)
+                })
+                .await;
+            }
+            // The model declined to mark it, which is the common case.
+            Ok(None) => {}
+            // Server down / not configured / a remote host refused: no point
+            // hammering the rest of this sync with the same failure.
+            Err(_) => break,
+        }
+    }
+}
+
+/// #204 — summarize one message into a few plain-text bullets, on demand. The
+/// summary is returned to the caller and held in frontend state; it is never
+/// persisted (the decrypted-plaintext rule).
+#[tauri::command]
+pub async fn mail_summarize(
+    message_id: String,
+    state: State<'_, MailState>,
+) -> Result<String, String> {
+    let rt = state.inner().clone();
+    let (header, text) = fetch_message_text(&rt, &message_id, SUMMARIZE_BODY_CAP).await?;
+    let user = mail_ai::summarize_user(&header.subject, &from_display(&header.from), &text);
+    tokio::task::spawn_blocking(move || {
+        mail_ai::chat(
+            mail_ai::SUMMARIZE_SYSTEM,
+            &user,
+            mail_ai::ChatOptions::bounded(400),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// #206 — turn rough notes into a formal reply body. **Never sends**: the result
+/// only fills the composer's `body_text` for explicit review and send.
+#[tauri::command]
+pub async fn mail_formalize_reply(
+    notes: String,
+    message_id: Option<String>,
+    account_id: String,
+    tone: Option<String>,
+    state: State<'_, MailState>,
+) -> Result<String, String> {
+    let rt = state.inner().clone();
+    // The original message is optional context, never quoted back.
+    let original = match &message_id {
+        Some(id) => Some(fetch_message_text(&rt, id, FORMALIZE_BODY_CAP).await?.1),
+        None => None,
+    };
+    // The sending identity's name to sign off with (best-effort).
+    let acct = account_id.clone();
+    let sender_name = tokio::task::spawn_blocking(move || {
+        account_by_id(&accounts_path(), &acct).ok().map(|a| a.label)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .filter(|n| !n.trim().is_empty());
+
+    let user = mail_ai::formalize_user(
+        &notes,
+        original.as_deref(),
+        tone.as_deref(),
+        sender_name.as_deref(),
+    );
+    tokio::task::spawn_blocking(move || {
+        mail_ai::chat(
+            mail_ai::FORMALIZE_SYSTEM,
+            &user,
+            mail_ai::ChatOptions::bounded(600),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// #207 — extract a calendar event, anchored on the message `Date` and today so
+/// relative phrasing resolves. A low-confidence / unparseable result is
+/// `Ok(None)` — "nothing to create" — never an error.
+#[tauri::command]
+pub async fn mail_extract_event(
+    message_id: String,
+    state: State<'_, MailState>,
+) -> Result<Option<MailExtractedEvent>, String> {
+    let rt = state.inner().clone();
+    let (header, text) = fetch_message_text(&rt, &message_id, EXTRACT_BODY_CAP).await?;
+    let today = mail_ai::today_iso();
+    let user = mail_ai::event_user(
+        &header.subject,
+        &from_display(&header.from),
+        &text,
+        &header.date,
+        &today,
+    );
+    let out = tokio::task::spawn_blocking(move || {
+        mail_ai::chat(
+            mail_ai::EVENT_SYSTEM,
+            &user,
+            mail_ai::ChatOptions::bounded(300),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(mail_ai::parse_event(&out))
+}
+
+/// #208 — extract a to-do task, same anchoring and defensive parse. `Ok(None)`
+/// when there is nothing actionable.
+#[tauri::command]
+pub async fn mail_extract_task(
+    message_id: String,
+    state: State<'_, MailState>,
+) -> Result<Option<MailExtractedTask>, String> {
+    let rt = state.inner().clone();
+    let (header, text) = fetch_message_text(&rt, &message_id, EXTRACT_BODY_CAP).await?;
+    let today = mail_ai::today_iso();
+    let user = mail_ai::task_user(
+        &header.subject,
+        &from_display(&header.from),
+        &text,
+        &header.date,
+        &today,
+    );
+    let out = tokio::task::spawn_blocking(move || {
+        mail_ai::chat(mail_ai::TASK_SYSTEM, &user, mail_ai::ChatOptions::bounded(200))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(mail_ai::parse_task(&out))
+}
+
+/// #205 — the manual "what would the local model file?" counterpart to the sync
+/// hook, mirroring `mail_filters_apply` but with a source-labelled report that
+/// can never be mistaken for the keyword-filter report. `dry_run` previews;
+/// otherwise the marks are applied with `model` provenance. A whole-model
+/// failure (down / not configured / remote refused) is reported rather than
+/// returned as an empty preview.
+#[tauri::command]
+pub async fn mail_ai_classify_apply(
+    dry_run: bool,
+    account_id: Option<String>,
+    limit: Option<u32>,
+    state: State<'_, MailState>,
+) -> Result<MailAiClassifyReport, String> {
+    let rt = state.inner().clone();
+    let store = {
+        let rt = rt.clone();
+        tokio::task::spawn_blocking(move || store_of(&rt))
+            .await
+            .map_err(|e| e.to_string())??
+    };
+    // The same unmarked scope the filter apply uses, so the two previews agree
+    // about what is in play. Bounded — a model call per message is not free.
+    let cap = limit.unwrap_or(50).clamp(1, 200);
+    let headers = {
+        let store = store.clone();
+        let acc = account_id.clone();
+        tokio::task::spawn_blocking(move || store.unmarked_headers(acc.as_deref(), cap))
+            .await
+            .map_err(|e| e.to_string())??
+    };
+
+    let mut report = MailAiClassifyReport::new(dry_run);
+    report.scanned = headers.len() as u32;
+    for h in &headers {
+        let subject = h.subject.clone();
+        let from = from_display(&h.from);
+        let preview = h.preview.clone();
+        let verdict = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            tokio::task::spawn_blocking(move || mail_ai::classify(&subject, &from, &preview)),
+        )
+        .await;
+        let verdict = match verdict {
+            Ok(Ok(v)) => v,
+            // A timeout or a panicked task is skipped, not fatal.
+            _ => continue,
+        };
+        match verdict {
+            Ok(Some((mark, reason))) => {
+                report.matched.push(MailAiClassifyMatch {
+                    message_id: h.id.clone(),
+                    priority: mark.as_str().to_string(),
+                    reason: reason.clone(),
+                });
+                if !dry_run {
+                    let store = store.clone();
+                    let id = h.id.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        store.set_priority_ex(&id, Some(mark), MailPrioritySource::Model, &reason)
+                    })
+                    .await;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(report)
+}
+
 #[tauri::command]
 pub async fn mail_move(
     message_ids: Vec<String>,
@@ -2427,8 +2885,13 @@ pub async fn mail_draft_send(
                 bytes: store.staged_bytes(&id, &staged.staged_id)?,
             });
         }
+        // The account's `label` — the dialog's **Name** — is the sending
+        // identity: it is what recipients read in `From:`. `display_name` is
+        // this machine's own nickname for the account (the accounts badge) and
+        // deliberately never leaves the box.
+        let from_name = Some(account.label.trim()).filter(|n| !n.is_empty());
         let raw = mail_engine::build_outgoing(
-            account.display_name.as_deref(),
+            from_name,
             &account.address,
             &draft.to,
             &draft.cc,
@@ -2656,6 +3119,83 @@ pub async fn mail_attachment_save(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Save an attachment into a project's `emails/` folder, creating that folder if
+/// it does not exist yet, and return the full path written (for a toast).
+///
+/// The exception to rule 2, kept honest by naming **no path**: the project is an
+/// opaque `project_id` the backend resolves to that project's own `directory`
+/// (via [`crate::services::remote::project_directory`]), the destination is
+/// fixed at `<project>/emails/`, and the filename is sanitized exactly as the
+/// OS-dialog path pre-fills it. An attacker who controls the bytes and the
+/// filename can neither choose the folder nor traverse out of it. The
+/// pick-any-location path stays [`mail_attachment_save`]'s OS dialog, offered
+/// beside this one in the same confirmation.
+#[tauri::command]
+pub async fn mail_attachment_save_to_project(
+    message_id: String,
+    part_id: String,
+    project_id: String,
+    state: State<'_, MailState>,
+) -> Result<String, String> {
+    let rt = state.inner().clone();
+    let (mid, pid) = (message_id.clone(), part_id.clone());
+    let (meta, bytes) = tokio::task::spawn_blocking(move || {
+        let store = store_of(&rt)?;
+        let (meta, blob) = store
+            .attachment(&mid, &pid)?
+            .ok_or_else(|| "attachment not found".to_string())?;
+        let bytes = store.get_blob(&blob)?;
+        Ok::<_, String>((meta, bytes))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    tokio::task::spawn_blocking(move || {
+        let dir = crate::services::remote::project_directory(&project_id)
+            .filter(|d| !d.is_empty())
+            .ok_or_else(|| "no such project".to_string())?;
+        let emails = PathBuf::from(dir).join("emails");
+        std::fs::create_dir_all(&emails).map_err(|e| e.to_string())?;
+
+        // The filename is the message's, so it is sanitized (no path component,
+        // no traversal, no control/bidi trickery) before being joined under the
+        // fixed `emails/` subfolder.
+        let safe = mail_sanitize::sanitize_attachment_name(&meta.filename).value;
+        let target = unique_in_dir(&emails, &safe);
+
+        std::fs::write(&target, &bytes).map_err(|e| e.to_string())?;
+        Ok(target.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// A path in `dir` for `name` that will not clobber an existing file: `name`
+/// itself if free, else `name (2)`, `name (3)`, … with the extension preserved.
+/// A save into a project tree must never silently overwrite a file already
+/// sitting there — two mails can carry an `invoice.pdf`.
+fn unique_in_dir(dir: &Path, name: &str) -> PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let path = Path::new(name);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
+    let ext = path.extension().and_then(|s| s.to_str());
+    for n in 2..10_000 {
+        let candidate = match ext {
+            Some(ext) => format!("{stem} ({n}).{ext}"),
+            None => format!("{stem} ({n})"),
+        };
+        let p = dir.join(candidate);
+        if !p.exists() {
+            return p;
+        }
+    }
+    // 10k collisions is pathological; fall back to the base rather than loop.
+    first
 }
 
 /// Bounded bytes for in-pane preview. Nothing is written to disk; the pane
@@ -2906,6 +3446,7 @@ mod tests {
             "mail_attach_pick",
             "mail_attach_remove",
             "mail_attachment_save",
+            "mail_attachment_save_to_project",
             "mail_attachment_preview",
         ] {
             assert!(
@@ -3162,6 +3703,8 @@ mod tests {
             malformed_headers: None,
             auth: Some(auth),
             priority: None,
+            priority_source: None,
+            priority_reason: None,
         }
     }
 

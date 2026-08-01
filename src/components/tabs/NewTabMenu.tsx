@@ -366,27 +366,28 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                 }),
             }],
           },
-          // Needs a project to install into — hidden at the root scope rather
-          // than offered disabled, the Network Traffic bargain above.
-          ...(scope !== "root"
-            ? [{
-                label: t("skillsLibrary.title"),
-                entries: [{
-                  key: "skillslibrary",
+          // Offered at the root scope too, since the personal install scope
+          // (`~/.claude/skills/`) gave it something to do there: the catalog is
+          // machine state, and a skill can now be installed for every project
+          // on this machine without one being open. It was hidden while a
+          // project was the only possible destination.
+          {
+            label: t("skillsLibrary.title"),
+            entries: [{
+              key: "skillslibrary",
+              label: t("skillsLibrary.title"),
+              dot: "◧",
+              color: TAB_ACCENT.skillslibrary,
+              untested: true,
+              onPick: () =>
+                pickFixed({
                   label: t("skillsLibrary.title"),
-                  dot: "◧",
-                  color: TAB_ACCENT.skillslibrary,
-                  untested: true,
-                  onPick: () =>
-                    pickFixed({
-                      label: t("skillsLibrary.title"),
-                      cmd: SKILLSLIBRARY_TAB_CMD,
-                      cwd: projectCwd,
-                      kind: "skillslibrary",
-                    }),
-                }],
-              }]
-            : []),
+                  cmd: SKILLSLIBRARY_TAB_CMD,
+                  cwd: projectCwd,
+                  kind: "skillslibrary",
+                }),
+            }],
+          },
           ...(webBrowser
             ? [{
                 label: t("newTabMenu.browser"),

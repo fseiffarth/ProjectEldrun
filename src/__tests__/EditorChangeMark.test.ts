@@ -191,3 +191,43 @@ describe("deletionGhostText", () => {
     expect(deletionGhostText("\n")).toBeNull();
   });
 });
+
+/**
+ * A coupled `\begin{env}`/`\end{env}` rename changes the document in two places
+ * at once. `editSpan` can only report ONE run, so read directly it returns
+ * everything between the two — which is what the editor books its trail through,
+ * hence the two-stage booking (typed run, then mirrored run) in `CodeEditor`'s
+ * `edit`. These pin the reason down.
+ */
+describe("a two-place edit through editSpan", () => {
+  const prev = "\\begin{item}\nbody\n\\end{item}";
+  // What the user typed: "ize" into the \begin name only.
+  const typed = "\\begin{itemize}\nbody\n\\end{item}";
+  // What is committed: the mirrored rename on top of it.
+  const next = "\\begin{itemize}\nbody\n\\end{itemize}";
+
+  it("read in one step, swallows the whole environment body", () => {
+    const span = editSpan(prev, next)!;
+    // The run reaches from inside the \begin name to inside the \end name, so the
+    // tint would paint the body and the ghost would report it as deleted text.
+    expect(prev.slice(span.start, span.endPrev)).toContain("body");
+    expect(deletionGhostText(prev.slice(span.start, span.endPrev))).not.toBeNull();
+  });
+
+  it("read as its two stages, is two small runs and no bogus deletion", () => {
+    const typedSpan = editSpan(prev, typed)!;
+    expect(next.slice(typedSpan.start, typedSpan.endNext)).toBe("ize");
+    // Nothing was removed by either stage, so neither raises a deletion ghost.
+    expect(deletionGhostText(prev.slice(typedSpan.start, typedSpan.endPrev))).toBeNull();
+    const mirrorSpan = editSpan(typed, next)!;
+    expect(next.slice(mirrorSpan.start, mirrorSpan.endNext)).toBe("ize");
+    expect(deletionGhostText(typed.slice(mirrorSpan.start, mirrorSpan.endPrev))).toBeNull();
+    // The typed run, remapped through the mirrored one, still points at the
+    // \begin name — the mirrored insertion lands after it.
+    const remapped = remapChangeRange(
+      { start: typedSpan.start, end: typedSpan.endNext },
+      mirrorSpan,
+    )!;
+    expect(remapped).toEqual({ start: typedSpan.start, end: typedSpan.endNext });
+  });
+});

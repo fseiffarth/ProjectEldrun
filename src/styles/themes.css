@@ -77,11 +77,31 @@ html, body, #root {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  gap: 2px;
   min-height: 30px;
   padding: 0 4px;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border-color);
+}
+
+/* The star mark — the ONE place it renders outside the main window's header.
+   It marks the popout's frame (an undecorated window has no other identity),
+   which is why it is not on the tab bars inside it. Decorative: no pointer
+   events, so it never eats a titlebar drag started on top of it. */
+.detached-titlebar-logo {
+  flex-shrink: 0;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 26px;
+  pointer-events: none;
+  opacity: 0.8;
+}
+.detached-titlebar-logo svg {
+  width: 13px;
+  height: 13px;
 }
 
 /* The layout tree lives below the title bar and is the positioning context for
@@ -881,6 +901,28 @@ select option {
      theme (the dark-green original vanished on the dark background). Pure
      black on light themes, pure white on dark, via the per-theme token. */
   color: var(--logo-color, var(--text-primary));
+  /* HeaderBar mounts exactly once per app launch, so this plays once as a
+     startup flourish and never again (no infinite/repeat). */
+  animation: eldrun-logo-intro 1.1s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  transform-origin: 50% 50%;
+}
+
+@keyframes eldrun-logo-intro {
+  0% {
+    opacity: 0;
+    transform: scale(0.2) rotate(-135deg);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.15) rotate(10deg);
+  }
+  80% {
+    transform: scale(0.95) rotate(-4deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
 }
 
 /* The logo doubles as the root-terminal switch button. */
@@ -1322,6 +1364,11 @@ select option {
   cursor: default;
 }
 
+.file-viewer-print svg {
+  width: 14px;
+  height: 14px;
+}
+
 /* Auto-sync toggle in the viewer header (remote projects only). Off = muted
    outline; on = accent-tinted so it reads as active. */
 .file-viewer-autosync {
@@ -1409,13 +1456,29 @@ select option {
 }
 
 .file-viewer-save {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
   color: var(--text-muted);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
-  padding: 1px 8px;
-  font-size: 10px;
+  padding: 0;
+  width: 22px;
+  height: 18px;
+  line-height: 1;
   cursor: pointer;
+}
+
+.file-viewer-save svg {
+  width: 14px;
+  height: 14px;
+}
+
+.file-viewer-save.is-dirty {
+  color: var(--warning, #d29922);
+  border-color: color-mix(in srgb, var(--warning, #d29922) 55%, transparent);
+  background: color-mix(in srgb, var(--warning, #d29922) 10%, transparent);
 }
 
 .file-viewer-save:disabled {
@@ -1424,8 +1487,9 @@ select option {
 }
 
 .file-viewer-save:not(:disabled):hover {
-  color: var(--text-primary);
-  border-color: var(--text-muted);
+  color: var(--warning, #d29922);
+  border-color: var(--warning, #d29922);
+  background: color-mix(in srgb, var(--warning, #d29922) 18%, transparent);
 }
 
 /* "Format document" button — same chrome as the save button. */
@@ -2949,6 +3013,330 @@ select option {
   background: color-mix(in srgb, var(--accent, #4493f8) 14%, transparent);
 }
 
+/* ── BibTeX card view (`.bib`) ────────────────────────────────────────────────
+   One card per bibliography entry in a single readable column, each holding its
+   `field = {value}` rows. Deliberately built on the YAML card view's primitives
+   (.yaml-value-input / .yaml-value-locked / .yaml-act / .yaml-add / .yaml-card-empty),
+   so the two structured viewers read as one family and a change to a value field
+   lands in both. What is its own is the layout: no nesting, no drill — a flat,
+   scrolling list with a sticky filter bar, because a real bibliography is
+   thousands of records long. Monospace like the tree so values read as data. */
+.bib-cards {
+  padding: 8px 12px 24px;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+/* Sticky, because it carries the filter and the count: scrolling a 2000-entry
+   file must not take the one control that makes it navigable off screen. It sits
+   on the pane's own background so the cards pass under it opaquely. */
+.bib-cards-bar {
+  position: sticky;
+  top: -8px; /* cancels the container's own top padding */
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: -8px -12px 8px;
+  padding: 8px 12px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.bib-filter {
+  flex: 0 1 220px;
+  min-width: 100px;
+  background: var(--bg-input, var(--bg-panel));
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  font: inherit;
+}
+
+.bib-filter:focus {
+  outline: none;
+  border-color: var(--accent, #4493f8);
+}
+
+.bib-cards-count {
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.bib-cards-act {
+  flex: none;
+}
+
+/* What the cards do NOT show, stated rather than left as a silent difference
+   between this view and Source. */
+.bib-cards-note {
+  margin-bottom: 8px;
+  padding: 4px 8px;
+  border-left: 2px solid var(--warning, #d29922);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* A readable column rather than the full width of a wide pane — an entry's
+   fields are label/value pairs, and a 2000px-wide value is unreadable. */
+.bib-card-list {
+  max-width: 1040px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bib-card {
+  border: 1px solid var(--border-color);
+  border-left: 2px solid color-mix(in srgb, var(--accent, #4493f8) 55%, transparent);
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+
+/* A duplicate citation key is silently wrong (the bibliography keeps one entry
+   and drops the other), so the card wears the warning colour on its edge. */
+.bib-card-dup {
+  border-left-color: var(--warning, #d29922);
+}
+
+.bib-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.03));
+  border-bottom: 1px solid var(--border-color);
+}
+
+.bib-card-caret {
+  flex: none;
+  width: 16px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* `@` is chrome, the type is a field: the sigil stays a static glyph so the
+   input holds exactly what a rename writes back. */
+.bib-card-at {
+  flex: none;
+  color: var(--text-muted);
+}
+
+/* The three inline-editable header/name fields strike the tree's undressed-field
+   bargain: they keep their box (so hover/focus can dress it without a layout
+   shift) and wear no chrome until pointed at. */
+.bib-card-type,
+.bib-card-key,
+.bib-card-fname {
+  background: transparent;
+  color: var(--text-primary);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 1px 3px;
+  font: inherit;
+  min-width: 0;
+}
+
+.bib-card-type {
+  flex: 0 1 auto;
+  width: 11ch;
+  color: var(--text-muted);
+}
+
+/* The citation key is the entry's identity — the thing you came to the card for
+   — so it is the one emphasized string in the header. */
+.bib-card-key {
+  flex: 0 1 auto;
+  width: 22ch;
+  font-weight: 600;
+}
+
+.bib-card-type-static {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.bib-card-type:hover:not(:focus),
+.bib-card-key:hover:not(:focus),
+.bib-card-fname:hover:not(:focus) {
+  background: color-mix(in srgb, var(--accent, #4493f8) 10%, transparent);
+}
+
+.bib-card-type:focus,
+.bib-card-key:focus,
+.bib-card-fname:focus {
+  outline: none;
+  background: var(--bg-panel);
+  border-color: var(--accent, #4493f8);
+}
+
+.bib-card-warn {
+  flex: none;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning, #d29922) 22%, transparent);
+  color: var(--warning, #d29922);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* "author · year", the reading that tells two same-titled entries apart at a
+   glance. Ellipsized: it is a hint, and the fields below are the truth. */
+.bib-card-byline {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bib-card-head-spacer {
+  flex: 1 1 auto;
+}
+
+/* Copy/delete keep their slot but only paint on header hover, so they aren't
+   furniture on every one of a thousand cards. */
+.bib-card-copy,
+.bib-card .yaml-card-del {
+  flex: none;
+  opacity: 0;
+}
+
+.bib-card-head:hover .bib-card-copy,
+.bib-card-head:hover .yaml-card-del,
+.bib-card-copy:focus-visible,
+.bib-card .yaml-card-del:focus-visible {
+  opacity: 1;
+}
+
+.bib-card-body {
+  padding: 4px 4px 6px;
+}
+
+.bib-card-fields {
+  display: flex;
+  flex-direction: column;
+}
+
+/* A field row: the name on the left, the value filling the rest, a hover-delete
+   on the right. `start` rather than `center`, because a value grows to several
+   lines (an abstract) and its name belongs on the first one. */
+.bib-card-field {
+  display: grid;
+  grid-template-columns: minmax(0, 12ch) 1fr auto;
+  align-items: start;
+  gap: 6px;
+  padding: 1px 4px;
+}
+
+/* The value box grows with its content (height is set from scrollHeight), wraps,
+   and never scrolls inside itself — a bib value is text to read, not a cell. */
+.bib-card-field .bib-value-input {
+  display: block;
+  width: 100%;
+  border-color: transparent;
+  padding: 2px 4px;
+  resize: none;
+  overflow: hidden;
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+
+.bib-card-field .bib-value-input:hover:not(:focus) {
+  background: color-mix(in srgb, var(--accent, #4493f8) 10%, transparent);
+}
+
+.bib-card-field .bib-value-input:focus {
+  outline: none;
+  background: var(--bg-panel);
+  border-color: var(--accent, #4493f8);
+}
+
+/* A value the cards refuse to rewrite is shown IN FULL — no ellipsis, no width
+   cap — because it is the only place its source form is visible in this view. */
+.bib-card-field .bib-value-locked {
+  display: block;
+  padding: 2px 4px;
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+/* `@comment`/`@preamble` (and the `@type(…)` paren form) as their own source
+   text: present in the view, plainly not editable through it. */
+.bib-card-raw {
+  margin: 0;
+  padding: 6px 8px;
+  color: var(--text-muted);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.bib-card-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 4px 0;
+}
+
+.bib-add-field {
+  flex: 0 1 14ch;
+  min-width: 0;
+  background: transparent;
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0 4px;
+  font: inherit;
+  font-size: 11px;
+}
+
+.bib-add-field:focus {
+  outline: none;
+  border-color: var(--accent, #4493f8);
+}
+
+/* The venue picker and the sort control wear the filter box's own chrome — they
+   are the same kind of thing (how the list is read), so they read as one group
+   rather than three unrelated widgets. A venue name can be a whole paper title's
+   worth of text, so that one is allowed to take the room it needs and no more. */
+.bib-venue {
+  flex: 0 1 200px;
+  max-width: 260px;
+}
+
+.bib-sort {
+  flex: none;
+}
+
+.bib-sort-dir {
+  flex: none;
+  min-width: 2em;
+}
+
+/* The two ends of the rendered window: "show the entries above/below this one".
+   Centered on the card column rather than the pane, so the button sits under the
+   cards it extends and not out in the margin beside them. */
+.bib-cards-more {
+  display: block;
+  width: 100%;
+  max-width: 1040px;
+  margin: 8px auto;
+}
+
 /* "No LaTeX engine — install one" prompt in the TeX viewer's no-engine state.
    Mirrors the install-cmd rows used in the Ollama/Agents settings panels. */
 .tex-install-banner {
@@ -3143,6 +3531,18 @@ select option {
   outline-offset: -1px;
 }
 
+/* The line the caret sits on — a colour cue at the left edge where the numbers
+   are, so an ordinary click and a SyncTeX reverse-search jump (Ctrl+Click a PDF
+   → its source) are both easy to spot. An inset left bar rather than a solid
+   fill, so it composes with the search-match backgrounds instead of fighting
+   them. Placed after the breakpoint rules to win over `.is-breakable`'s reset. */
+.file-viewer-gutter-line.caret {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--accent-color) 16%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent-color);
+  border-radius: 2px;
+}
+
 /* Hidden mirror that measures each logical line's wrapped height so the wrap-mode
    gutter (LaTeX viewer) can size its cells to match. Shares the editor's font
    metrics, padding and wrap rules; its width is set inline to the textarea's
@@ -3256,6 +3656,11 @@ select option {
 .tok-tag { color: var(--accent); }
 .tok-attr { color: var(--accent-secondary); }
 .tok-prop { color: var(--accent); }
+/* A LaTeX command's brace argument (`\emph{…}`): slant only, no colour of its
+   own — the content keeps whatever tokens it contains (a nested command still
+   reads as a keyword), and the italic is what separates a command's text from
+   the markup around it. */
+.tok-arg { font-style: italic; }
 
 /* Markdown source highlighting (the .md "Edit" view). Reuses the same semantic
    variables so it adapts per theme; headings/strong stay bold, emphasis italic. */
@@ -3324,6 +3729,7 @@ select option {
 .file-viewer-change-layer,
 .file-viewer-delete-layer,
 .file-viewer-grammar-layer,
+.file-viewer-bracket-layer,
 .file-viewer-ghost {
   position: absolute;
   inset: 0;
@@ -3352,7 +3758,8 @@ select option {
 .file-viewer-search-layer,
 .file-viewer-change-layer,
 .file-viewer-delete-layer,
-.file-viewer-grammar-layer {
+.file-viewer-grammar-layer,
+.file-viewer-bracket-layer {
   inset: auto;
   top: 0;
   left: 0;
@@ -3918,6 +4325,17 @@ select option {
   background: rgba(255, 145, 0, 0.6);
 }
 
+/* Bracket-match highlight: when the caret sits right before/after a bracket,
+   it and its partner both paint this outline — a lighter touch than the search
+   match's fill so it doesn't compete with it when a search is also active.
+   Fixed rgba so it reads on both light and dark themes. */
+.file-viewer-bracket-layer .file-viewer-bracket-match {
+  border-radius: 2px;
+  outline: 1.5px solid rgba(88, 166, 255, 0.75);
+  outline-offset: -1px;
+  background: rgba(88, 166, 255, 0.18);
+}
+
 /* Change-tint trail: tint recently typed runs so the latest edits stand out,
    sequenced new→old across tiers (.tier-0 newest … .tier-17 oldest). Each tier
    shifts hue green→teal→blue and fades, so the freshest keystrokes read brightest
@@ -4174,9 +4592,19 @@ select option {
 /* Soft-wrap mode (LaTeX viewer): wrap long lines to the editor width instead of
    scrolling horizontally. The textarea (wrap="soft") and all overlay <pre> layers
    must wrap identically — same width, same break rules — so the caret, coloured
-   glyphs and link spans stay aligned. overflow-wrap:anywhere breaks tokens with no
-   break point (long URLs/paths) at the edge rather than overflowing. With no
-   horizontal scroll, the editor's overflow-x is hidden. */
+   glyphs and link spans stay aligned.
+
+   overflow-wrap is `normal`, NOT `anywhere`, and that is the alignment-critical
+   part: WebKitGTK's native <textarea> does not honour `overflow-wrap: anywhere`
+   the way a laid-out <pre> does, so with `anywhere` the overlay <pre>s take
+   mid-token break opportunities the textarea never takes. On a token-dense line
+   (hyphenated compounds like `same-label`, inline math like `$50-60\%$`) the two
+   layers then wrap at different columns, and the coloured glyphs slide ~a word
+   out from under the caret — so a click or delete lands on the wrong characters.
+   `normal` makes the <pre> break only where the textarea does; the price is that a
+   single unbreakable token wider than the editor is clipped (overflow-x is hidden
+   below) rather than force-broken, which for prose LaTeX is rare and preferable to
+   a drifting caret. */
 .file-viewer-code-area.is-wrapped .file-viewer-code-editor,
 .file-viewer-code-area.is-wrapped .file-viewer-highlight,
 .file-viewer-code-area.is-wrapped .file-viewer-link-layer,
@@ -4184,9 +4612,10 @@ select option {
 .file-viewer-code-area.is-wrapped .file-viewer-change-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-delete-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-grammar-layer,
+.file-viewer-code-area.is-wrapped .file-viewer-bracket-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-ghost {
   white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
   word-break: normal;
 }
 /* The overlay layers are pinned to the textarea's content width (excluding its
@@ -4199,6 +4628,7 @@ select option {
 .file-viewer-code-area.is-wrapped .file-viewer-change-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-delete-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-grammar-layer,
+.file-viewer-code-area.is-wrapped .file-viewer-bracket-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-ghost {
   min-width: 0;
   right: auto;
@@ -4368,8 +4798,6 @@ select option {
 }
 
 /* #47 save-state icon button: square-ish, icon-only. */
-.file-viewer-save .file-viewer-save-icon.dirty { color: var(--warning, #d29922); }
-.file-viewer-save .file-viewer-save-icon.clean { color: var(--success, #3fb950); }
 .file-viewer-save-spinner,
 .file-viewer-tex-spinner {
   display: inline-block;
@@ -4652,6 +5080,152 @@ select option {
   outline: 1px solid rgba(229, 110, 0, 0.9);
 }
 
+/* ── Blacking text out (#pdf-redact) ──────────────────────────────────────
+   A mark is drawn SOLID BLACK, in both themes, whether or not the tool is armed:
+   it is a preview of the saved page, and a translucent or accent-tinted preview
+   of a redaction would be showing the user something the file will never look
+   like. Armed, it gains a dashed accent outline so it can be told from ink the
+   document itself printed — and only then is it clickable. */
+.file-viewer-pdf-redact-box {
+  position: absolute;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: #000;
+  pointer-events: none;
+}
+.file-viewer-pdf-redact-box.is-armed {
+  pointer-events: auto;
+  cursor: pointer;
+  outline: 1px dashed color-mix(in srgb, var(--accent, #4493f8) 80%, transparent);
+  outline-offset: 1px;
+}
+.file-viewer-pdf-redact-box.is-armed:hover,
+.file-viewer-pdf-redact-box.is-armed:focus-visible {
+  outline: 2px solid var(--danger, #e05252);
+}
+
+/* The drag surface. It covers the page while the tool is armed, which is what
+   takes the gesture away from the link layer underneath — a drag across a
+   `hyperref` box must draw a mark, not follow a reference. */
+.file-viewer-pdf-redact-layer {
+  position: absolute;
+  inset: 0;
+  cursor: crosshair;
+  touch-action: none;
+}
+.file-viewer-pdf-redact-draft {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.55);
+  outline: 1px solid var(--accent, #4493f8);
+  pointer-events: none;
+}
+
+/* Select-and-copy uses the same page-local drag geometry as redaction, but its
+   result is ephemeral: the blue wash is only the rectangle that will become a
+   pasteable clipboard image. Width/height are set from the canvas so the page
+   number gap below the canvas can never be selected. */
+.file-viewer-pdf-copy-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  cursor: crosshair;
+  touch-action: none;
+}
+.file-viewer-pdf-copy-draft {
+  position: absolute;
+  background: color-mix(in srgb, var(--accent, #4493f8) 22%, transparent);
+  outline: 1px solid var(--accent, #4493f8);
+  pointer-events: none;
+}
+
+.file-viewer-pdf-copy-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--text-secondary, var(--text-muted));
+  background: var(--control-bg);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.file-viewer-pdf-copy-success {
+  color: var(--success, #3fb950);
+}
+
+/* The tool's strip under the toolbar. */
+.file-viewer-pdf-redact-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--control-bg);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.file-viewer-pdf-redact-opt {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary, var(--text-muted));
+}
+.file-viewer-pdf-redact-opt select {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  padding: 1px 4px;
+}
+.file-viewer-pdf-redact-hint,
+.file-viewer-pdf-redact-count {
+  color: var(--text-muted);
+}
+.file-viewer-pdf-redact-warn {
+  color: var(--warning, #d29922);
+}
+
+/* The metadata panel (#pdf-meta) shares the blackout tool's strip; only the field
+   list is its own. It wraps rather than truncates — a Producer string or a document
+   id is the whole reason to be looking, and half of one is not an answer. */
+.file-viewer-pdf-meta-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-width: 0;
+}
+.file-viewer-pdf-meta-entry {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+}
+.file-viewer-pdf-meta-key {
+  color: var(--text-muted);
+}
+.file-viewer-pdf-meta-value {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+/* Armed: the list reads as what it is about to become. Struck through AND dimmed,
+   because a strike alone at 12px is easy to miss on a value that is mostly digits. */
+.file-viewer-pdf-meta-list.is-doomed .file-viewer-pdf-meta-key,
+.file-viewer-pdf-meta-list.is-doomed .file-viewer-pdf-meta-value {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+/* The toolbar button while a deletion is pending, so the armed state is visible
+   with the panel closed. */
+.file-viewer-zoom-btn.is-armed {
+  box-shadow: inset 0 -2px 0 var(--warning, #d29922);
+}
+
 /* The page stack lives in an inner wrapper so a Ctrl+wheel zoom can grow it past
    the viewport and scroll horizontally. min-width:min-content lets the wrapper
    expand to the widest page (enabling horizontal scroll when zoomed in) while
@@ -4803,6 +5377,84 @@ select option {
   100% { opacity: 0; transform: scale(1.7); }
 }
 
+/* ── The PDF's own hyperlinks (#pdf-links) ─────────────────────────────────
+   A link box is PAINTED, in the colour of what it is. The alternative — invisible
+   until pointed at, so the author's typography is never overruled — was tried and
+   is wrong for the document this feature exists for: in a paper compiled without
+   `colorlinks` NOTHING on the page says the "(3)" after "see equation" can be
+   clicked, so the links are found only by sweeping the pointer across the page,
+   which is exactly the work they were supposed to save. So they are marked the
+   way a `hyperref` document that *did* set `colorlinks` marks them, and with the
+   same three-way split, because the three go to different places: a cross-ref
+   (blue) moves inside the argument, a citation (green) goes to the bibliography
+   and back, an external address (violet) leaves the app entirely and is the one
+   that first raises a confirm.
+
+   The mark is an UNDERLINE plus a wash, not a filled block: the box is the glyph
+   run's own bounding rectangle, so a solid tint reads as a highlighter pen drawn
+   over the sentence, while a rule under it reads as a link and leaves the text
+   the colour the author set. The colours are fixed rather than the theme's
+   accents — they sit on the document's white paper, not on app chrome, and the
+   accent that carries a dark theme's UI (a pale cyan, a gold) is unreadable
+   there. Buttons, so they are focusable — hence the reset of the button chrome. */
+.file-viewer-pdf-link {
+  --pdf-link-color: #1d4ed8;
+  position: absolute;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 2px;
+  cursor: pointer;
+  background: color-mix(in srgb, var(--pdf-link-color) 9%, transparent);
+  box-shadow: inset 0 -1.5px 0 color-mix(in srgb, var(--pdf-link-color) 62%, transparent);
+  transition: background-color 90ms ease-out, box-shadow 90ms ease-out;
+}
+/* Pointed at (or focused): the same colour, at the strength that says THIS box —
+   not the one beside it, which in a dense bibliography is two millimetres away —
+   is what the click will take. */
+.file-viewer-pdf-link:hover,
+.file-viewer-pdf-link:focus-visible {
+  background: color-mix(in srgb, var(--pdf-link-color) 24%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pdf-link-color) 62%, transparent);
+  outline: none;
+}
+/* A cross-reference — `\ref`, `\autoref`, `\eqref`, a footnote mark, a contents
+   row. The default above, spelled out so the three roles read as a set. */
+.file-viewer-pdf-link.is-ref {
+  --pdf-link-color: #1d4ed8;
+}
+/* A citation. Green for `hyperref`'s `citecolor`, and because a `\cite` is the
+   one internal link that is a detour rather than a move. */
+.file-viewer-pdf-link.is-cite {
+  --pdf-link-color: #15803d;
+}
+/* An address that leaves the app. Violet, the odd one out of the three on
+   purpose: it is the only link whose click opens a question first. */
+.file-viewer-pdf-link.is-external {
+  --pdf-link-color: #7c3aed;
+}
+/* While reverse search is armed (Ctrl/⌘ held) a click on a link box performs the
+   SyncTeX jump instead of following the link, so the boxes must not go on
+   promising a link cursor. The canvas carries the armed marker and the boxes are
+   its later siblings. */
+.file-viewer-pdf-page.is-syncable ~ .file-viewer-pdf-link {
+  cursor: crosshair;
+}
+
+/* Where an internal link just landed: a band across the page at the destination's
+   own y, so a jump to a `\ref` says which line it meant. Full width because that
+   is all a PDF destination names — a y anchor, never a box. */
+.file-viewer-pdf-dest-mark {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  pointer-events: none;
+  background: var(--accent, #4493f8);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent, #4493f8) 16%, transparent);
+  animation: file-viewer-pdf-sync-fade 2.2s ease-out forwards;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .file-viewer-tex-compile.is-compiling {
     animation: none;
@@ -4814,6 +5466,7 @@ select option {
     opacity: 0.7;
   }
   /* Hold a static highlight briefly rather than animating its opacity. */
+  .file-viewer-pdf-dest-mark,
   .file-viewer-pdf-sync-highlight {
     animation: none;
     opacity: 1;
@@ -4854,15 +5507,66 @@ select option {
   border-bottom: 1px solid var(--border-color);
 }
 
-/* Build-log error area: a terse last line, plus an expandable full log. */
-.file-viewer-tex-log-error {
+/* Compile-error card (#tex): a light-red panel floated at the top of the
+   viewer — a distinct card, not the neutral notices above it — carrying the
+   title + count, the jump-to-error list and the expandable full log. The
+   light-red tint is theme-aware (mixed from --danger), so it stays legible in
+   both light and dark themes rather than washing out. */
+.file-viewer-tex-error-card {
   flex-shrink: 0;
+  margin: 8px 10px;
+  padding: 10px 12px;
   max-height: 40%;
   overflow: auto;
+  background: color-mix(in srgb, var(--danger, #f85149) 10%, var(--bg-panel, #fff));
+  border: 1px solid color-mix(in srgb, var(--danger, #f85149) 45%, transparent);
+  border-left: 3px solid var(--danger, #f85149);
+  border-radius: var(--radius-md, 8px);
+}
+
+/* Card header: warning glyph + "Compilation failed", with the error count as a
+   pill pushed to the far end. */
+.file-viewer-tex-error-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.file-viewer-tex-error-icon {
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--danger, #f85149);
+}
+
+.file-viewer-tex-error-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--danger, #f85149);
+}
+
+.file-viewer-tex-error-count {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--danger, #f85149);
+  border-radius: 999px;
 }
 
 .file-viewer-tex-log-line {
+  font-size: 12px;
   font-weight: 600;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .file-viewer-tex-log-toggle {
@@ -4941,6 +5645,10 @@ select option {
   padding: 16px 22px;
   font-size: 13px;
   line-height: 1.65;
+  /* The app shell disables selection to keep its chrome from highlighting;
+     documents are content, so allow normal copy/select interactions here. */
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .markdown-body > :first-child { margin-top: 0; }
@@ -5084,6 +5792,7 @@ select option {
   margin: 0.32em 0 0;
   accent-color: var(--accent);
   flex: 0 0 auto;
+  cursor: pointer;
 }
 
 .markdown-body hr {
@@ -10235,13 +10944,17 @@ select option {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Lifted out of the row button so the Join can sit before it (see AlertsSection):
+   right-aligned by the row's `flex:1`, severity-toned on the span itself now that
+   `.alerts-row` no longer wraps it. */
 .alerts-when {
   font-size: 10px;
   color: var(--text-muted, var(--text-secondary));
   white-space: nowrap;
   flex: 0 0 auto;
+  padding-right: 2px;
 }
-.alerts-row.overdue .alerts-when {
+.alerts-when.overdue {
   color: var(--danger, #f85149);
 }
 
@@ -10263,6 +10976,66 @@ select option {
 .alerts-row-wrap:hover,
 .alerts-row-wrap:focus-within {
   background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+}
+/* The door. Accent-tinted and always visible (never hover-revealed like the
+   mute), because a meeting two minutes off is the one alert whose whole point is
+   the direct join — the same treatment the calendar menu's Join gets, sized down
+   for the strip. */
+.alerts-join {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  margin-right: 2px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  transition: background-color var(--transition);
+}
+.alerts-join:hover {
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+.alerts-done {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin-left: 5px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--success, #3fb950) 72%, transparent);
+  border-radius: 2px;
+  background:
+    linear-gradient(135deg, transparent 3px, color-mix(in srgb, var(--success, #3fb950) 10%, transparent) 0)
+    top left;
+  color: var(--success, #3fb950);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  box-shadow:
+    2px 2px 0 color-mix(in srgb, var(--success, #3fb950) 22%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--success, #3fb950) 8%, transparent);
+}
+.alerts-done:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--success, #3fb950) 22%, transparent);
+  border-color: var(--success, #3fb950);
+}
+.alerts-done:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+/* The narrow strip drops the word first — the 📹 and the service-naming tooltip
+   still say what the button is, and the row's title is worth more than "Join". */
+@media (max-width: 360px) {
+  .alerts-join-text {
+    display: none;
+  }
 }
 .alerts-mute {
   flex: 0 0 auto;
@@ -11757,6 +12530,17 @@ select option {
   color: #3fb950;
 }
 
+/* "broken" is not a pending-change state but a contradiction: the project is
+   tagged as a git repo yet has no readable `.git` (empty/missing). Muted grey +
+   a dashed outline reads as "not a working repo / needs attention" rather than
+   borrowing the alarm-red of an ordinary dirty tree. Tooltip carries the why. */
+.pill-folder-icon.git-broken {
+  color: #8b949e;
+  outline: 1px dashed #8b949e;
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
 .project-search-wrap {
   position: relative;
   width: 150px;
@@ -12654,6 +13438,12 @@ select option {
 .file-viewer-banner.is-error {
   color: var(--danger, #e05252);
 }
+/* A question about something irreversible (the blackout burn-in), not a failure —
+   so it is toned as a warning rather than as an error. */
+.file-viewer-banner.is-warn {
+  color: var(--warning, #d29922);
+  background: color-mix(in srgb, var(--warning, #d29922) 12%, var(--control-bg));
+}
 .file-viewer-banner button {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
@@ -12993,7 +13783,7 @@ select option {
 }
 
 .project-settings-dialog {
-  width: min(460px, calc(100vw - 32px));
+  width: min(560px, calc(100vw - 32px));
 }
 
 .project-ending-form {
@@ -13039,6 +13829,16 @@ select option {
   max-height: min(360px, calc(100vh - 300px));
   overflow-y: auto;
   padding-right: 2px;
+  /* `flex: none` is what keeps this list on screen at all. It is a flex item of
+     the dialog's column, and `overflow-y: auto` gives a flex item an automatic
+     minimum size of ZERO — every sibling here (headings, help text, the viewer
+     rows) has the default content-based minimum and cannot shrink, so when the
+     dialog's content exceeds its max-height this one list absorbed the entire
+     shrinkage and collapsed to 0px: the File hiding section rendered its title
+     and its help line above nothing at all. It still scrolls internally once
+     the endings pass `max-height`; it just no longer pays for the whole
+     dialog's overflow. */
+  flex: none;
 }
 
 .project-ending-toggle {
@@ -21976,29 +22776,43 @@ select option {
 /* An entry = the row plus, when the event has a video call, its Join. Siblings
    rather than a button inside a button (invalid markup, and the two go to
    genuinely different places: the calendar, and out of the app). */
+/* Row + Join are ONE white entry: no gap, a shared rounded outline the two
+   segments are clipped to, so the door reads as the right end of the same bar
+   rather than a chip floating beside it. */
 .cal-menu-entry {
   display: flex;
   align-items: stretch;
-  gap: 3px;
+  gap: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
 }
 .cal-menu-entry > .cal-menu-row {
   flex: 1;
   min-width: 0;
+  border-radius: 0;
+}
+/* Hovering either segment lights the whole entry, so the two never look like
+   two separately-hoverable things. */
+.cal-menu-entry:hover > .cal-menu-row,
+.cal-menu-entry:hover > .cal-menu-join {
+  background: var(--control-hover-bg);
 }
 
-/* Direct connection. Accent-tinted, because it is the one control in this menu
-   that *does* something rather than navigating — and the whole reason to read
-   the day from the header two minutes before the hour. */
+/* Direct connection — the one control in the menu that *does* something rather
+   than navigating. It sits inside the white entry now (a hairline divides it
+   from the title), keeping only accent *text* + the 📹 as the affordance, since
+   the whole reason to read the day from the header is to reach this door. */
 .cal-menu-join {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 0 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
-  color: var(--text-primary);
+  padding: 0 10px;
+  border: none;
+  border-left: 1px solid var(--border-color);
+  border-radius: 0;
+  background: var(--control-bg);
+  color: var(--accent);
   cursor: pointer;
   font-size: 11px;
   font-weight: 600;
@@ -22006,7 +22820,7 @@ select option {
   transition: background-color var(--transition);
 }
 .cal-menu-join:hover {
-  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  background: color-mix(in srgb, var(--accent) 20%, var(--control-hover-bg));
 }
 /* The label is what a narrow menu drops first — the 📹 plus the tooltip (which
    names the service) still say what the button is, and the row's title is worth
@@ -22080,14 +22894,16 @@ select option {
    extra room either. */
 .mail-overlay,
 .calendar-overlay,
-.todo-overlay {
+.todo-overlay,
+.skills-overlay {
   width: min(1680px, calc(100vw - 24px));
   height: min(93vh, calc(100vh - 24px));
   max-height: min(93vh, calc(100vh - 24px));
 }
 .mail-overlay-body,
 .calendar-overlay-body,
-.todo-overlay-body {
+.todo-overlay-body,
+.skills-overlay-body {
   position: relative;
   flex: 1;
   min-height: 0;
@@ -22099,8 +22915,10 @@ select option {
    title would be the word "Mail" twice, one line apart. Hidden only inside the
    overlay — in a tab the toolbar title is the only label there is. The calendar
    needs no equivalent: `.cal-toolbar-title` is the visible date range, not the
-   app's name, so it says something the band does not. */
-.mail-overlay .mail-toolbar-title {
+   app's name, so it says something the band does not. The skills library has the
+   same duplication as mail, and the same fix. */
+.mail-overlay .mail-toolbar-title,
+.skills-overlay .skills-title {
   display: none;
 }
 
@@ -22982,72 +23800,15 @@ handle — it swallows the pointer before the card ever sees it. */
   display: flex;
   gap: 10px;
 }
-/* The due date and its optional hour: one field, two inputs. The time is sized
-   to its content rather than sharing the row equally — it is the optional half,
-   and a date that shrank to make room for an empty time would read as the
-   smaller of the two.
+/* The due date and its optional hour are laid out with the **same** container
+   the calendar's event dialog uses (`.cal-datetime`), so the date input and the
+   `common/TimeField` clock share the row equally and look identical to the
+   calendar's start/end fields — one deadline, two inputs, one visual treatment.
 
-   It stays **one line, never wrapping**: the hour/minute lists are a fixed size
-   and the date is the only flexible control, so the date is what gives when the
-   column is tight (it shrinks — WebKitGTK clips its native field — rather than
-   the time lists dropping below it). `nowrap` is deliberate: an earlier `wrap`
-   here put the time group on a second row at ordinary widths, because flex wraps
-   an overflowing item *before* it shrinks a flexible one, and the native date
-   input claims a wide intrinsic size that pushed the group down. Letting the
-   date shrink instead also cures the original "intersecting fields" — nothing
-   overflows the column into the priority select, so there is nothing to wrap
-   around in the first place. */
-.todo-due-inputs {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 4px;
-  min-width: 0;
-}
-/* The due field holds three controls where the priority beside it holds one, so
+   The due field holds two controls where the priority beside it holds one, so
    it takes the larger share of the row rather than half of it. */
 .todo-field-due {
   flex: 2;
-}
-.todo-due-inputs > input[type="date"] {
-  /* `auto` basis, not `0`: WebKitGTK does not reliably grow a native date input
-     from a zero basis, so it collapsed to a clipped stub. Starting from its own
-     intrinsic width shows the whole `yyyy-mm-dd`; grow fills any leftover, shrink
-     (with `min-width: 0`) gives it up first when the row is tight. */
-  flex: 1 1 auto;
-  min-width: 0;
-}
-/* The hour list, colon and minute list travel as one fixed block beside the
-   date — it neither shrinks nor grows, so the date is the one control that gives
-   when the column is tight, and the colon stays snug between the two lists. */
-.todo-due-time-group {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-  min-width: 0;
-}
-/* The hour and minute lists: just the two digits, centred. The native `<select>`
-   widget has a hard minimum width on WebKitGTK (room for its own dropdown arrow)
-   that ignores a smaller CSS `width`, so the two lists stayed fat and squeezed
-   the date until its year clipped. `appearance: none` drops that native widget,
-   after which the CSS `width` is honoured; it still opens as a dropdown on click. */
-.todo-due-time {
-  flex: 0 0 auto;
-  width: 40px;
-  min-width: 0;
-  -webkit-appearance: none;
-  appearance: none;
-  text-align: center;
-  padding: 0 4px;
-}
-
-.todo-due-sep {
-  align-self: center;
-  /* The colon belongs to the pair, so it pulls the row's gap back in around
-     itself rather than sitting as a third item spaced like a control. */
-  margin: 0 -3px;
-  opacity: 0.75;
-  user-select: none;
 }
 .todo-tag-editor {
   display: flex;
@@ -23483,13 +24244,6 @@ handle — it swallows the pointer before the card ever sees it. */
    labelled row say "switcher", which is what they are. What survives here is
    the `!`/`!!` mark — the same glyph `MailList` prints on a filed row, which is
    what makes the two ends of the feature recognisably one thing. */
-.mail-rail-scope {
-  text-transform: none;
-  letter-spacing: 0;
-  font-size: 10px;
-  font-weight: 500;
-  color: var(--text-muted);
-}
 .mail-rail-priority-mark {
   flex: 0 0 auto;
   text-align: center;
@@ -23896,6 +24650,198 @@ handle — it swallows the pointer before the card ever sees it. */
   color: var(--text-muted);
   line-height: 1.5;
 }
+
+/* ── Local-model mail assistant (Group Q #204–#208) ─────────────────────────
+   On-device summarize / extract / classify surfaces. Toned with --accent-secondary
+   so the "runs on a local model" affordances read as one distinct family, apart
+   from the sender/crypto panels above them. */
+.mail-ai-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.mail-ai-actions-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mail-ai-summary,
+.mail-ai-task-review,
+.mail-ai-report {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--accent-secondary, var(--accent));
+  background: color-mix(in srgb, var(--accent-secondary, var(--accent)) 8%, transparent);
+}
+.mail-ai-summary-head,
+.mail-ai-report-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.mail-ai-summary-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.mail-ai-summary-close:hover {
+  color: var(--text-primary);
+}
+.mail-ai-summary-list {
+  margin: 2px 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.mail-ai-summary-list li {
+  margin: 2px 0;
+}
+.mail-ai-task-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.mail-ai-task-actions,
+.mail-ai-notes-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mail-ai-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.mail-field-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.mail-field-inline .mail-input {
+  width: auto;
+}
+.mail-ai-provenance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--accent-secondary, var(--accent));
+  background: color-mix(in srgb, var(--accent-secondary, var(--accent)) 8%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.mail-ai-provenance-lead {
+  font-weight: 600;
+}
+.mail-ai-provenance-reason {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.mail-ai-report-list {
+  margin: 2px 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mail-ai-report-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+.mail-ai-report-mark {
+  flex: none;
+  font-weight: 700;
+}
+.mail-ai-report-mark.urgent {
+  color: var(--danger, #f85149);
+}
+.mail-ai-report-mark.important {
+  color: var(--warning, #e3b341);
+}
+.mail-ai-report-reason {
+  color: var(--text-secondary);
+}
+.mail-ai-unavailable {
+  font-style: italic;
+}
+.mail-ai-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+
+/* The Mail AI (local) toolbar group: a bordered cluster holding the global
+   master switch and, when it is on, the per-account quick-toggle tags + the ✨
+   settings button. The border makes it read as one control rather than three
+   loose buttons scattered along the toolbar. */
+.mail-ai-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+}
+
+.mail-ai-allow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.mail-ai-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* A quick-toggle "tag": click to activate, click to deactivate. Off is a muted
+   outline chip; on fills with the accent so the active set reads at a glance. */
+.mail-ai-tag {
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mail-ai-tag:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.mail-ai-tag.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+.mail-ai-tag:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .mail-unsafe-card {
   padding: 12px;
   border-radius: var(--radius);
@@ -24295,9 +25241,14 @@ handle — it swallows the pointer before the card ever sees it. */
 
 /* ── Mail dialogs ────────────────────────────────────────────────────────── */
 
+/* `.pdf-link-dialog` is the PDF viewer's link confirm (#pdf-links). It is the
+   same question as mail's about the same kind of content, so it rides the same
+   width and the same `.mail-link-detail*` rows rather than growing a second look
+   for it. */
 .mail-account-dialog,
 .mail-compose-dialog,
-.mail-link-dialog {
+.mail-link-dialog,
+.pdf-link-dialog {
   width: min(600px, calc(100vw - 32px));
   color: var(--text-primary);
 }
@@ -25173,8 +26124,14 @@ handle — it swallows the pointer before the card ever sees it. */
   border-bottom: 1px solid var(--border-subtle);
 }
 .print-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-weight: 650;
   color: var(--accent);
+}
+.print-title-icon {
+  flex: 0 0 auto;
 }
 .print-toolbar-spacer {
   flex: 1;
@@ -25439,6 +26396,56 @@ handle — it swallows the pointer before the card ever sees it. */
   min-width: 0;
 }
 
+/* The install scope. Its own row under the toolbar rather than another control
+   inside it: it is not a way of choosing a source, it is what the install button
+   means, so it reads as a statement about the next install rather than as more
+   chrome. The note wraps onto its own line at narrow widths — it is a sentence
+   about where files land, and truncating that is exactly what it exists to
+   prevent. */
+.skills-scope-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+}
+.skills-scope-label {
+  color: var(--text-muted);
+}
+.skills-scope-choices {
+  display: inline-flex;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.skills-scope-btn {
+  background: var(--bg-input);
+  color: var(--text-secondary, var(--text-muted));
+  border: none;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.skills-scope-btn + .skills-scope-btn {
+  border-left: 1px solid var(--border-color);
+}
+.skills-scope-btn:hover {
+  color: var(--text-primary);
+}
+.skills-scope-btn.on {
+  background: var(--accent);
+  color: var(--bg-panel);
+  font-weight: 600;
+}
+.skills-scope-note {
+  flex: 1;
+  min-width: 220px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 .skills-strip {
   padding: 6px 10px;
   font-size: 12px;
@@ -25560,6 +26567,14 @@ handle — it swallows the pointer before the card ever sees it. */
   border: 1px solid var(--accent);
   color: var(--accent);
 }
+/* Installed personally, i.e. usable in this project without being its own copy.
+   Muted rather than accented because it answers a different question from the
+   accented badge beside it: "available here" is not "installed here", and giving
+   the two one appearance is what would make the distinction pointless. */
+.skills-badge.personal {
+  border-color: var(--border-color);
+  color: var(--text-muted);
+}
 /* A skill bundling scripts/ can execute code on install — flagged as a plain
    dot on the row (the preview panel states it in full) rather than hidden. */
 .skills-scripts-dot {
@@ -25608,4 +26623,206 @@ handle — it swallows the pointer before the card ever sees it. */
   margin-top: 10px;
   border-top: 1px solid var(--border-subtle);
   padding-top: 10px;
+}
+
+/* ── TeX workspace (viewer:"texworkspace") ───────────────────────────────────
+   One tab: a left structure sidebar, a center that switches between the TeX
+   editor and the image viewer, and (Implementer B) a docked SyncTeX PDF pane.
+   Chrome mirrors the shared .file-viewer surround (accent header, --bg-panel,
+   --border-color dividers); tokens carry light/dark for free. */
+.tex-workspace {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: row;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+.tex-structure-sidebar {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 140px;
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+
+.tex-structure-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-color);
+  border-top: 2px solid var(--accent);
+}
+
+.tex-structure-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-secondary, var(--text-primary));
+}
+
+.tex-structure-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 4px 0 8px;
+}
+
+.tex-structure-section {
+  display: block;
+}
+
+.tex-structure-heading {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-secondary, var(--text-primary));
+  opacity: 0.75;
+  padding: 6px 8px 2px;
+}
+
+.tex-structure-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tex-structure-row:hover {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+}
+
+.tex-structure-row.is-active {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--text-primary);
+}
+
+.tex-structure-icon {
+  flex: 0 0 auto;
+  width: 1.1em;
+  text-align: center;
+}
+
+.tex-structure-label {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tex-structure-empty {
+  padding: 10px 8px;
+  font-size: 11px;
+  color: var(--text-secondary, var(--text-primary));
+  opacity: 0.7;
+}
+
+.tex-structure-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 5px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+}
+.tex-structure-resize:hover {
+  background: var(--accent);
+}
+
+.tex-workspace-center {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.tex-workspace-pane {
+  position: absolute;
+  inset: 0;
+}
+
+.tex-workspace-pdf {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border-color);
+  overflow: hidden;
+}
+
+/* Drag handle on the pane's LEFT edge — dragging left widens the PDF. */
+.tex-workspace-pdf-resize {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 5px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+  z-index: 2;
+}
+.tex-workspace-pdf-resize:hover {
+  background: var(--accent);
+}
+
+.tex-workspace-pdf-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--border-color);
+  border-top: 2px solid var(--accent);
+}
+
+.tex-workspace-pdf-title {
+  flex: 1 1 auto;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-secondary, var(--text-primary));
+}
+
+.tex-workspace-pdf-close {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.tex-workspace-pdf-close:hover {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+}
+
+.tex-workspace-pdf-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
 }

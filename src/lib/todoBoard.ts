@@ -63,6 +63,14 @@ export const DEFAULT_COLUMNS: TaskColumn[] = [
   { id: "today", name: "Today", position: 1, done: false, color: "#4aa3df" },
   { id: "doing", name: "Doing", position: 2, done: false, color: "#e8a33d" },
   { id: "done", name: "Done", position: 3, done: true, color: "#5cb85c" },
+  {
+    id: "archived",
+    name: "Archived",
+    position: 4,
+    done: false,
+    archived: true,
+    color: "#7d8590",
+  },
 ];
 
 /** Translation keys for the seeded columns, so a default board is localized. */
@@ -71,6 +79,7 @@ const DEFAULT_COLUMN_LABELS: Record<string, TranslationKey> = {
   today: "todoBoard.columnToday",
   doing: "todoBoard.columnDoing",
   done: "todoBoard.columnDone",
+  archived: "todoBoard.columnArchived",
 };
 
 /** The columns to render: the store's, or the defaults while it has none. */
@@ -103,22 +112,36 @@ export function doneColumnId(columns: TaskColumn[]): string | null {
   return columns.find((c) => c.done)?.id ?? null;
 }
 
-/** The column an unplaced card is shown in: the leftmost that is not Done. */
+/** The ids of the archive columns — resting places exempt from the completion
+ *  coupling. Usually one (the seeded "archived"), but a user may add more. */
+export function archivedColumnIds(columns: TaskColumn[]): Set<string> {
+  return new Set(columns.filter((c) => c.archived).map((c) => c.id));
+}
+
+/**
+ * The column an unplaced card is shown in: the leftmost that is neither Done nor
+ * an archive. An unplaced card must never land in the archive — archiving is a
+ * deliberate move, mirroring the backend's `col_fallback`.
+ */
 export function fallbackColumnId(columns: TaskColumn[]): string {
-  return (columns.find((c) => !c.done) ?? columns[0]).id;
+  return (columns.find((c) => !c.done && !c.archived) ?? columns[0]).id;
 }
 
 // ── Bucketing and ordering ──────────────────────────────────────────────────
 
 /**
- * Which column a card is *shown* in, applying the three rules in order:
- * completion wins, then an absent/unknown column falls to the first, then the
- * column the card names.
+ * Which column a card is *shown* in, applying the rules in order:
+ * an archive it names wins first (a resting place outranks completion, so a
+ * finished card can leave Done), then completion wins, then an absent/unknown
+ * column falls to the first, then the column the card names.
  */
 export function columnOf(task: CalendarTask, columns: TaskColumn[]): string {
+  const named = task.column;
+  // A card filed in an archive stays there whatever its percent — that is the
+  // whole point of archiving a *done* card, and mirrors `normalize_tasks`.
+  if (named && columns.some((c) => c.id === named && c.archived)) return named;
   const done = doneColumnId(columns);
   if (task.percent >= 100 && done) return done;
-  const named = task.column;
   if (!named || !columns.some((c) => c.id === named)) {
     // A completed card with no done column has nowhere better to go than the
     // fallback — which is exactly what the backend does with the coupling off.
@@ -221,6 +244,11 @@ export interface BoardFilter {
   tag: string | null;
   hideDone: boolean;
   visibleCalendars: Set<string>;
+  /** Ids of the archive columns, so "hide done" hides a card resting there too
+   *  — a finished card whose `percent` is 100 is caught by that check anyway,
+   *  but an *abandoned* archived card (percent < 100) needs this one. Optional
+   *  so a caller with no board (and every existing test) can omit it. */
+  archived?: Set<string>;
 }
 
 export function filterTasks(
@@ -231,6 +259,9 @@ export function filterTasks(
   return tasks.filter((task) => {
     if (!filter.visibleCalendars.has(task.calendar_id)) return false;
     if (filter.hideDone && task.percent >= 100) return false;
+    if (filter.hideDone && task.column && filter.archived?.has(task.column)) {
+      return false;
+    }
     if (filter.project === "none" && task.project_id) return false;
     if (
       filter.project &&
@@ -432,7 +463,15 @@ export function toggleTaskDone(
   now: Date = new Date(),
 ): CalendarTask {
   const done = task.percent >= 100;
-  const target = done ? fallbackColumnId(columns) : doneColumnId(columns);
+  // A card resting in an archive stays there when ticked or unticked — the
+  // archive outranks the coupling, so relocating it would defeat archiving.
+  const current = columnOf(task, columns);
+  const inArchive = columns.some((c) => c.id === current && c.archived);
+  const target = inArchive
+    ? current
+    : done
+      ? fallbackColumnId(columns)
+      : doneColumnId(columns);
   return {
     ...task,
     percent: done ? 0 : 100,
@@ -850,12 +889,16 @@ export function taskFromMail(
 /**
  * An appointment as a card — `taskFromMail`'s twin, through the same builder.
  *
- * Two decisions are the appointment's own. It is **due on the day it happens**,
- * which is what puts the card in the header badge's count and turns it red the
- * day after — a meeting you have not prepared for is late in exactly the way an
- * overdue card is. And it is **one card per occurrence**: `start` is this
- * instance's, not the series', so next week's stand-up is a card of its own
- * rather than a duplicate the board would have to reconcile.
+ * Two decisions are the appointment's own. It is **due when it happens** — a
+ * timed appointment carries its hour onto the card (`due` is the full
+ * `occ.start`, so the card goes overdue at the meeting's start rather than at the
+ * end of its day), while an all-day one has only a day to be due on
+ * (`datePart`). Either way that is what puts the card in the header badge's count
+ * and turns it red once the moment has passed — a meeting you have not prepared
+ * for is late in exactly the way an overdue card is. And it is **one card per
+ * occurrence**: `start` is this instance's, not the series', so next week's
+ * stand-up is a card of its own rather than a duplicate the board would have to
+ * reconcile.
  */
 export function taskFromOccurrence(
   occ: Occurrence,
@@ -869,7 +912,7 @@ export function taskFromOccurrence(
     title: occ.title || fallbackTitle,
     notes: occ.location ? `🗓 ${when} · ${occ.location}` : `🗓 ${when}`,
     priority: 5,
-    due: datePart(occ.start),
+    due: occ.allDay ? datePart(occ.start) : occ.start,
     start: occ.start,
     event: {
       event_id: occ.eventId,

@@ -31,6 +31,7 @@ import {
 } from "../../lib/gpu";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+import { useSkillsOverlayStore } from "../../stores/skills";
 
 const MENU_ID = "local-model";
 
@@ -125,11 +126,22 @@ interface AgentInfo {
  * (autocomplete + grammar in the editor, "Local Model" agent tabs), so several
  * resident models can each own a different job. A task with no tag falls back to
  * the default `ollama_model`. Mirrors the consumers in `FileViewerPane`/`TabBar`.
+ *
+ * `pending` marks a tag whose *consumer* does not exist yet — the tag is stored
+ * and shown, and nothing reads it. It is offered anyway because the assignment
+ * is the user's statement about which model a job may use, and it has to be
+ * answerable before the job exists rather than after: `mail` is the model a
+ * future mail task (importance scoring, summaries) will run on, and until that
+ * lands the chip says so in its tooltip rather than quietly implying a feature.
  */
-const MODEL_ROLES: Array<{ key: string; labelKey: TranslationKey }> = [
+const MODEL_ROLES: Array<{ key: string; labelKey: TranslationKey; pending?: boolean }> = [
   { key: "autocomplete", labelKey: "localModel.role.autocomplete" },
   { key: "grammar", labelKey: "localModel.role.grammar" },
   { key: "tabs", labelKey: "localModel.role.tabs" },
+  // `mail` was `pending` until Group Q; the mail assistant (#204–#208) now reads
+  // this role, so the chip is live — a resident model can be pinned to it and the
+  // mail features run against it.
+  { key: "mail", labelKey: "localModel.role.mail" },
 ];
 
 
@@ -319,7 +331,7 @@ function UpdateAction({
  * Hovering reveals the models currently loaded in memory (the running set from
  * `list_ollama_models_detailed`), each shown with a green "loaded" lamp. Clicking
  * a model's name makes it the default (`settings.ollama_model`); its task tags
- * (Autocomplete / Grammar / Tabs → `settings.ollama_roles`) pin individual jobs
+ * (Autocomplete / Grammar / Tabs / Mail → `settings.ollama_roles`) pin individual jobs
  * to specific loaded models, so several can run different tasks in parallel. A
  * task with no tag falls back to the default model. Always shown: when Ollama
  * isn't installed (or no
@@ -762,6 +774,18 @@ export function LocalModelMenu() {
     window.dispatchEvent(new CustomEvent("eldrun:open-settings", { detail: "agents" }));
   };
 
+  // Open the Skills Library overlay (`docs/skills_plan.md`). It sits in this
+  // menu beside "Manage agents…" because a skill is the same kind of object as
+  // the agent CLIs above it: installed per machine, then available to every
+  // project — and because two thirds of the library (the sources and their
+  // cached clones) were always machine state that could only be reached from a
+  // project tab. The project-scoped install still lives in that tab, which is
+  // the one surface that knows which project is meant.
+  const openSkills = () => {
+    setOpen(false);
+    useSkillsOverlayStore.getState().openOverlay();
+  };
+
   // The agent Eldrun picks on its own when a feature needs exactly one and the
   // user hasn't chosen per-instance (today: scaffold-fill "Agent choice"; more
   // features are expected to read this same setting rather than each growing
@@ -1049,6 +1073,12 @@ export function LocalModelMenu() {
             </span>
             {t("localModel.manageAgents")}
           </button>
+          <button className="tab-new-menu-item" onClick={openSkills}>
+            <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
+              ●
+            </span>
+            {t("localModel.skillsLibrary")} <UntestedTag />
+          </button>
           <div className="tab-new-menu-group-label">{t("localModel.localModelsGroup")}</div>
           {showAutoNote && (
             <div
@@ -1199,20 +1229,25 @@ export function LocalModelMenu() {
                       </span>
                     </button>
                     {/* Task tags: pin this model to a job (autocomplete/grammar/
-                        tabs). Several loaded models can each own a different one. */}
+                        tabs/mail). Several loaded models can each own a different
+                        one. A `pending` tag adds "nothing reads this yet" to its
+                        tooltip — the chip must not imply a job that doesn't run. */}
                     <div className="local-model-roles">
                       {MODEL_ROLES.map((r) => {
                         const on = roles[r.key] === m.name;
                         const roleLabel = t(r.labelKey);
+                        const title = t(on ? "localModel.usedForRole" : "localModel.useForRole", {
+                          role: roleLabel.toLowerCase(),
+                          name: m.name,
+                        });
                         return (
                           <button
                             key={r.key}
                             type="button"
                             className={`local-model-role-chip${on ? " on" : ""}`}
-                            title={t(on ? "localModel.usedForRole" : "localModel.useForRole", {
-                              role: roleLabel.toLowerCase(),
-                              name: m.name,
-                            })}
+                            title={
+                              r.pending ? `${title} — ${t("localModel.roleNotWired")}` : title
+                            }
                             onClick={() => toggleRole(r.key, m.name)}
                           >
                             {roleLabel}

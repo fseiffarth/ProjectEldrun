@@ -9,8 +9,9 @@ nothing was tracking them because nothing was failing loudly.*
 `scripts/privacy-check.sh`.*
 
 **Why this group outranks feature work.** The repo has ~4100 automated tests
-(1630 `cargo test`, 2476 vitest) and **145 manual-QA boxes of which exactly one
-is ticked**. Verification cost is roughly constant per feature; *deferred*
+(1630 `cargo test`, 2476 vitest) and **227 manual-QA items, each now a
+Works/Doesn't-work pair, of which exactly two have ever been confirmed
+Works**. Verification cost is roughly constant per feature; *deferred*
 verification cost is superlinear, because a defect found later must be bisected
 across dozens of unvalidated layers instead of one. That inversion — not any
 missing capability — is the project's dominant risk.
@@ -24,6 +25,8 @@ missing capability — is the project's dominant risk.
        locally with a throwaway spec; the step itself is one `npm test` call).
      - [ ] 🖐️ Manual test — push a branch with a failing vitest and watch CI red.
        *Still open: nothing has watched this go red on GitHub yet.*
+       - [ ] ✅ Works
+       - [ ] ❌ Doesn't work
 
 162. ~~**`privacy-check.sh` is mandated but wired to nothing.**~~ **DONE
      2026-07-28.** Wired in both places, because neither alone is enough — the
@@ -48,6 +51,8 @@ missing capability — is the project's dominant risk.
        with rc=1. (The literal is kept out of this file on purpose — writing it
        here would trip the very scan it documents.)
      - [ ] 🖐️ Manual test
+       - [ ] ✅ Works
+       - [ ] ❌ Doesn't work
 
 163. **No mechanical quality gate at all.** **MOSTLY DONE 2026-07-28** — the two
      halves that catch defects are in; `cargo fmt --check` is not, and that is
@@ -87,6 +92,8 @@ missing capability — is the project's dominant risk.
        `cargo clippy -- -D warnings` both exit 0 on the current tree, and both
        suites (2476 vitest / 1630 cargo) stay green across every fix above.
      - [ ] 🖐️ Manual test
+       - [ ] ✅ Works
+       - [ ] ❌ Doesn't work
 
 164. **First live-QA session — unblock the 145 manual boxes.** `TODO.md`'s
      verification section used to say *"do not launch Eldrun from the agent"*,
@@ -104,6 +111,8 @@ missing capability — is the project's dominant risk.
        presenter** — code-complete, never run, and #93/#94 both lose authored
        work with no prompt.
      - [ ] 🖐️ Manual test — this item *is* the manual test.
+       - [ ] ✅ Works
+       - [ ] ❌ Doesn't work
      - *Status 2026-07-28: not started, and not startable unattended.* (a) mail
        crypto needs a real IMAP/SMTP account and a correspondent's OpenPGP key —
        neither exists in this environment; (b) the `invoke('list_projects')`
@@ -157,5 +166,7 @@ missing capability — is the project's dominant risk.
      - [ ] 🤖 Automated test — existing suites must stay green across the split
        (`FileViewerPane` is imported by 19 test files, `tabs.ts` by 61).
      - [ ] 🖐️ Manual test
+       - [ ] ✅ Works
+       - [ ] ❌ Doesn't work
 
 ---

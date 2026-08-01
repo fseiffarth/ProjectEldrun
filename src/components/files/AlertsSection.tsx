@@ -9,7 +9,13 @@ import { useMailStore } from "../../stores/mail";
 import { useSettingsStore } from "../../stores/settings";
 import { useTodoStore } from "../../stores/todo";
 import { useExperimental } from "../../lib/experimental";
-import { awayDelta, type DueDelta } from "../../lib/todoBoard";
+import { joinConference } from "../../lib/linkTarget";
+import {
+  awayDelta,
+  boardColumns,
+  toggleTaskDone,
+  type DueDelta,
+} from "../../lib/todoBoard";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 
@@ -32,12 +38,12 @@ import { UntestedTag } from "../common/UntestedTag";
  * not a default: a file viewer that starts telling you about your mail is a
  * change to the app nobody asked for.
  *
- * **A read, never a write — of the alert.** Rows come from `useAlertsFeed`,
- * whose selectors are `lib/alerts`' pure ones; this component renders and routes
- * clicks, and owns no alert state of its own. Opening a row hands off to the
- * surface that owns the item, and nothing is marked, acknowledged or *completed*
- * from here, because an alert that could be cleared in two places would
- * immediately disagree with itself.
+ * Rows come from `useAlertsFeed`, whose selectors are `lib/alerts`' pure ones;
+ * this component does not keep a second copy of alert state. Opening a row hands
+ * off to the owning surface, while its Done button resolves each kind on its
+ * own terms: a task is completed, priority mail is returned to normal, and a
+ * calendar occurrence is removed from this alert strip without deleting the
+ * appointment itself.
  *
  * **Muting is the one exception, and it is not a dismissal.** A row's 🔕 hides
  * that row *in this group* and changes nothing about the thing behind it — the
@@ -87,6 +93,8 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
   // The reveal is local and transient on purpose: it is a way to look at what
   // you silenced, not a second visibility setting to keep in step with the first.
   const [showMuted, setShowMuted] = useState(false);
+  const [finishingId, setFinishingId] = useState<string | null>(null);
+  const [finishError, setFinishError] = useState<string | null>(null);
 
   // Resizable height: the same drag-the-top-handle mechanism `DownloadsSection`
   // uses, so the two sections that share this slot grow the same way.
@@ -195,10 +203,58 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
         ? t("filesAlerts.calendarOff")
         : t("filesAlerts.boardOff");
 
+  const finishLabel = (kind: AlertKind): string =>
+    kind === "mail"
+      ? t("filesAlerts.doneMail")
+      : kind === "event"
+        ? t("filesAlerts.doneEvent")
+        : t("filesAlerts.doneTask");
+
   /**
-   * One row: the open button, plus its own mute/unmute **beside** it rather than
-   * inside it — a button nested in a button is invalid markup and, here, would
-   * also make the silencer part of the click target that opens the thing.
+   * Resolve the item in the way its source supports.
+   *
+   * The board helper is important here: completion also files the card in the
+   * configured Done column. Mail's priority cache belongs to `useTodoStore`, so
+   * it is re-read after clearing the mark. Calendar events have no completion
+   * state, so Done uses the strip's persisted mute rather than deleting the
+   * appointment from the calendar.
+   */
+  const finishItem = async (item: AlertItem) => {
+    if (finishingId) return;
+    setFinishingId(item.id);
+    setFinishError(null);
+    try {
+      if (item.kind === "mail") {
+        if (!item.source.mailId) throw new Error("Missing mail id");
+        await useMailStore.getState().setPriority(item.source.mailId, null);
+        await useTodoStore.getState().loadUrgentMail();
+      } else if (item.kind === "event") {
+        mute(item.id);
+      } else {
+        if (!item.source.taskId) throw new Error("Missing task id");
+        const calendar = useCalendarStore.getState();
+        const task = calendar.tasks.find((row) => row.id === item.source.taskId);
+        if (!task) throw new Error("Missing task");
+        await calendar.updateTask(toggleTaskDone(task, boardColumns(calendar.taskColumns)));
+      }
+    } catch {
+      setFinishError(t("filesAlerts.doneFailed"));
+    } finally {
+      setFinishingId(null);
+    }
+  };
+
+  /**
+   * One row: the open button, plus its own mute/unmute — and, for a meeting with
+   * a video call, a **Join** — **beside** it rather than inside it, because a
+   * button nested in a button is invalid markup and, here, would also make the
+   * silencer (or the door) part of the click target that opens the thing.
+   *
+   * The Join goes to the same place the calendar's own Join buttons do, through
+   * the same `lib/conference` verdict (`item.source.conferenceUrl`, computed in
+   * `lib/alerts`): a video meeting two minutes off is the one alert whose point
+   * is the door, not the surface behind it. It is shown even on a muted row —
+   * muting silenced the reminder, it did not cancel the meeting.
    *
    * The same renderer draws a live row and a muted one, so the two can't drift
    * into looking like different kinds of object; `muted` only swaps the trailing
@@ -206,8 +262,19 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
    */
   const renderRow = (item: AlertItem, muted: boolean) => {
     const openable = canOpen(item.kind);
+    const conferenceUrl = item.source.conferenceUrl;
     return (
       <div key={item.id} className={`alerts-row-wrap${muted ? " muted" : ""}`}>
+        <button
+          type="button"
+          className="alerts-done"
+          disabled={finishingId !== null}
+          onClick={() => void finishItem(item)}
+          title={finishLabel(item.kind)}
+          aria-label={finishLabel(item.kind)}
+        >
+          {finishingId === item.id ? "…" : "✓"}
+        </button>
         <button
           type="button"
           className={`alerts-row ${item.severity}`}
@@ -229,8 +296,30 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
             <span className="alerts-row-title">{item.title}</span>
             {item.detail && <span className="alerts-detail">{item.detail}</span>}
           </span>
-          <span className="alerts-when">{relativeLabel(item)}</span>
         </button>
+        {/* The Join sits **before** the time readout, inside the row: a meeting's
+            door belongs next to the meeting, and the countdown ("in 4 min") is
+            precisely the number that makes it worth clicking now. It is a sibling
+            of the open button, not nested in it, because a button inside a button
+            is invalid markup — so the `when` readout is lifted out too, and the
+            two ride the row-wrap's own hover highlight. */}
+        {conferenceUrl && (
+          <button
+            type="button"
+            className="alerts-join"
+            title={t("calendar.joinTitle", {
+              provider: item.source.conferenceProvider ?? "",
+            })}
+            aria-label={t("calendar.joinTitle", {
+              provider: item.source.conferenceProvider ?? "",
+            })}
+            onClick={() => joinConference(conferenceUrl)}
+          >
+            <span aria-hidden="true">📹</span>
+            <span className="alerts-join-text">{t("calendar.join")}</span>
+          </button>
+        )}
+        <span className={`alerts-when ${item.severity}`}>{relativeLabel(item)}</span>
         <button
           type="button"
           className="alerts-mute"
@@ -300,6 +389,7 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
       </div>
 
       {error && <div className="alerts-error">{t("filesAlerts.failed")}</div>}
+      {finishError && <div className="alerts-error">{finishError}</div>}
 
       <div className="alerts-list">
         {!enabled ? (

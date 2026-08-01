@@ -92,5 +92,7 @@
       (is-box row → openBox, members independently searchable). Covers Phase 1 +
       Phase 2 groundwork; Phase 3/4 deferred.
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---

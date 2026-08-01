@@ -11,6 +11,9 @@ pub mod git_credentials;
 pub mod git_peer;
 pub mod hpc_mode;
 pub mod local_loss;
+// Local-model mail assistant (Group Q, #203–#208): the loopback-only /api/chat
+// helper, prompt builders and defensive JSON parsers. AI never touches the net.
+pub mod mail_ai;
 pub mod mail_authres;
 pub mod mail_crypt;
 pub mod mail_crypto;

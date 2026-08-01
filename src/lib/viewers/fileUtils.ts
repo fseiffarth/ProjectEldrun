@@ -60,10 +60,23 @@ export type InternalViewer =
   | "html"
   | "sqlite"
   | "yaml"
+  // A BibTeX/BibLaTeX bibliography (`.bib`) as a list of cards — one per entry,
+  // with its `field = {value}` pairs (see BibCards). Falls back to the plain code
+  // editor when opted out, the way the YAML tree does: turning the cards off is a
+  // vote against the cards, not against editing a `.bib` in Eldrun.
+  | "bib"
   // The native presenter's deck sidecar (`*.eldeck.json`, EXPERIMENTAL — see
   // `docs/deck_presenter_plan.md`). A deck is JSON, so this must be matched by
   // FILENAME before the generic `.json` rule; see `naturalViewerFor`.
-  | "eldeck";
+  | "eldeck"
+  // The LaTeX WORKSPACE: a single tab that hosts a main `.tex`, a left structure
+  // sidebar of its `\input`/`\include`/`\subfile` children and `\includegraphics`
+  // graphics, a center that switches between the TeX editor and the image viewer
+  // for the selected entry, and a docked SyncTeX PDF pane. Never auto-selected by
+  // extension (`internalViewerFor(.tex)` stays `"tex"` for a standalone/child
+  // file); it is chosen only at the open site (`openTexWorkspace`), which resolves
+  // the build root so there is exactly one workspace tab per main document.
+  | "texworkspace";
 
 // Audio/video formats the webview plays natively via <audio>/<video> from a
 // Blob URL (Dev D). Kept separate from IMAGE_EXTS so the media viewer wins.
@@ -143,6 +156,9 @@ export function internalViewerFor(
  *  render honestly. */
 const VIEWER_FALLBACK: Partial<Record<InternalViewer, InternalViewer>> = {
   yaml: "text",
+  // Same bargain as YAML: without the cards a `.bib` is still text we edit well
+  // (and where it opened before the card view existed).
+  bib: "text",
   // Opting out the GIF transport UI is not a vote against viewing GIFs in-app:
   // the plain image viewer still animates them honestly (the webview animates
   // <img> GIFs natively) — it just offers no frame control.
@@ -175,10 +191,14 @@ function naturalViewerFor(entry: FileEntry): InternalViewer | null {
   if (IMAGE_EXTS.has(ext)) return "image";
   if (MARKDOWN_EXTS.has(ext)) return "markdown";
   // .tex gets the dedicated LaTeX viewer (compile to a PDF tab when a TeX engine
-  // is installed; otherwise it degrades to the plain code editor). .bib stays
-  // plain text via the generic TEXT_EXTS check below. This early return must win
-  // even though .tex is also in TEXT_EXTS.
+  // is installed; otherwise it degrades to the plain code editor). This early
+  // return must win even though .tex is also in TEXT_EXTS.
   if (ext === ".tex") return "tex";
+  // .bib gets the bibliography card view — one card per entry, its fields as
+  // key/value rows (see BibCards). `.bib` is also in TEXT_EXTS, so this specific
+  // return must win, like .tex above; opting it out lands on the plain code editor
+  // (VIEWER_FALLBACK), which is where a `.bib` opened before the cards existed.
+  if (ext === ".bib" || ext === ".bibtex") return "bib";
   // .csv/.tsv get the table viewer, .ipynb the notebook viewer, .diff/.patch the
   // diff viewer. .csv/.tsv/.diff/.patch are also in TEXT_EXTS, so these specific
   // returns must win — exactly like .tex above. .ipynb is intentionally NOT in
@@ -281,7 +301,7 @@ export const VIEWER_PREF_TYPES: ViewerTypeMeta[] = [
   {
     id: "text",
     label: "Text / code",
-    extensions: [".txt", ".toml", ".py", ".rs", ".ts", ".svg", ".bib", "…"],
+    extensions: [".txt", ".toml", ".py", ".rs", ".ts", ".ini", "…"],
     autocomplete: true,
   },
   {
@@ -300,6 +320,15 @@ export const VIEWER_PREF_TYPES: ViewerTypeMeta[] = [
     id: "yaml",
     label: "YAML / JSON tree",
     extensions: [".yaml", ".yml", ".json"],
+    autocomplete: true,
+  },
+  {
+    id: "bib",
+    label: "BibTeX bibliography",
+    extensions: [".bib", ".bibtex"],
+    // Autocomplete applies: the Source half of this viewer is the ordinary code
+    // editor, and a `.bib` is exactly the kind of prose-in-fields a completion
+    // helps with.
     autocomplete: true,
   },
   {
@@ -429,6 +458,11 @@ export function visibleEntries(
     sortKey?: SortKey;
     descending?: boolean;
     hiddenEndings?: string[];
+    // Skip the hiddenEndings exclusion below instead of dropping the match —
+    // for a caller (the file tree) that wants those entries kept around so it
+    // can bucket them into its own collapsed "hidden by extension" group,
+    // rather than have them vanish from the listing entirely.
+    keepHiddenEndings?: boolean;
     relPath?: string;
     hiddenPaths?: string[];
     shownPaths?: string[];
@@ -453,6 +487,7 @@ export function visibleEntries(
       return !INTERNAL_PROJECT_FILES.has(entry.name);
     })
     .filter((entry) => {
+      if (options.keepHiddenEndings) return true;
       const entryRelPath = normalizeRulePath(relPath ? `${relPath}/${entry.name}` : entry.name);
       if (shownPaths.has(entryRelPath)) return true;
       return !hiddenEndings.some((ending) => entry.name.toLowerCase().endsWith(ending));
@@ -474,6 +509,23 @@ export function visibleEntries(
 
 function normalizeRulePath(path: string): string {
   return path.trim().replace(/^\/+|\/+$/g, "").toLowerCase();
+}
+
+// The same match `visibleEntries` uses to drop a hiddenEndings entry, exposed
+// so a caller that kept those entries (via `keepHiddenEndings`) can bucket
+// them out again — e.g. the file tree's collapsed "hidden by extension" group.
+export function isHiddenByEnding(
+  entry: FileEntry,
+  hiddenEndings: string[],
+  relPath: string,
+  shownPaths: string[],
+): boolean {
+  const endings = hiddenEndings.map((ending) => ending.trim().toLowerCase()).filter(Boolean);
+  if (endings.length === 0) return false;
+  const rel = relPath.replace(/^\/+|\/+$/g, "");
+  const entryRelPath = normalizeRulePath(rel ? `${rel}/${entry.name}` : entry.name);
+  if (shownPaths.some((p) => normalizeRulePath(p) === entryRelPath)) return false;
+  return endings.some((ending) => entry.name.toLowerCase().endsWith(ending));
 }
 
 function compareEntries(a: FileEntry, b: FileEntry, sortKey: SortKey, descending: boolean): number {
@@ -505,6 +557,7 @@ export function fileIcon(ext: string | null): string {
     case ".jsx": return "⚡";
     case ".md": return "📝";
     case ".json": return "{}";
+    case ".bib": return "📚";
     case ".png":
     case ".jpg":
     case ".jpeg":

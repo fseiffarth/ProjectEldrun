@@ -44,6 +44,14 @@ export interface EventDialogTarget {
   draftStart?: string;
   draftEnd?: string;
   draftAllDay?: boolean;
+  /** Prefilled title/location for a new event extracted from elsewhere — the mail
+   *  assistant's calendar extraction (#207) seeds these so a message becomes an
+   *  event with one confirming click. Ignored when editing an existing event. */
+  draftTitle?: string;
+  draftLocation?: string;
+  /** Prefilled notes — the mail extraction seeds a provenance line here so the
+   *  created event records what it came from. */
+  draftNotes?: string;
 }
 
 /** How an edit to a recurring event should apply. */
@@ -103,9 +111,9 @@ function initialForm(
 
   return {
     calendarId: event?.calendar_id ?? defaultCalendarId,
-    title: occurrence?.title ?? event?.title ?? "",
-    location: occurrence?.location ?? event?.location ?? "",
-    notes: occurrence?.notes ?? event?.notes ?? "",
+    title: occurrence?.title ?? event?.title ?? target.draftTitle ?? "",
+    location: occurrence?.location ?? event?.location ?? target.draftLocation ?? "",
+    notes: occurrence?.notes ?? event?.notes ?? target.draftNotes ?? "",
     // The master's, never an occurrence's: a series has one call, and the
     // override record has no field for a second one.
     conference: event?.conference ?? "",

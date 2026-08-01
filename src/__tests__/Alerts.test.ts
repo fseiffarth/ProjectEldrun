@@ -490,10 +490,32 @@ describe("selectAlerts — titles and details", () => {
     expect(item.id).toBe("task:t1");
     expect(item.source).toEqual({ taskId: "t1", calendarId: "work", projectId: "eldrun" });
   });
+
+  it("carries an event's video-call link + provider for the Join button", () => {
+    const item = one(
+      selectAlerts({ now: NOW, events: [ev({ conference: "https://zoom.us/j/42" })] }),
+    );
+    expect(item.source.conferenceUrl).toBe("https://zoom.us/j/42");
+    expect(item.source.conferenceProvider).toBe("Zoom");
+  });
+
+  it("derives the link from a location that is a bare meeting URL", () => {
+    const item = one(
+      selectAlerts({ now: NOW, events: [ev({ location: "https://meet.google.com/abc-def" })] }),
+    );
+    expect(item.source.conferenceUrl).toBe("https://meet.google.com/abc-def");
+    expect(item.source.conferenceProvider).toBe("Google Meet");
+  });
+
+  it("leaves an event with no joinable link without a conference url", () => {
+    const item = one(selectAlerts({ now: NOW, events: [ev({ location: "Room 2" })] }));
+    expect(item.source.conferenceUrl).toBeUndefined();
+    expect(item.source.conferenceProvider).toBeUndefined();
+  });
 });
 
 describe("selectAlerts — ordering", () => {
-  it("sorts by severity, then time, then kind, then id", () => {
+  it("sorts by time, then kind, then id — an overdue row is earliest anyway", () => {
     const items = selectAlerts({
       now: NOW,
       events: [
@@ -511,7 +533,21 @@ describe("selectAlerts — ordering", () => {
     ]);
   });
 
-  it("puts an all-day item before the same day's timed ones", () => {
+  it("sorts by `at`, not by the mail severity floor", () => {
+    // `mailSeverity` raises a skew-dated urgent message's dot to "now" without
+    // touching its `at` — the row still sorts on that (future) date, behind an
+    // event actually starting soon, even though its severity reads louder.
+    const items = selectAlerts({
+      now: NOW,
+      urgentMail: [mail({ id: "INBOX-skewed", date: "2026-07-20T08:00:00" })],
+      events: [ev({ id: "soon", start: "2026-07-08T09:30" })],
+    });
+    const skewed = items.find((i) => i.id === "mail:INBOX-skewed");
+    expect(skewed?.severity).toBe("now");
+    expect(ids(items)).toEqual(["event:soon", "mail:INBOX-skewed"]);
+  });
+
+  it("puts an all-day event before the same day's timed ones", () => {
     const items = selectAlerts({
       now: NOW,
       events: [
@@ -520,6 +556,27 @@ describe("selectAlerts — ordering", () => {
       ],
     });
     expect(ids(items)).toEqual(["event:allday", "event:timed"]);
+  });
+
+  it("puts a date-only task's card AFTER a same-day timed event, not before", () => {
+    // NOW is 2026-07-08T09:00. A bare-date task due today reads "due in 15h"
+    // (to midnight) — it must not outrank an event two hours off just because
+    // its `at` has no time component and looks like the start of the day.
+    const items = selectAlerts({
+      now: NOW,
+      events: [ev({ id: "soon", start: "2026-07-08T11:00" })], // 2h away
+      tasks: [task({ id: "today", due: "2026-07-08" })], // due in 15h (midnight)
+    });
+    expect(ids(items)).toEqual(["event:soon", "task:today"]);
+  });
+
+  it("still puts a date-only task ahead of a LATER day's timed event", () => {
+    const items = selectAlerts({
+      now: NOW,
+      events: [ev({ id: "later", start: "2026-07-09T08:00" })],
+      tasks: [task({ id: "today", due: "2026-07-08" })],
+    });
+    expect(ids(items)).toEqual(["task:today", "event:later"]);
   });
 
   it("sorts a null `at` last within its severity", () => {

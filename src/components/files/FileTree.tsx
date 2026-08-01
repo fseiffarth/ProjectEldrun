@@ -29,7 +29,7 @@ import { useSyncStore, isPathExcluded, type SyncFileState } from "../../stores/s
 import { confirmSyncTransfer } from "../../stores/syncConfirm";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
-import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, visibleEntries, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
+import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, visibleEntries, isHiddenByEnding, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
 import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
 import { basename, dirname, relativePathWithin, resolvePath } from "../../lib/paths";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
@@ -56,6 +56,9 @@ import { useT, type TranslationKey } from "../../lib/i18n";
 // choice survives right-panel hide/show and remounts (FileTree remounts each
 // time the panel reopens). Mirrors GitHistory's localStorage view pref.
 const GITIGNORED_EXPANDED_KEY = "eldrun.fileTree.gitignoredExpanded";
+// Same idea, for the collapsed "hidden by extension" group (the project's own
+// hiddenEndings list — see ProjectFilesSettings) — collapsed by default too.
+const HIDDEN_EXT_EXPANDED_KEY = "eldrun.fileTree.hiddenExtExpanded";
 
 // How many rows the tree renders at once, and how many more each click of the
 // "show more" footer adds. The rows are not virtualized, so this is the bound on
@@ -358,6 +361,13 @@ export function FileTree({
     }
   });
   const [scaffoldExpanded, setScaffoldExpanded] = useState(false);
+  const [hiddenExtExpanded, setHiddenExtExpanded] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(HIDDEN_EXT_EXPANDED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   // Whether the Ctrl key is currently held. While held, file rows arm NATIVE
   // HTML5 drag-and-drop (export/copy the file to an embedded browser / external
   // target like Signal) instead of the pointer-based drag-to-tab. The two can't
@@ -589,8 +599,11 @@ export function FileTree({
   const [hostChildNames, setHostChildNames] = useState<Set<string> | null>(null);
 
   // Dotfiles always render inline here — there's no separate "hidden" section;
-  // any that are actually gitignored get pulled into the gitignored section
-  // below instead (see the render below).
+  // any that are actually gitignored, or match a hiddenEndings rule, get
+  // pulled into their own collapsed section below instead (see the render
+  // below) — `keepHiddenEndings` is what keeps them in this list rather than
+  // dropping them outright, mirroring how a gitignored entry was never
+  // filtered out of here either.
   const entries = useMemo(
     () => visibleEntries(rawEntries, {
       showHidden: true,
@@ -598,6 +611,7 @@ export function FileTree({
       sortKey,
       descending,
       hiddenEndings,
+      keepHiddenEndings: true,
       relPath,
       hiddenPaths,
       shownPaths,
@@ -653,14 +667,19 @@ export function FileTree({
     return m;
   }, [gitStatuses, entries]);
 
-  // The three on-screen sections in render order (regular, then the collapsible
-  // scaffold + gitignored groups). Shared by the renderer and the selection
-  // click handler so a shift-range spans exactly what the user sees. Mirrors the
-  // split the render body applies below.
+  // The four on-screen sections in render order (regular, then the collapsible
+  // scaffold + gitignored + hidden-by-extension groups). Shared by the
+  // renderer and the selection click handler so a shift-range spans exactly
+  // what the user sees. Mirrors the split the render body applies below.
   const sections = useMemo(() => {
+    // Extension-hidden wins over both other splits — it's an explicit,
+    // per-project user rule (ProjectFilesSettings), more specific than "is
+    // this a scaffold file" or "does git ignore it".
+    const notHiddenExt = entries.filter((e) => !isHiddenByEnding(e, hiddenEndings, relPath, shownPaths));
+    const hiddenExt = entries.filter((e) => isHiddenByEnding(e, hiddenEndings, relPath, shownPaths));
     const isRoot = !relPath && separateScaffold;
-    const nonStandard = isRoot ? entries.filter((e) => !STANDARD_PROJECT_FILES.has(e.name)) : entries;
-    const standard = isRoot ? entries.filter((e) => STANDARD_PROJECT_FILES.has(e.name)) : [];
+    const nonStandard = isRoot ? notHiddenExt.filter((e) => !STANDARD_PROJECT_FILES.has(e.name)) : notHiddenExt;
+    const standard = isRoot ? notHiddenExt.filter((e) => STANDARD_PROJECT_FILES.has(e.name)) : [];
     // The size breakdown is an independent ignored-path scan. If it establishes
     // that every byte in a folder is ignored, keep that folder out of the normal
     // section even when the status request was incomplete (for example an older
@@ -674,8 +693,8 @@ export function FileTree({
         (dirIgnoredBytes[e.path] ?? 0) >= dirSizes[e.path]);
     const regular = nonStandard.filter((e) => !isIgnored(e));
     const gitignored = nonStandard.filter(isIgnored);
-    return { regular, standard, gitignored };
-  }, [entries, relPath, separateScaffold, displayStatuses, dirSizes, dirIgnoredBytes]);
+    return { regular, standard, gitignored, hiddenExt };
+  }, [entries, relPath, separateScaffold, displayStatuses, dirSizes, dirIgnoredBytes, hiddenEndings, shownPaths]);
 
   // How many rows the tree will actually render, raised a page at a time by the
   // "show more" footer. Rows are NOT virtualized, and each one is ~16 elements
@@ -710,13 +729,15 @@ export function FileTree({
     const regular = clip(sections.regular);
     const standard = scaffoldExpanded ? clip(sections.standard) : [];
     const gitignored = gitignoredExpanded ? clip(sections.gitignored) : [];
+    const hiddenExt = hiddenExtExpanded ? clip(sections.hiddenExt) : [];
     const total =
       sections.regular.length +
       (scaffoldExpanded ? sections.standard.length : 0) +
-      (gitignoredExpanded ? sections.gitignored.length : 0);
-    const shown = regular.length + standard.length + gitignored.length;
-    return { regular, standard, gitignored, hidden: total - shown };
-  }, [sections, rowCap, scaffoldExpanded, gitignoredExpanded]);
+      (gitignoredExpanded ? sections.gitignored.length : 0) +
+      (hiddenExtExpanded ? sections.hiddenExt.length : 0);
+    const shown = regular.length + standard.length + gitignored.length + hiddenExt.length;
+    return { regular, standard, gitignored, hiddenExt, hidden: total - shown };
+  }, [sections, rowCap, scaffoldExpanded, gitignoredExpanded, hiddenExtExpanded]);
 
   // Flat list of visible row paths in on-screen order — the axis a shift-range
   // spans. Collapsed sections contribute no rows (they aren't rendered), and
@@ -726,6 +747,7 @@ export function FileTree({
     const paths = rowWindow.regular.map((e) => e.path);
     paths.push(...rowWindow.standard.map((e) => e.path));
     paths.push(...rowWindow.gitignored.map((e) => e.path));
+    paths.push(...rowWindow.hiddenExt.map((e) => e.path));
     return paths;
   }, [rowWindow]);
 
@@ -835,6 +857,34 @@ export function FileTree({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rowWindow.gitignored]);
 
+  // Same as the gitignored effect above, for the visible hidden-by-extension
+  // rows — a plain `dir_size` is enough here too, since the group's own
+  // total needs no ignored/non-ignored split.
+  useEffect(() => {
+    const pending = rowWindow.hiddenExt.filter(
+      (e) => e.is_dir && !requestedSizes.current.has(e.path) && !isScanExcluded(relForEntry(e)),
+    );
+    if (pending.length === 0) return;
+    pending.forEach((e) => requestedSizes.current.add(e.path));
+    const gen = sizeGeneration.current;
+    for (const e of pending) {
+      guardedDirSize(projectDir, () =>
+        invoke<number>("dir_size", {
+          projectDir,
+          relPath: relForEntry(e),
+          excluded: scanExcludedList,
+        }),
+      )
+        .then((bytes) => {
+          if (sizeGeneration.current === gen) setDirSizes((m) => ({ ...m, [e.path]: bytes }));
+        })
+        .catch(() => {
+          /* best-effort display aid — leave unresolved on failure */
+        });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rowWindow.hiddenExt]);
+
   // Lazily compute the recursive size of each visible regular/standard-section
   // folder, split into ignored vs. non-ignored bytes in the SAME backend walk
   // that produces the total — so a folder with e.g. a build output dir mixed
@@ -915,6 +965,7 @@ export function FileTree({
       standard: total(sections.standard) - standardIgnored,
       standardIgnored,
       gitignored: total(sections.gitignored),
+      hiddenExt: total(sections.hiddenExt),
     };
   }, [sections, dirSizes, dirIgnoredBytes]);
 
@@ -2931,14 +2982,14 @@ export function FileTree({
         // `sections` carries the FULL lists — the section headers count them, and
         // a header that counted only the rendered page would misreport the folder.
         // `rowWindow` carries the capped lists that are actually rendered.
-        // Only the two collapsible sections read their full list here (their
+        // Only the three collapsible sections read their full list here (their
         // headers count it); the regular section has no header, so it is read
         // from `rows` alone.
-        const { standard, gitignored } = sections;
+        const { standard, gitignored, hiddenExt } = sections;
         const rows = rowWindow;
 
-        function renderEntry(e: FileEntry, isScaffold = false, isGitignored = false) {
-          const status = isGitignored ? undefined : displayStatuses[e.name];
+        function renderEntry(e: FileEntry, isScaffold = false, isGitignored = false, isHiddenExt = false) {
+          const status = isGitignored || isHiddenExt ? undefined : displayStatuses[e.name];
           const sizeClass = !e.is_dir ? sizeCategory(e.size) : "";
           // A folder's headline number is its non-ignored weight — the part
           // that's actually "yours" — with the full total + ignored split
@@ -2950,7 +3001,7 @@ export function FileTree({
           // every folder still looks regular), and there the ignored figure is
           // the folder's WHOLE size — subtracting it would show a plain 0 B.
           const dirTotal = e.is_dir ? dirSizes[e.path] : undefined;
-          const dirIgnored = e.is_dir && !isGitignored ? dirIgnoredBytes[e.path] : undefined;
+          const dirIgnored = e.is_dir && !isGitignored && !isHiddenExt ? dirIgnoredBytes[e.path] : undefined;
           const dirShown = dirTotal !== undefined ? dirTotal - (dirIgnored ?? 0) : undefined;
           const canShRun = !e.is_dir && shellRunnerFor(e.extension, PLATFORM) !== null;
           // Run only for a Python "main" script (see the `pyMainByPath` effect
@@ -3016,7 +3067,7 @@ export function FileTree({
           return (
             <div
               key={e.path}
-              className={`file-entry ${e.is_dir ? "dir" : "file"}${dragTarget ? " embeddable" : ""}${isScaffold || isGitignored ? " scaffold" : ""}${isMoveTarget ? " move-drop-target" : ""}${selected.has(e.path) ? " selected" : ""}${notOnRemote ? " not-on-remote" : ""}`}
+              className={`file-entry ${e.is_dir ? "dir" : "file"}${dragTarget ? " embeddable" : ""}${isScaffold || isGitignored || isHiddenExt ? " scaffold" : ""}${isMoveTarget ? " move-drop-target" : ""}${selected.has(e.path) ? " selected" : ""}${notOnRemote ? " not-on-remote" : ""}`}
               // Row key for jump-to-path reveal scroll (search results).
               data-entry-path={e.path}
               // Folders are drag-to-move destinations: dropping a dragged file
@@ -3233,6 +3284,28 @@ export function FileTree({
                   </span>
                 </button>
                 {gitignoredExpanded && rows.gitignored.map((e) => renderEntry(e, false, true))}
+              </>
+            )}
+            {hiddenExt.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  className="file-tree-section-divider file-tree-hidden-toggle"
+                  aria-expanded={hiddenExtExpanded}
+                  onClick={() => setHiddenExtExpanded((v) => {
+                    const next = !v;
+                    try { localStorage.setItem(HIDDEN_EXT_EXPANDED_KEY, next ? "1" : "0"); } catch { /* ignore storage failures */ }
+                    return next;
+                  })}
+                  title={t(hiddenExtExpanded ? "fileTree.collapseHiddenExt" : "fileTree.expandHiddenExt")}
+                >
+                  <span className="file-tree-hidden-caret">{hiddenExtExpanded ? "▾" : "▸"}</span>
+                  {t("fileTree.hiddenExtSection", { count: hiddenExt.length })}
+                  <span className="file-tree-path-total" title={t("fileTree.totalSizeHiddenExt")}>
+                    {fmtSize(groupSizes.hiddenExt)}
+                  </span>
+                </button>
+                {hiddenExtExpanded && rows.hiddenExt.map((e) => renderEntry(e, false, false, true))}
               </>
             )}
             {rows.hidden > 0 && (

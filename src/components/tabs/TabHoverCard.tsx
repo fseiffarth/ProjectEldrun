@@ -46,6 +46,7 @@ const VIEWER_LABEL_KEY: Record<InternalViewer, TranslationKey> = {
   markdown: "viewerLabel.markdown",
   text: "viewerLabel.text",
   tex: "viewerLabel.tex",
+  texworkspace: "viewerLabel.texworkspace",
   table: "viewerLabel.table",
   notebook: "viewerLabel.notebook",
   diff: "viewerLabel.diff",
@@ -56,6 +57,7 @@ const VIEWER_LABEL_KEY: Record<InternalViewer, TranslationKey> = {
   html: "viewerLabel.html",
   sqlite: "viewerLabel.sqlite",
   yaml: "viewerLabel.yaml",
+  bib: "viewerLabel.bib",
   eldeck: "viewerLabel.eldeck",
 };
 

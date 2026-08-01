@@ -33,29 +33,85 @@ interface RawOutlineItem {
 }
 
 /**
- * Resolve one outline destination to a 1-based page number.
+ * A resolved destination: which page, and where on it.
+ *
+ * `top` is the destination's own y anchor in **PDF user space** (bottom-left
+ * origin, unrotated) — the number the file itself carries — or null when the
+ * destination names no position (a whole-page `/Fit`, or an `/XYZ` that left the
+ * coordinate as "unchanged"). Converting it to a screen offset needs the target
+ * page's viewport, which only the caller that is about to scroll knows the
+ * rotation for, so it is deliberately left in the file's own units here.
+ */
+export interface PdfDest {
+  /** 1-based FILE page (the numbering `PageRef.page` uses). */
+  page: number;
+  top: number | null;
+}
+
+/**
+ * The y anchor an explicit destination array names, in PDF user space.
+ *
+ * The array is `[pageRef, {name}, …args]` and each destination *type* spends its
+ * args differently — `/XYZ left top zoom`, `/FitH top`, `/FitR left bottom right
+ * top` — so the slot the top sits in is chosen by the name. A type that names no
+ * position (`/Fit`, `/FitB`), or an argument the file left as `null` (PDF's
+ * "leave this coordinate unchanged"), yields null. Pure.
+ */
+export function destTop(explicit: unknown[]): number | null {
+  const name = (explicit[1] as { name?: string } | undefined)?.name;
+  const at = (i: number) => (typeof explicit[i] === "number" ? (explicit[i] as number) : null);
+  switch (name) {
+    case "XYZ":
+      return at(3);
+    case "FitH":
+    case "FitBH":
+      return at(2);
+    case "FitR":
+      return at(5);
+    default:
+      return null;
+  }
+}
+
+/**
+ * Resolve one destination — the app's ONE destination resolver, shared by the
+ * contents sidebar and the page links, so a chapter and a `\ref` to the same
+ * anchor can never disagree about where it is.
  *
  * A named destination (a string) is looked up first; an explicit array carries
  * the page reference in slot 0 — usually a `{num, gen}` ref (resolved via
  * `getPageIndex`), occasionally already a 0-based page index.
  */
+export async function resolveDest(
+  doc: PDFDocumentProxy,
+  dest: string | unknown[] | null,
+): Promise<PdfDest | null> {
+  let explicit: unknown = dest;
+  if (typeof dest === "string") {
+    try {
+      explicit = await doc.getDestination(dest);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(explicit) || explicit.length === 0) return null;
+  const top = destTop(explicit);
+  const ref = explicit[0];
+  if (typeof ref === "number") return { page: ref + 1, top }; // already a 0-based index
+  try {
+    const idx = await doc.getPageIndex(ref as Parameters<PDFDocumentProxy["getPageIndex"]>[0]);
+    return { page: idx + 1, top };
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve one outline destination to a 1-based page number. */
 async function destToPage(
   doc: PDFDocumentProxy,
   dest: string | unknown[] | null,
 ): Promise<number | null> {
-  let explicit: unknown = dest;
-  if (typeof dest === "string") {
-    explicit = await doc.getDestination(dest);
-  }
-  if (!Array.isArray(explicit) || explicit.length === 0) return null;
-  const ref = explicit[0];
-  if (typeof ref === "number") return ref + 1; // already a 0-based page index
-  try {
-    const idx = await doc.getPageIndex(ref as Parameters<PDFDocumentProxy["getPageIndex"]>[0]);
-    return idx + 1;
-  } catch {
-    return null;
-  }
+  return (await resolveDest(doc, dest))?.page ?? null;
 }
 
 /** Resolve one raw item and its descendants into an {@link OutlineNode}. */
@@ -246,4 +302,20 @@ export function flattenOutline(nodes: OutlineNode[], depth = 0): { node: Outline
     if (node.children.length) out.push(...flattenOutline(node.children, depth + 1));
   }
   return out;
+}
+
+/**
+ * Does this embedded outline carry real navigation, or is it a lone bookmark?
+ *
+ * Some LaTeX/`hyperref` templates ship a bookmark tree of exactly one entry — the
+ * paper's title, pointing at page 1 — while the actual section structure lives
+ * only in the typeset text. Rendered verbatim, the contents sidebar then shows
+ * nothing but that title, which reads as broken. Such an outline is worthless for
+ * navigation, so the viewer treats it as *absent* and falls back to the font-size
+ * heading scan (which does find the sections). A genuine contents has at least two
+ * entries, or one entry with children; a single childless node is the degenerate
+ * case this rules out.
+ */
+export function outlineIsNavigable(nodes: OutlineNode[]): boolean {
+  return flattenOutline(nodes).length >= 2;
 }

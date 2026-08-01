@@ -61,11 +61,66 @@ pub enum MailAuthKind {
     Oauth2,
 }
 
+/// Per-account **Mail AI (local)** feature toggles (Group Q, #203–#208).
+///
+/// These live on the account rather than in `Settings` because the decision is
+/// per mailbox: a work account may want auto-filing and extraction while a
+/// personal one wants none of it, and a single global switch could not say so.
+/// All are opt-in and **default off/absent**; the whole feature is additionally
+/// gated by the one *global* master switch `Settings::mail_ai_allow` and by a
+/// resolvable loopback mail-role model (see `src/lib/mail.ts`'s
+/// `mailAiResolvable`). `autoclassify` is the only field read in the **backend**
+/// (a background sync has no UI in the loop); the rest gate frontend surfaces.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MailAiPrefs {
+    /// Offer the on-demand "Summarize (local)" control in the message view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summarize: Option<bool>,
+    /// Let a sync ask the local model to file **new inbox** messages into
+    /// Important/Urgent, after the keyword-filter pass. Read in `sync_inner`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autoclassify: Option<bool>,
+    /// Offer the composer's "Draft from notes" control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formalize: Option<bool>,
+    /// Offer "Add to calendar" extraction on a message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar: Option<bool>,
+    /// Offer "Add to-do" extraction on a message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo: Option<bool>,
+    /// The "no review step" opt-in for the calendar/to-do extractors.
+    /// **Default off** — mail must never quietly write to the user's own data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_create: Option<bool>,
+    #[serde(flatten, default)]
+    pub extra: HashMap<String, Value>,
+}
+
+impl MailAiPrefs {
+    /// True when no field is set — used to store `None` rather than an empty
+    /// `{}` object, keeping an account that never touched Mail AI clean.
+    pub fn is_empty(&self) -> bool {
+        self.summarize.is_none()
+            && self.autoclassify.is_none()
+            && self.formalize.is_none()
+            && self.calendar.is_none()
+            && self.todo.is_none()
+            && self.auto_create.is_none()
+            && self.extra.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MailAccount {
     pub id: String,
+    /// The dialog's **Name**, and the *sending* identity: `mail_send` writes it
+    /// as the `From:` display name, so of the two names on an account this is
+    /// the one that leaves the machine. Empty means send the bare address.
     pub label: String,
     pub address: String,
+    /// The dialog's **Display name** — local only, and read by exactly one
+    /// surface: the accounts badge. Never written to a header.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub imap: MailServer,
@@ -87,6 +142,10 @@ pub struct MailAccount {
     /// worse than showing nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authserv_id: Option<String>,
+    /// Per-account **Mail AI (local)** toggles. Absent for an account that never
+    /// opened the feature; see [`MailAiPrefs`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai: Option<MailAiPrefs>,
     #[serde(flatten, default)]
     pub extra: HashMap<String, Value>,
 }
@@ -472,6 +531,60 @@ pub struct MailHeader {
     /// state, and the cross-account list itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<MailPriority>,
+    /// **Who** set [`Self::priority`] — the user by hand, a keyword filter rule,
+    /// or the local model (#205). Sealed at rest; recomputed onto the header on
+    /// every read from its own column. `None` when there is no mark, or when the
+    /// column predates this feature.
+    ///
+    /// It exists so the model classifier can never masquerade as a keyword
+    /// filter, which `docs/context/mail_encryption.md` makes a hard requirement:
+    /// the UI says *"marked Urgent by the local model: '…'"* only because this
+    /// field distinguishes it from the filter's *"rule Billing"*.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_source: Option<MailPrioritySource>,
+    /// The one-line reason behind [`Self::priority`] — a filter's rule name, or
+    /// the model's own sentence. Sealed at rest (a model's reason quotes the
+    /// message, which says as much as the subject). `None`/empty when there is no
+    /// mark or the mark carries no stated reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_reason: Option<String>,
+}
+
+/// **Who** applied a message's priority mark. The provenance that keeps the
+/// model classifier from being mistaken for a keyword filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MailPrioritySource {
+    /// The user marked it by hand (the right-click menu / `mail_priority_set`).
+    User,
+    /// A keyword filter rule marked it (`services::mail_filters`).
+    Filter,
+    /// The local model marked it (`services::mail_ai`, #205).
+    Model,
+}
+
+impl MailPrioritySource {
+    /// The literal stored in the `priority_source` column — fixed per variant,
+    /// never anything caller-supplied.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MailPrioritySource::User => "user",
+            MailPrioritySource::Filter => "filter",
+            MailPrioritySource::Model => "model",
+        }
+    }
+
+    /// Read one back. An unrecognized value reads as `None` (no provenance) for
+    /// the same reason [`MailPriority::parse`] does: a wrong guess would be worse
+    /// than an honest blank.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "user" => Some(MailPrioritySource::User),
+            "filter" => Some(MailPrioritySource::Filter),
+            "model" => Some(MailPrioritySource::Model),
+            _ => None,
+        }
+    }
 }
 
 /// A message's local priority mark: **Important** or **Urgent**.
@@ -708,6 +821,77 @@ pub struct MailFilterReport {
     /// A capped list of what matched, newest first.
     #[serde(default)]
     pub samples: Vec<MailFilterSample>,
+}
+
+// ── Local-model extraction (Group Q, #205/#207/#208) ────────────────────────
+
+/// A calendar event the local model read out of a message (#207).
+///
+/// The wire contract's `MailExtractedEvent`. Field-for-field the TS interface:
+/// `start` is an ISO-8601 **local** wall-clock string (`2026-08-04T15:00`), and
+/// `confidence` is `0..1`. The command returns `null` (not this) when the model
+/// gave nothing usable, so every field here is one a caller may trust to be set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MailExtractedEvent {
+    pub title: String,
+    /// ISO-8601 local, e.g. `2026-08-04T15:00`.
+    pub start: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<String>,
+    pub all_day: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// `0.0..=1.0`. Below the command's floor the extraction is discarded.
+    pub confidence: f64,
+}
+
+/// A to-do card the local model read out of a message (#208). The wire
+/// contract's `MailExtractedTask`; `priority` matches the board's vocabulary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MailExtractedTask {
+    pub title: String,
+    /// ISO date, e.g. `2026-08-04`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+}
+
+/// The manual "what would the local model file?" report (#205).
+///
+/// Deliberately a **different shape** from [`MailFilterReport`]: it carries a
+/// fixed `source: "model"` tag and its matches name the model's own reason, so a
+/// UI can never render a model verdict as though a keyword rule produced it.
+#[derive(Debug, Clone, Serialize)]
+pub struct MailAiClassifyReport {
+    /// Always `"model"`. The tag that makes this visibly distinct from the
+    /// filter report; set once, here, and nowhere caller-controlled.
+    pub source: String,
+    pub scanned: u32,
+    pub matched: Vec<MailAiClassifyMatch>,
+    pub dry_run: bool,
+}
+
+impl MailAiClassifyReport {
+    /// A fresh report with the fixed `"model"` source tag.
+    pub fn new(dry_run: bool) -> Self {
+        MailAiClassifyReport {
+            source: "model".to_string(),
+            scanned: 0,
+            matched: Vec::new(),
+            dry_run,
+        }
+    }
+}
+
+/// One message the local model would file, and why.
+#[derive(Debug, Clone, Serialize)]
+pub struct MailAiClassifyMatch {
+    pub message_id: String,
+    /// `"important"` or `"urgent"` — [`MailPriority::as_str`].
+    pub priority: String,
+    /// The model's one-line reason.
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -166,6 +166,20 @@ pub struct Settings {
     /// Mail: OS notification on new inbox mail (default on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail_notify_new: Option<bool>,
+    // ── Local-model mail assistant (Group Q, #203–#208) ─────────────────────
+    //
+    // The per-feature switches (summarize / autoclassify / formalize / calendar /
+    // todo / auto-create) now live **per account** (`schema::mail`'s
+    // `MailAiPrefs`), because whether a given mailbox wants summaries, auto-filing
+    // and extraction is a per-mailbox decision a single global switch could not
+    // express. What stays global here is exactly one thing: a **master switch**.
+    /// The global "Allow Mail AI features" master switch. **Default off/absent**,
+    /// so nobody inherits a model reading their mail without turning it on. With
+    /// it off no Mail AI feature runs anywhere, and the mail toolbar does not even
+    /// offer the per-account quick-toggle tags. Read in the backend sync (it gates
+    /// per-account `autoclassify`) and everywhere in the UI via `mailAiResolvable`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_ai_allow: Option<bool>,
     /// Where the Ollama server is, when it is not the default
     /// `127.0.0.1:11434` — a different port (a container publishing 11435, a
     /// second server) or, with [`Self::ollama_allow_remote_host`] set, another
@@ -190,14 +204,31 @@ pub struct Settings {
     /// they wrote rather than what DNS answered today.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ollama_allow_remote_host: Option<bool>,
+    /// Where Ollama saves the models it downloads — its `OLLAMA_MODELS`
+    /// directory. `None`/empty means Ollama's own default (`~/.ollama/models`,
+    /// or the system-service dir when one holds models).
+    ///
+    /// It reaches only a server **Eldrun starts itself** (`ensure_ollama_running`
+    /// passes it as `OLLAMA_MODELS`): an already-running or systemd-managed
+    /// server keeps whatever location it was launched with, which is why the
+    /// Settings panel offers a one-click systemd drop-in
+    /// (`ollama_models_dir_plan`) to point *that* server at the same folder. The
+    /// path is also folded into the partial-blob scan (`ollama_blob_dirs`) so a
+    /// resumable download in the custom dir is still found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ollama_models_path: Option<String>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_model: Option<String>,
     /// Per-task local-model assignments set from the 🧠 menu's role chips. Maps a
-    /// task key (`"autocomplete"`, `"grammar"`, `"tabs"`) to the model name that
-    /// serves it, so several loaded models can run different jobs in parallel.
-    /// Optional + flat so older settings files round-trip cleanly; a task absent
-    /// here falls back to `ollama_model`. Frontend logic only — persisted here.
+    /// task key (`"autocomplete"`, `"grammar"`, `"tabs"`, `"mail"`) to the model
+    /// name that serves it, so several loaded models can run different jobs in
+    /// parallel. Optional + flat so older settings files round-trip cleanly; a
+    /// task absent here falls back to `ollama_model`. Frontend logic only —
+    /// persisted here. An open map rather than a struct of known keys, which is
+    /// what lets `"mail"` be stored before the mail task that will read it exists:
+    /// adding a role is a frontend edit, and this file keeps round-tripping one it
+    /// has never heard of.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ollama_roles: Option<HashMap<String, String>>,
     /// Preserved for Python rollback; not used by the Tauri app.
@@ -739,5 +770,27 @@ mod tests {
         let back: Settings =
             serde_json::from_str(&serde_json::to_string(&s).unwrap()).expect("round trip");
         assert_eq!(back.browser_link_target.as_deref(), Some("in_app"));
+    }
+
+    /// The global Mail AI master switch (Group Q) is **absent by default** — a
+    /// fresh `settings.json` omits it, so nobody inherits a feature that runs a
+    /// model over their mail without turning it on. It is a real named field (not
+    /// an `extra` passenger), so `mail_ai_allow`, read in the backend sync, can be
+    /// gated on at all. The per-feature toggles moved to `schema::mail`.
+    #[test]
+    fn the_mail_ai_master_switch_defaults_absent_and_is_a_real_field() {
+        let raw = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(
+            !raw.contains("mail_ai_allow"),
+            "default settings must omit mail_ai_allow: {raw}"
+        );
+
+        let s: Settings = serde_json::from_str(r#"{"mail_ai_allow":true}"#).expect("parse");
+        assert_eq!(s.mail_ai_allow, Some(true));
+        assert!(
+            s.extra.is_empty(),
+            "mail_ai_allow fell through to `extra`: {:?}",
+            s.extra.keys().collect::<Vec<_>>()
+        );
     }
 }

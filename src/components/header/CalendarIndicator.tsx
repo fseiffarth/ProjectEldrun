@@ -4,6 +4,7 @@ import {
   dayAgenda,
   eventsLeftToday,
   occurrenceEnded,
+  occurrenceStale,
   useCalendarStore,
 } from "../../stores/calendar";
 import { useSettingsStore } from "../../stores/settings";
@@ -49,9 +50,12 @@ const TICK_MS = 60_000;
  * merged into one list, where a 09:00 under a 16:00 reads as an ordering bug.
  * Affordable on hover for `MailIndicator`'s reason — the store is already in
  * memory and one local file behind it, so a pointer crossing the header touches
- * no network and starts no work. Past occurrences are **dimmed, not hidden**,
- * which is the agenda rail's rule and what stops this list from disagreeing with
- * the rail about what today held.
+ * no network and starts no work. A past occurrence is **dimmed for an hour and
+ * then dropped** (`occurrenceStale`): dimming is the agenda rail's rule and the
+ * hour is what it is worth here — the meeting you have just come out of is still
+ * part of the answer, this morning's four are not, and by the evening they were
+ * pushing what is still coming off the bottom of a list whose whole job is to
+ * show it.
  */
 export function CalendarIndicator() {
   const t = useT();
@@ -125,8 +129,23 @@ export function CalendarIndicator() {
   // is the thing worth knowing. Tomorrow is a *section below* today, never mixed
   // into one list — a row reading 09:00 under a row reading 16:00 would be read
   // as an ordering bug, not as the next day.
+  // Today's finished occurrences are dropped an hour after they end
+  // (`occurrenceStale`) — long enough that the meeting you have just come out of
+  // is still on the list, short enough that the evening's list is not mostly
+  // this morning. Only day 0 can hold one: a row belonging to a day that has not
+  // started is never past, and `occurrenceStale` compares against *now* whatever
+  // day it is handed. The filter is here rather than inside `dayAgenda` because
+  // the expansion is shared with the badge and the board's agenda rail, and this
+  // is a rule about *this* list.
   const days = useMemo(
-    () => (enabled ? dayAgenda(events, calendars, now, 2) : []),
+    () =>
+      enabled
+        ? dayAgenda(events, calendars, now, 2).map((day, i) =>
+            i === 0
+              ? { ...day, occurrences: day.occurrences.filter((occ) => !occurrenceStale(occ, now)) }
+              : day,
+          )
+        : [],
     [enabled, events, calendars, now],
   );
 

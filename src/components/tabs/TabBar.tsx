@@ -546,10 +546,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     setMenuPos(null);
   }
 
-  // Open (or focus, if already open) the Skills Library tab. Install/uninstall
-  // act on this one project, so a second tab in this scope would show exactly
-  // the same catalog and installed list — hence ensureTab, the calendar/
-  // printing bargain, rather than addTab.
+  // Open (or focus, if already open) the Skills Library tab. Its catalog is
+  // machine state and its install scopes are this project plus the personal
+  // one, so a second tab in this scope would show exactly the same lists —
+  // hence ensureTab, the calendar/printing bargain, rather than addTab.
   function handleAddSkills() {
     focusGroup(groupId);
     ensureTab(
@@ -1490,21 +1490,21 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   onPick: handleAddPrinting,
                 }],
               },
-              // Needs a project to install into — hidden at the root scope
-              // rather than offered disabled, the Network Traffic bargain above.
-              ...(scope !== "root"
-                ? [{
-                    label: t("skillsLibrary.title"),
-                    entries: [{
-                      key: "skillslibrary",
-                      label: t("skillsLibrary.title"),
-                      dot: "◧",
-                      color: TAB_ACCENT.skillslibrary,
-                      untested: true,
-                      onPick: handleAddSkills,
-                    }],
-                  }]
-                : []),
+              // Offered at the root scope too since the personal install scope
+              // exists: the catalog is machine state and a skill can be
+              // installed for every project here without one being open. See
+              // `NewTabMenu`, which carries the same entry.
+              {
+                label: t("skillsLibrary.title"),
+                entries: [{
+                  key: "skillslibrary",
+                  label: t("skillsLibrary.title"),
+                  dot: "◧",
+                  color: TAB_ACCENT.skillslibrary,
+                  untested: true,
+                  onPick: handleAddSkills,
+                }],
+              },
               ...(webBrowser
                 ? [{
                     label: t("newTabMenu.browser"),

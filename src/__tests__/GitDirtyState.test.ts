@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { gitDirtyState } from "../stores/gitDirty";
+import { gitDirtyState, expectsGitRepo } from "../stores/gitDirty";
 
 const status = (over: Partial<{ staged: number; unstaged: number; untracked: number; is_repo: boolean }>) => ({
   staged: 0,
@@ -11,7 +11,7 @@ const status = (over: Partial<{ staged: number; unstaged: number; untracked: num
 });
 
 describe("gitDirtyState", () => {
-  it("reports clean for a non-repo regardless of counts", () => {
+  it("reports clean for a non-repo regardless of counts (git_type is decided in refresh, not here)", () => {
     expect(gitDirtyState(status({ is_repo: false, untracked: 5, staged: 2 }), 3)).toBe("clean");
   });
 
@@ -35,5 +35,20 @@ describe("gitDirtyState", () => {
   it("prioritizes dirty over staged over unpushed", () => {
     expect(gitDirtyState(status({ untracked: 1, staged: 1 }), 2)).toBe("dirty");
     expect(gitDirtyState(status({ staged: 1 }), 2)).toBe("staged");
+  });
+});
+
+describe("expectsGitRepo", () => {
+  it("is true for a project whose git_type names a repo", () => {
+    expect(expectsGitRepo("local")).toBe(true);
+    expect(expectsGitRepo("remote-private")).toBe(true);
+    expect(expectsGitRepo("remote-public")).toBe(true);
+  });
+
+  it("is false for a project that never had git", () => {
+    expect(expectsGitRepo("none")).toBe(false);
+    expect(expectsGitRepo(undefined)).toBe(false);
+    expect(expectsGitRepo(null)).toBe(false);
+    expect(expectsGitRepo("")).toBe(false);
   });
 });

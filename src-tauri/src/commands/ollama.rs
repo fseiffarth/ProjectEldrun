@@ -75,6 +75,17 @@ fn read_settings() -> Option<crate::schema::Settings> {
         .flatten()
 }
 
+/// The user's chosen `OLLAMA_MODELS` directory (`Settings::ollama_models_path`),
+/// trimmed and dropped when empty. Read on every use for `ollama_addr`'s reason:
+/// a settings write is not an event this module hears.
+fn configured_models_dir() -> Option<std::path::PathBuf> {
+    read_settings()
+        .and_then(|s| s.ollama_models_path)
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
 /// The pure core of [`ollama_addr`]: what the user wrote → what we dial.
 ///
 /// Liberal about spelling (Ollama's own `OLLAMA_HOST` accepts most of these, and
@@ -100,7 +111,7 @@ fn read_settings() -> Option<crate::schema::Settings> {
 /// The result is interpolated into a request line and a `Host:` header, so a
 /// host carrying a control character is rejected outright — this builds HTTP by
 /// string concatenation, and that is header injection.
-fn resolve_ollama_addr(raw: Option<&str>, allow_remote: bool) -> Result<String, String> {
+pub(crate) fn resolve_ollama_addr(raw: Option<&str>, allow_remote: bool) -> Result<String, String> {
     let raw = raw.map(str::trim).unwrap_or("");
     if raw.is_empty() {
         return Ok(DEFAULT_OLLAMA_ADDR.to_string());
@@ -222,7 +233,7 @@ fn connect_ollama(addr: &str) -> Result<TcpStream, String> {
 
 /// Whether a host *literal* names this machine. Deliberately no DNS: see
 /// [`resolve_ollama_addr`].
-fn host_is_loopback(host: &str) -> bool {
+pub(crate) fn host_is_loopback(host: &str) -> bool {
     if host.eq_ignore_ascii_case("localhost") {
         return true;
     }
@@ -237,7 +248,7 @@ fn host_is_loopback(host: &str) -> bool {
 
 /// Send a request to the local Ollama REST API and return the response body.
 /// Uses HTTP/1.0 to avoid chunked transfer encoding.
-fn ollama_http(method: &str, path: &str, json_body: Option<&str>) -> Result<String, String> {
+pub(crate) fn ollama_http(method: &str, path: &str, json_body: Option<&str>) -> Result<String, String> {
     let addr = ollama_addr()?;
     let mut stream = connect_ollama(&addr)?;
     // 10-minute timeout accommodates large model pulls
@@ -782,6 +793,26 @@ fn model_has_capability(model: &str, cap: &str) -> Option<bool> {
     Some(caps.iter().any(|c| c == cap))
 }
 
+/// Ollama's capability list for `model`, resolved through one `/api/tags` read
+/// for the manifest digest and the digest-keyed [`model_capabilities`] cache.
+///
+/// **Empty means "could not ask", never "supports nothing"** — the same rule
+/// [`model_capabilities`] documents. `services::mail_ai` reads it to refuse an
+/// embedding-only model, and honours the empty-is-unknown contract by allowing
+/// through anything it cannot classify.
+pub(crate) fn capabilities_of(model: &str) -> Vec<String> {
+    let digest = ollama_http("GET", "/api/tags", None)
+        .ok()
+        .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["models"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .find(|m| m["name"].as_str() == Some(model))
+        .and_then(|m| m["digest"].as_str().map(String::from))
+        .unwrap_or_default();
+    model_capabilities(model, &digest)
+}
+
 /// Whether `model` can drive tool/function calls.
 fn model_supports_tools(model: &str) -> Option<bool> {
     model_has_capability(model, "tools")
@@ -921,6 +952,13 @@ fn ollama_blob_dirs() -> Vec<std::path::PathBuf> {
     .into_iter()
     .map(|dir| dir.join("blobs"))
     .collect::<Vec<_>>();
+    // The user's configured dir belongs here too: it is where a server *Eldrun*
+    // spawns downloads to, but it is not on this process's `OLLAMA_MODELS`, so
+    // the env-var candidate above would miss it and a paused download in the
+    // custom dir would have no resumable partial to find.
+    if let Some(cfg) = configured_models_dir() {
+        dirs.push(cfg.join("blobs"));
+    }
     if let Some(system) = system_ollama_models_dir() {
         dirs.push(system.join("blobs"));
     }
@@ -2405,6 +2443,106 @@ pub async fn ollama_gpu_status() -> OllamaGpuStatus {
     .unwrap_or_default()
 }
 
+/// Whether a chosen models path can be embedded in the terminal command that
+/// reconfigures the *service* (a systemd drop-in). A directory carrying a double
+/// quote, a `%`, a backslash or a control character is refused rather than
+/// escaped through three nested quoting layers (shell → `printf` → systemd
+/// `Environment="…"`, where `%` is a specifier): such a path is not a real
+/// Ollama models directory, so the honest answer is to withhold the drop-in and
+/// leave the setting itself — which reaches an Eldrun-spawned server through a
+/// plain `Command::env`, with no shell — unaffected.
+fn models_path_is_safe(path: &str) -> bool {
+    !path.is_empty()
+        && !path
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '"' | '%' | '\\'))
+}
+
+/// POSIX single-quote a string so it survives as one shell word.
+fn sh_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// The terminal command that points the **running service** at `path`, plus the
+/// shell it needs. Empty when there is nothing to run — no service (a server
+/// Eldrun spawns already honours the setting via `ensure_ollama_running`), or a
+/// path too exotic to embed (`models_path_is_safe`).
+///
+/// A systemd drop-in, mirroring `igpu_fix_command`: additive, survives the
+/// installer rewriting `ollama.service`, undone by deleting one file, and handed
+/// to a terminal because it needs a root password and reconfigures a system
+/// service the user is entitled to read first. The service user is read from the
+/// unit itself (`systemctl show -p User`) rather than assumed, so the new dir is
+/// chowned to whoever `ollama.service` actually runs as; existing models are
+/// **not** moved — the panel says so.
+fn models_dir_service_command(path: &str, systemd: bool) -> (String, String) {
+    if !systemd || !models_path_is_safe(path) {
+        return (String::new(), String::new());
+    }
+    let q = sh_single_quote(path);
+    (
+        format!(
+            "svc_user=$(systemctl show -p User --value ollama); \
+             svc_user=${{svc_user:-ollama}}; \
+             sudo mkdir -p /etc/systemd/system/ollama.service.d && \
+             printf '[Service]\\nEnvironment=\"OLLAMA_MODELS=%s\"\\n' {q} | \
+             sudo tee /etc/systemd/system/ollama.service.d/eldrun-models.conf && \
+             sudo mkdir -p {q} && sudo chown \"$svc_user\": {q} && \
+             sudo systemctl daemon-reload && sudo systemctl restart ollama"
+        ),
+        "bash".to_string(),
+    )
+}
+
+/// What the Settings panel needs to render the "Model download location" row:
+/// the default it stands in for, whether the running server is systemd-managed
+/// (so the setting cannot reach it on its own), and the one-click command that
+/// makes it.
+#[derive(serde::Serialize, Clone, Default)]
+pub struct OllamaModelsDirPlan {
+    /// Ollama's own default (`~/.ollama/models`), for the field's placeholder.
+    pub default_dir: String,
+    /// The local Ollama runs as a systemd unit; the drop-in below is the only way
+    /// a chosen location reaches it.
+    pub systemd_service: bool,
+    /// The "apply to the running service" command, for `runInstallInTab`. Empty
+    /// when there is nothing to run — see [`models_dir_service_command`].
+    pub service_cmd: String,
+    /// Which shell `service_cmd` needs.
+    pub shell_kind: String,
+}
+
+/// Describe how a chosen models directory would be applied. `path` is the
+/// setting as it stands (or as the user just picked); an empty/absent one yields
+/// no service command, since there is nothing to point anywhere.
+///
+/// On demand only — it spawns `systemctl` to learn whether the server is a unit,
+/// so it belongs to the Settings panel opening, never to a poll.
+#[tauri::command]
+pub async fn ollama_models_dir_plan(path: Option<String>) -> OllamaModelsDirPlan {
+    tokio::task::spawn_blocking(move || {
+        let default_dir = crate::paths::home_dir()
+            .join(".ollama")
+            .join("models")
+            .to_string_lossy()
+            .into_owned();
+        let systemd = ollama_under_systemd();
+        let chosen = path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+        let (service_cmd, shell_kind) = chosen
+            .as_deref()
+            .map(|p| models_dir_service_command(p, systemd))
+            .unwrap_or_default();
+        OllamaModelsDirPlan {
+            default_dir,
+            systemd_service: systemd,
+            service_cmd,
+            shell_kind,
+        }
+    })
+    .await
+    .unwrap_or_default()
+}
+
 fn ollama_listening() -> bool {
     let Ok(addr) = ollama_addr() else {
         // A misconfigured endpoint is not a server that is down: say "not
@@ -2483,7 +2621,16 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
 
-    if let Some(sys_models) = system_ollama_models_dir() {
+    // The user's chosen download location wins over the system dir: they asked
+    // for it explicitly, and this is the one server whose `OLLAMA_MODELS` Eldrun
+    // controls. Create it first — Ollama would otherwise fail its first pull
+    // against a directory that does not exist. A systemd-managed server never
+    // reaches this branch (it is started via the unit above), which is what the
+    // Settings panel's "Apply to the service" drop-in is for.
+    if let Some(dir) = configured_models_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        cmd.env("OLLAMA_MODELS", dir);
+    } else if let Some(sys_models) = system_ollama_models_dir() {
         cmd.env("OLLAMA_MODELS", sys_models);
     }
 
@@ -4741,6 +4888,53 @@ mod tests {
         assert!(linux.contains(&std::path::PathBuf::from(
             "/usr/share/ollama/.ollama/models"
         )));
+    }
+
+    // ── models-download-location (Settings::ollama_models_path) ──────────────
+
+    #[test]
+    fn models_path_safety_gates_the_service_command_only() {
+        assert!(models_path_is_safe("/data/ollama/models"));
+        assert!(models_path_is_safe("/mnt/big disk/models")); // a space is fine
+        assert!(!models_path_is_safe("")); // nothing to point at
+        assert!(!models_path_is_safe("/data/\"quoted\"")); // breaks Environment="…"
+        assert!(!models_path_is_safe("/data/50%")); // a systemd specifier
+        assert!(!models_path_is_safe("/data/back\\slash"));
+        assert!(!models_path_is_safe("/data/\nnewline"));
+    }
+
+    #[test]
+    fn sh_single_quote_wraps_and_escapes() {
+        assert_eq!(sh_single_quote("/plain/path"), "'/plain/path'");
+        assert_eq!(sh_single_quote("/with space"), "'/with space'");
+        // A lone apostrophe closes, escapes, reopens.
+        assert_eq!(sh_single_quote("a'b"), "'a'\\''b'");
+    }
+
+    #[test]
+    fn service_command_is_a_drop_in_only_under_systemd() {
+        let path = "/data/ollama/models";
+        // No service to reconfigure → nothing to run (an Eldrun-spawned server
+        // already honours the setting).
+        assert_eq!(models_dir_service_command(path, false), (String::new(), String::new()));
+
+        let (cmd, shell) = models_dir_service_command(path, true);
+        assert_eq!(shell, "bash");
+        assert!(cmd.contains("ollama.service.d/eldrun-models.conf"));
+        assert!(cmd.contains("OLLAMA_MODELS=%s")); // path arrives as a printf arg
+        assert!(cmd.contains(&sh_single_quote(path)));
+        assert!(cmd.contains("systemctl restart ollama"));
+        // The dir is created and handed to whoever the unit runs as.
+        assert!(cmd.contains("systemctl show -p User"));
+        assert!(cmd.contains("chown"));
+    }
+
+    #[test]
+    fn service_command_withheld_for_an_unsafe_path_even_under_systemd() {
+        assert_eq!(
+            models_dir_service_command("/data/\"x\"", true),
+            (String::new(), String::new())
+        );
     }
 
     // ── #201a: `ollama_host` actually reaches the transport ──────────────────

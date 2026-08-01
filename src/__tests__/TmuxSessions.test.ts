@@ -53,17 +53,24 @@ describe("persistSessionsEnabled — default ON", () => {
   });
 });
 
-describe("shouldPersistTab — shell + remote host + enabled", () => {
-  it("persists a remote shell tab, but never an agent, a local tab, or an opted-out project", () => {
+describe("shouldPersistTab — shell/agent + remote host + enabled", () => {
+  it("persists a remote shell OR remote agent tab, but never a local agent, a local tab, or an opted-out project", () => {
     expect(shouldPersistTab("shell", "primary", remote())).toBe(true);
     expect(shouldPersistTab("shell", "h1", remote())).toBe(true); // a worker host too
-    // Agent tabs resume via their own session — excluded.
-    expect(shouldPersistTab("agent", "primary", remote())).toBe(false);
+    // A remote agent tab now persists too: its tmux name composes with `--resume`
+    // (reattach the live agent, else re-run the resume).
+    expect(shouldPersistTab("agent", "primary", remote())).toBe(true);
+    expect(shouldPersistTab("agent", "h1", remote())).toBe(true);
+    // A local Ollama agent is host-bound and out of scope — excluded.
     expect(shouldPersistTab("local_agent", "primary", remote())).toBe(false);
-    // A local-running tab (hostId null) has no host session.
+    // A local-running tab (hostId null) has no host session — shell or agent.
     expect(shouldPersistTab("shell", null, remote())).toBe(false);
-    // Opted out.
+    expect(shouldPersistTab("agent", null, remote())).toBe(false);
+    // The per-tab ephemeral opt-out still wins for an agent tab.
+    expect(shouldPersistTab("agent", "primary", remote(), true)).toBe(false);
+    // Opted out (project toggle) — shell or agent.
     expect(shouldPersistTab("shell", "primary", remote({ persist_sessions: false }))).toBe(false);
+    expect(shouldPersistTab("agent", "primary", remote({ persist_sessions: false }))).toBe(false);
   });
 });
 
@@ -146,5 +153,51 @@ describe("attach tab restore", () => {
     );
     const tab = useTabsStore.getState().tabsByScope["p"][0];
     expect(tab.tmuxSession).toMatch(/^eldrun-/);
+  });
+
+  it("mints a stable tmuxSession for a restorable remote agent tab, in the shell-tab format", () => {
+    // A resumable remote agent tab (claude, with a sessionId) persisted before the
+    // feature: on restore it mints a persisted name in the SAME eldrun-<scope>--<uuid>
+    // format shell tabs use, so it reattaches on every subsequent relaunch.
+    useTabsStore.getState().loadFromLayout(
+      [
+        {
+          key: "agent-1",
+          label: "claude",
+          cmd: "claude",
+          cwd: "/p",
+          kind: "agent",
+          location: "remote",
+          sessionId: "sess-abc",
+        },
+      ],
+      "/p",
+      "p",
+    );
+    const tab = useTabsStore.getState().tabsByScope["p"][0];
+    expect(tab.kind).toBe("agent");
+    expect(tab.tmuxSession).toMatch(/^eldrun-p--/);
+  });
+
+  it("keeps an agent tab's persisted tmuxSession across a restart (reattach, not fork)", () => {
+    useTabsStore.getState().loadFromLayout(
+      [
+        {
+          key: "agent-9",
+          label: "claude",
+          cmd: "claude",
+          cwd: "/p",
+          kind: "agent",
+          location: "remote",
+          sessionId: "sess-xyz",
+          tmuxSession: "eldrun-p--fixed-agent-uuid",
+        },
+      ],
+      "/p",
+      "p",
+    );
+    const tab = useTabsStore.getState().tabsByScope["p"][0];
+    expect(tab.key).not.toBe("agent-9");
+    expect(tab.tmuxSession).toBe("eldrun-p--fixed-agent-uuid");
   });
 });

@@ -1,5 +1,6 @@
 import type { CalendarEvent, CalendarTask } from "../types";
 import type { MailHeader } from "../types/mail";
+import { conferenceLink } from "./conference";
 import {
   MINUTES_PER_DAY,
   addDays,
@@ -40,8 +41,10 @@ import { selectUrgentMail } from "./todoBoard";
 export type AlertKind = "mail" | "event" | "task";
 
 /**
- * How loud the row is. Ordered worst-first — `SEVERITY_ORDER` is the sort key,
- * and the CSS class is the same string.
+ * How loud the row is. Drives the dot colour (the CSS class is the same
+ * string) and the `mailSeverity` floor; the row *order* is due time, not this
+ * — see `compareAlerts`. `SEVERITY_ORDER` still ranks the values worst-first
+ * for that floor comparison.
  *
  * - `overdue` — the due date/start is in the past and the thing is not done.
  * - `now` — happening inside the imminent window (`IMMINENT_MINUTES`).
@@ -91,6 +94,15 @@ export interface AlertSource {
   mailPriority?: "urgent" | "important";
   /** `kind === "event"`: `CalendarEvent.id`. */
   eventId?: string;
+  /**
+   * `kind === "event"`: the event's video-call link and the service behind it,
+   * when it has one. Computed once here through `lib/conference`'s
+   * `conferenceLink` — the same verdict the header's 🗓 dropdown and the event
+   * dialog reach — so the row's Join button cannot disagree with theirs about
+   * the same meeting. Absent when the event has no joinable link.
+   */
+  conferenceUrl?: string;
+  conferenceProvider?: string;
   /** `kind === "task"`: `CalendarTask.id`. */
   taskId?: string;
   /** Calendar owning the event/task, for the colour chip. */
@@ -249,36 +261,63 @@ function displayText(text: string | undefined | null): string {
 }
 
 /**
- * Order two rows: severity, then `at` ascending with nulls last, then kind, then
- * id. Total and deterministic — the same snapshot always renders in the same
- * order, which is what stops a one-minute refresh from reshuffling rows the user
- * is reading.
+ * The instant a row actually sorts on — **not always `at`**.
  *
- * `at` compares as a *string* on purpose: `"YYYY-MM-DD"` and
- * `"YYYY-MM-DDTHH:MM"` are both lexicographically ordered, and the short form
- * sorts before every timed stamp on its own day — which is where an all-day item
- * belongs. The kind and id tie-breaks are alphabetic and arbitrary; they exist
- * only so two rows on the same minute cannot swap between renders.
+ * For a timed row and an all-day *event* this is `at` itself: an all-day event
+ * has no deadline inside it (it is "a fact about the calendar", `readsInHours`'s
+ * words), so it is ranked at the *start* of its day, ahead of that day's timed
+ * rows — the bare date string sorts before every timed stamp on the same day.
+ *
+ * For an all-day **task** this is `dayEnd(at)`, the same midnight `minutesAway`
+ * already counts to. A card due "today" with no hour is not due at the day's
+ * *start* — it is due at its *end* — and the strip already reads it that way
+ * (`readsInHours` keeps a task's hour countdown even when it has none of its
+ * own). Sorting it by the bare date instead put a card reading "due in 15h"
+ * ahead of a meeting reading "in 2h", which is backwards: ranking it by `at`
+ * alone was measuring a different instant than the one the row displays.
+ */
+function sortMoment(item: AlertItem): string | null {
+  if (item.at === null) return null;
+  return item.kind === "task" && item.allDay ? dayEnd(item.at) : item.at;
+}
+
+/**
+ * Order two rows: `sortMoment` ascending with nulls last, then kind, then id.
+ * Total and deterministic — the same snapshot always renders in the same
+ * order, which is what stops a one-minute refresh from reshuffling rows the
+ * user is reading.
+ *
+ * Due time is the sort key, not severity — the strip reads top-to-bottom as a
+ * timeline (what is due soonest is first), and severity stays what it always
+ * was otherwise: the dot colour, nothing more. The two agree in the
+ * overwhelming case anyway (a past moment is a smaller string than a future
+ * one, so an overdue row already sorts ahead of everything upcoming without
+ * severity's help); where they can part is the mail severity floor
+ * (`mailSeverity`), which raises a skew-dated urgent message's *dot* to `now`
+ * without moving its `at` — that row now sorts on the date on the message,
+ * same as everything else.
+ *
+ * The kind and id tie-breaks are alphabetic and arbitrary; they exist only so
+ * two rows on the same minute cannot swap between renders.
  */
 function compareAlerts(a: AlertItem, b: AlertItem): number {
-  const bySeverity = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity];
-  if (bySeverity !== 0) return bySeverity;
-  if (a.at !== b.at) {
-    if (a.at === null) return 1;
-    if (b.at === null) return -1;
-    return a.at < b.at ? -1 : 1;
+  const am = sortMoment(a);
+  const bm = sortMoment(b);
+  if (am !== bm) {
+    if (am === null) return 1;
+    if (bm === null) return -1;
+    return am < bm ? -1 : 1;
   }
   if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
 /**
- * Merge the three sources into one severity-then-time-ordered list, capped at
- * `limit`.
+ * Merge the three sources into one due-time-ordered list, capped at `limit`.
  *
- * Ordering is severity first (an overdue task outranks a meeting in six days),
- * then `at` ascending, then kind, then id — total and deterministic, so a
- * refresh that changes nothing renders the same rows in the same order.
+ * Ordering is `at` ascending, then kind, then id — total and deterministic, so
+ * a refresh that changes nothing renders the same rows in the same order. See
+ * `compareAlerts` for why due time rather than severity is the key.
  *
  * Filtered out: done cards (`percent >= 100`), cancelled events, anything past
  * the lookahead window, and mail already converted into a card (a deadline the
@@ -389,6 +428,14 @@ function buildAlerts(input: AlertInput): AlertItem[] {
       const at = allDay ? datePart(event.start) : event.start;
       const { minutesAway, daysAway, inWindow } = timing(at, allDay);
       if (!inWindow) continue;
+      // The video call, if any, is derived the one way every Join button reaches
+      // it — the explicit field, else a location/notes link from a recognized
+      // meeting host — so the strip's door and the calendar's are the same door.
+      const call = conferenceLink({
+        conference: event.conference,
+        location: event.location,
+        notes: event.notes,
+      });
       rows.push({
         id: `event:${event.id}`,
         kind: "event",
@@ -399,7 +446,12 @@ function buildAlerts(input: AlertInput): AlertItem[] {
         allDay,
         minutesAway,
         daysAway,
-        source: { eventId: event.id, calendarId: event.calendar_id },
+        source: {
+          eventId: event.id,
+          calendarId: event.calendar_id,
+          conferenceUrl: call?.url,
+          conferenceProvider: call?.provider,
+        },
       });
     }
   }
@@ -453,12 +505,13 @@ function buildAlerts(input: AlertInput): AlertItem[] {
  * The rows the group shows: everything `buildAlerts` found, minus what the user
  * muted, capped at `limit`.
  *
- * A plain truncation, not a per-severity quota. The sort has already put the
- * loudest rows first, so the only thing a quota could do is *evict* an overdue
- * card to guarantee a slot for something merely upcoming — which is the wrong
- * trade in a strip whose whole job is what needs doing now. The counts in
- * `alertCounts` are taken from the capped list for the same reason: a badge must
- * describe the rows on screen, not a list nobody can see.
+ * A plain truncation, not a per-severity quota. The sort has already put what
+ * is due soonest first — which, `at` being a timeline, means overdue rows are
+ * already at the front on their own (see `compareAlerts`) — so a quota could
+ * only *evict* one of them to guarantee a slot for something merely upcoming,
+ * the wrong trade in a strip whose whole job is what needs doing now. The
+ * counts in `alertCounts` are taken from the capped list for the same reason: a
+ * badge must describe the rows on screen, not a list nobody can see.
  */
 export function selectAlerts(input: AlertInput): AlertItem[] {
   const limit = input.limit ?? DEFAULT_ALERT_LIMIT;

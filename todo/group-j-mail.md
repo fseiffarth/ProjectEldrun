@@ -80,6 +80,8 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
     - [ ] 🖐️ Manual test — write a rule, check mail, confirm the arrival lands in
       the named list and the strip says how many were filed; then "Apply to mail
       I already have" and confirm the count matches the dry run
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
     - **The rail is two zones now** (2026-07-29): account-*independent* above
       (Important/Urgent + the filter rules that fill them), account-*dependent*
       below (the accounts, and the selected one's folders, whose heading now
@@ -111,6 +113,8 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       refused_while_a_sealed_file_exists, the_sealed_files_resolve_their_own_key}`
     - [ ] 🖐️ Manual test — launch with the mail overlay closed, open it, confirm
       the account is listed on the first paint.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 61. **Include a browser in Eldrun. (BUILT — reader mode; live pages opt-in.)**
     Shipped as two surfaces, because the obvious third one is not buildable:
@@ -130,6 +134,8 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
     - [ ] 🖐️ Manual test — **nothing here has been runtime-verified.** The
       gating check: from a live page's devtools, `invoke('list_projects')` must
       reject naming the ACL. If it resolves, stop.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 61a. **Containerise live pages. (DEFERRED — do not build without new evidence.)**
     Plan, kept for reference: `docs/browser_sandbox_plan.md`. It would run the
@@ -165,6 +171,8 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
     mode kept.
     - [ ] 🤖 Automated test — n/a while deferred
     - [ ] 🖐️ Manual test — n/a while deferred
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 61b. **Readability extraction for reader mode.** The change that would make the
     reader tab a *reading* surface rather than a sanitized document dump, and the
@@ -207,6 +215,8 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
     reintroduce a tag or attribute the sanitizer would have removed.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---
 
@@ -260,6 +270,8 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       real server or a real correspondent: interop with Thunderbird and Outlook,
       unlock latency on the slowest machine, keychain-locked behaviour, and the
       migration of a store that actually holds mail.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---
 
@@ -313,6 +325,8 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       the provider's "recent activity" page shows **one** sign-in, not ten; then
       leave the app idle 10 min and read another to confirm the stale-session
       path recovers rather than erroring.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 168. **OAuth 2.0 / `XOAUTH2` for the big providers.** Not built, and the plan is
     mostly *not* about IMAP. Today `imap_login` sends `LOGIN user pass`, which
@@ -384,5 +398,38 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       is the wrong thing to build against a client that has never met a server.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+202. **The local model a mail task runs on — the tag exists, the task does not.**
+    The 🧠 menu's role chips gained a **Mail** tag (2026-07-30), stored at
+    `settings.ollama_roles.mail` beside `autocomplete`/`grammar`/`tabs`, and
+    **nothing reads it yet**. Only the tag shipped, deliberately: which model may
+    see someone's mail is the user's statement, and the honest order is to let
+    them make it in the same menu they assign every other local job in, rather
+    than bolt a model picker onto whatever mail feature lands first.
+    - What would read it: an **importance/urgency classifier** — the model-driven
+      half of the filing #65's keyword filters do by hand — plus summaries or a
+      draft reply. The filters' rule stands and must not be blurred: a keyword
+      rule is answerable by *reading the rule*, a model's verdict is not, so a
+      classifier is a **separate** mark path and may never present itself as a
+      filter hit. (The stale `#169` reference in #65's filter note above meant
+      exactly this item; that number belongs to Group Z's CalDAV push.)
+    - Prerequisites it inherits rather than invents: the model has to be
+      **resident** to answer unattended, which is what `ollama_autoload_models`
+      (the "On start" chip) already exists for; the mail store may be **locked**
+      (`Unlock::Unavailable`), in which case there is nothing to classify and the
+      absence must read as "locked", never as "nothing important"; and mail is off
+      by default (`mail_client`), so no timer here may run before that gate and
+      the tag are both set.
+    - The chip's tooltip and the lesson text say **nothing reads this yet**, in
+      all five languages. Both come out when the consumer lands (the `pending`
+      flag on `MODEL_ROLES` in `LocalModelMenu.tsx` is the single switch), and the
+      fallback chain is the existing one: no tag ⇒ `ollama_model` ⇒ any loaded
+      model — an unassigned tag must not mean "never run".
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---

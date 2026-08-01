@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { eventsLeftToday } from "../stores/calendar";
+import { eventsLeftToday, occurrencesToday, occurrenceStale } from "../stores/calendar";
 import type { Calendar, CalendarEvent } from "../types";
 
 /**
@@ -82,5 +82,57 @@ describe("eventsLeftToday", () => {
 
   it("is zero with nothing scheduled", () => {
     expect(eventsLeftToday([], CALENDARS, at("08:00"))).toBe(0);
+  });
+});
+
+/**
+ * The header list's *hiding* rule, one step past the badge's: a finished
+ * occurrence is dimmed while it is recent and dropped once it is an hour old.
+ * The two rules are read against each other, so the cases here are the boundary
+ * ones — a row must never leave the list while it is still being counted.
+ */
+describe("occurrenceStale", () => {
+  const only = (now: Date) => occurrencesToday([ev()], CALENDARS, now)[0];
+
+  it("keeps one that has not started", () => {
+    expect(occurrenceStale(only(at("08:00")), at("08:00"))).toBe(false);
+  });
+
+  it("keeps one still running", () => {
+    expect(occurrenceStale(only(at("09:30")), at("09:30"))).toBe(false);
+  });
+
+  it("keeps one that has just ended", () => {
+    // The hour after a meeting is exactly when a dimmed row is still an answer.
+    expect(occurrenceStale(only(at("10:05")), at("10:05"))).toBe(false);
+  });
+
+  it("keeps one at the grace boundary", () => {
+    expect(occurrenceStale(only(at("10:59")), at("10:59"))).toBe(false);
+  });
+
+  it("drops one an hour past its end", () => {
+    expect(occurrenceStale(only(at("11:00")), at("11:00"))).toBe(true);
+    expect(occurrenceStale(only(at("16:00")), at("16:00"))).toBe(true);
+  });
+
+  it("never drops an all-day event", () => {
+    // It has no hour to be an hour past, and it runs to the end of the day.
+    const allDay = ev({ start: "2026-07-08", end: "2026-07-08", all_day: true });
+    const occ = occurrencesToday([allDay], CALENDARS, at("23:00"))[0];
+    expect(occurrenceStale(occ, at("23:00"))).toBe(false);
+  });
+
+  it("never drops what the badge is still counting", () => {
+    const day = [
+      ev({ id: "a", start: "2026-07-08T09:00", end: "2026-07-08T10:00" }),
+      ev({ id: "b", start: "2026-07-08T13:00", end: "2026-07-08T14:00" }),
+      ev({ id: "c", start: "2026-07-08T16:00", end: "2026-07-08T17:00" }),
+    ];
+    for (const hhmm of ["08:00", "09:30", "10:30", "13:30", "16:59", "23:00"]) {
+      const now = at(hhmm);
+      const shown = occurrencesToday(day, CALENDARS, now).filter((o) => !occurrenceStale(o, now));
+      expect(shown.length).toBeGreaterThanOrEqual(eventsLeftToday(day, CALENDARS, now));
+    }
   });
 });

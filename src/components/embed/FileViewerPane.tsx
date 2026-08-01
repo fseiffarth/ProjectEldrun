@@ -25,10 +25,12 @@ import { usePdfSyncStore } from "../../stores/pdfSync";
 import { useScrollSync } from "../../stores/scrollSync";
 import { parseDetachedParam } from "../../stores/detached";
 import { Dropdown } from "../common/Dropdown";
+import { PrinterIcon } from "../common/PrinterIcon";
+import { SaveIcon } from "../common/SaveIcon";
 import { CompareView } from "./CompareView";
 import { PresentationOverlay } from "./PresentationOverlay";
 import { usePresentationStore } from "../../stores/presentation";
-import { renderMarkdown } from "../../lib/viewers/markdown";
+import { renderMarkdown, toggleTaskCheckbox } from "../../lib/viewers/markdown";
 import { enrichMarkdownDom } from "../../lib/viewers/markdownEnrich";
 import { highlight, languageForPath, escapeHtml } from "../../lib/viewers/highlight";
 import { useOllamaStatus } from "../../lib/ollamaStatus";
@@ -142,6 +144,9 @@ import {
   parseTexErrors,
   resolveTexErrorPath,
   findTexRefAt,
+  findTexKeyRefAt,
+  resolveTexKeyRef,
+  texKeyRefRanges,
   findTexComplAt,
   parseTexLabels,
   gatherTexCompletions,
@@ -154,12 +159,23 @@ import {
   lineStartOffset,
   offsetToLineCol,
   phraseAt,
+  findTexDelimiterMatch,
+  findTexEnvNameMatch,
+  syncTexEnvRename,
+  texEnvNameRangeAt,
+  gatherTexStructure,
+  type TexStructure,
+  type TexFileNode,
+  type SyncSource,
 } from "../../lib/viewers/tex";
+import { TexStructureSidebar } from "./tex/TexStructureSidebar";
 import { PdfView } from "./pdf/PdfViewer";
 import { DeckView } from "./deck/DeckView";
 import { YamlTree } from "./YamlTree";
 import { YamlGrid } from "./YamlGrid";
+import { BibCards } from "./BibCards";
 import { isTreePath, isJsonPath } from "../../lib/viewers/yaml";
+import { isBibPath } from "../../lib/viewers/bib";
 import { hasCards } from "../../lib/viewers/yamlGrid";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
@@ -471,6 +487,21 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
     view = <MarkdownView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
   } else if (viewer === "tex") {
     view = <TexView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "texworkspace") {
+    // The LaTeX workspace: one tab hosting a structure sidebar + a center that
+    // switches between the TeX editor and the image viewer for the selected
+    // file, plus a docked SyncTeX PDF pane. `mainPath` is the EFFECTIVE path so
+    // children enumerate on the same side (host SFTP vs local mirror) as the
+    // shown main — the workspace follows one side per tab.
+    view = (
+      <TexWorkspaceView
+        mainPath={effectivePath}
+        projectId={projectId}
+        tabKey={tabKey}
+        groupId={groupId}
+        onOpenExternally={openExternally}
+      />
+    );
   } else if (viewer === "table") {
     view = <TableView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "notebook") {
@@ -504,6 +535,10 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
     // YAML is the same base editor, with the structure tree as its "preview" half
     // (#yaml) and its own per-type prefs.
     view = <TextView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} type="yaml" groupId={groupId} />;
+  } else if (viewer === "bib") {
+    // A `.bib` is the same base editor too, with the bibliography CARD list as its
+    // "preview" half (see BibCards) — one card per entry, editing this very draft.
+    view = <TextView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} type="bib" groupId={groupId} />;
   } else {
     view = <TextView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
   }
@@ -778,6 +813,20 @@ interface SourceJumpEnvelope {
   input: string;
   line: number;
   column: number;
+  /** The main `.tex` that produces the PDF (the clicked source's root). Used to
+   *  route the opened source into the subwindow that already holds that main
+   *  `.tex`. Absent, or unmatched in the receiving window (its tab isn't open
+   *  there), falls back to the focused group — see {@link applySourceJump}. */
+  anchorPath?: string;
+}
+
+/** The key of an open editor tab for `path` (any viewer), or undefined. Lets a
+ *  reverse-search source route into the subwindow that already holds the
+ *  producing main `.tex`, via {@link openLinkedFile}'s same-group rule. */
+function tabKeyForPath(path: string): string | undefined {
+  return useTabsStore
+    .getState()
+    .tabs.find((t) => t.kind === "embed" && t.embedPath === path)?.key;
 }
 
 /** True when this webview is the MAIN window (no `?detached=` param) — the one
@@ -792,11 +841,16 @@ function isMainWindow(): boolean {
 }
 
 /** Open/re-activate the source tab in THIS window and post the editor jump to its
- *  local editorJump store. The local half of {@link jumpToSource}. */
-function applySourceJump(input: string, line: number, column: number) {
+ *  local editorJump store. The local half of {@link jumpToSource}. `anchorPath`
+ *  is the main `.tex` that produces the PDF: when the source is not already open,
+ *  the new editor tab opens in the subwindow that already holds that main `.tex`
+ *  (resolved to its tab here, so the group lookup runs in the window that owns the
+ *  layout) rather than in whichever group happens to be focused. */
+function applySourceJump(input: string, line: number, column: number, anchorPath?: string) {
   const dir = dirname(input) || "/";
   const label = basename(input);
-  openLinkedFile(undefined, dir, { path: input, viewer: viewerForPath(input), label });
+  const linkingTabKey = anchorPath ? tabKeyForPath(anchorPath) : undefined;
+  openLinkedFile(linkingTabKey, dir, { path: input, viewer: viewerForPath(input), label });
   useEditorJumpStore.getState().requestJump(input, line, column);
 }
 
@@ -820,8 +874,13 @@ function applySourceJump(input: string, line: number, column: number) {
  *    window, which owns the editor layout (it registers {@link listenSourceJump}).
  * `requestJump` itself broadcasts cross-window, so the scroll reaches the editor
  * wherever it is mounted regardless of which branch opens/focuses the tab.
+ *
+ * `anchorPath` is the main `.tex` that produces the PDF (the clicked source's
+ * root). When the source file has no tab yet, the new editor opens in the
+ * subwindow that already holds that main `.tex`, rather than whichever group
+ * happens to be focused.
  */
-export function jumpToSource(input: string, line: number, column = 0) {
+export function jumpToSource(input: string, line: number, column = 0, anchorPath?: string) {
   if (hasMountedEditor(input)) {
     useEditorJumpStore.getState().requestJump(input, line, column);
     return;
@@ -831,12 +890,13 @@ export function jumpToSource(input: string, line: number, column = 0) {
     .getState()
     .tabs.some((t) => t.kind === "embed" && t.viewer === viewer && t.embedPath === input);
   if (hasTab || isMainWindow()) {
-    applySourceJump(input, line, column);
+    applySourceJump(input, line, column, anchorPath);
     return;
   }
   // Detached window without the source tab: ask the main window to handle it.
   try {
-    emit(SOURCE_JUMP_EVENT, { input, line, column } satisfies SourceJumpEnvelope).catch(() => {});
+    emit(SOURCE_JUMP_EVENT, { input, line, column, anchorPath } satisfies SourceJumpEnvelope)
+      .catch(() => {});
   } catch {
     /* no Tauri event bus available */
   }
@@ -852,8 +912,8 @@ export function jumpToSource(input: string, line: number, column = 0) {
 export async function listenSourceJump(): Promise<() => void> {
   try {
     return await listen<SourceJumpEnvelope>(SOURCE_JUMP_EVENT, (ev) => {
-      const { input, line, column } = ev.payload;
-      applySourceJump(input, line, column);
+      const { input, line, column, anchorPath } = ev.payload;
+      applySourceJump(input, line, column, anchorPath);
     });
   } catch {
     return () => {};
@@ -1337,7 +1397,11 @@ export function decorateLinkRanges(source: string, ranges: { start: number; end:
   for (const r of sorted) {
     if (r.start < pos || r.start >= r.end) continue; // skip overlaps / empties
     out += escapeHtmlText(source.slice(pos, r.start));
-    out += `<span class="file-link">${escapeHtmlText(source.slice(r.start, r.end))}</span>`;
+    // `data-off` carries the token's source offset so a Ctrl/⌘+click can follow
+    // the link by the span it lands on rather than by `selectionStart` — a
+    // modified click does not reposition a textarea's caret, so the caret is
+    // stale exactly when the follow needs it.
+    out += `<span class="file-link" data-off="${r.start}">${escapeHtmlText(source.slice(r.start, r.end))}</span>`;
     pos = r.end;
   }
   out += escapeHtmlText(source.slice(pos));
@@ -1393,6 +1457,116 @@ export function decorateSearchRanges(
   });
   out += escapeHtmlText(source.slice(pos));
   return out;
+}
+
+/** The three bracket pairs matched by {@link findMatchingBracket}: `(`/`)`,
+ *  `[`/`]`, `{`/`}` — the pairs shared by every language the editor highlights
+ *  (LaTeX group braces and optional-arg brackets included). Keyed both ways so
+ *  a lookup never needs to know which side it's holding. */
+const BRACKET_OPEN_FOR: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+const BRACKET_CLOSE_FOR: Record<string, string> = { "(": ")", "[": "]", "{": "}" };
+
+/** One side of a matched delimiter pair: a `[start, end)` source range —
+ *  length 1 for a plain `(`/`)`/etc., longer for a multi-character LaTeX token
+ *  like `\[`, `$$`, or a whole `\begin{itemize}`. */
+export interface BracketSide {
+  start: number;
+  end: number;
+}
+
+/** A matched delimiter pair (`open` earlier in the source than `close`), for
+ *  the "highlight the matching bracket" overlay. Ranges rather than single
+ *  offsets so the same type/overlay serves both the plain single-char
+ *  ()[]{} matcher below and `lib/viewers/tex.ts`'s LaTeX-aware math/environment
+ *  matcher (`$`/`$$`/`\(`/`\)`/`\[`/`\]`/`\begin{…}`/`\end{…}`), which the two
+ *  share structurally without either module importing the other's type. */
+export interface BracketMatch {
+  open: BracketSide;
+  close: BracketSide;
+}
+
+/** Scan from `start` in direction `dir` (`1` forward, `-1` backward) for the
+ *  offset where a running depth — incremented on `incChar`, decremented on
+ *  `decChar` — returns to 0; that is the partner bracket. `null` if the depth
+ *  never returns to 0 (unbalanced/unmatched). Shared by the two directions
+ *  {@link findMatchingBracket} scans, which just swap which char increments vs.
+ *  decrements. Pure — a plain nesting count, no comment/string awareness (the
+ *  same level of sophistication as this file's other overlay decorators). */
+function scanForBracketMatch(
+  text: string,
+  start: number,
+  incChar: string,
+  decChar: string,
+  dir: 1 | -1,
+): number | null {
+  let depth = 1;
+  for (let i = start; dir === 1 ? i < text.length : i >= 0; i += dir) {
+    const ch = text[i];
+    if (ch === incChar) depth++;
+    else if (ch === decChar) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return null;
+}
+
+/** If `text[pos]` is a bracket (either side of a pair), its match — scanning
+ *  forward for an opener or backward for a closer, from just past `pos`. `null`
+ *  when `pos` isn't a bracket, or the bracket found has no partner (unbalanced
+ *  source). Shared by both adjacent offsets {@link findMatchingBracket} checks. */
+function matchBracketAt(text: string, pos: number): BracketMatch | null {
+  const ch = text[pos];
+  if (ch === undefined) return null;
+  if (BRACKET_CLOSE_FOR[ch]) {
+    const close = scanForBracketMatch(text, pos + 1, ch, BRACKET_CLOSE_FOR[ch], 1);
+    return close != null
+      ? { open: { start: pos, end: pos + 1 }, close: { start: close, end: close + 1 } }
+      : null;
+  }
+  if (BRACKET_OPEN_FOR[ch]) {
+    const open = scanForBracketMatch(text, pos - 1, ch, BRACKET_OPEN_FOR[ch], -1);
+    return open != null
+      ? { open: { start: open, end: open + 1 }, close: { start: pos, end: pos + 1 } }
+      : null;
+  }
+  return null;
+}
+
+/**
+ * The bracket pair straddling `caret`, for the "highlight the matching
+ * bracket" affordance. A caret sits "on" a bracket from either side of it, so
+ * this checks BOTH adjacent characters — `text[caret]` (the caret sits just
+ * before it) first, then `text[caret - 1]` (the caret sits just after it) —
+ * covering all four ways a blinking caret can touch a bracket: just before or
+ * just after either its open or its close. (An earlier cut only checked "just
+ * before an opener" and "just after a closer", which missed the two positions
+ * a caret is actually in most often — right after typing `(`, or right before
+ * deleting `)` — so the caret could sit directly against a bracket and nothing
+ * would light up.) Returns `null` when neither side is a bracket, or the
+ * bracket found has no partner (unbalanced source). Pure / unit-tested.
+ */
+export function findMatchingBracket(text: string, caret: number): BracketMatch | null {
+  return matchBracketAt(text, caret) ?? matchBracketAt(text, caret - 1);
+}
+
+/**
+ * Build the transparent bracket-match overlay: the two paired delimiter
+ * ranges found by {@link findMatchingBracket} (or `lib/viewers/tex.ts`'s
+ * math/environment matcher) are each wrapped in
+ * `<span class="file-viewer-bracket-match">`, the rest emitted plain — mirrors
+ * `decorateSearchRanges`. SECURITY: every run of source text is HTML-escaped.
+ */
+export function decorateBracketMatch(source: string, match: BracketMatch): string {
+  const [a, b] =
+    match.open.start < match.close.start ? [match.open, match.close] : [match.close, match.open];
+  return (
+    escapeHtmlText(source.slice(0, a.start)) +
+    `<span class="file-viewer-bracket-match">${escapeHtmlText(source.slice(a.start, a.end))}</span>` +
+    escapeHtmlText(source.slice(a.end, b.start)) +
+    `<span class="file-viewer-bracket-match">${escapeHtmlText(source.slice(b.start, b.end))}</span>` +
+    escapeHtmlText(source.slice(b.end))
+  );
 }
 
 /**
@@ -1912,6 +2086,7 @@ function CodeEditor({
   const changeLayerRef = useRef<HTMLPreElement>(null);
   const deleteLayerRef = useRef<HTMLPreElement>(null);
   const grammarLayerRef = useRef<HTMLPreElement>(null);
+  const bracketLayerRef = useRef<HTMLPreElement>(null);
   const ghostRef = useRef<HTMLPreElement>(null);
   const measureRef = useRef<HTMLPreElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
@@ -1955,6 +2130,24 @@ function CodeEditor({
     },
     [onFollowLink],
   );
+
+  // The source offset of the `.file-link` span under a screen point, or null.
+  // Used by Ctrl/⌘+click: a modified click does NOT move a textarea's caret, so
+  // `selectionStart` is stale there — the span the pointer is actually over is the
+  // reliable target, and its `data-off` (see `decorateLinkRanges`) is a real
+  // offset inside the reference the follow resolves.
+  const linkOffsetAt = useCallback((x: number, y: number): number | null => {
+    const layer = linkLayerRef.current;
+    if (!layer) return null;
+    for (const span of layer.querySelectorAll<HTMLElement>(".file-link")) {
+      const r = span.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+        const off = span.getAttribute("data-off");
+        return off != null ? Number(off) : null;
+      }
+    }
+    return null;
+  }, []);
 
   // #45 autocomplete: a pending ghost-text suggestion + the caret it applies at.
   const [suggestion, setSuggestion] = useState<{ text: string; at: number } | null>(null);
@@ -2136,6 +2329,7 @@ function CodeEditor({
       changeLayerRef,
       deleteLayerRef,
       grammarLayerRef,
+      bracketLayerRef,
     ]) {
       if (ref.current) ref.current.style.transform = transform;
     }
@@ -2219,6 +2413,53 @@ function CodeEditor({
     return m ? offsetToLineCol(draft, m.start).line : 0;
   }, [matches, current, draft]);
 
+  // Bracket-match highlight: whichever bracket the caret sits just before/after
+  // gets its partner highlighted too (`findMatchingBracket`/`decorateBracketMatch`
+  // — mirrors the search overlay). For a `.tex` file, when the plain ()[]{}
+  // matcher finds nothing, fall back to `lib/viewers/tex.ts`'s LaTeX-aware
+  // extras: math-mode toggles (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`) and
+  // `\begin{env}…\end{env}` structure blocks — LaTeX syntax the generic
+  // matcher doesn't (and shouldn't, for every other file type) know about.
+  // Re-run on every text change AND every caret move (`caretTick`, bumped by
+  // `emitCaret`), reading the textarea's *live* selectionStart rather than a
+  // stashed offset — the same reason `refreshCompl` does, since a keystroke
+  // changes `draft` and the caret in the same tick and a stale offset would
+  // highlight last render's position.
+  const [bracketMatch, setBracketMatch] = useState<BracketMatch | null>(null);
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!loaded || !el) {
+      setBracketMatch(null);
+      return;
+    }
+    const offset = el.selectionStart;
+    // For `.tex`, a caret inside a `\begin{…}`/`\end{…}` name marks the PARTNER's
+    // name — checked ahead of the plain matcher, which at the name's edges would
+    // otherwise pair that token's own `{`/`}` and say nothing about the partner.
+    const envName = lang === "tex" ? findTexEnvNameMatch(draft, offset) : null;
+    // A selection is not a caret and normally clears the overlay — with one
+    // exception: the click-into-the-braces gesture selects exactly an environment
+    // name, and that is precisely when the partner is worth pointing at.
+    if (el.selectionStart !== el.selectionEnd) {
+      const onName =
+        envName != null &&
+        [envName.open, envName.close].some(
+          (s) => s.start === el.selectionStart && s.end === el.selectionEnd,
+        );
+      setBracketMatch(onName ? envName : null);
+      return;
+    }
+    const match =
+      envName ??
+      findMatchingBracket(draft, offset) ??
+      (lang === "tex" ? findTexDelimiterMatch(draft, offset) : null);
+    setBracketMatch(match);
+  }, [draft, caretTick, loaded, lang]);
+  const bracketHtml = useMemo(
+    () => (bracketMatch ? decorateBracketMatch(draft, bracketMatch) : null),
+    [draft, bracketMatch],
+  );
+
   // ── Git blame overlay (#blame) ─────────────────────────────────────────────
   // When `showBlame` is set, the gutter grows a per-line blame column (its own
   // inner, scroll-synced with the numbers), the caret's line gets a faint inline
@@ -2290,11 +2531,16 @@ function CodeEditor({
       el.selectionStart = m.start;
       el.selectionEnd = m.end;
       const line = draft.slice(0, m.start).split("\n").length; // 1-based
-      const lh = parseFloat(getComputedStyle(el).lineHeight) || 18;
-      el.scrollTop = Math.max(0, (line - 1) * lh - el.clientHeight / 2 + lh);
+      // Wrap-aware vertical offset, mirroring the SyncTeX `gotoLine` math: under
+      // soft-wrap (the TeX viewer) a logical line's top is the SUM of the measured
+      // wrapped-row heights, not `(line-1)·lineHeight`. The naive form undershoots
+      // on wide-prose files and scrolled the match off-screen, so the search never
+      // appeared to jump to it. `lineTop` handles both wrap and fixed-row modes.
+      const target = lineTop(line) - el.clientHeight / 2 + effectiveLineHeight / 2;
+      el.scrollTop = Math.max(0, target);
       syncScroll();
     },
-    [matches, draft, syncScroll],
+    [matches, draft, syncScroll, lineTop, effectiveLineHeight],
   );
 
   const goToMatch = useCallback(
@@ -2367,49 +2613,111 @@ function CodeEditor({
   }, []);
   useEffect(() => () => clearDeleteTimers(), [clearDeleteTimers]);
   const lastEditRef = useRef<string | null>(null);
+  // Record ONE changed run in the trail (tint + deletion ghost). Split out of
+  // `edit` because a coupled `\begin`/`\end` rename changes the document in two
+  // places at once, and `editSpan` — which pares off a common prefix and suffix —
+  // can only report ONE run: for the two it would hand back everything between
+  // them, tinting the whole environment body and ghosting it as deleted text. So
+  // such an edit is booked as its two real runs in sequence, each against the
+  // text the previous one produced.
+  const noteChangeTrail = useCallback(
+    (prevText: string, nextText: string) => {
+      const span = editSpan(prevText, nextText);
+      if (span) {
+        setChanges((prev) => {
+          const remapped = prev
+            .map((r) => remapChangeRange(r, span))
+            .filter((r): r is { start: number; end: number } => r != null);
+          const merged =
+            span.endNext > span.start
+              ? [{ start: span.start, end: span.endNext }, ...remapped]
+              : remapped;
+          // newest-first → re-index so tier === age (0 = newest).
+          return merged.slice(0, CHANGE_TIERS).map((r, i) => ({ ...r, tier: i }));
+        });
+        // Removed text (if any) becomes a red strike-through ghost anchored
+        // where it vanished; existing ghosts are re-mapped through this edit
+        // (dropped if their anchor sat inside the edited run) so they keep
+        // pointing at the right spot.
+        const removed = deletionGhostText(prevText.slice(span.start, span.endPrev));
+        const ghost: DeleteGhost | null =
+          removed !== null
+            ? { id: deleteIdRef.current++, pos: span.endNext, text: removed, born: Date.now() }
+            : null;
+        if (ghost) scheduleDeleteRemoval(ghost.id);
+        setDeletes((prev) => {
+          const remapped = prev
+            .map((g) => {
+              const r = remapChangeRange({ start: g.pos, end: g.pos }, span);
+              return r ? { ...g, pos: r.start } : null;
+            })
+            .filter((g): g is DeleteGhost => g != null);
+          return ghost ? [...remapped, ghost] : remapped;
+        });
+      }
+    },
+    [scheduleDeleteRemoval],
+  );
+  // Commit a new draft. `via` is the intermediate text an edit passed through
+  // when it landed in two places — the document with only the user's own
+  // keystroke in it — so the trail books "what was typed" and "what was mirrored"
+  // as the two separate runs they are. Still ONE `setDraft`, so it stays one
+  // undo step.
   const edit = useCallback(
-    (next: string) => {
+    (next: string, via?: string) => {
       if (next !== draftRef.current) {
         if (changeTintRef.current) {
-          const span = editSpan(draftRef.current, next);
-          if (span) {
-            setChanges((prev) => {
-              const remapped = prev
-                .map((r) => remapChangeRange(r, span))
-                .filter((r): r is { start: number; end: number } => r != null);
-              const merged =
-                span.endNext > span.start
-                  ? [{ start: span.start, end: span.endNext }, ...remapped]
-                  : remapped;
-              // newest-first → re-index so tier === age (0 = newest).
-              return merged.slice(0, CHANGE_TIERS).map((r, i) => ({ ...r, tier: i }));
-            });
-            // Removed text (if any) becomes a red strike-through ghost anchored
-            // where it vanished; existing ghosts are re-mapped through this edit
-            // (dropped if their anchor sat inside the edited run) so they keep
-            // pointing at the right spot.
-            const removed = deletionGhostText(draftRef.current.slice(span.start, span.endPrev));
-            const ghost: DeleteGhost | null =
-              removed !== null
-                ? { id: deleteIdRef.current++, pos: span.endNext, text: removed, born: Date.now() }
-                : null;
-            if (ghost) scheduleDeleteRemoval(ghost.id);
-            setDeletes((prev) => {
-              const remapped = prev
-                .map((g) => {
-                  const r = remapChangeRange({ start: g.pos, end: g.pos }, span);
-                  return r ? { ...g, pos: r.start } : null;
-                })
-                .filter((g): g is DeleteGhost => g != null);
-              return ghost ? [...remapped, ghost] : remapped;
-            });
+          const stages =
+            via != null && via !== draftRef.current && via !== next ? [via, next] : [next];
+          let from = draftRef.current;
+          for (const stage of stages) {
+            noteChangeTrail(from, stage);
+            from = stage;
           }
         }
         lastEditRef.current = next;
       }
       setDraft(next);
     },
-    [setDraft, scheduleDeleteRemoval],
+    [setDraft, noteChangeTrail],
+  );
+
+  // Where the caret and the view belong once React has re-rendered the textarea
+  // with text we changed behind the user's back. Both are needed together, and
+  // the SCROLL is the load-bearing half: a controlled textarea whose `value` prop
+  // no longer matches the DOM is updated by assigning `.value`, which drops the
+  // caret at the END of the document and scrolls there — so a mirrored rename two
+  // lines into a long file threw the view to its last line on every keystroke.
+  // Restoring in the layout effect below (before paint) rather than a rAF (after
+  // it) is what makes the correction invisible instead of a visible bounce.
+  const pendingSelRef = useRef<{ start: number; end: number } | null>(null);
+  const pendingScrollRef = useRef<{ top: number; left: number } | null>(null);
+
+  // The textarea's own change, with one LaTeX rule in front of it: renaming a
+  // `\begin{env}` renames its `\end{env}` in the same keystroke (and the other
+  // way round), so an environment can be retyped in place instead of leaving the
+  // document briefly — or permanently — unbalanced. `syncTexEnvRename` decides
+  // whether the edit was that; anything else falls through untouched (React then
+  // leaves the DOM alone, since the new value is already what the user typed),
+  // and either way it is ONE `edit` call, so a coupled rename is one undo step.
+  const onTextChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const el = e.currentTarget;
+      const value = el.value;
+      if (lang === "tex") {
+        const synced = syncTexEnvRename(draftRef.current, value, el.selectionStart);
+        if (synced) {
+          pendingSelRef.current = { start: synced.caret, end: synced.caret };
+          pendingScrollRef.current = { top: el.scrollTop, left: el.scrollLeft };
+          // `value` is the document with only what the user typed in it — the
+          // trail books that run and the mirrored one separately (see `edit`).
+          edit(synced.text, value);
+          return;
+        }
+      }
+      edit(value);
+    },
+    [edit, lang],
   );
   // Drop a stale trail when the draft changes by some path other than our own
   // `edit` (disk reload, undo/redo), and clear it when the feature is turned off.
@@ -2582,6 +2890,13 @@ function CodeEditor({
   useEffect(() => {
     if (grammarHtml) syncScroll();
   }, [grammarHtml, syncScroll]);
+
+  // Keep the bracket-match overlay aligned after it mounts (it toggles on/off as
+  // the caret moves onto/off a bracket, so a freshly-mounted <pre> would
+  // otherwise sit un-scrolled at translate(0,0) until the next scroll event).
+  useEffect(() => {
+    if (bracketHtml) syncScroll();
+  }, [bracketHtml, syncScroll]);
 
   // Apply a single issue's suggested fix: replace its resolved range with the
   // suggestion and drop the issue so its mark clears (the rest re-resolve against
@@ -2803,9 +3118,9 @@ function CodeEditor({
 
   // Imperative editing API for a toolbar (the Markdown viewer). `applyEdit` runs
   // a pure transform on the current value+selection and commits it through
-  // `edit`; the requested selection is stashed and restored by the layout effect
-  // below once React has re-rendered the textarea with the new value.
-  const pendingSelRef = useRef<{ start: number; end: number } | null>(null);
+  // `edit`; the requested selection (and the view it was made in) is stashed in
+  // the pending refs above and restored by the layout effect below once React has
+  // re-rendered the textarea with the new value.
   useEffect(() => {
     if (!editorApiRef) return;
     editorApiRef.current = {
@@ -2815,6 +3130,7 @@ function CodeEditor({
         const end = el?.selectionEnd ?? start;
         const res = fn(draftRef.current, start, end);
         pendingSelRef.current = { start: res.selStart, end: res.selEnd };
+        if (el) pendingScrollRef.current = { top: el.scrollTop, left: el.scrollLeft };
         el?.focus();
         edit(res.value);
       },
@@ -2823,15 +3139,27 @@ function CodeEditor({
       editorApiRef.current = null;
     };
   }, [editorApiRef, edit]);
+  // Put the caret and the view back where the edit was made. Scroll first, then
+  // selection: assigning `.value` has already thrown the textarea to the end of
+  // the document, and the overlay layers (highlight/link/change) are re-aligned
+  // by hand rather than left to the scroll event, which arrives a frame later —
+  // i.e. after the paint this effect exists to get right.
   useLayoutEffect(() => {
     const sel = pendingSelRef.current;
-    if (!sel) return;
+    const view = pendingScrollRef.current;
     pendingSelRef.current = null;
+    pendingScrollRef.current = null;
+    if (!sel) return;
     const el = textareaRef.current;
     if (!el) return;
+    if (view) {
+      el.scrollTop = view.top;
+      el.scrollLeft = view.left;
+    }
     el.selectionStart = sel.start;
     el.selectionEnd = sel.end;
-  }, [draft]);
+    if (view) syncScroll();
+  }, [draft, syncScroll]);
 
   // SyncTeX reverse search: on a new `gotoLine` nonce, place the caret at the
   // target line/column and scroll it to roughly the middle of the view. SyncTeX
@@ -2851,8 +3179,16 @@ function CodeEditor({
     }
     el.focus();
     el.selectionStart = el.selectionEnd = offset;
-    const lh = parseFloat(getComputedStyle(el).lineHeight) || 18;
-    const target = (gotoLine.line - 1) * lh - el.clientHeight / 2 + lh;
+    // Light the target line in the gutter straight away: assigning selectionStart
+    // fires no `select` event, so `emitCaret` never runs and the caret-line
+    // highlight would otherwise stay on wherever the cursor last was.
+    setCaretLine(gotoLine.line);
+    // Centre the target line's visual top. `lineTop` accounts for the gutter's
+    // 10px padding and, under soft-wrap (the LaTeX editor), the measured per-line
+    // wrapped heights — so a target below several wrapped lines lands centred
+    // instead of drifting up a row per wrap, which the old (line-1)·lineHeight
+    // math got wrong for exactly the wide-prose files reverse search runs on.
+    const target = lineTop(gotoLine.line) - el.clientHeight / 2 + effectiveLineHeight / 2;
     el.scrollTop = Math.max(0, target);
     syncScroll();
     onGotoApplied?.();
@@ -3032,8 +3368,10 @@ function CodeEditor({
         .map((e) => ({ value: e.key, detail: citeDetail(e) }));
     } else {
       items = texCompletions.labels
-        .filter((l) => !q || l.toLowerCase().includes(q))
-        .map((l) => ({ value: l }));
+        .filter(
+          (l) => !q || l.key.toLowerCase().includes(q) || l.section?.toLowerCase().includes(q),
+        )
+        .map((l) => ({ value: l.key, detail: l.section }));
     }
     if (q) {
       items.sort(
@@ -3258,11 +3596,35 @@ function CodeEditor({
   // After a click the textarea's caret (selectionStart) is at the click point,
   // so a Ctrl/Cmd+Click resolves the reference there. The modifier gates it so
   // ordinary clicks keep placing the caret as usual.
+  // Clicking between the braces of `\begin{…}`/`\end{…}` selects the whole
+  // environment name, so swapping an environment is click-and-type — and with the
+  // coupled rename above, retyping it here rewrites the partner as you go. Only a
+  // plain collapsed click qualifies: a drag-select, double- or shift-click has
+  // already stated what it wanted selected, and a modifier click is the
+  // link-follow gesture.
+  const selectEnvName = (el: HTMLTextAreaElement) => {
+    if (lang !== "tex" || el.selectionStart !== el.selectionEnd) return;
+    const range = texEnvNameRangeAt(el.value, el.selectionStart);
+    if (!range || range.end === range.start) return; // `\begin{}` — nothing to select
+    el.setSelectionRange(range.start, range.end);
+    emitCaret();
+  };
+
   const onClick = (e: React.MouseEvent<HTMLTextAreaElement>) => {
     if (suggestion) dismissSuggestion();
     emitCaret();
-    if (!onFollowLink || !(e.ctrlKey || e.metaKey)) return;
-    onFollowLink(e.currentTarget.selectionStart);
+    if (e.ctrlKey || e.metaKey) {
+      // Prefer the link span under the pointer: a Ctrl/⌘+click leaves the caret
+      // where it was, so `selectionStart` points at the old position, not the
+      // link that was clicked. Fall back to the caret for a forward-sync click
+      // that landed on no link.
+      if (onFollowLink) {
+        const off = linkOffsetAt(e.clientX, e.clientY);
+        onFollowLink(off ?? e.currentTarget.selectionStart);
+      }
+      return;
+    }
+    selectEnvName(e.currentTarget);
   };
 
   const onMouseMove = (e: React.MouseEvent<HTMLTextAreaElement>) => {
@@ -3378,6 +3740,7 @@ function CodeEditor({
                 : matchLineSet.has(n)
                   ? "file-viewer-gutter-line has-match"
                   : "file-viewer-gutter-line") +
+              (n === caretLine ? " caret" : "") +
               (onToggleBreakpoint ? " is-breakable" : "") +
               (broken ? " has-breakpoint" : "");
             const style = h != null ? { height: h } : undefined;
@@ -3439,6 +3802,15 @@ function CodeEditor({
             aria-hidden="true"
             style={overlayWidthStyle}
             dangerouslySetInnerHTML={{ __html: highlighted + "\n" }}
+          />
+        )}
+        {bracketHtml != null && (
+          <pre
+            ref={bracketLayerRef}
+            className="file-viewer-bracket-layer"
+            aria-hidden="true"
+            style={overlayWidthStyle}
+            dangerouslySetInnerHTML={{ __html: bracketHtml + "\n" }}
           />
         )}
         {changeHtml != null && (
@@ -3504,7 +3876,7 @@ function CodeEditor({
           value={draft}
           spellCheck={false}
           wrap={wrap ? "soft" : "off"}
-          onChange={(e) => edit(e.target.value)}
+          onChange={onTextChange}
           onKeyDown={onKeyDown}
           onKeyUp={(e) => { if (!(e.ctrlKey || e.metaKey)) setLinkHover(false); emitCaret(); }}
           onBlur={() => { setLinkHover(false); setLinkTip(null); dismissSuggestion(); setCompl(null); }}
@@ -3749,37 +4121,38 @@ function CodeEditor({
   );
 }
 
-/**
- * Save control shared by the editable viewers (#47). Shows a state ICON rather
- * than text: a spinner while saving, a filled disk with a dot when there are
- * unsaved edits, and a check when clean. `aria-label="Save"` keeps it findable.
- */
+/** Save control shared by every editable viewer (#47). The outline disk matches
+ * the printer mark beside it; dirty/clean state is carried by the button color
+ * and enabled state, while an in-flight write swaps the mark for a spinner. */
 export function SaveButton({
   isDirty,
   saving,
   save,
+  title,
 }: {
   isDirty: boolean;
   saving: boolean;
   save: () => void;
+  title?: string;
 }) {
   const t = useT();
-  const icon = saving ? (
-    <span className="file-viewer-save-spinner" aria-hidden="true" />
-  ) : isDirty ? (
-    <span className="file-viewer-save-icon dirty" aria-hidden="true">●</span>
-  ) : (
-    <span className="file-viewer-save-icon clean" aria-hidden="true">✓</span>
-  );
   return (
     <button
       className={`file-viewer-save${isDirty ? " is-dirty" : ""}${saving ? " is-saving" : ""}`}
       onClick={save}
       disabled={!isDirty || saving}
       aria-label={t("common.save")}
-      title={saving ? t("common.saving") : isDirty ? t("fileViewer.saveWithShortcut") : t("fileViewer.noUnsavedChanges")}
+      title={
+        saving
+          ? t("common.saving")
+          : title ?? (isDirty ? t("fileViewer.saveWithShortcut") : t("fileViewer.noUnsavedChanges"))
+      }
     >
-      {icon}
+      {saving ? (
+        <span className="file-viewer-save-spinner" aria-hidden="true" />
+      ) : (
+        <SaveIcon />
+      )}
     </button>
   );
 }
@@ -3806,7 +4179,11 @@ function PrintButton({
       title={busy ? t("pdfViewer.preparing") : t("pdfViewer.printLabel")}
       aria-label={t("pdfViewer.printLabel")}
     >
-      {busy ? <span className="file-viewer-save-spinner" aria-hidden="true" /> : "🖨"}
+      {busy ? (
+        <span className="file-viewer-save-spinner" aria-hidden="true" />
+      ) : (
+        <PrinterIcon />
+      )}
     </button>
   );
 }
@@ -5228,11 +5605,22 @@ function TextView({
     () => (isYaml && loaded ? hasCards(draft, jsonStrict) : false),
     [isYaml, loaded, draft, jsonStrict],
   );
-  // YAML/JSON opens in the TREE view by default ("preview"); HTML/SVG in preview; CSS
-  // in the editor. The card view stays available (via the toggle, when the file nests
-  // something to card) but is no longer the default — it still needs work.
+  // A `.bib` gets the bibliography CARD list as its "preview" half (see BibCards):
+  // one card per entry, its `field = {value}` pairs as rows, splicing this same
+  // draft — so Cards and Source are two views on one text exactly as Tree and
+  // Source are for YAML. It is a FLAT list of records, so it has nothing to do with
+  // the YAML tree's nesting and shares none of its state.
+  const isBib = useMemo(() => isBibPath(path), [path]);
+  // Every type whose "preview" is an editable structured view of the same draft (as
+  // opposed to a rendered document). They share the toggle, the live undo/redo and
+  // the body's scroll persistence; a file is only ever one of them.
+  const structured = isYaml || isBib;
+  // YAML/JSON opens in the TREE view by default ("preview"), a `.bib` in its CARDS
+  // view (same mode value — a file is only one of the two); HTML/SVG in preview; CSS
+  // in the editor. The YAML card view stays available (via the toggle, when the file
+  // nests something to card) but is no longer the default — it still needs work.
   const [mode, setMode] = useState<"preview" | "grid" | "edit">(
-    isYaml ? "preview" : previewKind === "html" || previewKind === "svg" ? "preview" : "edit",
+    structured ? "preview" : previewKind === "html" || previewKind === "svg" ? "preview" : "edit",
   );
   // A flat file (or a card edit that removes all nesting) has no card view — retire
   // the mode rather than strand it on a toggle with no button, dropping to the tree.
@@ -5246,7 +5634,18 @@ function TextView({
     [path],
   );
 
-  const showEditor = (!previewKind && !isYaml) || mode === "edit";
+  // A jump names a LINE, and a line only exists in Source — so an incoming one
+  // (a `\cite` followed into this `.bib`, a search hit, reverse search) switches
+  // a structured file out of its card/tree view rather than being swallowed by a
+  // view that has no lines to scroll to. Keyed on the request's nonce, so a
+  // repeat jump to the same line still fires and an ordinary toggle back to the
+  // cards is not undone a frame later.
+  const gotoNonce = jump.gotoLine?.nonce;
+  useEffect(() => {
+    if (gotoNonce != null && structured) setMode("edit");
+  }, [gotoNonce, structured]);
+
+  const showEditor = (!previewKind && !structured) || mode === "edit";
   const wheelRef = useNonPassiveWheel((e) => {
     onCtrlWheelFont(e, font.inc, font.dec);
   });
@@ -5263,9 +5662,11 @@ function TextView({
     },
     [wheelRef],
   );
-  // Only the TREE persists/restores the body's scroll (the grid scrolls its own
-  // inner table container, the editor its own viewport).
-  const treeScrolls = isYaml && mode === "preview";
+  // The TREE and the bib CARD LIST persist/restore the body's scroll (the YAML card
+  // grid scrolls its own inner container, the editor its own viewport). They share
+  // `yamlScrollTop` because one file is never both — a `.bib` has no tree and a
+  // `.yaml` has no bib cards — so there is one structured view per tab to remember.
+  const treeScrolls = structured && mode === "preview";
   const showGrid = isYaml && mode === "grid" && gridAvailable;
   const scrollRaf = useRef<number | null>(null);
   const onBodyScroll = useCallback(() => {
@@ -5313,19 +5714,29 @@ function TextView({
   return (
     <div className="file-viewer">
       <ViewerHeader onOpenExternally={onOpenExternally}>
-        {(previewKind || isYaml) && (
+        {(previewKind || structured) && (
           <ModeToggle
             value={mode}
             onChange={setMode}
             options={[
-              { value: "preview", label: isYaml ? t("fileViewer.modeTree") : t("fileViewer.modePreview") },
+              {
+                value: "preview",
+                label: isYaml
+                  ? t("fileViewer.modeTree")
+                  : isBib
+                    ? t("fileViewer.modeCards")
+                    : t("fileViewer.modePreview"),
+              },
               // The card view leads no longer — Tree is the default. It is still
               // offered, but only for a file with nesting to card (the tree's
               // honesty rule).
               ...(gridAvailable ? [{ value: "grid" as const, label: t("fileViewer.modeCards") }] : []),
               {
                 value: "edit",
-                label: isYaml || previewKind === "svg" ? t("fileViewer.modeSource") : t("fileViewer.modeEdit"),
+                label:
+                  structured || previewKind === "svg"
+                    ? t("fileViewer.modeSource")
+                    : t("fileViewer.modeEdit"),
               },
             ]}
           />
@@ -5380,28 +5791,38 @@ function TextView({
         {showEditor && (
           <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
         )}
-        {/* The YAML tree edits the text, so its edits are ordinary undo steps —
-            the buttons stay live in Tree mode, unlike a read-only preview. */}
-        {(showEditor || isYaml) && (
+        {/* The YAML tree and the bib cards edit the text, so their edits are
+            ordinary undo steps — the buttons stay live in those modes, unlike in a
+            read-only preview. */}
+        {(showEditor || structured) && (
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
         )}
-        <PrintButton onPrint={handlePrint} disabled={!loaded} />
         <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
+        <PrintButton onPrint={handlePrint} disabled={!loaded} />
       </ViewerHeader>
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
       {saveError && <div className="file-viewer-error">{saveError}</div>}
       {fmt.status && <div className="file-viewer-status-line">{fmt.status}</div>}
-      {(showEditor || isYaml) && <ValidationBanner issue={issue} onJump={jumpToLine} />}
+      {(showEditor || structured) && <ValidationBanner issue={issue} onJump={jumpToLine} />}
       <div
         className={`file-viewer-body${showEditor ? " file-viewer-code-body" : ""}`}
         ref={bodyRef}
         onScroll={onBodyScroll}
       >
-        {!showEditor && (previewKind || isYaml) ? (
+        {!showEditor && (previewKind || structured) ? (
           error != null ? (
             <div className="file-viewer-error">{error}</div>
           ) : !loaded ? (
             <div className="file-viewer-loading">{t("common.loading")}</div>
+          ) : isBib ? (
+            // One card per bibliography entry, splicing the same draft — a field
+            // edit here is dirty, undoable and saveable exactly like a typed one.
+            <BibCards
+              text={draft}
+              onChange={setDraft}
+              tabKey={tabKey}
+              fontSize={font.isCustom ? font.fontSize : undefined}
+            />
           ) : showGrid ? (
             // The grid edits the same draft by splice, just like the tree — a cell
             // edit is dirty, undoable and saveable exactly like a typed one.
@@ -5540,6 +5961,17 @@ function MarkdownView({
   // Ctrl/Cmd+Click (matching the LaTeX editor). A hover hint advertises the
   // shortcut. `linkTip` anchors that hint above the hovered link.
   const [linkTip, setLinkTip] = useState<{ left: number; top: number } | null>(null);
+  // Kept local to the viewer rather than routed through AppShell's project toast:
+  // Markdown tabs can live in detached windows, where the main shell's toast
+  // would appear in the wrong window (or not be visible at all).
+  const [copyNotice, setCopyNotice] = useState(0);
+  const copyNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (copyNoticeTimer.current) clearTimeout(copyNoticeTimer.current);
+    },
+    [],
+  );
 
   // #50: inline local images in the preview. The renderer tags relative/absolute
   // image paths as <img.md-img-local data-md-src="…"> (no `src`, since the webview
@@ -5599,8 +6031,55 @@ function MarkdownView({
     setLinkTip({ left: r.left, top: r.top });
   }, []);
 
+  // Copy-on-select for the rendered preview, matching the native terminal.
+  // Mouse-up covers drag and double/triple-click selection while keeping the
+  // clipboard write inside the user gesture required by WebKit. Both endpoints
+  // must belong to this preview so a selection crossing into adjacent chrome or
+  // another tiled pane cannot replace the clipboard unexpectedly.
+  const onPreviewMouseUp = useCallback(() => {
+    const root = previewRef.current;
+    const selection = window.getSelection();
+    if (
+      !root ||
+      !selection ||
+      selection.isCollapsed ||
+      !selection.anchorNode ||
+      !selection.focusNode ||
+      !root.contains(selection.anchorNode) ||
+      !root.contains(selection.focusNode)
+    ) return;
+    const text = selection.toString();
+    const clipboard = navigator.clipboard;
+    if (!text || !clipboard) return;
+    void clipboard.writeText(text).then(() => {
+      setCopyNotice((notice) => notice + 1);
+      if (copyNoticeTimer.current) clearTimeout(copyNoticeTimer.current);
+      copyNoticeTimer.current = setTimeout(() => setCopyNotice(0), 2200);
+    }).catch(() => {});
+  }, []);
+
   const onPreviewClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
+      // Task-list checkboxes toggle the underlying `- [ ]`/`- [x]` in the draft.
+      // The clicked box's position among all task checkboxes in the preview is its
+      // document order — exactly toggleTaskCheckbox's index — so we count them and
+      // flip the matching source line. The native toggle stands until the re-render
+      // reconciles it from the (now-updated) source, so there is no flicker.
+      const box = (e.target as HTMLElement).closest?.(
+        "li.task-item > input[data-md-task]",
+      ) as HTMLInputElement | null;
+      if (box) {
+        const root = previewRef.current;
+        if (!root) return;
+        const boxes = Array.from(
+          root.querySelectorAll<HTMLInputElement>("li.task-item > input[data-md-task]"),
+        );
+        const index = boxes.indexOf(box);
+        if (index < 0) return;
+        const nextSrc = toggleTaskCheckbox(draft, index);
+        if (nextSrc != null) setDraft(nextSrc);
+        return;
+      }
       const a = (e.target as HTMLElement).closest?.("a.file-link") as HTMLAnchorElement | null;
       if (!a) return;
       // Always stop the anchor's own navigation (it carries target="_blank"); only
@@ -5615,7 +6094,7 @@ function MarkdownView({
         label: basename(target),
       });
     },
-    [path, tabKey],
+    [path, tabKey, draft, setDraft],
   );
 
   return (
@@ -5649,8 +6128,8 @@ function MarkdownView({
         {mode === "edit" && (
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
         )}
-        <PrintButton onPrint={handlePrint} disabled={!loaded} />
         <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
+        <PrintButton onPrint={handlePrint} disabled={!loaded} />
       </ViewerHeader>
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
       {saveError && <div className="file-viewer-error">{saveError}</div>}
@@ -5710,6 +6189,7 @@ function MarkdownView({
             // then drive the base font-size so headings (em-based) scale with it.
             style={font.isCustom ? { fontSize: `${font.fontSize}px` } : undefined}
             onMouseMove={onPreviewMove}
+            onMouseUp={onPreviewMouseUp}
             onMouseLeave={() => setLinkTip(null)}
             onClick={onPreviewClick}
             dangerouslySetInnerHTML={{ __html: html }}
@@ -5717,6 +6197,11 @@ function MarkdownView({
         )}
       </div>
       {mode === "preview" && <LinkOpenHint at={linkTip} />}
+      {copyNotice > 0 && (
+        <div key={copyNotice} className="project-switch-toast" role="status" aria-live="polite">
+          {t("fileViewer.copiedToClipboard")}
+        </div>
+      )}
     </div>
   );
 }
@@ -5824,15 +6309,423 @@ const TEX_INSTALL_CMD = IS_WINDOWS
     ? "brew install --cask mactex-no-gui"
     : "sudo apt-get install -y texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended latexmk";
 
+/** True when `path` is the main document or any enumerated child/graphic of the
+ *  workspace structure — i.e. a target a sidebar/link switch should center rather
+ *  than open in a new tab. */
+function texWorkspaceContains(structure: TexStructure, path: string): boolean {
+  const walk = (n: TexFileNode): boolean => {
+    if (n.path === path) return true;
+    if (n.graphics.some((g) => g.path === path)) return true;
+    return n.children.some(walk);
+  };
+  return walk(structure.root);
+}
+
+// The most panes kept mounted in the workspace center at once. Switching between
+// them is display:none, not remount, so an unsaved draft / undo / scroll of a
+// file you flipped away from survives — the same guarantee two standalone `.tex`
+// tabs have (CenterPanel keeps both mounted). Beyond the cap the LEAST-recently
+// used CLEAN pane is dropped; a dirty pane (or the main file) is never evicted.
+const TEX_WS_MAX_PANES = 12;
+const TEX_WS_SIDEBAR_DEFAULT = 240;
+const TEX_WS_PDF_SPLIT_DEFAULT = 0.42;
+
+/**
+ * The LaTeX WORKSPACE host: one tab that composes the left structure sidebar, a
+ * keep-mounted center that switches between the reused `TexView` (a `.tex`) and
+ * `ImageView`/`PdfView`/`TextView` (a graphic) for the selected file, and a
+ * docked SyncTeX PDF pane — forward search (the compile's `requestReveal`) lands
+ * in it and a reverse click routes back through `onReverseSource` to the center.
+ *
+ * It reuses the existing viewer components verbatim; the only new pieces are the
+ * sidebar (a separate leaf) and this thin host. Everything the host needs is
+ * already in `FileViewerPane`'s module scope (`TexView`, `ImageView`, `viewerForPath`,
+ * `jumpToSource`), so it lives here inline rather than in its own file — that
+ * avoids exporting the pane components and the `FileViewerPane ↔ workspace`
+ * import cycle a separate file would create.
+ *
+ * One-side-per-tab: `mainPath` is the tab's EFFECTIVE path, so every child is
+ * enumerated and shown on the same side (host SFTP vs local mirror) as the main.
+ * Flipping the tab's Local/Remote switch re-roots `mainPath` and re-enumerates.
+ */
+function TexWorkspaceView({
+  mainPath,
+  projectId,
+  tabKey,
+  groupId,
+  onOpenExternally,
+}: {
+  mainPath: string;
+  projectId: string | null;
+  tabKey?: string;
+  groupId?: string | null;
+  onOpenExternally: () => void;
+}) {
+  const t = useT();
+
+  // The parsed document structure (children + graphics). Re-gathered on mount, on
+  // a root/side change, and after each successful compile (structureVersion bump).
+  // A gather failure degrades to a degenerate one-node structure so the sidebar —
+  // and its UntestedTag pill — still render.
+  const [structure, setStructure] = useState<TexStructure | null>(null);
+  const [structureVersion, setStructureVersion] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    const disabled = disabledViewers(useSettingsStore.getState().settings?.viewer_prefs);
+    gatherTexStructure(mainPath, projectId, disabled)
+      .then((s) => { if (!cancelled) setStructure(s); })
+      .catch(() => {
+        if (!cancelled)
+          setStructure({ root: { path: mainPath, label: basename(mainPath), graphics: [], children: [] } });
+      });
+    return () => { cancelled = true; };
+  }, [mainPath, projectId, structureVersion]);
+
+  // Where this tab's ViewerState (the centered file, the docked-PDF flag/split,
+  // the sidebar width) actually lives. In the MAIN window the layout store owns
+  // it, and the reads below are reactive so a sidebar/link switch re-renders. In
+  // a DETACHED popout the store has NO entry for the tab — its tabs render from a
+  // Tauri seed into local React state (see `seedViewerState`) — so a store read
+  // is forever undefined and a store WRITE is a silent no-op, which pinned the
+  // center to the main file and killed the docked PDF and sidebar-resize in a
+  // popout. So keep a local mirror seeded from the persisted state, treat the
+  // store as the source of truth only when it actually holds the tab, and persist
+  // to BOTH (the store write round-trips through the main window's layout save;
+  // in a popout it is a harmless no-op and the local mirror drives the UI).
+  const storeVs = useTabsStore((s) =>
+    tabKey ? s.tabs.find((tb) => tb.key === tabKey)?.viewerState : undefined,
+  );
+  const [localVs, setLocalVs] = useState<ViewerState>(() => seedViewerState(tabKey) ?? {});
+  const patchViewerState = useCallback(
+    (patch: ViewerState) => {
+      setLocalVs((prev) => ({ ...prev, ...patch }));
+      if (tabKey) useTabsStore.getState().setViewerState(tabKey, patch);
+    },
+    [tabKey],
+  );
+
+  // The centered file: the persisted `texActivePath` when it still resolves in the
+  // structure, else the main document (a stale id is inert).
+  const storedActive = storeVs?.texActivePath ?? localVs.texActivePath;
+  const activePath = useMemo(() => {
+    if (!storedActive || storedActive === mainPath) return mainPath;
+    if (structure && !texWorkspaceContains(structure, storedActive)) return mainPath;
+    return storedActive;
+  }, [storedActive, mainPath, structure]);
+
+  const setActivePath = useCallback((p: string) => patchViewerState({ texActivePath: p }), [patchViewerState]);
+
+  // Keep-mounted center: the LRU list of mounted paths (most-recent last). The
+  // active file is always mounted; the main file is pinned; a dirty pane is never
+  // evicted (its unsaved draft would be lost).
+  const [mounted, setMounted] = useState<string[]>(() => [mainPath]);
+  const dirtyRef = useRef<Map<string, boolean>>(new Map());
+  // Stable per-path dirty reporter, so TexView's onDirtyChange identity doesn't
+  // churn every render.
+  const dirtyHandlersRef = useRef<Map<string, (d: boolean) => void>>(new Map());
+  const dirtyHandlerFor = useCallback((p: string) => {
+    let h = dirtyHandlersRef.current.get(p);
+    if (!h) {
+      h = (d: boolean) => { dirtyRef.current.set(p, d); };
+      dirtyHandlersRef.current.set(p, h);
+    }
+    return h;
+  }, []);
+
+  // Follow the active file into the mounted LRU, evicting the least-recently-used
+  // clean, non-main, non-active pane past the cap.
+  useEffect(() => {
+    setMounted((prev) => {
+      if (prev[prev.length - 1] === activePath) return prev;
+      const next = prev.filter((x) => x !== activePath);
+      next.push(activePath);
+      while (next.length > TEX_WS_MAX_PANES) {
+        const idx = next.findIndex(
+          (x) => x !== mainPath && x !== activePath && !dirtyRef.current.get(x),
+        );
+        if (idx < 0) break; // everything left is dirty/pinned — keep it
+        next.splice(idx, 1);
+      }
+      return next;
+    });
+  }, [activePath, mainPath]);
+
+  // The compiled PDF this workspace docks. Seeded from convention (the root's
+  // `.pdf` sibling) and updated to the compile's ACTUAL output (which honours the
+  // #54 out-dir) via `onCompiled`. Re-seeded when the root/side changes.
+  const [pdfPath, setPdfPath] = useState<string>(() => mainPath.replace(/\.tex$/i, ".pdf"));
+  useEffect(() => {
+    setPdfPath(mainPath.replace(/\.tex$/i, ".pdf"));
+  }, [mainPath]);
+
+  // Whether that PDF is actually on disk. The docked pane mounts pdf.js only when
+  // it is — so a never-compiled workspace (and every jsdom test that doesn't
+  // compile) keeps the worker unmounted, and a restore with `texPdfOpen` but no
+  // file shows nothing rather than a broken canvas. Probed on mount / path change,
+  // and set true optimistically the instant a compile writes it.
+  const [pdfExists, setPdfExists] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fileMtime(pdfPath, projectId)
+      .then(() => { if (!cancelled) setPdfExists(true); })
+      .catch(() => { if (!cancelled) setPdfExists(false); });
+    return () => { cancelled = true; };
+  }, [pdfPath, projectId]);
+
+  // A successful compile (from any mounted editor — a child builds the root too):
+  // remember the output PDF, reveal the docked pane, and re-gather the structure
+  // (a build may add an \input or a figure). Never auto-compiles on restore — this
+  // only ever fires from an explicit build.
+  const onCompiled = useCallback(
+    (info: { pdfPath: string; pdfVersion: number }) => {
+      setPdfPath(info.pdfPath);
+      setPdfExists(true);
+      setStructureVersion((v) => v + 1);
+      patchViewerState({ texPdfOpen: true });
+    },
+    [patchViewerState],
+  );
+
+  // "Show the PDF" from the center editor (the compile's forward-search, or the
+  // explicit Open-PDF button): dock it in-tab instead of opening a separate PDF
+  // tab. TexView only calls this once a PDF has been built, so the file exists.
+  const onOpenPdf = useCallback(
+    (pdf: string) => {
+      setPdfPath(pdf);
+      setPdfExists(true);
+      patchViewerState({ texPdfOpen: true });
+    },
+    [patchViewerState],
+  );
+
+  // Reverse search (a Ctrl/⌘-click in the docked PDF): switch the center to the
+  // producing source when it is in THIS workspace (no new tab — the editor lives
+  // in the same tab, so `tabKey`/`structure` are already in scope), else fall back
+  // to the module jump for an out-of-tree target. The center child consumes the
+  // retained `requestJump` via its own `useEditorJump(path)` subscription.
+  const onReverseSource = useCallback(
+    (src: SyncSource, anchor: string) => {
+      if (src.input === mainPath || (structure && texWorkspaceContains(structure, src.input))) {
+        setActivePath(src.input);
+        useEditorJumpStore.getState().requestJump(src.input, src.line, src.column);
+      } else {
+        jumpToSource(src.input, src.line, src.column, anchor);
+      }
+    },
+    [mainPath, structure, setActivePath],
+  );
+
+  // In-structure link/error targets switch the center; out-of-tree ones fall back
+  // to the standalone tab open (a `.bib` → bib cards, an external file).
+  const onFollowChild = useCallback(
+    (resolved: { path: string; viewer: InternalViewer; label: string }) => {
+      if (resolved.path === mainPath || (structure && texWorkspaceContains(structure, resolved.path))) {
+        setActivePath(resolved.path);
+        return true;
+      }
+      return false;
+    },
+    [mainPath, structure, setActivePath],
+  );
+  const onJumpToSource = useCallback(
+    (input: string, line: number, column: number) => {
+      if (input === mainPath || (structure && texWorkspaceContains(structure, input))) {
+        setActivePath(input);
+        useEditorJumpStore.getState().requestJump(input, line, column);
+      } else {
+        jumpToSource(input, line, column);
+      }
+    },
+    [mainPath, structure, setActivePath],
+  );
+
+  // Sidebar width, persisted per tab (store-or-local, see `patchViewerState`).
+  const sidebarWidth = (storeVs?.texSidebarWidth ?? localVs.texSidebarWidth) ?? TEX_WS_SIDEBAR_DEFAULT;
+  const onResizeSidebar = useCallback(
+    (w: number) => patchViewerState({ texSidebarWidth: w }),
+    [patchViewerState],
+  );
+
+  // Docked PDF pane visibility/split (persisted per tab). Default collapsed — the
+  // pane is revealed by the first compile or the Open-PDF button, so pdf.js's
+  // worker stays unmounted until there is something to show.
+  const pdfOpen = (storeVs?.texPdfOpen ?? localVs.texPdfOpen) ?? false;
+  const pdfSplit = (storeVs?.texPdfSplit ?? localVs.texPdfSplit) ?? TEX_WS_PDF_SPLIT_DEFAULT;
+  const closePdf = useCallback(() => patchViewerState({ texPdfOpen: false }), [patchViewerState]);
+
+  // Live split fraction while the divider between the center and the PDF pane is
+  // being dragged; persisted (as `texPdfSplit`) on pointer-up, mirroring the
+  // sidebar's resize. Measured against the workspace's own width so the fraction
+  // is exact regardless of the sidebar.
+  const workspaceRef = useRef<HTMLDivElement | null>(null);
+  const [livePdfSplit, setLivePdfSplit] = useState<number | null>(null);
+  const shownSplit = livePdfSplit ?? pdfSplit;
+  const startPdfResize = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+      const rect = workspaceRef.current?.getBoundingClientRect();
+      const total = rect?.width ?? 0;
+      const right = rect?.right ?? 0;
+      let last = shownSplit;
+      const onMove = (ev: PointerEvent) => {
+        if (total <= 0) return;
+        last = Math.max(0.2, Math.min(0.8, (right - ev.clientX) / total));
+        setLivePdfSplit(last);
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        setLivePdfSplit(null);
+        patchViewerState({ texPdfSplit: last });
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [shownSplit, patchViewerState],
+  );
+
+  const centerFor = (p: string) => {
+    const v = viewerForPath(p);
+    const paneKey = p === mainPath ? tabKey : tabKey ? `${tabKey}#${p}` : undefined;
+    if (v === "tex") {
+      return (
+        <TexView
+          path={p}
+          tabKey={paneKey}
+          onOpenExternally={onOpenExternally}
+          onOpenPdf={onOpenPdf}
+          onFollowChild={onFollowChild}
+          onJumpToSource={onJumpToSource}
+          onDirtyChange={dirtyHandlerFor(p)}
+          onCompiled={onCompiled}
+        />
+      );
+    }
+    if (v === "image") {
+      return <ImageView path={p} fileName={basename(p)} tabKey={paneKey} onOpenExternally={onOpenExternally} />;
+    }
+    if (v === "pdf") {
+      return <PdfView path={p} tabKey={paneKey} onOpenExternally={onOpenExternally} groupId={groupId} />;
+    }
+    // A `.tikz`/`.sty`/other graphic-adjacent source: the plain code editor.
+    return <TextView path={p} tabKey={paneKey} onOpenExternally={onOpenExternally} groupId={groupId} />;
+  };
+
+  // The docked PDF is shown only when explicitly open AND actually on disk, so a
+  // restored `texPdfOpen` with no compiled file (or a jsdom test) never mounts
+  // pdf.js, and a build never dials out to re-create it.
+  const showPdf = pdfOpen && pdfExists;
+
+  return (
+    <div className="tex-workspace" ref={workspaceRef}>
+      {structure ? (
+        <TexStructureSidebar
+          structure={structure}
+          activePath={activePath}
+          width={sidebarWidth}
+          onSelect={(p) => setActivePath(p)}
+          onResize={onResizeSidebar}
+        />
+      ) : (
+        <div className="tex-structure-sidebar" style={{ width: sidebarWidth }}>
+          <div className="tex-structure-header">
+            <span className="tex-structure-title">{t("texWorkspace.structureTitle")}</span>
+            <UntestedTag />
+          </div>
+        </div>
+      )}
+      <div className="tex-workspace-center">
+        {mounted.map((p) => (
+          <div
+            key={p}
+            className="tex-workspace-pane"
+            style={{ display: p === activePath ? undefined : "none" }}
+          >
+            {centerFor(p)}
+          </div>
+        ))}
+      </div>
+      {/* Docked SyncTeX PDF pane: the same real PdfView a standalone PDF tab
+          renders, re-hosted in-tab. Forward search lands here (the compile's
+          `requestReveal` targets this pdfPath, now mounted), and a reverse click
+          routes back through `onReverseSource` to switch the center — both
+          directions in one tab, both stores untouched (they are path-keyed). */}
+      {showPdf && (
+        <div
+          className="tex-workspace-pdf"
+          style={{ width: `${(shownSplit * 100).toFixed(3)}%` }}
+        >
+          <div
+            className="tex-workspace-pdf-resize"
+            role="separator"
+            aria-orientation="vertical"
+            onPointerDown={startPdfResize}
+          />
+          <div className="tex-workspace-pdf-head">
+            <span className="tex-workspace-pdf-title" title={pdfPath}>
+              {basename(pdfPath)}
+            </span>
+            <button
+              type="button"
+              className="tex-workspace-pdf-close"
+              onClick={closePdf}
+              title={t("texWorkspace.hidePdf")}
+              aria-label={t("texWorkspace.hidePdf")}
+            >
+              ×
+            </button>
+          </div>
+          <div className="tex-workspace-pdf-body">
+            <PdfView
+              path={pdfPath}
+              tabKey={tabKey ? `${tabKey}#pdf` : undefined}
+              onOpenExternally={onOpenExternally}
+              groupId={groupId}
+              onReverseSource={onReverseSource}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TexView({
   path,
   onOpenExternally,
   tabKey,
+  onOpenPdf,
+  onFollowChild,
+  onJumpToSource,
+  onDirtyChange,
+  onCompiled,
 }: {
   path: string;
   onOpenExternally: () => void;
   /** This viewer tab's key, for #50 same-subwindow link routing. */
   tabKey?: string;
+  // --- TeX workspace host seams (all optional; absent ⇒ today's standalone
+  //     behavior, so a plain `viewer:"tex"` tab and its tests are unaffected) ---
+  /** Show the compiled PDF. When present, `openPdf` calls this INSTEAD of opening
+   *  a separate PDF tab — the workspace docks the PDF in-tab. Absent ⇒ the
+   *  standalone tab's default (open/refocus a separate PDF tab). */
+  onOpenPdf?: (pdf: string) => void;
+  /** Follow an `\input`/`\includegraphics` target. Return true when the host
+   *  handled it (an in-structure child/graphic switched the workspace center);
+   *  false falls back to opening the target in its own tab (external/out-of-tree
+   *  targets, a `.bib` → bib cards, …). */
+  onFollowChild?: (resolved: { path: string; viewer: InternalViewer; label: string }) => boolean;
+  /** Jump to a source location (a compile-error row). When present the host may
+   *  switch the workspace center to an in-structure file; else the module default
+   *  opens a tab. */
+  onJumpToSource?: (input: string, line: number, column: number) => void;
+  /** Report this editor's dirty state up, so the workspace's keep-mounted center
+   *  cache never evicts a pane with unsaved edits. */
+  onDirtyChange?: (dirty: boolean) => void;
+  /** A successful compile finished: the actual output PDF and the bumped version.
+   *  Drives the docked PDF pane and a structure re-gather. */
+  onCompiled?: (info: { pdfPath: string; pdfVersion: number }) => void;
 }) {
   const t = useT();
   const texInstallLabel = IS_WINDOWS ? t("fileViewer.texInstallMiktex") : t("fileViewer.texInstallLatex");
@@ -5876,23 +6769,56 @@ function TexView({
   // (#50). A bare \includegraphics is resolved by probing the directory.
   const followLink = useCallback(
     async (caret: number): Promise<boolean> => {
-      const target = findTexRefAt(draft, caret);
-      if (!target) return false;
       const disabled = disabledViewers(
         useSettingsStore.getState().settings?.viewer_prefs,
       );
-      const resolved = await resolveTexRefAsync(path, target, disabled);
-      if (!resolved) return false;
-      const dir = dirname(path) || "/";
-      openLinkedFile(tabKey, dir, resolved);
+      const target = findTexRefAt(draft, caret);
+      if (target) {
+        const resolved = await resolveTexRefAsync(path, target, disabled);
+        if (!resolved) return false;
+        // In a workspace, an in-structure child/graphic switches the center view
+        // instead of opening a tab; the host returns false for an out-of-tree
+        // target (a `.bib` → bib cards, an external file), which falls through to
+        // the standalone tab open so nothing dead-ends.
+        if (onFollowChild?.(resolved)) return true;
+        const dir = dirname(path) || "/";
+        openLinkedFile(tabKey, dir, resolved);
+        return true;
+      }
+      // A `\ref`/`\cite` (#tex-ref-jump): the target is a POSITION — the
+      // `\label{…}` or the `.bib` record defining the key — so following it is an
+      // editor jump, and only opens a file when the definition is in another one.
+      // A key nothing defines is left alone: a `\ref` written before its label is
+      // an ordinary state of a document, not an error to report at a click.
+      const keyRef = findTexKeyRefAt(draft, caret);
+      if (!keyRef) return false;
+      const loc = await resolveTexKeyRef(path, keyRef, {
+        projectId: scope,
+        currentText: draft,
+        disabled,
+      });
+      if (!loc) return false;
+      if (loc.path !== path) {
+        // Bring the defining file up first — in the workspace by switching the
+        // center, else in its own tab — then jump. `requestJump` is keyed by path
+        // and consumed by whichever editor mounts for it, so the order is safe
+        // either way: a tab that opens a frame later still applies the request.
+        if (!onFollowChild?.(loc)) {
+          openLinkedFile(tabKey, dirname(path) || "/", loc);
+        }
+      }
+      useEditorJumpStore.getState().requestJump(loc.path, loc.line, loc.column);
       return true;
     },
-    [draft, path, tabKey],
+    [draft, path, tabKey, scope, onFollowChild],
   );
 
-  // #49: decorate every `\input{…}`/`\includegraphics{…}` argument range so it
-  // reads as a clickable link in the editor.
-  const linkRanges = useCallback((source: string) => texRefRanges(source), []);
+  // #49 + #tex-ref-jump: decorate every `\input{…}`/`\includegraphics{…}` path and
+  // every `\ref{…}`/`\cite{…}` key so both read as the clickable links they are.
+  const linkRanges = useCallback(
+    (source: string) => [...texRefRanges(source), ...texKeyRefRanges(source)],
+    [],
+  );
 
   // Chosen engine (only when >1 is available); "" means "let the backend pick".
   const [engine, setEngine] = useState("");
@@ -5910,11 +6836,16 @@ function TexView({
   // 0 = never compiled (preview shows a placeholder); each successful compile
   // bumps this to force the PDF blob to refetch the freshly written bytes.
   const [pdfVersion, setPdfVersion] = useState(0);
-  // True when the last successful compile's forward-search (caret → PDF) found
-  // no location, so the PDF kept its previous position instead of jumping to the
-  // cursor. Shown as a transient notice so a SyncTeX miss reads differently from
-  // a bug; auto-cleared by the effect below.
-  const [syncMiss, setSyncMiss] = useState(false);
+  // Mirror of `pdfVersion` for the compile closure (which doesn't depend on the
+  // state), so it can report the next version to the workspace host in one write.
+  const pdfVersionRef = useRef(0);
+  // Why the last forward-search (caret → PDF) did not jump, if it didn't — shown
+  // as a transient notice so it reads as a SyncTeX outcome, never as a build
+  // failure (the PDF is always shown/refreshed regardless). `"miss"` = SyncTeX
+  // ran but found no box for that line (the PDF kept its position); `"unavail"` =
+  // SyncTeX could not run at all (tool absent, or a backend not yet rebuilt), the
+  // case that used to masquerade as a miss. Auto-cleared by the effect below.
+  const [syncNote, setSyncNote] = useState<null | "miss" | "unavail">(null);
 
   // \ref/\cite key completion: `\label` keys across the document and entry keys
   // from the connected `.bib` file(s), gathered from disk on load. Re-gathered
@@ -5929,13 +6860,15 @@ function TexView({
       .catch(() => {});
     return () => { cancelled = true; };
   }, [path, scope, pdfVersion]);
-  const completions = useMemo<TexCompletions>(
-    () => ({
-      labels: Array.from(new Set([...parseTexLabels(draft), ...gathered.labels])),
-      cites: gathered.cites,
-    }),
-    [draft, gathered],
-  );
+  const completions = useMemo<TexCompletions>(() => {
+    const seen = new Set<string>();
+    const labels = [...parseTexLabels(draft), ...gathered.labels].filter((l) => {
+      if (seen.has(l.key)) return false;
+      seen.add(l.key);
+      return true;
+    });
+    return { labels, cites: gathered.cites };
+  }, [draft, gathered]);
 
   // #54 compiler options: an optional output folder (relative to the source or
   // absolute) and extra engine flags (space-separated). The backend filters the
@@ -5976,11 +6909,17 @@ function TexView({
   // so a reused tab reloads the freshly compiled bytes on its own.
   const openPdf = useCallback(
     (pdf: string) => {
+      // In a workspace the host docks the PDF in-tab; standalone opens/refocuses
+      // a separate PDF tab.
+      if (onOpenPdf) {
+        onOpenPdf(pdf);
+        return;
+      }
       const name = basename(pdf);
       const dir = dirname(path) || "/";
       openLinkedFile(tabKey, dir, { path: pdf, viewer: "pdf", label: name });
     },
-    [path, tabKey],
+    [path, tabKey, onOpenPdf],
   );
 
   // The PDF this source builds to: the last compile's actual output when known
@@ -5997,20 +6936,21 @@ function TexView({
   const forwardSync = useCallback(
     async (caret: number) => {
       const pdf = targetPdf();
-      setSyncMiss(false);
+      setSyncNote(null);
       const { line, column } = offsetToLineCol(draftRef.current, caret);
       const phrase = phraseAt(draftRef.current, caret) ?? undefined;
-      // Try every spelling SyncTeX might have stored the source under.
+      // Try every spelling SyncTeX might have stored the source under. `null` here
+      // means SyncTeX could not run at all — a different notice from a real miss.
       const recs = await synctexViewBest(pdf, path, rootDir, line, column);
       // Pick the record (box / wrapped row) the clicked column lands in.
-      const rect = pickSyncRect(recs, sourceColumnFraction(draftRef.current, line, column));
+      const rect = pickSyncRect(recs ?? [], sourceColumnFraction(draftRef.current, line, column));
       if (rect) {
         openPdf(pdf);
         // Pass the clicked word + neighbours so the PDF narrows the line box to
         // that exact word, using the phrase to pick the right occurrence.
         usePdfSyncStore.getState().requestReveal(pdf, rect, phrase);
       } else {
-        setSyncMiss(true);
+        setSyncNote(recs === null ? "unavail" : "miss");
       }
     },
     [targetPdf, path, openPdf, rootDir],
@@ -6031,7 +6971,7 @@ function TexView({
     setCompiling(true);
     setCompileError(null);
     setErrors([]);
-    setSyncMiss(false);
+    setSyncNote(null);
     // Snapshot the caret synchronously, before any await can let focus change or
     // a blur reset it: prefer the editor's live cursor, falling back to the last
     // reported offset. This is the position forward search reveals in the PDF.
@@ -6065,35 +7005,59 @@ function TexView({
       setCompileError(null);
       if (res.pdf_path) {
         setPdfPath(res.pdf_path);
-        setPdfVersion((v) => v + 1);
+        const nextVersion = pdfVersionRef.current + 1;
+        pdfVersionRef.current = nextVersion;
+        setPdfVersion(nextVersion);
+        // Tell the workspace host a build landed (drives the docked PDF pane and a
+        // structure re-gather); no-op for a standalone tab.
+        // The PDF is shown/refreshed FIRST, before any forward search — so a
+        // SyncTeX miss (or SyncTeX being unavailable) can never keep the compiled
+        // PDF off screen. Jump-to-cursor is a best-effort extra on top.
+        onCompiled?.({ pdfPath: res.pdf_path, pdfVersion: nextVersion });
         openPdf(res.pdf_path); // open (or refocus) the PDF in its own tab
         // Forward search: reveal & highlight the caret's output position in the
         // PDF. `input` is this edited file even when a parent was built, since
         // the caret lives here. Best-effort — no-op when SyncTeX has no answer.
         const { line, column } = offsetToLineCol(draftRef.current, caretAtCompile);
         const recs = await synctexViewBest(res.pdf_path, path, rootDir, line, column);
-        const rect = pickSyncRect(recs, sourceColumnFraction(draftRef.current, line, column));
+        const rect = pickSyncRect(recs ?? [], sourceColumnFraction(draftRef.current, line, column));
         if (rect)
           usePdfSyncStore
             .getState()
-            .requestReveal(res.pdf_path, rect, phraseAt(draftRef.current, caretAtCompile) ?? undefined);
-        // No SyncTeX answer for the caret → the PDF stays where it was. Flag it so
-        // the user knows the jump-to-cursor was skipped (a miss, not a failure).
-        else setSyncMiss(true);
+            .requestReveal(
+              res.pdf_path,
+              rect,
+              phraseAt(draftRef.current, caretAtCompile) ?? undefined,
+              true,
+            );
+        // No jump: the PDF is already shown and stays where it was. Distinguish a
+        // real miss (SyncTeX ran, no box for that line) from SyncTeX being
+        // unavailable (`null`) so the notice names the actual cause, not a failure.
+        else setSyncNote(recs === null ? "unavail" : "miss");
       }
     } catch (e) {
       setCompileError(String(e));
     } finally {
       setCompiling(false);
     }
-  }, [compiling, save, path, engine, outDir, extraFlags, openPdf, t]);
+  }, [compiling, save, path, engine, outDir, extraFlags, openPdf, rootDir, t, onCompiled]);
 
-  // Auto-dismiss the forward-search miss notice a few seconds after it appears.
+  // Auto-dismiss the forward-search notice a few seconds after it appears.
   useEffect(() => {
-    if (!syncMiss) return;
-    const id = setTimeout(() => setSyncMiss(false), 4000);
+    if (!syncNote) return;
+    const id = setTimeout(() => setSyncNote(null), 6000);
     return () => clearTimeout(id);
-  }, [syncMiss]);
+  }, [syncNote]);
+
+  // Report dirty state up so the workspace's keep-mounted center cache never
+  // evicts a pane with unsaved edits (no-op for a standalone tab).
+  useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
+
+  // The error-list jump: a workspace switches the center to an in-structure file;
+  // standalone falls back to the module default (open/focus a tab).
+  const jumpToError = onJumpToSource ?? jumpToSource;
 
   // No engine (or still probing): degrade to exactly the plain-text editor.
   if (!cap || !cap.available) {
@@ -6104,8 +7068,8 @@ function TexView({
           <EditorAiControls ai={ai} />
           <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
-          <PrintButton onPrint={handlePrint} disabled={!loaded} />
           <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
+          <PrintButton onPrint={handlePrint} disabled={!loaded} />
         </ViewerHeader>
         {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
         {saveError && <div className="file-viewer-error">{saveError}</div>}
@@ -6242,8 +7206,8 @@ function TexView({
         <EditorAiControls ai={ai} />
         <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
         <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
-        <PrintButton onPrint={handlePrint} disabled={!loaded} />
         <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
+        <PrintButton onPrint={handlePrint} disabled={!loaded} />
       </ViewerHeader>
       {compiling && (
         <div className="file-viewer-tex-progress" role="progressbar" aria-label={t("fileViewer.compilingLabel")}>
@@ -6276,9 +7240,9 @@ function TexView({
         </div>
       )}
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
-      {syncMiss && (
+      {syncNote && (
         <div className="file-viewer-tex-sync-miss" role="status">
-          {t("fileViewer.syncMissMsg")}
+          {t(syncNote === "unavail" ? "fileViewer.syncUnavailMsg" : "fileViewer.syncMissMsg")}
         </div>
       )}
       {shellEscape && (
@@ -6290,9 +7254,19 @@ function TexView({
       )}
       {saveError && <div className="file-viewer-error">{saveError}</div>}
       {compileError && (
-        <div className="file-viewer-error file-viewer-tex-log-error">
-          <div className="file-viewer-tex-log-line">{compileError}</div>
-          {errors.length > 0 && (
+        <div className="file-viewer-tex-error-card" role="alert">
+          <div className="file-viewer-tex-error-head">
+            <span className="file-viewer-tex-error-icon" aria-hidden="true">⚠</span>
+            <span className="file-viewer-tex-error-title">
+              {t("fileViewer.compileErrorTitle")}
+            </span>
+            {errors.length > 0 && (
+              <span className="file-viewer-tex-error-count">{errors.length}</span>
+            )}
+          </div>
+          {/* The terse summary line only when no structured errors were parsed —
+              otherwise it just repeats the first list row below. */}
+          {errors.length > 0 ? (
             <ul className="file-viewer-tex-errors">
               {errors.map((err, i) => (
                 <li key={`${err.file}:${err.line}:${i}`}>
@@ -6300,7 +7274,7 @@ function TexView({
                     className="file-viewer-tex-error-jump"
                     title={t("fileViewer.jumpToLocation", { location: `${err.file}:${err.line}` })}
                     onClick={() =>
-                      jumpToSource(
+                      jumpToError(
                         resolveTexErrorPath(rootDir, err.file),
                         err.line,
                         1,
@@ -6315,6 +7289,8 @@ function TexView({
                 </li>
               ))}
             </ul>
+          ) : (
+            <div className="file-viewer-tex-log-line">{compileError}</div>
           )}
           {log && (
             <button

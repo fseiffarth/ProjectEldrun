@@ -249,6 +249,14 @@ pub struct TaskColumn {
     /// the coupling off, which is what a user who deleted their Done column meant.
     #[serde(default)]
     pub done: bool,
+    /// An **archive**: a resting place that outranks the done↔column coupling. A
+    /// card filed here stays here whatever its `percent` — the whole point of
+    /// archiving a *finished* card is to get it out of Done, so `normalize` must
+    /// not pull it straight back (see `normalize_tasks` step 4). Unlike `done`
+    /// there is no cap and no coupling: nothing auto-moves a card here, and an
+    /// unplaced card is never filed here (it goes to the leftmost open column).
+    #[serde(default)]
+    pub archived: bool,
     /// CSS color for the column header, like `Calendar::color`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub color: String,
@@ -264,19 +272,24 @@ pub struct TaskColumn {
 impl TaskColumn {
     /// The board a user who has never touched one starts with.
     pub fn default_set() -> Vec<TaskColumn> {
+        // (id, name, color, done, archived) — at most one `done`, and `archived`
+        // sits last so the leftmost open column (the unplaced-card fallback) is
+        // never the archive.
         [
-            ("backlog", "Backlog", "#8a93a5", false),
-            ("today", "Today", "#4aa3df", false),
-            ("doing", "Doing", "#e8a33d", false),
-            ("done", "Done", "#5cb85c", true),
+            ("backlog", "Backlog", "#8a93a5", false, false),
+            ("today", "Today", "#4aa3df", false, false),
+            ("doing", "Doing", "#e8a33d", false, false),
+            ("done", "Done", "#5cb85c", true, false),
+            ("archived", "Archived", "#7d8590", false, true),
         ]
         .iter()
         .enumerate()
-        .map(|(i, (id, name, color, done))| TaskColumn {
+        .map(|(i, (id, name, color, done, archived))| TaskColumn {
             id: (*id).to_string(),
             name: (*name).to_string(),
             position: i as i64,
             done: *done,
+            archived: *archived,
             color: (*color).to_string(),
             limit: 0,
             extra: HashMap::new(),
@@ -622,16 +635,30 @@ impl CalendarData {
             .find(|c| c.done)
             .map(|c| c.id.clone());
         // The destination for a card with no home: the leftmost column that is
-        // not the done one (falling back to the first column at all, for a board
-        // whose only column is Done).
+        // neither the done one nor an archive (falling back to the first column
+        // at all, for a board whose only columns are Done/Archived). An unplaced
+        // card must never land in the archive — archiving is a deliberate move.
         let col_fallback: String = {
-            let mut open: Vec<&TaskColumn> = self.task_columns.iter().filter(|c| !c.done).collect();
+            let mut open: Vec<&TaskColumn> = self
+                .task_columns
+                .iter()
+                .filter(|c| !c.done && !c.archived)
+                .collect();
             open.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
             open.first()
                 .map(|c| c.id.clone())
                 .unwrap_or_else(|| self.task_columns[0].id.clone())
         };
         let known_cols: HashSet<&str> = self.task_columns.iter().map(|c| c.id.as_str()).collect();
+        // Columns exempt from the done↔column coupling below: a finished card is
+        // archived precisely to leave Done, so pulling it back would make the
+        // move impossible.
+        let archived_cols: HashSet<&str> = self
+            .task_columns
+            .iter()
+            .filter(|c| c.archived)
+            .map(|c| c.id.as_str())
+            .collect();
 
         for task in self.tasks.iter_mut() {
             // 3. Refile a card naming a column that is gone — the `calendar_id`
@@ -655,8 +682,12 @@ impl CalendarData {
             //    rather than "wherever it was", because nothing records where it
             //    was and inventing a memory field for a cross-surface edge case
             //    is worse than one predictable, stated destination.
+            //    A card resting in an archive is exempt: it stays put whatever
+            //    its completion, so a finished card can actually leave Done.
             if let Some(done_id) = &done_col {
-                if task.percent >= 100 && &task.column != done_id {
+                if archived_cols.contains(task.column.as_str()) {
+                    // leave it alone
+                } else if task.percent >= 100 && &task.column != done_id {
                     task.column = done_id.clone();
                     task.rank = None; // re-ranked to the column's end below
                 } else if task.percent < 100 && &task.column == done_id {
@@ -1061,8 +1092,9 @@ mod tests {
     fn ensure_board_seeds_the_default_columns() {
         let mut data = CalendarData::default();
         data.ensure_board();
-        assert_eq!(data.task_columns.len(), 4);
+        assert_eq!(data.task_columns.len(), 5);
         assert_eq!(data.task_columns.iter().filter(|c| c.done).count(), 1);
+        assert_eq!(data.task_columns.iter().filter(|c| c.archived).count(), 1);
         assert_eq!(done_column_id(&data), "done");
 
         // Idempotent: a second call must not duplicate or re-seed.
@@ -1208,6 +1240,43 @@ mod tests {
             percent: 0,
             ..task("t")
         }]);
+        data.normalize();
+        assert_eq!(data.tasks[0].column, "backlog");
+    }
+
+    #[test]
+    fn an_archived_card_stays_put_when_complete() {
+        // The whole point of the archive: a finished card filed there is NOT
+        // pulled back into Done by the completion coupling.
+        let mut data = board(vec![CalendarTask {
+            column: "archived".into(),
+            rank: Some(RANK_GAP),
+            percent: 100,
+            ..task("t")
+        }]);
+        data.normalize();
+        assert_eq!(data.tasks[0].column, "archived");
+    }
+
+    #[test]
+    fn an_incomplete_card_may_rest_in_the_archive() {
+        // And an abandoned (not-done) card may sit there too — the archive has
+        // no completion coupling in either direction.
+        let mut data = board(vec![CalendarTask {
+            column: "archived".into(),
+            rank: Some(RANK_GAP),
+            percent: 0,
+            ..task("t")
+        }]);
+        data.normalize();
+        assert_eq!(data.tasks[0].column, "archived");
+    }
+
+    #[test]
+    fn an_unplaced_card_is_never_filed_into_the_archive() {
+        // The fallback for a homeless card is the leftmost *open* column, never
+        // the archive — archiving is a deliberate move, not a resting default.
+        let mut data = board(vec![task("t")]);
         data.normalize();
         assert_eq!(data.tasks[0].column, "backlog");
     }

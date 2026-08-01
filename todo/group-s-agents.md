@@ -62,6 +62,8 @@ unchanged; the new agents are additive.
     - [x] 🤖 Automated test — `commands/ollama.rs:2469-2490` covers the registry
       rows and argv construction.
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 73. **Backend: `local_launch_argv` + ensure-running command.** ✅ Implemented ·
     🧪 Awaiting live QA. Add a pure helper
@@ -82,6 +84,8 @@ unchanged; the new agents are additive.
     - [x] 🤖 Automated test — `commands/ollama.rs:2469-2490` covers allowlist
       acceptance and rejection of unknown ids / injection-y model names.
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 74. **`cmdToKind` + spawn path for `ollama launch` tabs.** Teach
     `cmdToKind` (tabs.ts) that `cmd === "ollama"` with a `launch` first-arg maps to
@@ -98,6 +102,8 @@ unchanged; the new agents are additive.
     - [ ] 🤖 Automated test — `cmdToKind("ollama", ["launch","claude",…])` →
       `"local_agent"`; unchanged for plain `ollama`/`bash`.
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 75. **Picker UI: choose which local agent runs the active model.** ✅ Implemented ·
     🧪 Awaiting live QA. Today the
@@ -115,6 +121,8 @@ unchanged; the new agents are additive.
     - [x] 🤖 Automated test — picker rows follow `list_local_drivers`; selection
       dispatches `prepare_local_launch` (argv) vs the vibe env path.
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 76. **Per-agent wiring — Claude Code, Hermes, OpenClaw, OpenCode.** With #72–#75 in
     place each is one `LOCAL_AGENTS` row, but verify per agent: `claude` →
@@ -138,6 +146,8 @@ unchanged; the new agents are additive.
       every agent except the OpenClaw bullet below.
     - [ ] 🤖 Automated test — table test: each id → expected argv + endpoint note.
     - [ ] 🖐️ Manual test — each agent opens, sees the model, completes one edit.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 77. **Persistence / resume parity (follow-up).** Start at **vibe parity**: these
     `local_agent` tabs are **not** resumable (dropped on relaunch like vibe today),
@@ -158,6 +168,8 @@ unchanged; the new agents are additive.
       filtered OUT by the persist filter (matches vibe), **including the
       fallback spawn shape**.
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 78. **Discoverability in the Ollama panel.** In `SettingsSubPanels.tsx` (Ollama
     panel), add a short "Local agents" section listing the supported `ollama
@@ -166,6 +178,8 @@ unchanged; the new agents are additive.
     no separate "Install …" button is required). Link the picker to it.
     - [ ] 🤖 Automated test — n/a (static copy) or a render smoke test.
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 200. **The GPU is not something to be assumed.** ✅ **Done** (2026-07-29).
     Ollama ≥0.32 **drops integrated GPUs by default** ("dropping integrated GPU;
@@ -194,6 +208,8 @@ unchanged; the new agents are additive.
     - [ ] 🖐️ Manual test — the notice itself has never rendered (the machine it
       was found on was fixed before the UI existed); the CPU/GPU buttons are
       verified at the protocol level only.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 201. **The runtime is not something to be assumed either.** Ollama is not a
     choice Eldrun made; it is a fact wired into 33 `#[tauri::command]`s across
@@ -291,12 +307,14 @@ unchanged; the new agents are additive.
       bare-`:port`/`11500` and `0.0.0.0`/IPv6 spellings, `https://` refused,
       remote refused without the opt-in and accepted with it, a header-injecting
       host refused, and `addr_is_loopback` for the ensure-running gate.
-    - [x] 🖐️ Manual test — verified live against a second `ollama serve` on
+    - [ ] 🖐️ Manual test — verified live against a second `ollama serve` on
       11500 via `ELDRUN_STATE_DIR` + `examples/ollama_probe.rs` (2026-07-29):
       the configured port returns that server's own model list (a different set
       from the systemd server's, which is the proof it did not fall back), a
       port with nothing listening reports `not_running` instead of quietly
       reaching 11434, and both refusals surface their sentence.
+      - [x] ✅ Works
+      - [ ] ❌ Doesn't work
 
     **201b — name the seam.** A `LocalRuntime` trait over the ~6 questions Eldrun
     actually asks: is it up, list models, model capabilities, load/unload,
@@ -314,6 +332,8 @@ unchanged; the new agents are additive.
       behaviour command-for-command; a driver reporting no `launch` support
       empties the local-agent group with a reason rather than silently.
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
     **201c — a second implementation, as the proof the seam is real.**
     **Lemonade first**, for two reasons that are not "it is newer": it answers
@@ -327,6 +347,8 @@ unchanged; the new agents are additive.
     - [ ] 🖐️ Manual test — a model loads onto the 890M **without** the
       `OLLAMA_IGPU_ENABLE` drop-in, and `ollama_gpu_status`'s equivalent reads
       it as on-GPU.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
     **201d — the picker, and what it must admit.** A runtime selector in the
     Ollama settings panel (which #78 is already opening up), plus the sentence
@@ -336,6 +358,8 @@ unchanged; the new agents are additive.
     `needs_tools_unsupported` already draws for a model that lacks `tools`.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
     **Priority: below #74/#76/#77/#78.** Those finish a feature that is
     currently invisible and carry a known `RESUMABLE_AGENTS` collision; this one
@@ -376,6 +400,8 @@ unchanged; the new agents are additive.
     - [ ] 🖐️ Manual test — the `⚠` renders and reads correctly in both menus and
       in all five languages; the tooltip is reachable (it is `title` + an
       `aria-label`, on a `<span>` inside a `<button>`).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
     - Left undone deliberately, both offered and declined: promoting vibe as the
       recommended local driver, and stripping the user's own MCP servers from a
       local Codex tab via `-c mcp_servers={}`. The second is a real lever — a

@@ -74,7 +74,8 @@ use sha2::{Digest, Sha256};
 
 use crate::schema::mail::{
     MailAttachmentMeta, MailDraft, MailFlag, MailFolder, MailFolderKind, MailHeader,
-    MailHeaderPage, MailPriority, MailPriorityCounts, MailSort, StagedAttachment,
+    MailHeaderPage, MailPriority, MailPriorityCounts, MailPrioritySource, MailSort,
+    StagedAttachment,
 };
 use crate::services::mail_crypt::{self, MailKeys};
 
@@ -360,6 +361,8 @@ impl MailStore {
                 rfc_message_id TEXT NOT NULL DEFAULT '',
                 authres_json  TEXT NOT NULL DEFAULT '',
                 priority      TEXT NOT NULL DEFAULT '',
+                priority_source TEXT NOT NULL DEFAULT '',
+                priority_reason TEXT NOT NULL DEFAULT '',
                 UNIQUE (folder_id, uid)
             );
             CREATE INDEX IF NOT EXISTS messages_by_folder ON messages (folder_id, date DESC);
@@ -418,6 +421,19 @@ impl MailStore {
         );
         let _ = conn.execute(
             "ALTER TABLE messages ADD COLUMN priority TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        // #205 provenance. Sealable (a model's reason quotes the message), so
+        // they are read through `open_text` like every other value column — but
+        // additive, for the reason the `priority` ALTER above documents: a dev
+        // database from before they existed keeps its old shape otherwise, and a
+        // duplicate-column error here just means they are already there.
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN priority_source TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN priority_reason TEXT NOT NULL DEFAULT ''",
             [],
         );
         // The Important/Urgent lists span every account and folder, so their only
@@ -819,7 +835,7 @@ impl MailStore {
     /// added to all of them and `row_to_header`'s indices cannot drift.
     const HEADER_COLUMNS: &'static str = "id, account_id, folder_id, uid, subject, from_json, \
          to_json, cc_json, date, seen, flagged, answered, has_attachments, size, preview, \
-         malformed, rfc_message_id, authres_json, priority";
+         malformed, rfc_message_id, authres_json, priority, priority_source, priority_reason";
 
     /// One page of a folder's headers in the requested order, optionally
     /// filtered.
@@ -1100,12 +1116,57 @@ impl MailStore {
         message_id: &str,
         priority: Option<MailPriority>,
     ) -> Result<bool, String> {
+        // A bare `set_priority` is the user's own hand — the right-click menu and
+        // `mail_priority_set`. The filter and the model call `set_priority_ex`
+        // with their own provenance, so the classifier can never masquerade as a
+        // hand-mark (or as a keyword rule).
+        self.set_priority_ex(message_id, priority, MailPrioritySource::User, "")
+    }
+
+    /// [`set_priority`], but recording **who** set the mark and **why** (#205).
+    ///
+    /// `source`/`reason` are sealed alongside every other value column when the
+    /// store has keys — a model's reason quotes the message, which says as much
+    /// as a subject line. Clearing the mark (`priority = None`) also clears the
+    /// provenance, so a message the user un-marks carries no stale "the model
+    /// said…" behind it.
+    ///
+    /// The AAD binds each sealed value to this message's `account_id`, which is
+    /// read from the row itself; a message not in the index changes nothing and
+    /// answers `false`, exactly as [`set_priority`] does.
+    pub fn set_priority_ex(
+        &self,
+        message_id: &str,
+        priority: Option<MailPriority>,
+        source: MailPrioritySource,
+        reason: &str,
+    ) -> Result<bool, String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let Some(account_id) = conn
+            .query_row(
+                "SELECT account_id FROM messages WHERE id = ?1",
+                params![message_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(false);
+        };
         let value = priority.map(|p| p.as_str()).unwrap_or("");
+        // Provenance is only meaningful while a mark is set; a cleared mark
+        // stores empty strings so nothing is left behind.
+        let (src, rsn) = match priority {
+            Some(_) => (source.as_str(), reason),
+            None => ("", ""),
+        };
+        let src_v = self.seal_text(&account_id, "messages", "priority_source", message_id, src);
+        let rsn_v = self.seal_text(&account_id, "messages", "priority_reason", message_id, rsn);
         let changed = conn
             .execute(
-                "UPDATE messages SET priority = ?1 WHERE id = ?2",
-                params![value, message_id],
+                "UPDATE messages SET priority = ?1, priority_source = ?2, priority_reason = ?3 \
+                 WHERE id = ?4",
+                params![value, src_v, rsn_v, message_id],
             )
             .map_err(|e| e.to_string())?;
         Ok(changed > 0)
@@ -2107,6 +2168,11 @@ impl MailStore {
         // gets no mark rather than a panic. Cleartext — it is what the two
         // priority lists filter on.
         let priority: String = r.get(18).unwrap_or_default();
+        // Provenance (#205). Sealed like the other value columns, so it goes
+        // through the same `sealed` closure that flags a damaged row. A SELECT
+        // predating the columns simply yields empty — no mark, no reason.
+        let priority_source = sealed(19, "priority_source").unwrap_or_default();
+        let priority_reason = sealed(20, "priority_reason").unwrap_or_default();
 
         let mut malformed_headers: Vec<String> = if malformed.is_empty() {
             Vec::new()
@@ -2146,6 +2212,10 @@ impl MailStore {
             },
             // An unrecognized value reads as unmarked; see `MailPriority::parse`.
             priority: MailPriority::parse(&priority),
+            // Provenance rides the mark: a cleared mark clears both, so these are
+            // only ever `Some` on a marked message.
+            priority_source: MailPrioritySource::parse(&priority_source),
+            priority_reason: (!priority_reason.is_empty()).then_some(priority_reason),
         })
     }
 }
@@ -2265,6 +2335,63 @@ mod tests {
             // half of its statement, so a fixture that set it would be lying
             // about what a sync can do.
             priority: None,
+            priority_source: None,
+            priority_reason: None,
+        }
+    }
+
+    /// #205 provenance round-trips: who set the mark and why, and clearing the
+    /// mark clears both — a sealed store and a plain one alike.
+    #[test]
+    fn priority_provenance_round_trips() {
+        use crate::services::mail_crypt::{Key, MailKeys};
+        let sealed_keys = Arc::new(MailKeys::derive(Key::from_bytes([9u8; 32])));
+        for keys in [None, Some(sealed_keys)] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = MailStore::open_with_keys(dir.path(), keys.clone()).unwrap();
+            let f = folder("acct", "INBOX");
+            store.upsert_folder(&f).unwrap();
+            let h = header(&f, 1, "Invoice due", "2026-07-30T00:00:00Z");
+            store.upsert_header(&h).unwrap();
+
+            // A model mark carries source + reason.
+            assert!(store
+                .set_priority_ex(
+                    &h.id,
+                    Some(MailPriority::Urgent),
+                    MailPrioritySource::Model,
+                    "invoice is overdue"
+                )
+                .unwrap());
+            let got = store.header(&h.id).unwrap().unwrap();
+            assert_eq!(got.priority, Some(MailPriority::Urgent));
+            assert_eq!(got.priority_source, Some(MailPrioritySource::Model));
+            assert_eq!(got.priority_reason.as_deref(), Some("invoice is overdue"));
+
+            // A bare user mark is labelled `user` and carries no reason.
+            assert!(store
+                .set_priority(&h.id, Some(MailPriority::Important))
+                .unwrap());
+            let got = store.header(&h.id).unwrap().unwrap();
+            assert_eq!(got.priority_source, Some(MailPrioritySource::User));
+            assert!(got.priority_reason.is_none());
+
+            // Clearing the mark clears the provenance with it.
+            assert!(store.set_priority(&h.id, None).unwrap());
+            let got = store.header(&h.id).unwrap().unwrap();
+            assert!(got.priority.is_none());
+            assert!(got.priority_source.is_none());
+            assert!(got.priority_reason.is_none());
+
+            // A message not in the index changes nothing.
+            assert!(!store
+                .set_priority_ex(
+                    "ghost",
+                    Some(MailPriority::Urgent),
+                    MailPrioritySource::Filter,
+                    "x"
+                )
+                .unwrap());
         }
     }
 

@@ -795,16 +795,43 @@ fn parse_synctex_edit(out: &str, base: &Path) -> Option<SyncSource> {
 /// Reverse search: which source line produced the point `(x, y)` (big points
 /// from the page top-left) on `page` of `pdf`. Returns `Ok(None)` when SyncTeX
 /// is unavailable or has no answer, so the UI can degrade silently.
+///
+/// The `.synctex(.gz)` beside the PDF is read directly
+/// (`commands::synctex::resolve`) rather than by shelling out, because the CLI
+/// answers a click that is not squarely on a glyph — the left margin, a
+/// paragraph indent, the slack after a short line — with the *enclosing box's*
+/// tag, and pdfTeX labels that box with wherever `\par` happened to fire. On a
+/// three-file document that is a different `.tex` file for every such click, so
+/// the jump lands in the wrong editor. See that module for the record dump.
+///
+/// `synctex edit` remains the fallback for a PDF with no map beside it (an
+/// out-of-tree build) or a map this parser could not make sense of; the CLI is
+/// also what supplies the column, which the map never records.
+///
+/// Async so the read + gunzip runs off the main thread: a sync `#[tauri::command]`
+/// is called on it, and a large document's map is megabytes.
 #[tauri::command]
-pub fn synctex_edit(pdf: String, page: u32, x: f64, y: f64) -> Result<Option<SyncSource>, String> {
-    let pdf_path = Path::new(&pdf);
-    let dir = pdf_path.parent().unwrap_or_else(|| Path::new("."));
-    if !on_path("synctex") {
-        return Ok(None);
-    }
-    let spec = format!("{page}:{x}:{y}:{pdf}");
-    let out = run_in(dir, "synctex", &["edit", "-o", &spec])?;
-    Ok(parse_synctex_edit(&out.text, dir))
+pub async fn synctex_edit(
+    pdf: String,
+    page: u32,
+    x: f64,
+    y: f64,
+) -> Result<Option<SyncSource>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let pdf_path = Path::new(&pdf);
+        let dir = pdf_path.parent().unwrap_or_else(|| Path::new("."));
+        if let Some((input, line)) = crate::commands::synctex::resolve(pdf_path, page, x, y) {
+            return Ok(Some(SyncSource { input, line, column: 0 }));
+        }
+        if !on_path("synctex") {
+            return Ok(None);
+        }
+        let spec = format!("{page}:{x}:{y}:{pdf}");
+        let out = run_in(dir, "synctex", &["edit", "-o", &spec])?;
+        Ok(parse_synctex_edit(&out.text, dir))
+    })
+    .await
+    .map_err(|e| format!("synctex task failed: {e}"))?
 }
 
 /// Parse the `synctex view` stdout into every record block it emitted, in order.
@@ -900,6 +927,17 @@ fn parse_synctex_view(out: &str) -> Vec<SyncRect> {
 /// SyncTeX record block (the line's constituent boxes / wrapped rows), in order;
 /// the frontend picks the one matching the clicked column. Empty when SyncTeX is
 /// unavailable or has no answer.
+///
+/// The `.synctex(.gz)` beside the PDF is read directly
+/// (`commands::synctex::view`) first, for the same reason reverse search is: the
+/// CLI's `synctex view -i` matches the input against the *exact* path string
+/// SyncTeX recorded, so an absolute vs. `./`-prefixed vs. symlinked spelling that
+/// doesn't match character-for-character silently returns nothing — "can't locate
+/// the cursor" even with the caret squarely on body text. The native reader
+/// matches the source file by canonicalised path, so spelling can't defeat it.
+///
+/// `synctex view` remains the fallback for a PDF whose map this parser could not
+/// make sense of, or one with no map beside it.
 #[tauri::command]
 pub fn synctex_view(
     pdf: String,
@@ -908,6 +946,13 @@ pub fn synctex_view(
     column: u32,
 ) -> Result<Vec<SyncRect>, String> {
     let pdf_path = Path::new(&pdf);
+    let native = crate::commands::synctex::view(pdf_path, &input, line);
+    if !native.is_empty() {
+        return Ok(native
+            .into_iter()
+            .map(|(page, x, y, w, h)| SyncRect { page, x, y, w, h })
+            .collect());
+    }
     let dir = pdf_path.parent().unwrap_or_else(|| Path::new("."));
     if !on_path("synctex") {
         return Ok(Vec::new());

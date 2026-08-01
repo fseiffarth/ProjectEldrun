@@ -414,10 +414,89 @@ function scanTag(tag: string): string {
   return out;
 }
 
+/** The offset of the `}` closing the group opened at `open`, or `-1` when the
+ *  source is unbalanced. Nesting counts; an escaped brace (`\{`, `\}`) is not a
+ *  brace at all, which the "skip the character after a backslash" step covers —
+ *  it also steps over `\\`, so a line break inside an argument is inert. */
+function texGroupEnd(code: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < code.length; i++) {
+    const c = code[i];
+    if (c === "\\") { i += 1; continue; }
+    if (c === "{") depth += 1;
+    else if (c === "}") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** Maximum brace nesting the argument scanner recurses through. A `.tex` file is
+ *  arbitrary text, and this recursion is one stack frame per level, so a
+ *  pathological (or corrupt) file must not be able to overflow it; past the
+ *  limit an argument's content is still emitted, just without its own inner
+ *  tokenizing. Real documents nest a handful of levels. */
+const TEX_ARG_MAX_DEPTH = 32;
+
+/**
+ * The brace arguments directly following a control word — `\emph{…}`,
+ * `\frac{a}{b}`, `\includegraphics[width=2cm]{fig}` — with each group's CONTENT
+ * rendered italic (`tok-arg`); the braces themselves stay plain, so the source
+ * still reads as source. The content is re-scanned recursively rather than
+ * escaped flat, so a command nested in an argument keeps its own colour and the
+ * span contributes only the slant (`font-style` inherits into the inner spans).
+ *
+ * Returns `null` when there is no group to take — no `{`, or an unbalanced one —
+ * leaving those characters to the caller's main loop. A `[…]` optional argument
+ * between the command and its braces is passed through plain and does not by
+ * itself count as having taken an argument.
+ */
+function texArgGroups(code: string, from: number, depth: number): { html: string; next: number } | null {
+  let i = from;
+  let html = "";
+  let took = false;
+  for (;;) {
+    // Only blanks may sit between a command and its argument: a newline there is
+    // far more often the end of the command's line than a wrapped argument.
+    let j = i;
+    while (j < code.length && (code[j] === " " || code[j] === "\t")) j += 1;
+    if (code[j] === "{") {
+      const close = texGroupEnd(code, j);
+      if (close === -1) break;
+      const inner = code.slice(j + 1, close);
+      // The wrapper is written out rather than built with `span`, which escapes
+      // its text — here the content is already-tokenized HTML.
+      html += escapeHtml(code.slice(i, j + 1));
+      html += `<span class="tok-arg">${
+        depth < TEX_ARG_MAX_DEPTH ? scanTex(inner, depth + 1) : escapeHtml(inner)
+      }</span>`;
+      html += escapeHtml("}");
+      i = close + 1;
+      took = true;
+      continue;
+    }
+    if (code[j] === "[") {
+      // `\includegraphics[width=2cm]{fig}`: step over the optional argument so the
+      // brace group after it is still recognised. Never across a line.
+      const close = code.indexOf("]", j + 1);
+      const nl = code.indexOf("\n", j + 1);
+      if (close === -1 || (nl !== -1 && nl < close)) break;
+      html += escapeHtml(code.slice(i, close + 1));
+      i = close + 1;
+      continue;
+    }
+    break;
+  }
+  return took ? { html, next: i } : null;
+}
+
 /** Tokenize LaTeX/TeX: `%` line comments, `\control` sequences, the environment
- *  name inside `\begin{…}`/`\end{…}`, and bare numbers. Math stays plain text so
- *  commands inside `$…$` (e.g. `\frac`) still colour as commands. */
-function scanTex(code: string): string {
+ *  name inside `\begin{…}`/`\end{…}`, a command's brace arguments (italic), and
+ *  bare numbers. Math stays plain text so commands inside `$…$` (e.g. `\frac`)
+ *  still colour as commands. `depth` is the brace-nesting level the argument
+ *  scanner recurses at — callers outside this file always start at 0. */
+function scanTex(code: string, depth = 0): string {
   let out = "";
   let i = 0;
   const n = code.length;
@@ -439,8 +518,10 @@ function scanTex(code: string): string {
     // non-letter (`\\`, `\%`, `\{`).
     if (c === "\\") {
       let j = i + 1;
+      let word = false;
       if (j < n && /[A-Za-z]/.test(code[j])) {
         while (j < n && /[A-Za-z]/.test(code[j])) j += 1;
+        word = true;
       } else {
         j = Math.min(j + 1, n);
       }
@@ -448,12 +529,26 @@ function scanTex(code: string): string {
       out += span("keyword", cmd);
       i = j;
 
-      // `\begin{env}` / `\end{env}` → colour the environment name as a type.
+      // `\begin{env}` / `\end{env}` → colour the environment name as a type. Not
+      // an argument: the name names a structure rather than reading as text, and
+      // it is the one brace group whose own colour would be lost to the slant.
       if ((cmd === "\\begin" || cmd === "\\end") && code[i] === "{") {
         const close = code.indexOf("}", i);
         if (close !== -1) {
           out += escapeHtml("{") + span("type", code.slice(i + 1, close)) + escapeHtml("}");
           i = close + 1;
+        }
+        continue;
+      }
+
+      // Any other control WORD carries its brace arguments in italic. A single
+      // non-letter sequence (`\%`, `\{`, `\\`) takes none — the `{` after one is
+      // ordinary text, not its argument.
+      if (word) {
+        const args = texArgGroups(code, i, depth);
+        if (args) {
+          out += args.html;
+          i = args.next;
         }
       }
       continue;

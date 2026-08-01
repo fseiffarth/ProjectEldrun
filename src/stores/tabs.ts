@@ -13,15 +13,19 @@ import { useRunHostPrefStore } from "./runHostPref";
 import { experimentalEnabled, withdrawnTabKinds } from "../lib/experimental";
 import { useSettingsStore } from "./settings";
 
-/** A shell tab gets a stable persisted tmux session name at creation (TODO #85),
- *  so a persistent remote run reattaches after a relaunch instead of forking a
- *  second session. Non-shell tabs, and shell tabs that already carry one (or an
- *  explicit attach), are left untouched. */
+/** A shell tab, or a remote agent tab (Claude/Codex/…), gets a stable persisted
+ *  tmux session name at creation (TODO #85), so a persistent remote run reattaches
+ *  after a relaunch instead of forking a second session. For an agent tab this
+ *  composes with `--resume`: `tmux new-session -A` reattaches the live agent when the
+ *  host session survives, else creates a fresh one that runs the resume. The name is
+ *  inert until `shouldPersistTab` decides to pass it, so minting it on a local agent
+ *  costs nothing. Tabs that already carry a name (or an explicit attach), and pane
+ *  kinds with no PTY, are left untouched. */
 function withTmuxSession(
   tab: Omit<TabEntry, "key">,
   scope: string,
 ): Omit<TabEntry, "key"> {
-  if (tab.kind === "shell" && !tab.tmuxSession && !tab.tmuxAttach) {
+  if ((tab.kind === "shell" || tab.kind === "agent") && !tab.tmuxSession && !tab.tmuxAttach) {
     return { ...tab, tmuxSession: newTmuxSessionName(scope) };
   }
   return tab;
@@ -319,6 +323,20 @@ export interface ViewerState {
   // row don't clobber each other. Ids are re-derived on every parse, so a stale one
   // is inert.
   gridCollapsed?: string[];
+  // Folded cards of the BibTeX card view, as record ids (`entry:<citation key>`).
+  // Kept apart from the YAML views' fold sets for their reason — one file is never
+  // both — and persisted because a working bibliography is thousands of entries
+  // long, so a fold that came back on the next open would be a control that does
+  // nothing. Ids are re-derived on every parse, so a stale one is inert.
+  bibCollapsed?: string[];
+  // The BibTeX card list's ORDER (file order / first author / year, and its
+  // direction). Persisted where the filter and the venue picker deliberately are
+  // not: an order hides nothing — every entry is still there, in a different
+  // place — so it has none of the "the file looks half empty and nothing says
+  // why" failure mode that keeps a filter session-local. It reorders only the
+  // view; the file's own order is never rewritten.
+  bibSort?: string;
+  bibSortDesc?: boolean;
   // The focused ("main") card of the YAML card grid (#yaml-grid), as its node id,
   // for the drill navigation: the grid shows that card's level (its siblings, it
   // highlighted) and its children below. Absent/unmatched = the top overview.
@@ -346,6 +364,30 @@ export interface ViewerState {
   // first time (or by an older build with no field) gets the current default
   // rather than a stale one baked into the file.
   deckRailWidth?: number;
+  // --- TeX workspace (`viewer:"texworkspace"`) --------------------------------
+  // These four ride the single workspace tab whose `embedPath` is the resolved
+  // build root, so its layout survives a reopen/restart like every other viewer's
+  // reader state. Each follows the "stale id is inert, re-derived from content"
+  // convention (yamlCollapsed/gridFocus): a value that no longer resolves against
+  // the freshly parsed structure falls back to the default rather than erroring.
+  //
+  // The absolute path of the file currently CENTERED in the workspace: a child
+  // `.tex` (shown in the TeX editor) or a graphic (shown in the image viewer).
+  // Absent — or equal to the root — means the main document is centered.
+  // Validated against the parsed structure on read; an unresolved path falls back
+  // to the root inertly.
+  texActivePath?: string;
+  // Whether the docked SyncTeX PDF pane is shown. Default-collapsed: absent/false
+  // keeps pdf.js unmounted until the first compile or an explicit toggle (also the
+  // no-engine and jsdom-test degrade path). On restore the pane is shown only when
+  // this was true AND a PDF exists on disk, and never auto-compiles.
+  texPdfOpen?: boolean;
+  // The docked PDF pane's split fraction (0–1) of the workspace width. Absent uses
+  // the computed default; only written on an explicit divider drag.
+  texPdfSplit?: number;
+  // The left structure sidebar's width in px. Absent uses the default; only
+  // written on an explicit resize.
+  texSidebarWidth?: number;
 }
 
 // Detached windows render their tabs from a Tauri-event SEED into local React
@@ -2186,6 +2228,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         cur.autocomplete === merged.autocomplete &&
         cur.autocompleteMode === merged.autocompleteMode &&
         cur.grammarCheck === merged.grammarCheck &&
+        // TeX workspace: switching the centered file, toggling/splitting the PDF
+        // pane and resizing the sidebar all patch these, so each must be compared
+        // or a change-only patch would be swallowed by the guard.
+        cur.texActivePath === merged.texActivePath &&
+        cur.texPdfOpen === merged.texPdfOpen &&
+        cur.texPdfSplit === merged.texPdfSplit &&
+        cur.texSidebarWidth === merged.texSidebarWidth &&
         // New array ref on every change, so this term is false exactly when a card
         // was folded/unfolded — which is what lets a collapse-only patch through the
         // guard (it touches none of the scalar fields above).
@@ -3685,11 +3734,12 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         url: t.url,
         // Persistent sessions (TODO #85): keep the stable session name so the
         // reattach targets the SAME host session after a relaunch. Mint one for a
-        // shell tab persisted before this feature existed (it then reattaches on
-        // every subsequent restart).
+        // shell tab — or a resumable agent tab (only restorable tabs reach here) —
+        // persisted before this feature existed (it then reattaches on every
+        // subsequent restart).
         tmuxSession:
           t.tmuxSession ??
-          (kind === "shell" && !t.tmuxAttach
+          ((kind === "shell" || kind === "agent") && !t.tmuxAttach
             ? newTmuxSessionName(targetScope ?? get().scope)
             : undefined),
         // A Sessions-view attach tab reattaches to its tmux session on restart.

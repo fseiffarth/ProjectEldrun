@@ -343,7 +343,10 @@ const LIST_ITEM_RE = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
 
 /** Build the HTML for a collected list region using an indentation stack so
  *  nested lists render as nested <ul>/<ol>. Each item may be a GitHub task item
- *  (`- [ ]` / `- [x]`), rendered with a disabled checkbox. */
+ *  (`- [ ]` / `- [x]`), rendered with a live checkbox: the preview toggles it and
+ *  writes the `[ ]`/`[x]` back into the source (see `toggleTaskCheckbox`). The
+ *  `data-md-task` attribute is the click handler's hook — checkboxes are emitted
+ *  in document order, so their DOM order is the toggler's index. */
 function renderList(items: ListItem[]): string {
   const parts: string[] = [];
   const stack: { type: "ul" | "ol"; indent: number }[] = [];
@@ -353,7 +356,7 @@ function renderList(items: ListItem[]): string {
     if (it.task === null) return `<li>${inner}`;
     const checked = it.task ? " checked" : "";
     return (
-      `<li class="task-item"><input type="checkbox" disabled${checked} />` +
+      `<li class="task-item"><input type="checkbox" data-md-task${checked} />` +
       `<span>${inner}</span>`
     );
   };
@@ -550,4 +553,43 @@ export function renderMarkdown(src: string): string {
 
   flushParagraph();
   return out.join("\n");
+}
+
+/** A GitHub task-list line: `- [ ] …` / `* [x] …` (unordered bullets only, to
+ *  match the renderer, which emits a checkbox only for those). The captured
+ *  groups bracket the state character so a toggle is a one-character splice that
+ *  leaves the rest of the line — indent, bullet, trailing text — byte-for-byte. */
+const TASK_LINE_RE = /^(\s*[-*+]\s+\[)([ xX])(\]\s+)/;
+
+/** Toggle the `index`-th task checkbox (`[ ]` ⇄ `[x]`) in Markdown `src`, where
+ *  `index` is the checkbox's position in document order — exactly the DOM order
+ *  `renderMarkdown` emits them in, so the preview can pass the clicked box's
+ *  ordinal straight through. Lines inside fenced code blocks are skipped with the
+ *  same fence bookkeeping the renderer uses, so a `- [ ]` shown as code text is
+ *  never miscounted. Returns the edited source, or `null` when `index` names no
+ *  task (out of range) — the caller then does nothing. */
+export function toggleTaskCheckbox(src: string, index: number): string | null {
+  const lines = src.split("\n");
+  let fence: string | null = null; // the opening fence's marker char while open
+  let seen = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fenceM = line.match(/^\s*(`{3,}|~{3,})/);
+    if (fenceM) {
+      const marker = fenceM[1][0];
+      if (fence == null) fence = marker;
+      else if (marker === fence && new RegExp(`^\\s*\\${marker}{3,}\\s*$`).test(line))
+        fence = null;
+      continue;
+    }
+    if (fence != null) continue;
+    const m = line.match(TASK_LINE_RE);
+    if (!m) continue;
+    seen++;
+    if (seen !== index) continue;
+    const next = m[2].toLowerCase() === "x" ? " " : "x";
+    lines[i] = line.replace(TASK_LINE_RE, `$1${next}$3`);
+    return lines.join("\n");
+  }
+  return null;
 }

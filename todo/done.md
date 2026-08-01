@@ -19,6 +19,8 @@ Code-complete groups, collected here per [CLAUDE.md](../CLAUDE.md)'s numbering c
      inside an empty folder to confirm creation there too.
    - [x] 🤖 Automated test — `FileTreeNav.test.tsx`
    - [ ] 🖐️ Manual test
+     - [ ] ✅ Works
+     - [ ] ❌ Doesn't work
 
 2. ✅ **Show long file/folder names in full.** Added a native `title={e.name}` to
    the `.file-name` span so the full name shows on hover (CSS ellipsis kept).
@@ -27,6 +29,8 @@ Code-complete groups, collected here per [CLAUDE.md](../CLAUDE.md)'s numbering c
      native tooltip.
    - [x] 🤖 Automated test — `FileTreeNav.test.tsx`
    - [ ] 🖐️ Manual test
+     - [ ] ✅ Works
+     - [ ] ❌ Doesn't work
 
 3. ✅ **Show parent folders when inside a subfolder.** Replaced the single
    "↑ .." button with a breadcrumb trail (up arrow, project-root `⌂` crumb, and
@@ -36,6 +40,8 @@ Code-complete groups, collected here per [CLAUDE.md](../CLAUDE.md)'s numbering c
      and the breadcrumb trims accordingly.
    - [x] 🤖 Automated test — `FileTreeNav.test.tsx`
    - [ ] 🖐️ Manual test
+     - [ ] ✅ Works
+     - [ ] ❌ Doesn't work
 
 ---
 
@@ -55,6 +61,8 @@ Code-complete groups, collected here per [CLAUDE.md](../CLAUDE.md)'s numbering c
      folder bubbles up to red.
    - [x] 🤖 Automated test — `GitStatusColors.test.tsx` (STATUS_COLOR mapping)
    - [ ] 🖐️ Manual test
+     - [ ] ✅ Works
+     - [ ] ❌ Doesn't work
 
 5. ✅ **Richer marker scheme.** `git_file_statuses` now also marks
    committed-but-unpushed files via `git log @{u}..`. Markers: gitignored → gray
@@ -67,6 +75,8 @@ Code-complete groups, collected here per [CLAUDE.md](../CLAUDE.md)'s numbering c
      gray ✕, red bar, orange bar, green ↑, no marker respectively.
    - [x] 🤖 Automated test — `GitStatusColors.test.tsx` (STATUS_COLOR mapping)
    - [ ] 🖐️ Manual test
+     - [ ] ✅ Works
+     - [ ] ❌ Doesn't work
 
 6. ✅ **Show `.gitignore` in the tree.** `visibleEntries` now keeps `.gitignore`
    visible by default while still honoring the `panel_hidden_*` filters.
@@ -75,6 +85,8 @@ Code-complete groups, collected here per [CLAUDE.md](../CLAUDE.md)'s numbering c
      `panel_hidden_*` matches remain hidden.
    - [x] 🤖 Automated test — `GitignoreVisible.test.ts`
    - [ ] 🖐️ Manual test
+     - [ ] ✅ Works
+     - [ ] ❌ Doesn't work
 
 ---
 
@@ -95,6 +107,8 @@ view), backend commands `git_log` / `git_branches` / `git_checkout` /
      checks it out (tree/branch label update).
    - [x] 🤖 Automated test — `GitHistory.test.tsx`
    - [ ] 🖐️ Manual test
+     - [ ] ✅ Works
+     - [ ] ❌ Doesn't work
 
 8. ✅ **Click a commit → commit-message window.** Clicking a commit opens a modal
    showing its full message. For HEAD it is editable with a "Generate (agent)"
@@ -106,6 +120,8 @@ view), backend commands `git_log` / `git_branches` / `git_checkout` /
      puts the repo in detached HEAD at that commit.
    - [x] 🤖 Automated test — `GitHistory.test.tsx`
    - [ ] 🖐️ Manual test
+     - [ ] ✅ Works
+     - [ ] ❌ Doesn't work
 
 ---
 
@@ -129,6 +145,8 @@ backend `commands/terminal.rs` (`project_cpu_percent`), `commands/projects.rs`
      output stops, the spinner clears shortly after.
    - [x] 🤖 Automated test — `PillRunningIndicator.test.ts`
    - [ ] 🖐️ Manual test
+     - [ ] ✅ Works
+     - [ ] ❌ Doesn't work
 
 10. ✅ **Right-click → change description.** Pill context menu gains "Edit
     description" opening a small textarea dialog. Saving calls the new
@@ -140,6 +158,8 @@ backend `commands/terminal.rs` (`project_cpu_percent`), `commands/projects.rs`
       on disk and the hover popup shows the new description.
     - [x] 🤖 Automated test — `projects_commands.rs::set_project_description_writes_both_projects_json_and_project_json`
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 11. ✅ **Hover → per-project CPU %.** Hover popup now shows live CPU%, polled
     every 1.5 s while open. New `project_cpu_percent` command (backed by the
@@ -152,6 +172,8 @@ backend `commands/terminal.rs` (`project_cpu_percent`), `commands/projects.rs`
       ~0%; on non-Linux it returns 0 without erroring.
     - [x] 🤖 Automated test — *partial:* `sysstat.rs` unit tests (clk_tck, descendant_pids self-inclusion/empty, sum_jiffies live+dead pid); live % readout is manual
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 12. ✅ **Suppress default webview reload/inspect on right-click.** The
     `.project-switcher` container now `preventDefault`s `contextmenu`, so a right-click
@@ -161,6 +183,8 @@ backend `commands/terminal.rs` (`project_cpu_percent`), `commands/projects.rs`
       context menu never shows.
     - [x] 🤖 Automated test — `ProjectSwitcherContextMenu.test.tsx`
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---
 
@@ -182,6 +206,8 @@ backend `commands/terminal.rs` (`project_cpu_percent`), `commands/projects.rs`
       stretched 650×650 blob).
     - [ ] 🤖 Automated test — *N/A: purely visual; manual only*
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---
 
@@ -203,6 +229,8 @@ backend `save_projects`.*
       feedback; reopen the app → the new tab order persisted (saveLayout fired).
     - [x] 🤖 Automated test — `TabReorder.test.ts`
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 27. ✅ **Drag-and-drop project ordering.** Pills in `ProjectPill.tsx` are now
     `draggable` (source id carried in `dataTransfer`); dropping on another pill
@@ -215,6 +243,8 @@ backend `save_projects`.*
       `save_projects`; restart → order survives.
     - [x] 🤖 Automated test — `ProjectReorder.test.ts`
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---
 
@@ -241,6 +271,8 @@ backend `save_projects`.*
       expands it; the existing show/hide toggle still works independently.
     - [x] 🤖 Automated test — `HiddenFilesSection.test.ts`
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---
 
@@ -267,6 +299,8 @@ Related to the run-detached backend `run_script_detached` in `commands/apps.rs`.
       shows the finished (non-spinning) state.
     - [x] 🤖 Automated test — `ScriptRunState.test.ts`
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---
 
@@ -287,6 +321,8 @@ was **removed** and replaced by the tiling split-subwindow model in Group D.11.
     store API no longer exists.
     - [x] 🤖 Automated test — `GridView.test.ts` (asserts removal)
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---
 
@@ -315,6 +351,8 @@ skip-scaffold checkbox), `ProjectPill.tsx` (Publish window + menu),
       `project.json` is written so it registers (cf. `import_project_skip_scaffold_…`).
     - [x] 🤖 Automated test — `projects_commands.rs::import_project_skip_scaffold_does_not_add_missing_scaffold_files`
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 21. ✅ **Rename public/private → local/remote (push-target axis).** `git_type`
     now models the git **push** target — distinct from the SSH **work**-remote —
@@ -328,6 +366,8 @@ skip-scaffold checkbox), `ProjectPill.tsx` (Publish window + menu),
       `local` (cf. the `normalize_git_type` unit test).
     - [x] 🤖 Automated test — `commands/projects.rs` normalize_git_type unit tests
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 22. ✅ **"Make repo public" publish flow.** New `github_publish(project_id,
     visibility)` command shells out to `gh repo create <name> --public|--private
@@ -344,6 +384,8 @@ skip-scaffold checkbox), `ProjectPill.tsx` (Publish window + menu),
       both json files; for an SSH project the command runs over `ssh` on the host.
     - [x] 🤖 Automated test — *partial:* `commands/github.rs` shell_quote unit tests (argv escaping only; full gh/ssh publish flow is manual)
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 23. ✅ **GitLab support alongside GitHub.** `commands/github.rs` renamed to
     `commands/git_publish.rs`; `github_publish` generalized to
@@ -362,6 +404,8 @@ skip-scaffold checkbox), `ProjectPill.tsx` (Publish window + menu),
       to `remote-private` with `git_provider: "gitlab"` in both json files.
     - [x] 🤖 Automated test — `commands/git_publish.rs` provider-parse + remote-script unit tests (argv only; full glab/ssh flow is manual)
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---
 
@@ -402,6 +446,8 @@ Tests: `src/__tests__/SplitLayout.test.ts`.*
       tree from `tab_groups`.
     - [x] 🤖 Automated test — `SplitLayout.test.ts` (splits/collapse/move/resize/load)
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---
 
@@ -422,6 +468,8 @@ Tests: `src/__tests__/SplitLayout.test.ts`.*
       right panel no longer collides with a bottom bar.
     - [x] 🤖 Automated test — `ProjectSwitcherContextMenu.test.tsx`
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---
 
@@ -444,6 +492,8 @@ Tests: `src/__tests__/SplitLayout.test.ts`.*
       pinned state restored.
     - [x] 🤖 Automated test — covered by the right-panel suite
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---
 
@@ -478,6 +528,8 @@ backend `commands/apps.rs` (`embed_capability`, default-app resolution),
       tab; on an unsupported OS/app a non-viewer file opens externally as before.
     - [x] 🤖 Automated test — `FileDrop*`/`InternalViewer`/`Markdown`/`EmbedCapabilityGate`
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 *This is an organizational plan. Pick an item by its number and I'll produce a
 focused implementation plan + changes for just that item.*
@@ -563,6 +615,8 @@ Design notes worth keeping in mind before extending it:
     - [x] 🤖 Automated test — `src/__tests__/PromptCount.test.ts` (arrow keys,
       Ctrl-C, bare Enter, paste-then-Enter, per-PTY independence).
     - [ ] 🖐️ Manual test — send N prompts to a Claude tab, confirm the recap says N.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 87. **File churn is local-filesystem only.** The recursive `notify` watcher
     (`services::usage_stats`) cannot see an SFTP tree, so a remote project is
@@ -573,17 +627,23 @@ Design notes worth keeping in mind before extending it:
       cover create/modify/delete, every ignore rule, and burst collapsing.
     - [ ] 🖐️ Manual test — create/edit/delete files, confirm the counts match; run
       a `cargo build` and confirm `target/` churn does NOT show up.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 88. **One watcher at a time.** Only the *active* project's tree is watched, so
     churn in a background project is not counted. Watching every open project
     would mean an inotify tree per project. Reconsider if per-project file stats
     while multitasking turn out to matter.
     - [ ] 🖐️ Manual test — switch projects, confirm the watcher follows.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 89. **Buckets are UTC.** Matching `time_summary.json` and `net_usage.json`, so all
     three line up. A late-night session lands in "tomorrow" for users well west of
     UTC. Fixing it means a timezone-aware bucket key across all three stores.
     - [ ] 🖐️ Manual test — confirm the recap's day matches the timer's day.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 90. **Only the recap reads the counters.** `usage_summary` already returns
     per-project buckets and the hour buckets are recorded but only used for the
@@ -628,6 +688,8 @@ W3. **Actions, and what they cost.** Make default (the *user's* default —
     with a generic failure.
     - [ ] 🖐️ Manual test — with a real printer: pause/resume, cancel a job
       mid-print, make a second printer default, send a test page.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 W4. **What it deliberately does not do.** No print-this-file command exists on
     the whole surface — printing a document you are looking at is the viewers'

@@ -34,6 +34,7 @@ function setupInvoke(
   // Override what `resolve_tex_root` returns (defaults to the file itself, i.e.
   // not a child). Lets a test exercise the subtex→parent redirect.
   resolveRoot?: (path: string) => string,
+  syncRects: Array<{ page: number; x: number; y: number; w: number; h: number }> = [],
 ) {
   mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
     if (cmd === "tex_capability") {
@@ -54,7 +55,7 @@ function setupInvoke(
         shell_escape: false,
       });
     }
-    if (cmd === "synctex_view") return Promise.resolve([]); // no records → forward-search miss
+    if (cmd === "synctex_view") return Promise.resolve(syncRects);
     if (cmd === "synctex_edit") return Promise.resolve(null);
     if (cmd === "file_mtime") return Promise.reject(new Error("no synctex"));
     if (cmd === "read_file_bytes") return Promise.resolve([37, 80, 68, 70]); // %PDF
@@ -157,7 +158,7 @@ describe("TexView", () => {
   });
 
   it("shows a forward-search miss notice when SyncTeX can't locate the cursor", async () => {
-    // setupInvoke's synctex_view resolves [] → forward search finds no spot.
+    // setupInvoke's synctex_view resolves [] → SyncTeX ran but matched nothing.
     setupInvoke(true, ["pdflatex"]);
     await renderTexView();
 
@@ -169,8 +170,43 @@ describe("TexView", () => {
       await userEvent.click(compileBtn);
     });
 
-    // A successful compile whose forward search returns null surfaces the notice.
+    // A successful compile whose forward search finds no box surfaces the miss
+    // notice — worded so it reads as a SyncTeX outcome, not a build failure.
     await screen.findByText(/couldn't locate the cursor/i);
+    // …and it must NOT claim SyncTeX was unavailable (that is the other cause).
+    expect(screen.queryByText(/didn't run/i)).toBeNull();
+  });
+
+  it("distinguishes 'SyncTeX unavailable' from a real miss when the command errors", async () => {
+    // The synctex_view command itself REJECTS (a backend not yet rebuilt for it,
+    // or the `synctex` tool absent) — this used to look identical to a miss.
+    setupInvoke(true, ["pdflatex"]);
+    mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "tex_capability")
+        return Promise.resolve({ available: true, engines: ["pdflatex"], bibtex: false, latexmk: false });
+      if (cmd === "read_file_text") return Promise.resolve(TEX_SOURCE);
+      if (cmd === "write_file_text") return Promise.resolve(null);
+      if (cmd === "resolve_tex_root") return Promise.resolve((args?.path as string) ?? "");
+      if (cmd === "compile_tex")
+        return Promise.resolve({ success: true, pdf_path: "/p/paper.pdf", engine: "pdflatex", log: "ok", shell_escape: false });
+      if (cmd === "synctex_view") return Promise.reject(new Error("no such command"));
+      if (cmd === "synctex_edit") return Promise.resolve(null);
+      if (cmd === "file_mtime") return Promise.reject(new Error("no synctex"));
+      if (cmd === "read_file_bytes") return Promise.resolve([37, 80, 68, 70]);
+      return Promise.resolve(null);
+    });
+    await renderTexView();
+
+    const compileBtn = await screen.findByRole("button", { name: /compile/i });
+    await act(async () => {
+      await userEvent.click(compileBtn);
+    });
+
+    // The notice names the real cause (SyncTeX didn't run) rather than a miss, and
+    // still confirms the PDF was updated (compile did NOT fail).
+    await screen.findByText(/didn't run/i);
+    await screen.findByText(/PDF updated/i);
+    expect(screen.queryByText(/couldn't locate the cursor/i)).toBeNull();
   });
 
   it("#56: a child file compiles its resolved parent and labels the button", async () => {
@@ -211,5 +247,39 @@ describe("TexView", () => {
         expect.objectContaining({ pdf: "/p/paper.pdf", input: "/p/paper.tex" }),
       ),
     );
+  });
+
+  it("Ctrl+S recompiles and reveals the live editor cursor after the fresh PDF loads", async () => {
+    setupInvoke(
+      true,
+      ["pdflatex"],
+      undefined,
+      [{ page: 2, x: 10, y: 20, w: 100, h: 12 }],
+    );
+    await renderTexView();
+
+    const textarea = (await screen.findByRole("textbox")) as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea.value).toBe(TEX_SOURCE));
+    const caret = TEX_SOURCE.indexOf("Hi") + 1;
+    textarea.focus();
+    textarea.setSelectionRange(caret, caret);
+
+    await act(async () => {
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "synctex_view",
+        expect.objectContaining({ line: 3, column: 2 }),
+      ),
+    );
+    const { usePdfSyncStore } = await import("../stores/pdfSync");
+    expect(usePdfSyncStore.getState().byPath["/p/paper.pdf"]).toMatchObject({
+      rect: { page: 2, x: 10, y: 20, w: 100, h: 12 },
+      afterReload: true,
+    });
   });
 });

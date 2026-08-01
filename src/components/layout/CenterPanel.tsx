@@ -1072,9 +1072,11 @@ export function CenterPanel() {
           // wrap a shell/script tab in a tmux session, so a long run survives — for a
           // REMOTE tab an SSH drop / relaunch (default ON per project, opt out via
           // the pill toggle), for a LOCAL tab an Eldrun crash (default ON on Unix via
-          // `persist_local_sessions`). Shell tabs only (Python runs open a shell tab),
-          // never agents; never the root scope. In TerminalView's spawn deps, so
-          // toggling respawns the tab. Undefined ⇒ no tmux wrap.
+          // `persist_local_sessions`). Remote shell/script AND remote agent tabs
+          // (`shouldPersistTab`; the agent's process reattaches, composing with its
+          // own `--resume`); local persistence stays shell-only
+          // (`shouldPersistLocalTab`); never the root scope. In TerminalView's spawn
+          // deps, so toggling respawns the tab. Undefined ⇒ no tmux wrap.
           const localRunning =
             !paneProject?.remote || effectiveTabLocation(tab) === "local";
           const tmuxSession =

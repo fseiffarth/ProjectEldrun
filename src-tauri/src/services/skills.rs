@@ -2,15 +2,28 @@
 //! versioning. A "source" is a git repo (Anthropic's own `anthropics/skills` by
 //! default, or any other collection the user points at); its clone is cached
 //! under `~/.local/share/eldrun/skills_cache/<id>/` and walked on demand for
-//! `**/SKILL.md` folders. Install is a plain recursive copy into a project's
-//! `.claude/skills/<name>/` — the project tree itself is the only record of
-//! what is installed, matching how `CLAUDE.md`/`AGENTS.md` scaffolding already
-//! works.
+//! `**/SKILL.md` folders. Install is a plain recursive copy into a target's
+//! `.claude/skills/<name>/` — the tree itself is the only record of what is
+//! installed, matching how `CLAUDE.md`/`AGENTS.md` scaffolding already works.
+//!
+//! **The catalog is machine state; only the install is scoped.** The source
+//! list and every cached clone live in `state_dir()`, shared by every project —
+//! which is why a skill can be installed into a project (`.claude/skills/`,
+//! travelling with the repo, reaching a container through the identical-path
+//! mount and a remote host through lockstep) or into the machine's personal
+//! `~/.claude/skills/`, which every project here sees and no other machine ever
+//! does. `SkillTarget` is that choice and nothing more: it is resolved by
+//! [`target_skills_dir`] and by no caller, so the personal target — the one
+//! with the widest blast radius — is the one whose path never crosses the IPC
+//! boundary.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::schema::skills::{InstalledSkill, SkillCatalogEntry, SkillDetail, SkillSource};
+use crate::paths;
+use crate::schema::skills::{
+    InstalledSkill, SkillCatalogEntry, SkillDetail, SkillSource, SkillTarget,
+};
 use crate::storage;
 
 fn sources_path() -> PathBuf {
@@ -272,6 +285,26 @@ fn project_skills_dir(project_dir: &str) -> PathBuf {
     Path::new(project_dir).join(".claude").join("skills")
 }
 
+/// The `.claude/skills/` directory a target names. `Personal` resolves against
+/// this process's own idea of home — the frontend never says where that is, so
+/// no caller can turn the personal scope into an arbitrary destination.
+///
+/// An empty project dir is refused rather than silently resolving to a relative
+/// `.claude/skills` under whatever the working directory happens to be: a
+/// project whose directory could not be resolved must fail, not install
+/// somewhere unrelated.
+fn target_skills_dir(target: &SkillTarget) -> Result<PathBuf, String> {
+    match target {
+        SkillTarget::Project { dir } => {
+            if dir.trim().is_empty() {
+                return Err("No project directory for this skills install".to_string());
+            }
+            Ok(project_skills_dir(dir))
+        }
+        SkillTarget::Personal => Ok(project_skills_dir(&paths::home_dir_string())),
+    }
+}
+
 /// Copy `src` into `dest` recursively. `dest`'s parent is created if needed;
 /// `dest` itself is expected to not exist yet — callers that mean to overwrite
 /// (a re-install) remove it first, so this never merges an old and a new
@@ -291,11 +324,15 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Copy a skill folder verbatim into `<project_dir>/.claude/skills/<name>/`.
+/// Copy a skill folder verbatim into the target's `.claude/skills/<name>/`.
 /// Overwrites an existing install of the same name (e.g. after a source
 /// refresh) — no commit-pin, no drift detection; the frontend confirms the
 /// overwrite before calling this.
-pub fn install_skill(project_dir: &str, source_id: &str, rel_path: &str) -> Result<(), String> {
+pub fn install_skill(
+    target: &SkillTarget,
+    source_id: &str,
+    rel_path: &str,
+) -> Result<(), String> {
     let src = cache_dir(source_id).join(rel_path);
     if !src.join("SKILL.md").is_file() {
         return Err(format!("'{rel_path}' is not a skill folder (no SKILL.md)"));
@@ -306,29 +343,35 @@ pub fn install_skill(project_dir: &str, source_id: &str, rel_path: &str) -> Resu
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     let (name, _, _) = parse_skill_md(&content, &folder_name);
-    let dest = project_skills_dir(project_dir).join(&name);
+    let dest = target_skills_dir(target)?.join(&name);
     if dest.exists() {
         fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
     }
     copy_dir_recursive(&src, &dest).map_err(|e| e.to_string())
 }
 
-/// Delete `<project_dir>/.claude/skills/<name>/`.
-pub fn uninstall_skill(project_dir: &str, name: &str) -> Result<(), String> {
-    let dir = project_skills_dir(project_dir).join(name);
+/// Delete `<target>/.claude/skills/<name>/`.
+pub fn uninstall_skill(target: &SkillTarget, name: &str) -> Result<(), String> {
+    let dir = target_skills_dir(target)?.join(name);
     if dir.exists() {
         fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
-/// Every skill folder actually on disk under the project's `.claude/skills/` —
+/// Every skill folder actually on disk under the target's `.claude/skills/` —
 /// so a hand-authored or agent-authored skill shows up too, not just ones
 /// installed through this UI. Deliberately the only source of truth for "is
 /// this skill here"; there is no separate tracked install state.
-pub fn list_installed(project_dir: &str) -> Vec<InstalledSkill> {
-    let dir = project_skills_dir(project_dir);
-    let Ok(entries) = fs::read_dir(&dir) else { return Vec::new() };
+pub fn list_installed(target: &SkillTarget) -> Vec<InstalledSkill> {
+    let Ok(dir) = target_skills_dir(target) else { return Vec::new() };
+    list_installed_at(&dir)
+}
+
+/// The read half of [`list_installed`], against an already-resolved directory —
+/// the seam a unit test can drive without a home directory to redirect.
+fn list_installed_at(dir: &Path) -> Vec<InstalledSkill> {
+    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
@@ -395,6 +438,7 @@ mod tests {
 
         let project = tempfile::tempdir().expect("tempdir");
         let project_dir = project.path().to_string_lossy().to_string();
+        let target = SkillTarget::Project { dir: project_dir.clone() };
 
         // install_skill/get_skill_detail resolve against the source's cache dir
         // (state_dir()/skills_cache/<id>), which a unit test can't redirect
@@ -405,14 +449,36 @@ mod tests {
         assert!(dest.join("SKILL.md").is_file());
         assert!(dest.join("scripts").join("run.py").is_file());
 
-        let installed = list_installed(&project_dir);
+        let installed = list_installed(&target);
         assert_eq!(installed.len(), 1);
         assert_eq!(installed[0].name, "pdf-fill");
         assert_eq!(installed[0].description, "Fill PDF forms");
 
-        uninstall_skill(&project_dir, "pdf-fill").unwrap();
+        uninstall_skill(&target, "pdf-fill").unwrap();
         assert!(!dest.exists());
-        assert!(list_installed(&project_dir).is_empty());
+        assert!(list_installed(&target).is_empty());
+    }
+
+    #[test]
+    fn target_skills_dir_resolves_both_scopes() {
+        let project = target_skills_dir(&SkillTarget::Project { dir: "/tmp/proj".into() }).unwrap();
+        assert_eq!(project, Path::new("/tmp/proj").join(".claude").join("skills"));
+
+        // Personal resolves against this process's own home — the point being
+        // that no argument reached it, so no caller can aim it elsewhere.
+        let personal = target_skills_dir(&SkillTarget::Personal).unwrap();
+        assert!(personal.ends_with(Path::new(".claude").join("skills")));
+        assert!(personal.starts_with(paths::home_dir_string()));
+    }
+
+    #[test]
+    fn target_skills_dir_refuses_an_empty_project_dir() {
+        // Would otherwise resolve to a relative `.claude/skills` under whatever
+        // the working directory happens to be — an install somewhere unrelated
+        // reported as a success.
+        assert!(target_skills_dir(&SkillTarget::Project { dir: String::new() }).is_err());
+        assert!(target_skills_dir(&SkillTarget::Project { dir: "  ".into() }).is_err());
+        assert!(list_installed(&SkillTarget::Project { dir: String::new() }).is_empty());
     }
 
     #[test]

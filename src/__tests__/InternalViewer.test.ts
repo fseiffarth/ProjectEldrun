@@ -4,6 +4,7 @@ import {
   disabledViewers,
   isDeferredOfficeFile,
   type FileEntry,
+  type InternalViewer,
 } from "../lib/viewers/fileUtils";
 
 function file(name: string, extension: string | null): FileEntry {
@@ -91,9 +92,33 @@ describe("internalViewerFor", () => {
     expect(internalViewerFor(file("book.xls", ".xls"))).toBe("table");
   });
 
-  it("maps .tex to the dedicated LaTeX viewer, but .bib stays text", () => {
+  it("maps .tex to the dedicated LaTeX viewer", () => {
     expect(internalViewerFor(file("paper.tex", ".tex"))).toBe("tex");
-    expect(internalViewerFor(file("refs.bib", ".bib"))).toBe("text");
+  });
+
+  it('never auto-selects "texworkspace" by extension (it is chosen at the open site)', () => {
+    // The workspace is a distinct InternalViewer value, but extension routing
+    // still resolves a `.tex` to the standalone "tex" viewer — the upgrade to a
+    // workspace happens in `openTexWorkspace`, never here. This keeps the
+    // standalone path (and its tests) byte-for-byte intact.
+    const v: InternalViewer = "texworkspace"; // compiles ⇒ it is a valid member
+    expect(v).toBe("texworkspace");
+    expect(internalViewerFor(file("paper.tex", ".tex"))).not.toBe("texworkspace");
+    // Opting `tex` out is unrelated to the workspace value and just falls through.
+    expect(internalViewerFor(file("paper.tex", ".tex"), new Set(["tex"] as const))).not.toBe(
+      "texworkspace",
+    );
+  });
+
+  it("maps .bib to the bibliography card view (wins over generic text)", () => {
+    expect(internalViewerFor(file("refs.bib", ".bib"))).toBe("bib");
+    expect(internalViewerFor(file("refs.bibtex", ".bibtex"))).toBe("bib");
+    // Opting the cards out lands on the plain code editor — where a `.bib` opened
+    // before the card view existed — not on the external app.
+    expect(internalViewerFor(file("refs.bib", ".bib"), new Set(["bib"] as const))).toBe("text");
+    expect(
+      internalViewerFor(file("refs.bib", ".bib"), new Set(["bib", "text"] as const)),
+    ).toBeNull();
   });
 
   it("maps .csv/.tsv to the table viewer (wins over generic text)", () => {

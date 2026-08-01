@@ -35,8 +35,10 @@ function facets(tags: ReturnType<typeof projectTypeTags>) {
 
 const GIT = { key: "git", label: "git", color: "#3fb950" };
 const NO_GIT = { key: "git", label: "no git", color: "#8b949e" };
-const GITHUB = { key: "provider", label: "GitHub", color: "#a371f7" };
-const GITLAB = { key: "provider", label: "GitLab", color: "#fc6d26" };
+const GITHUB_PUBLIC = { key: "provider", label: "GitHub · public", color: "#a371f7" };
+const GITHUB_PRIVATE = { key: "provider", label: "GitHub · private 🔒", color: "#a371f7" };
+const GITLAB_PUBLIC = { key: "provider", label: "GitLab · public", color: "#fc6d26" };
+const GITLAB_PRIVATE = { key: "provider", label: "GitLab · private 🔒", color: "#fc6d26" };
 const SSH_TAG = { key: "ssh", label: "SSH", color: "#58a6ff" };
 
 /** The 6 git-label states, each as (git_type, git_provider) → expected git-axis
@@ -44,10 +46,10 @@ const SSH_TAG = { key: "ssh", label: "SSH", color: "#58a6ff" };
 const GIT_STATES: Array<{ name: string; extra: Record<string, unknown>; tags: typeof GIT[] }> = [
   { name: "no git", extra: { git_type: "none" }, tags: [NO_GIT] },
   { name: "local", extra: { git_type: "local" }, tags: [GIT] },
-  { name: "remote-private · GitHub", extra: { git_type: "remote-private", git_provider: "github" }, tags: [GIT, GITHUB] },
-  { name: "remote-private · GitLab", extra: { git_type: "remote-private", git_provider: "gitlab" }, tags: [GIT, GITLAB] },
-  { name: "remote-public · GitHub", extra: { git_type: "remote-public", git_provider: "github" }, tags: [GIT, GITHUB] },
-  { name: "remote-public · GitLab", extra: { git_type: "remote-public", git_provider: "gitlab" }, tags: [GIT, GITLAB] },
+  { name: "remote-private · GitHub", extra: { git_type: "remote-private", git_provider: "github" }, tags: [GIT, GITHUB_PRIVATE] },
+  { name: "remote-private · GitLab", extra: { git_type: "remote-private", git_provider: "gitlab" }, tags: [GIT, GITLAB_PRIVATE] },
+  { name: "remote-public · GitHub", extra: { git_type: "remote-public", git_provider: "github" }, tags: [GIT, GITHUB_PUBLIC] },
+  { name: "remote-public · GitLab", extra: { git_type: "remote-public", git_provider: "gitlab" }, tags: [GIT, GITLAB_PUBLIC] },
 ];
 
 describe("projectTypeTags — the 12 project combinations", () => {
@@ -84,7 +86,7 @@ describe("projectTypeTags — stacked / edge axes", () => {
     );
     expect(facets(tags)).toEqual([
       GIT,
-      GITHUB,
+      GITHUB_PUBLIC,
       SSH_TAG,
       { key: "scaffold", label: "no scaffold", color: "#d29922" },
     ]);
@@ -101,7 +103,7 @@ describe("projectTypeTags — stacked / edge axes", () => {
 
   it("treats a published project with no recorded provider as GitHub", () => {
     const tags = projectTypeTags(entry({ git_type: "remote-public" }), false);
-    expect(facets(tags)).toEqual([GIT, GITHUB]);
+    expect(facets(tags)).toEqual([GIT, GITHUB_PUBLIC]);
   });
 });
 

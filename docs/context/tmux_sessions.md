@@ -19,10 +19,18 @@ Referenced from `CLAUDE.md`.
   genuinely local tab is wrapped.
 
 Scoped to **shell tabs** (Python runs open one; a command runs inside the
-session's login shell, which outlives it → the run reattaches, not re-runs) and
-never the root scope — **agent tabs are excluded** (they resume via their own
-session). The session name is a **`eldrun-<scope>--<uuid>` the frontend mints
-once per shell tab and persists** (`TabEntry.tmuxSession`, `lib/tmuxSession.ts`'s
+session's login shell, which outlives it → the run reattaches, not re-runs) and,
+**since the remote-agent extension**, to **remote agent tabs** (Claude, Codex,
+any SSH-hosted agent) — never the root scope, and never a **local** agent
+(`local_agent`, host-bound Ollama). An agent tab now carries a persisted tmux name
+**in addition to** its `--resume` restore, and the two **compose** through
+`new-session -A`: when the host session is still alive (the laptop-shutdown case)
+the wrap **reattaches** the still-running agent and the `--resume` target is ignored;
+when it is gone (host rebooted, session killed) `-A` creates a fresh session that runs
+`--resume`, so the conversation resumes exactly as it did before. The agent bootstrap
+prelude is nested inside the tmux target unchanged, the same way a shell tab's login
+shell is. The session name is a **`eldrun-<scope>--<uuid>` the frontend mints
+once per tab and persists** (`TabEntry.tmuxSession`, `lib/tmuxSession.ts`'s
 `newTmuxSessionName`) — *not* derived from the PTY id, which `loadFromLayout`
 regenerates on restore (a derived name would fork a second session on relaunch
 instead of reattaching); `tmux_attach` overrides it for a Sessions-view attach.

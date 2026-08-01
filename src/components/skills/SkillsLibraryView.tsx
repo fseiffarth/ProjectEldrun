@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useT } from "../../lib/i18n";
 import { renderMarkdown } from "../../lib/viewers/markdown";
 import {
+  PERSONAL_SKILLS,
   addSkillSource,
   getSkillDetail,
   installSkill,
   listInstalledSkills,
   listSkillCatalog,
   listSkillSources,
+  projectSkills,
   refreshSkillSource,
   removeSkillSource,
   uninstallSkill,
@@ -20,32 +22,69 @@ import type {
 } from "../../types/skills";
 
 export interface SkillsLibraryViewProps {
-  /** Absolute path to the project skills install into. */
-  projectDir: string;
+  /** Absolute path to the project skills may install into, or `null` where
+   *  there is no project to mean — the root scope, and the header's machine-
+   *  level surface. Personal is then the only scope, and the selector that
+   *  would offer a second one is not drawn. */
+  projectDir: string | null;
   visible?: boolean;
 }
 
 /**
- * The Skills Library's whole UI (`docs/skills_plan.md`): a sources bar, this
- * project's already-installed skills, a browsable/filterable catalog, and a
- * preview panel that is the ONLY place the install action lives — showing a
- * skill's content before it is copied into agent-trusted territory (the
- * project's `.claude/skills/`) is the one piece of the original security
- * posture worth keeping even at this scope, and it costs nothing extra to
- * build beyond putting the button here rather than on the list row.
+ * The Skills Library's whole UI (`docs/skills_plan.md`): a sources bar, the
+ * install scope's already-installed skills, a browsable/filterable catalog, and
+ * a preview panel that is the ONLY place the install action lives — showing a
+ * skill's content before it is copied into agent-trusted territory is the one
+ * piece of the original security posture worth keeping even at this scope, and
+ * it costs nothing extra to build beyond putting the button here rather than on
+ * the list row.
  *
- * There is deliberately no manifest on this side either: `installed` is a
- * plain read of `<projectDir>/.claude/skills/*`, so a hand-authored skill
- * shows up exactly like one this UI installed, and re-installing is a plain
- * overwrite the user confirms rather than a tracked version bump.
+ * **The catalog is machine state; only the install is scoped**, which is why
+ * this is one component with a scope switch rather than two views. The sources
+ * and their clones are shared by every project, so browsing needs no project at
+ * all — and the same panel therefore serves the project tab and the header's
+ * 🧠 menu, the "one component, two hosts" bargain `ProjectFilesView` strikes.
+ *
+ * The scope itself is this component's own state rather than a prop: a host
+ * knows whether a project exists, not which scope the user wants for the next
+ * install, and offering it *beside the install button* is what keeps the answer
+ * visible at the moment it matters. It defaults to the narrower scope that is
+ * available — the project when there is one — because a personal install is
+ * read by every project on the machine and should be asked for rather than
+ * fallen into.
+ *
+ * There is deliberately no manifest on this side either: `installed` is a plain
+ * read of the target's `.claude/skills/*`, so a hand-authored skill shows up
+ * exactly like one this UI installed, and re-installing is a plain overwrite
+ * the user confirms rather than a tracked version bump. `inherited` is the same
+ * read against the personal scope while a project scope is selected — without
+ * it the catalog's "Installed" badge would lie by omission, reporting a skill
+ * the project can already use as absent.
  */
 export function SkillsLibraryView({ projectDir, visible = true }: SkillsLibraryViewProps) {
   const t = useT();
+
+  const [scope, setScope] = useState<"project" | "personal">(
+    projectDir ? "project" : "personal",
+  );
+  // A host whose project resolves late (or goes away) must not leave the scope
+  // pointing at a project that isn't there — the target would carry an empty
+  // dir, which the backend refuses.
+  useEffect(() => {
+    if (!projectDir) setScope("personal");
+  }, [projectDir]);
+
+  const inProject = scope === "project" && !!projectDir;
+  const target = useMemo(
+    () => (inProject && projectDir ? projectSkills(projectDir) : PERSONAL_SKILLS),
+    [inProject, projectDir],
+  );
 
   const [sources, setSources] = useState<SkillSource[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState<string>("");
   const [catalog, setCatalog] = useState<SkillCatalogEntry[]>([]);
   const [installed, setInstalled] = useState<InstalledSkill[]>([]);
+  const [inherited, setInherited] = useState<InstalledSkill[]>([]);
   const [filter, setFilter] = useState("");
   const [selectedEntry, setSelectedEntry] = useState<SkillCatalogEntry | null>(null);
   const [detail, setDetail] = useState<SkillDetail | null>(null);
@@ -62,12 +101,24 @@ export function SkillsLibraryView({ projectDir, visible = true }: SkillsLibraryV
   const [addOpen, setAddOpen] = useState(false);
 
   const reloadInstalled = useCallback(() => {
-    listInstalledSkills(projectDir)
+    listInstalledSkills(target)
       .then(setInstalled)
       .catch((e) => setError(String(e)));
-  }, [projectDir]);
+    // The personal list is read as well while a project is the target, because
+    // a personally-installed skill IS available in this project — a catalog
+    // badge that ignored it would report an available skill as missing. In the
+    // personal scope it would be the same list twice, so it is not read.
+    if (inProject) {
+      listInstalledSkills(PERSONAL_SKILLS)
+        .then(setInherited)
+        .catch((e) => setError(String(e)));
+    } else {
+      setInherited([]);
+    }
+  }, [target, inProject]);
 
-  // Sources + this project's installed list load once the tab is first shown.
+  // Sources load once the tab is first shown; the installed lists re-read
+  // whenever the scope moves, since they are what the scope selects.
   useEffect(() => {
     if (!visible) return;
     listSkillSources()
@@ -76,11 +127,14 @@ export function SkillsLibraryView({ projectDir, visible = true }: SkillsLibraryV
         setSelectedSourceId((prev) => prev || list[0]?.id || "");
       })
       .catch((e) => setError(String(e)));
-    reloadInstalled();
     // Deliberately once per mount (not re-run on every `visible` flip): a
     // background tab keeps its already-loaded list, matching diskusage/files.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
+
+  useEffect(() => {
+    if (!visible) return;
+    reloadInstalled();
+  }, [visible, reloadInstalled]);
 
   // The catalog is re-derived from the source's cache on every selection —
   // nothing about it is persisted, and no clone/pull happens here (only an
@@ -111,7 +165,13 @@ export function SkillsLibraryView({ projectDir, visible = true }: SkillsLibraryV
       .finally(() => setLoadingDetail(false));
   }, [selectedEntry]);
 
+  /** In the scope the install button aims at — the only set "Reinstall" and the
+   *  overwrite confirm may read, since those are about *this* target's copy. */
   const installedNames = useMemo(() => new Set(installed.map((s) => s.name)), [installed]);
+  /** Present personally while a project is the target: usable here already, but
+   *  not this project's own copy, so it is badged differently and never turns
+   *  the install button into a "Reinstall" for a folder it would not touch. */
+  const inheritedNames = useMemo(() => new Set(inherited.map((s) => s.name)), [inherited]);
 
   const filteredCatalog = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -180,7 +240,7 @@ export function SkillsLibraryView({ projectDir, visible = true }: SkillsLibraryV
     setInstalling(true);
     setError("");
     try {
-      await installSkill(projectDir, selectedEntry.source_id, selectedEntry.rel_path);
+      await installSkill(target, selectedEntry.source_id, selectedEntry.rel_path);
       reloadInstalled();
     } catch (e) {
       setError(String(e));
@@ -189,10 +249,17 @@ export function SkillsLibraryView({ projectDir, visible = true }: SkillsLibraryV
     }
   }
 
-  async function handleUninstall(skill: InstalledSkill) {
-    if (!window.confirm(t("skillsLibrary.confirmUninstall", { name: skill.name }))) return;
+  /** Uninstall names the scope it removes from — the personal rows carry their
+   *  own button, and a row that says "this reaches every project" must not be
+   *  removable by a confirm that talks about this one. */
+  async function handleUninstall(skill: InstalledSkill, from: "target" | "personal") {
+    const personal = from === "personal" || !inProject;
+    const question = personal
+      ? t("skillsLibrary.confirmUninstallPersonal", { name: skill.name })
+      : t("skillsLibrary.confirmUninstall", { name: skill.name });
+    if (!window.confirm(question)) return;
     try {
-      await uninstallSkill(projectDir, skill.name);
+      await uninstallSkill(personal ? PERSONAL_SKILLS : target, skill.name);
       reloadInstalled();
     } catch (e) {
       setError(String(e));
@@ -268,12 +335,56 @@ export function SkillsLibraryView({ projectDir, visible = true }: SkillsLibraryV
         </div>
       )}
 
+      {/* The scope, in its own row rather than folded into the toolbar: it is
+          not another source control, it is what the install button means. Drawn
+          only where there is a second scope to choose — a host with no project
+          gets the sentence instead, since a one-option selector is chrome that
+          asks a question with one answer. */}
+      <div className="skills-scope-row">
+        {projectDir ? (
+          <>
+            <span className="skills-scope-label">{t("skillsLibrary.installTo")}</span>
+            <div className="skills-scope-choices" role="radiogroup" aria-label={t("skillsLibrary.installTo")}>
+              <button
+                type="button"
+                className={`skills-scope-btn${scope === "project" ? " on" : ""}`}
+                role="radio"
+                aria-checked={scope === "project"}
+                onClick={() => setScope("project")}
+              >
+                {t("skillsLibrary.scopeProject")}
+              </button>
+              <button
+                type="button"
+                className={`skills-scope-btn${scope === "personal" ? " on" : ""}`}
+                role="radio"
+                aria-checked={scope === "personal"}
+                onClick={() => setScope("personal")}
+              >
+                {t("skillsLibrary.scopePersonal")}
+              </button>
+            </div>
+          </>
+        ) : (
+          <span className="skills-scope-label">{t("skillsLibrary.scopePersonalOnly")}</span>
+        )}
+        {/* Stated on every personal install, because it is the one thing the
+            scope's own name does not say: personal means every project on THIS
+            machine, and no other machine — a remote project's agents run on the
+            host, where this folder does not exist. */}
+        <span className="skills-scope-note">
+          {inProject ? t("skillsLibrary.scopeProjectNote") : t("skillsLibrary.scopePersonalNote")}
+        </span>
+      </div>
+
       {error && <div className="skills-strip error">{error}</div>}
 
       <div className="skills-body">
         <div className="skills-list-col">
           <section className="skills-installed">
-            <div className="skills-section-title">{t("skillsLibrary.installed")}</div>
+            <div className="skills-section-title">
+              {inProject ? t("skillsLibrary.installed") : t("skillsLibrary.installedPersonal")}
+            </div>
             {installed.length === 0 ? (
               <div className="skills-empty">{t("skillsLibrary.noInstalled")}</div>
             ) : (
@@ -283,13 +394,40 @@ export function SkillsLibraryView({ projectDir, visible = true }: SkillsLibraryV
                     <span className="skills-installed-name">{skill.name}</span>
                     <span className="skills-installed-desc">{skill.description}</span>
                   </div>
-                  <button className="skills-btn small danger" onClick={() => handleUninstall(skill)}>
+                  <button
+                    className="skills-btn small danger"
+                    onClick={() => handleUninstall(skill, "target")}
+                  >
                     {t("skillsLibrary.uninstall")}
                   </button>
                 </div>
               ))
             )}
           </section>
+
+          {/* Personal skills this project already gets for free. A separate
+              section rather than merged rows: they are usable here but are not
+              this project's, they do not travel with its repo, and removing one
+              removes it from every other project too. */}
+          {inProject && inherited.length > 0 && (
+            <section className="skills-installed">
+              <div className="skills-section-title">{t("skillsLibrary.inherited")}</div>
+              {inherited.map((skill) => (
+                <div className="skills-installed-row" key={skill.name}>
+                  <div className="skills-installed-info">
+                    <span className="skills-installed-name">{skill.name}</span>
+                    <span className="skills-installed-desc">{skill.description}</span>
+                  </div>
+                  <button
+                    className="skills-btn small danger"
+                    onClick={() => handleUninstall(skill, "personal")}
+                  >
+                    {t("skillsLibrary.uninstall")}
+                  </button>
+                </div>
+              ))}
+            </section>
+          )}
 
           <input
             className="skills-input skills-filter"
@@ -314,9 +452,13 @@ export function SkillsLibraryView({ projectDir, visible = true }: SkillsLibraryV
                 >
                   <div className="skills-catalog-row-head">
                     <span className="skills-catalog-name">{entry.name}</span>
-                    {installedNames.has(entry.name) && (
+                    {installedNames.has(entry.name) ? (
                       <span className="skills-badge">{t("skillsLibrary.installedBadge")}</span>
-                    )}
+                    ) : inheritedNames.has(entry.name) ? (
+                      <span className="skills-badge personal" title={t("skillsLibrary.personalBadgeTitle")}>
+                        {t("skillsLibrary.personalBadge")}
+                      </span>
+                    ) : null}
                     {entry.has_scripts && <span className="skills-scripts-dot" title={t("skillsLibrary.hasScripts")} />}
                   </div>
                   <div className="skills-catalog-desc">{entry.description}</div>
@@ -335,13 +477,28 @@ export function SkillsLibraryView({ projectDir, visible = true }: SkillsLibraryV
             <>
               <div className="skills-preview-head">
                 <span className="skills-preview-name">{detail.name}</span>
+                {/* The button names its destination. It is the only install
+                    control in the feature and the scope can be changed two rows
+                    above it, so a bare "Install" would be the one word that
+                    cannot say where the copy lands. */}
                 <button className="skills-btn primary" disabled={installing} onClick={handleInstall}>
                   {installedNames.has(detail.name)
-                    ? t("skillsLibrary.reinstall")
-                    : t("skillsLibrary.install")}
+                    ? inProject
+                      ? t("skillsLibrary.reinstallProject")
+                      : t("skillsLibrary.reinstallPersonal")
+                    : inProject
+                      ? t("skillsLibrary.installProject")
+                      : t("skillsLibrary.installPersonal")}
                 </button>
               </div>
               <div className="skills-preview-desc">{detail.description}</div>
+              {/* Already usable here through the personal scope — installing a
+                  project copy is a real choice (it travels with the repo, and to
+                  a remote host), not a no-op, but it must not look like the only
+                  way to get the skill. */}
+              {inProject && !installedNames.has(detail.name) && inheritedNames.has(detail.name) && (
+                <div className="skills-strip notice">{t("skillsLibrary.alreadyPersonal")}</div>
+              )}
               {detail.has_scripts && (
                 <div className="skills-strip notice">{t("skillsLibrary.hasScriptsWarning")}</div>
               )}

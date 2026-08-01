@@ -9,6 +9,8 @@
     in that mode.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 64. **[Bug] Right-panel Apps list must drop closed app windows.** A project-opened
     external app appears in the right-panel "Apps" list but doesn't disappear when
@@ -17,6 +19,8 @@
     entry's window id, monitor id, and z-order.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 65. **Nested-repo git view: remote support.** The right panel's git section now
     auto-detects a nested git repo under the browsed folder (`git_repo_root`) and
@@ -29,6 +33,8 @@
     project-scoped, not re-rooted per nested repo.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 66. **Share the remaining per-surface probes across file-viewer instances.** The
     same `ProjectFilesView` is mounted many times over at once (right panel, each
@@ -46,6 +52,8 @@
     repo detection), so those probes are genuinely per-surface.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 67. **Alerts group in the file viewer.** A collapsible "Alerts" group
     below the file tree in `ProjectFilesView` (so it lands in the right panel and
@@ -65,3 +73,5 @@
     Implemented 2026-07-29, **never live-tested**.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

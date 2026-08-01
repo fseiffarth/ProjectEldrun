@@ -45,8 +45,12 @@ describe("SaveButton icon (#47)", () => {
   it("is an aria-labelled Save control, disabled while the buffer is clean", async () => {
     await renderTextView();
     const save = await screen.findByRole("button", { name: "Save" });
+    const print = screen.getByRole("button", { name: "Print" });
     // No textual Save/Saved label — it's icon-only.
     expect(save.textContent).not.toMatch(/saved/i);
+    expect(save.querySelector("svg")).not.toBeNull();
+    // File actions have one stable reading order in every editable viewer.
+    expect(save.compareDocumentPosition(print) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     await waitFor(() =>
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(SOURCE),
     );

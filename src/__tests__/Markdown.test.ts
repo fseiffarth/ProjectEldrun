@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderMarkdown } from "../lib/viewers/markdown";
+import { renderMarkdown, toggleTaskCheckbox } from "../lib/viewers/markdown";
 
 describe("renderMarkdown", () => {
   it("renders ATX headings", () => {
@@ -66,8 +66,10 @@ describe("renderMarkdown", () => {
   it("renders task list checkboxes with checked state", () => {
     const html = renderMarkdown("- [ ] todo\n- [x] done");
     expect(html).toContain('class="task-item"');
-    expect(html).toContain('<input type="checkbox" disabled />');
-    expect(html).toContain('<input type="checkbox" disabled checked />');
+    // Live (not disabled) checkboxes, tagged for the preview's click handler.
+    expect(html).toContain('<input type="checkbox" data-md-task />');
+    expect(html).toContain('<input type="checkbox" data-md-task checked />');
+    expect(html).not.toContain("disabled");
     expect(html).toContain("<span>todo</span>");
     expect(html).toContain("<span>done</span>");
   });
@@ -132,6 +134,50 @@ describe("renderMarkdown", () => {
   it("rejects images with an unsafe scheme", () => {
     const html = renderMarkdown("![x](javascript:alert(1))");
     expect(html).not.toContain("<img");
+  });
+});
+
+describe("toggleTaskCheckbox", () => {
+  it("checks an unchecked task and unchecks a checked one", () => {
+    const src = "- [ ] a\n- [x] b";
+    expect(toggleTaskCheckbox(src, 0)).toBe("- [x] a\n- [x] b");
+    expect(toggleTaskCheckbox(src, 1)).toBe("- [ ] a\n- [ ] b");
+  });
+
+  it("preserves indentation, bullet char, and trailing text byte-for-byte", () => {
+    const src = "  * [ ]   nested item  ";
+    expect(toggleTaskCheckbox(src, 0)).toBe("  * [x]   nested item  ");
+  });
+
+  it("normalizes an uppercase X only when it flips it off", () => {
+    // `[X]` reads as checked, so toggling it produces `[ ]`; the letter case only
+    // ever appears on the checked side, which the toggle removes.
+    expect(toggleTaskCheckbox("- [X] done", 0)).toBe("- [ ] done");
+  });
+
+  it("counts tasks in document order across non-task lines", () => {
+    const src = "- [ ] one\nsome text\n- [ ] two\n- [ ] three";
+    expect(toggleTaskCheckbox(src, 2)).toBe(
+      "- [ ] one\nsome text\n- [ ] two\n- [x] three",
+    );
+  });
+
+  it("skips `- [ ]` lines inside fenced code blocks", () => {
+    // The fenced line renders as code, not a checkbox, so it must not be counted:
+    // index 0 is the real task after the fence closes.
+    const src = "```\n- [ ] not a task\n```\n- [ ] real";
+    expect(toggleTaskCheckbox(src, 0)).toBe("```\n- [ ] not a task\n```\n- [x] real");
+  });
+
+  it("does not count ordered-list items (no checkbox is rendered for them)", () => {
+    // `1. [ ]` is not a GFM task item; only the bullet line is.
+    const src = "1. [ ] ordered\n- [ ] bullet";
+    expect(toggleTaskCheckbox(src, 0)).toBe("1. [ ] ordered\n- [x] bullet");
+  });
+
+  it("returns null when the index names no task", () => {
+    expect(toggleTaskCheckbox("- [ ] only", 1)).toBeNull();
+    expect(toggleTaskCheckbox("no tasks here", 0)).toBeNull();
   });
 });
 // Link labels (images/code/math inside `[…](…)`) and the placeholder scheme they

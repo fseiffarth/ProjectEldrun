@@ -291,11 +291,30 @@ export interface Settings {
    *  machine — the opposite of what the local-model feature is for. Judged on
    *  the literal that was typed, never on what it resolves to. */
   ollama_allow_remote_host?: boolean;
+  /** Where Ollama saves the models it downloads — its `OLLAMA_MODELS`
+   *  directory. Unset/empty means Ollama's own default (`~/.ollama/models`, or a
+   *  system-service dir when one holds models). It reaches only a server Eldrun
+   *  starts itself; a systemd-managed one is pointed at the same folder by the
+   *  Settings panel's one-click drop-in (`ollama_models_dir_plan`). */
+  ollama_models_path?: string | null;
   /** Per-task local-model assignments (🧠 menu role chips). Maps a task key —
-   *  `"autocomplete"`, `"grammar"`, or `"tabs"` — to the model name that should
-   *  serve it, so several loaded models can run different jobs in parallel. A
-   *  task absent here falls back to `ollama_model`, then to any loaded model. */
+   *  `"autocomplete"`, `"grammar"`, `"tabs"` or `"mail"` — to the model name that
+   *  should serve it, so several loaded models can run different jobs in parallel.
+   *  A task absent here falls back to `ollama_model`, then to any loaded model.
+   *  `"mail"` is written by the chip and **read by nothing yet**: the mail task it
+   *  names (importance scoring, summaries) is not built. It is offered ahead of
+   *  its consumer because the choice is the user's — which model may see their
+   *  mail — and is the kind of thing to have answered before the feature runs,
+   *  not after; the chip's tooltip says nothing reads it so far. */
   ollama_roles?: Record<string, string>;
+  /** The **Mail AI (local)** global master switch (Group Q, #203–#208) —
+   *  "Allow Mail AI features", **default off**. The per-feature toggles now live
+   *  **per account** (`MailAiPrefs` in `types/mail`); this one global flag gates
+   *  them all. The AI path is loopback-only and stricter than
+   *  {@link ollama_allow_remote_host}: nothing about a message ever leaves this
+   *  machine. Read in the backend sync (it gates per-account autoclassify) and in
+   *  the UI via `lib/mail`'s `mailAiResolvable`. */
+  mail_ai_allow?: boolean;
   /** Local models to load into memory when Eldrun starts (🧠 menu "on start"
    *  chip / Ollama settings). Loading is what makes a model *usable* without a
    *  manual step, so a feature that wants one waiting — mail-importance scoring,
@@ -597,10 +616,12 @@ export interface RemoteSpec {
    *  *project* name — this labels the machine, not the project. */
   label?: string;
   /** Persistent remote sessions (TODO #85): run this project's remote shell/script
-   *  tabs inside a **tmux** session on the host, so a long run survives an SSH drop,
-   *  a laptop sleep, or Eldrun quitting. **Default ON** — `undefined`/`true` mean
-   *  enabled; only an explicit `false` (the pill's toggle) opts out. Agent tabs are
-   *  excluded regardless. See `persistSessionsEnabled`. */
+   *  AND remote agent tabs inside a **tmux** session on the host, so a long run (or a
+   *  live agent) survives an SSH drop, a laptop sleep, or Eldrun quitting. **Default
+   *  ON** — `undefined`/`true` mean enabled; only an explicit `false` (the pill's
+   *  toggle) opts out. An agent tab's tmux persistence composes with its `--resume`
+   *  restore (`tmux new-session -A` reattaches the live process, else runs `--resume`).
+   *  See `persistSessionsEnabled`. */
   persist_sessions?: boolean;
 }
 
@@ -1011,6 +1032,10 @@ export interface TaskColumn {
   /** **The** completion column: dropping a card here completes it. At most one
    *  column carries it; zero is legal and turns the coupling off. */
   done: boolean;
+  /** An **archive**: a resting place that outranks the completion coupling, so a
+   *  finished card filed here stays instead of snapping back to Done. Nothing
+   *  auto-moves a card here, and an unplaced card is never filed here. */
+  archived?: boolean;
   color?: string;
   /** Advisory WIP cap; `0` = none. Nothing ever refuses a move because of it. */
   limit?: number;

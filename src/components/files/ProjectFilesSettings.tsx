@@ -237,6 +237,7 @@ export function ProjectFilesSettingsDialog({
       availableEndings.some((e) => PYTHON_ENDINGS.has(e.toLowerCase())));
 
   return createPortal(
+    <>
     <div className="modal-backdrop how-to-start-backdrop" onMouseDown={onClose}>
       <div className="settings-dialog project-settings-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
@@ -244,6 +245,14 @@ export function ProjectFilesSettingsDialog({
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
 
+        {/* `.settings-dialog` is a split-scroll FRAME: it clips (overflow:hidden,
+            padding 0, gap 0) and the `.dialog-scroll` child does the scrolling.
+            Without this wrapper the body renders flush to the dialog's edges
+            with no spacing between sections, and everything past the frame's
+            max-height is cut off with no way to reach it — which for this
+            dialog is the Alerts group, "Unmute all" and the debug row. Same
+            structure as EventDialog/CustomAgentDialog. */}
+        <div className="dialog-scroll">
         <div className="settings-section-title">{t("projectSettings.fileHiding")}</div>
         <p className="settings-help">{t("projectSettings.fileHidingHelp")}</p>
         {availableEndings.length === 0 ? (
@@ -482,12 +491,19 @@ export function ProjectFilesSettingsDialog({
             </button>
           </>
         )}
+        </div>
       </div>
+    </div>
 
-      {showPython && project && (
-        <PythonInterpreterWindow project={project} onClose={() => setShowPython(false)} />
-      )}
-    </div>,
+    {/* A sibling of the backdrop, not a child of it: this window portals to
+        <body>, but React events bubble along the React tree — inside the
+        backdrop, a mousedown on the interpreter picker's own backdrop reached
+        this dialog's `onMouseDown={onClose}` and closed Project Settings too,
+        so dismissing the picker threw away the dialog it was opened from. */}
+    {showPython && project && (
+      <PythonInterpreterWindow project={project} onClose={() => setShowPython(false)} />
+    )}
+    </>,
     document.body,
   );
 }

@@ -513,4 +513,13 @@ describe("pdfSync store", () => {
     usePdfSyncStore.getState().requestReveal("/p/b.pdf", rect, phrase);
     expect(usePdfSyncStore.getState().byPath["/p/b.pdf"]).toMatchObject({ rect, phrase });
   });
+
+  it("marks compile reveals so the PDF reloads before scrolling", () => {
+    const rect = { page: 3, x: 1, y: 2, w: 3, h: 4 };
+    usePdfSyncStore.getState().requestReveal("/p/fresh.pdf", rect, undefined, true);
+    expect(usePdfSyncStore.getState().byPath["/p/fresh.pdf"]).toMatchObject({
+      rect,
+      afterReload: true,
+    });
+  });
 });

@@ -1,10 +1,12 @@
 # Agent Skills — MVP Plan
 
-Status: **implemented** (2026-07-28), on `develop`, untested live. Backend:
+Status: **implemented** (2026-07-28; personal scope added 2026-07-30), on
+`develop`, untested live. Backend:
 `schema::skills`/`services::skills`/`commands::skills`. Frontend: `lib/skills.ts`,
-`components/skills/{SkillsLibraryTab,SkillsLibraryView}.tsx`, wired as the
-`skillslibrary` tab kind (`SKILLSLIBRARY_TAB_CMD`, project-scoped, singleton per
-scope via `ensureTab`, hidden at the root scope). Scaled down from a broader four-part
+`components/skills/{SkillsLibraryTab,SkillsLibraryView,SkillsOverlay}.tsx`,
+`stores/skills.ts`, wired as the `skillslibrary` tab kind
+(`SKILLSLIBRARY_TAB_CMD`, singleton per scope via `ensureTab`) **and** as an
+overlay off the header's 🧠 menu. Scaled down from a broader four-part
 investigation (discovery/library UX, integration mechanics, backend storage,
 cross-agent generalization) after weighing effort vs. value: the underlying
 action — getting a skill folder into `.claude/skills/` — is already nearly
@@ -71,22 +73,68 @@ New `SkillsLibraryTab.tsx` / `SkillsLibraryView.tsx`, following
   before copying it into agent-trusted territory costs nothing extra to
   build (it's just where the button lives).
 
+### 2b. Two install scopes (added 2026-07-30)
+
+The catalog was machine state from the first commit — one `skills_sources.json`,
+one clone cache, shared by every project — and only the *install* was ever
+scoped. Two things followed from having built only the scoped half:
+
+- **The library was unreachable without a project.** Adding a source is a
+  machine-wide act, and the only surface that could do it was a project tab
+  (hidden at the root scope, since there was nowhere to install).
+- **A skill wanted everywhere meant N verbatim copies**, with no versioning to
+  reconcile them afterwards — deliberately, see the deferred list, which makes
+  the copies worse rather than better.
+
+So the install target is now the choice Claude Code itself makes: a project's
+`.claude/skills/`, or the machine's personal `~/.claude/skills/`.
+`schema::skills::SkillTarget` is that choice and the **only** thing scoped about
+the feature. Its two variants are asymmetric on purpose — `Project` names a
+directory because only the caller knows which project is meant, `Personal`
+carries nothing and is resolved against `paths::home_dir_string()` inside
+`services::skills`. The widest-reaching destination in the feature is therefore
+the one no caller can aim, which is what keeps this a scope choice rather than an
+install-anywhere primitive.
+
+Neither scope replaces the other, and the note beside the selector says which is
+which: a project install travels with the repo (into a container through the
+identical-path mount, onto a remote host through lockstep), a personal one
+reaches every project on **this machine** and no other — a remote project's
+agents run on the host, where that folder does not exist.
+
+The two hosts follow from the split. The project **tab** offers both scopes and
+is the one surface that knows which project is meant; the 🧠 menu's **overlay**
+renders the same `SkillsLibraryView` with no project, beside "Manage agents…",
+because a skill is installed per machine exactly like an agent CLI. Unlike
+mail's, the tab is *not* retired by the overlay — the scope here is real.
+
+One security consequence had to be paid before this shipped, and it was latent
+already: `~/.claude/skills` was not in `services::sandbox`'s `CLAUDE_UNMOUNTED`,
+whose unlisted entries are bind-mounted **rw** into every project container. A
+`SKILL.md` is standing instructions and a skill may bundle `scripts/`, so a
+contained agent could have written both for every *uncontained* session of every
+other project — the `plugins/`/`agents/` hole one directory over. It is excluded
+now, which is correct independently of this feature.
+
 ### 3. Install / uninstall (copy, not tracked)
 
-- `install_skill(project_id, source_id, skill_path)` — copies the skill
-  folder verbatim into `<project>/.claude/skills/<name>/`. Re-installing
+- `install_skill(target, source_id, skill_path)` — copies the skill
+  folder verbatim into the target's `.claude/skills/<name>/`. Re-installing
   (e.g. after a source refresh) just overwrites — no commit-pin, no
   drift/update detection. A user who hand-edits an installed skill and then
   re-installs loses their edits; acceptable at this scope, worth a plain
   confirm-overwrite dialog rather than silent overwrite.
-- `uninstall_skill(project_id, name)` — deletes the folder.
-- `list_installed(project_id)` — reads `.claude/skills/*` directly off disk,
-  so a hand-authored or agent-authored skill shows up too.
+- `uninstall_skill(target, name)` — deletes the folder.
+- `list_installed(target)` — reads that target's `.claude/skills/*` directly
+  off disk, so a hand-authored or agent-authored skill shows up too. The view
+  reads the **personal** list as well while a project is the target: a
+  personally-installed skill is already available in the project, and a badge
+  computed from the project's folder alone would report it as absent.
 - **No manifest, no `Project.enabled_skills` field, no `enabled_in` map.**
-  The project tree itself is the only source of truth for "is this skill
-  here" — matches how the rest of `.claude/` scaffolding already works
-  (`CLAUDE.md`, `AGENTS.md` etc. have no separate Eldrun-tracked "is this
-  present" flag either).
+  The tree itself is the only source of truth for "is this skill here" —
+  matches how the rest of `.claude/` scaffolding already works (`CLAUDE.md`,
+  `AGENTS.md` etc. have no separate Eldrun-tracked "is this present" flag
+  either).
 
 ### 4. Propagation — free, no extra code
 
@@ -94,11 +142,16 @@ Because install only writes an ordinary file into the project tree, a
 containerized project sees it immediately (identical-path bind mount, no
 new mount rule) and a git-tracked `.claude/skills/` syncs to a remote/
 multi-host project through the existing transports with zero skills-specific
-code. **Explicitly out of scope for MVP**: making install work for a project
-whose files live *only* remotely (no local mirror) — hide/disable the
-Skills tab for such a project rather than silently writing to the wrong
-filesystem; this is a small, well-understood gap to close later, not a
-blocker for the MVP itself.
+code. A personal install propagates to every project on the machine for free
+and to no other machine at all — the same sentence read from the other side.
+
+**Explicitly out of scope, and now wider than it was**: a project whose files
+live *only* remotely (no local mirror). The plan's answer was to hide the Skills
+tab for such a project; the tab is no longer hidden anywhere, because the
+personal scope gave it something to do without a project. So today the scope
+note *states* the limit (a personal install is this machine's, and a remote
+project's agents run on the host) where it should eventually refuse. Still a
+small, well-understood gap — but it is open, not closed.
 
 ## Deferred (explored, intentionally not built now)
 

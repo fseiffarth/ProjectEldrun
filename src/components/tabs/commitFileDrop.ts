@@ -10,6 +10,7 @@ import {
 } from "../../stores/tabs";
 import { useWindowsStore } from "../../stores/windows";
 import { reseedDetached } from "./detachedDropTargets";
+import { openTexWorkspace } from "../embed/openTexWorkspace";
 
 /**
  * The embed-tab payload a dropped file becomes. Shared by every file-drop path —
@@ -143,6 +144,51 @@ export function commitFileDrop(
   const multi = d.files && d.files.length > 1 ? d.files : null;
   const items: (FileDragItem | null)[] = multi ?? [null];
   const payloadFor = (f: FileDragItem | null) => fileEmbedPayload(d, f, projectCwd);
+
+  // A single `.tex` drop becomes (or focuses) the ONE TeX workspace tab for its
+  // document rather than a bare editor embed — the same one-tab policy the
+  // FileTree double-click uses. Resolving the build root is async, so we hand
+  // `openTexWorkspace` a `place` seam matching whichever drop target resolved
+  // below and let it dedupe on the root (an already-open workspace is focused,
+  // `place` unused). A multi-file drag keeps the per-file embed path; a graphics
+  // drop from a link-follow is not a `.tex` and is untouched.
+  if (!multi && d.viewer === "tex" && d.filePath) {
+    const texPath = d.filePath;
+    const store = useTabsStore.getState();
+    let place: ((tab: Omit<TabEntry, "key">) => void) | null;
+    if (detachedTarget) {
+      place = (tab) => {
+        const e = store.addTab(tab);
+        store.dockTabIntoDetached(detachedTarget.scope, detachedTarget.groupId, e.key, detachedTarget.target);
+        reseedDetached(detachedTarget.scope, detachedTarget.groupId, e.key);
+      };
+    } else if (detachBounds) {
+      place = (tab) => { store.detachNewTab(tab, detachBounds); };
+    } else if (!store.layout) {
+      if (d.reorderGroup === EMPTY_GROUP_ID || d.overGroup === EMPTY_GROUP_ID) {
+        place = (tab) => { store.addTab(tab); };
+      } else {
+        return; // empty scope, no drop target
+      }
+    } else if (overTabBar) {
+      const targetGroup = d.reorderGroup as string;
+      if (!findGroup(store.layout, targetGroup)) return;
+      const slot = d.reorderIndex as number;
+      place = (tab) => {
+        store.focusGroup(targetGroup);
+        const e = store.addTab(tab);
+        store.moveTab(e.key, targetGroup, slot);
+      };
+    } else if (overSplit) {
+      const targetGroup = d.overGroup as string;
+      if (!findGroup(store.layout, targetGroup)) return;
+      place = (tab) => { store.splitWithNewTab(tab, targetGroup, d.edge as DropEdge); };
+    } else {
+      return; // no valid target — a stray drop opens nothing
+    }
+    void openTexWorkspace(texPath, place);
+    return;
+  }
 
   // Released over an open popout → dock the file as a new embed tab INTO it. We
   // create the tab in this scope, then move it into the popout's subtree (the

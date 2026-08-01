@@ -1,9 +1,29 @@
 //! Types for the Skills Library (`docs/skills_plan.md`): a browsable catalog of
-//! git-hosted Claude Code skills (plain `<name>/SKILL.md` folders) a project can
-//! copy into its own `.claude/skills/`. See `services::skills` for the logic;
-//! these are just the wire shapes.
+//! git-hosted Claude Code skills (plain `<name>/SKILL.md` folders) that can be
+//! copied into a project's own `.claude/skills/` or into the machine's personal
+//! `~/.claude/skills/`. See `services::skills` for the logic; these are just the
+//! wire shapes.
 
 use serde::{Deserialize, Serialize};
+
+/// Where an install lands — the two scopes Claude Code actually reads.
+///
+/// The variants are asymmetric on purpose. `Project` names a directory, because
+/// only the caller knows which project is meant; `Personal` carries **nothing**,
+/// because the frontend must not be able to say *where* home is. That is what
+/// keeps this a scope choice rather than an install-anything-anywhere primitive:
+/// `services::skills` resolves `Personal` against `paths::home_dir()` itself, so
+/// the widest-reaching target in the feature is also the one no caller can aim.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum SkillTarget {
+    /// `<dir>/.claude/skills/` — travels with the repo, reaches a container
+    /// through the identical-path mount and a remote host through lockstep.
+    Project { dir: String },
+    /// `~/.claude/skills/` — every project on **this machine**, and no other
+    /// machine at all.
+    Personal,
+}
 
 /// A git repository the catalog is built from (e.g. `anthropics/skills`).
 /// Persisted verbatim in `skills_sources.json` — no per-skill version/commit
@@ -30,9 +50,10 @@ pub struct SkillCatalogEntry {
     pub has_scripts: bool,
 }
 
-/// A skill already present in `<project>/.claude/skills/<name>/`, whether it got
-/// there via install or was hand-authored. `list_installed` is the only source
-/// of truth — there is no separate Eldrun-tracked "is this installed" flag.
+/// A skill already present in a target's `.claude/skills/<name>/`, whether it
+/// got there via install or was hand-authored. `list_installed` is the only
+/// source of truth — there is no separate Eldrun-tracked "is this installed"
+/// flag, and asking a target is the only way to know what it holds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledSkill {
     pub name: String,

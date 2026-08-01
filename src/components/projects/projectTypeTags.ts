@@ -29,9 +29,9 @@ export interface ProjectTypeTag {
   title: string;
 }
 
-/** Derive the colored type tags for a project. The git axis contributes exactly
- *  one tag (no git / local / GitHub / GitLab); the SSH-remote and missing-
- *  scaffold axes each contribute an independent tag on top. */
+/** Derive the colored type tags for a project. The git axis contributes a base
+ *  git tag plus a provider/visibility tag when known; the SSH-remote and
+ *  missing-scaffold axes each contribute an independent tag on top. */
 export function projectTypeTags(project: ProjectEntry, scaffoldMissing: boolean): ProjectTypeTag[] {
   const tags: ProjectTypeTag[] = [];
   const gitType = typeof project.git_type === "string" ? project.git_type : "local";
@@ -58,7 +58,14 @@ export function projectTypeTags(project: ProjectEntry, scaffoldMissing: boolean)
           : "Local git repo (not pushed to a remote)",
     });
     if (published || provider) {
-      const label = provider === "gitlab" ? "GitLab" : "GitHub";
+      const providerLabel = provider === "gitlab" ? "GitLab" : "GitHub";
+      // Visibility is trustworthy only when Eldrun recorded it during publish;
+      // an origin URL alone cannot reveal whether its repository is private.
+      const label = published
+        ? gitType === "remote-private"
+          ? `${providerLabel} · private 🔒`
+          : `${providerLabel} · public`
+        : providerLabel;
       const color = provider === "gitlab" ? "#fc6d26" : "#a371f7";
       const title = published
         ? gitTypeLabel(gitType, provider)

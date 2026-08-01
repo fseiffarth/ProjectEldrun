@@ -40,8 +40,18 @@ export type MailAuthKind = "password" | "oauth2";
 
 export interface MailAccount {
   id: string;
+  /**
+   * The dialog's **Name**, and the *sending* identity: this is the display
+   * name written into `From:`, so it is the one of the two names that leaves
+   * the machine. Empty means send the bare address.
+   */
   label: string;
   address: string;
+  /**
+   * The dialog's **Display name** — local only. It names the account on the
+   * accounts badge and nowhere on the wire; the folders rail deliberately
+   * keeps naming the account by `label`.
+   */
   display_name?: string;
   imap: MailServer;
   smtp: MailServer;
@@ -56,6 +66,34 @@ export interface MailAccount {
    * at all** — an unchecked header is sender-controlled text.
    */
   authserv_id?: string;
+  /** Per-account **Mail AI (local)** toggles (Group Q). Absent for an account
+   *  that never opened the feature. Gated globally by `Settings.mail_ai_allow`
+   *  and a resolvable loopback mail-role model — see `lib/mail`'s
+   *  `mailAiResolvable`/`mailAiFeatureOn`. */
+  ai?: MailAiPrefs;
+}
+
+/**
+ * The per-account Mail AI (local) feature toggles — all opt-in, all **default
+ * off/absent**. Per account rather than in `Settings`, because whether a mailbox
+ * wants summaries, auto-filing and extraction is a per-mailbox decision. The one
+ * thing that stays global is the master switch `Settings.mail_ai_allow`.
+ */
+export interface MailAiPrefs {
+  /** Offer the on-demand "Summarize (local)" control in the message view. */
+  summarize?: boolean;
+  /** Let a sync ask the local model to file new inbox mail into Important /
+   *  Urgent, after the keyword-filter pass. Read in the **backend** sync. */
+  autoclassify?: boolean;
+  /** Offer the composer's "Draft from notes" control. */
+  formalize?: boolean;
+  /** Offer "Add to calendar" extraction on a message. */
+  calendar?: boolean;
+  /** Offer "Add to-do" extraction on a message. */
+  todo?: boolean;
+  /** Skip the review step for extracted events / to-do cards. **Default off** —
+   *  mail must never quietly write to the user's own data. */
+  auto_create?: boolean;
 }
 
 /**
@@ -224,7 +262,23 @@ export interface MailHeader {
    *  unmarked, and an unrecognized value from a newer backend arrives absent too
    *  (the Rust side degrades it rather than guessing). */
   priority?: MailPriority;
+  /**
+   * **Who** set {@link priority}, sealed alongside it (Group Q #205). A model
+   * classifier must not be able to pass for a keyword rule the user wrote, so the
+   * provenance is carried explicitly: `user` (a right-click), `filter` (a keyword
+   * rule) or `model` (the local classifier). Absent when unmarked, or from a
+   * backend that predates the column. See {@link priority_reason}.
+   */
+  priority_source?: MailPrioritySource;
+  /** The one-line reason the {@link priority_source} recorded — a rule name for a
+   *  filter, the local model's own sentence for `model`. Surfaced read-only so a
+   *  mark the user did not make can be *explained* ("marked Urgent by the local
+   *  model: '…'") rather than merely appear. */
+  priority_reason?: string;
 }
+
+/** Who set a message's {@link MailHeader.priority} — see `priority_source`. */
+export type MailPrioritySource = "user" | "filter" | "model";
 
 /**
  * A message's local priority mark: **Important** or **Urgent**.
@@ -535,4 +589,54 @@ export interface MailPreviewBlob {
   mime: string;
   bytes_b64: string;
   truncated: boolean;
+}
+
+// ── Local-model mail assistant (Group Q, #204–#208) ─────────────────────────
+//
+// The wire shapes the on-device model returns. Every one is produced by a
+// **loopback-only** Ollama (`services/mail_ai.rs`) and parsed defensively in
+// Rust: a low-confidence or unparseable extraction comes back as `null`, never
+// as a malformed struct — the frontend reads `null` as "nothing to create".
+
+/**
+ * A calendar event the model read out of a message (#207).
+ *
+ * `start`/`end` are **local wall-clock ISO** with no zone (`2026-08-04T15:00`),
+ * matching `lib/calendarTime`'s stamps, so they prefill `EventDialog` directly.
+ * `confidence` is the model's own 0..1 estimate; the backend has already applied
+ * its floor (a value below it yields `null` rather than a low-confidence event),
+ * and the field is carried only so the review UI can note it.
+ */
+export interface MailExtractedEvent {
+  title: string;
+  start: string;
+  end?: string | null;
+  all_day: boolean;
+  location?: string | null;
+  confidence: number;
+}
+
+/** A to-do the model read out of a message (#208). `due` is an ISO date;
+ *  `priority` matches the board's priority vocabulary. Reused through
+ *  `taskFromMail` so an AI card is the same kind of card as a hand-made one. */
+export interface MailExtractedTask {
+  title: string;
+  due?: string | null;
+  priority?: string | null;
+}
+
+/**
+ * What the manual "what would the local model catch" pass found (#205).
+ *
+ * **Deliberately a different shape from {@link MailFilterReport}** — the schema
+ * doc forbids a model classifier from masquerading as a keyword rule, so its
+ * report is source-labelled (`source: "model"`) and never reuses the filter
+ * report's fields. `dry_run` is always true from the preview button; the same
+ * command applies for real when it is false.
+ */
+export interface MailAiClassifyReport {
+  source: "model";
+  scanned: number;
+  matched: Array<{ message_id: string; priority: string; reason: string }>;
+  dry_run: boolean;
 }
