@@ -109,6 +109,15 @@ scrub_args=(
   -e 's/(password|secret|api[_-]?key)[[:space:]]*:[[:space:]]*&?(mut[[:space:]]+)?[A-Z][A-Za-z0-9_]*//gI'
   # ...or by a literal that is definitionally not a credential.
   -e 's/(password|secret|api[_-]?key)[[:space:]]*[:=][[:space:]]*(false|true|None|null|nil|undefined|0)\b//gI'
+  # ...or by a CALL: `let password = creds::get(&account)` reads a secret out of
+  # the keychain at runtime, which is the pattern this repo is supposed to use —
+  # the opposite of the hardcoded credential the scan is hunting for, and the
+  # "params named 'password'" case the guidance below already calls expected.
+  # Narrow on purpose: `=` only (a `:` is a struct/JSON/YAML field, where a value
+  # really can be a literal), and the right-hand side must be an identifier or
+  # `::`/`.` path ending in `(`, so `password = "hunter2"` and a bare
+  # `password=hunter2` are both still reported.
+  -e 's/(password|secret|api[_-]?key)[[:space:]]*=[[:space:]]*&?[A-Za-z_][A-Za-z0-9_]*([:.]{1,2}[A-Za-z_][A-Za-z0-9_]*)*\(//gI'
 )
 
 # Last resort for a line that is genuinely fine but that no general rule can
