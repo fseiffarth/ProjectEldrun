@@ -50,6 +50,14 @@ fn load_all() -> Vec<GlobalMachine> {
     storage::read_json(&global_machines_path()).unwrap_or_default()
 }
 
+/// Resolve one registered global machine by its stable UI id. Kept here so
+/// commands that act on a project-free host (agent installation, monitoring)
+/// never trust a frontend-supplied SSH address when the registry already owns
+/// the target identity.
+pub(crate) fn find_by_id(id: &str) -> Option<GlobalMachine> {
+    load_all().into_iter().find(|machine| machine.id == id)
+}
+
 fn save_all(list: &[GlobalMachine]) -> Result<(), String> {
     storage::write_json(&global_machines_path(), &list.to_vec()).map_err(|e| e.to_string())
 }

@@ -26,6 +26,12 @@ const COPY: Record<HpcGuardKind, { title: string; body: string; go: string }> = 
       "The giant-folder census runs `du` over the whole host tree to find what is too big to sync. Same metadata cost as a full scan, and this one normally runs by itself on connect — which is why it stays off here unless you ask.",
     go: "Measure anyway",
   },
+  connect: {
+    title: "Log in to this cluster?",
+    body:
+      "Opening this tab would dial the machine and leave a shared SSH master standing on it (and, for a persistent tab, a tmux server with it) — the unattended presence the tag exists to prevent. That is right for a tab restored at relaunch, which nobody asked for; it is only in the way when you meant to open one. Going ahead connects the project first, then opens the tab.",
+    go: "Connect and open",
+  },
   "login-node-run": {
     title: "Run this on the login node?",
     body:

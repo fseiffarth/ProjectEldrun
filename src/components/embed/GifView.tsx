@@ -9,7 +9,7 @@ import {
   MAX_SCALE,
   ZOOM_STEP,
 } from "./FileViewerPane";
-import { useFileScope, readFileBytes, fileMtime } from "./fileAccess";
+import { useFileScope, usePaneVisible, readFileBytes, fileMtime } from "./fileAccess";
 import { openGif, effectiveDelayMs } from "../../lib/viewers/gif";
 import { Dropdown } from "../common/Dropdown";
 import { useT } from "../../lib/i18n";
@@ -61,6 +61,7 @@ const SPEED_OPTIONS = [0.25, 0.5, 1, 1.5, 2, 4].map((s) => ({
  */
 function useGifBytes(path: string) {
   const scope = useFileScope();
+  const paneVisible = usePaneVisible();
   const [bytes, setBytes] = useState<Uint8Array<ArrayBuffer> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const lastMtime = useRef<number | null>(null);
@@ -88,7 +89,8 @@ function useGifBytes(path: string) {
     };
   }, [path, scope, diskVersion]);
 
-  // Poll mtime; on an external advance, bump diskVersion to re-read fresh bytes.
+  // Seed the mtime baseline once per file, visible or not, so it pairs with the
+  // bytes the load effect read — the re-show catch-up below compares against it.
   useEffect(() => {
     let cancelled = false;
     fileMtime(path, scope)
@@ -96,7 +98,18 @@ function useGifBytes(path: string) {
         if (!cancelled) lastMtime.current = m;
       })
       .catch(() => {});
-    const id = setInterval(() => {
+    return () => {
+      cancelled = true;
+    };
+  }, [path, scope]);
+
+  // Poll mtime; on an external advance, bump diskVersion to re-read fresh bytes.
+  // Visible panes only (hidden ones stay mounted forever); the immediate check
+  // on re-show catches a change made while the pane was hidden.
+  useEffect(() => {
+    if (!paneVisible) return;
+    let cancelled = false;
+    const check = () => {
       fileMtime(path, scope)
         .then((m) => {
           if (cancelled || lastMtime.current == null || m <= lastMtime.current) return;
@@ -104,12 +117,14 @@ function useGifBytes(path: string) {
           setDiskVersion((v) => v + 1);
         })
         .catch(() => {});
-    }, RELOAD_POLL_MS);
+    };
+    check();
+    const id = setInterval(check, RELOAD_POLL_MS);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [path, scope]);
+  }, [path, scope, paneVisible]);
 
   return { bytes, error };
 }
@@ -137,6 +152,7 @@ export function GifView({
   const t = useT();
   const viewPos = useViewerState(tabKey);
   const { bytes, error } = useGifBytes(path);
+  const paneVisible = usePaneVisible();
 
   // ── Decode ──────────────────────────────────────────────────────────────────
   const [decoded, setDecoded] = useState<DecodedGif | null>(null);
@@ -215,9 +231,13 @@ export function GifView({
   // The playback loop: a rAF-driven timestamp accumulator. Each tick banks the
   // elapsed wall-clock time (× speed) and advances as many frames as it pays
   // for — possibly several per tick at high speed — so playback never drifts
-  // and per-frame delays are honored exactly.
+  // and per-frame delays are honored exactly. Paused while the pane is hidden
+  // (panes stay mounted forever): a background GIF tab otherwise keeps a rAF +
+  // per-frame putImageData running for nobody. `playing` is untouched, so the
+  // animation resumes on its own when the tab is next shown; lastTs restarts
+  // null, so the hidden spell banks no elapsed time.
   useEffect(() => {
-    if (!playing || !decoded || decoded.frames.length < 2) return;
+    if (!playing || !paneVisible || !decoded || decoded.frames.length < 2) return;
     let raf = 0;
     let lastTs: number | null = null;
     let carry = 0;
@@ -256,7 +276,7 @@ export function GifView({
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, decoded, speed, loop]);
+  }, [playing, paneVisible, decoded, speed, loop]);
 
   // ── Canvas ──────────────────────────────────────────────────────────────────
   const canvasRef = useRef<HTMLCanvasElement | null>(null);

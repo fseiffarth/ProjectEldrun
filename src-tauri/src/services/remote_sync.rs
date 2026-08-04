@@ -272,6 +272,25 @@ pub fn divergence(
     (host_diverged, local_diverged)
 }
 
+/// Whether a tracked FILE entry should be pruned from the manifest during a
+/// status pass. Each side is a TRI-STATE stat result — `Ok(Some(..))` present,
+/// `Ok(None)` **positively gone** (the SFTP `NoSuchFile` status / io
+/// `NotFound`), `Err` could-not-check — and the prune fires only when BOTH
+/// sides are positively gone on an entry we HAD synced: nothing left on either
+/// side to compare, resolve, or protect. An `Err` never counts as gone — a
+/// dropped session mid-refresh stats every entry as `Err`, and reading that as
+/// "deleted" would prune the whole manifest in one pass. Never fires for
+/// one-side deletions (real conflicts by design) or never-synced markers.
+/// Pure, unit-tested.
+pub fn should_prune(
+    entry: &SyncEntry,
+    host: &Result<Option<(u64, Option<u64>)>, String>,
+    local: &Result<Option<(u64, Option<u64>)>, String>,
+) -> bool {
+    let ever_synced = entry.last_pull_ts.is_some() || entry.last_push_ts.is_some();
+    !entry.is_dir && ever_synced && matches!(host, Ok(None)) && matches!(local, Ok(None))
+}
+
 /// Whether an amber verdict is worth confirming against the actual bytes rather
 /// than trusting the size+mtime heuristic. Size+mtime only *approximates*
 /// divergence: a re-save with identical bytes (or a bare `touch`) moves the mtime
@@ -753,14 +772,34 @@ pub async fn push_file_atomic(
     }
     let bytes = std::fs::read(local).map_err(|e| e.to_string())?;
     // Temp path beside the target (same dir → same filesystem → atomic rename).
-    // The single-writer manifest lock serializes pushes per project, so a fixed
-    // suffix can't collide with a concurrent push of the same file.
-    let tmp = format!("{host_abs}.eldrun-sync-tmp");
+    // The suffix must be UNIQUE per in-flight write: the manifest lock is held only
+    // per file (not for a whole push), so a manual `sync_push` and a background
+    // `reconcile_pass` — or two manual pushes — can be writing the same file at
+    // once, and a fixed temp name lets one push rename the tmp out from under the
+    // other (the loser's rename then fails on a vanished source). A process-wide
+    // counter plus the pid keeps every concurrent write on its own tmp.
+    let seq = {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static PUSH_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+        PUSH_TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    };
+    let tmp = format!("{host_abs}.eldrun-sync-tmp.{}.{seq}", std::process::id());
     sftp::write_file_on(sftp, &tmp, &bytes).await?;
     sftp::rename_on(sftp, &tmp, host_abs).await?;
     // Re-stat the host to capture the new base (mtime is the host's, post-write).
-    let (h_size, h_mtime) = sftp::metadata_on(sftp, host_abs).await.unwrap_or((bytes.len() as u64, None));
-    Ok((h_size, h_mtime))
+    // The bytes DID land by this point — this error exists because recording a
+    // made-up base of (len, None) guarantees a false amber on the next status
+    // pass, while an unrecorded base only degrades to a conflict prompt (the
+    // safe direction). One retry covers a transient hiccup on the pooled session.
+    match sftp::metadata_on(sftp, host_abs).await {
+        Ok(hm) => Ok(hm),
+        Err(_) => match sftp::metadata_on(sftp, host_abs).await {
+            Ok(hm) => Ok(hm),
+            Err(e) => Err(format!(
+                "pushed '{host_abs}' but could not re-stat it to record the new base: {e}"
+            )),
+        },
+    }
 }
 
 /// Record a freshly-pushed file in the manifest: keep it selected and stamp the
@@ -1185,6 +1224,37 @@ mod tests {
         );
         // Host not stat'd (cold) → host side never flagged.
         assert_eq!(divergence(&e, None, Some((10, Some(50)))), (false, false));
+    }
+
+    #[test]
+    fn both_gone_after_sync_is_pruned() {
+        let synced = SyncEntry {
+            selected: true,
+            host_size: 10,
+            host_mtime: Some(100),
+            local_size: 10,
+            local_mtime: Some(50),
+            last_pull_ts: Some(1),
+            ..Default::default()
+        };
+        let gone: Result<Option<(u64, Option<u64>)>, String> = Ok(None);
+        let present: Result<Option<(u64, Option<u64>)>, String> = Ok(Some((10, Some(100))));
+        let err: Result<Option<(u64, Option<u64>)>, String> = Err("session dropped".into());
+        // Positively gone on BOTH sides after a sync → nothing left to compare
+        // → prune.
+        assert!(should_prune(&synced, &gone, &gone));
+        // Host still present → a real one-side deletion, never pruned.
+        assert!(!should_prune(&synced, &present, &gone));
+        // Local still present → same, the conflict machinery owns it.
+        assert!(!should_prune(&synced, &gone, &present));
+        // Never synced → a bare marker, nothing to forget.
+        let never = SyncEntry { selected: true, ..Default::default() };
+        assert!(!should_prune(&never, &gone, &gone));
+        // A stat ERROR is "could not check", NEVER "gone": a dropped session
+        // mid-refresh must not read as every file deleted (mass-prune hazard).
+        assert!(!should_prune(&synced, &err, &gone));
+        assert!(!should_prune(&synced, &gone, &err));
+        assert!(!should_prune(&synced, &err, &err));
     }
 
     #[test]

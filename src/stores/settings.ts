@@ -4,6 +4,7 @@ import { emit } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import type { Settings, Theme, WindowState } from "../types";
 import { applyLanguage, type Language } from "../lib/i18n";
+import { mergeVerdicts, verdictsUnchanged, type PyMainCache } from "../lib/pythonMainCache";
 
 /** Each Tauri window is its own JS runtime with its own copy of this store, so
  *  a theme change made in one (normally the main window's Settings dialog)
@@ -95,6 +96,11 @@ interface SettingsStore {
    *  absolute path. Kept per file so every viewer of the same script shares them;
    *  persisted in settings.json so they survive a restart (see Settings.python_run_args). */
   setPythonRunArgs: (path: string, args: string) => Promise<void>;
+  /** Fold a batch of `.py` "is this a script" verdicts into the persisted cache
+   *  that gates the tree's ▶ (see `lib/pythonMainCache`). Batched — one settings
+   *  write per folder scan, not one per file — and a no-op when every verdict
+   *  already matches, so re-listing an unchanged folder writes nothing. */
+  setPythonMainVerdicts: (updates: PyMainCache) => Promise<void>;
 }
 
 /**
@@ -128,6 +134,38 @@ export function whenSettingsLoaded(timeoutMs = 5000): Promise<void> {
   });
 }
 
+/**
+ * The object a write must merge its patch onto — **never `{}`**.
+ *
+ * Every writer here is a read-modify-write of the WHOLE settings object
+ * (`save_settings` replaces the file; only `save_window_state` touches a single
+ * field). They all used to spread `get().settings ?? {}`, and that `?? {}` is a
+ * silent factory reset: `settings` is null until `load()` resolves, so a write
+ * that lands before then persists the patch ALONE and every key not mentioned in
+ * it — the theme, the header's CPU/RAM/GPU toggles, the Ollama host, every
+ * opt-in — is dropped from settings.json.
+ *
+ * That is not hypothetical and it is not rare. It happened on 2026-08-03: a hot
+ * reload of a half-saved file threw a ReferenceError during render, the mount
+ * that calls `load()` never completed, a background writer fired anyway, and the
+ * user's settings came back with six keys. The trigger was a one-line typo in an
+ * unrelated component — the damage was this line.
+ *
+ * So: re-read from disk instead of assuming empty, and if even that fails, let
+ * the write REJECT. A settings change that reports an error is a nuisance; a
+ * settings change that quietly erases everything else is unrecoverable — there
+ * is no undo and no backup of this file.
+ */
+async function baseForWrite(): Promise<Partial<Settings>> {
+  const cached = useSettingsStore.getState().settings;
+  if (cached) return cached;
+  // Deliberately not `load()`: that re-applies the theme, language and this
+  // window's zoom as a side effect, which a background writer must not do.
+  const fresh = await invoke<Settings>("get_settings");
+  useSettingsStore.setState({ settings: fresh, loaded: true });
+  return fresh;
+}
+
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   settings: null,
   loaded: false,
@@ -143,7 +181,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   setTheme: async (theme) => {
-    const current = get().settings ?? {};
+    const current = await baseForWrite();
     const updated = { ...current, color_scheme: theme };
     await invoke<void>("save_settings", { settings: updated });
     applyTheme(theme);
@@ -152,7 +190,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   setLanguage: async (lang) => {
-    const current = get().settings ?? {};
+    const current = await baseForWrite();
     const updated = { ...current, language: lang };
     await invoke<void>("save_settings", { settings: updated });
     applyLanguage(lang);
@@ -161,7 +199,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   updateSettings: async (patch) => {
-    const current = get().settings ?? {};
+    const current = await baseForWrite();
     const updated = { ...current, ...patch };
     await invoke<void>("save_settings", { settings: updated });
     if (typeof updated.color_scheme === "string") {
@@ -199,7 +237,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   setPythonRunArgs: async (path, args) => {
-    const current = get().settings ?? {};
+    // Same rule as the writers above, for the same reason one step removed: this
+    // reads the CURRENT map to build the patch, so an unloaded store would hand
+    // `updateSettings` a map missing every other file's args — a partial wipe of
+    // one key rather than the whole file, but a wipe.
+    const current = await baseForWrite();
     const map = { ...(current.python_run_args ?? {}) };
     const trimmed = args.trim();
     // "" clears the entry outright rather than storing an empty string, so the map
@@ -211,5 +253,13 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     // outside-click after a run) doesn't rewrite the whole settings file.
     if ((current.python_run_args ?? {})[path] === map[path]) return;
     await get().updateSettings({ python_run_args: map });
+  },
+
+  setPythonMainVerdicts: async (updates) => {
+    const current = await baseForWrite();
+    if (verdictsUnchanged(current.python_main_scripts, updates)) return;
+    await get().updateSettings({
+      python_main_scripts: mergeVerdicts(current.python_main_scripts, updates),
+    });
   },
 }));

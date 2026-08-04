@@ -65,3 +65,30 @@ export async function openTexWorkspace(
   const entry = store.addTab(tab);
   store.setActive(entry.key);
 }
+
+/**
+ * Route a SyncTeX reverse-search target (a `.tex` source) into an ALREADY-OPEN
+ * workspace, when one owns it. Resolves the build root and looks for an existing
+ * workspace tab keyed on it; if found, focuses that tab and switches its center
+ * to `sourcePath` (via `texActivePath`), returning `true`. Returns `false` — and
+ * touches nothing — when no workspace tab is open for the document, so the caller
+ * falls back to the standalone open.
+ *
+ * The deliberate difference from `openTexWorkspace` is that this NEVER creates a
+ * tab: reverse search is a navigation into an existing surface, so a PDF whose
+ * workspace the user has closed should reopen the source the ordinary way, not
+ * resurrect the whole workspace.
+ */
+export async function focusTexWorkspaceForSource(sourcePath: string): Promise<boolean> {
+  const root = await resolveTexRoot(sourcePath);
+  const store = useTabsStore.getState();
+  const existing = store.tabs.find(
+    (t) => t.kind === "embed" && t.viewer === "texworkspace" && t.embedPath === root,
+  );
+  if (!existing) return false;
+  store.setActive(existing.key);
+  // "center on the main" is represented as texActivePath === root, matching
+  // `openTexWorkspace`, so nothing has to special-case the main document.
+  store.setViewerState(existing.key, { texActivePath: sourcePath === root ? root : sourcePath });
+  return true;
+}

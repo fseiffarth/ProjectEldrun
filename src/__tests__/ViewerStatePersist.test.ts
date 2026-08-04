@@ -125,7 +125,7 @@ describe("viewerState round-trips through save/load", () => {
     expect(tabs[0].viewerState).toEqual({ scale: 1.8, scrollTop: 320 });
   });
 
-  it("round-trips the TeX workspace layout fields (active file, PDF pane, widths)", async () => {
+  it("round-trips the TeX workspace layout fields (active file, sidebar width)", async () => {
     const store = useTabsStore.getState();
     store.setScope("p");
     const tab = store.addTab({
@@ -138,8 +138,6 @@ describe("viewerState round-trips through save/load", () => {
     });
     useTabsStore.getState().setViewerState(tab.key, {
       texActivePath: "/p/chap.tex",
-      texPdfOpen: true,
-      texPdfSplit: 0.55,
       texSidebarWidth: 260,
     });
 
@@ -148,8 +146,6 @@ describe("viewerState round-trips through save/load", () => {
     const before = useTabsStore.getState().tabs;
     useTabsStore.getState().setViewerState(tab.key, {
       texActivePath: "/p/chap.tex",
-      texPdfOpen: true,
-      texPdfSplit: 0.55,
       texSidebarWidth: 260,
     });
     expect(useTabsStore.getState().tabs).toBe(before);
@@ -162,8 +158,6 @@ describe("viewerState round-trips through save/load", () => {
     const saved = arg.tabs.find((t) => t.label === "paper.tex");
     expect(saved?.viewerState).toEqual({
       texActivePath: "/p/chap.tex",
-      texPdfOpen: true,
-      texPdfSplit: 0.55,
       texSidebarWidth: 260,
     });
 
@@ -180,8 +174,6 @@ describe("viewerState round-trips through save/load", () => {
           viewer: "texworkspace",
           viewerState: {
             texActivePath: "/p/chap.tex",
-            texPdfOpen: true,
-            texPdfSplit: 0.55,
             texSidebarWidth: 260,
           },
         },
@@ -194,8 +186,6 @@ describe("viewerState round-trips through save/load", () => {
     expect(restored[0].viewer).toBe("texworkspace");
     expect(restored[0].viewerState).toEqual({
       texActivePath: "/p/chap.tex",
-      texPdfOpen: true,
-      texPdfSplit: 0.55,
       texSidebarWidth: 260,
     });
   });

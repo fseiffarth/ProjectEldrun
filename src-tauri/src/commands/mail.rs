@@ -1780,6 +1780,15 @@ async fn sync_inner(
             let mut added = 0u32;
             let mut filed = 0u32;
             let mut candidates: Vec<ClassifyCandidate> = Vec::new();
+            // The arrival watermark, captured BEFORE any upsert in this folder:
+            // the highest UID we had already stored. A message counts as a new
+            // *arrival* (and so may be auto-filed / classified) only when its UID
+            // rises above it — being merely new to the local index is what the
+            // whole initial backlog is too. `None` is the folder's first sync, so
+            // nothing here is an arrival and nothing is filed: the existing pile
+            // is what the explicit "apply to existing" is for.
+            let prev_max_uid = store3.folder_max_uid(&folder2.id)?;
+            let is_arrival = |uid: u32| matches!(prev_max_uid, Some(m) if uid > m);
             for h in headers {
                 let row = crate::schema::mail::MailHeader {
                     id: message_id_for(&folder2.id, h.uid),
@@ -1819,15 +1828,21 @@ async fn sync_inner(
                     priority_source: None,
                     priority_reason: None,
                 };
-                if store3.upsert_header(&row)? {
+                let inserted = store3.upsert_header(&row)?;
+                if inserted {
                     added += 1;
-                    // **New messages only.** A re-sync re-visits every message
-                    // in the folder, so applying rules to all of them would
-                    // re-file mail the user had unmarked by hand, every check —
-                    // `mark_for` refuses an already-marked message, but an
-                    // *unmarked* one the user deliberately cleared looks
-                    // identical to one that never matched. The user's own
-                    // decision is only safe if the automatic pass happens once.
+                }
+                // **New arrivals only**, two conditions that must BOTH hold. The
+                // row must be new to the index (`inserted`) — a re-sync revisits
+                // every message, and re-filing one the user unmarked by hand
+                // resurrects a filing they corrected (`mark_for` refuses an
+                // already-*marked* one, but a deliberately *cleared* one looks
+                // identical to one that never matched). And it must be a genuine
+                // arrival (`is_arrival`) — the initial backlog of a folder is all
+                // new-to-index at once, so filing on insertion alone marks a whole
+                // mail history the instant a rule predates the folder's first
+                // pull, the "apply to existing" the user never clicked.
+                if inserted && is_arrival(row.uid) {
                     if let Some((mark, hit)) = mail_filters::mark_for(&rules2, &row) {
                         // Provenance `filter`, so the model classifier below can
                         // never be mistaken for a keyword rule (#205). The reason
@@ -2281,6 +2296,30 @@ pub async fn mail_priority_page(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Empty one of the two lists: clear the mark from **every** message carrying
+/// `priority`, and answer how many rows changed.
+///
+/// The bulk twin of [`mail_priority_set`]`(…, None)` and local for its reasons —
+/// no login, no STORE, no COPY, nothing leaves this machine. It exists because
+/// the mark is the one thing in the mail surface that accumulates without ever
+/// being consumed: a list you file into is not an inbox and does not empty as it
+/// is read, so without this the only way back to an empty Urgent list is one
+/// right-click per message.
+///
+/// Nothing here is destructive to *mail* — a mark is not a folder, so every
+/// message stays exactly where it is (`schema::mail::MailPriority`). What is
+/// lost is the filing itself, which is why the caller asks first.
+#[tauri::command]
+pub async fn mail_priority_clear(
+    priority: MailPriority,
+    state: State<'_, MailState>,
+) -> Result<u32, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || store_of(&rt)?.clear_priority(priority))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// The two rail badges' numbers, read together so they cannot disagree.

@@ -8,6 +8,7 @@ import { ProjectSearch } from "../projects/ProjectSearch";
 import { ProjectDialog } from "../projects/ProjectDialog";
 import { SettingsDialog, type SettingsPanelKind } from "./SettingsPanel";
 import { UntestedTag } from "../common/UntestedTag";
+import { StarIcon } from "./StarIcon";
 import { useHpcPipelineStore } from "../../stores/hpcPipeline";
 import { useBigFoldersStore } from "../../stores/bigFolders";
 import { useProjectsStore } from "../../stores/projects";
@@ -129,41 +130,17 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     return () => window.removeEventListener("eldrun:open-settings", onOpenSettings);
   }, []);
 
-  // Project projection that drives the pill strip. Reduced to just the fields
-  // the bucketing reads (id/position/box_id) plus a join-key, so the heavier
-  // box-bucketing memos below only recompute when one of those changes — not on
-  // every unrelated `projects` mutation (e.g. a status/name edit on an inactive
-  // project, time/CPU updates) (Eff #11).
-  const activeProjectsSignature = useMemo(
-    () =>
-      projects
-        .filter((p) => p.status !== "inactive")
-        .map(
-          (p) =>
-            // Include the git-provider axis (explicit `git_provider` and the
-            // async-sniffed `detected_provider`) so a pill's type tags refresh
-            // when `detect_git_providers` fills them in after load — otherwise
-            // the memo pins a stale project object and the hover shows only the
-            // base "git" tag while the right panel (which reads the live store)
-            // shows git + GitHub. Both feed the same `projectTypeTags`; keep
-            // their inputs in sync.
-            `${p.id}:${p.position}:${typeof p.box_id === "string" ? p.box_id : ""}:${
-              typeof p.git_type === "string" ? p.git_type : ""
-            }:${typeof p.git_provider === "string" ? p.git_provider : ""}:${
-              typeof p.detected_provider === "string" ? p.detected_provider : ""
-            }`,
-        )
-        .sort()
-        .join("|"),
-    [projects],
-  );
-
   const activeProjects = useMemo(() => {
     return projects
       .filter((p) => p.status !== "inactive")
       .sort((a, b) => a.position - b.position);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeProjectsSignature]);
+    // Keep the actual project objects live. A signature containing only the
+    // bucketing fields pinned the old object when a local project finished
+    // extending to remote, so ProjectPill never saw `remote` and did not add
+    // its connection lamp until an unrelated signature field changed/reload.
+    // The same stale-object bug affected any other pill-visible metadata that
+    // was not copied into that signature.
+  }, [projects]);
 
   // Per-pill git "dirty" dots: poll every active local project's git state on a
   // shared interval (one loop for all pills, deduped by project id) and store
@@ -464,20 +441,28 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
           )}
         </div>
         <div className="project-switcher-separator" />
-
-        <ProjectSearch
-          projects={projects}
-          boxes={boxes}
-          onActivateProject={(id) => void setActive(id)}
-          onOpenBox={(id) => void openBox(id)}
-        />
-
-        <div className="project-switcher-separator" />
         <div
           className={`project-pills-region${pillOverflow.left ? " overflow-left" : ""}${
             pillOverflow.right ? " overflow-right" : ""
           }`}
         >
+          {/* The root terminal, as the row's first tab — a sibling of the
+              scroll strip rather than a child of it, which is what pins it:
+              the pills scroll past underneath and this one never leaves the
+              left edge. It reads its state off `scope`, like every pill beside
+              it (activeId would keep it lit while a box is open). */}
+          <button
+            type="button"
+            className={`root-pill${scope === "root" ? " active" : ""}`}
+            title={t("header.rootTerminal")}
+            aria-label={t("header.rootTerminal")}
+            onClick={(e) => {
+              e.stopPropagation();
+              void setActive(null);
+            }}
+          >
+            <StarIcon className="root-pill-star" />
+          </button>
           <button
             type="button"
             className="pills-scroll-btn left"
@@ -599,6 +584,18 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             </div>
           )}
         </div>
+
+        {/* Right of the + rather than left of the pills: the box searches the
+            projects that are *not* on the strip, so it belongs with the control
+            that adds one, not in front of the ones already there. Its popover
+            is right-anchored (see .project-search-popover) since it now opens
+            near the header's right half. */}
+        <ProjectSearch
+          projects={projects}
+          boxes={boxes}
+          onActivateProject={(id) => void setActive(id)}
+          onOpenBox={(id) => void openBox(id)}
+        />
       </div>
     </>
   );

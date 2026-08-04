@@ -32,6 +32,22 @@ that session's stale module graph and looks like an old build.
 `src/` changes hot-reload in the running instance; don't ask for a restart.
 Only `src-tauri/` changes need the user to rebuild/restart.
 
+**`tauri dev` runs with `--no-watch`** (in the `tauri:dev` script). Its Rust
+watcher rebuilds *and relaunches the window* on any `src-tauri/` write — so
+merely saving a backend file restarted a session that had been up for half an
+hour, taking its open tabs with it and reloading the frontend from whatever
+uncommitted WIP was on disk. Editing `src-tauri/` has to stay a normal thing to
+do, so the watcher is off rather than the edits being rationed: backend changes
+now accumulate harmlessly until the user restarts deliberately. `tauri:dev:watch`
+is the opt-in escape hatch for when auto-restart is actually wanted.
+
+The cost is a backend fix that is saved, compiles, and is silently not in the
+window. `npm run backend:stale` is the answer to that — it compares the running
+process's start time to the newest `src-tauri/` mtime and says whether a restart
+is needed. **Run it after backend edits and report the result**; never restart
+the app to apply them (`docs/context/` aside, this is the one lifecycle rule:
+the window is the user's).
+
 ## File maps
 
 `src/CLAUDE.md` (frontend), `src-tauri/CLAUDE.md` (backend). Both list only

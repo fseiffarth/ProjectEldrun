@@ -46,7 +46,7 @@ function GlobalActivityWindow({ onClose }: { onClose: () => void }) {
   );
 }
 
-export function AppTimerDisplay() {
+export function AppTimerDisplay({ inMenu = false }: { inMenu?: boolean }) {
   const t = useT();
   const paused = useTimerStore((s) => s.paused);
   const toggle = useTimerStore((s) => s.toggle);
@@ -67,7 +67,7 @@ export function AppTimerDisplay() {
   return (
     <>
       <button
-        className={`app-timer-btn${paused ? " paused" : ""}`}
+        className={`${inMenu ? "tab-new-menu-item app-timer-menu-item" : "app-timer-btn"}${paused ? " paused" : ""}`}
         title={`${t("projectHoverCard.todayPrefix")} ${displayText}\n${paused ? t("appTimer.pausedResumeHint") : t("appTimer.clickPauseHint")}`}
         onClick={() => void toggle()}
         onContextMenu={(e) => {

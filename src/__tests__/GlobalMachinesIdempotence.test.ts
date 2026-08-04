@@ -71,7 +71,7 @@ describe("globalMachines — a no-op status write must not notify", () => {
 
   it("probeAll does not notify when every machine is already in the probed state", async () => {
     // Both already reachable, and both probe ok → nothing changed.
-    mockInvoke.mockResolvedValue({ ok: true });
+    mockInvoke.mockResolvedValue({ ok: true, unreachable: false, error: "" });
     const seen = vi.fn();
     const unsub = useGlobalMachinesStore.subscribe(seen);
 
@@ -79,6 +79,36 @@ describe("globalMachines — a no-op status write must not notify", () => {
     // This is the valuable half: `probeAll` writes EVERY machine at once, so on a
     // fleet of N an unchanged sweep used to invalidate the whole list at once.
     expect(seen).not.toHaveBeenCalled();
+
+    unsub();
+  });
+
+  // The Pi bug: a password-only host that ANSWERS but rejects our credential-less
+  // probe (nothing saved, no key, no master to ride) is `ok:false` but NOT
+  // `unreachable`. Scoring it `reachable:false` painted the connected session
+  // `stale` (red) in `MachinesIndicator` — a machine the user is logged into in a
+  // terminal, shown red. A probe that only means "we hold no credential to check
+  // with" must leave `reachable` (and the session lamp) exactly as they were.
+  it("probeAll leaves a reachable-but-unauthenticated host alone, never stale", async () => {
+    // m2 is held as a session with no prior probe answer — the shape after a
+    // password connect that saved nothing.
+    useGlobalMachinesStore.setState({ reachable: { m1: true } });
+    mockInvoke.mockImplementation((_cmd: string, args: { host?: string }) =>
+      args?.host === "b.example"
+        ? Promise.resolve({ ok: false, unreachable: false, error: "Permission denied (publickey,password)." })
+        : Promise.resolve({ ok: true, unreachable: false, error: "" }),
+    );
+    const seen = vi.fn();
+    const unsub = useGlobalMachinesStore.subscribe(seen);
+
+    await useGlobalMachinesStore.getState().probeAll();
+
+    // m2's reachability stays absent — "not checked", never `false` — so its
+    // connected lamp stays green rather than flipping to stale/red; and no
+    // "Permission denied" error is pinned under that green lamp.
+    expect(useGlobalMachinesStore.getState().reachable).toEqual({ m1: true });
+    expect(useGlobalMachinesStore.getState().errors.m2).toBeUndefined();
+    expect(useGlobalMachinesStore.getState().status.m2).toBe("connected");
 
     unsub();
   });
@@ -91,8 +121,12 @@ describe("globalMachines — a no-op status write must not notify", () => {
   // the project stayed unconnected. The idempotence guarantee this file exists for is
   // unchanged; only the field it guards moved.
   it("probeAll still notifies, once, when a machine actually changed — on `reachable`", async () => {
+    // b.example is genuinely off the network (`unreachable: true`), the one lane
+    // that still scores a host `reachable: false`.
     mockInvoke.mockImplementation((_cmd: string, args: { host?: string }) =>
-      Promise.resolve({ ok: args?.host !== "b.example" }),
+      args?.host === "b.example"
+        ? Promise.resolve({ ok: false, unreachable: true, error: "Connection timed out" })
+        : Promise.resolve({ ok: true, unreachable: false, error: "" }),
     );
     const seen = vi.fn();
     const unsub = useGlobalMachinesStore.subscribe(seen);

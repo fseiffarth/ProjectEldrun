@@ -1,0 +1,164 @@
+/* Dev-only perf panel (src/dev/DevPerfHost.tsx). Never in a shipped bundle —
+   imported only by a component behind import.meta.env.DEV. Follows the app's
+   canonical chrome: accent header + divider, --bg-panel surfaces, theme text
+   tiers. Floats above everything (it is a measuring instrument, and the thing
+   being measured may be a modal), but is not a backdrop: clicks outside it
+   land in the app. */
+
+.dev-perf-fab {
+  position: fixed;
+  right: 10px;
+  bottom: 10px;
+  z-index: 10000;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+}
+.dev-perf-fab:hover {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.dev-perf-panel {
+  position: fixed;
+  right: 10px;
+  bottom: 10px;
+  z-index: 10000;
+  width: 560px;
+  max-width: calc(100vw - 20px);
+  max-height: 72vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+}
+
+.dev-perf-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--accent);
+  font-weight: 600;
+}
+.dev-perf-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dev-perf-head-actions {
+  display: flex;
+  gap: 6px;
+}
+.dev-perf-head-actions button {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.dev-perf-head-actions button:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.dev-perf-body {
+  overflow-y: auto;
+  padding: 8px 12px 12px;
+}
+.dev-perf-body section {
+  margin-bottom: 12px;
+}
+.dev-perf-body h4 {
+  margin: 0 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+.dev-perf-body h4 small,
+.dev-perf-body small {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text-muted);
+}
+
+.dev-perf-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr max-content 1fr;
+  gap: 2px 10px;
+}
+.dev-perf-grid span:nth-child(odd) {
+  color: var(--text-muted);
+}
+
+.dev-perf-empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.dev-perf-list {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.dev-perf-list li {
+  padding: 1px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dev-perf-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.dev-perf-table th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 1px 6px 2px 0;
+}
+.dev-perf-table td {
+  padding: 1px 6px 1px 0;
+  white-space: nowrap;
+}
+.dev-perf-table td.mono {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dev-perf-table th:not(:first-child),
+.dev-perf-table td:not(:first-child) {
+  text-align: right;
+}
+
+.dev-perf-panel .mono {
+  font-family: "JetBrains Mono Variable", monospace;
+  font-size: 11px;
+}
+
+.dev-perf-scan {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  cursor: pointer;
+  color: var(--text-secondary);
+}

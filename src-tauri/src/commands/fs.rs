@@ -127,7 +127,7 @@ pub fn list_dir_local(project_dir: &str, rel_path: &str) -> Result<Vec<FileEntry
         }
         result.push(file_entry_from(&path, &meta, name));
     }
-    result.sort_by_key(|entry| (!entry.is_dir, entry.name.to_lowercase()));
+    result.sort_by_cached_key(|entry| (!entry.is_dir, entry.name.to_lowercase()));
     Ok(result)
 }
 

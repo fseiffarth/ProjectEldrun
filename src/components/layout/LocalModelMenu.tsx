@@ -492,19 +492,30 @@ export function LocalModelMenu() {
   }, []);
 
 
-  // The GPU's own memory, polled only while the menu is open: the question this
-  // menu raises is "will the next model fit?", which each model's `size_vram`
-  // (its own share) cannot answer — only the free headroom on the device can.
+  // The GPU's own memory AND the machine's CPU/RAM, polled only while the menu is
+  // open: the question this menu raises is "will the next model fit, and is there
+  // anything left to run it with?" — which each model's `size_vram` (its own
+  // share) cannot answer; only the device's free headroom and the machine load
+  // can. Both are machine-wide (Ollama is a separate process, so Eldrun's own
+  // figures say nothing about it) and both carry no process table, so a tick is a
+  // handful of small reads. They share ONE interval — same cadence, same gating —
+  // rather than two timers firing a frame apart for no benefit.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    const check = () =>
-      invoke<GpuSample[]>("gpu_memory_snapshot")
+    const check = () => {
+      void invoke<GpuSample[]>("gpu_memory_snapshot")
         .then((g) => {
           if (!cancelled) setGpus(g);
         })
         .catch(() => {});
-    void check();
+      void invoke<MachineLoad>("machine_load_snapshot")
+        .then((m) => {
+          if (!cancelled) setMachine(m);
+        })
+        .catch(() => {});
+    };
+    check();
     const id = window.setInterval(check, saverInterval(2000, energySaver));
     return () => {
       cancelled = true;
@@ -529,32 +540,6 @@ export function LocalModelMenu() {
       cancelled = true;
     };
   }, [open]);
-
-  // The CPU and RAM the *machine* is under, on the same open-only poll as the
-  // GPU above and for the same reason: "will the next model fit, and is there
-  // anything left to run it with?" is one question with three halves, and a
-  // model that doesn't fit in VRAM lands in system RAM and answers on the CPU.
-  // Machine-wide deliberately, not Eldrun's own tree (the header readout's
-  // subject) — Ollama is a separate process, so the app's own figures would say
-  // nothing about the thing this menu is about. The command carries no process
-  // table, so a poll here is three small reads rather than the monitor pane's
-  // whole-system snapshot.
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    const check = () =>
-      invoke<MachineLoad>("machine_load_snapshot")
-        .then((m) => {
-          if (!cancelled) setMachine(m);
-        })
-        .catch(() => {});
-    void check();
-    const id = window.setInterval(check, saverInterval(2000, energySaver));
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [open, energySaver]);
 
   // Read the full installed-model list (resident + on-disk). Used on hover and
   // re-run after a load completes so a freshly-resident model moves up.
@@ -1041,7 +1026,13 @@ export function LocalModelMenu() {
               themes.css) because this menu is the one that stacks four of them
               over rows that are themselves multi-line — an 9px accent word was
               not enough to break the list into parts. */}
+          {/* Pinned title + scrolling region: the unified menu shape (the accent
+              rail and the ::before wash live on this element, so it must not be
+              the thing that scrolls — see `.menu-scroll-region`). This menu is
+              the tallest one in the app: four sections, each row two or three
+              lines, so on a short window it ran off the bottom edge. */}
           <div className="tab-new-menu-group-label">{t("localModel.agentsGroup")}</div>
+          <div className="menu-scroll-region">
           {agents.map((a) => {
             const isDefault = a.id === defaultAgentCmd;
             return (
@@ -1693,6 +1684,7 @@ export function LocalModelMenu() {
               </div>
             </>
           )}
+          </div>
         </div>
       )}
     </div>

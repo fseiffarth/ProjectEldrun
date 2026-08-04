@@ -15,6 +15,8 @@ import {
   useTabsStore,
   useGroup,
   useGroupTabs,
+  type TabEntry,
+  type TabKind,
 } from "../../stores/tabs";
 import { useDragStore } from "../../stores/drag";
 import { useTabLandStore } from "../../stores/tabLand";
@@ -53,6 +55,7 @@ import { closeTabWithConfirm } from "../../lib/closeRemoteTab";
 import { registerHostBoundTab } from "../../lib/hostBound";
 import { listLocalDrivers, type LocalDriverInfo } from "../../lib/localDrivers";
 import { useActivityStore } from "../../stores/activity";
+import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
 
 /** Default fly-out card size when no live pane thumbnail is available (group
@@ -81,6 +84,30 @@ function playDetachFlyOut(
     dx,
     dy,
   });
+}
+
+/**
+ * The panes the "+" menu opens through `ensureTab` — one per scope by
+ * construction, because each renders a machine-global or store-global list that
+ * a second copy would repeat verbatim (see `handleAddMonitor` and friends).
+ * There is nothing for "Duplicate" to produce, so the item is **hidden** rather
+ * than disabled: no state makes it available, and a permanently dead entry in a
+ * five-item menu is worse than one that isn't there.
+ */
+const SINGLETON_TAB_KINDS = new Set<TabKind>([
+  "projects3d",
+  "monitor",
+  "calendar",
+  "printing",
+  "skillslibrary",
+]);
+
+/** Is a second tab like this one a thing that can exist? A Files (Project) tab
+ *  counts as a singleton only at the project ROOT — one opened on a folder is
+ *  its own view, exactly the distinction `handleAdd` draws. */
+function canDuplicateTab(tab: TabEntry): boolean {
+  if (SINGLETON_TAB_KINDS.has(tab.kind)) return false;
+  return !(isFileTabKind(tab.kind) && !tab.folder);
 }
 
 interface Props {
@@ -119,6 +146,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   const setGroupActive = useTabsStore((s) => s.setGroupActive);
   const renameTab = useTabsStore((s) => s.renameTab);
   const addTab = useTabsStore((s) => s.addTab);
+  const duplicateTab = useTabsStore((s) => s.duplicateTab);
   const ensureTab = useTabsStore((s) => s.ensureTab);
   const removeTab = useTabsStore((s) => s.removeTab);
   const setTabLocation = useTabsStore((s) => s.setTabLocation);
@@ -657,6 +685,22 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     // label unchanged.
     renameTab(key, value);
     setEditingKey(null);
+  }
+
+  // Open a second tab like this one, landing immediately to its right. The spec
+  // (what is copied, what is re-minted) is the store's `duplicateSpec`; the one
+  // thing it cannot do itself is the host-bound marker, which the backend has to
+  // register (#150) — so a local-model tab's copy gets its OWN uid here rather
+  // than inheriting the original's, the same way every such tab is created.
+  async function handleDuplicate(key: string) {
+    const source = tabs.find((tab) => tab.key === key);
+    setTabMenu(null);
+    if (!source) return;
+    focusGroup(groupId);
+    const overrides = source.hostBoundUid
+      ? { hostBoundUid: await registerHostBoundTab(scope) }
+      : undefined;
+    duplicateTab(key, overrides);
   }
 
   // Right-click a tab → context menu; Shift+right-click → straight to rename.
@@ -1567,6 +1611,16 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>✎</span>
             {t("common.rename")}
           </button>
+          {tabs.some((tab) => tab.key === tabMenu.key && canDuplicateTab(tab)) && (
+            <button
+              className="tab-new-menu-item"
+              onClick={() => void handleDuplicate(tabMenu.key)}
+            >
+              <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>⧉</span>
+              {t("tabBar.duplicate")}
+              <UntestedTag />
+            </button>
+          )}
           <button
             className="tab-new-menu-item"
             onClick={() => {

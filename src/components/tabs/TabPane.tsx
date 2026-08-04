@@ -89,7 +89,8 @@ function TabPaneImpl({
 
   switch (tab.kind) {
     case "projects3d":
-      return <ProjectBlobPane />;
+      // `visible` stops the 3D rAF loop while the root scope is backgrounded.
+      return <ProjectBlobPane visible={visible} />;
     case "calendar":
       return <CalendarPane visible={visible} />;
     case "browser":
@@ -135,6 +136,10 @@ function TabPaneImpl({
           // Same as Disk Usage above: no write channel back from a popout, so no
           // tabKey (browsed folder stays the popout's) and no open-in-new-tab.
           {...(ownsTabs ? { tabKey: tab.key, canOpenTabs: true } : {})}
+          // Unconditional, unlike `tabKey`: this only names the viewer to its own
+          // window's Local/Remote memory, so it needs no write channel back and a
+          // popout's Files tab keeps its side across a remount too.
+          viewerId={`tab:${tab.key}`}
           folder={tab.folder}
           visible={visible}
         />

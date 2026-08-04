@@ -1467,11 +1467,19 @@ export function DetachedCenterPanel({
           </div>
           {/* Per-subwindow right file viewer. The popout has no projects store,
               so the viewer resolves its root from the group's tab cwd (same
-              fallback a Files (Project) tab uses here); no open-in-new-tab (a
-              popout can't own tabs). Width edits stream back like the toggle. */}
+              fallback a Files (Project) tab uses here) UNLESS the seed streamed the
+              owning project (`remoteInfo.project`), which restores the Local/Remote
+              source switch + run-host picker for a remote project. No
+              open-in-new-tab (a popout can't own tabs). Width edits stream back
+              like the toggle. */}
           {group.filesOpen && (
             <SubwindowFilesSidebar
               scope={scope}
+              // The popout is inert to the projects store, so hand the docked
+              // viewer the owning project (streamed in the seed) — otherwise it
+              // resolves no project and its Local/Remote switch + run-host picker
+              // (gated on `project.remote`) never render (see ProjectFilesTab).
+              project={remoteInfo?.project}
               cwd={
                 byKey.get(group.activeKey ?? group.tabKeys[0] ?? "")?.cwd ??
                 group.tabKeys.map((k) => byKey.get(k)?.cwd).find(Boolean) ??

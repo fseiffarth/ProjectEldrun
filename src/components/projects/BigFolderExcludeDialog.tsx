@@ -75,9 +75,9 @@ export function BigFolderExcludeDialog({ projectId }: { projectId: string }) {
   const [hostAsked, setHostAsked] = useState(false);
 
   const scan = useCallback(
-    async (scanHost: boolean) => {
+    async (scanHost: boolean, confirmed = false) => {
       try {
-        const result = await bigFolders(projectId, scanHost);
+        const result = await bigFolders(projectId, scanHost, confirmed);
         setRows(result.folders);
         setHostScanned(result.hostScanned);
         setError(result.hostError);
@@ -110,7 +110,11 @@ export function BigFolderExcludeDialog({ projectId }: { projectId: string }) {
     setHostAsked(true);
     setScanningHost(true);
     try {
-      await scan(true);
+      // `confirmed: true` is what the answer above is *for*. Without it the
+      // backend refuses the host half on a tagged machine whatever the caller
+      // asked, so this dialog could raise the question and then not honour the
+      // yes — the gap G.24 recorded. The automatic pass never sends it.
+      await scan(true, true);
     } finally {
       setScanningHost(false);
     }

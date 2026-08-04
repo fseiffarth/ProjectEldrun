@@ -380,3 +380,74 @@ describe("the badge counts", () => {
     expect(useMailStore.getState().error).toBeNull();
   });
 });
+
+describe("emptying a list", () => {
+  it("re-reads the page and the counts when the open list is the one cleared", async () => {
+    answers["mail_priority_clear"] = 3;
+    answers["mail_priority_counts"] = {
+      important: 0,
+      urgent: 0,
+      important_unread: 0,
+      urgent_unread: 0,
+    };
+    answers["mail_priority_page"] = page([]);
+    useMailStore.setState({
+      selectedFolderId: null,
+      selectedPriority: "urgent",
+      headers: [header({ id: "m1" })],
+      headerOffset: 100,
+    });
+
+    await useMailStore.getState().clearPriority("urgent");
+    expect(argsOf("mail_priority_clear")).toEqual({ priority: "urgent" });
+    expect(cmds()).toContain("mail_priority_counts");
+    // Page 1, not the offset it was on: the list it was paging through is gone.
+    expect(argsOf("mail_priority_page")?.offset).toBe(0);
+    expect(useMailStore.getState().headers).toEqual([]);
+  });
+
+  it("touches no list on screen when the other one was cleared", async () => {
+    answers["mail_priority_clear"] = 2;
+    answers["mail_priority_counts"] = {
+      important: 0,
+      urgent: 1,
+      important_unread: 0,
+      urgent_unread: 1,
+    };
+    useMailStore.setState({ selectedFolderId: null, selectedPriority: "urgent" });
+
+    await useMailStore.getState().clearPriority("important");
+    expect(cmds()).not.toContain("mail_priority_page");
+    expect(cmds()).not.toContain("mail_headers");
+  });
+
+  it("leaves the page alone and reports the reason when the write fails", async () => {
+    // No optimistic patch to roll back — a list blanked before the write landed
+    // would be indistinguishable from a write that failed and took the mail.
+    const core = await import("@tauri-apps/api/core");
+    vi.mocked(core.invoke).mockRejectedValueOnce("locked");
+    useMailStore.setState({
+      selectedFolderId: null,
+      selectedPriority: "urgent",
+      headers: [header({ id: "m1", priority: "urgent" })],
+    });
+
+    await useMailStore.getState().clearPriority("urgent");
+    expect(useMailStore.getState().error).toBe("locked");
+    expect(useMailStore.getState().headers).toHaveLength(1);
+    expect(cmds()).not.toContain("mail_priority_page");
+  });
+
+  it("reaches no server", async () => {
+    answers["mail_priority_clear"] = 1;
+    answers["mail_priority_counts"] = {
+      important: 0,
+      urgent: 0,
+      important_unread: 0,
+      urgent_unread: 0,
+    };
+    await useMailStore.getState().clearPriority("important");
+    expect(cmds()).not.toContain("mail_sync");
+    expect(cmds()).not.toContain("mail_move");
+  });
+});

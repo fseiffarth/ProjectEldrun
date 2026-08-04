@@ -79,9 +79,11 @@ fn write_terminal_session(
         return Ok(());
     }
     let Some(project_id) = project_id else {
-        // No project to key by — the root scope, whose tabs are never restored
-        // from disk. Writing the export copy alone would create a file nothing
-        // ever reads, so do nothing at all.
+        // No id to key by. Every UI caller now passes one — a project id, or the
+        // literal `"root"` for the root scope (whose tabs ARE persisted and
+        // restored, under `<state_dir>/sessions/root/`). A bare `None` is left only
+        // as a defensive no-op: with no key there is nowhere in the state dir to
+        // write, and the export copy alone would create a file nothing ever reads.
         return Ok(());
     };
 

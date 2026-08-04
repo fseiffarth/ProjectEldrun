@@ -856,6 +856,30 @@ pub async fn metadata_on(sftp: &Sftp, path: &str) -> Result<(u64, Option<u64>), 
     Ok((size, modified))
 }
 
+/// Like [`metadata_on`], but the three outcomes stay distinct: `Ok(Some(..))`
+/// when the path exists, `Ok(None)` ONLY when the server answered the stat with
+/// the SFTP `NoSuchFile` status — the one response that positively means "gone"
+/// — and `Err` for everything else (permission denied, dropped session, protocol
+/// failure), which means "could not check", never "absent". The distinction is
+/// load-bearing for the sync-manifest prune: a helper that collapses a transient
+/// failure into "gone" is how one dropped session wipes the tracked state.
+pub async fn metadata_opt_on(
+    sftp: &Sftp,
+    path: &str,
+) -> Result<Option<(u64, Option<u64>)>, String> {
+    use openssh_sftp_client::error::{Error as SftpClientError, SftpErrorKind};
+    let mut fs = sftp.fs();
+    match fs.metadata(path).await {
+        Ok(meta) => {
+            let size = meta.len().unwrap_or(0);
+            let modified = meta.modified().map(|t| t.as_duration().as_secs());
+            Ok(Some((size, modified)))
+        }
+        Err(SftpClientError::SftpError(SftpErrorKind::NoSuchFile, _)) => Ok(None),
+        Err(e) => Err(format!("sftp metadata failed: {e}")),
+    }
+}
+
 /// SFTP-get a remote file into a local destination path on an open session
 /// (read the bytes, then write them locally). The primitive a per-project
 /// "download" command would call; see [`download`].

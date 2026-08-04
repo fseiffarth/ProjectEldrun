@@ -17,6 +17,7 @@ import {
 import type { GlobalAppEntry } from "../../types";
 import { parseSshAddress } from "../projects/scaffold";
 import { useProjectsStore } from "../../stores/projects";
+import { useGlobalMachinesStore } from "../../stores/globalMachines";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 interface OllamaModelInfo {
@@ -525,18 +526,30 @@ function CodexHookNotice() {
   // Healthy, absent, or still probing → nothing to say.
   if (!codexHookNeedsTrust(state)) return null;
 
+  // The two states need two different instructions, and conflating them is what
+  // made this notice useless: `disabled` means Codex ALREADY recorded a trust
+  // verdict for the hook (its `trusted_hash` is in `config.toml`) and the row is
+  // merely switched off, so telling that user to "trust it" sends them looking
+  // for an action they already took. Only `untrusted` — no verdict at all — is
+  // the review-and-approve case.
+  const off = state === "disabled";
+
   return (
     <div className="agent-codex-hook">
       <div className="settings-section-title">
         {t("agents.codexHookLabel")}{" "}
         <span className="ollama-status-text">
-          {state === "disabled" ? t("agents.codexHookDisabled") : t("agents.codexHookNotTrusted")}
+          {off ? t("agents.codexHookDisabled") : t("agents.codexHookNotTrusted")}
         </span>
       </div>
       <p className="settings-help">
-        {t("agents.codexHookHelpPre")} <strong>eldrun_session_start</strong>{" "}
-        {t("agents.codexHookHelpPost")}{" "}
-        <code>/hooks</code> {t("agents.codexHookHelpPost2")}
+        {off ? t("agents.codexHookCauseDisabled") : t("agents.codexHookCauseUntrusted")}{" "}
+        {t("agents.codexHookFallback")}
+      </p>
+      <p className="settings-help">
+        {t("agents.codexHookFindPre")} <code>/hooks</code>{" "}
+        {t("agents.codexHookFindMid")} <strong>eldrun_session_start</strong>
+        {off ? t("agents.codexHookActionDisabled") : t("agents.codexHookActionUntrusted")}
       </p>
       <div className="ollama-install-cmd-row">
         <code className="ollama-install-cmd">/hooks</code>
@@ -643,6 +656,9 @@ function NodeRuntimeNotice() {
 export function AgentsPanel({ onBack }: { onBack: () => void }) {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
+  const remoteMachines = useGlobalMachinesStore((s) => s.machines);
+  const remoteMachinesLoaded = useGlobalMachinesStore((s) => s.loaded);
+  const loadRemoteMachines = useGlobalMachinesStore((s) => s.load);
   const disabledAgents = settings?.disabled_agents ?? [];
   const setAgentDisabled = (id: string, disabled: boolean) => {
     const next = disabled
@@ -659,12 +675,22 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
   // Per-agent live install log, keyed by agent id.
   const [logs, setLogs] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // Per-agent target selection and outcome for explicit installs on a global
+  // remote machine. This is independent of local `installed`: each machine has
+  // its own CLI state.
+  const [remoteTargets, setRemoteTargets] = useState<Record<string, string>>({});
+  const [remoteInstalling, setRemoteInstalling] = useState<string | null>(null);
+  const [remoteResults, setRemoteResults] = useState<Record<string, string>>({});
+  const [remoteErrors, setRemoteErrors] = useState<Record<string, string>>({});
   const logRef = useRef<HTMLPreElement>(null);
 
   const refresh = () => {
     invoke<AgentInfo[]>("list_agents").then(setAgents).catch(() => setAgents([]));
   };
   useEffect(refresh, []);
+  useEffect(() => {
+    if (!remoteMachinesLoaded) void loadRemoteMachines();
+  }, [loadRemoteMachines, remoteMachinesLoaded]);
 
   // Keep the live install log pinned to its latest line.
   useEffect(() => {
@@ -739,6 +765,65 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
       .catch(() => {});
   };
 
+  const installAgentRemote = async (agent: AgentInfo) => {
+    const machineId = remoteTargets[agent.id];
+    const machine = remoteMachines.find((m) => m.id === machineId);
+    if (!machine) return;
+    const key = `${agent.id}:${machine.id}`;
+    setRemoteInstalling(key);
+    setRemoteResults(({ [agent.id]: _drop, ...rest }) => rest);
+    setRemoteErrors(({ [agent.id]: _drop, ...rest }) => rest);
+    try {
+      await invoke<string>("install_agent_remote", {
+        agentId: agent.id,
+        machineId: machine.id,
+      });
+      setRemoteResults((prev) => ({
+        ...prev,
+        [agent.id]: t("agents.remoteInstalled", {
+          label: agent.label,
+          machine: machine.label || machine.host,
+        }),
+      }));
+    } catch (err) {
+      setRemoteErrors((prev) => ({ ...prev, [agent.id]: String(err) }));
+    } finally {
+      setRemoteInstalling(null);
+    }
+  };
+
+  // The same install, watched. `install_agent_remote` reports one string when it
+  // is over and nothing while it runs — which hides exactly what goes wrong on
+  // someone else's machine: an npm install that takes minutes, an nvm PATH that
+  // isn't there, or a prompt (sudo, a host key) nobody can answer headlessly. The
+  // backend hands back an `ssh -t` command line for the *same* registry-owned
+  // script, and `runInstallInTab` types it into a root-terminal tab, where the
+  // output is readable and the prompts are answerable. No `remoteInstalling`
+  // spinner: the tab is the progress, and this call is over the moment it opens.
+  const installAgentRemoteInTerminal = async (agent: AgentInfo) => {
+    const machineId = remoteTargets[agent.id];
+    const machine = remoteMachines.find((m) => m.id === machineId);
+    if (!machine) return;
+    setRemoteResults(({ [agent.id]: _drop, ...rest }) => rest);
+    setRemoteErrors(({ [agent.id]: _drop, ...rest }) => rest);
+    try {
+      const command = await invoke<string>("install_agent_remote_command", {
+        agentId: agent.id,
+        machineId: machine.id,
+      });
+      runInstallInTab(
+        t("agents.installRemoteTabLabel", {
+          label: agent.label,
+          machine: machine.label || machine.host,
+        }),
+        command,
+        "default",
+      );
+    } catch (err) {
+      setRemoteErrors((prev) => ({ ...prev, [agent.id]: String(err) }));
+    }
+  };
+
   return (
     <>
       <div className="settings-title-row">
@@ -787,6 +872,57 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
                   </label>
                 )}
               </div>
+              <div className="agent-remote-install-row">
+                {/* The app's own `Dropdown`, never a native <select>: WebKitGTK
+                    renders a <select> popup as a light OS menu that ignores the
+                    theme entirely — the reason every other picker in the app
+                    (the file-browser sort, the LaTeX engine, the catalog sort a
+                    few hundred lines below) already uses this one. */}
+                <Dropdown
+                  className="agent-remote-machine-picker"
+                  title={t("agents.remoteMachineAria", { label: a.label })}
+                  value={remoteTargets[a.id] ?? ""}
+                  placeholder={
+                    !remoteMachinesLoaded
+                      ? t("agents.remoteMachinesLoading")
+                      : remoteMachines.length === 0
+                        ? t("agents.noRemoteMachines")
+                        : t("agents.chooseRemoteMachine")
+                  }
+                  disabled={!remoteMachinesLoaded || remoteMachines.length === 0 || remoteInstalling !== null}
+                  options={remoteMachines.map((machine) => ({
+                    value: machine.id,
+                    label: machine.label || machine.host,
+                  }))}
+                  onChange={(v) => setRemoteTargets((prev) => ({ ...prev, [a.id]: v }))}
+                />
+                <button
+                  type="button"
+                  className="ollama-action-btn"
+                  disabled={!remoteTargets[a.id] || remoteInstalling !== null}
+                  onClick={() => void installAgentRemote(a)}
+                >
+                  {remoteInstalling === `${a.id}:${remoteTargets[a.id]}`
+                    ? t("agents.installingRemote")
+                    : t("agents.installOnRemote")}
+                </button>
+                <button
+                  type="button"
+                  className="ollama-action-btn"
+                  title={t("agents.installOnRemoteTerminalTitle")}
+                  disabled={!remoteTargets[a.id] || remoteInstalling !== null}
+                  onClick={() => void installAgentRemoteInTerminal(a)}
+                >
+                  {t("agents.installOnRemoteTerminal")}
+                </button>
+                <UntestedTag />
+              </div>
+              {remoteResults[a.id] && (
+                <div className="agent-remote-result">{remoteResults[a.id]}</div>
+              )}
+              {remoteErrors[a.id] && (
+                <div className="project-dialog-error">{remoteErrors[a.id]}</div>
+              )}
               {a.installed && (
                 <>
                   <div className="ollama-install-cmd-row">

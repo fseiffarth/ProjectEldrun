@@ -47,6 +47,7 @@ import {
   readFileBytes,
   readFileText,
   useFileScope,
+  usePaneVisible,
   writeFileBytes,
 } from "../fileAccess";
 import { openLinkedFile, useViewerState } from "../FileViewerPane";
@@ -230,6 +231,7 @@ export interface DeckViewProps {
 export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewProps) {
   const t = useT();
   const scope = useFileScope();
+  const paneVisible = usePaneVisible();
   /** The scope project's own directory — the boundary `read_file_bytes` confines
    *  to, and therefore the boundary an asset pick has to respect (#108). */
   const projectRoot = useProjectsStore(
@@ -477,9 +479,11 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
 
   // Notice a foreign write to the sidecar itself — two deck tabs on one file
   // (main window + popout), or the JSON edited in a text tab beside it. Until now
-  // that was last-writer-wins with no warning (TODO V #116).
+  // that was last-writer-wins with no warning (TODO V #116). Visible panes only
+  // (hidden ones stay mounted forever); re-show re-arms the interval, whose
+  // first tick then reconciles anything written while hidden.
   useEffect(() => {
-    if (!deck) return;
+    if (!deck || !paneVisible) return;
     const id = setInterval(() => {
       if (presentingRef.current) return;
       void (async () => {
@@ -495,7 +499,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       })();
     }, TEX_FIGURE_POLL_MS);
     return () => clearInterval(id);
-  }, [deck, path, scope]);
+  }, [deck, path, scope, paneVisible]);
 
   // --- editing -----------------------------------------------------------
   //
@@ -1222,7 +1226,11 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
   // deliberately skips any object already mid-compile, so a manual Recompile
   // and this poll can never race to rasterize the same PDF twice.
   useEffect(() => {
-    if (!deck) return;
+    // Visible panes only: this poll is a `file_mtime` per figure per tick — an
+    // SFTP round trip each on a remote project — and hidden panes stay mounted
+    // forever. `mtimesRef` survives the hidden spell, so re-show re-baselines
+    // nothing and the first tick picks up any recompile it missed.
+    if (!deck || !paneVisible) return;
     const figures = deck.slides.flatMap((s) =>
       s.objects.filter(
         (o): o is ImageObject & { texSrc: string } => o.kind === "image" && !!o.texSrc,
@@ -1278,7 +1286,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       cancelled = true;
       clearInterval(id);
     };
-  }, [deck, path, scope, texBusyIds, rasterizeInto, refreshImage, markTexBusy]);
+  }, [deck, path, scope, paneVisible, texBusyIds, rasterizeInto, refreshImage, markTexBusy]);
 
   // --- keyboard ----------------------------------------------------------
   const onKeyDown = useCallback(

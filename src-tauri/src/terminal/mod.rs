@@ -134,7 +134,7 @@ fn invalidate_proc_tree_cache() {
 }
 
 /// How aggressively [`reap_child_subtree`] signals a doomed process subtree.
-enum ReapMode {
+pub(crate) enum ReapMode {
     /// SIGTERM now, then SIGKILL any survivors after a short grace period on a
     /// detached thread. Used on tab close / respawn, where the app stays alive
     /// long enough to deliver the escalation.
@@ -142,6 +142,16 @@ enum ReapMode {
     /// SIGKILL immediately. Used at app exit, where a delayed escalation thread
     /// would be torn down with the process before it could fire.
     Immediate,
+    /// SIGTERM now, then SIGKILL whatever is still alive when `grace` runs out —
+    /// escalated on the **calling** thread, and returning as soon as the subtree
+    /// is gone. This is the mode for an exit-time teardown that must let the
+    /// process shut itself down first: [`ReapMode::Graceful`]'s escalation thread
+    /// dies with the app before it can fire, and [`ReapMode::Immediate`] never
+    /// offers the chance. The caller pays the wait, so keep the grace short.
+    ///
+    /// The grace is unread on Windows, where `TerminateProcess` is the only
+    /// per-pid primitive and every mode reaps immediately.
+    GracefulBlocking(#[cfg_attr(not(unix), allow(dead_code))] Duration),
 }
 
 /// Best-effort abort of a PTY child's **entire process subtree**.
@@ -155,7 +165,7 @@ enum ReapMode {
 ///
 /// The leader pid is included in the returned set; re-signalling a leader the
 /// caller also `Child::kill`s is a harmless no-op (a dead pid yields ESRCH).
-fn reap_child_subtree(leader_pid: u32, mode: ReapMode) {
+pub(crate) fn reap_child_subtree(leader_pid: u32, mode: ReapMode) {
     // Force a fresh process-tree walk rather than reusing a cached CPU sample
     // that may predate a just-spawned child.
     crate::sysstat::invalidate_descendant_cache();
@@ -186,6 +196,21 @@ fn reap_pids(pids: Vec<u32>, mode: ReapMode) {
                 std::thread::sleep(Duration::from_secs(2));
                 signal(&pids, libc::SIGKILL);
             });
+        }
+        ReapMode::GracefulBlocking(grace) => {
+            signal(&pids, libc::SIGTERM);
+            let deadline = Instant::now() + grace;
+            while Instant::now() < deadline {
+                // SAFETY: `kill(pid, 0)` probes existence without signalling.
+                let any_alive = pids
+                    .iter()
+                    .any(|&pid| unsafe { libc::kill(pid as libc::pid_t, 0) } == 0);
+                if !any_alive {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            signal(&pids, libc::SIGKILL);
         }
     }
 }

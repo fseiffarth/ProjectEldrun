@@ -13,6 +13,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) 
 
 import {
   newTmuxSessionName,
+  sessionKindFromName,
   persistSessionsEnabled,
   shouldPersistTab,
   shouldPersistLocalTab,
@@ -39,6 +40,34 @@ describe("newTmuxSessionName", () => {
     expect(newTmuxSessionName("proj-1")).toMatch(/^eldrun-proj-1--/);
     // A scope with tmux-unsafe characters is sanitized, never dropped or thrown.
     expect(newTmuxSessionName("weird:scope.id")).toMatch(/^eldrun-weird_scope_id--/);
+  });
+
+  it("embeds the tab kind AFTER the scope separator so the project prefix is untouched", () => {
+    // The kind token sits at the front of the uuid half, so the `eldrun-<scope>--`
+    // prefix the Sessions view filters by is exactly as it was before the token.
+    expect(newTmuxSessionName("p1", "agent")).toMatch(/^eldrun-p1--agent-/);
+    expect(newTmuxSessionName("p1", "shell")).toMatch(/^eldrun-p1--shell-/);
+    // Defaults to shell (the common case; both mint sites narrow the tab kind).
+    expect(newTmuxSessionName("p1")).toMatch(/^eldrun-p1--shell-/);
+  });
+});
+
+describe("sessionKindFromName — the Sessions view's per-machine grouping", () => {
+  it("round-trips the kind a minted name carries", () => {
+    expect(sessionKindFromName(newTmuxSessionName("p1", "agent"))).toBe("agent");
+    expect(sessionKindFromName(newTmuxSessionName("p1", "shell"))).toBe("shell");
+  });
+
+  it("classifies as `other` anything with no recognizable token", () => {
+    // A legacy name minted before the token existed: a bare uuid after the `--`.
+    // Hex can never begin with `agent`/`shell`, so it never misclassifies.
+    expect(sessionKindFromName("eldrun-p1--fe80abcd-1234-5678-9abc-def012345678")).toBe("other");
+    // A foreign / hand-started session.
+    expect(sessionKindFromName("train")).toBe("other");
+    // A name that was hand-renamed through the Sessions view (no `--`).
+    expect(sessionKindFromName("eldrun-my-run")).toBe("other");
+    // A scope that itself contains the token word must not leak across the `--`.
+    expect(sessionKindFromName("eldrun-agent-repo--shell-abc")).toBe("shell");
   });
 });
 

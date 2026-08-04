@@ -43,11 +43,14 @@ interface GlobalMachinesStore {
    *  claim a session nothing ever opened. Written only by `add`/`register`/
    *  `connect`/`disconnect`. */
   status: Record<string, ConnState>;
-  /** Per-machine id: the last `probeAll` answer — "this host was reachable and
-   *  authenticated our credential", which is *not* a session and must never be
-   *  mistaken for one. Absent = never probed. Kept beside `status` rather than
-   *  folded into it so the row can say "up, but not connected" instead of lying
-   *  in either direction. */
+  /** Per-machine id: the last `probeAll` answer — `true` = "the host answered and
+   *  authenticated our credential" (not a session, and never to be mistaken for
+   *  one), `false` = "genuinely off the network" (`ssh_probe.unreachable`). Absent
+   *  = never probed **or** last probed a host that answered but rejected our
+   *  credential-less probe — a password-only host we hold no key/saved password
+   *  for is not "down", and scoring it `false` painted a connected session `stale`
+   *  (red). Kept beside `status` rather than folded into it so the row can say
+   *  "up, but not connected" instead of lying in either direction. */
   reachable: Record<string, boolean>;
   /** Per-machine id: the message from the last failed `connect`/`update`, so a
    *  red lamp is never just "error" with no way to tell why — an unknown host
@@ -373,9 +376,16 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
     );
     const results = await Promise.all(
       machines.map((m) =>
-        invoke<{ ok: boolean; error: string }>("ssh_probe", { user: m.user, host: m.host, port: m.port })
-          .then((r) => [m.id, r.ok, r.error] as const)
-          .catch((e) => [m.id, false, String(e)] as const),
+        invoke<{ ok: boolean; unreachable: boolean; error: string }>("ssh_probe", {
+          user: m.user,
+          host: m.host,
+          port: m.port,
+        })
+          .then((r) => [m.id, r.ok, r.unreachable, r.error] as const)
+          // A rejected task is not the host telling us it is off the network, so
+          // it is NOT `unreachable`: fall into the answered-but-unconfirmed lane
+          // rather than scoring the host down.
+          .catch((e) => [m.id, false, false, String(e)] as const),
       ),
     );
     // The sweep writes `reachable`, NEVER `status`. A probe says the host answered;
@@ -383,33 +393,61 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
     // the second — opening the pool of a project that holds the same host. Folding
     // the first into the second is what lit a machine green off a hover while every
     // project holding it stayed unconnected, with nothing to propagate.
-    //
-    // Same idempotence rule as `setStatus`: a sweep that finds everything as it
-    // already was is a no-op and must not notify. This one is the more valuable of
-    // the two — it writes EVERY machine at once, so on a fleet of N an unchanged
-    // sweep used to invalidate the whole list.
     set((s) => {
-      const nextReachable = Object.fromEntries(results.map(([id, ok]) => [id, ok]));
-      const changed = Object.entries(nextReachable).some(([id, ok]) => s.reachable[id] !== ok);
-      // `ssh_probe` already carries the reason a re-auth failed (bad password,
-      // unreachable network, refused prompt…) — capture it the same way `connect`
-      // does, so a menu-open sweep explains a red lamp exactly as well as a manual
-      // retry would, instead of throwing that text away.
+      // Three outcomes, not two — `ssh_probe`'s `unreachable` is the distinction the
+      // old `reachable = ok` collapse threw away, and that collapse was a bug: a
+      // password-only host that ANSWERS but rejects our credential-less probe
+      // (nothing saved, no key, no ControlMaster to ride — the ordinary Raspberry-Pi
+      // shape) failed the probe and was recorded identically to a host that is off
+      // the network. That `reachable: false` then painted a *connected* session as
+      // `stale` (red, `MachinesIndicator`'s `rowStateOf`) and a reachable host as
+      // down — a machine you are logged into in a terminal, shown red.
+      //
+      //   ok           → reachable = true  (answered AND authenticated us)
+      //   unreachable  → reachable = false (genuinely off the network)
+      //   answered/!ok → leave `reachable` alone: a held session stays green, an
+      //                  un-probed row stays "not checked", and no error is filed —
+      //                  "we have no credential to probe with" is not a failure the
+      //                  user can act on from this row, and pinning it under a green
+      //                  lamp reads as a broken connection that is not broken.
+      const reachable = { ...s.reachable };
+      let changedReach = false;
+      // `ssh_probe` carries the reason it could not reach a host — captured the same
+      // way `connect` does, so a menu-open sweep explains a red lamp as well as a
+      // manual retry would, instead of throwing the text away. Only for the genuinely
+      // unreachable, per the lanes above.
       const errors = { ...s.errors };
       let changedErrors = false;
-      for (const [id, ok, err] of results) {
+      for (const [id, ok, unreachable, err] of results) {
         if (ok) {
+          if (reachable[id] !== true) {
+            reachable[id] = true;
+            changedReach = true;
+          }
           if (errors[id] !== undefined) {
             delete errors[id];
             changedErrors = true;
           }
-        } else if (err && errors[id] !== err) {
-          errors[id] = err;
-          changedErrors = true;
+        } else if (unreachable) {
+          if (reachable[id] !== false) {
+            reachable[id] = false;
+            changedReach = true;
+          }
+          if (err && errors[id] !== err) {
+            errors[id] = err;
+            changedErrors = true;
+          }
         }
       }
-      if (!changed && !changedErrors) return s;
-      return { reachable: changed ? { ...s.reachable, ...nextReachable } : s.reachable, errors };
+      // Same idempotence rule as `setStatus`: a sweep that changed nothing must not
+      // notify. This one writes EVERY machine at once, so on a fleet of N an
+      // unchanged sweep used to invalidate the whole list and re-render the header
+      // beneath it.
+      if (!changedReach && !changedErrors) return s;
+      return {
+        reachable: changedReach ? reachable : s.reachable,
+        errors: changedErrors ? errors : s.errors,
+      };
     });
   },
 

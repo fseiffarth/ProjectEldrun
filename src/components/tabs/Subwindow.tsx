@@ -70,6 +70,7 @@ export function Subwindow({ groupId, projectCwd, children }: Props) {
           <SubwindowFilesSidebar
             scope={scope}
             cwd={projectCwd}
+            viewerId={`group:${groupId}`}
             width={group.filesWidth}
             onWidthChange={(w) => setGroupFilesWidth(groupId, w)}
             folder={group.filesFolder}

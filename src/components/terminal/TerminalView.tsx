@@ -13,6 +13,8 @@ import { noteInput } from "../../lib/promptCount";
 import { METRIC, agentPromptLeaf, sub } from "../../lib/usageMetrics";
 import { ROOT_SCOPE, bumpUsage, markAgentActive } from "../../stores/usage";
 import { onTerminalExit, onTerminalOutput, onTerminalReady } from "../../lib/terminalBus";
+import { hpcGuardRefusal } from "../../lib/hpcGuard";
+import { useHpcGuardStore } from "../../stores/hpcGuardPrompt";
 import { claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isTerminalIdentityResponse } from "../../lib/terminalControl";
 import "@xterm/xterm/css/xterm.css";
 
@@ -162,10 +164,15 @@ function terminalTheme(scheme: string | undefined) {
   };
 }
 
-// While a pane is hidden xterm has no renderer to write into, so its PTY output
-// is buffered until the terminal is first opened. Cap the retained text so a
-// chatty background agent can't grow this without bound; xterm trims to its own
-// scrollback on flush anyway.
+// While a pane is hidden its PTY output is buffered instead of written into
+// xterm — before the first open because xterm has no renderer to write into,
+// and for every hidden spell after it because a `display: none` pane still
+// pays full escape-sequence parsing + render scheduling per chunk. With many
+// parallel agent tabs streaming (Eldrun's normal shape) that made background
+// tabs the renderer's biggest standing cost. The buffer flushes when the pane
+// is next shown; agent TUIs repaint whole screens, so the flush converges on
+// the current frame. Cap the retained text so a chatty background agent can't
+// grow this without bound; xterm trims to its own scrollback on flush anyway.
 const PENDING_OUTPUT_CAP = 1_000_000;
 
 // Agent-terminal zoom. Agent TUIs (Claude, Codex, …) render dense layouts, so
@@ -266,15 +273,26 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     openedRef.current = false;
     pendingOutput.current = "";
 
-    // Write PTY output to the terminal once it is open; buffer it otherwise so a
-    // hidden pane doesn't lose its scrollback (and doesn't crash xterm's
-    // not-yet-initialized renderer).
+    // Write PTY output to the terminal only while the pane is open AND visible;
+    // buffer it otherwise — a hidden pane's xterm still parses and schedules
+    // renders for every chunk, which is what background agent tabs must not
+    // cost (see PENDING_OUTPUT_CAP). Draining the buffer before a direct write
+    // keeps ordering safe even if a chunk lands between the visibility flip
+    // and the flush-on-show in doFit.
     const writeTerm = (data: string) => {
-      if (openedRef.current) {
+      if (openedRef.current && visibleRef.current) {
+        if (pendingOutput.current) {
+          term.write(pendingOutput.current);
+          pendingOutput.current = "";
+        }
         term.write(data);
       } else {
         pendingOutput.current += data;
-        if (pendingOutput.current.length > PENDING_OUTPUT_CAP) {
+        // Trim with hysteresis: cutting exactly to the cap on every chunk past
+        // it re-copies the whole buffer per chunk (a ~1 MB memcpy up to ~60×/s
+        // per chatty hidden tab, forever). Letting it grow to 2× and cutting
+        // back to the cap costs one copy per megabyte of new output instead.
+        if (pendingOutput.current.length > PENDING_OUTPUT_CAP * 2) {
           pendingOutput.current = pendingOutput.current.slice(-PENDING_OUTPUT_CAP);
         }
       }
@@ -577,13 +595,52 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // about the previous occupant of this id, so a reopened project's resume
       // replay can't ride an old input stamp into a "working"/"done" glow.
       notePtySpawn(id);
-      try {
-        await invoke("pty_spawn", {
+      const spawn = () =>
+        invoke("pty_spawn", {
           opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, project_id: projectId ?? null, remote_host_id: remoteHostId ?? null, tmux_session: tmuxSession ?? null, tmux_attach: tmuxAttach ?? null, host_bound_uid: hostBoundUid ?? null },
         });
+      try {
+        await spawn();
       } catch (e) {
-        if (!cancelled) {
+        if (cancelled) return;
+        // **The HPC tag's refusal, made actionable** (G.24). `pty_spawn` dials the
+        // host before wrapping a remote tab, and on a machine tagged HPC it
+        // refuses with `hpc_mode`'s sentinel — deliberately, because it receives
+        // identical options for a tab *restored at relaunch* (nobody asked for
+        // that) and for a click. The backend's own comment says the frontend
+        // should "offer connect and open"; nothing did, so the raw
+        // `ELDRUN_HPC_GUARD connect user@host:22` was printed into the pane.
+        //
+        // Connecting the project is what actually lifts the refusal: the pool
+        // holds a standing authorization once it is up
+        // (`services::remote::connect_host`), which is the only distinction this
+        // seam can make. So the retry is connect-then-spawn, not a flag.
+        const refusal = hpcGuardRefusal(e);
+        if (!refusal) {
           writeTerm(`\r\n\x1b[31m[spawn error: ${e}]\x1b[0m\r\n`);
+          return;
+        }
+        const ok = await useHpcGuardStore.getState().request(refusal.kind, refusal.target);
+        if (cancelled) return;
+        if (!ok) {
+          // Backing out is an answer, not a failure — say what did not happen and
+          // how to get it, rather than leaving a blank pane.
+          writeTerm(
+            `\r\n\x1b[33m[${refusal.target} is tagged as a cluster login node, so this tab did not connect.\r\n` +
+              `Connect the project from its pill to open tabs on it.]\x1b[0m\r\n`,
+          );
+          return;
+        }
+        try {
+          await invoke("remote_connect", {
+            projectId: projectId ?? null,
+            hostId: remoteHostId ?? null,
+            password: null,
+          });
+          if (cancelled) return;
+          await spawn();
+        } catch (retryErr) {
+          if (!cancelled) writeTerm(`\r\n\x1b[31m[spawn error: ${retryErr}]\x1b[0m\r\n`);
         }
       }
     };
@@ -600,6 +657,14 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         return;
       }
       if (fitRef.current && termRef.current && hasLayout()) {
+        // A re-shown pane holds whatever streamed while it was hidden
+        // (writeTerm buffers past a hidden pane's xterm) — flush it in the
+        // same beat the pane regains its layout, before the refit, so the
+        // catch-up isn't waiting on the next live chunk to drain it.
+        if (visibleRef.current && pendingOutput.current) {
+          termRef.current.write(pendingOutput.current);
+          pendingOutput.current = "";
+        }
         fitRef.current.fit();
         invoke("pty_resize", {
           id,

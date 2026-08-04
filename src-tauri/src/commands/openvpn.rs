@@ -158,6 +158,43 @@ pub async fn vpn_has_saved_password(config: String) -> bool {
         .unwrap_or(false)
 }
 
+/// The VPN twin of `commands::ssh::remote_saved_password_state` (G.24): both
+/// halves of "is a password saved for this tunnel?" in one answer — whether one
+/// reads back, and whether the store could be read at all.
+///
+/// It exists because [`vpn_has_saved_password`] is a bare `bool`, and against a
+/// **locked** Secret Service that bool is a lie with a specific consequence. A
+/// locked collection answers every lookup with "nothing saved", so the SSH side
+/// used to untick "Save password" — and an unticked box is not neutral, it is an
+/// instruction to *clear* the credential, which is how a host lost the password
+/// it had just authenticated with. The SSH side now distinguishes "not saved"
+/// from "keyring unreadable"; the VPN side still read a plain boolean, so a
+/// locked keyring here went on masquerading as "nothing saved".
+///
+/// Same shape and same reason as its twin: **one** `spawn_blocking` hop, because
+/// these are one question and asking them separately costs two unbounded keychain
+/// trips on a path the launch-time auto-connect already takes once per config.
+/// The lock state is read *first*, so it refreshes the cache that `has()`'s own
+/// gate consults and the two facts describe the same moment rather than
+/// straddling a probe.
+#[tauri::command]
+pub async fn vpn_saved_password_state(config: String) -> crate::commands::ssh::SavedPasswordState {
+    tokio::task::spawn_blocking(move || {
+        use crate::services::remote_credentials as creds;
+        let keyring = creds::keyring_state();
+        let saved = has_saved_password_blocking(&config);
+        crate::commands::ssh::SavedPasswordState { saved, keyring }
+    })
+    .await
+    .unwrap_or(crate::commands::ssh::SavedPasswordState {
+        saved: false,
+        // A panicked lookup told us nothing about the store, and "unavailable" is
+        // the state with no action behind it — the honest answer to "we don't
+        // know", and the one that routes the caller to a prompt.
+        keyring: crate::services::remote_credentials::KeyringState::Unavailable,
+    })
+}
+
 /// The blocking body of [`vpn_has_saved_password`], callable from the other
 /// keychain helpers without going through the command layer (and without each
 /// one spawning its own blocking task).

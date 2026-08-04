@@ -38,6 +38,7 @@ import {
 import { withdrawnTabKinds } from "../../lib/experimental";
 import { PLATFORM } from "../../lib/platform";
 import { useTabLandStore } from "../../stores/tabLand";
+import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenEditorJump } from "../../stores/editorJump";
 import { DetachedCenterPanel } from "./DetachedCenterPanel";
@@ -321,6 +322,16 @@ export function DetachedApp({ param }: Props) {
       setGroup(ev.payload.subtree);
       setTabs(ev.payload.tabs);
       setRemoteInfo(ev.payload.remote);
+      // Seed THIS window's (otherwise empty) remoteStatus store with the primary
+      // host's SSH state from the seed, so the docked file viewer's Local/Remote
+      // hooks (`useRemoteBlocked`/`useIndependentFileSource`) resolve the same way
+      // they do in the main window — the SFTP pool itself is shared across
+      // windows, so a Remote read works once the status here says connected. Runs
+      // on every seed (initial + re-seeds), so a later connect refreshes it.
+      const remote = ev.payload.remote;
+      if (remote?.project?.remote && remote.primarySsh) {
+        useRemoteStatusStore.getState().setSsh(remote.project.id, remote.primarySsh);
+      }
       // A tab docked INTO this popout from another window arrives on a seed
       // tagged with its key — play the same drop-in landing as an in-popout
       // merge as it mounts in its destination bar (batched with the state sets

@@ -169,10 +169,37 @@ container) — as opposed to the git **push** axis (#21/#22).*
         remote session.
         - [x] 🤖 Automated test — `remote_command_strips_agent_auth_env` asserts
           auth vars (and their values) are excluded while ordinary env is kept
-      - [ ] **Generalize bootstrap/detect to other agent CLIs** (Codex, Gemini,
-        Vibe): add one `AgentRecipe` row per agent to `remote_agents::RECIPES`
-        (the framework + claude recipe already ship); keep honoring the existing
-        `local_only` flag (local Ollama agents are never wrapped).
+      - [x] **Generalize bootstrap/detect to other agent CLIs** (2026-08-04; ✅
+        Done · 🧪 Untested). `remote_agents::RECIPES` now carries **codex**,
+        **gemini**, **vibe** and **opencode** beside claude, so a remote tab for
+        any of them probes and userspace-installs instead of exec'ing straight
+        into a bare "command not found". `local_only` is untouched and still
+        honoured one layer up (`commands::terminal::pty_spawn` only wraps
+        `!opts.local_only`), so local Ollama agents are never wrapped.
+        Two things beyond the plain row-adding:
+        - **The claude row was wrong.** It installed
+          `npm install -g @anthropic-ai/claude-code` while the shipped registry
+          (`commands::agents::AGENTS`) had moved to the official
+          `curl -fsSL https://claude.ai/install.sh | bash` — so the same agent
+          name put *different* binaries on two machines depending on which side
+          installed it. Aligned, and a tripwire
+          (`every_remote_recipe_matches_its_registry_row`) now fails whenever a
+          recipe names an agent the registry doesn't have or disagrees with its
+          Unix install command, since nothing else forces the two tables to
+          agree. Membership rule stated in the module header: **userspace, no
+          sudo** — an agent whose only installer needs root gets no row at all
+          rather than a prelude that puts a password prompt in an agent's PTY.
+        - **`hash -r` between the two probes.** The prelude probes, installs,
+          then re-probes — and an installer dropping a binary into a directory
+          already on `PATH` is invisible to a shell that cached the lookup, so a
+          successful install could be reported as a failure and `exit 127`.
+        - [x] 🤖 Automated test — `remote_agents` (all five have recipes; every
+          recipe builds a probe-twice/abort prelude that runs its own installer;
+          no recipe escalates; none carries a newline/NUL that would split the
+          script it is spliced into) + `ssh_exec`
+          `remote_command_bootstraps_the_other_agent_clis` and
+          `remote_command_leaves_an_unknown_cli_alone` (the lookup did not become
+          a catch-all) + the registry tripwire above.
       - [ ] 🖐️ Manual test — connect (VPN if needed) → open a remote agent tab →
         the CLI is detected/installed, logs in on first run, and runs a pipeline
         on the remote (remote GPU/env), with edits visible in Eldrun's file tree.
@@ -1217,23 +1244,132 @@ deliberately did **not** do, in priority order:
   from "keyring unreadable"; the VPN side still reads a plain boolean, so a locked
   keyring there still masquerades as "nothing saved". Needs the backend twin of
   `remote_saved_password_state`.
-- [ ] **`sync_big_folders` takes no `confirmed`/`background` flag**, so the host
-  census on a tagged machine can only ever be refused — the frontend now says so
-  rather than silently doing nothing, but the explicit "measure it anyway" cannot
-  be honoured until the command accepts one.
-- [ ] **`pty_spawn`'s `HPC_GUARD` refusal has no frontend handler**: opening a tab
-  on a tagged, not-yet-connected project surfaces the raw sentinel instead of the
-  "connect and open" affordance the backend refusal was designed for.
+  > **Done 2026-08-04 · 🧪 Untested.** `commands::openvpn::vpn_saved_password_state`
+  > is that twin — one `spawn_blocking` hop answering both halves (saved, and
+  > whether the store was readable), lock state read first so the two facts
+  > describe the same moment. `VpnPasswordPrompt` now renders the SSH side's own
+  > `SavePasswordRow` off `useSavedCredentialSource` rather than a fourth copy of
+  > the toggle, which brings the tri-state, the 4 s bound and the
+  > **Unlock keyring** banner with it; the password field's "(not stored)" is
+  > withheld when the store was unreadable, since that is a claim about a
+  > keychain nobody could read. Unticking stays **inert** — `stores/vpnPrompt`
+  > already sends `remember ? true : null`, never `false` — so deleting a VPN
+  > credential remains an explicit act in the header's VPN menu. The box is
+  > seeded once per prompt behind a ref, so a later `applyOutcome`/`refresh`
+  > cannot retick what the user just unticked.
+- [x] **`sync_big_folders` takes no `confirmed`/`background` flag** (2026-08-04;
+  ✅ Done · 🧪 Untested). It now takes `confirmed: Option<bool>` and refuses with
+  `hpc_mode::guard_error("du-scan", …)` — `disk_usage_scan`'s shape — instead of
+  silently forcing the host half off. The refusal fires **before** any work, so
+  the retry repeats nothing, and only for a caller that actually wants the host
+  half: a local-only census of a tagged project is not the act the tag guards,
+  and gating it would put a dialog in front of the *automatic* on-connect census,
+  which is the one thing the tag exists to keep quiet. A confirmed run also takes
+  a `user_dial` guard, so one confirmation covers the whole act rather than the
+  census being stopped again at its own ssh. `BigFolderExcludeDialog` already
+  raised the question via `confirmOnHpcHost`; it now sends the answer.
+- [x] **`pty_spawn`'s `HPC_GUARD` refusal has no frontend handler** (2026-08-04;
+  ✅ Done · 🧪 Untested). `TerminalView`'s spawn `catch` runs the error through
+  `hpcGuardRefusal` and, on a hit, raises the `HpcGuardDialog` (new **`connect`**
+  kind, wording of its own) instead of printing
+  `[spawn error: ELDRUN_HPC_GUARD connect user@host:22]` into the pane. Going
+  ahead is **connect-then-spawn**, not a flag — connecting the project is what
+  actually lifts the refusal, since the pool then holds a standing authorization
+  (`services::remote::connect_host`), which is the only distinction that seam can
+  make between a click and a tab restored at relaunch. Declining says what did
+  not happen and names the pill as the way to connect, rather than leaving a
+  blank pane.
 - [ ] **A tagged machine connected by hand does not propagate to its project**
   (`lib/machineSync` skips HPC refs before opening a pool). Correct as a default —
   a pool is a `ControlPersist` master — but the user is not told the project needs
   a second click. Product call.
-- [ ] **`useSavedCredential` fires per keystroke** in the address fields, and each
-  call is now two keychain ops. Needs a debounce.
-- [ ] **`store_readable()` is Linux-only**: a locked macOS keychain can still let a
-  `Remember::Clear` through and still let `record_key_auth` stamp `key_auth: true`.
+- [x] **`useSavedCredential` fires per keystroke** (2026-08-04; ✅ Done · 🧪
+  Untested). The read is debounced by a 300 ms settle inside
+  `useSavedCredentialSource`, so typing `user@host.example` costs one keychain
+  round trip instead of eighteen (each of which is now *two* D-Bus ops). `state`
+  still goes to `checking` **immediately**, before the wait — the row must not go
+  on showing the previous target's answer, which for a half-typed host would read
+  as a confident "nothing saved". A superseded key clears its own timer, so only
+  the settled one ever reaches the store; a dialog opened on an already-filled
+  target and a post-unlock `refresh()` both settle at once and pay nothing.
+- [x] **`store_readable()` is Linux-only** (2026-08-04; ✅ Done · 🧪 Untested,
+  and **the macOS half cannot be compile-checked here** — no SDK on Linux). It is
+  now `cached_keyring_state() == Unlocked` on every platform, with the caching
+  machinery (`STATE_CACHE`/`STATE_TTL`/`cached_keyring_state`/`remember`/`forget`)
+  un-gated from Linux. `keyring_state_uncapped` gained a **macOS** arm: the login
+  keychain really does lock (on a timer, on sleep, on `security lock-keychain`)
+  and then fails reads with *User interaction is not allowed*, so it is measured
+  with `security show-keychain-info` — chosen because it is the one probe that
+  **cannot prompt**, where reading a real item would raise the unlock dialog.
+  Locked and absent stay distinct (only the first has an unlock behind it).
+  Windows keeps `Unlocked` from its own arm, as a fact rather than an assumption:
+  its store is DPAPI-backed and unlocks with the login session. The consequence
+  the item was about is that `set()`'s locked-collection refusal is no longer
+  `#[cfg(linux)]`, so a `Remember::Clear` can no longer delete a macOS credential
+  that merely *read* as absent, and `record_key_auth` can no longer stamp
+  `key_auth: true` off an unreadable store.
 - [ ] 🖐️ **Manual test (the whole pass)** — see the QA list in the session summary:
   tagged-host add/browse/first-tab, credential survival across reconnects, the
   Machines row states, and the `cm-*` socket sweep against a live master.
+
+---
+
+### G.25 — The socketless ControlMaster has no reclaimer
+
+Observed 2026-08-03, with no Eldrun running: four `ssh … [mux]` masters alive,
+21–31 min old, each holding an ESTABLISHED `:22` connection — and
+`~/.local/share/eldrun/ssh-control/` **empty**. Socket unlinked, master still
+running. (They expired on their own within the day, so this is a leak with a
+ceiling, not an unbounded one — but the ceiling is whatever the master decides,
+not anything we set: they had already outlived `ControlPersist=600` by 2–3×.)
+
+That state is unreachable by every mechanism we have, which is the actual defect:
+
+- `commands::ssh::ssh_close_master` asks over the `cm-%C` socket. No socket, no ask.
+- `ssh_exec::sweep_stale_control_sockets` iterates `read_dir` over **files**. No
+  file, nothing to sweep — at this launch or any future one.
+- `ControlPersist` is the master's own timer and had visibly not fired.
+
+So the only remaining handle is the pid, and nothing in the codebase looks at pids.
+The masters are also unusable *as* masters — the whole reason `RunEvent::Exit`
+leaves them up (`lib.rs:1250-1257`: next launch finds one answering and rides it
+with no re-auth) is defeated the moment the socket is gone. We pay the open
+connection and get none of the warm-reconnect benefit.
+
+- [x] **A pid-level orphan sweep at startup** (2026-08-04; ✅ Done · 🧪 Untested),
+  folded into `sweep_stale_control_sockets` rather than added beside it, so the
+  two halves share one `ps` read. `mux_socket_in_row` is the pure predicate: a row
+  is ours only if it carries `[mux]` **and** names a `cm-*` path inside our own
+  `control_dir`, so a foreign `ssh`, a user's own `ssh -M`, another tool's mux
+  socket, and an ordinary session that merely mentions the path on its command
+  line all fall through. Reaped with **SIGTERM**, never SIGKILL — the master's own
+  shutdown unlinks its socket and closes its channels, where a kill would leave
+  exactly the litter this collects. One `ps -eo pid=,args=` rather than a `/proc`
+  walk, so Linux and macOS share an implementation.
+- [x] **Widen `control_master_alive`'s conservative default** — **resolved the
+  other way, deliberately** (2026-08-04). Neither candidate cause was
+  reproducible, and the doc's reasoning holds on inspection: "could not ask" is
+  genuinely not evidence of death, and reading it as death is what would unlink a
+  *live* master's socket. So the default stays `true` and the **consequence** of a
+  false negative is removed instead — the unlink site now signals whatever master
+  still names the socket **before** removing the file. Unlinking without killing
+  is what mints an orphan, and that is the one step of the cycle we control; the
+  worst case becomes a master shut down early, which the next connect reopens.
+  (The *other* minting path — an unconditional unlink in `teardown_pooled` and at
+  `RunEvent::Exit` — was already closed in the working tree this landed on.)
+- [x] 🤖 Automated test — `mux_row_predicate_claims_only_our_own_masters` is that
+  table (socketless-ours → reapable, ours-with-socket → kept, four flavours of
+  foreign → not ours at all), plus `ps_rows_split_into_pid_and_argv` and
+  `reaping_a_socket_never_matches_a_sibling_master` (one dead socket must not take
+  a live sibling master down with it).
+  `mux_row_predicate_survives_a_space_in_the_state_dir` earned its place by
+  **failing first**: the path was read by scanning to the next whitespace from the
+  start of the match, so a home directory with a space in it truncated it to
+  `/home/My` — and the sweep would then have compared a wrong path, silently
+  matching nothing. It anchors past the whole `<control_dir>/cm-` prefix now,
+  where only the hex filename follows and no space can occur.
+- [ ] 🖐️ **Manual test** — quit Eldrun with remote projects connected, confirm the
+  masters keep their sockets and answer `-O check`, and that the next launch's
+  first reconnect does not re-prompt for credentials.
 
 ---

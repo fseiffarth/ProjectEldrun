@@ -18,6 +18,7 @@ import { usePdfSyncStore } from "../../../stores/pdfSync";
 import { useScrollSync } from "../../../stores/scrollSync";
 import {
   useFileScope,
+  usePaneVisible,
   readFileBytes,
   readFileText,
   writeFileBytes,
@@ -1115,6 +1116,7 @@ function PdfCanvas({
 }) {
   const t = useT();
   const scope = useFileScope();
+  const paneVisible = usePaneVisible();
 
   // "Present": turn this PDF into a deck — a sidecar of editable layers beside
   // it, plus the fullscreen presenter. Experimental, so the button is absent
@@ -2144,15 +2146,27 @@ function PdfCanvas({
     [path, onReverseSource],
   );
 
-  // Poll mtime; on an advance (e.g. a recompile wrote a new PDF), bump
-  // diskVersion so the load effect re-reads the fresh bytes (#43-style).
+  // Seed the mtime baseline once per file, visible or not, so it pairs with the
+  // bytes the load effect read — the re-show catch-up below compares against it.
   useEffect(() => {
     lastMtime.current = null;
     let cancelled = false;
     fileMtime(path, scope)
       .then((m) => { if (!cancelled) lastMtime.current = m; })
       .catch(() => {});
-    const id = setInterval(() => {
+    return () => { cancelled = true; };
+  }, [path, scope]);
+
+  // Poll mtime; on an advance (e.g. a recompile wrote a new PDF), bump
+  // diskVersion so the load effect re-reads the fresh bytes (#43-style).
+  // Visible panes only — a hidden PDF tab (every backgrounded project's, and a
+  // TeX PDF behind another tab in its group) polled an SFTP stat per tick on a
+  // remote project forever. The immediate check on re-show catches a recompile
+  // that happened while the tab was hidden.
+  useEffect(() => {
+    if (!paneVisible) return;
+    let cancelled = false;
+    const check = () => {
       fileMtime(path, scope)
         .then((m) => {
           if (cancelled || lastMtime.current == null || m <= lastMtime.current) return;
@@ -2165,9 +2179,11 @@ function PdfCanvas({
           else setDiskVersion((v) => v + 1);
         })
         .catch(() => {});
-    }, RELOAD_POLL_MS);
+    };
+    check();
+    const id = setInterval(check, RELOAD_POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
-  }, [path, scope]);
+  }, [path, scope, paneVisible]);
 
   // Load (and reload on path / disk change) the document. pdf.js detaches the
   // backing buffer, so each load gets a fresh Uint8Array; the prior documents are

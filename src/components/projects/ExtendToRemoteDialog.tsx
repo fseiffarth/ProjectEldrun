@@ -1,13 +1,17 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { resolveProjectDirectory, type ProjectEntry } from "../../types";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useBigFoldersStore } from "../../stores/bigFolders";
+import { useGlobalMachinesStore } from "../../stores/globalMachines";
 import { joinRemotePath, sanitizeName } from "./scaffold";
 import { useRemoteSession, type RemoteStep } from "./useRemoteSession";
 import { RemoteProjectSection } from "./RemoteProjectSection";
 import { targetLabel } from "../header/MachinesIndicator";
+import { ConnLamp } from "../common/ConnLamp";
+import { UntestedTag } from "../common/UntestedTag";
 import { hostKeyConfirmOnce } from "../../lib/hostKeyOnce";
 import type { DroppedGlobalMachine } from "../../stores/remoteMachines";
 import { useT } from "../../lib/i18n";
@@ -23,6 +27,12 @@ import { useT } from "../../lib/i18n";
  * uses — `useRemoteSession` (state/effects) + `RemoteProjectSection` (the SSH /
  * OpenVPN / folder-browser UI) — so there's no duplicated remote logic here. The
  * project name is fixed, so the "details" step is just a confirm summary.
+ *
+ * Opened from the pill's menu there is no machine behind it, so the connect
+ * step also lists the header's **global machines** ("Your machines"): one click
+ * fills the SSH address from a host that is already set up, instead of typing
+ * an address the app already stores. It fills and never connects — the login
+ * still happens here, for `initialMachine`'s reason below.
  *
  * `initialMachine` seeds the SSH address from a global machine
  * (`MachinesIndicator`) dropped onto this (local-only) project's pill — this
@@ -66,6 +76,24 @@ export function ExtendToRemoteDialog({
 
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // ── The machines you already have ──────────────────────────────────────
+  // Opened from the pill's menu there is no machine behind this dialog, and the
+  // only way to name a host was to re-type an address that is already stored
+  // (and already authenticated) in the header's "Machines" list. Offering that
+  // list here is the same bargain `RemoteMachinesWindow`'s add-a-machine form
+  // strikes: one click *fills the address*, it does not connect — the login
+  // still happens in this dialog, since a global machine's session is keyed by
+  // its own id and is not this project's pooled one.
+  const globalMachines = useGlobalMachinesStore((s) => s.machines);
+  const globalStatuses = useGlobalMachinesStore((s) => s.status);
+  const globalsLoaded = useGlobalMachinesStore((s) => s.loaded);
+  useEffect(() => {
+    if (!globalsLoaded) void useGlobalMachinesStore.getState().load();
+  }, [globalsLoaded]);
+  // Which row filled the address, purely so the list can say so — the address
+  // field stays the truth (it is editable, and typing over it is allowed).
+  const [pickedMachine, setPickedMachine] = useState<string | null>(initialMachine?.id ?? null);
 
   // Footer step machine, borrowed verbatim from the new-project dialog so the
   // extend flow gets the same Back/Next navigation (the details step must be
@@ -182,7 +210,13 @@ export function ExtendToRemoteDialog({
   // The local files stay in place, so the mirror is the project's current dir.
   const localPath = resolveProjectDirectory(project);
 
-  return (
+  // Portaled to <body> like every other dialog raised from a pill: this
+  // component renders inside `.project-pills-scroll`, a 40px-tall horizontally
+  // scrolling strip in the header, and WebKitGTK positions a `position: fixed`
+  // descendant of a scroll container against that container rather than the
+  // viewport — so the backdrop centered its dialog inside the header band and
+  // the whole thing sat pinned to the top of the window.
+  return createPortal(
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog dialog-framed" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
@@ -200,6 +234,55 @@ export function ExtendToRemoteDialog({
             t("extendRemote.attachGeneric")
           )}
         </p>
+
+        {/* Pick a machine instead of typing its address. Only while the host is
+            still being chosen: once the session is up, the address is settled
+            and a list offering to overwrite it would be a trap. */}
+        {step === "connect" && !isRemote && globalMachines.length > 0 && (
+          <div className="remote-machine-global">
+            <div className="remote-machine-add-label">
+              <span className="remote-machine-global-title">
+                {t("extendRemote.machinesTitle")}
+              </span>
+              <UntestedTag />
+            </div>
+            <p className="settings-help">{t("extendRemote.machinesHelp")}</p>
+            <div className="remote-machine-global-list">
+              {globalMachines.map((m) => {
+                const target = targetLabel(m);
+                const picked = pickedMachine === m.id;
+                return (
+                  <div key={m.id} className="remote-machine-global-row">
+                    {/* The machine's own status — a session this app opened,
+                        never a probe (`stores/globalMachines`). */}
+                    <ConnLamp status={globalStatuses[m.id] ?? "off"} label={target} />
+                    <span className="remote-machine-name">{m.label || m.host}</span>
+                    <span className="remote-machine-target">{target}</span>
+                    {picked ? (
+                      <span
+                        className="remote-machine-tag"
+                        title={t("extendRemote.machinePickedTitle")}
+                      >
+                        {t("extendRemote.machinePicked")}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        title={t("extendRemote.machineUseTitle")}
+                        onClick={() => {
+                          onSshAddressChange(target);
+                          setPickedMachine(m.id);
+                        }}
+                      >
+                        {t("extendRemote.machineUse")}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         <RemoteProjectSection
           kind="new"
@@ -251,6 +334,7 @@ export function ExtendToRemoteDialog({
         </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

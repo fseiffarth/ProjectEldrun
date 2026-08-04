@@ -892,7 +892,9 @@ select option {
 .wm-close::after { transform: rotate(-45deg); }
 
 /* ── App logo ────────────────────────────────────────────────────────── */
-.app-logo {
+/* The star inside the root-terminal pill (the pill itself is .root-pill, down
+   with the project pills it is the first of). */
+.root-pill-star {
   height: 20px;
   width: 20px;
   object-fit: contain;
@@ -926,29 +928,37 @@ select option {
 }
 
 /* The logo doubles as the root-terminal switch button. */
-.root-logo-btn {
+/* The root terminal as the pill row's fixed first tab. Deliberately the
+   .project-pill box copied rather than a treatment of its own — same 40px
+   height, same reserved-transparent 3px top border, same accent line + side
+   shadow when it is the current scope — so the row reads as one strip of tabs
+   whose first one happens to wear the mark instead of a name. It sits outside
+   .project-pills-scroll, which is what keeps it put while the rest scroll. */
+.root-pill {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 4px;
-  margin-right: 2px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  cursor: pointer;
   flex-shrink: 0;
-  transition: background-color var(--transition), border-color var(--transition);
+  height: 40px;
+  padding: 0 10px;
+  border: none;
+  border-top: 3px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color var(--transition), border-color var(--transition);
 }
 
-.root-logo-btn:hover {
-  background: var(--control-bg);
-  border-color: var(--control-border);
+.root-pill:hover {
+  color: var(--text-primary);
 }
 
-.root-logo-btn.active {
-  background: var(--pill-active-bg);
-  border-color: var(--pill-active-border);
-  box-shadow: inset 0 4px 0 var(--accent);
+.root-pill.active {
+  color: var(--text-primary);
+  border-top-color: var(--accent);
+  box-shadow: 3px 0 4.5px -2px rgba(0, 0, 0, 0.4), -3px 0 4.5px -2px rgba(0, 0, 0, 0.4);
 }
 
 /* ── Version / debug / conn-type ─────────────────────────────────────── */
@@ -958,6 +968,20 @@ select option {
   align-items: center;
   gap: 1px;
   line-height: 1;
+}
+
+/* The release label lives at the bottom of the docked file viewer rather than
+   competing with project controls in the top frame. */
+.right-panel-frame-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  min-height: 20px;
+  padding: 2px 10px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  flex-shrink: 0;
 }
 
 .app-version-label {
@@ -1052,9 +1076,25 @@ select option {
 /* ── Clock ───────────────────────────────────────────────────────────── */
 .header-clock {
   font-size: 11px;
+  font-weight: 700;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
+}
+
+/* The clock is a header hover-menu trigger, like the neighbouring top-bar
+   controls. Its width follows the rendered time rather than the standard icon
+   button's 32px minimum. */
+.clock-menu-btn {
+  min-width: 0;
+  padding: 0 5px;
+}
+.clock-menu-btn[aria-expanded="true"] .header-clock,
+.clock-menu-btn:hover .header-clock {
+  color: var(--text-primary);
+}
+.clock-menu-popover {
+  min-width: 104px;
 }
 
 /* ── App timer ───────────────────────────────────────────────────────── */
@@ -1067,6 +1107,7 @@ select option {
   cursor: pointer;
   color: var(--text-secondary);
   font-size: 11px;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
   padding: 2px 5px;
   border-radius: var(--radius-sm);
@@ -1089,6 +1130,20 @@ select option {
   background: var(--text-muted);
 }
 .app-timer-btn.paused .app-timer-text {
+  color: var(--text-muted);
+}
+/* The clock's counter is a menu row, while retaining its pause/resume and
+   activity interactions from the former standalone header control. */
+.app-timer-menu-item {
+  width: 100%;
+  justify-content: flex-start;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.app-timer-menu-item.paused .app-timer-dot {
+  background: var(--text-muted);
+}
+.app-timer-menu-item.paused .app-timer-text {
   color: var(--text-muted);
 }
 .project-pill.timer-paused .pill-folder-icon {
@@ -7206,6 +7261,38 @@ select option {
   cursor: default;
 }
 
+/* Send-to-project dialog (file-tree right-click → copy into another project).
+   Reuses the folder-picker chrome; these are the few bits it adds. */
+.send-to-project-source {
+  margin: 4px 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.send-to-project-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.send-to-project-tag {
+  flex-shrink: 0;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: lowercase;
+}
+.send-to-project-done {
+  padding: 14px 4px 6px;
+}
+.send-to-project-done-title {
+  margin: 0 0 4px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .right-panel-scroll::-webkit-scrollbar,
 .file-browser-main::-webkit-scrollbar,
 .file-browser-sidebar::-webkit-scrollbar,
@@ -8750,6 +8837,13 @@ select option {
   pointer-events: none;
   z-index: 9999;
   box-shadow: var(--shadow-2);
+}
+
+/* A project name in a left-docked file viewer sits at the outer window edge.
+   Keep its card under that name, but grow it inward (to the right) instead of
+   centering it across the window border. */
+.project-pill-popup.anchor-start {
+  transform: translate(0, 6px);
 }
 
 .pill-popup-path {
@@ -10412,7 +10506,10 @@ select option {
   word-break: break-word;
 }
 
-.file-tree-remote-bar {
+/* The remote bar and its local twin share one shape so the ↻ sits in exactly the
+   same spot on either side — switching Remote/Local must not move the button. */
+.file-tree-remote-bar,
+.file-tree-local-bar {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -10430,12 +10527,38 @@ select option {
   opacity: 0.7;
 }
 
-/* SSH-sync Phase 1: in-flight transfer counter in the remote bar. */
+/* SSH-sync Phase 1: in-flight transfer counter, in the remote bar, the local bar
+   and the files pane's whole-tree sync row (all three start the same transfer). */
 .file-tree-sync-progress {
   font-size: 10px;
   color: var(--success, #3fb950);
   margin-left: auto;
   white-space: nowrap;
+}
+
+/* What the last whole-tree sync/push did, under the row that started it. Long
+   enough to hold a host error message, so it wraps rather than clipping — a
+   truncated "permission denied on …" is the half without the answer in it. */
+.project-files-sync-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 3px 6px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.project-files-sync-result span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.project-files-sync-result--bad {
+  color: var(--error, #f85149);
 }
 
 /* SSH-sync Phase 1: local/remote source toggle row in the files view. */
@@ -11210,10 +11333,10 @@ select option {
   to { transform: rotate(360deg); }
 }
 
-/* SSH-sync: actionable buttons shown left of the icon per sync state — red on an
-   unsynced row (pull from host / push from the mirror), orange on a diverged row
-   (view the host-vs-mirror diff). Shared box geometry; the accent color differs.
-   `--danger` = not synced, `#d29922` (amber) = diverged. */
+/* SSH-sync: actionable buttons shown left of the icon per sync state — an
+   unsynced row wears the orange list's own take-remote/keep-local controls
+   (`.orange-file-act--slot` below), a diverged row the amber diff button.
+   `#d29922` (amber) = diverged. */
 /* Fixed-width gutter reserving space for the sync/diff button so file & folder
    names stay left-aligned across a sync-tracked tree even on rows with no button
    (in-sync/green). Sits between the git-status marker and the file icon. */
@@ -11225,7 +11348,6 @@ select option {
   flex-shrink: 0;
 }
 
-.file-sync-btn,
 .file-diff-btn {
   display: inline-flex;
   align-items: center;
@@ -11241,16 +11363,6 @@ select option {
   cursor: pointer;
 }
 
-.file-sync-btn {
-  border: 1px solid color-mix(in srgb, var(--danger) 70%, transparent);
-  color: var(--danger);
-}
-
-.file-sync-btn:hover {
-  background: color-mix(in srgb, var(--danger) 14%, transparent);
-  border-color: var(--danger);
-}
-
 .file-diff-btn {
   border: 1px solid color-mix(in srgb, #d29922 70%, transparent);
   color: #d29922;
@@ -11261,7 +11373,6 @@ select option {
   border-color: #d29922;
 }
 
-.file-sync-btn:disabled,
 .file-diff-btn:disabled {
   cursor: default;
   opacity: 0.5;
@@ -11573,6 +11684,26 @@ select option {
   letter-spacing: 0.02em;
 }
 
+/* Session-type sub-grouping within a machine (TODO #85): Agents / Shells / Other.
+   A quieter heading than the machine title — the machine is the primary grouping,
+   the type a secondary split under it. */
+.tmux-kind-group-title {
+  padding: 3px 7px 3px 14px;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-secondary, var(--text-primary));
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Only the very last row of a machine group drops its divider; a row that is last
+   within its own kind bucket keeps one, so the next sub-heading sits on a clean
+   edge. */
+.tmux-kind-group:not(:last-child) .orange-file-row:last-child {
+  border-bottom: 1px solid var(--border-color);
+}
+
 /* The Sessions view's project-scope escape hatch (TODO #85): off (the default)
    lists only this project's sessions, on lists the whole host. */
 .tmux-scope-toggle {
@@ -11661,6 +11792,58 @@ select option {
   color: var(--success);
   background: color-mix(in srgb, var(--success) 16%, transparent);
   border-color: var(--success);
+}
+
+/* Delete-the-other-copy variant (a file deleted on exactly one side): tinted
+   --danger, because unlike the arrows it does not move bytes — it ends the
+   file's last remaining copy. Same control shape as its two siblings. */
+.orange-file-act--icon.orange-file-act--delete {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+}
+
+.orange-file-act--icon.orange-file-act--delete:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  border-color: var(--danger);
+}
+
+/* Tree-slot size variant: the same take-remote/keep-local controls, shrunk to
+   the 16px .file-sync-slot. Colors stay the orange list's — one shared class,
+   never a re-tinted copy (feedback: copy the working sibling). */
+.orange-file-act--icon.orange-file-act--slot {
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+}
+
+/* Non-interactive "this folder contains diverged files" marker — the ± in the
+   amber the .file-diff-btn wears, minus the border/hover of a control. */
+.file-sync-dir-diverged {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
+  line-height: 1;
+  color: #d29922;
+}
+
+/* The tree head's folder-level "in sync with the host" marker. Deliberately dim
+   and non-interactive: it is only there so the browsed folder's sync slot is
+   never *empty*, which is indistinguishable from a control that failed to
+   render — the state the project root was in before the slot existed. */
+.file-sync-folder-green {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--success, #3fb950);
+  opacity: 0.75;
 }
 
 /* Nested-repo toggle: segmented control shown atop the git view when the browsed
@@ -11763,6 +11946,15 @@ select option {
   text-transform: none;
   color: var(--text-muted);
   flex-shrink: 0;
+}
+
+/* A total still missing at least one folder's walk (`≥ 1.2 MB`, or `…` before
+   anything has landed). Dimmed and italic so it reads as a figure in progress
+   rather than a measured one — the number itself already says `≥`, this only
+   keeps it from being mistaken for the settled total at a glance. */
+.file-tree-path-total.partial {
+  opacity: 0.65;
+  font-style: italic;
 }
 
 .file-tree-scaffold-toggle {
@@ -12570,20 +12762,24 @@ select option {
   opacity: 0.7;
 }
 
-.project-search-entry:hover {
+.project-search-entry:hover:not(:focus) {
   border-color: var(--control-border);
   background: var(--control-bg);
 }
 
-.project-search-entry:focus {
-  border-color: var(--accent);
+.project-search-entry:focus,
+.project-search-entry:focus-visible {
+  border-color: transparent;
   background: var(--control-bg);
+  outline: none;
 }
 
+/* Right-anchored: the box sits right of the + now, i.e. in the header's right
+   half, where a 360px panel hung off its left edge would run past the window. */
 .project-search-popover {
   position: absolute;
   top: calc(100% + 4px);
-  left: 0;
+  right: 0;
   width: min(360px, 80vw);
   max-height: 420px;
   overflow-y: auto;
@@ -16097,6 +16293,33 @@ select option {
   justify-content: space-between;
   gap: 10px;
 }
+.agent-remote-install-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.agent-remote-install-row {
+  flex-wrap: wrap;
+}
+/* The themed `Dropdown` sits where a native <select> used to; it is an
+   inline-flex wrapper, so the flex basis goes on it and the trigger fills it. */
+.agent-remote-install-row .agent-remote-machine-picker {
+  min-width: 0;
+  flex: 1 1 180px;
+}
+.agent-remote-install-row .agent-remote-machine-picker .dropdown-trigger {
+  width: 100%;
+  justify-content: space-between;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.agent-remote-result {
+  margin-top: 6px;
+  color: var(--success);
+  font-size: 11px;
+}
 /* Enabled/Disabled toggle on an installed agent's row: hides it from tab-choice
    menus (add-tab Agents group, Local Model drivers) without uninstalling it. */
 .agent-disable-toggle {
@@ -16167,6 +16390,14 @@ select option {
    backgrounds only, never a blurred shadow (the WebKit software-rendering rule).
    The 4px top margin is what separates a header from the section above it; the
    first one drops it, having nothing to be separated from. */
+/* The tallest menu in the app — four sections of two- and three-line rows — so
+   it is bounded and its body scrolls (the pinned first title + `.menu-scroll-
+   region`, the unified scrolling-menu shape). Without a cap a machine with
+   several agents and models ran the Machine section off the bottom of a short
+   window, unreachable. */
+.local-model-menu {
+  max-height: min(80vh, 640px);
+}
 .local-model-menu .tab-new-menu-group-label {
   display: flex;
   align-items: center;
@@ -17742,6 +17973,15 @@ select option {
   align-items: center;
   gap: 6px;
 }
+/* A machine row is two lines: the name (+ lamp, badges, expand toggle) on the
+   first, the action icons on a second below it — so a long machine name is not
+   crowded into the buttons in the narrow (280px) menu. `flex-wrap` + a
+   full-width `.machines-row-actions` is what breaks the icons onto their own
+   line; the expand toggle sits before the actions in the DOM so it stays up on
+   the first row with the name. */
+.machines-indicator-row .vpn-indicator-head {
+  flex-wrap: wrap;
+}
 .vpn-indicator-config {
   font-family: var(--mono-font, monospace);
   font-size: 12px;
@@ -17885,6 +18125,10 @@ select option {
    different (the draggable rows, the drop-zone highlight) gets its own class. */
 .machines-indicator-menu {
   width: 280px;
+  /* This trigger lives in the header's right cluster. Grow the fixed-width
+     menu inward from its right edge so it cannot cross the window border. */
+  right: 0;
+  left: auto;
 }
 .machines-indicator-row {
   cursor: grab;
@@ -17917,17 +18161,17 @@ select option {
   background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
 }
 
-/* A row's steady-state actions are ICONS on the SAME line as the lamp, the label
-   and the ▸ expand toggle: four worded buttons ("Reconnect", "Disconnect",
-   "Edit…", "Remove") wrapped onto two lines in a 280px menu and cost every row a
-   second row of height. The words survive as title/aria-label, so nothing is lost
-   to a hover or a screen reader — and the *armed* confirm states (Remove /
-   Disconnect / Retry / Edit) still replace them with worded buttons below, because
-   a destructive confirm must never be a glyph.
-   The label flexes so a long machine name ellipsizes into the icons rather than
-   pushing them off the row; `margin-left: auto` on the group is what puts the icon
-   cluster + expand toggle hard right (the expand button drops its own auto margin,
-   or the two autos would split the slack and strand it mid-row). */
+/* A row's steady-state actions are ICONS on a SECOND line, below the lamp, the
+   label and the ▸ expand toggle: four worded buttons ("Reconnect", "Disconnect",
+   "Edit…", "Remove") wrapped onto two lines in a 280px menu and cost too much
+   width beside a real machine name. The words survive as title/aria-label, so
+   nothing is lost to a hover or a screen reader — and the *armed* confirm states
+   (Remove / Disconnect / Retry / Edit) still replace them with worded buttons
+   below, because a destructive confirm must never be a glyph.
+   The label flexes so a long machine name ellipsizes rather than pushing the
+   expand toggle off the first row; the actions take a full row of their own
+   (`flex-basis: 100%` against the head's `flex-wrap`), so the name has the whole
+   first line to itself. */
 .vpn-indicator-head .vpn-indicator-config {
   flex: 1;
   min-width: 0;
@@ -17936,14 +18180,9 @@ select option {
   display: flex;
   align-items: center;
   gap: 4px;
-  margin-left: auto;
+  flex-basis: 100%;
   flex-shrink: 0;
-}
-/* The expand toggle keeps a slightly wider gap than the icons keep between
-   themselves — it is a different kind of control (it opens the row, it doesn't
-   act on the machine), so it reads as its own thing rather than a fifth action. */
-.machines-row-actions + .machines-row-expand-btn {
-  margin-left: 2px;
+  margin-top: 6px;
 }
 
 .machines-row-action {
@@ -23075,6 +23314,27 @@ select option {
   padding: 12px;
   overflow-x: auto;
   overflow-y: hidden;
+  /* A fixed-width column set commonly exceeds the overlay's width (5 seeded
+     columns + the add-column tile run past ~1600px), so a right-hand column
+     like Archived routinely sits off screen. WebKitGTK's default scrollbar is
+     an invisible overlay that only appears on hover, which left that overflow
+     with no visible affordance at all — the board looked like it had 4
+     columns and a scrollbar nobody could see. Styling it (as `.project-dialog`
+     already does for its own scroller) forces a classic, always-rendered
+     scrollbar instead. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.todo-board::-webkit-scrollbar {
+  height: 10px;
+}
+.todo-board::-webkit-scrollbar-track {
+  background: transparent;
+}
+.todo-board::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 6px;
+  border: transparent;
 }
 /* While a card is in flight the cards stop answering `elementFromPoint`, so the
    hit-test reaches the `.todo-column` underneath — the same trick
@@ -26757,72 +27017,4 @@ handle — it swallows the pointer before the card ever sees it. */
 .tex-workspace-pane {
   position: absolute;
   inset: 0;
-}
-
-.tex-workspace-pdf {
-  position: relative;
-  flex: 0 0 auto;
-  min-width: 180px;
-  display: flex;
-  flex-direction: column;
-  border-left: 1px solid var(--border-color);
-  overflow: hidden;
-}
-
-/* Drag handle on the pane's LEFT edge — dragging left widens the PDF. */
-.tex-workspace-pdf-resize {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 5px;
-  height: 100%;
-  cursor: col-resize;
-  touch-action: none;
-  background: transparent;
-  z-index: 2;
-}
-.tex-workspace-pdf-resize:hover {
-  background: var(--accent);
-}
-
-.tex-workspace-pdf-head {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 6px 4px 10px;
-  border-bottom: 1px solid var(--border-color);
-  border-top: 2px solid var(--accent);
-}
-
-.tex-workspace-pdf-title {
-  flex: 1 1 auto;
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--text-secondary, var(--text-primary));
-}
-
-.tex-workspace-pdf-close {
-  flex: 0 0 auto;
-  border: none;
-  background: transparent;
-  color: var(--text-primary);
-  font-size: 15px;
-  line-height: 1;
-  padding: 2px 6px;
-  cursor: pointer;
-  border-radius: 4px;
-}
-.tex-workspace-pdf-close:hover {
-  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
-}
-
-.tex-workspace-pdf-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  position: relative;
-  overflow: hidden;
 }

@@ -722,6 +722,19 @@ interface ProjectRuntimeSwitchedPayload {
     agentMode?: AgentMode;
     /** A "projectfiles" tab's browsed folder (see TabEntry.folder). */
     folder?: string;
+    /** A "browser" tab's committed address (see TabEntry.url). */
+    url?: string;
+    /** A restart-resumable custom agent's resume flag (see TabEntry.resumeArgs). */
+    resumeArgs?: string[];
+    /** The stable tmux session name / Sessions-view attach target — carried
+     *  through a switch so `loadFromLayout` REATTACHES rather than forking a
+     *  second remote session (see TabEntry.tmuxSession/tmuxAttach). */
+    tmuxSession?: string;
+    tmuxAttach?: string;
+    /** Host-bound container-exemption marker (see TabEntry.hostBoundUid, #150). */
+    hostBoundUid?: string;
+    /** The "never tmux-wrap this tab" marker (see TabEntry.ephemeral). */
+    ephemeral?: boolean;
   }>;
   // Opaque split/group layout tree (camelCased by the backend's serde rename);
   // absent → restored as a single group.
@@ -1036,6 +1049,23 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
           location: t.location,
           agentMode: t.agentMode,
           folder: t.folder,
+          // A "browser" tab's committed address.
+          url: t.url,
+          // A restart-resumable custom agent's resume flag.
+          resumeArgs: t.resumeArgs,
+          // The stable tmux session name + any Sessions-view attach target. Without
+          // these the previous project's persisted session name is WIPED on every
+          // switch-away (this snapshot overwrites its terminals.json), so on the
+          // next relaunch `loadFromLayout` mints a fresh name and `tmux new-session
+          // -A` FORKS a second remote session instead of reattaching the running one.
+          tmuxSession: t.tmuxSession,
+          tmuxAttach: t.tmuxAttach,
+          // The host-bound marker id (#150), so a local-model tab keeps its
+          // container exemption across a switch.
+          hostBoundUid: t.hostBoundUid,
+          // The no-tmux marker, so a SLURM log tab is not re-wrapped in tmux (and
+          // left leaking a `tail -F` daemon) after a switch-away + relaunch.
+          ephemeral: t.ephemeral,
         })),
         tabGroups,
         activeTabIndex,

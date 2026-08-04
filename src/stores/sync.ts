@@ -28,6 +28,13 @@ interface SyncStatusEntry {
   host_mtime: number | null;
   /** Current local-mirror modification time, when known. */
   local_mtime: number | null;
+  /** Host side moved from its recorded base (optional — older backend tolerated). */
+  host_diverged?: boolean;
+  /** Local mirror moved from its recorded base (optional — older backend tolerated). */
+  local_diverged?: boolean;
+  /** Whether this pass actually stat'd the host for this row and got an answer
+   *  (optional — older backend tolerated). */
+  host_checked?: boolean;
 }
 
 /** Payload of the backend `sync-progress` event. */
@@ -55,6 +62,15 @@ export interface SyncEntryStatus {
   hostMtime: number | null;
   /** Current local-mirror modification time, for the diverged-files list. */
   localMtime: number | null;
+  /** Which side moved from its recorded base — the backend's clock-skew-safe
+   *  direction; only meaningful on amber rows. */
+  hostDiverged: boolean;
+  /** Local twin of `hostDiverged` — the mirror moved from its recorded base. */
+  localDiverged: boolean;
+  /** Whether the status pass actually consulted the host for this row (false on
+   *  a cold pool or an errored stat) — what keeps "gone on both sides" from
+   *  being asserted about a host nobody asked. */
+  hostChecked: boolean;
 }
 
 /** One side (local mirror or host) of a tracked file, from `sync_file_meta`. */
@@ -110,6 +126,30 @@ export interface SyncProgressState {
   total: number;
 }
 
+/**
+ * What a local→remote push actually did — mirrors the backend `SyncPushResult`.
+ *
+ * All three outcomes are reported because a push has three of them and only one
+ * is an `Err`: files written, files *skipped* because the host moved past the
+ * recorded base (never clobbered), and files the transfer itself failed on. A
+ * caller that reads only `pushed` cannot tell a clean 0-file push (nothing to
+ * do) from a push where every single write was refused.
+ */
+export interface SyncPushResult {
+  pushed: number;
+  /** Host-diverged paths, skipped rather than overwritten (force=false only). */
+  conflicts: string[];
+  failed_total: number;
+  /** Capped sample of the failed paths (the backend caps at 24). */
+  failed: string[];
+  /** The first failure's message — the actionable half of `failed_total`. */
+  first_error: string | null;
+  /** Files dropped by the exclusion filter before any transfer was attempted —
+   *  what distinguishes "pushed nothing because nothing qualified" from
+   *  "pushed everything". */
+  skipped_excluded: number;
+}
+
 interface SyncStore {
   /** projectId → (project-relative path → status). */
   byProject: Record<string, Record<string, SyncEntryStatus>>;
@@ -126,9 +166,7 @@ interface SyncStore {
   syncWholeProject: (projectId: string) => Promise<void>;
   /** Push the whole local mirror to the host, skipping host-diverged (amber)
    *  files (force=false → conflicts are returned, not clobbered). */
-  pushWholeProject: (
-    projectId: string,
-  ) => Promise<{ pushed: number; conflicts: string[] }>;
+  pushWholeProject: (projectId: string) => Promise<SyncPushResult>;
   /** Re-pull every selected file (reconcile; clears amber). */
   syncNow: (projectId: string) => Promise<void>;
   /** Push a local mirror file/folder to the host. Blocks stale files (returned in
@@ -137,7 +175,18 @@ interface SyncStore {
     projectId: string,
     relPath: string,
     force?: boolean,
-  ) => Promise<{ pushed: number; conflicts: string[] }>;
+  ) => Promise<SyncPushResult>;
+  /** Propagate a one-sided deletion of a tracked file to the other side:
+   *  `"host"` applies a local deletion to the host (deletes the host copy),
+   *  `"local"` accepts a host deletion into the mirror (deletes the mirror copy).
+   *  The backend re-verifies the premise against live state (the deleted side
+   *  must be positively absent) and prunes the manifest entry, so the row leaves
+   *  the orange list on the refresh this triggers. */
+  applyDelete: (
+    projectId: string,
+    relPath: string,
+    side: "host" | "local",
+  ) => Promise<void>;
   /** Resolve a batch of diverged files by taking one side for every path at once:
    *  "host" pulls each (host overwrites the mirror), "local" force-pushes each
    *  (the mirror overwrites the host). Refreshes the status once at the end rather
@@ -172,7 +221,14 @@ interface SyncStore {
    *  is a recursive `du -ak -x`, which on a cluster runs against a parallel
    *  filesystem's metadata server. Passing false keeps the local walk and skips
    *  the host entirely, leaving `hostScanned` false. See `lib/carefulHost.ts`. */
-  bigFolders: (projectId: string, scanHost?: boolean) => Promise<BigFolderScan>;
+  /** `confirmed` carries "the user asked for this machine by name" past the HPC
+   *  tag's refusal of the host `du` half — see `commands::sync::sync_big_folders`.
+   *  It is only ever `true` on the explicit button, never on the automatic pass. */
+  bigFolders: (
+    projectId: string,
+    scanHost?: boolean,
+    confirmed?: boolean,
+  ) => Promise<BigFolderScan>;
   /** Record (or lift) an explicit byte-sync exclusion for folders. Stronger than
    *  `setAuto(false)`: the whole-project pull and push skip an excluded tree too.
    *  Never deletes — mirror bytes already present stay put. */
@@ -181,6 +237,51 @@ interface SyncStore {
     relPaths: string[],
     excluded: boolean,
   ) => Promise<void>;
+}
+
+/**
+ * Fold a marker write that the backend has already accepted into the cached
+ * status, without waiting for `sync_status`.
+ *
+ * The markers (`excluded`, `auto`) are pure manifest state — the backend decided
+ * them the moment `sync_set_excluded` / `sync_set_auto` returned, and no host
+ * round-trip can change the answer. `sync_status`, on the other hand, re-stats
+ * every selected FILE over the pooled SFTP session, so a marker whose only path
+ * onto the screen is that refresh is invisible for as long as the re-stat takes:
+ * seconds on a large manifest, and effectively unbounded while a push holds the
+ * same session (`PUSH_FILE_TIMEOUT` is 120 s *per file*). That is what made
+ * "Exclude from sync" look like a menu item that does nothing — the exclusion was
+ * written and honoured, but the row kept its ⇄ push button until the refresh that
+ * was queued behind a transfer finally landed.
+ *
+ * So the marker is applied here and the refresh still runs behind it, correcting
+ * anything else that moved. A path with no row yet gets one: the marker IS the
+ * reason it is now interesting, and an absent row reads as "not excluded".
+ */
+function patchMarkers(
+  byPath: Record<string, SyncEntryStatus> | undefined,
+  relPaths: string[],
+  patch: Partial<SyncEntryStatus>,
+  isDir: boolean,
+): Record<string, SyncEntryStatus> {
+  const out = { ...(byPath ?? {}) };
+  for (const rel of relPaths) {
+    const prev = out[rel];
+    out[rel] = {
+      state: prev?.state ?? "none",
+      selected: prev?.selected ?? false,
+      isDir: prev?.isDir ?? isDir,
+      auto: prev?.auto ?? false,
+      excluded: prev?.excluded ?? false,
+      hostMtime: prev?.hostMtime ?? null,
+      localMtime: prev?.localMtime ?? null,
+      hostDiverged: prev?.hostDiverged ?? false,
+      localDiverged: prev?.localDiverged ?? false,
+      hostChecked: prev?.hostChecked ?? false,
+      ...patch,
+    };
+  }
+  return out;
 }
 
 function indexStatus(rows: SyncStatusEntry[]): Record<string, SyncEntryStatus> {
@@ -194,9 +295,43 @@ function indexStatus(rows: SyncStatusEntry[]): Record<string, SyncEntryStatus> {
       excluded: r.excluded,
       hostMtime: r.host_mtime,
       localMtime: r.local_mtime,
+      hostDiverged: r.host_diverged ?? false,
+      localDiverged: r.local_diverged ?? false,
+      hostChecked: r.host_checked ?? false,
     };
   }
   return out;
+}
+
+/** Roll tracked FILE states up onto ancestor directories. Rows whose state is
+ *  "none" (unselected / untracked / excluded) do NOT vote: they used to pin
+ *  `allGreen` false forever, leaving a folder's push button red after a
+ *  successful push. `any` = the folder contains a TRACKED file (green/amber);
+ *  `allGreen` = all tracked descendants are green.
+ *
+ *  The **root** ("") is rolled up like any other ancestor. It has no row in the
+ *  tree, so this used to stop one level short of it — which left the one folder
+ *  every project has, and the one the file view opens on, with no state to show
+ *  and therefore no pull/push control (the tree head's folder-level slot reads
+ *  this key). A file at the top level contributes to "" and to nothing else. */
+export function dirSyncAggregate(
+  byPath: Record<string, SyncEntryStatus> | undefined,
+): Record<string, { any: boolean; allGreen: boolean }> {
+  const agg: Record<string, { any: boolean; allGreen: boolean }> = {};
+  if (!byPath) return agg;
+  for (const [p, s] of Object.entries(byPath)) {
+    if (s.isDir) continue; // dir entries are authoritative on their own row
+    if (s.state === "none") continue;
+    const parts = p.split("/");
+    for (let i = 0; i < parts.length; i++) {
+      const dir = parts.slice(0, i).join("/");
+      const cur = agg[dir] ?? { any: false, allGreen: true };
+      cur.any = true;
+      if (s.state !== "green") cur.allGreen = false;
+      agg[dir] = cur;
+    }
+  }
+  return agg;
 }
 
 /**
@@ -286,13 +421,18 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
   },
 
   push: async (projectId, relPath, force = false) => {
-    const result = await invoke<{ pushed: number; conflicts: string[] }>("sync_push", {
+    const result = await invoke<SyncPushResult>("sync_push", {
       projectId,
       relPath,
       force,
     });
     await get().refreshStatus(projectId);
     return result;
+  },
+
+  applyDelete: async (projectId, relPath, side) => {
+    await invoke("sync_apply_delete", { projectId, relPath, side });
+    await get().refreshStatus(projectId);
   },
 
   resolveAll: async (projectId, relPaths, side) => {
@@ -321,17 +461,38 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
 
   setAuto: async (projectId, relPaths, auto, isDir) => {
     await invoke("sync_set_auto", { projectId, relPaths, auto, isDir });
+    set((s) => ({
+      byProject: {
+        ...s.byProject,
+        [projectId]: patchMarkers(s.byProject[projectId], relPaths, { auto }, isDir),
+      },
+    }));
     await get().refreshStatus(projectId);
   },
 
   autoPreview: async (projectId, relPath) =>
     invoke<AutoSyncPreview>("sync_auto_preview", { projectId, relPath }),
 
-  bigFolders: async (projectId, scanHost = true) =>
-    invoke<BigFolderScan>("sync_big_folders", { projectId, scanHost }),
+  bigFolders: async (projectId, scanHost = true, confirmed = false) =>
+    invoke<BigFolderScan>("sync_big_folders", { projectId, scanHost, confirmed }),
 
   setExcluded: async (projectId, relPaths, excluded) => {
     await invoke("sync_set_excluded", { projectId, relPaths, excluded });
+    // Mirror what the backend just wrote: `sync_set_excluded` marks every path a
+    // directory, and an exclusion also clears auto-sync (an excluded folder must
+    // not keep being hauled by the background engine). Lifting one restores
+    // nothing — the backend doesn't either, `auto_off` stays set.
+    set((s) => ({
+      byProject: {
+        ...s.byProject,
+        [projectId]: patchMarkers(
+          s.byProject[projectId],
+          relPaths,
+          excluded ? { excluded, auto: false } : { excluded },
+          true,
+        ),
+      },
+    }));
     await get().refreshStatus(projectId);
   },
 }));

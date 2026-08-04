@@ -3,10 +3,19 @@ import { ProjectFilesView } from "../files/ProjectFilesView";
 import { useFileSource } from "../files/ProjectFilesPane";
 import { openProjectFilesTab } from "../files/ProjectFilesTab";
 import { useProjectsStore } from "../../stores/projects";
-import { useTabsStore, orderedTabKeys, isPtyTabKind, type TabEntry } from "../../stores/tabs";
+import {
+  ROOT_SCOPE,
+  useTabsStore,
+  orderedTabKeys,
+  isPtyTabKind,
+  type TabEntry,
+} from "../../stores/tabs";
 import { useActivityStore, type AttentionKind } from "../../stores/activity";
 import { resolveProjectDirectory } from "../../types";
 import { useT } from "../../lib/i18n";
+// Single source of truth for the displayed version: package.json is kept in
+// lockstep with the Tauri manifests on each version bump.
+import { version as APP_VERSION } from "../../../package.json";
 
 interface Props {
   open: boolean;
@@ -89,17 +98,29 @@ export function RightPanel({
   const { projects, activeId } = useProjectsStore();
   const rightPanelFolderByProject = useProjectsStore((s) => s.rightPanelFolderByProject);
   const setRightPanelFolder = useProjectsStore((s) => s.setRightPanelFolder);
-
-  const activeProject = projects.find((p) => p.id === activeId) ?? null;
-  const projectDir = resolveProjectDirectory(activeProject);
-  // SSH-sync Phase 1: which side of a remote project the files view shows — the
-  // host (remote, SFTP-listed, with the sync overlay) or the local mirror.
-  const [fileSource, setFileSource] = useFileSource(activeId, !!activeProject?.remote);
-  const rightPanelFolder = activeId ? rightPanelFolderByProject[activeId] ?? "" : "";
+  const rootDir = useProjectsStore((s) => s.rootDir);
 
   // When a box scope is open, the shared view shows a multi-root file view. It
   // derives that from the current tab scope, which the panel forwards.
   const scope = useTabsStore((s) => s.scope);
+
+  const activeProject = projects.find((p) => p.id === activeId) ?? null;
+  // The root scope gets the same panel, rooted at `~/eldrun/root` — the app's
+  // unfiled/scratch area, for data that is only being looked at or has no project
+  // to belong to yet. Deliberately keyed off the SCOPE and not merely "no active
+  // project": a box scope also has none, and its multi-root view must keep its
+  // own empty `projectDir`.
+  const isRootScope = !activeProject && scope === ROOT_SCOPE;
+  const projectDir = isRootScope ? rootDir ?? "" : resolveProjectDirectory(activeProject);
+  // SSH-sync Phase 1: which side of a remote project the files view shows — the
+  // host (remote, SFTP-listed, with the sync overlay) or the local mirror.
+  const [fileSource, setFileSource] = useFileSource(activeId, !!activeProject?.remote);
+  // The browsed folder is kept per scope, the root's under the scope's own name
+  // (project ids are UUIDs, so it can't collide with one). Unlike a project's, it
+  // is session-only: `setRightPanelFolder` persists through the owning project's
+  // `project.json`, and the root folder has none.
+  const folderKey = activeId ?? (isRootScope ? ROOT_SCOPE : null);
+  const rightPanelFolder = folderKey ? rightPanelFolderByProject[folderKey] ?? "" : "";
   // Subwindows the user has hidden in the current scope, surfaced as an
   // auto-pinned section above the toolbar. Their tabs still live in
   // `tabsByScope[scope]` (PTYs mounted, hidden), so the chips resolve labels
@@ -248,6 +269,13 @@ export function RightPanel({
       </div>
     ) : null;
 
+  const versionFooter = (
+    <div className="right-panel-frame-footer">
+      {import.meta.env.DEV && <span className="debug-badge">DEBUG</span>}
+      <span className="app-version-label">v{APP_VERSION}</span>
+    </div>
+  );
+
   return (
     <ProjectFilesView
       // The panel is one long-lived instance across every project switch, so
@@ -255,15 +283,17 @@ export function RightPanel({
       // half-typed commit message, the detected nested repo root, the session
       // rows, the tree's entries) carried into the next project — a path from
       // one project resolved against another's root. Identity is the project,
-      // so a switch is a remount.
-      key={activeId ?? "none"}
+      // so a switch is a remount. With no project it is the scope — root and a
+      // box are two different roots (`~/eldrun/root` and a multi-root view), and
+      // one shared key would have carried the tree between them.
+      key={activeId ?? scope}
       scope={scope}
       projectId={activeId ?? null}
       project={activeProject}
       projectDir={projectDir}
       folder={rightPanelFolder}
       onFolderChange={(folder) => {
-        if (activeId) setRightPanelFolder(activeId, folder);
+        if (folderKey) setRightPanelFolder(folderKey, folder);
       }}
       source={fileSource}
       setSource={setFileSource}
@@ -280,6 +310,7 @@ export function RightPanel({
       resizeHandle={resizeHandle}
       pin={chrome}
       hidden={hidden}
+      footer={versionFooter}
     />
   );
 }

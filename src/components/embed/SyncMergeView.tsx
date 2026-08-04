@@ -125,7 +125,11 @@ export function SyncMergeView({
     // both sides converge (the file clears amber). `push` refreshes sync status.
     (async () => {
       await invoke("write_file_text", { path, content: merged, projectId });
-      await useSyncStore.getState().push(projectId, rel, true);
+      const r = await useSyncStore.getState().push(projectId, rel, true);
+      // A push that transferred nothing means the host still holds the old
+      // bytes — closing the tab would present the merge as resolved when only
+      // the mirror half landed. Refuse to close and surface why.
+      if (r.pushed === 0) throw new Error(r.first_error ?? t("syncMerge.applyNothingPushed"));
     })()
       .then(() => closeTab())
       .catch((e) => {

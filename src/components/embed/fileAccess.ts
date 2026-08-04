@@ -43,6 +43,26 @@ export function useFileSource(): FileSource {
   return useContext(FileSourceContext);
 }
 
+/**
+ * Whether the enclosing viewer pane is currently laid out on screen.
+ *
+ * The pane layer keeps every tab of every scope mounted (`CenterPanel`'s flat
+ * pane layer), so a viewer's standing work — above all the `file_mtime`
+ * auto-reload polls, which for a remote project are an SFTP round trip each —
+ * would otherwise keep running for every hidden tab of every backgrounded
+ * project forever. `FileViewerPane` publishes its `visible` prop here; each
+ * poll gates its interval on it and runs one immediate catch-up check when the
+ * pane is next shown, so a file that changed while the tab was hidden still
+ * reloads the moment it is looked at. Defaults to `true` so a viewer rendered
+ * outside a gated pane (tests, future hosts) keeps the old always-on behavior.
+ */
+export const PaneVisibleContext = createContext<boolean>(true);
+
+/** Whether the surrounding viewer pane is on screen (see {@link PaneVisibleContext}). */
+export function usePaneVisible(): boolean {
+  return useContext(PaneVisibleContext);
+}
+
 /** Classify a path's bytes as remote-native / local-mirror / not-applicable. */
 export function fileSource(path: string, projectId: string | null): Promise<FileSource> {
   return invoke<FileSource>("file_source", { path, projectId });

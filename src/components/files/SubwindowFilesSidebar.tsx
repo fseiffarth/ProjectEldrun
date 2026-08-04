@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ProjectFilesTab } from "./ProjectFilesTab";
 import { useT } from "../../lib/i18n";
+import type { ProjectEntry } from "../../types";
 
 /** Default/clamp bounds for the per-subwindow file-viewer column (px). */
 export const DEFAULT_GROUP_FILES_WIDTH = 300;
@@ -29,6 +30,14 @@ interface Props {
   /** Hide the docked viewer (double-click the resize edge). Same close path the
    *  ◫ tab-bar button uses. */
   onHide?: () => void;
+  /** The owning group's id — this column's stable identity, so its Local/Remote
+   *  choice survives the `key={scope}` remount below (see `ProjectFilesTab`). */
+  viewerId?: string;
+  /** The owning project, injected when the host has no projects store to resolve
+   *  it from (a detached popout — streamed in its seed). Restores the Local/Remote
+   *  source switch + run-host picker, which are gated on `project.remote`. Omitted
+   *  in the main window, where `ProjectFilesTab` resolves it from the store. */
+  project?: ProjectEntry;
 }
 
 /**
@@ -52,6 +61,8 @@ export function SubwindowFilesSidebar({
   onFolderChange,
   canOpenTabs,
   onHide,
+  viewerId,
+  project,
 }: Props) {
   const t = useT();
   const committed = clampFilesWidth(width ?? DEFAULT_GROUP_FILES_WIDTH);
@@ -108,6 +119,8 @@ export function SubwindowFilesSidebar({
         key={scope}
         scope={scope}
         cwd={cwd}
+        injectedProject={project}
+        viewerId={viewerId}
         canOpenTabs={canOpenTabs}
         folder={folder}
         persistFolder={onFolderChange}

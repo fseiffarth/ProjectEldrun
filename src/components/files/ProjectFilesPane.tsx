@@ -8,12 +8,19 @@ import { useSyncStore } from "../../stores/sync";
 import { confirmSyncTransfer } from "../../stores/syncConfirm";
 import { useBigFoldersStore } from "../../stores/bigFolders";
 import { useRemoteMachinesStore } from "../../stores/remoteMachines";
-import { useFileSourcePrefStore } from "../../stores/fileSourcePref";
+import {
+  autoFileSource,
+  fileSourceSettled,
+  useFileSourcePrefStore,
+  viewerSourceKey,
+  type FileSourceSide,
+} from "../../stores/fileSourcePref";
 import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import type { ProjectBox, ProjectEntry } from "../../types";
 import type { SortKey } from "../../lib/viewers/fileUtils";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { UntestedTag } from "../common/UntestedTag";
 
 const SORT_KEY_LABEL: Record<SortKey, TranslationKey> = {
   name: "sortKey.name",
@@ -46,63 +53,90 @@ export function useRemoteBlocked(projectId: string | null, isRemote: boolean) {
 }
 
 /**
- * Which side of a remote project a file view shows. Defaults to whichever side
- * is actually usable when the project changes: connected → Remote (the host
- * tree), disconnected → Local (the mirror, so the view doesn't open on a Connect
- * prompt). Only resets on a project switch — it never fights a mid-session
- * manual toggle (flip to Remote, then lose the connection: the Connect
- * placeholder takes over, but the toggle stays put).
+ * Which side of a remote project a file view shows.
  *
- * Backed by `useFileSourcePrefStore` (keyed by project id), not local state, so
- * a freshly opened subwindow file viewer (`FileViewerPane`) can default to
- * whichever side this tree is CURRENTLY showing for the project.
+ * A side is decided ONCE per project and then only ever moves because the user
+ * clicked the switch. The first time the project's SSH lamp reads something
+ * definite, the usable side is *latched* into `useFileSourcePrefStore` —
+ * connected → Remote (the host tree), otherwise → Local (the mirror, so the view
+ * doesn't open on a Connect prompt) — and every later read returns that latch.
+ * An explicit click replaces it and is remembered across relaunches.
+ *
+ * The latch is what this hook exists for. The seed used to be an unconditional
+ * mount effect over the live lamp, so *anything* that remounted a file view —
+ * hiding/re-showing the panels (the panel is unmounted, not hidden), a scope
+ * switch that briefly clears the active project, an "Extend to remote" —
+ * silently re-derived the side and threw a deliberate Local choice away the
+ * moment the pool came up. From the user's side the tree jumped to Remote with
+ * nothing touched. `latch` no-ops when the project already has a side, so a
+ * remount now costs nothing.
+ *
+ * `isRemote` stays in the deps because a project can flip local → remote
+ * ("Extend to remote") under a mounted view, and only then is there a side to
+ * decide at all.
  */
 export function useFileSource(projectId: string | null, isRemote: boolean) {
   const stored = useFileSourcePrefStore((s) => (projectId ? s.byProject[projectId] : undefined));
   const { remoteSshState } = useRemoteBlocked(projectId, isRemote);
-  // `isRemote` (not just `projectId`) in the deps: a project can flip local → remote
-  // ("Extend to remote") while this view is already mounted on the same id, and
-  // without re-seeding here it keeps whatever the store already held — typically
-  // nothing for a project that was never remote, which falls through to the
-  // "remote" default below and points every file op at an SFTP host that may not
-  // have finished its first lockstep sync yet. `isRemote` itself only moves on an
-  // extend/detach, never on a mere connect/disconnect, so this can't fight a
-  // mid-session manual toggle the way resetting on `remoteSshState` would.
   useEffect(() => {
-    if (projectId && isRemote) {
-      useFileSourcePrefStore.getState().set(projectId, remoteSshState === "connected" ? "remote" : "local");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, isRemote]);
-  const setSource = (s: "remote" | "local") => {
+    if (!projectId || !isRemote) return;
+    // Only a settled lamp is a decision: latching mid-handshake would freeze
+    // "remote" onto a project whose connect is about to fail, and a project with
+    // no status entry at all (never activated this session) has said nothing yet.
+    if (!fileSourceSettled(remoteSshState)) return;
+    useFileSourcePrefStore.getState().latch(projectId, autoFileSource(remoteSshState));
+  }, [projectId, isRemote, remoteSshState]);
+  const setSource = (s: FileSourceSide) => {
     if (projectId) useFileSourcePrefStore.getState().set(projectId, s);
   };
-  return [stored ?? "remote", setSource] as const;
+  return [stored ?? autoFileSource(remoteSshState), setSource] as const;
 }
 
 /**
- * Like `useFileSource`, but for a viewer that must NOT keep mirroring the
- * shared per-project preference forever — only take it as a starting point.
- * Every `ProjectFilesTab` instance (the standalone Files (Project) tab, and
- * every per-subwindow ◫ sidebar) used to share `useFileSourcePrefStore`
- * with the right panel, so flipping Local/Remote *anywhere* flipped it
- * *everywhere* for that project — one shared toggle wearing many faces
- * instead of each viewer owning its own. This seeds from the right panel's
- * current value on mount (and again if the underlying project's identity or
- * remote-ness changes, matching `useFileSource`'s own reseed), then keeps the
- * choice in plain component state: this viewer's later toggles never write
- * back to the shared store, and the shared store's later changes never read
- * back into this viewer.
+ * Like `useFileSource`, but for a viewer that owns its own switch instead of
+ * following the project-wide one. Every `ProjectFilesTab` instance (the
+ * standalone Files (Project) tab, and every per-subwindow ◫ sidebar) used to
+ * share `useFileSourcePrefStore` with the right panel, so flipping Local/Remote
+ * *anywhere* flipped it *everywhere* for that project — one shared toggle
+ * wearing many faces instead of each viewer owning its own. This takes the
+ * project-wide side as a starting point, latches it, and from then on the two
+ * are independent in both directions.
+ *
+ * The choice lives in the store under `viewerId` rather than in component state,
+ * and that is the fix rather than a detail: these viewers are remounted by their
+ * hosts (the docked column is `key={scope}`, so every scope switch remounts it),
+ * and component state does not survive a remount — the viewer came back seeded
+ * from the shared value, i.e. flipped to Remote without the user touching it.
+ * A viewer with no stable id keeps the old component-state behaviour.
  */
-export function useIndependentFileSource(projectId: string | null, isRemote: boolean) {
+export function useIndependentFileSource(
+  projectId: string | null,
+  isRemote: boolean,
+  viewerId?: string,
+) {
   const { remoteSshState } = useRemoteBlocked(projectId, isRemote);
-  const [source, setSource] = useState<"remote" | "local">("remote");
+  const key = viewerId && projectId ? viewerSourceKey(viewerId, projectId) : null;
+  const own = useFileSourcePrefStore((s) => (key ? s.byViewer[key] : undefined));
+  const shared = useFileSourcePrefStore((s) => (projectId ? s.byProject[projectId] : undefined));
+  // Fallback for a viewer with nothing stable to remember a choice against.
+  const [local, setLocal] = useState<FileSourceSide | null>(null);
   useEffect(() => {
-    if (!projectId || !isRemote) return;
-    const shared = useFileSourcePrefStore.getState().byProject[projectId];
-    setSource(shared ?? (remoteSshState === "connected" ? "remote" : "local"));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setLocal(null);
   }, [projectId, isRemote]);
+  useEffect(() => {
+    if (!key || !isRemote) return;
+    if (!fileSourceSettled(remoteSshState)) return;
+    const store = useFileSourcePrefStore.getState();
+    store.latchViewer(
+      key,
+      (projectId ? store.byProject[projectId] : undefined) ?? autoFileSource(remoteSshState),
+    );
+  }, [key, projectId, isRemote, remoteSshState]);
+  const source = own ?? local ?? shared ?? autoFileSource(remoteSshState);
+  const setSource = (s: FileSourceSide) => {
+    if (key) useFileSourcePrefStore.getState().setViewer(key, s);
+    else setLocal(s);
+  };
   return [source, setSource] as const;
 }
 
@@ -208,7 +242,8 @@ function BoxRootSection({
   variant,
   sortKey,
   descending,
-}: BoxRoot & { sortKey: SortKey; descending: boolean }) {
+  active = true,
+}: BoxRoot & { sortKey: SortKey; descending: boolean; active?: boolean }) {
   const t = useT();
   const [collapsed, setCollapsed] = useState(false);
   const rel = useProjectsStore((s) => s.rightPanelFolderByProject[rootId] ?? "");
@@ -249,6 +284,7 @@ function BoxRootSection({
             shownPaths={[]}
             initialRelPath={rel}
             onRelPathChange={(folder) => setRightPanelFolder(rootId, folder)}
+            active={active}
           />
         </div>
       )}
@@ -294,6 +330,11 @@ interface Props {
   /** False keeps the tree unmounted (the right panel does this while closed, so
    *  a hidden panel costs no fs-watch). */
   mountTree?: boolean;
+  /** Whether this surface is on screen. A mounted-but-hidden tree (a background
+   *  Files tab, a backgrounded project) keeps its listing but stops all standing
+   *  work — fs-watch, sync re-stat, host probes, folder-size walks — restarting
+   *  with a catch-up when its project becomes current again (see FileTree). */
+  active?: boolean;
   /** Compact (docked subwindow) mode: hide the remote-sync row and the sort row
    *  so the tree's find-files search box is the topmost element. */
   compact?: boolean;
@@ -320,6 +361,7 @@ export function ProjectFilesPane({
   onCloseAlerts,
   onOpenFolderTab,
   mountTree = true,
+  active = true,
   compact,
 }: Props) {
   const t = useT();
@@ -328,6 +370,69 @@ export function ProjectFilesPane({
   const isRemoteProject = !!project?.remote;
   const { remoteSshState, remoteBlocked } = useRemoteBlocked(projectId, isRemoteProject);
   const syncMap = useSyncStore((s) => (projectId ? s.byProject[projectId] : undefined));
+  // Live per-file progress for the whole-tree transfer below. The tree renders
+  // this too, but only in its REMOTE bar — and a push is by definition started
+  // from the Local side, where that bar is not on screen. So a whole-project push
+  // had no progress anywhere in the window: it ran for minutes looking exactly
+  // like a button that does nothing.
+  const syncProgress = useSyncStore((s) => (projectId ? s.progressByProject[projectId] : null));
+  const [syncBusy, setSyncBusy] = useState(false);
+  // The outcome line under the row: what the transfer did, or why it failed.
+  // `bad` only colours it — a skipped-conflicts result is not an error.
+  const [syncResult, setSyncResult] = useState<{ text: string; bad: boolean } | null>(null);
+
+  /**
+   * Run one whole-tree transfer with the confirm dialog in front of it, and
+   * REPORT it. Both buttons went through a bare `void (async () => …)()`, so the
+   * one thing a user needs to see was the one thing that could not reach them:
+   * `sync_push`/`sync_whole_project` reject on the ordinary failures (a dropped
+   * pool — "remote project not connected — reconnect first" — a walk that hit an
+   * unreadable dir), and an unhandled rejection inside a floating promise renders
+   * nothing at all. The success path was silent too, and a push that skips every
+   * file as host-diverged is *also* a legitimate 0-file success — three different
+   * things, one identical blank.
+   */
+  async function runWholeTreeSync(direction: "pull" | "push") {
+    if (!projectId || syncBusy) return;
+    const ok = await confirmSyncTransfer({
+      projectId,
+      direction,
+      relPath: "",
+      isDir: true,
+      label: project?.name ?? projectId,
+    });
+    if (!ok) return;
+    setSyncBusy(true);
+    setSyncResult(null);
+    try {
+      if (direction === "pull") {
+        await useSyncStore.getState().syncWholeProject(projectId);
+        setSyncResult({ text: t("projectFilesPane.syncPullDone"), bad: false });
+      } else {
+        const r = await useSyncStore.getState().pushWholeProject(projectId);
+        const parts = [t("projectFilesPane.syncPushed", { count: r.pushed })];
+        // Named separately because they are different answers to "why wasn't my
+        // file pushed": a conflict is the safe-direction policy working (the file
+        // is on the host, changed, and stays orange in the tree), a failure is the
+        // transfer breaking.
+        if (r.conflicts.length > 0) {
+          parts.push(t("projectFilesPane.syncSkipped", { count: r.conflicts.length }));
+        }
+        if (r.failed_total > 0) {
+          parts.push(t("projectFilesPane.syncFailed", { count: r.failed_total }));
+          if (r.first_error) parts.push(r.first_error);
+        }
+        if (r.skipped_excluded > 0) {
+          parts.push(t("projectFilesPane.syncExcludedSkipped", { count: r.skipped_excluded }));
+        }
+        setSyncResult({ text: parts.join(" · "), bad: r.failed_total > 0 });
+      }
+    } catch (err) {
+      setSyncResult({ text: String(err), bad: true });
+    } finally {
+      setSyncBusy(false);
+    }
+  }
 
   return (
     <>
@@ -380,52 +485,62 @@ export function ProjectFilesPane({
           >
             {t("projectFilesPane.bigFolders")}
           </button>
+          <UntestedTag />
           {/* Both directions ask first (`stores/syncConfirm`). This is the widest
               transfer in the app — one click over the *whole* tree, in whichever
               direction the source switch happens to be on — so the one thing it
               must never be is ambiguous about which side it is about to
               overwrite. */}
-          {source === "remote" ? (
-            <button
-              className="tab-add-btn"
-              style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: "auto" }}
-              onClick={() =>
-                void (async () => {
-                  const ok = await confirmSyncTransfer({
-                    projectId,
-                    direction: "pull",
-                    relPath: "",
-                    isDir: true,
-                    label: project?.name ?? projectId,
-                  });
-                  if (ok) await useSyncStore.getState().syncWholeProject(projectId);
-                })()
-              }
-              title={t("projectFilesPane.syncAllRemoteTitle")}
+          {/* Live counter, in the row that holds the button that started it — so
+              the feedback is where the click was, whichever side the source
+              switch is on. `total` is known from the first event (the walk runs
+              before any transfer), so this is a real fraction, not a spinner. */}
+          {syncProgress && (
+            <span
+              className="file-tree-sync-progress"
+              style={{ marginLeft: "auto" }}
+              title={t("fileTree.syncingRel", { rel: syncProgress.rel || "…" })}
             >
-              {t("projectFilesPane.syncAll")}
-            </button>
-          ) : (
-            <button
-              className="tab-add-btn"
-              style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: "auto" }}
-              onClick={() =>
-                void (async () => {
-                  const ok = await confirmSyncTransfer({
-                    projectId,
-                    direction: "push",
-                    relPath: "",
-                    isDir: true,
-                    label: project?.name ?? projectId,
-                  });
-                  if (ok) await useSyncStore.getState().pushWholeProject(projectId);
-                })()
-              }
-              title={t("projectFilesPane.syncAllLocalTitle")}
-            >
-              {t("projectFilesPane.syncAll")}
-            </button>
+              ⟳ {syncProgress.done}/{syncProgress.total}
+            </span>
           )}
+          <button
+            className="tab-add-btn"
+            style={{
+              fontSize: 10,
+              padding: "1px 6px",
+              height: 20,
+              ...(syncProgress ? { marginLeft: 6 } : { marginLeft: "auto" }),
+            }}
+            disabled={syncBusy}
+            onClick={() => void runWholeTreeSync(source === "remote" ? "pull" : "push")}
+            title={t(
+              source === "remote"
+                ? "projectFilesPane.syncAllRemoteTitle"
+                : "projectFilesPane.syncAllLocalTitle",
+            )}
+          >
+            {syncBusy ? t("projectFilesPane.syncAllBusy") : t("projectFilesPane.syncAll")}
+          </button>
+        </div>
+      )}
+      {/* The outcome of the last whole-tree transfer. Dismissible, and it stays
+          until dismissed or superseded: a push that ends in one second must not
+          report itself in a toast the user is not looking at yet. */}
+      {!compact && !activeBox && isRemoteProject && projectId && syncResult && (
+        <div
+          className={`project-files-sync-result${syncResult.bad ? " project-files-sync-result--bad" : ""}`}
+          role="status"
+        >
+          <span>{syncResult.text}</span>
+          <button
+            className="file-tree-up"
+            onClick={() => setSyncResult(null)}
+            title={t("common.close")}
+            aria-label={t("common.close")}
+          >
+            ×
+          </button>
         </div>
       )}
       {!compact && (
@@ -465,6 +580,7 @@ export function ProjectFilesPane({
                 {...r}
                 sortKey={sortKey}
                 descending={descending}
+                active={active}
               />
             ))
           )
@@ -539,6 +655,7 @@ export function ProjectFilesPane({
                 onOpenFolderTab={onOpenFolderTab}
                 syncSource={isRemoteProject ? source : undefined}
                 remoteProbeDir={isRemoteProject ? projectDir : undefined}
+                active={active}
               />
             );
           })()

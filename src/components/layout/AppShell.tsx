@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useEffect,
   useRef,
   useState,
@@ -64,11 +66,18 @@ import { listenEditorJump } from "../../stores/editorJump";
 import { listenSourceJump } from "../embed/FileViewerPane";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
 import { useSettingsStore } from "../../stores/settings";
-import { useTabsStore } from "../../stores/tabs";
+import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { useTimerStore } from "../../stores/timer";
 import { flushUsage } from "../../stores/usage";
 import { useKeyboard } from "../../hooks/useKeyboard";
 import { useT, useI18nStore, translate } from "../../lib/i18n";
+
+// Dev-only perf panel (src/dev/). The ternary is statically resolved at build
+// time (`import.meta.env.DEV` → false), so in a shipped bundle the lazy() —
+// and with it the whole src/dev/ chunk — is dead code and never emitted.
+const DevPerfHost = import.meta.env.DEV
+  ? lazy(() => import("../../dev/DevPerfHost").then((m) => ({ default: m.DevPerfHost })))
+  : null;
 
 // Width of the right-edge band that reveals the (unpinned) right panel on hover.
 // Kept wide because on Windows/WebView2 the window often isn't true-fullscreen
@@ -136,10 +145,17 @@ export function AppShell() {
   );
   const loadBoxes = useBoxesStore((s) => s.load);
   const activeId = useProjectsStore((s) => s.activeId);
+  const rootDir = useProjectsStore((s) => s.rootDir);
   const scope = useTabsStore((s) => s.scope);
   // The right panel also opens for an active box scope (multi-root file view),
-  // even when no project is the current activeId.
-  const panelTarget = activeId !== null || scope.startsWith(BOX_SCOPE_PREFIX);
+  // even when no project is the current activeId — and for the ROOT scope, whose
+  // `~/eldrun/root` is the app's unfiled/scratch area: the place data lands while
+  // it is only being looked at, or before it belongs to any one project. That
+  // folder had a terminal but no file view, so the only way to see what was in it
+  // was to `ls`. Gated on `rootDir` because it arrives with the projects load —
+  // an empty root would give the panel no tree to mount.
+  const panelTarget =
+    activeId !== null || scope.startsWith(BOX_SCOPE_PREFIX) || (scope === ROOT_SCOPE && !!rootDir);
   const switchToast = useProjectsStore((s) => s.switchToast);
   const clearSwitchToast = useProjectsStore((s) => s.clearSwitchToast);
   const connToast = useProjectsStore((s) => s.connToast);
@@ -885,6 +901,13 @@ export function AppShell() {
       <HintHost />
       <TourHost />
       <StatsRecapHost />
+      {/* Dev-only floating perf monitor (Ctrl+Alt+P). Main window only, like
+          the renderer watchdog; null in production builds by construction. */}
+      {DevPerfHost && (
+        <Suspense fallback={null}>
+          <DevPerfHost />
+        </Suspense>
+      )}
       {showHowToStart && (
         <HowToStart
           onClose={() => {

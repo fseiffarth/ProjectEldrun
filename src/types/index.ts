@@ -1,4 +1,5 @@
 import type { LinkOpenTarget } from "./browser";
+import type { PyMainVerdict } from "../lib/pythonMainCache";
 
 export interface GlobalAppEntry {
   exec: string;
@@ -335,6 +336,16 @@ export interface Settings {
    *  Eldrun restart. Round-trips through the backend's `extra` catch-all — no Rust
    *  field needed. An entry set to "" means "cleared" and is pruned. */
   python_run_args?: Record<string, string>;
+  /** Cached "is this a runnable script" verdicts for `.py` files (#py), keyed by
+   *  absolute path — what gates the file tree's ▶ Run button. Each entry carries
+   *  the `(size, mtime)` it was computed from, so an edited file is re-read and an
+   *  untouched one never is, across viewer reopens and restarts alike. Persisted
+   *  here precisely because the check needs the file's *content*: on a remote
+   *  listing that is an SFTP round trip per file, which is why it used to be
+   *  skipped there (and ▶ wrongly shown on every `.py`). Bounded and pruned by
+   *  `lib/pythonMainCache`. Round-trips through the backend's `extra` catch-all —
+   *  no Rust field needed. */
+  python_main_scripts?: Record<string, PyMainVerdict>;
   run_scripts_in_background?: boolean;
   /** Header resource-monitor row toggles. Each defaults ON (undefined → shown).
    *  Independent of `debug`; the pill is available in every build. */

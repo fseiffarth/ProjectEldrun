@@ -283,7 +283,9 @@ fn get_uncapped(account: &str) -> Option<String> {
 /// the kernel-keyring half would be worse than either — a credential that reads back
 /// fine until the next reboot silently loses it.
 pub fn set(account: &str, password: Option<&str>) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
+    // No longer Linux-only: a locked macOS keychain refuses the write too, and used to
+    // reach `delete_credential` with nothing standing in its way (G.24). Windows'
+    // store reports `Unlocked` unconditionally, so this is a no-op there.
     if cached_keyring_state() != KeyringState::Unlocked {
         return Err("the OS keyring is locked, so nothing was saved — unlock it and try again".into());
     }
@@ -318,14 +320,15 @@ pub fn has(account: &str) -> bool {
 /// could not read. Callers that would act destructively, or write something down,
 /// ask this first and do nothing when it says no.
 pub fn store_readable() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        cached_keyring_state() == KeyringState::Unlocked
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        true
-    }
+    // Asked the same way on every platform. It used to be hardcoded `true` off Linux
+    // — the assumption that only the Secret Service has a lockable collection — which
+    // is wrong for macOS, whose login keychain locks on a timer and on sleep. There
+    // the two destructive paths this gate exists to stop were never gated at all: a
+    // `Remember::Clear` deleting a credential that merely *read* as absent, and
+    // `record_key_auth` stamping `key_auth: true` on a host whose saved password was
+    // simply unreadable. Windows genuinely has no such state and answers `Unlocked`
+    // from its own branch, so nothing there changes.
+    cached_keyring_state() == KeyringState::Unlocked
 }
 
 /// Whether the OS credential store can be read **right now** — the question every
@@ -366,21 +369,18 @@ pub fn keyring_state() -> KeyringState {
 }
 
 /// How long [`cached_keyring_state`] trusts a reading. Short enough that unlocking the
-/// collection from *outside* Eldrun (Seahorse, another app's prompt) is picked up
-/// without a restart; long enough that a burst of connects costs one probe, not one per
-/// credential. The transition that actually matters — our own [`unlock_keyring`] — does
-/// not wait for it: it invalidates the cache outright.
-#[cfg(target_os = "linux")]
+/// collection from *outside* Eldrun (Seahorse, Keychain Access, another app's prompt)
+/// is picked up without a restart; long enough that a burst of connects costs one probe,
+/// not one per credential. The transition that actually matters — our own
+/// [`unlock_keyring`] — does not wait for it: it invalidates the cache outright.
 const STATE_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 
-#[cfg(target_os = "linux")]
 static STATE_CACHE: std::sync::Mutex<Option<(std::time::Instant, KeyringState)>> =
     std::sync::Mutex::new(None);
 
 /// The lock state as [`get`]'s gate sees it: cached, so that asking "may I dispatch a
 /// Secret Service read?" before *every* read costs a D-Bus round trip only once per
 /// [`STATE_TTL`]. The probe behind it never prompts, so a miss is cheap and safe.
-#[cfg(target_os = "linux")]
 fn cached_keyring_state() -> KeyringState {
     if let Ok(cache) = STATE_CACHE.lock() {
         if let Some((at, state)) = *cache {
@@ -392,17 +392,13 @@ fn cached_keyring_state() -> KeyringState {
     keyring_state()
 }
 
-/// Record a freshly-observed lock state. A no-op off Linux, where there is no lock to
-/// observe and [`get`] never consults the cache.
+/// Record a freshly-observed lock state.
 /// `pub(crate)` only so a test elsewhere can put the gate into a known state
 /// without a live probe (see `commands::remote`'s locked-keychain test) — nothing
 /// in production code outside this module should be *asserting* a lock state.
-pub(crate) fn remember_keyring_state(_state: KeyringState) {
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(mut cache) = STATE_CACHE.lock() {
-            *cache = Some((std::time::Instant::now(), _state));
-        }
+pub(crate) fn remember_keyring_state(state: KeyringState) {
+    if let Ok(mut cache) = STATE_CACHE.lock() {
+        *cache = Some((std::time::Instant::now(), state));
     }
 }
 
@@ -410,11 +406,8 @@ pub(crate) fn remember_keyring_state(_state: KeyringState) {
 /// is known to have just changed under us — an unlock we raised, a write that proved
 /// the collection was writable.
 pub fn forget_keyring_state() {
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(mut cache) = STATE_CACHE.lock() {
-            *cache = None;
-        }
+    if let Ok(mut cache) = STATE_CACHE.lock() {
+        *cache = None;
     }
 }
 
@@ -438,7 +431,49 @@ fn keyring_state_uncapped() -> KeyringState {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS: the login keychain **can** be locked — by `security lock-keychain`, by the
+/// "Lock after N minutes of inactivity" setting, or on sleep — and a locked one fails
+/// reads with *User interaction is not allowed* rather than answering "no entry". So
+/// this is a measurement here too, not the platform claim it used to be
+/// (`store_readable()` was hardcoded `true` off Linux, which let a `Remember::Clear`
+/// and a `record_key_auth` through on a keychain nobody could read — G.24).
+///
+/// `show-keychain-info` is the probe because it is the one that **cannot prompt**: it
+/// reports the keychain's settings and fails outright when locked, where any read of a
+/// real item would raise the unlock dialog — and a probe that can put a dialog on
+/// screen is not a probe. It costs a process spawn, which is why only
+/// [`cached_keyring_state`] calls it and only once per [`STATE_TTL`]; the whole call is
+/// already bounded by [`read_timed`]'s 4 s.
+#[cfg(target_os = "macos")]
+fn keyring_state_uncapped() -> KeyringState {
+    let Ok(out) = crate::paths::command_no_window("security")
+        .arg("show-keychain-info")
+        .output()
+    else {
+        // No `security` binary at all — nothing here can be concluded about a store
+        // we could not address, and "unavailable" is the answer with no action behind
+        // it (the honest reading of "we don't know").
+        return KeyringState::Unavailable;
+    };
+    if out.status.success() {
+        return KeyringState::Unlocked;
+    }
+    // Locked and absent are different failures and must not collapse: only the first
+    // has an unlock behind it. The message is matched case-insensitively because it is
+    // the stable part; the exit status alone cannot tell them apart.
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    if err.contains("user interaction is not allowed") || err.contains("locked") {
+        KeyringState::Locked
+    } else {
+        KeyringState::Unavailable
+    }
+}
+
+/// Windows: the credential store is DPAPI-backed and unlocks with the login session —
+/// there is genuinely no lockable collection, so there is nothing to measure and
+/// `Unlocked` is a fact rather than an assumption. Same for any other target, where a
+/// wrong guess would be the unsafe direction and no probe exists to improve on it.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn keyring_state_uncapped() -> KeyringState {
     KeyringState::Unlocked
 }

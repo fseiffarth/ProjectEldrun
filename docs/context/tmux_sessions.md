@@ -29,11 +29,21 @@ the wrap **reattaches** the still-running agent and the `--resume` target is ign
 when it is gone (host rebooted, session killed) `-A` creates a fresh session that runs
 `--resume`, so the conversation resumes exactly as it did before. The agent bootstrap
 prelude is nested inside the tmux target unchanged, the same way a shell tab's login
-shell is. The session name is a **`eldrun-<scope>--<uuid>` the frontend mints
+shell is. The session name is a **`eldrun-<scope>--<kind>-<uuid>` the frontend mints
 once per tab and persists** (`TabEntry.tmuxSession`, `lib/tmuxSession.ts`'s
 `newTmuxSessionName`) — *not* derived from the PTY id, which `loadFromLayout`
 regenerates on restore (a derived name would fork a second session on relaunch
 instead of reattaching); `tmux_attach` overrides it for a Sessions-view attach.
+The `<kind>` token (`agent`/`shell`) sits at the *front of the uuid half*, after
+the `--`, so it never disturbs the `eldrun-<scope>--` prefix the project filter
+matches on, and a uuid (hex) can never begin with `agent`/`shell` so an older
+tokenless name reads back cleanly as neither. `sessionKindFromName` is the pure
+inverse, and it is the whole basis of the Sessions view's **second** grouping:
+rows are grouped **first by machine** (`tmux-machine-group`), then **by session
+type** within each machine (Agents / Shells / Other sub-headings,
+`tmux-kind-group`), an empty bucket dropped and `Other` — foreign/legacy/renamed
+sessions — shown only when non-empty. The grouping is entirely a function of the
+name; the backend `TmuxSession` carries no kind field and did not need one.
 **Scoping the Sessions view to one project** (`remote_tmux_list` →
 `ssh_exec::filter_sessions_for_project`) matters because the host is usually
 shared — a cluster login node carries several Eldrun projects' runs and other
@@ -51,6 +61,23 @@ not. A row whose host reported no path (older format) is shown rather than
 silently dropped. Nothing is unreachable: the view's **"All host sessions"**
 checkbox passes `include_all`, returning the host listing untouched, so an
 orphaned run outside every project tree can still be attached to or killed.
+**An empty list must mean "we asked and there is nothing"**, and for a while it
+did not. `tmux_ls_script` ends in `|| true` so an absent tmux or a stopped
+server is a clean empty listing rather than an error — but `run_remote_script`
+only errors when `ssh` fails to *spawn*, so a failed **login** (exit 255, empty
+stdout) parsed to the same empty list, and the frontend poll's `.catch(() => [])`
+did the same for a hard rejection. Both said "no persistent sessions on the
+host" about a host full of them. It is not a rare path: this probe spawns its
+**own** `ssh` riding the shared `cm-%C` socket rather than the pooled session,
+so whenever that socket is missing or being replaced (`remote::connect_host`
+reopens a master whose socket went away; a sibling teardown, an `ssh -O exit`)
+it falls back to a fresh login with no credential to answer, fails for one 7 s
+tick and succeeds on the next — a Sessions view that blanks and comes back.
+`remote_tmux_list` now returns `Err` on a non-zero exit status, and
+`stores/hostSessions`' poll carries a **failed host's previous rows forward**
+rather than folding them into the reading; a host that answers with nothing
+still empties, or a killed session would never leave the list. This is the same
+rule `release` already kept the last reading for.
 **Kill vs. detach**: closing a tab **always detaches** —
 `lib/closeRemoteTab.ts`'s `closeTabWithConfirm` just `removeTab`s, killing only the
 ssh/PTY client, so the session lives on under its tmux daemon; an app-exit,

@@ -28,7 +28,11 @@ export default defineConfig(async () => ({
     port: 1420,
     strictPort: true,
     watch: {
-      ignored: ["**/src-tauri/**", "**/target/**", "**/.eldrun/**"],
+      // src/__tests__ is here because vite full-reloads the live window for a
+      // changed file it watches but has no module-graph entry for — and test
+      // files are exactly that. Concurrent agent sessions editing tests were
+      // reloading the app the user was working in.
+      ignored: ["**/src-tauri/**", "**/target/**", "**/.eldrun/**", "**/src/__tests__/**"],
     },
   },
 }));

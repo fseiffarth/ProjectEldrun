@@ -3,7 +3,7 @@ import { ProjectFilesView } from "./ProjectFilesView";
 import { useIndependentFileSource } from "./ProjectFilesPane";
 import { useProjectsStore } from "../../stores/projects";
 import { PROJECT_FILES_TAB_CMD, useTabsStore } from "../../stores/tabs";
-import { resolveProjectDirectory } from "../../types";
+import { resolveProjectDirectory, type ProjectEntry } from "../../types";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 /**
@@ -65,6 +65,20 @@ interface Props {
   /** Compact mode: strip the header + view-switcher toolbar + sync/sort rows so
    *  the find-files search is topmost. Set by the docked subwindow viewer only. */
   compact?: boolean;
+  /** Stable identity for THIS viewer instance, so its own Local/Remote choice
+   *  survives a remount (`useIndependentFileSource`). The docked column passes
+   *  its group id — it is remounted by `key={scope}` on every scope switch, and
+   *  a choice held in component state came back re-seeded from the project-wide
+   *  one. Falls back to the tab key; a viewer with neither keeps its choice only
+   *  as long as it stays mounted. */
+  viewerId?: string;
+  /** A project to fall back to when the projects store can't resolve `scope` — a
+   *  detached popout is inert to that store, so it streams the owning project in
+   *  its seed and hands it here. Without it a remote project's viewer resolves no
+   *  project and its Local/Remote source switch + run-host picker (gated on
+   *  `project.remote`) never render. Ignored when the store already has the
+   *  project (the main window), so the store stays authoritative there. */
+  injectedProject?: ProjectEntry | null;
 }
 
 export function ProjectFilesTab({
@@ -76,10 +90,14 @@ export function ProjectFilesTab({
   visible,
   compact,
   persistFolder,
+  viewerId,
+  injectedProject,
 }: Props) {
   const t = useT();
   const projects = useProjectsStore((s) => s.projects);
-  const project = projects.find((p) => p.id === scope) ?? null;
+  // Prefer the store (authoritative in the main window); fall back to the streamed
+  // project a detached popout injects, which is inert to the projects store.
+  const project = projects.find((p) => p.id === scope) ?? injectedProject ?? null;
   const projectDir = project ? resolveProjectDirectory(project) : cwd;
 
   // The browsed folder is meaningless without the root it is relative to, so it
@@ -94,7 +112,11 @@ export function ProjectFilesTab({
   const identity = `${scope}\u0000${projectDir}`;
   const [held, setHeld] = useState({ identity, folder: initialFolder ?? "" });
   const folder = held.identity === identity ? held.folder : (initialFolder ?? "");
-  const [source, setSource] = useIndependentFileSource(project?.id ?? null, !!project?.remote);
+  const [source, setSource] = useIndependentFileSource(
+    project?.id ?? null,
+    !!project?.remote,
+    viewerId ?? (tabKey ? `tab:${tabKey}` : undefined),
+  );
 
   // Re-seed when the identity changes (above is the same frame's answer; this
   // commits it) or when the persisted folder changes out from under us — a

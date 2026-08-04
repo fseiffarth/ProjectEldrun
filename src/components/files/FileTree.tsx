@@ -25,7 +25,7 @@ import { useExperimental } from "../../lib/experimental";
 import { createDeckFile } from "../../lib/viewers/deck/create";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
-import { useSyncStore, isPathExcluded, type SyncFileState } from "../../stores/sync";
+import { useSyncStore, isPathExcluded, dirSyncAggregate, type SyncFileState } from "../../stores/sync";
 import { confirmSyncTransfer } from "../../stores/syncConfirm";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
@@ -34,7 +34,12 @@ import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLin
 import { basename, dirname, relativePathWithin, resolvePath } from "../../lib/paths";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import { DirSizeUnavailable, guardedDirSize, isHostTimeout } from "../../lib/dirSizeGuard";
-import { isPythonPath, isPythonMainScript } from "../../lib/viewers/python";
+import { isPythonPath } from "../../lib/viewers/python";
+import {
+  checkMainScripts,
+  isMainScriptCached,
+  needsMainCheck,
+} from "../../lib/pythonMainCache";
 import { runPythonFile, pythonRunPlan, placeForFocused } from "../../lib/pythonRun";
 import {
   shellRunnerFor,
@@ -46,6 +51,7 @@ import { projectIsOnHpc } from "../../lib/hpcHost";
 import { useRunHostPrefStore } from "../../stores/runHostPref";
 import { readFileText } from "../embed/fileAccess";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
+import { SendToProjectDialog, type SendSource } from "./SendToProjectDialog";
 import { normalizeScanPath } from "./ProjectFilesSettings";
 import { FileTreeSearch } from "./FileTreeSearch";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
@@ -127,6 +133,14 @@ interface Props {
    *  the host for the browsed folder and flag which local-only child folders don't
    *  exist on the remote yet. Absent for a local project / the remote-source view. */
   remoteProbeDir?: string | null;
+  /** Whether the surface hosting this tree is on screen. A tree stays MOUNTED
+   *  while hidden (it must be instantly ready on switch-back), but all of its
+   *  standing work stops: the fs-watch + fs-change re-list (every mounted tree
+   *  used to re-list on every event burst, hidden or not), the 15 s sync
+   *  re-stat, the host readdir probe, and the lazy folder-size walks. When the
+   *  tree's project becomes current again everything restarts, with one quiet
+   *  catch-up re-list covering whatever changed while it was hidden. */
+  active?: boolean;
 }
 
 type GitStatusMap = Record<string, string>;
@@ -267,6 +281,7 @@ export function FileTree({
   onOpenFolderTab,
   syncSource,
   remoteProbeDir,
+  active = true,
 }: Props) {
   const t = useT();
   // Non-null inside a detached popout: replaces the main window's CenterPanel
@@ -456,6 +471,7 @@ export function FileTree({
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm>(null);
   const [autoConfirm, setAutoConfirm] = useState<AutoConfirm>(null);
   const [defaultAppFor, setDefaultAppFor] = useState<FileEntry | null>(null);
+  const [sendTo, setSendTo] = useState<SendSource | null>(null);
   const [pastePrompt, setPastePrompt] = useState<PastePrompt | null>(null);
   const [pasteBusy, setPasteBusy] = useState(false);
   // SSH-sync Phase 2: project-relative paths whose push was blocked by a stale
@@ -463,6 +479,14 @@ export function FileTree({
   // first is shown in the conflict modal; resolving advances the queue.
   const [pushConflicts, setPushConflicts] = useState<string[]>([]);
   const [pushBusy, setPushBusy] = useState(false);
+  // What the last transfer started from this tree did. It exists for the
+  // successful case: a failure had `error`, a conflict had its own modal, and a
+  // push that simply worked said nothing whatsoever — the same blank as a button
+  // whose click was swallowed. Stays until dismissed or superseded rather than
+  // fading, since a one-second push must not report itself into a toast the user
+  // has not looked at yet (the whole-project row in `ProjectFilesPane` strikes
+  // the same bargain, with the same chrome).
+  const [syncNotice, setSyncNotice] = useState<{ text: string; bad: boolean } | null>(null);
   // Whether the system clipboard holds an image when the context menu opened
   // (probed async on right-click), gating the "Paste screenshot" option.
   const [clipboardImage, setClipboardImage] = useState(false);
@@ -548,22 +572,7 @@ export function FileTree({
   // `allGreen` = they are all green. A folder with its own entry still uses that
   // (handled at the lookup site); this only rescues the entry-less ones. Keyed by
   // project-relative directory path.
-  const dirSyncAgg = useMemo(() => {
-    const agg: Record<string, { any: boolean; allGreen: boolean }> = {};
-    if (!syncStatus) return agg;
-    for (const [p, s] of Object.entries(syncStatus)) {
-      if (s.isDir) continue; // dir entries are authoritative on their own row
-      const parts = p.split("/");
-      for (let i = 1; i < parts.length; i++) {
-        const dir = parts.slice(0, i).join("/");
-        const cur = agg[dir] ?? { any: false, allGreen: true };
-        cur.any = true;
-        if (s.state !== "green") cur.allGreen = false;
-        agg[dir] = cur;
-      }
-    }
-    return agg;
-  }, [syncStatus]);
+  const dirSyncAgg = useMemo(() => dirSyncAggregate(syncStatus), [syncStatus]);
   const syncProgress = useSyncStore((s) => (projectId ? s.progressByProject[projectId] : undefined));
   const refreshSyncStatus = useSyncStore((s) => s.refreshStatus);
   const syncPull = useSyncStore((s) => s.pull);
@@ -621,36 +630,69 @@ export function FileTree({
 
   // Whether a visible Python file is a "main" script (has a module-level
   // `if __name__ == "__main__":` guard) — the Run ▶ button only shows for
-  // those, not for every importable module. Resolved lazily per file since it
-  // needs the file's content, which the tree listing doesn't carry. Keyed by
-  // path + size + mtime so an on-disk edit (picked up by the fs watcher's
-  // `entries` change) gets rechecked instead of trusting a stale verdict.
-  const [pyMainByPath, setPyMainByPath] = useState<Record<string, boolean>>({});
-  const pyMainChecked = useRef<Set<string>>(new Set());
+  // those, not for every importable module. It needs the file's content, which
+  // the tree listing doesn't carry, so it is read once per *version* of a file
+  // and the verdict is persisted in settings.json (`lib/pythonMainCache`).
+  //
+  // Persisting is what makes this affordable on BOTH sides. It used to be a
+  // component-lifetime ref, so every reopen of the viewer re-read every visible
+  // .py — and because that is an SFTP round trip per file on a remote listing,
+  // remote skipped the check entirely and showed ▶ on every .py. That is the
+  // local/remote disagreement this replaces: the same library module offered a
+  // Run button on the host and none on the mirror. Now both sides ask the same
+  // question and pay for the answer once.
+  const pyMainCache = useSettingsStore((s) => s.settings?.python_main_scripts);
+  // Guards against a second scan of files whose read is still in flight (the
+  // cache only learns the answer when it lands). Keyed by path + version, so a
+  // file edited mid-scan is still re-checked.
+  const pyMainInFlight = useRef<Set<string>>(new Set());
+  // Bumped by the ↻ refresh button: re-check every listed .py regardless of its
+  // stamp. The stamp cannot see a same-second write that lands on an identical
+  // size, and "I pressed refresh" is exactly the gesture that should not trust it.
+  const [pyMainNonce, setPyMainNonce] = useState(0);
+  const pyMainNonceSeen = useRef(0);
   useEffect(() => {
-    // A remote-source listing's `readFileText` is an SFTP round trip — doing
-    // one per visible .py file just to place the Run button would visibly
-    // stall the tree. Remote falls back to the old any-.py-file behavior
-    // instead (see `canPyRun` below).
-    if (remoteListing) return;
-    const pending = entries.filter(
-      (e) => !e.is_dir && isPythonPath(e.path)
-        && !pyMainChecked.current.has(`${e.path}#${e.size}#${e.modified_secs ?? 0}`),
-    );
+    const forced = pyMainNonceSeen.current !== pyMainNonce;
+    pyMainNonceSeen.current = pyMainNonce;
+    // The ref object's identity never changes, so holding the Set itself is the
+    // same Set the cleanup must clear — and it satisfies the hooks lint, which
+    // can't know that a ref to a plain Set is not a ref to a DOM node.
+    const inFlight = pyMainInFlight.current;
+    const version = (e: FileEntry) => `${e.path}#${e.size}#${e.modified_secs ?? 0}`;
+    const pending = entries
+      .filter((e) => !e.is_dir && isPythonPath(e.path) && !inFlight.has(version(e)))
+      .map((e) => ({ path: e.path, size: e.size, mtime: e.modified_secs ?? 0 }))
+      .filter((f) => forced || needsMainCheck(pyMainCache, f));
     if (pending.length === 0) return;
-    pending.forEach((e) => pyMainChecked.current.add(`${e.path}#${e.size}#${e.modified_secs ?? 0}`));
+    pending.forEach((f) => inFlight.add(`${f.path}#${f.size}#${f.mtime}`));
     let cancelled = false;
-    (async () => {
-      for (const e of pending) {
-        const text = await readFileText(e.path, projectId).catch(() => null);
-        if (cancelled) return;
-        setPyMainByPath((m) => ({ ...m, [e.path]: text != null && isPythonMainScript(text) }));
-      }
+    void (async () => {
+      const verdicts = await checkMainScripts(
+        pending,
+        (path) => readFileText(path, projectId),
+        { cancelled: () => cancelled },
+      );
+      if (cancelled) return;
+      // One settings write for the whole folder, not one per file.
+      await useSettingsStore.getState().setPythonMainVerdicts(verdicts);
     })();
     return () => {
       cancelled = true;
+      // A cancelled scan's files were never answered, so they must not stay
+      // marked as in flight or the next listing would skip them forever.
+      pending.forEach((f) => inFlight.delete(`${f.path}#${f.size}#${f.mtime}`));
     };
-  }, [entries, remoteListing, projectId]);
+  }, [entries, projectId, pyMainCache, pyMainNonce]);
+
+  /** Re-list the current folder, and re-check every .py in it for the Run gate.
+   *  Both refresh buttons (the remote bar's and the local breadcrumb's) call this,
+   *  so a manual refresh means the same thing on either side. */
+  function refreshListing() {
+    void load(relPath);
+    pyMainInFlight.current.clear();
+    setPyMainNonce((n) => n + 1);
+    if (projectId) void refreshSyncStatus(projectId);
+  }
 
   // Per-entry git status resolving the "whole directory is ignored" sentinel the
   // backend emits under the reserved key "." (git's porcelain never lists an empty
@@ -831,8 +873,11 @@ export function FileTree({
   // folder costs a recursive walk — a `du` over SSH for a remote project — so a
   // listing holding thousands of subfolders would dispatch thousands of them for
   // rows that aren't even on screen. `requestedSizes` dedupes, so raising the
-  // render cap prices the newly revealed folders and only those.
+  // render cap prices the newly revealed folders and only those. `active` gates
+  // all three size effects the same way: a hidden tree walks nothing, and the
+  // dedupe set means reactivation prices exactly the still-unpriced folders.
   useEffect(() => {
+    if (!active) return;
     const pending = rowWindow.gitignored.filter(
       (e) => e.is_dir && !requestedSizes.current.has(e.path) && !isScanExcluded(relForEntry(e)),
     );
@@ -855,12 +900,13 @@ export function FileTree({
         });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rowWindow.gitignored]);
+  }, [rowWindow.gitignored, active]);
 
   // Same as the gitignored effect above, for the visible hidden-by-extension
   // rows — a plain `dir_size` is enough here too, since the group's own
   // total needs no ignored/non-ignored split.
   useEffect(() => {
+    if (!active) return;
     const pending = rowWindow.hiddenExt.filter(
       (e) => e.is_dir && !requestedSizes.current.has(e.path) && !isScanExcluded(relForEntry(e)),
     );
@@ -883,7 +929,7 @@ export function FileTree({
         });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rowWindow.hiddenExt]);
+  }, [rowWindow.hiddenExt, active]);
 
   // Lazily compute the recursive size of each visible regular/standard-section
   // folder, split into ignored vs. non-ignored bytes in the SAME backend walk
@@ -896,6 +942,7 @@ export function FileTree({
   // `requestedSizes` with the effect above so no folder is fetched twice.
   // Scoped to the rendered rows for the same reason that effect is — see there.
   useEffect(() => {
+    if (!active) return;
     const candidates = [...rowWindow.regular, ...rowWindow.standard];
     const pending = candidates.filter(
       (e) => e.is_dir && !requestedSizes.current.has(e.path) && !isScanExcluded(relForEntry(e)),
@@ -941,7 +988,7 @@ export function FileTree({
         });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rowWindow.regular, rowWindow.standard]);
+  }, [rowWindow.regular, rowWindow.standard, active]);
 
   // Total bytes contained in each section, kept separate rather than merged
   // into one figure — the point of splitting scaffold/gitignored out visually
@@ -957,17 +1004,64 @@ export function FileTree({
       list.reduce((sum, e) => sum + (e.is_dir ? (dirSizes[e.path] ?? 0) : e.size), 0);
     const ignored = (list: FileEntry[]) =>
       list.reduce((sum, e) => sum + (e.is_dir ? (dirIgnoredBytes[e.path] ?? 0) : 0), 0);
+    // Whether the sum is still MISSING a folder — the thing that makes it a lower
+    // bound rather than a measurement, and the reason it must not be printed as a
+    // plain figure (see `renderGroupTotal`). Three independent causes, deliberately
+    // folded into one flag because the reader's question is the same for all of
+    // them: a `dir_size` still in flight (on a remote project that is a `du` over
+    // SSH, four at a time), one that failed or was refused by the breaker, and a
+    // folder past the render cap, which is never requested at all. An excluded
+    // folder is NOT missing: it is deliberately unmeasured and contributes 0.
+    const incomplete = (list: FileEntry[]) =>
+      list.some(
+        (e) => e.is_dir && dirSizes[e.path] === undefined && !isScanExcluded(relForEntry(e)),
+      );
     const regularIgnored = ignored(sections.regular);
     const standardIgnored = ignored(sections.standard);
     return {
       regular: total(sections.regular) - regularIgnored,
       regularIgnored,
+      regularPartial: incomplete(sections.regular),
       standard: total(sections.standard) - standardIgnored,
       standardIgnored,
+      standardPartial: incomplete(sections.standard),
       gitignored: total(sections.gitignored),
+      gitignoredPartial: incomplete(sections.gitignored),
       hiddenExt: total(sections.hiddenExt),
+      hiddenExtPartial: incomplete(sections.hiddenExt),
     };
+    // `relForEntry`/`isScanExcluded` depend only on `relPath`/`scanExcluded`, both
+    // of which force a re-list (and so a fresh `sections`) when they change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sections, dirSizes, dirIgnoredBytes]);
+
+  /**
+   * A group header's byte total.
+   *
+   * A folder's recursive size arrives asynchronously and may never arrive at all
+   * (a `du` over SSH that timed out, the breaker in `dirSizeGuard`, a folder past
+   * the render cap that is never requested), so until every folder in the group
+   * has answered the sum is a **lower bound**, not a measurement. Printing it
+   * plainly is what made a remote listing read as a measured `0 B`: a folder
+   * holding only subfolders sums to zero for as long as the walks take, and the
+   * figure then silently corrected itself seconds later.
+   *
+   * So an incomplete sum says it is incomplete — `…` while nothing has landed,
+   * `≥ 1.2 MB` once part of it has — and a bare figure means the total really is
+   * the total.
+   */
+  const renderGroupTotal = (bytes: number, partial: boolean, title: string) => (
+    <span
+      className={`file-tree-path-total${partial ? " partial" : ""}`}
+      title={partial ? `${title} — ${t("fileTree.sizeIncomplete")}` : title}
+    >
+      {!partial
+        ? fmtSize(bytes)
+        : bytes > 0
+          ? t("fileTree.sizeAtLeast", { size: fmtSize(bytes) })
+          : "…"}
+    </span>
+  );
 
   const isEmbeddable = (e: FileEntry): boolean =>
     !e.is_dir && embedByExt[e.extension ?? ""] === true;
@@ -1034,11 +1128,13 @@ export function FileTree({
   // known manifest state (the backend falls back gracefully when the pool is
   // down — see `sync_status`).
   useEffect(() => {
-    if (isRemote && projectId && !remoteBlocked) {
+    // `active` doubles as the reactivation catch-up: a hidden tree skips the
+    // refresh, and the flip back to visible re-runs this with fresh sync state.
+    if (isRemote && projectId && !remoteBlocked && active) {
       void refreshSyncStatus(projectId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRemote, projectId, remoteBlocked, relPath]);
+  }, [isRemote, projectId, remoteBlocked, relPath, active]);
 
   // SSH-sync: the host tree has no change watcher (inotify can't see the SFTP
   // tree), so a remote-side edit wouldn't flip a file to amber until the user
@@ -1050,7 +1146,9 @@ export function FileTree({
   // re-stats (which would report stale green); runs for both the remote-source
   // and local-mirror views (the amber marker is symmetric).
   useEffect(() => {
-    if (!isRemote || !projectId || remoteSshState !== "connected") return;
+    // Hidden trees re-stat nothing: the sync markers they'd refresh aren't on
+    // screen, and the mount-refresh effect above catches up on reactivation.
+    if (!isRemote || !projectId || remoteSshState !== "connected" || !active) return;
     const refresh = () => { void refreshSyncStatus(projectId); };
     window.addEventListener("focus", refresh);
     // The 15 s tick is the third periodic walk of a host tree, after the 25 s
@@ -1072,7 +1170,7 @@ export function FileTree({
       window.removeEventListener("focus", refresh);
       if (id !== undefined) window.clearInterval(id);
     };
-  }, [isRemote, projectId, remoteSshState, refreshSyncStatus, primaryIsHpc]);
+  }, [isRemote, projectId, remoteSshState, refreshSyncStatus, primaryIsHpc, active]);
 
   // Local-mirror view: readdir the HOST for the browsed folder so folders that
   // live only in the local mirror can be flagged (see `hostChildNames`). One
@@ -1080,7 +1178,9 @@ export function FileTree({
   // isn't on the host (readdir fails), every local child here is off-host too, so
   // an empty set is the right answer — it flags them all.
   useEffect(() => {
-    if (!treatLocal || !isRemote || !remoteProbeDir || remoteSshState !== "connected") {
+    // `!active`: a hidden tree probes no host; the flags fall back to "unknown"
+    // (no markers) and the reactivation re-run re-probes.
+    if (!treatLocal || !isRemote || !remoteProbeDir || remoteSshState !== "connected" || !active) {
       setHostChildNames(null);
       return;
     }
@@ -1096,17 +1196,36 @@ export function FileTree({
     return () => {
       cancelled = true;
     };
-  }, [treatLocal, isRemote, remoteProbeDir, remoteSshState, relPath]);
+  }, [treatLocal, isRemote, remoteProbeDir, remoteSshState, relPath, active]);
 
   // Live updates: watch the currently-displayed directory on the backend and
   // re-fetch when it changes, so files created/removed by terminals, agents, or
   // other processes appear without manual navigation. Re-points to the new
   // directory whenever relPath changes; tears down on unmount/panel close.
+  //
+  // Active surfaces only: trees stay mounted while hidden (background Files
+  // tabs, backgrounded projects), and the fs-change listener ignores the event's
+  // path — so every mounted tree used to re-list (list_dir + git_file_statuses)
+  // on every event burst anywhere. A hidden tree now stops watching entirely and
+  // catches up with ONE quiet re-list when its surface is next shown (the same
+  // identity-preserving refresh an fs-change triggers, so nothing repaints when
+  // nothing changed). React runs effect cleanups before setups across the tree,
+  // so the deactivating tree's `unwatch_dir` lands before the activating tree's
+  // `watch_dir` claims the single backend watch slot.
+  const sawInactive = useRef(false);
   useEffect(() => {
     // Remote projects have no local fs watcher (inotify can't see the SFTP tree);
     // they refresh manually via the toolbar button. Skip the watch wiring. The
     // local mirror source IS a real local dir, so it keeps live watch updates.
     if (!projectDir || remoteListing) return;
+    if (!active) {
+      sawInactive.current = true;
+      return;
+    }
+    if (sawInactive.current) {
+      sawInactive.current = false;
+      void refresh(relPath);
+    }
     const absDir = relPath ? `${projectDir}/${relPath}` : projectDir;
     let unlisten: (() => void) | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -1129,7 +1248,7 @@ export function FileTree({
       invoke("unwatch_dir").catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectDir, relPath, remoteListing]);
+  }, [projectDir, relPath, remoteListing, active]);
 
   async function load(rel: string) {
     // Never issue the (synchronous, main-thread) remote listing commands while the
@@ -2059,22 +2178,41 @@ export function FileTree({
   // whole subtree — so it asks first (`stores/syncConfirm`), naming what would be
   // replaced and what would be lost. The button used to do it on one click, which
   // is what made an ordinary misclick destructive.
-  async function syncEntryToLocal(entry: FileEntry) {
+  /**
+   * Pull one project-relative path (a file, a folder, or "" for the whole
+   * project) from the host into the mirror, with the confirm in front of it.
+   *
+   * Rel-based rather than entry-based because the same transfer is started from
+   * three places and only one of them has a `FileEntry`: a tree row, the row's
+   * context menu, and the tree head's folder-level slot — which acts on the
+   * folder currently being *browsed*, including the root, which has no row to
+   * carry an entry.
+   */
+  async function syncRelToLocal(rel: string, label: string, isDir: boolean) {
     setContextMenu(null);
     if (!projectId) return;
     const ok = await confirmSyncTransfer({
       projectId,
       direction: "pull",
-      relPath: relForEntry(entry),
-      isDir: entry.is_dir,
-      label: entry.name,
+      relPath: rel,
+      isDir,
+      label,
     });
     if (!ok) return;
+    setSyncNotice(null);
     try {
-      await syncPull(projectId, relForEntry(entry));
+      await syncPull(projectId, rel);
+      // A pull reports no per-file count, so the confirmation is that it landed
+      // at all. Silence used to be the *only* successful outcome, which reads
+      // exactly like a button that does nothing.
+      setSyncNotice({ text: t("fileTree.pullDoneNotice", { name: label }), bad: false });
     } catch (err) {
       setError(String(err));
     }
+  }
+
+  async function syncEntryToLocal(entry: FileEntry) {
+    await syncRelToLocal(relForEntry(entry), entry.name, entry.is_dir);
   }
 
   async function stopSyncingEntry(entry: FileEntry) {
@@ -2145,43 +2283,46 @@ export function FileTree({
   // but a push that lands on an unchanged host file simply replaces it, which for
   // a folder row is a whole subtree of the host's content going under the mirror's.
   // So, like the pull, it asks first and names what it would replace.
-  async function pushEntryToHost(entry: FileEntry) {
+  async function pushRelToHost(rel: string, label: string, isDir: boolean) {
     setContextMenu(null);
     if (!projectId) return;
     const ok = await confirmSyncTransfer({
       projectId,
       direction: "push",
-      relPath: relForEntry(entry),
-      isDir: entry.is_dir,
-      label: entry.name,
+      relPath: rel,
+      isDir,
+      label,
     });
     if (!ok) return;
+    setSyncNotice(null);
     try {
-      const { conflicts } = await syncPush(projectId, relForEntry(entry), false);
-      if (conflicts.length > 0) setPushConflicts(conflicts);
+      const r = await syncPush(projectId, rel, false);
+      if (r.conflicts.length > 0) setPushConflicts(r.conflicts);
+      else if (r.failed_total > 0)
+        setError(r.first_error ?? t("fileTree.pushFailedCount", { count: r.failed_total }));
+      else if (r.pushed === 0) setError(t("fileTree.pushedNothing"));
+      // The success case, which used to be the ONLY outcome with no feedback at
+      // all: a push that worked and a push that never ran looked identical, and
+      // the row's button going away is not something the eye catches on a tree
+      // of two hundred. Conflicts are named separately — those files are still
+      // orange, and calling that a successful push would be wrong.
+      else
+        setSyncNotice({
+          text: t("fileTree.pushDoneNotice", { count: r.pushed, name: label }),
+          bad: false,
+        });
     } catch (err) {
       setError(String(err));
     }
   }
 
+  async function pushEntryToHost(entry: FileEntry) {
+    await pushRelToHost(relForEntry(entry), entry.name, entry.is_dir);
+  }
+
   // Push the whole local mirror up to the host (root context menu, local source).
   async function pushAllToHost() {
-    setContextMenu(null);
-    if (!projectId) return;
-    const ok = await confirmSyncTransfer({
-      projectId,
-      direction: "push",
-      relPath: "",
-      isDir: true,
-      label: basename(projectDir) || t("fileTree.projectRootFolder"),
-    });
-    if (!ok) return;
-    try {
-      const { conflicts } = await syncPush(projectId, "", false);
-      if (conflicts.length > 0) setPushConflicts(conflicts);
-    } catch (err) {
-      setError(String(err));
-    }
+    await pushRelToHost("", basename(projectDir) || t("fileTree.projectRootFolder"), true);
   }
 
   // Drop the whole remaining conflict queue in one click. A push over a folder or
@@ -2719,6 +2860,97 @@ export function FileTree({
   const searchScope = searchRoot ? "" : relPath;
   const scopeLabel = relPath ? basename(relPath) || relPath : "";
 
+  /**
+   * The sync control for the folder currently being BROWSED — the tree head's
+   * counterpart to the per-row slot, and the only one the project root can have:
+   * the root is not a row in anybody's listing, so at the top level (where a
+   * file view opens) the whole green/orange pull/push vocabulary was simply
+   * absent, and the one transfer people actually want there — "send this folder
+   * up" — was reachable only from a context menu or the pane's text button.
+   *
+   * The state is read from the roll-up FIRST, unlike a row (which prefers its
+   * own manifest entry). A directory's own entry is always reported green by the
+   * backend — it is a marker, not a measurement — so honouring it here would
+   * paint a folder full of diverged files as in sync. The roll-up is derived from
+   * the files themselves and cannot say that.
+   */
+  function renderFolderSyncSlot() {
+    const syncTracked = remoteListing || treatLocal;
+    if (!syncTracked || !projectId) return null;
+    const agg = dirSyncAgg[relPath];
+    const state: SyncFileState = agg?.any
+      ? agg.allGreen
+        ? "green"
+        : "amber"
+      : (syncStatus?.[relPath]?.state ?? "none");
+    const label = relPath
+      ? basename(relPath) || relPath
+      : basename(projectDir) || t("fileTree.projectRootFolder");
+    if (isPathExcluded(syncStatus, relPath)) {
+      return (
+        <span
+          className="file-sync-excluded"
+          title={t("fileTree.excludedFromByteSync")}
+          aria-label={t("fileTree.excludedFromByteSync")}
+        >
+          ✕
+        </span>
+      );
+    }
+    // Diverged: the same non-interactive ± a folder row shows. Which side wins is
+    // a per-file question, and answering it for a whole subtree in one click is
+    // not something this button may offer.
+    if (state === "amber") {
+      return (
+        <span
+          className="file-sync-dir-diverged"
+          title={t("fileTree.folderDiverged")}
+          aria-label={t("fileTree.folderDiverged")}
+        >
+          ±
+        </span>
+      );
+    }
+    // In sync: still shown, quietly. An empty slot is the state the root had
+    // before this existed, and it cannot be told from a control that failed to
+    // render.
+    if (state === "green") {
+      return (
+        <span
+          className="file-sync-folder-green"
+          title={t("fileTree.folderInSync", { name: label })}
+          aria-label={t("fileTree.folderInSync", { name: label })}
+        >
+          ✓
+        </span>
+      );
+    }
+    const busy = !!syncProgress;
+    return (
+      <button
+        type="button"
+        className={`orange-file-act orange-file-act--icon orange-file-act--slot ${remoteListing ? "orange-file-act--remote" : "orange-file-act--local"}`}
+        title={t(remoteListing ? "fileTree.syncFolderSlotTitle" : "fileTree.pushFolderSlotTitle", {
+          name: label,
+        })}
+        aria-label={t(
+          remoteListing ? "fileTree.syncFolderSlotTitle" : "fileTree.pushFolderSlotTitle",
+          { name: label },
+        )}
+        disabled={busy}
+        onClick={(ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          void (remoteListing
+            ? syncRelToLocal(relPath, label, true)
+            : pushRelToHost(relPath, label, true));
+        }}
+      >
+        {remoteListing ? "⬇" : "⬆"}
+      </button>
+    );
+  }
+
   return (
     <div
       ref={treeRootRef}
@@ -2743,7 +2975,7 @@ export function FileTree({
         <div className="file-tree-remote-bar" title={t("fileTree.remoteBarTitle")}>
           <button
             className="file-tree-up file-tree-refresh"
-            onClick={() => { load(relPath); if (projectId) void refreshSyncStatus(projectId); }}
+            onClick={refreshListing}
             disabled={loading}
             title={t("fileTree.refreshSftpTitle")}
             aria-label={t("common.refresh")}
@@ -2751,6 +2983,42 @@ export function FileTree({
             ↻
           </button>
           <span className="file-tree-remote-label">{t("fileSourceSwitch.remote")}</span>
+          {/* The browsed folder's own pull control — the root's included, which
+              is the one this bar exists to give it. */}
+          {renderFolderSyncSlot()}
+          {syncProgress && (
+            <span className="file-tree-sync-progress" title={t("fileTree.syncingRel", { rel: syncProgress.rel || "…" })}>
+              ⟳ {syncProgress.done}/{syncProgress.total}
+            </span>
+          )}
+        </div>
+      )}
+      {/* The local twin of the remote bar's ↻. A local listing has an fs watcher,
+          so it does not *need* a manual refresh to see new files — but it is the
+          only way to force the Run-gate re-check (`refreshListing`) when the
+          watcher can't help: a same-second write that lands on an identical size
+          leaves the persisted verdict's stamp untouched. Same classes and same
+          slot as the remote bar, so the button doesn't move when the Remote/Local
+          switch flips. */}
+      {!remoteListing && (
+        <div className="file-tree-local-bar">
+          <button
+            className="file-tree-up file-tree-refresh"
+            onClick={refreshListing}
+            disabled={loading}
+            title={t("fileTree.refreshTitle")}
+            aria-label={t("common.refresh")}
+          >
+            ↻
+          </button>
+          {/* The browsed folder's own push control (see `renderFolderSyncSlot`).
+              The local bar is where it matters most: a push starts from this
+              side, and at the root there was no row to start it from. */}
+          {renderFolderSyncSlot()}
+          {/* Same counter, same class, same slot as the remote bar's. It belongs
+              here MORE than there: a push is started from the Local side, so this
+              is the bar that is on screen while the longest transfer in the app
+              runs. Without it the local side showed nothing at all. */}
           {syncProgress && (
             <span className="file-tree-sync-progress" title={t("fileTree.syncingRel", { rel: syncProgress.rel || "…" })}>
               ⟳ {syncProgress.done}/{syncProgress.total}
@@ -2933,18 +3201,35 @@ export function FileTree({
               </React.Fragment>
             );
           })}
-          <span
-            className="file-tree-path-total"
-            title={sizeTitle(groupSizes.regular, groupSizes.regularIgnored, t("fileTree.totalSizeShown"))}
-          >
-            {fmtSize(groupSizes.regular)}
-          </span>
+          {renderGroupTotal(
+            groupSizes.regular,
+            groupSizes.regularPartial,
+            sizeTitle(groupSizes.regular, groupSizes.regularIgnored, t("fileTree.totalSizeShown")),
+          )}
         </div>
         );
       })()}
       </div>
       {loading && <div className="file-tree-loading">{t("common.loading")}</div>}
       {error && <div className="file-tree-error">{error}</div>}
+      {/* What the last transfer did — the success half, which nothing reported
+          before. Same chrome as the whole-project row's result line. */}
+      {syncNotice && (
+        <div
+          className={`project-files-sync-result${syncNotice.bad ? " project-files-sync-result--bad" : ""}`}
+          role="status"
+        >
+          <span>{syncNotice.text}</span>
+          <button
+            className="file-tree-up"
+            onClick={() => setSyncNotice(null)}
+            title={t("common.close")}
+            aria-label={t("common.close")}
+          >
+            ×
+          </button>
+        </div>
+      )}
       {!searching && pathEdit === null && !relPath && (
         <label
           className="file-tree-scaffold-toggle"
@@ -2956,12 +3241,11 @@ export function FileTree({
         >
           <Toggle size="sm" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} />
           {t("fileBrowser.separateScaffold")}
-          <span
-            className="file-tree-path-total"
-            title={sizeTitle(groupSizes.regular, groupSizes.regularIgnored, t("fileTree.totalSizeShown"))}
-          >
-            {fmtSize(groupSizes.regular)}
-          </span>
+          {renderGroupTotal(
+            groupSizes.regular,
+            groupSizes.regularPartial,
+            sizeTitle(groupSizes.regular, groupSizes.regularIgnored, t("fileTree.totalSizeShown")),
+          )}
         </label>
       )}
       {searching && (
@@ -3004,11 +3288,17 @@ export function FileTree({
           const dirIgnored = e.is_dir && !isGitignored && !isHiddenExt ? dirIgnoredBytes[e.path] : undefined;
           const dirShown = dirTotal !== undefined ? dirTotal - (dirIgnored ?? 0) : undefined;
           const canShRun = !e.is_dir && shellRunnerFor(e.extension, PLATFORM) !== null;
-          // Run only for a Python "main" script (see the `pyMainByPath` effect
-          // above) — a remote-source listing can't cheaply check content, so it
-          // keeps the old any-.py-file behavior instead of hiding Run entirely.
+          // Run only for a Python "main" script — one with a module-level
+          // `if __name__ == "__main__":` guard — not for every importable module,
+          // which has nothing useful to execute. The verdict comes from the
+          // persisted cache filled by the effect above, and it is read WITHOUT
+          // checking the stamp: while a re-check of a just-edited script is in
+          // flight the previous answer is the best one available, and keeping it
+          // stops ▶ blinking out from under the pointer mid-edit. Remote is no
+          // longer special-cased — that exemption is what put a ▶ on every remote
+          // .py, library modules included.
           const canPyRun = !e.is_dir && isPythonPath(e.path)
-            && (remoteListing || (pyMainByPath[e.path] ?? false));
+            && isMainScriptCached(pyMainCache, e.path);
           const canRun = canShRun || canPyRun;
           // "Running" drives the green pulse + title/aria and unions both run
           // paths: a detached `.sh` tracked by real process liveness
@@ -3033,15 +3323,19 @@ export function FileTree({
           // A folder with no manifest entry of its own falls back to the rolled-up
           // state of its tracked descendants (`dirSyncAgg`): green when it contains
           // tracked files and they are all green (so no misleading red push button),
-          // else `none`. Files, and folders that DO have an own entry, keep the
-          // direct lookup. `none` remains the default when nothing is known.
+          // amber when a tracked descendant diverged. Edge cases: a folder with
+          // only untracked ("none") descendants has `any: false` → "none" → shows
+          // the action button (correct — there IS something to transfer); a folder
+          // with an own manifest entry keeps its authoritative lookup (unchanged);
+          // backend dir rows always report green, so own-entry dirs never enter
+          // the aggregate path. `none` remains the default when nothing is known.
           const syncState: SyncFileState = !syncTracked
             ? "none"
             : syncStatus?.[rel]?.state ??
               (e.is_dir && dirSyncAgg[rel]?.any
                 ? dirSyncAgg[rel].allGreen
                   ? "green"
-                  : "none"
+                  : "amber"
                 : "none");
           // Auto-sync glyph: shown on both the remote and local trees when this
           // path (or an ancestor auto folder) is set to auto-sync. Coexists with
@@ -3120,7 +3414,7 @@ export function FileTree({
                         return (
                           <button
                             type="button"
-                            className={`file-sync-btn${thisBusy ? " busy" : ""}`}
+                            className={`orange-file-act orange-file-act--icon orange-file-act--slot ${remoteListing ? "orange-file-act--remote" : "orange-file-act--local"}${thisBusy ? " busy" : ""}`}
                             title={t(remoteListing ? "fileTree.syncToLocal" : "fileTree.pushToHost")}
                             aria-label={t(remoteListing ? "fileTree.syncToLocal" : "fileTree.pushToHost")}
                             disabled={anyBusy}
@@ -3130,7 +3424,7 @@ export function FileTree({
                               void (remoteListing ? syncEntryToLocal(e) : pushEntryToHost(e));
                             }}
                           >
-                            {thisBusy ? <span className="file-run-spinner" /> : "⇄"}
+                            {thisBusy ? <span className="file-run-spinner" /> : remoteListing ? "⬇" : "⬆"}
                           </button>
                         );
                       })()}
@@ -3148,6 +3442,15 @@ export function FileTree({
                         >
                           ±
                         </button>
+                      )}
+                      {syncState === "amber" && e.is_dir && (
+                        <span
+                          className="file-sync-dir-diverged"
+                          title={t("fileTree.folderDiverged")}
+                          aria-label={t("fileTree.folderDiverged")}
+                        >
+                          ±
+                        </span>
                       )}
                       {/* Auto-sync indicator (non-interactive): only when the slot
                           has no action button, so it never crowds out the
@@ -3254,12 +3557,11 @@ export function FileTree({
                 >
                   <span className="file-tree-hidden-caret">{scaffoldExpanded ? "▾" : "▸"}</span>
                   {t("fileTree.scaffoldSection", { count: standard.length })}
-                  <span
-                    className="file-tree-path-total"
-                    title={sizeTitle(groupSizes.standard, groupSizes.standardIgnored, t("fileTree.totalSizeScaffold"))}
-                  >
-                    {fmtSize(groupSizes.standard)}
-                  </span>
+                  {renderGroupTotal(
+                    groupSizes.standard,
+                    groupSizes.standardPartial,
+                    sizeTitle(groupSizes.standard, groupSizes.standardIgnored, t("fileTree.totalSizeScaffold")),
+                  )}
                 </button>
                 {scaffoldExpanded && rows.standard.map((e) => renderEntry(e, true))}
               </>
@@ -3279,9 +3581,11 @@ export function FileTree({
                 >
                   <span className="file-tree-hidden-caret">{gitignoredExpanded ? "▾" : "▸"}</span>
                   {t("fileTree.gitignoredSection", { count: gitignored.length })}
-                  <span className="file-tree-path-total" title={t("fileTree.totalSizeGitignored")}>
-                    {fmtSize(groupSizes.gitignored)}
-                  </span>
+                  {renderGroupTotal(
+                    groupSizes.gitignored,
+                    groupSizes.gitignoredPartial,
+                    t("fileTree.totalSizeGitignored"),
+                  )}
                 </button>
                 {gitignoredExpanded && rows.gitignored.map((e) => renderEntry(e, false, true))}
               </>
@@ -3301,9 +3605,11 @@ export function FileTree({
                 >
                   <span className="file-tree-hidden-caret">{hiddenExtExpanded ? "▾" : "▸"}</span>
                   {t("fileTree.hiddenExtSection", { count: hiddenExt.length })}
-                  <span className="file-tree-path-total" title={t("fileTree.totalSizeHiddenExt")}>
-                    {fmtSize(groupSizes.hiddenExt)}
-                  </span>
+                  {renderGroupTotal(
+                    groupSizes.hiddenExt,
+                    groupSizes.hiddenExtPartial,
+                    t("fileTree.totalSizeHiddenExt"),
+                  )}
                 </button>
                 {hiddenExtExpanded && rows.hiddenExt.map((e) => renderEntry(e, false, false, true))}
               </>
@@ -3679,6 +3985,21 @@ export function FileTree({
                 <button onClick={() => copyEntries([entry], "cut")}>
                   {t("common.cut")}
                 </button>
+                {/* Copy this file/folder into another project. Local trees only:
+                    the source is read as an ordinary filesystem path, which a
+                    remote (SFTP) listing's entry is not. */}
+                {!remoteListing && (
+                  <button
+                    className="untested"
+                    onClick={() => {
+                      setContextMenu(null);
+                      setSendTo({ path: entry.path, name: entry.name, isDir: entry.is_dir });
+                    }}
+                  >
+                    {t("sendToProject.menuItem")}
+                    <UntestedTag />
+                  </button>
+                )}
                 {renderPasteButton()}
                 {clipboardImage && (
                   <button onClick={openScreenshotPrompt}>
@@ -3879,6 +4200,13 @@ export function FileTree({
           onClose={() => setDefaultAppFor(null)}
         />
       )}
+      {sendTo && (
+        <SendToProjectDialog
+          source={sendTo}
+          fromProjectId={projectId}
+          onClose={() => setSendTo(null)}
+        />
+      )}
       {tooltip && createPortal(
         <div
           ref={tooltipRef}
@@ -3918,10 +4246,10 @@ export function FileTree({
             </div>
           )}
           {!tooltip.entry.is_dir && isPythonPath(tooltip.entry.path) && (
-            (remoteListing || pyMainByPath[tooltip.entry.path] || pyArgsByPath[tooltip.entry.path])
+            (isMainScriptCached(pyMainCache, tooltip.entry.path) || pyArgsByPath[tooltip.entry.path])
           ) && (
             <>
-              {(remoteListing || pyMainByPath[tooltip.entry.path]) && (
+              {isMainScriptCached(pyMainCache, tooltip.entry.path) && (
                 <div>
                   <span className="file-tooltip-label">{t("fileTree.tooltipRun")} </span>
                   {t("fileTree.tooltipRunHint")}

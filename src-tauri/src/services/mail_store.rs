@@ -1085,6 +1085,34 @@ impl MailStore {
         Ok(uids)
     }
 
+    /// The highest UID stored for a folder, or `None` when the folder holds no
+    /// messages yet.
+    ///
+    /// This is the sync loop's **arrival watermark**. IMAP UIDs rise
+    /// monotonically within a folder, so a message whose UID exceeds every one
+    /// we have already seen is one that *arrived* since the last check — as
+    /// opposed to one merely inserted into the local index for the first time,
+    /// which every message in the initial backlog of a folder also is. The
+    /// keyword filters must fire only on the former: `None` here (a folder's
+    /// first sync) means "everything present is history", and the caller files
+    /// none of it. The alternative — treating first-insert as arrival — marks a
+    /// user's entire mail history the moment a rule exists before the folder is
+    /// first pulled, which is exactly the "apply to existing" the user did not
+    /// ask for.
+    pub fn folder_max_uid(&self, folder_id: &str) -> Result<Option<u32>, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let max: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(uid) FROM messages WHERE folder_id = ?1",
+                params![folder_id],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .flatten();
+        Ok(max.map(|m| m as u32))
+    }
+
     /// Mark every unread message in a folder read, locally. Returns how many
     /// rows actually changed, which is the number the UI reports — a folder
     /// already fully read answers 0 rather than claiming work it did not do.
@@ -1292,6 +1320,31 @@ impl MailStore {
             },
         )
         .map_err(|e| e.to_string())
+    }
+
+    /// Clear the mark from **every** message carrying `priority` — emptying one
+    /// of the two lists in a single action — answering how many rows changed.
+    ///
+    /// One statement rather than a read-then-`set_priority`-per-row, and the two
+    /// provenance columns go back to a plain `''`: they are sealed only while a
+    /// mark is *set* (a model's reason quotes the message), and an empty value
+    /// has nothing to hide — which is exactly why `open_text` reads a text cell
+    /// straight through even in a sealed store. Deliberately **not** filtered on
+    /// `deleted`: a mark left on a message that is already gone from the index
+    /// is precisely the kind of leftover this action exists to get rid of, and
+    /// it is invisible to the count the user is shown either way.
+    pub fn clear_priority(&self, priority: MailPriority) -> Result<u32, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        // The value is bound, not formatted — `set_priority`'s rule, for the
+        // same reason: this is a data column, not the `ORDER BY` clause.
+        let changed = conn
+            .execute(
+                "UPDATE messages SET priority = '', priority_source = '', priority_reason = '' \
+                 WHERE priority = ?1",
+                params![priority.as_str()],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(changed as u32)
     }
 
     pub fn move_messages(&self, message_ids: &[String], dest_folder_id: &str) -> Result<(), String> {
@@ -2340,6 +2393,37 @@ mod tests {
         }
     }
 
+    /// The sync loop's arrival watermark: `None` before any message lands, then
+    /// the highest UID stored — never a lower one, whatever order they arrive in.
+    #[test]
+    fn folder_max_uid_tracks_the_high_water_mark() {
+        let (_dir, store) = store();
+        let f = folder("acct", "INBOX");
+        store.upsert_folder(&f).unwrap();
+        assert_eq!(store.folder_max_uid(&f.id).unwrap(), None, "first sync");
+
+        store
+            .upsert_header(&header(&f, 5, "a", "2026-07-30T00:00:00Z"))
+            .unwrap();
+        assert_eq!(store.folder_max_uid(&f.id).unwrap(), Some(5));
+
+        // A lower UID arriving later must not lower the mark.
+        store
+            .upsert_header(&header(&f, 2, "b", "2026-07-29T00:00:00Z"))
+            .unwrap();
+        assert_eq!(store.folder_max_uid(&f.id).unwrap(), Some(5));
+
+        store
+            .upsert_header(&header(&f, 9, "c", "2026-07-31T00:00:00Z"))
+            .unwrap();
+        assert_eq!(store.folder_max_uid(&f.id).unwrap(), Some(9));
+
+        // Scoped to the folder, not the account.
+        let other = folder("acct", "Archive");
+        store.upsert_folder(&other).unwrap();
+        assert_eq!(store.folder_max_uid(&other.id).unwrap(), None);
+    }
+
     /// #205 provenance round-trips: who set the mark and why, and clearing the
     /// mark clears both — a sealed store and a plain one alike.
     #[test]
@@ -2961,6 +3045,42 @@ mod tests {
             .unwrap();
         assert_eq!(first.total, 2);
         assert_eq!(first.items.len(), 1);
+    }
+
+    #[test]
+    fn emptying_one_list_leaves_the_other_and_the_mail_alone() {
+        let (_d, store, a, b) = two_accounts();
+        let urgent_id = format!("{}#1", a.id);
+        let important_id = format!("{}#1", b.id);
+        store
+            .set_priority_ex(
+                &urgent_id,
+                Some(MailPriority::Urgent),
+                MailPrioritySource::Model,
+                "invoice is overdue",
+            )
+            .unwrap();
+        store
+            .set_priority(&important_id, Some(MailPriority::Important))
+            .unwrap();
+
+        assert_eq!(store.clear_priority(MailPriority::Urgent).unwrap(), 1);
+
+        let cleared = store.header(&urgent_id).unwrap().unwrap();
+        assert_eq!(cleared.priority, None);
+        // The provenance goes with the mark — nothing may be left claiming the
+        // model said something about a message that is no longer filed.
+        assert_eq!(cleared.priority_source, None);
+        assert_eq!(cleared.priority_reason, None);
+        // The message itself is untouched: a mark is not a folder.
+        assert_eq!(cleared.folder_id, a.id);
+
+        // The other list is not this list.
+        let counts = store.priority_counts().unwrap();
+        assert_eq!((counts.urgent, counts.important), (0, 1));
+
+        // Emptying an already-empty list is a no-op that reports as one.
+        assert_eq!(store.clear_priority(MailPriority::Urgent).unwrap(), 0);
     }
 
     #[test]

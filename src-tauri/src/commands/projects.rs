@@ -1854,8 +1854,9 @@ pub fn save_project(local_file: String, project: Project) -> Result<(), String> 
 }
 
 /// Save only the tab layout — into `<state_dir>/sessions/<project_id>/`, plus the
-/// export copy in the project folder. `project_id` is what it is keyed by; a
-/// `None` id (the root scope) persists nothing.
+/// export copy in the project folder. `project_id` is what it is keyed by; the
+/// root scope passes the literal `"root"` (persisted like any project, minus the
+/// export copy, since it has no project folder). A bare `None` persists nothing.
 ///
 /// `allow_clear` licenses an EMPTY `tabs` to erase the saved layout. The frontend
 /// sets it only for a scope it has actually hydrated and that genuinely holds no
@@ -1879,9 +1880,23 @@ pub fn save_tab_layout(
     )
 }
 
+/// `~/eldrun/root` — the working directory of everything that belongs to no
+/// project (the root control terminal, and now the right panel's file tree over
+/// the same folder, which is where data lands while it is only being looked at
+/// or before it has a project to belong to).
+///
+/// It is **created here**, not only by the first root terminal that spawns into
+/// it (`pty_spawn`). That used to be the only path, so a session where no root
+/// terminal was ever opened had no such folder at all — and a file view is the
+/// one surface that reads the directory rather than being handed to a shell
+/// that would create it. A create that fails is not reported: the answer is the
+/// path either way, and every command that then touches it fails with its own,
+/// more specific error.
 #[tauri::command]
 pub fn root_work_dir() -> String {
-    storage::root_work_dir().to_string_lossy().to_string()
+    let dir = storage::root_work_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    dir.to_string_lossy().to_string()
 }
 
 #[tauri::command]
