@@ -2035,6 +2035,19 @@ function citeDetail(e: { title?: string; author?: string; year?: string }): stri
   return head || e.title;
 }
 
+/** Is the screen point `x,y` inside a `.file-link` span's box? A **collapsed**
+ *  rect never counts, however the point compares to it: a zero-by-zero box is
+ *  not a hit target — it is a span that isn't laid out (an unmounted or hidden
+ *  link layer) — and `0 >= 0 && 0 <= 0` is true on both axes, so the naive
+ *  comparison reports a hit on the FIRST link in the document for any click at
+ *  the viewport origin. Under jsdom, where every `getBoundingClientRect()` is
+ *  all-zeros and a synthetic click defaults to `clientX/clientY = 0`, that made
+ *  every Ctrl+click resolve the file's first link regardless of where it landed. */
+function linkRectHit(r: DOMRect, x: number, y: number): boolean {
+  if (r.width <= 0 || r.height <= 0) return false;
+  return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+}
+
 function CodeEditor({
   error,
   draft,
@@ -2203,7 +2216,7 @@ function CodeEditor({
       let hit: DOMRect | null = null;
       for (const span of layer.querySelectorAll<HTMLElement>(".file-link")) {
         const r = span.getBoundingClientRect();
-        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+        if (linkRectHit(r, x, y)) {
           hit = r;
           break;
         }
@@ -2224,7 +2237,7 @@ function CodeEditor({
     if (!layer) return null;
     for (const span of layer.querySelectorAll<HTMLElement>(".file-link")) {
       const r = span.getBoundingClientRect();
-      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+      if (linkRectHit(r, x, y)) {
         const off = span.getAttribute("data-off");
         return off != null ? Number(off) : null;
       }
