@@ -13,9 +13,10 @@ import { useHpcPipelineStore } from "../../stores/hpcPipeline";
 import { useBigFoldersStore } from "../../stores/bigFolders";
 import { useProjectsStore } from "../../stores/projects";
 import { useBoxesStore } from "../../stores/boxes";
-import { useTabsStore } from "../../stores/tabs";
+import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
+import { PillStatusBars } from "../projects/PillStatusBars";
 import { useGitDirtyStore } from "../../stores/gitDirty";
-import { useEnergySaver, saverInterval } from "../../stores/power";
+import { useQuiesce, saverInterval } from "../../stores/power";
 import { resolveProjectDirectory, type ProjectBox, type ProjectEntry } from "../../types";
 import { useT } from "../../lib/i18n";
 
@@ -159,16 +160,16 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     () => gitDotTargets.map((t) => `${t.id}:${t.dir}`).join("|"),
     [gitDotTargets],
   );
-  const energySaver = useEnergySaver();
+  const quiesce = useQuiesce();
   useEffect(() => {
     if (gitDotTargets.length === 0) return;
     const refresh = useGitDirtyStore.getState().refresh;
     const run = () => gitDotTargets.forEach((t) => void refresh(t.id, t.dir));
     run();
-    const id = window.setInterval(run, saverInterval(12000, energySaver));
+    const id = window.setInterval(run, saverInterval(12000, quiesce));
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gitDotSignature, energySaver]);
+  }, [gitDotSignature, quiesce]);
 
   // Bucket the active pills into boxes (by `box_id`) + an ungrouped remainder,
   // interleaved by switcher position. A pill whose `box_id` points at a missing
@@ -450,19 +451,29 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
               scroll strip rather than a child of it, which is what pins it:
               the pills scroll past underneath and this one never leaves the
               left edge. It reads its state off `scope`, like every pill beside
-              it (activeId would keep it lit while a box is open). */}
-          <button
-            type="button"
-            className={`root-pill${scope === "root" ? " active" : ""}`}
-            title={t("header.rootTerminal")}
-            aria-label={t("header.rootTerminal")}
-            onClick={(e) => {
-              e.stopPropagation();
-              void setActive(null);
-            }}
-          >
-            <StarIcon className="root-pill-star" />
-          </button>
+              it (activeId would keep it lit while a box is open) — and it wears
+              the same working/waiting/finished strip, because the root terminal
+              runs the same agents in the same kind of tabs and a bare pill could
+              only be read as "nothing is running in there". */}
+          <div className={`root-pill${scope === "root" ? " active" : ""}`}>
+            {/* The switch itself is an inner button with the strip as its
+                SIBLING — the project pill's own shape (.project-pill wrapping
+                .pill-main), and here for a second reason: a status bar is a
+                button now, and a button inside a button is invalid markup. */}
+            <button
+              type="button"
+              className="root-pill-main"
+              title={t("header.rootTerminal")}
+              aria-label={t("header.rootTerminal")}
+              onClick={(e) => {
+                e.stopPropagation();
+                void setActive(null);
+              }}
+            >
+              <StarIcon className="root-pill-star" />
+            </button>
+            <PillStatusBars scope={ROOT_SCOPE} />
+          </div>
           <button
             type="button"
             className="pills-scroll-btn left"

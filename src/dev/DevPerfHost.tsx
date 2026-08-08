@@ -15,9 +15,19 @@
  * The panel re-renders on a 1s tick while open instead of subscribing to the
  * monitor's buffers — a per-IPC-call subscription would make the profiler a
  * measurable cost in its own trace. Closed, it costs one keydown listener.
+ *
+ * Three states, not two: open, closed-to-the-⏱-button, and **gone**. The ⏱ sits
+ * over the app's bottom-right corner and, until it could be dismissed, closing
+ * the panel only ever traded a big overlay for a small permanent one — on the
+ * exact surface being measured. Hiding it persists (localStorage, not settings:
+ * this is dev-only state and must not reach `settings.json`), because the point
+ * is to stop seeing it, and a dev session reloads the frontend constantly.
+ * Ctrl+Alt+P always reopens, whatever the button is doing — which is what makes
+ * hiding it safe rather than a one-way door.
  */
 
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   perfInvoke,
   perfState,
@@ -26,6 +36,7 @@ import {
   SLOW_CALL_MS,
   SLOW_COMMIT_MS,
   IPC_RING_CAP,
+  REACT_SCAN_ROOT_ID,
   type ReactScanState,
 } from "./perfMonitor";
 import {
@@ -42,6 +53,45 @@ const RATE_WINDOW_MS = 60_000;
 const STALL_WINDOW_MS = 60_000;
 const IPC_ROWS_SHOWN = 14;
 const RESOURCE_POLL_MS = 2000;
+const FAB_HIDDEN_KEY = "eldrun.devPerf.fabHidden";
+
+const readFabHidden = () => {
+  try {
+    return localStorage.getItem(FAB_HIDDEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+
+const writeFabHidden = (hidden: boolean) => {
+  try {
+    if (hidden) localStorage.setItem(FAB_HIDDEN_KEY, "1");
+    else localStorage.removeItem(FAB_HIDDEN_KEY);
+  } catch {
+    /* private mode / storage disabled — the flag is a convenience, not state */
+  }
+};
+
+const PERF_LAYER_ID = "eldrun-dev-perf-layer";
+
+/**
+ * The panel renders through a portal into a node appended to
+ * `documentElement`, and is kept its **last** child. That is not tidiness: it
+ * is the only way this panel can paint above react-scan, which its own
+ * checkbox switches on. react-scan mounts its widget on a div appended to
+ * `documentElement` (i.e. after `<body>`) at a z-index past the int32 range —
+ * so it clamps to the same maximum this panel uses and the tie is broken by
+ * tree order, which a panel rendered inside `<body>` loses by construction.
+ * Losing it means the widget covers the one control that turns it off.
+ */
+function perfLayer(): HTMLElement {
+  const existing = document.getElementById(PERF_LAYER_ID);
+  if (existing) return existing;
+  const el = document.createElement("div");
+  el.id = PERF_LAYER_ID;
+  document.documentElement.appendChild(el);
+  return el;
+}
 
 interface ResourceUsage {
   cpu_percent: number;
@@ -51,10 +101,26 @@ interface ResourceUsage {
 
 export function DevPerfHost() {
   const [open, setOpen] = useState(false);
+  const [fabHidden, setFabHidden] = useState(readFabHidden);
   const [, setTick] = useState(0);
   const [res, setRes] = useState<ResourceUsage | null>(null);
   const [rendererKib, setRendererKib] = useState<number>(0);
   const [scanState, setScanState] = useState<ReactScanState>(perfState().reactScan);
+  const [layer] = useState(perfLayer);
+
+  // Keep the layer last under <html>. react-scan appends its own root there
+  // whenever it starts — which, from this panel's checkbox, is after we
+  // mounted — so this cannot be done once at mount. Terminates: the move is
+  // itself a mutation, but by then there is no next sibling and it stops.
+  useEffect(() => {
+    const raise = () => {
+      if (layer.nextElementSibling) document.documentElement.appendChild(layer);
+    };
+    raise();
+    const mo = new MutationObserver(raise);
+    mo.observe(document.documentElement, { childList: true });
+    return () => mo.disconnect();
+  }, [layer]);
 
   // Ctrl+Alt+P toggles the panel from anywhere.
   useEffect(() => {
@@ -100,15 +166,23 @@ export function DevPerfHost() {
     };
   }, [open]);
 
+  const hideEntirely = () => {
+    setFabHidden(true);
+    writeFabHidden(true);
+    setOpen(false);
+  };
+
   if (!open) {
-    return (
+    if (fabHidden) return null;
+    return createPortal(
       <button
         className="dev-perf-fab"
         title="Perf monitor (Ctrl+Alt+P)"
         onClick={() => setOpen(true)}
       >
         ⏱
-      </button>
+      </button>,
+      layer,
     );
   }
 
@@ -120,13 +194,16 @@ export function DevPerfHost() {
   const slowCalls = st.slow.slice(-10).reverse();
   const commits = st.commits.slice(-8).reverse();
   const scanOn = scanState === "on" || scanState === "on-late";
+  // Read on each 1s tick rather than tracked: the widget can be mounted by a
+  // path this component never hears about (the boot arm, a hot update).
+  const scanLeftover = document.getElementById(REACT_SCAN_ROOT_ID) !== null;
 
   const toggleScan = () => {
     const next = !scanOn;
     void setReactScan(next).then(() => setScanState(perfState().reactScan));
   };
 
-  return (
+  return createPortal(
     <div className="dev-perf-panel">
       <div className="dev-perf-head">
         <span className="dev-perf-title">
@@ -136,7 +213,32 @@ export function DevPerfHost() {
           <button onClick={() => resetPerf()} title="Clear all buffers">
             Reset
           </button>
-          <button onClick={() => setOpen(false)} title="Close (Ctrl+Alt+P)">
+          {fabHidden ? (
+            <button
+              onClick={() => {
+                setFabHidden(false);
+                writeFabHidden(false);
+              }}
+              title="Put the ⏱ button back in the corner"
+            >
+              Show ⏱
+            </button>
+          ) : (
+            <button
+              onClick={hideEntirely}
+              title="Hide the panel and the ⏱ button — Ctrl+Alt+P brings it back"
+            >
+              Hide ⏱
+            </button>
+          )}
+          <button
+            onClick={() => setOpen(false)}
+            title={
+              fabHidden
+                ? "Close (Ctrl+Alt+P reopens)"
+                : "Close to the ⏱ button (Ctrl+Alt+P)"
+            }
+          >
             ✕
           </button>
         </span>
@@ -203,10 +305,20 @@ export function DevPerfHost() {
             <input type="checkbox" checked={scanOn} onChange={toggleScan} />
             <span>
               react-scan render highlighting
+              {scanOn && <small> — unticking also removes its widget</small>}
               {scanState === "on-late" && <small> — full coverage after reload</small>}
               {scanState === "failed" && <small> — failed to load (see console)</small>}
             </span>
           </label>
+          {/* The scan reports itself off while its widget is still on screen —
+              a build before the teardown existed, or a start this panel never
+              saw. The checkbox cannot express that (it is already unticked),
+              so the way out has to be its own control. */}
+          {!scanOn && scanLeftover && (
+            <button className="dev-perf-scan-clear" onClick={() => void setReactScan(false)}>
+              Remove leftover react-scan overlay
+            </button>
+          )}
         </section>
 
         <section>
@@ -267,6 +379,7 @@ export function DevPerfHost() {
           )}
         </section>
       </div>
-    </div>
+    </div>,
+    layer,
   );
 }

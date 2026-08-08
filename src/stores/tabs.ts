@@ -321,9 +321,11 @@ export const PRINTING_TAB_CMD = "__eldrun_printing__";
  *    which tab opened it, and install/uninstall act on the one project the
  *    scope names — a second tab would show exactly the same thing, hence
  *    `ensureTab` rather than `addTab` (the bargain calendar/printing make).
- *  - **Project-scoped only.** Unlike the calendar/print manager it needs
- *    somewhere to install INTO, so it is offered only where `scope !== "root"`
- *    and hidden at the root scope rather than shown disabled.
+ *  - **Offered at the root scope too**, which it was not at first: it needs
+ *    somewhere to install INTO, and the personal scope (`~/.claude/skills/`,
+ *    read by every project on this machine) is exactly that, so the tab has a
+ *    job with no project open. The install target is the view's own state; see
+ *    `NewTabMenu`/`TabBar`, which carry the entry unconditionally.
  *  - **A restored one re-reads, it does not fetch.** Coming back costs a local
  *    disk read (installed list + whatever catalog was already cached); no
  *    source is cloned/pulled without an explicit Refresh click.
@@ -400,6 +402,21 @@ export interface ViewerState {
   // highlighted) and its children below. Absent/unmatched = the top overview.
   // Re-derived on every parse, so a stale id is inert (falls back to overview).
   gridFocus?: string;
+  // Whether the PDF viewer writes a remark into the file on its own, shortly after
+  // it is made (#pdf-notes). Absent means ON — the ordinary behaviour, so only the
+  // reader who turned it *off* stores anything, and a tab that predates the feature
+  // gets it. Per tab rather than per app because it is a statement about a document
+  // ("this one I am commenting on") rather than about the person.
+  pdfAutosaveNotes?: boolean;
+  // Whether selecting text on a PDF page puts it on the clipboard by itself
+  // (#pdf-textselect). Absent means ON: selecting words in a document is almost
+  // always the first half of pasting them somewhere, and the second half was a
+  // keystroke that had to be remembered on a surface where Ctrl+C had never done
+  // anything before. Per tab, `pdfAutosaveNotes`'s reason — a paper being quoted from
+  // and one being read are different jobs — and reversible from the bar that appears
+  // over a selection, because writing the clipboard is not this viewer's to keep
+  // doing if the reader was only pointing at a sentence.
+  pdfCopyOnSelect?: boolean;
   // The table viewer's column separator (#40), as the literal character. Absent
   // means "auto" — sniffed from the content on every open. It is persisted only
   // when the reader *overrides* the guess, because that is the case the sniffer
@@ -833,6 +850,16 @@ interface TabsStore {
   focusGroup: (groupId: string) => void;
   setActive: (key: string) => void; // activate tab + focus its group
   setGroupActive: (groupId: string, key: string) => void;
+  // `setActive` for a scope that is not necessarily the current one: activate the
+  // tab within its subwindow and focus that subwindow in THAT scope's own tree,
+  // so a caller can aim a click at a project before switching to it (the project
+  // pill's status bars). Writing the scope map ahead of the switch is what makes
+  // the two one gesture: `setScope` mirrors whatever it finds there, so the tab
+  // is already the visible one by the time the project comes up. Returns false
+  // when the tab is not in that scope's visible tree — it sits in a hidden
+  // subwindow or a detached window — so the caller can still do the part of the
+  // jump it can (switching scope) rather than believing it landed.
+  revealTabInScope: (scope: string, key: string) => boolean;
 
   // tab lifecycle
   // `seeded` marks a tab Eldrun opened by itself rather than one the user asked
@@ -1964,6 +1991,27 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const next = mapGroup(layout, groupId, (g) => ({ ...g, activeKey: key }));
       return writeScope(s, s.scope, tabs, next, groupId);
     });
+  },
+
+  revealTabInScope: (scope, key) => {
+    const layout = get().layoutByScope[scope] ?? null;
+    const found = findGroupOfTab(layout, key);
+    if (!found || !layout) return false;
+    set((s) => {
+      const tabs = s.tabsByScope[scope] ?? [];
+      const cur = s.layoutByScope[scope] ?? null;
+      if (!cur) return {};
+      const next = mapGroup(cur, found.group.id, (g) => ({ ...g, activeKey: key }));
+      const base = writeScope(s, scope, tabs, next, found.group.id);
+      // A fullscreened OTHER subwindow would swallow the jump: the tab is now the
+      // active one in a group nothing is rendering, so the click would look like a
+      // no-op. Leaving fullscreen shows the tab that was asked for, which is the
+      // whole request.
+      return s.scope === scope && s.fullscreenGroupId && s.fullscreenGroupId !== found.group.id
+        ? { ...base, fullscreenGroupId: null }
+        : base;
+    });
+    return true;
   },
 
   addTab: (tab, opts) => {
@@ -4385,7 +4433,18 @@ export function defaultLocationForKind(kind: TabKind): TabLocation {
  */
 export function effectiveTabLocation(
   tab: { kind: TabKind; location?: TabLocation },
+  opts?: {
+    /** VM tier (`docs/vm_projects_plan.md`): the owning project lives inside
+     *  a VM, so locality is PINNED to the VM host — the agents-default-local
+     *  rule below is precisely the escape that tier forbids, and any stored
+     *  `location: "local"` (e.g. a persisted layout an in-VM agent could have
+     *  written) is overridden, never honored. The backend's spawn guard
+     *  refuses a local spawn outright as the hard boundary; this keeps the
+     *  frontend from ever building one. */
+    vmProject?: boolean;
+  },
 ): TabLocation {
+  if (opts?.vmProject && !isLocalAgentKind(tab.kind)) return "remote";
   if (isLocalAgentKind(tab.kind)) return "local";
   return tab.location ?? defaultLocationForKind(tab.kind);
 }

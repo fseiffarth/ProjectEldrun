@@ -835,3 +835,265 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       that the pages still render and their text still selects.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+95. **Remarks on a PDF (#pdf-notes).** ✅ Implemented · 🖐️ untested.
+    The viewer could rearrange a PDF, black text out of it and strip its
+    metadata, and could not do the one thing a reader does most: write something
+    next to a paragraph. Reading a draft therefore meant a second application
+    open beside this one, or a comment landing in a mail instead of on the page
+    it is about.
+
+    - **A remark is the PDF's own annotation, not a sidecar.** It is written into
+      the file as a `/Text` annotation — the sticky note every reader draws — so
+      what is saved here opens as a comment in Acrobat, Okular, a browser's viewer
+      and whatever a colleague uses, and a comment written *there* opens here.
+      Nothing is stored beside the document, because a comment only Eldrun can see
+      may as well not have been written. `Contents` is a hex (UTF-16BE) string, so
+      a remark outside PDFDocEncoding survives; `/F` is `Print` and nothing else.
+    - **The gesture is right-click, not an armed tool.** No mode to enter and none
+      to leave, which is the deliberate difference from the blackout beside it: a
+      blackout is destructive and wants a mode you can see you are in, a comment
+      is something you do in the middle of reading. Right-click any page → "Add
+      remark here"; right-click a marker → edit or delete it.
+    - **A sheet's remarks are owned all-or-nothing.** `PageRef.notes` is absent
+      while the file's own annotations are merely displayed; the first edit adopts
+      the *whole* set for that page, and a save rewrites that page's `/Text`
+      annotations from it while leaving every other page's — and every *other*
+      annotation on that page, its links above all — untouched. The alternative,
+      matching per-annotation edits across a rewrite, is the bookkeeping that
+      silently duplicates or drops a comment. The cost is a foreign note's exotic
+      parts (rich text, a reply thread, a custom popup box) on a page the reader
+      actually edited a remark on, and only there.
+    - **The menu waits for the page's own remarks to be read.** That list is the
+      baseline an edit adopts, so offering the action early would take "no remarks
+      here" as the truth and delete the file's comments at the next save. The read
+      is lazy per page, on the link layer's gate and for its reason.
+    - **Nothing invents an author.** New remarks are unsigned unless a name is
+      typed into the card, and the OS login is deliberately never consulted: a
+      document leaves the machine, and a real name would leave with it.
+    - Pending remarks ride the arrangement, so undo/redo, the dirty flag, the page
+      rail and a page dragged into another document all cover them for free; a
+      **flattened** (blacked-out) sheet keeps its remarks though it keeps nothing
+      else, since a comment about what was destroyed is the reader's own work.
+    - Tested in `src/__tests__/PdfNotes.test.ts`, asserting against the **saved
+      bytes**: that a remark is a real `/Text` annotation, that an untouched page's
+      comments are unmoved, that a touched page's are replaced rather than doubled,
+      that a link is never disturbed, and that two copies of one duplicated sheet
+      do not share an annotation array.
+    - [ ] 🖐️ Manual test — right-click a page, add a remark, Save, then open the
+      file in **another** PDF viewer (Okular, Firefox, Acrobat) and confirm the
+      note is there with its text; edit and delete it in that viewer, reopen here
+      and confirm Eldrun shows the change; then open a PDF that already carries
+      comments, add one of your own and Save, and confirm both survive.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+96. **Selecting text in a PDF (#pdf-textselect).** ✅ Implemented · 🖐️ untested.
+    The reader paints pages to a canvas, and a canvas has no text in it. Until
+    now the only way to get a sentence out of a PDF open in Eldrun was to retype
+    it, or to copy the *region* as an image (the ✂ tool, which is a picture of
+    the words rather than the words) — while Ctrl+F could already find them, which
+    is the same text, read for a different purpose.
+
+    - **pdf.js's own `TextLayer`, not a hand-rolled one.** One transparent,
+      correctly-placed span per text run, so the browser's ordinary selection
+      lands on the glyphs the reader sees and Ctrl+C copies what the file says.
+      The CSS is a scoped copy of `pdfjs-dist/web/pdf_viewer.css`'s `.textLayer`
+      rules rather than an import of that file, which also styles a whole viewer
+      application we do not use.
+    - **A mode, not scenery.** ~~So it is armed from the toolbar (`T`) like the
+      blackout and the region-copy, and turns both off.~~ **Superseded by #99**:
+      it is not a mode any more. The layer is up on every near page and the tool
+      button is gone.
+    - **Only near pages build one**, on the canvas render's gate and for its
+      reason; and a zoom costs nothing, because pdf.js lays the spans out in the
+      page's own units and scales them through `--scale-factor` — the same bargain
+      the link boxes and the search hits strike by storing big points.
+    - [ ] 🖐️ Manual test — see #99, which replaced the mode this describes.
+
+97. **Remarks: autosave, moving one, and a panel to walk them (#pdf-notes).**
+    ✅ Implemented · 🖐️ untested. Three things #95 left undone, each of which made
+    remarks cost more than the comment was worth.
+
+    - **A marker drags to a new spot.** A right-click places a remark exactly
+      where the pointer was, and where the pointer was is regularly a line off;
+      without a move, correcting one meant deleting it and retyping the text. The
+      gesture shares the marker with the click that opens the card, so distance
+      tells them apart (3 CSS px, so it means the same at 40% and at 400%) and the
+      click is swallowed only when the pointer travelled. `pointercancel` commits
+      like `pointerup` — the trap the tab and card drags document. The anchor is
+      clamped by the icon's own box, not by the point, so a remark cannot be
+      parked half off the sheet with its `/Rect` outside the media box.
+    - **Autosave, and what it refuses to carry.** A remark is written into the
+      file ~1.2 s after the last one is made, so a reader who writes one has
+      finished the job. It is a **silent** write: no reload, no repaint, no
+      scroll reset, no spinner, and the undo history and every remark id survive
+      it — the written sheets simply give up their ownership and what was written
+      becomes the file's own remarks in the cache, under the same ids. That
+      reconciliation is safe because the gate below admits nothing but the
+      identity arrangement (so a sheet's cache key stands for exactly one entry),
+      and because a sheet edited while the bytes were in flight keeps its
+      ownership — its `notes` array is no longer the one that was written. The safety is entirely in the refusal: a save writes the
+      *whole* arrangement, so an autosave that fired with a page move pending
+      would commit the move, and one that fired with a blackout pending would
+      flatten the sheet — the single irreversible edit here, and one that is
+      deliberately confirmed. Hence `isPristineExceptNotes`: remarks may be the
+      only thing pending, the file must not have changed underneath, and a pending
+      metadata deletion counts as something else. When it is holding, the panel
+      says so, because a switch that is on and quietly doing nothing is worse than
+      one that was never offered. Per tab (`ViewerState.pdfAutosaveNotes`), default
+      **on**, so only turning it off stores anything.
+    - **A panel that lists every remark in the document, and walks them.** The
+      markers answer "is there a comment here?"; they cannot answer "what did
+      anyone say about this paper?", because the answer is spread over forty
+      sheets and each marker holds its text behind a click. The panel is the
+      *reading* surface — a row carries the whole remark, wrapped and never
+      clipped — with ↑/↓ walking a **ring** in the document's own reading order
+      (`placedNotes`: sheet, then down the page, then across it, never the
+      annotation array's order). A row click goes to the marker and flashes it; ✎
+      opens its card; ✕ deletes it.
+    - **One owner of the file's remarks.** Reading a page's annotations mints
+      fresh ids (a PDF's annotation reference is document-scoped and rewritten on
+      every save), so the page canvas reading its own set and the panel reading
+      another would give two sets of ids for one comment, and "go to this remark"
+      would address one the page had never heard of. The read is hoisted to the
+      viewer, keyed by source/page/rotation, requested by a page when it comes
+      near and by the panel for the whole document when it opens.
+    - Tested in `src/__tests__/PdfNotes.test.ts`: the reading order and the ring,
+      that the arrangement's set wins over the file's for a sheet it has taken
+      over, that a remark is addressed by its entry so a reorder follows it, the
+      drag clamp, and what `isPristineExceptNotes` refuses to let an autosave
+      carry along.
+    - [ ] 🖐️ Manual test — add a remark, wait a second and confirm the Save button
+      goes clean on its own and the file on disk carries the note (another viewer,
+      or reopen the tab); drag its marker a few centimetres, wait, and confirm the
+      new position survives a reload; open 💬, confirm every remark in the document
+      is listed with its page, walk it with ↑/↓ and confirm the page follows and
+      the marker flashes; then reorder two pages and confirm the panel says
+      autosave is holding and nothing is written until Save.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+98. **Ctrl+F over a word split across two lines (#71).** ✅ Implemented ·
+    🖐️ untested. A PDF has no words and no lines — only positioned runs of glyphs
+    — so a wrapped paragraph arrives as `"hyphen-"` then `"ation"`. The search
+    joined the runs end to end, which produced `hyphen-ation`: searching for
+    *hyphenation* found nothing on a page that plainly prints it, and two whole
+    words either side of a break joined into `theend`, so a phrase that happened
+    to wrap could not be searched for at all. On a typeset document (which is
+    most of what this viewer opens) that is a large share of the words on every
+    page.
+
+    - **A break is now read, not ignored** (`pageHaystack` in
+      `lib/viewers/tex.ts`): a trailing hyphen at a line end is dropped, joining
+      the halves into the word the typesetter split; any other break becomes a
+      space, which is what it means to a reader — unless one of the two sides
+      already carries whitespace.
+    - **A dash that is punctuation is left alone.** Only a hyphen-minus, a
+      typographic hyphen and a soft hyphen are dropped; an en or em dash at a
+      line end is a range (`pages 3–\n4`), and joining it would invent `34`.
+    - **pdf.js's own `hasEOL` outranks the geometry** (`TextItemBox.eol`), since
+      it is the producer's answer rather than a guess — which is also why an
+      empty run, pdf.js's bare end-of-line marker, is now folded into the run
+      before it instead of being skipped with the other empty ones. Where the
+      flag is absent the geometry stands in (clearly below, or starting back to
+      the left).
+    - **The highlight stays honest**: a per-character map back to (run, offset)
+      means the boxes are still sliced out of the runs' own geometry, so a match
+      across a break draws one box per line, and a match running *through* a
+      dropped hyphen covers it rather than stopping a glyph short of the word it
+      matched. Case folding is per character for the same reason — `İ` folds to
+      two characters, and lowercasing the joined string would shift every index
+      after it and slide the boxes off the words.
+    - The blackout tool's "black out all N matches" inherits all of it, since it
+      marks from exactly these boxes: a redacted name that wrapped is now covered
+      on both lines.
+    - Tested in `src/__tests__/TexSync.test.ts`.
+    - [ ] 🖐️ Manual test — find a paper with a hyphenated line break, search for
+      the whole word and confirm both halves highlight (hyphen included) and that
+      Enter walks onto it; search a two-word phrase that wraps and confirm it is
+      found; then check a page range like "3–4" split over a line does not match
+      "34".
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+99. **Selection without a mode, highlights with remarks, and copy-on-select
+    (#pdf-textselect, #pdf-notes).** ✅ Implemented · 🖐️ untested. Three asks that
+    turned out to be one feature: select text *on the page* (not behind a tool),
+    highlight it and write a remark on the highlight, and have a selection reach
+    the clipboard by itself.
+
+    - **The `T` tool is gone.** Selecting words in a document is what a pointer
+      over text does everywhere else, and #96 made it a mode only because
+      pdf.js's text layer takes the pointer over the whole sheet. The answer is
+      the one pdf.js's own viewer uses: everything that needs its own click (link
+      boxes, search hits, markers, highlights, the blackout and region-copy
+      surfaces) is stacked **above** the text layer by `z-index` in `themes.css`,
+      which leaves the plain drag — the one gesture nothing else wants — to the
+      text. That stack is load-bearing: drop a `z-index` from one of those layers
+      and it silently stops being clickable.
+    - **A highlight IS a remark.** `PdfNote.quads` is the whole distinction:
+      without it a remark is a sticky note at a point (`/Text`), with it a
+      highlight over the words those boxes cover (`/Highlight`), whose remark is
+      that annotation's own `/Contents`. One model, so the ownership rule, the
+      baseline, the panel, the walk, the undo history, the autosave gate and the
+      save are written once — a second parallel model would be a second chance
+      for those answers to disagree. What genuinely differs is small and real: a
+      highlight has no drag, has a colour worth changing, opens its card *under*
+      the sentence, and clearing its text does not delete it (marking a sentence
+      is a complete act; the remark is the optional half).
+    - **Reading `/Highlight` is what the text layer bought.** `notes.ts` used to
+      ignore the subtype and said why: a highlight is painted by the page render
+      itself, so surfacing it here would draw it twice, and a viewer with no text
+      layer cannot know which words one would cover. Both halves are now
+      answered — the words come from the selection, and the doubling is settled
+      by suppressing the file's own paint for a highlight we have read
+      (`{ noView: true }` in pdf.js's annotation storage, keyed by the annotation
+      id kept on the remark as `srcId`, with every render switched to
+      `ENABLE_STORAGE`). Exactly one thing on screen draws each highlight and it
+      is the one that can be clicked. The suppression map is **not** derived from
+      the remark cache: an autosave replaces a sheet's cached remarks with the
+      ones it just wrote, which carry no `srcId`, so a derived key would empty
+      itself and the file's originals would come back underneath ours.
+    - **The bar over a selection** (`PdfSelectionBar`) is four highlighter
+      colours — a swatch *is* the highlight button, because marking a sentence is
+      a mid-reading act and a two-step one is a step too many — plus 💬 for
+      "highlight and write a remark", plus the copy chip.
+    - **Copy-on-select is on by default and reversible where it happens.** The
+      chip both reports the copy ("Copied") and turns the behaviour off for this
+      document (`ViewerState.pdfCopyOnSelect`, per tab). A clipboard write cannot
+      be taken back, so the honest control is the next one, not an undo of this
+      one. The write is on `mouseup`/`keyup`, never on `selectionchange`, which
+      fires on every pixel of a drag.
+    - **A drag across a page break** is one selection to the engine and one
+      annotation per sheet to a PDF, so `selection.ts` sorts the range's client
+      rects into the page wrappers they land in and clips them — the cross-page
+      case falls out of the same code as the ordinary one. Line rects are merged
+      along a line (a sentence crossing a font change arrives as five boxes, and
+      five overlapping quads at 40% each are visibly darker at every seam) and
+      never across lines (that would paint the leading between them).
+    - **An appearance stream is written** for every highlight, with a `Multiply`
+      `ExtGState`: optional in the format, and written anyway for the readers
+      that do not synthesise one (a printer's rasteriser, a thumbnail service, an
+      old viewer). Multiply is also what keeps black glyphs black instead of
+      dragging them towards the fill colour.
+    - **The quoted words are display-only** and never written into the file: they
+      are already on the page, and a copy of them in the annotation is a second
+      version of the sentence that stops being true the moment the document is
+      edited. Asserted against the saved bytes.
+    - Tested in `src/__tests__/PdfNotes.test.ts` (model, annotation read, and the
+      saved bytes), `src/__tests__/PdfSelection.test.ts` (the rect merge) and
+      `src/__tests__/PdfNoteUi.test.tsx` (a highlight through the real UI).
+    - [ ] 🖐️ Manual test — open a PDF and drag across a paragraph with no tool
+      armed: the selection should follow the words, a bar should appear over the
+      end of it, and the text should already be on the clipboard (paste it
+      somewhere). Click a swatch and confirm the sentence is marked in that
+      colour; click the mark and write a remark; check the 💬 panel lists it with
+      the quoted words. Save, reopen the file, and confirm the highlight and its
+      comment are still there and are shown by another reader (Okular, a browser)
+      — and that it appears **once**, not twice. Then: a link and a remark marker
+      must still be clickable, Ctrl-click must still reverse-search, the blackout
+      and ✂ tools must still take their drag, and a selection dragged across a
+      page break must produce one highlight per page.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

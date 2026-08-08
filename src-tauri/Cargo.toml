@@ -283,3 +283,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# test-util unlocks the paused clock (`start_paused`) the terminal batcher's
+# wakeup-discipline tests depend on; it is a test-only feature added on top of
+# the main dependency's "full".
+tokio = { version = "1.52.3", features = ["full", "test-util"] }

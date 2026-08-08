@@ -444,6 +444,11 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
     let cancelled = false;
     let un: (() => void) | undefined;
     let buf = "";
+    // Visible-only streaming: a hidden pane's PTY stops emitting
+    // terminal-output entirely, and this panel's terminal can be hidden while
+    // the tunnel comes up — the watch keeps its raw stream flowing so the
+    // marker scan below still sees it.
+    void invoke("pty_watch", { id: termId }).catch(() => {});
     void listen<TerminalOutput>("terminal-output", (ev) => {
       if (ev.payload.id !== termId) return;
       buf = (buf + ev.payload.data).slice(-512);
@@ -460,6 +465,7 @@ export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
     return () => {
       cancelled = true;
       un?.();
+      void invoke("pty_unwatch", { id: termId }).catch(() => {});
     };
     // vpnTerm is ref-held; re-run when its identity changes via the force tick.
   }, [vpnTermRef.current?.id, projectId, vpnConfig]);

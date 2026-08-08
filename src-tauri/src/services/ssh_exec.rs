@@ -710,6 +710,12 @@ pub fn ssh_pty_args(remote: &RemoteSpec, remote_command: &str) -> Result<Vec<Str
 
     let mut args: Vec<String> = vec!["-tt".to_string()];
 
+    // Per-VM identity + known_hosts when this tab targets a live project VM's
+    // forwarded port (`services::vm::vm_ssh_opts`; empty otherwise) — the tab
+    // must authenticate with the per-VM key and never touch the user's real
+    // `~/.ssh/known_hosts` for a host key we minted ourselves.
+    args.extend(crate::services::vm::vm_ssh_opts(&remote.host, remote.port));
+
     // Connection multiplexing (ControlMaster/ControlPath/ControlPersist) is a
     // Unix-only OpenSSH feature: it relies on a Unix-domain control socket with
     // file-descriptor passing, which the Windows OpenSSH client does not
@@ -1130,6 +1136,7 @@ mod tests {
             auto_connect: None,
             key_auth: None,
             persist_sessions: None,
+            vm: None,
             label: None,
             extra: HashMap::new(),
         }

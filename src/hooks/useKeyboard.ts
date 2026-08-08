@@ -278,15 +278,31 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
   }, [onTogglePanels]);
 }
 
-/** Cycle the active project to the next one (by display order). */
+/**
+ * Cycle the active scope to the next one (by display order).
+ *
+ * The **root terminal is a station in the cycle**, not a hole in it: it is the
+ * pill strip's first pill, so a shortcut that walks the strip has to stop there
+ * too. It was skipped, and worse than skipped — cycling *out* of the root scope
+ * worked (no pill matches a `null` activeId, so `-1 + 1` landed on the first
+ * project) while cycling *back into* it was impossible, making the shortcut a
+ * one-way door out of the root terminal.
+ *
+ * `null` leads the ring for the same reason the pill is pinned to the left edge.
+ */
 function cycleProject() {
   const ps = useProjectsStore.getState();
-  // Active = not inactive; ordered by `position` (the pill display order).
-  const active = ps.projects
-    .filter((p) => p.status !== "inactive")
-    .sort((a, b) => a.position - b.position);
-  if (active.length < 2) return;
-  const idx = active.findIndex((p) => p.id === ps.activeId);
-  const next = active[(idx + 1) % active.length];
-  if (next && next.id !== ps.activeId) void ps.setActive(next.id);
+  // Active = not inactive; ordered by `position` (the pill display order),
+  // behind the root scope.
+  const stations: (string | null)[] = [
+    null,
+    ...ps.projects
+      .filter((p) => p.status !== "inactive")
+      .sort((a, b) => a.position - b.position)
+      .map((p) => p.id),
+  ];
+  if (stations.length < 2) return;
+  const idx = stations.indexOf(ps.activeId);
+  const next = stations[(idx + 1) % stations.length];
+  if (next !== ps.activeId) void ps.setActive(next);
 }

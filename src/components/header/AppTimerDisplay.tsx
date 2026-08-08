@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import { useTimerStore } from "../../stores/timer";
-import { useEnergySaver, saverInterval } from "../../stores/power";
+import { useQuiesce, saverInterval } from "../../stores/power";
 import { ActivityCalendar } from "../projects/ActivityCalendar";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
@@ -52,7 +52,7 @@ export function AppTimerDisplay({ inMenu = false }: { inMenu?: boolean }) {
   const toggle = useTimerStore((s) => s.toggle);
   const [displayText, setDisplayText] = useState(t("projectHoverCard.timeUnderMinute"));
   const [showActivity, setShowActivity] = useState(false);
-  const energySaver = useEnergySaver();
+  const quiesce = useQuiesce();
 
   useEffect(() => {
     const update = () => {
@@ -60,9 +60,9 @@ export function AppTimerDisplay({ inMenu = false }: { inMenu?: boolean }) {
     };
     update();
     if (paused) return;
-    const id = setInterval(update, saverInterval(1000, energySaver));
+    const id = setInterval(update, saverInterval(1000, quiesce));
     return () => clearInterval(id);
-  }, [paused, energySaver, t]);
+  }, [paused, quiesce, t]);
 
   return (
     <>

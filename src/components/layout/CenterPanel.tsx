@@ -1029,7 +1029,9 @@ export function CenterPanel() {
           // down: spawning `ssh -tt` now would block on the dead pool. Multi-host:
           // a pane on gpu-2 holds iff gpu-2 is down, independent of the primary
           // (plan §4.5).
-          const rawHostId = remoteHostIdOf(effectiveTabLocation(tab));
+          const rawHostId = remoteHostIdOf(
+            effectiveTabLocation(tab, { vmProject: !!paneProject?.vm?.enabled }),
+          );
           // A tab naming a worker that no longer exists (machine removed) falls
           // back to the primary — matching the backend's wrap_pty_options (plan §8).
           const paneHostId =
@@ -1088,8 +1090,19 @@ export function CenterPanel() {
           // are covered too. NOTE: this flag is in TerminalView's spawn deps —
           // flipping the toggle respawns every live tab (ProjectPill confirms when
           // that would destroy a non-resumable agent conversation).
+          //
+          // `scope: "agents"` narrows it to agent tabs, leaving shells (and the
+          // viewer's Run/Debug, which IS a shell tab) on the host. This mirrors
+          // `services::sandbox::resolve_spawn_authority`, which re-derives the same
+          // answer from the trusted project record and remains the authority — the
+          // copy is here for the two things only the renderer can do: keep a live
+          // shell from staying inside the container after the scope changes (the
+          // flag is a spawn dep, so the change respawns exactly the affected tabs),
+          // and avoid claiming a container the backend is about to take away.
+          const containerScope = paneProject?.sandbox?.scope ?? "all";
           const sandbox =
             (tab.kind === "agent" || tab.kind === "shell") &&
+            (containerScope === "all" || tab.kind === "agent") &&
             scopeKey !== "root" &&
             !!paneProject?.sandbox?.enabled &&
             !paneProject?.remote;
@@ -1103,7 +1116,8 @@ export function CenterPanel() {
           // (`shouldPersistLocalTab`); never the root scope. In TerminalView's spawn
           // deps, so toggling respawns the tab. Undefined ⇒ no tmux wrap.
           const localRunning =
-            !paneProject?.remote || effectiveTabLocation(tab) === "local";
+            !paneProject?.remote ||
+            effectiveTabLocation(tab, { vmProject: !!paneProject?.vm?.enabled }) === "local";
           const tmuxSession =
             shouldPersistTab(tab.kind, paneHostId, paneProject?.remote, tab.ephemeral) ||
             shouldPersistLocalTab(tab.kind, scopeKey, localRunning, localPersistEnabled)
@@ -1147,6 +1161,7 @@ export function CenterPanel() {
                 terminalCwd={terminalCwd}
                 sandbox={sandbox}
                 tmuxSession={tmuxSession}
+                vmProject={!!paneProject?.vm?.enabled}
               />
             </div>
           );

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useEnergySaver, saverInterval } from "../../stores/power";
+import { useQuiesce, saverInterval } from "../../stores/power";
 import { useSettingsStore } from "../../stores/settings";
 import { useUse24h } from "../../lib/timeFormat";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
@@ -15,7 +15,7 @@ function fmt(n: number) {
 export function Clock() {
   const t = useT();
   const [time, setTime] = useState(() => new Date());
-  const energySaver = useEnergySaver();
+  const quiesce = useQuiesce();
   const showSeconds = useSettingsStore((s) => s.settings?.show_clock_seconds ?? false);
   const use24h = useUse24h();
   const menuOpen = useHeaderHoverMenuStore((s) => s.openId === MENU_ID);
@@ -28,9 +28,9 @@ export function Clock() {
   );
 
   useEffect(() => {
-    const id = setInterval(() => setTime(new Date()), saverInterval(1000, energySaver));
+    const id = setInterval(() => setTime(new Date()), saverInterval(1000, quiesce));
     return () => clearInterval(id);
-  }, [energySaver]);
+  }, [quiesce]);
 
   useEffect(() => () => window.clearTimeout(closeTimer.current), []);
 

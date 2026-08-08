@@ -38,6 +38,7 @@ import {
 import { withdrawnTabKinds } from "../../lib/experimental";
 import { PLATFORM } from "../../lib/platform";
 import { useTabLandStore } from "../../stores/tabLand";
+import { startFocusTracking, useQuiesce } from "../../stores/power";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenEditorJump } from "../../stores/editorJump";
@@ -96,6 +97,19 @@ export function DetachedApp({ param }: Props) {
   useEffect(() => {
     void loadSettings({ skipZoom: true });
   }, [loadSettings]);
+
+  // Track THIS window's focus (a popout is its own JS context, so the main
+  // window's tracker cannot see it): blur pauses every animation wholesale via
+  // `[data-blurred]` and collapses the agent-status glows via
+  // `[data-energy-saver]`, so an unfocused popout's render thread can reach a
+  // genuine idle instead of repainting glows nobody is looking at.
+  useEffect(() => startFocusTracking(), []);
+  const quiesce = useQuiesce();
+  useEffect(() => {
+    const root = document.documentElement;
+    if (quiesce) root.dataset.energySaver = "on";
+    else delete root.dataset.energySaver;
+  }, [quiesce]);
 
   // Clear a stray OS fullscreen, exactly as `restore_main_window` does for the
   // main window and for its reason: a `_NET_WM_STATE_FULLSCREEN` window loses

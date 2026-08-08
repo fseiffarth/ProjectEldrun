@@ -1190,6 +1190,28 @@ pub fn tracked_paths(project_id: &str) -> HashSet<String> {
         .collect()
 }
 
+/// Every non-gitignored file in the mirror — tracked AND untracked — as git sees
+/// it (`ls-files -co --exclude-standard`), or `None` when the mirror is not a
+/// repo (or git failed). Backs `sync_status`'s new-local-file pass: for a
+/// git-backed mirror, .gitignore is the honest noise filter — the caches, venvs
+/// and result trees a raw walk would report as thousands of "new" files are
+/// exactly what the user chose not to version. `None` (unlike `tracked_paths`'
+/// empty set) is a distinct answer on purpose: it tells the caller to fall back
+/// to a raw mirror walk rather than to conclude the mirror is empty.
+pub fn non_ignored_paths(project_id: &str) -> Option<HashSet<String>> {
+    let local = Peer::Local(mirror_dir(project_id));
+    let out = match local.run(&["ls-files", "-z", "-co", "--exclude-standard"]) {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return None,
+    };
+    Some(
+        out.split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).replace('\\', "/"))
+            .collect(),
+    )
+}
+
 // ── Transport + apply ───────────────────────────────────────────────────────
 
 /// Transient bundle file paths (inside `.git`, so file-sync/status never see them).

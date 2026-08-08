@@ -3,6 +3,20 @@ import { create } from "zustand";
 
 export const APP_TIMER_ID = "__eldrun__";
 
+/**
+ * The root terminal's own bucket in `time_log.json`. Time spent there is
+ * tracked exactly as a project's is — it is a scope with a folder and tabs, and
+ * work done in it is work done. It used to fall into the app total and into no
+ * project at all, so an afternoon in the root terminal read as an afternoon
+ * where nothing was worked on; the recap has always had a *name* for this id
+ * (`stats.rootTerminal`), it just never had a row to put it on.
+ *
+ * The literal is the tabs/usage scope id (`stores/tabs`' `ROOT_SCOPE`),
+ * restated rather than imported so this store keeps its single dependency on
+ * the invoke surface.
+ */
+export const ROOT_TIMER_ID = "root";
+
 interface TimerStore {
   paused: boolean;
   appStartedAt: number | null;
@@ -11,11 +25,19 @@ interface TimerStore {
   projectCommittedSecs: number;
   activeProjectId: string | null;
 
-  /** Call once after projects are loaded. */
+  /**
+   * Call once after projects are loaded. `null` — no project is current — is
+   * the ROOT scope and is tracked under {@link ROOT_TIMER_ID}, not dropped.
+   */
   init: (projectId: string | null) => Promise<void>;
   /** Pause both app + project timers (flush to backend) or resume them. */
   toggle: () => Promise<void>;
-  /** Flush the old project, load committed secs for the new one, restart timer. */
+  /**
+   * Flush the old project, load committed secs for the new one, restart timer.
+   * `null` is the root scope ({@link ROOT_TIMER_ID}) — the mapping lives here
+   * rather than at the call sites so no future caller can spend an afternoon's
+   * work on a scope that quietly records nothing.
+   */
   setProject: (newId: string | null) => Promise<void>;
   /** Flush elapsed (uncommitted) time to the backend without changing state. */
   flush: () => Promise<void>;
@@ -35,11 +57,10 @@ export const useTimerStore = create<TimerStore>((set, get) => ({
 
   init: async (projectId) => {
     const now = Date.now();
+    const scopeId = projectId ?? ROOT_TIMER_ID;
     const [appSecs, projSecs] = await Promise.all([
       invoke<number>("get_time_today", { projectId: APP_TIMER_ID }).catch(() => 0),
-      projectId
-        ? invoke<number>("get_time_today", { projectId }).catch(() => 0)
-        : Promise.resolve(0),
+      invoke<number>("get_time_today", { projectId: scopeId }).catch(() => 0),
     ]);
     set({
       paused: false,
@@ -47,7 +68,7 @@ export const useTimerStore = create<TimerStore>((set, get) => ({
       appCommittedSecs: appSecs,
       projectStartedAt: now,
       projectCommittedSecs: projSecs,
-      activeProjectId: projectId,
+      activeProjectId: scopeId,
     });
   },
 
@@ -93,11 +114,12 @@ export const useTimerStore = create<TimerStore>((set, get) => ({
         }).catch(() => {});
       }
     }
-    const newCommitted = newId
-      ? await invoke<number>("get_time_today", { projectId: newId }).catch(() => 0)
-      : 0;
+    const scopeId = newId ?? ROOT_TIMER_ID;
+    const newCommitted = await invoke<number>("get_time_today", {
+      projectId: scopeId,
+    }).catch(() => 0);
     set({
-      activeProjectId: newId,
+      activeProjectId: scopeId,
       projectCommittedSecs: newCommitted,
       projectStartedAt: s.paused ? null : now,
     });

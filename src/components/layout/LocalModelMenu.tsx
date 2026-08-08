@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../../stores/settings";
-import { useEnergySaver, saverInterval } from "../../stores/power";
+import { useQuiesce, saverInterval } from "../../stores/power";
 import { useOllamaAutoloadStore } from "../../stores/ollamaAutoload";
 import { useOllamaUpgradeStore } from "../../stores/ollamaUpgrade";
 import { useOllamaStatus } from "../../lib/ollamaStatus";
@@ -342,7 +342,7 @@ export function LocalModelMenu() {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const activeModel = settings?.ollama_model;
-  const energySaver = useEnergySaver();
+  const quiesce = useQuiesce();
   const [installed, setInstalled] = useState(false);
   // Three-state Ollama health for the status lamp: "stopped" (server down, red),
   // "idle" (server up, no model in memory, yellow), "loaded" (a model is loaded
@@ -352,7 +352,7 @@ export function LocalModelMenu() {
   // shared one (`lib/ollamaStatus`) — it is a machine-wide fact, and the file
   // viewer asks the same question per open tab, so a timer here as well meant the
   // same `/api/ps` round trip several times over.
-  const status = useOllamaStatus(installed, saverInterval(5000, energySaver));
+  const status = useOllamaStatus(installed, saverInterval(5000, quiesce));
   // Shared across every header hover-menu (stores/headerHoverMenu) so switching
   // straight from another one closes it instantly instead of racing its own
   // close-grace timer. `setOpen` mirrors the old local-state setter's boolean
@@ -432,12 +432,12 @@ export function LocalModelMenu() {
         })
         .catch(() => {});
     void check();
-    const id = window.setInterval(check, saverInterval(5000, energySaver));
+    const id = window.setInterval(check, saverInterval(5000, quiesce));
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [installed, energySaver]);
+  }, [installed, quiesce]);
 
   // Track in-flight downloads regardless of which surface started them.
   useEffect(() => {
@@ -516,12 +516,12 @@ export function LocalModelMenu() {
         .catch(() => {});
     };
     check();
-    const id = window.setInterval(check, saverInterval(2000, energySaver));
+    const id = window.setInterval(check, saverInterval(2000, quiesce));
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [open, energySaver]);
+  }, [open, quiesce]);
 
   // Whether Ollama is using that GPU at all — read **once per open**, not on the
   // poll above, because it spawns processes (`systemctl`, `ollama serve --help`)

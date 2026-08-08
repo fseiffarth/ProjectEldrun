@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settings";
-import { useEnergySaver, saverInterval } from "../../stores/power";
+import { useQuiesce, saverInterval } from "../../stores/power";
 import {
   formatBytes,
   gpuBusy,
@@ -40,7 +40,7 @@ export function AppResourceDisplay() {
   const showGpu = useSettingsStore((s) => s.settings?.show_gpu_usage ?? true);
   const anyShown = showCpu || showRam || showGpu;
   const [usage, setUsage] = useState<AppResourceUsage | null>(null);
-  const energySaver = useEnergySaver();
+  const quiesce = useQuiesce();
 
   useEffect(() => {
     if (!anyShown) {
@@ -60,12 +60,12 @@ export function AppResourceDisplay() {
     };
 
     poll();
-    const id = window.setInterval(poll, saverInterval(2_500, energySaver));
+    const id = window.setInterval(poll, saverInterval(2_500, quiesce));
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [anyShown, energySaver]);
+  }, [anyShown, quiesce]);
 
   if (!anyShown || !usage) return null;
 

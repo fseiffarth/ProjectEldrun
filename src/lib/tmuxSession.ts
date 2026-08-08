@@ -124,10 +124,20 @@ export function shouldPersistTab(
 /**
  * Whether THIS tab should be tmux-wrapped **locally** (TODO #85): a **shell** tab
  * (interactive shells + Python/script runs) that runs on the **local machine** —
- * a local project's tab, or a remote project's local (mirror) tab — in a project
- * scope. `localEnabled` folds the `persist_local_sessions` setting **and** the
- * platform check (off on Windows, where there is no tmux). Keeps the run alive
- * across an Eldrun crash and reattaches on restart.
+ * a local project's tab, or a remote project's local (mirror) tab. `localEnabled`
+ * folds the `persist_local_sessions` setting **and** the platform check (off on
+ * Windows, where there is no tmux). Keeps the run alive across an Eldrun crash
+ * and reattaches on restart.
+ *
+ * The **root** scope is included, and the `scopeKey !== "root"` gate that used to
+ * exclude it was left over from when root tabs were not persisted at all: with
+ * nothing restoring them, a surviving tmux session had no tab to reattach to and
+ * was a daemon nobody could reach. Root tabs restore like a project's now, and
+ * they already carry a minted `tmuxSession` name (`withTmuxSession` never
+ * excluded root) — so the exclusion had stopped meaning anything except that a
+ * long build started in the root terminal was the one shell an Eldrun crash
+ * still killed. `scopeKey` stays a parameter: a **box** scope is genuinely
+ * session-only, so it must keep failing this.
  */
 export function shouldPersistLocalTab(
   kind: string,
@@ -135,5 +145,10 @@ export function shouldPersistLocalTab(
   localRunning: boolean,
   localEnabled: boolean,
 ): boolean {
-  return kind === "shell" && scopeKey !== "root" && localRunning && localEnabled;
+  return (
+    kind === "shell" &&
+    !scopeKey.startsWith("box:") &&
+    localRunning &&
+    localEnabled
+  );
 }

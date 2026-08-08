@@ -13,6 +13,63 @@ export function isTerminalIdentityResponse(data: string): boolean {
   return new RegExp(`^(?:${CSI.replace("[", "\\[")}[?>]?[0-9;]*c)+$`).test(data);
 }
 
+/** The queries a program sends TO the terminal — device attributes, device
+ *  status, mode and version reports. Each one is *answered* by xterm through
+ *  `onData`, i.e. straight back into the PTY as if the user had typed it.
+ *
+ *  They are stripped out of output that reaches xterm LATE — everything a pane
+ *  buffered while it was closed or hidden (see `TerminalView`'s `flushPending`).
+ *  A query is only meaningful to the program that asked it, within the timeout
+ *  it waits out; parsed minutes later, the answer lands at whatever prompt is on
+ *  screen by then. That is how a remote shell ends up holding `0;276;0c`: tmux
+ *  probes the terminal with `ESC[>c` when it attaches, the tab was in the
+ *  background so the probe sat in the buffer, and the reply readline finally
+ *  received became command-line text (readline consumes the `ESC[>` prefix as an
+ *  unknown key sequence and inserts the rest literally).
+ *
+ *  Dropping them costs the catch-up nothing: not one of these sequences draws
+ *  anything. Only ever applied to buffered output — a query in *live* output is
+ *  answered normally, so a program running in a visible pane still gets its
+ *  reply. */
+const TERMINAL_QUERIES = new RegExp(
+  [
+    "\\x1b\\[[?>=]?[0-9;]*c", // DA1 / DA2 / DA3 — device attributes
+    "\\x1b\\[\\??[0-9;]*n", // DSR — device status (5n, 6n cursor position, ?6n)
+    "\\x1b\\[\\??[0-9;]*\\$p", // DECRQM — "is this mode set?"
+    "\\x1b\\[>[0-9;]*q", // XTVERSION (a space before `q` would be DECSCUSR, not a query)
+    "\\x1bP\\$q[^\\x1b\\x07]*(?:\\x1b\\\\|\\x07)", // DECRQSS — "what is this setting?"
+    "\\x1b\\](?:4;[0-9]+|1[0-9]);\\?(?:\\x1b\\\\|\\x07)", // OSC palette / fg / bg colour query
+  ].join("|"),
+  "g",
+);
+
+export function stripTerminalQueries(data: string): string {
+  return data.includes("\x1b") ? data.replace(TERMINAL_QUERIES, "") : data;
+}
+
+/** Anything xterm emits through `onData` as an *answer* rather than as a
+ *  keystroke: the replies to {@link TERMINAL_QUERIES}. Every one of them is a
+ *  CSI/OSC/DCS sequence no key produces (F3 is `ESC O R`, never `ESC [ … R`), so
+ *  matching the whole string is safe against real user input.
+ *
+ *  Used to refuse a reply provoked by a *stale* write — the belt to
+ *  {@link stripTerminalQueries}'s braces, covering any query shape that list
+ *  does not know about. */
+const TERMINAL_REPORT = new RegExp(
+  "^(?:" +
+    [
+      "\\x1b\\[[?>=]?[0-9;]*[cnR]", // DA reply, DSR status, CPR cursor position
+      "\\x1b\\[\\??[0-9;]*\\$y", // DECRPM — the mode report
+      "\\x1b\\](?:4;[0-9]+|1[0-9]);[^\\x07\\x1b]*(?:\\x1b\\\\|\\x07)", // OSC colour reply
+      "\\x1bP[01]\\$r[^\\x1b]*\\x1b\\\\", // DECRPSS
+    ].join("|") +
+    ")+$",
+);
+
+export function isTerminalReport(data: string): boolean {
+  return TERMINAL_REPORT.test(data);
+}
+
 /** Clear any startup junk already sitting in a shell's readline buffer before
  *  auto-typing a command. No-op for agent TUIs: their prompt behavior is not a
  *  POSIX shell line editor. */

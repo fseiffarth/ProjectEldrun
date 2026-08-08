@@ -1,21 +1,24 @@
 import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
+import { CanvasAddon } from "@xterm/addon-canvas";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
 import { useT } from "../../lib/i18n";
+import { useExperimental } from "../../lib/experimental";
 import { cmdToKind, isDetachedPtyId, type TabKind } from "../../stores/tabs";
 import { notePtySpawn, noteUserInput, splitPtyId, useActivityStore } from "../../stores/activity";
 import { useAgentTaskStore } from "../../stores/agentTask";
 import { noteInput } from "../../lib/promptCount";
 import { METRIC, agentPromptLeaf, sub } from "../../lib/usageMetrics";
 import { ROOT_SCOPE, bumpUsage, markAgentActive } from "../../stores/usage";
-import { onTerminalExit, onTerminalOutput, onTerminalReady } from "../../lib/terminalBus";
+import { onTerminalExit, onTerminalOutput, onTerminalReady, onTerminalReplay } from "../../lib/terminalBus";
 import { hpcGuardRefusal } from "../../lib/hpcGuard";
 import { useHpcGuardStore } from "../../stores/hpcGuardPrompt";
-import { claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isTerminalIdentityResponse } from "../../lib/terminalControl";
+import { claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isTerminalIdentityResponse, isTerminalReport, stripTerminalQueries } from "../../lib/terminalControl";
 import "@xterm/xterm/css/xterm.css";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
@@ -207,6 +210,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const unlistenOutput = useRef<(() => void) | null>(null);
+  const unlistenReplay = useRef<(() => void) | null>(null);
   const unlistenReady = useRef<(() => void) | null>(null);
   const unlistenExit = useRef<(() => void) | null>(null);
   const initialInputSent = useRef(false);
@@ -239,6 +243,15 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   // whatever the scheme became while the pane was still closed.
   const colorSchemeRef = useRef(colorScheme);
   colorSchemeRef.current = colorScheme;
+  // Same bargain for the renderer choice: the flag must not be a dep of the
+  // spawn effect (a settings flip must never respawn a PTY), and settings load
+  // asynchronously, so the first panes of a session open before the flag is
+  // even known. `applyRendererRef` lets the flag effect below re-pick the
+  // renderer of an already-open terminal in place.
+  const webglWanted = useExperimental("terminal_webgl");
+  const webglWantedRef = useRef(webglWanted);
+  webglWantedRef.current = webglWanted;
+  const applyRendererRef = useRef<((wantWebgl: boolean) => void) | null>(null);
   const argsKey = JSON.stringify(args);
   const envKey = JSON.stringify(env);
 
@@ -273,6 +286,102 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     openedRef.current = false;
     pendingOutput.current = "";
 
+    // Which renderer paints this terminal — the scroll-performance ladder.
+    // xterm's default DOM renderer rebuilds styled spans for every visible row
+    // on each scroll step, which under WebKitGTK with GPU compositing disabled
+    // (WEBKIT_DISABLE_DMABUF_RENDERER=1) makes scrolling densely colored agent
+    // output very slow — so every terminal gets the canvas renderer (glyph
+    // cache, no DOM/layout work, still on the safe software path). WebGL is
+    // the faster tier but rides the same GPU/driver territory the DMABUF
+    // re-test failed on (docs/typing_latency_plan.md Step 4), so it is opt-in
+    // via the `terminal_webgl` experimental flag and demotes itself: a
+    // construction/load failure falls back to canvas in the same call, and a
+    // context lost at runtime (driver reset, or the browser evicting the
+    // oldest of too many live contexts — every open pane holds one) disposes
+    // the addon and reloads canvas. A renderer must never take the terminal
+    // down; canvas failing too (jsdom has no canvas at all) leaves the DOM
+    // renderer. term.dispose() in the cleanup disposes whichever addon is
+    // loaded, so no teardown is kept here.
+    let canvasAddon: CanvasAddon | null = null;
+    let webglAddon: WebglAddon | null = null;
+    const dropCanvas = () => {
+      if (!canvasAddon) return;
+      const addon = canvasAddon;
+      canvasAddon = null;
+      try {
+        addon.dispose();
+      } catch {
+        /* already torn down */
+      }
+    };
+    const dropWebgl = () => {
+      if (!webglAddon) return;
+      const addon = webglAddon;
+      webglAddon = null;
+      try {
+        addon.dispose();
+      } catch {
+        /* already torn down */
+      }
+    };
+    const loadCanvas = () => {
+      if (canvasAddon) return;
+      try {
+        canvasAddon = new CanvasAddon();
+        term.loadAddon(canvasAddon);
+      } catch {
+        dropCanvas();
+      }
+    };
+    const applyRenderer = (wantWebgl: boolean) => {
+      if (cancelled || !openedRef.current) return;
+      if (wantWebgl) {
+        if (webglAddon) return;
+        dropCanvas();
+        try {
+          webglAddon = new WebglAddon();
+          webglAddon.onContextLoss(() => {
+            dropWebgl();
+            loadCanvas();
+          });
+          term.loadAddon(webglAddon);
+        } catch {
+          dropWebgl();
+          loadCanvas();
+        }
+      } else {
+        dropWebgl();
+        loadCanvas();
+      }
+    };
+    applyRendererRef.current = applyRenderer;
+
+    // THE one way buffered output reaches xterm — every catch-up goes through
+    // here, never through a bare `term.write`, because output written late is
+    // not the same thing as output written live. A terminal *query* in it
+    // (`ESC[>c` and friends) is answered by xterm the moment it is finally
+    // parsed, and that answer goes into the PTY as if typed — which is how
+    // `0;276;0c` (tmux's attach probe on a remote shell tab, replayed when the
+    // pane was next shown) ends up as text on the shell's command line.
+    // `stripTerminalQueries` takes out the queries it knows; `staleParse`
+    // counts how much stale output xterm is still parsing so `onData` can
+    // refuse the replies to any it doesn't. xterm's write callback fires when
+    // that exact chunk is done parsing, so the window is precise rather than a
+    // timeout: a live query written afterwards is parsed after the callback, and
+    // its reply still reaches the program that asked for it.
+    let staleParse = 0;
+    const flushPending = () => {
+      const buffered = pendingOutput.current;
+      if (!buffered) return;
+      pendingOutput.current = "";
+      const catchUp = stripTerminalQueries(buffered);
+      if (!catchUp) return;
+      staleParse += 1;
+      term.write(catchUp, () => {
+        staleParse = Math.max(0, staleParse - 1);
+      });
+    };
+
     // Write PTY output to the terminal only while the pane is open AND visible;
     // buffer it otherwise — a hidden pane's xterm still parses and schedules
     // renders for every chunk, which is what background agent tabs must not
@@ -281,10 +390,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // and the flush-on-show in doFit.
     const writeTerm = (data: string) => {
       if (openedRef.current && visibleRef.current) {
-        if (pendingOutput.current) {
-          term.write(pendingOutput.current);
-          pendingOutput.current = "";
-        }
+        flushPending();
         term.write(data);
       } else {
         pendingOutput.current += data;
@@ -313,6 +419,8 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (!visibleRef.current || !hasLayout() || !containerRef.current) return;
       term.open(containerRef.current);
       openedRef.current = true;
+      // Renderer addons need the opened element — see the manager above.
+      applyRenderer(webglWantedRef.current);
       // Adopt the current scheme now that there is a renderer to take it. The
       // terminal was constructed with whatever `colorScheme` was at setup — which
       // is `undefined` on a cold start, since settings load asynchronously — and
@@ -320,10 +428,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // pane opened after the settings landed would keep the fallback theme.
       term.options.theme = terminalTheme(colorSchemeRef.current);
       fit.fit();
-      if (pendingOutput.current) {
-        term.write(pendingOutput.current);
-        pendingOutput.current = "";
-      }
+      flushPending();
       invoke("pty_resize", { id, cols: term.cols, rows: term.rows }).catch(() => {});
       if (focusedRef.current) term.focus();
       // The pane may keep growing right after open — the startup fullscreen
@@ -373,6 +478,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // so the usage recap's "you asked them N things" is counted here (see
     // lib/promptCount): Enter with content pending = one submit.
     term.onData((data) => {
+      if (staleParse > 0 && isTerminalReport(data)) {
+        return; // an answer to a query xterm only just parsed out of replayed output
+      }
       if (initialInputPending.current && isTerminalIdentityResponse(data)) {
         return; // swallow the startup / tmux-reattach identity reply (see above)
       }
@@ -533,6 +641,22 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       writeTerm(data);
     });
 
+    // The backend's replay of what streamed while this pane was hidden
+    // (visible-only streaming — a hidden pane's PTY emits no terminal-output
+    // at all; showing it drains the Rust-side buffer as one of these). It is
+    // STALE output written late, so it goes through pendingOutput and
+    // flushPending's stripTerminalQueries guard, never a bare term.write — a
+    // terminal query in it would be answered on parse and typed into the
+    // shell (the tmux attach-probe bug flushPending documents).
+    unlistenReplay.current = onTerminalReplay(id, (data) => {
+      if (firstOutputAt.current === null) firstOutputAt.current = Date.now();
+      pendingOutput.current += data;
+      if (pendingOutput.current.length > PENDING_OUTPUT_CAP * 2) {
+        pendingOutput.current = pendingOutput.current.slice(-PENDING_OUTPUT_CAP);
+      }
+      if (openedRef.current && visibleRef.current) flushPending();
+    });
+
     unlistenReady.current = onTerminalReady(id, () => {
       writeTerm("\r\n");
       if (initialInput && !initialInputSent.current) {
@@ -661,10 +785,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         // (writeTerm buffers past a hidden pane's xterm) — flush it in the
         // same beat the pane regains its layout, before the refit, so the
         // catch-up isn't waiting on the next live chunk to drain it.
-        if (visibleRef.current && pendingOutput.current) {
-          termRef.current.write(pendingOutput.current);
-          pendingOutput.current = "";
-        }
+        if (visibleRef.current) flushPending();
         fitRef.current.fit();
         invoke("pty_resize", {
           id,
@@ -738,10 +859,13 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       }
       ro.disconnect();
       doFitRef.current = null;
+      applyRendererRef.current = null;
       unlistenOutput.current?.();
+      unlistenReplay.current?.();
       unlistenReady.current?.();
       unlistenExit.current?.();
       unlistenOutput.current = null;
+      unlistenReplay.current = null;
       unlistenReady.current = null;
       unlistenExit.current = null;
       // #42: do NOT kill the PTY on unmount when (a) this is an attach-only
@@ -797,6 +921,16 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     }
   }, [colorScheme]);
 
+  // Re-pick the renderer of a LIVE, OPEN terminal when the WebGL flag moves —
+  // which includes settings simply arriving: they load a few seconds after the
+  // restored tabs mount, so a pane opened before that read the flag as off and
+  // would otherwise stay on canvas for the whole session. The ref is null (or
+  // its closure self-guards on openedRef) outside the open()..dispose() window,
+  // so a closed terminal is skipped exactly as the theme effect skips it.
+  useEffect(() => {
+    applyRendererRef.current?.(webglWanted);
+  }, [webglWanted]);
+
   // Open (first time) or re-fit when the pane becomes visible or its cell
   // geometry changes (grid layout switches). The container ResizeObserver covers
   // most resizes, but a hidden→visible transition doesn't always fire it, so
@@ -804,6 +938,18 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   useEffect(() => {
     if (visible) doFitRef.current?.();
   }, [visible, id]);
+
+  // Visible-only streaming: report pane visibility so the backend can stop
+  // emitting a hidden pane's output over IPC entirely (it buffers in Rust and
+  // condenses throttled `terminal-activity` digests for the pill indicators;
+  // the buffer comes back as one `terminal-replay` when the pane is shown).
+  // Deliberately no unmount teardown: a detached tab's new pane re-reports
+  // from its own window, and a real close removes the backend route with the
+  // PTY — while an unmount-time "hidden" here could land AFTER the other
+  // window's "visible" and silence a pane that is on screen.
+  useEffect(() => {
+    invoke("pty_set_visible", { id, visible }).catch(() => {});
+  }, [id, visible]);
 
   // Take keyboard focus only when this pane is the focused one (and opened).
   useEffect(() => {

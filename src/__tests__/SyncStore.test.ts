@@ -16,6 +16,7 @@ import {
   useSyncStore,
   listenSyncProgress,
   dirSyncAggregate,
+  localNewPaths,
   type SyncEntryStatus,
 } from "../stores/sync";
 
@@ -199,7 +200,7 @@ describe("dirSyncAggregate", () => {
       "dir/a.txt": row({ state: "green" }),
       "dir/b.txt": row({ state: "none", selected: false }),
     });
-    expect(agg["dir"]).toEqual({ any: true, allGreen: true });
+    expect(agg["dir"]).toEqual({ any: true, allGreen: true, anyNew: false });
   });
 
   it("an amber descendant breaks allGreen", () => {
@@ -207,8 +208,8 @@ describe("dirSyncAggregate", () => {
       "dir/sub/a.txt": row({ state: "amber" }),
       "dir/b.txt": row({ state: "green" }),
     });
-    expect(agg["dir"]).toEqual({ any: true, allGreen: false });
-    expect(agg["dir/sub"]).toEqual({ any: true, allGreen: false });
+    expect(agg["dir"]).toEqual({ any: true, allGreen: false, anyNew: false });
+    expect(agg["dir/sub"]).toEqual({ any: true, allGreen: false, anyNew: false });
   });
 
   it("a folder with only 'none' descendants is absent from the aggregate", () => {
@@ -226,10 +227,11 @@ describe("dirSyncAggregate", () => {
       "top.txt": row({ state: "green" }),
       "dir/a.txt": row({ state: "green" }),
     });
-    expect(agg[""]).toEqual({ any: true, allGreen: true });
+    expect(agg[""]).toEqual({ any: true, allGreen: true, anyNew: false });
     expect(dirSyncAggregate({ "dir/a.txt": row({ state: "amber" }) })[""]).toEqual({
       any: true,
       allGreen: false,
+      anyNew: false,
     });
   });
 
@@ -240,6 +242,50 @@ describe("dirSyncAggregate", () => {
       "dir/sub": row({ isDir: true, state: "green" }),
     });
     expect(agg["dir"]).toBeUndefined();
+  });
+
+  it("a NEW local-only file sets anyNew without breaking allGreen or any", () => {
+    // `localnew` must not vote amber (the folder wants the actionable upload
+    // affordance, not the inert ± marker) and must not set `any` either: a
+    // folder with ONLY new files keeps any:false → state "none" → the red push
+    // button, exactly what it showed before the state existed.
+    const agg = dirSyncAggregate({
+      "dir/a.txt": row({ state: "green" }),
+      "dir/new.yml": row({ state: "localnew", selected: false }),
+      "only-new/b.yml": row({ state: "localnew", selected: false }),
+    });
+    expect(agg["dir"]).toEqual({ any: true, allGreen: true, anyNew: true });
+    expect(agg["only-new"]).toEqual({ any: false, allGreen: true, anyNew: true });
+    expect(agg[""]).toEqual({ any: true, allGreen: true, anyNew: true });
+  });
+});
+
+describe("localNewPaths", () => {
+  const row = (partial: Partial<SyncEntryStatus>): SyncEntryStatus => ({
+    state: "green",
+    selected: true,
+    isDir: false,
+    auto: false,
+    excluded: false,
+    hostMtime: null,
+    localMtime: null,
+    hostDiverged: false,
+    localDiverged: false,
+    hostChecked: false,
+    ...partial,
+  });
+
+  it("returns only localnew rows, sorted; separate from the amber list", () => {
+    // A new file has one side only (upload or ignore) — mixing it into the
+    // amber list would offer merge/take-remote actions with nothing to act on.
+    const map = {
+      "b/new.yml": row({ state: "localnew", selected: false }),
+      "a/new.yml": row({ state: "localnew", selected: false }),
+      "c/diverged.txt": row({ state: "amber" }),
+      "d/ok.txt": row({ state: "green" }),
+    };
+    expect(localNewPaths(map)).toEqual(["a/new.yml", "b/new.yml"]);
+    expect(localNewPaths(undefined)).toEqual([]);
   });
 });
 

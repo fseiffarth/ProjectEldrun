@@ -66,6 +66,11 @@ export interface TabPaneProps {
   /** The stable tmux session name to spawn-or-attach this remote shell/script tab
    *  into (TODO #85), or undefined when the tab doesn't run persistently. */
   tmuxSession?: string;
+  /** VM tier (`docs/vm_projects_plan.md`): the owning project lives inside a
+   *  VM, so tab locality is pinned to it (agents-default-local is exactly the
+   *  escape that tier forbids). Resolved by CenterPanel; a popout omits it —
+   *  its panes are attach-only and never spawn. */
+  vmProject?: boolean;
 }
 
 function TabPaneImpl({
@@ -82,6 +87,7 @@ function TabPaneImpl({
   terminalCwd,
   sandbox = false,
   tmuxSession,
+  vmProject = false,
 }: TabPaneProps) {
   // Identical in both windows: null for the root scope, else the scope id.
   const projectId = scope === "root" ? null : scope;
@@ -180,11 +186,11 @@ function TabPaneImpl({
           // never fires, so it takes no initialInput (matches its old behavior).
           initialInput={attachOnly ? undefined : tab.initialInput}
           cwd={terminalCwd}
-          localOnly={effectiveTabLocation(tab) === "local"}
+          localOnly={effectiveTabLocation(tab, { vmProject }) === "local"}
           projectId={projectId}
           // Multi-host: the worker id (or "primary") this tab runs on, so the
           // backend resolves the right host's RemoteSpec (null for a local tab).
-          remoteHostId={remoteHostIdOf(effectiveTabLocation(tab))}
+          remoteHostId={remoteHostIdOf(effectiveTabLocation(tab, { vmProject }))}
           sandbox={sandbox}
           // Persistent remote session (TODO #85). An explicit attach (opened from
           // the Sessions view) wins over the tab's own persistent session.

@@ -108,6 +108,26 @@ pub async fn remote_connect(
     // whole change exists to close: a launch path that inherits "user-initiated"
     // by saying nothing is exactly how the cluster kept being dialled. Failing
     // closed here costs one `ELDRUN_HPC_GUARD connect …` naming the machine.
+    // A VM project boots first (`docs/vm_projects_plan.md`): the VM *is* the
+    // host, so every connect path — activation auto-connect, the lamp click,
+    // a tab's silent re-connect — funnels through ensure-booted here rather
+    // than each caller learning about VMs. Idempotent and cheap when already
+    // up; on a cold boot it blocks (off the main thread) until sshd answers,
+    // with the fresh forwarded port already rewritten into the RemoteSpec the
+    // `connect_host` below resolves.
+    if host_id == remote::PRIMARY_HOST
+        && remote::remote_target_for(&project_id)
+            .is_some_and(|t| crate::services::vm::is_vm_spec(&t.spec))
+    {
+        let boot_id = project_id.clone();
+        let name = crate::commands::vm::project_name(&project_id)
+            .unwrap_or_else(|| "project".to_string());
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::services::vm::ensure_booted(&boot_id, &name)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+    }
     let _dial = remote::remote_target_for_host(&project_id, &host_id).and_then(|t| {
         crate::services::ssh_common::declared_dial(
             background,

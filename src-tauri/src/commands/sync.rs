@@ -44,6 +44,13 @@ const STAT_CONCURRENCY: usize = 16;
 /// refresh is exactly the cost the heuristic exists to avoid.
 const CONTENT_VERIFY_MAX_BYTES: u64 = 1024 * 1024; // 1 MiB
 
+/// Cap on the NEW-local-file rows a `sync_status` pass reports. The git-derived
+/// listing is naturally small (non-ignored files only), but the raw-walk
+/// fallback for a non-repo mirror can surface tens of thousands of candidates —
+/// and the row list is an advisory "these can be uploaded", not an inventory,
+/// so a bounded IPC payload wins over completeness past this point.
+const LOCAL_NEW_ROWS_CAP: usize = 2000;
+
 /// Per-file bound on a push's SFTP round-trips. Every transfer below rides the
 /// *pooled* session, and a dropped ControlMaster / dead `sftp-server` leaves a
 /// request waiting on a response that never comes — an unbounded wait that hangs
@@ -769,6 +776,64 @@ pub async fn sync_status(
             }
             let _ = remote_sync::save_manifest(&project_id, m);
         }
+    }
+    // NEW-local-file pass: files the mirror holds that the manifest has never
+    // seen. Everything above iterates the manifest, so without this a file
+    // created after the last transfer had NO row anywhere — no tree badge, no
+    // diverged-list entry, nothing saying "exists only locally, can be
+    // uploaded". Purely local work (git + fs), so it runs on a cold pool too.
+    // For a git-backed mirror the listing is `ls-files -co --exclude-standard`:
+    // .gitignore is the honest noise filter there (caches/venvs/results are
+    // exactly what the user chose not to version, and a raw walk would report
+    // them as thousands of "new" files). A non-repo mirror falls back to the
+    // raw walk; either way the pure filter drops manifest'd, lockstep-owned
+    // (tracked, when lockstep is on) and excluded paths, and caps the rest.
+    {
+        let pid = project_id.clone();
+        let snapshot_for_new = snapshot.clone();
+        let new_rows = tokio::task::spawn_blocking(move || {
+            let all: Vec<String> = match crate::services::git_peer::non_ignored_paths(&pid) {
+                Some(set) => set.into_iter().collect(),
+                None => remote_sync::walk_mirror_files(&pid, "").unwrap_or_default(),
+            };
+            let tracked = crate::services::git_peer::tracked_paths(&pid);
+            let lockstep = crate::services::git_peer::load_state(&pid).enabled;
+            let candidates = remote_sync::local_new_candidates(
+                &snapshot_for_new,
+                all,
+                &tracked,
+                lockstep,
+                LOCAL_NEW_ROWS_CAP,
+            );
+            candidates
+                .into_iter()
+                .filter_map(|rel| {
+                    // Stat for the row's mtime; a file that vanished between the
+                    // listing and here is simply not new any more.
+                    let meta = std::fs::metadata(mirror_local_path(&pid, &rel)).ok()?;
+                    let (_, mtime) = local_meta(&meta);
+                    let auto = remote_sync::is_auto(&snapshot_for_new, &rel);
+                    Some(SyncStatusEntry {
+                        rel_path: rel,
+                        is_dir: false,
+                        selected: false,
+                        state: SyncState::LocalNew,
+                        auto_sync: auto,
+                        excluded: false,
+                        host_mtime: None,
+                        local_mtime: mtime,
+                        // The mirror side is what makes the row exist; the host
+                        // was never asked (there is nothing to ask about).
+                        host_diverged: false,
+                        local_diverged: true,
+                        host_checked: false,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        out.extend(new_rows);
     }
     Ok(out)
 }

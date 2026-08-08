@@ -21,7 +21,7 @@
 //!   [`SyncManifestState`] serializes every mutation (G7), and SFTP transfers run
 //!   with the lock released.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -113,6 +113,12 @@ pub enum SyncState {
     Amber,
     /// Not synced (no mirror copy / not selected).
     None,
+    /// Exists in the local mirror but was never synced (no manifest entry) —
+    /// a NEW local file the host doesn't have yet, offered for upload. Emitted
+    /// only by `sync_status`'s local-new pass, never by `compute_state`: the
+    /// manifest can't compute a state for a file it has no record of.
+    #[serde(rename = "localnew")]
+    LocalNew,
 }
 
 /// Tauri-managed, single-writer cache of per-project manifests (G7). Every mutate
@@ -384,6 +390,44 @@ pub fn is_excluded(manifest: &Manifest, rel: &str, under: &str) -> bool {
             None => return false,
         };
     }
+}
+
+/// Which mirror files count as **new local files** for the status view — files
+/// the manifest has never seen, i.e. the host doesn't have them and no sync
+/// state exists to paint them green or amber. Without this pass they were
+/// invisible everywhere: `sync_status` iterates the manifest, so a file created
+/// after the last transfer had no row, no tree badge, no diverged-list entry —
+/// nothing saying "this exists only locally and can be uploaded" (the SimpleGNN
+/// report that motivated the pass).
+///
+/// `all` is the mirror-side file listing (git-derived or a raw walk — the
+/// caller decides); the filter is what's pure and tested here:
+/// - anything with a manifest entry already has a row (whatever its state);
+/// - with lockstep on, git-TRACKED files belong to lockstep (#28p D1 — they
+///   travel as commits, and reporting them "new" would invite a byte-push that
+///   lands them untracked on the peer and wedges the fast-forward);
+/// - an effectively excluded path (own or inherited marker) is out of byte-sync
+///   scope entirely — flagging it "uploadable" would contradict the marker;
+/// - the result is sorted (stable UI order) and capped: the fallback raw walk
+///   of a mirror with a giant data/ tree can yield tens of thousands of
+///   candidates, and the row list is advisory, not an inventory.
+pub fn local_new_candidates(
+    manifest: &Manifest,
+    all: impl IntoIterator<Item = String>,
+    tracked: &HashSet<String>,
+    lockstep_enabled: bool,
+    cap: usize,
+) -> Vec<String> {
+    let mut out: Vec<String> = all
+        .into_iter()
+        .filter(|rel| !rel.is_empty())
+        .filter(|rel| !manifest.contains_key(rel))
+        .filter(|rel| !(lockstep_enabled && tracked.contains(rel)))
+        .filter(|rel| !is_excluded(manifest, rel, ""))
+        .collect();
+    out.sort();
+    out.truncate(cap);
+    out
 }
 
 /// Borrow (loading from disk on first touch) the project's manifest from the
@@ -1098,6 +1142,48 @@ mod tests {
         assert_eq!(join_rel("", "a"), "a");
         assert_eq!(join_rel("a", "b"), "a/b");
         assert_eq!(join_rel("a/b/", "c"), "a/b/c");
+    }
+
+    #[test]
+    fn local_new_candidates_filters_manifest_tracked_and_excluded() {
+        let mut m = Manifest::new();
+        m.insert("synced.txt".into(), SyncEntry { selected: true, ..Default::default() });
+        m.insert("data".into(), excluded_dir());
+        let all = vec![
+            "synced.txt".to_string(),      // manifest'd → has a row already
+            "src/lib.rs".to_string(),      // tracked → lockstep's when enabled
+            "data/cache.bin".to_string(),  // under an excluded folder marker
+            "configs/new_v10.yml".to_string(), // genuinely new
+            "".to_string(),                // defensive: never a file
+        ];
+        let tracked: HashSet<String> = ["src/lib.rs".to_string()].into_iter().collect();
+
+        // Lockstep on: the tracked file belongs to lockstep (#28p D1), not here.
+        let with_lockstep =
+            local_new_candidates(&m, all.clone(), &tracked, true, 100);
+        assert_eq!(with_lockstep, vec!["configs/new_v10.yml".to_string()]);
+
+        // Lockstep off: byte-sync owns the tracked tree too, so a tracked file
+        // the manifest never saw IS new and reportable.
+        let without = local_new_candidates(&m, all, &tracked, false, 100);
+        assert_eq!(
+            without,
+            vec!["configs/new_v10.yml".to_string(), "src/lib.rs".to_string()],
+        );
+    }
+
+    #[test]
+    fn local_new_candidates_sorts_and_caps() {
+        let m = Manifest::new();
+        let all = vec!["b".to_string(), "c".to_string(), "a".to_string()];
+        let none = HashSet::new();
+        // Sorted for a stable UI order, then capped — the row list is advisory,
+        // not an inventory, so the cap keeps a raw-walk fallback's tens of
+        // thousands of candidates from flooding the IPC payload.
+        assert_eq!(
+            local_new_candidates(&m, all, &none, true, 2),
+            vec!["a".to_string(), "b".to_string()],
+        );
     }
 
     #[test]

@@ -51,6 +51,74 @@ export interface RedactRect {
   h: number;
 }
 
+/** One box of a highlighted run of text, in the same big-point, top-left,
+ *  already-rotated space every other overlay in the viewer lives in. A highlight
+ *  covers one of these per line, which is why it is a list and not a rectangle. */
+export interface PdfQuad {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * A remark on a sheet, anchored at a point in big points at scale 1 in the sheet's
+ * *rotated* space (top-left origin), i.e. the same coordinates the blackout marks,
+ * the Ctrl+F hits and the link boxes use.
+ *
+ * Unlike a mark, a remark is not a pending destruction but a pending *addition*, and
+ * it is written into the file as one of the PDF's own annotations — so a remark made
+ * here is a remark every other PDF reader shows. See `lib/viewers/pdfNotes` for why a
+ * sheet's remarks are owned all-or-nothing, and `pdf/notes.ts` for the annotations
+ * they are read from.
+ *
+ * There are **two** of them and `quads` is the whole distinction: without it a remark
+ * is a sticky note at a point (`/Text`), with it a highlight over the words those
+ * boxes cover (`/Highlight`), whose remark is that annotation's own `/Contents`. One
+ * shape rather than two, because everything around a remark — the ownership rule, the
+ * baseline, the panel, the walk, the undo history, the autosave gate, the save — is
+ * the same question for both, and a second parallel model would be a second chance for
+ * those answers to disagree.
+ */
+export interface PdfNote {
+  /** Unique within its sheet; written out as the annotation's `/NM`. */
+  id: string;
+  /** Where the remark sits: the note icon's top-left corner for a sticky note, the
+   *  start of the highlighted text for a highlight. What the reading order, the card's
+   *  position and the panel's walk are all measured from. */
+  x: number;
+  y: number;
+  /** The boxes the highlight covers, one per line — absent on a sticky note. A
+   *  highlight is written as a `/Highlight` annotation over exactly these. */
+  quads?: PdfQuad[];
+  /** The words under a highlight, as the selection read them. Display only: it is
+   *  what the panel shows for a highlight nobody has written a remark on yet, and it
+   *  is deliberately NOT written into the file — the words are already on the page,
+   *  and a copy of them in the annotation would be a second version of the sentence
+   *  that stops being true the moment the document is edited. */
+  quote?: string;
+  /** The pdf.js id of the annotation this was read from, for a remark that came out
+   *  of the file. Used for exactly one thing — stopping the page render from painting
+   *  the file's own copy of a highlight underneath ours — and never written. */
+  srcId?: string;
+  /** What the remark says. Empty is a real state for a **highlight** (marking a
+   *  sentence is worth doing on its own); for a sticky note it means "delete me",
+   *  since a blank marker is indistinguishable from a bug in the next reader. */
+  text: string;
+  /** Who wrote it (`/T`). Absent unless somebody typed one: Eldrun has no name of
+   *  the reader's to offer, and taking one from the OS login would put a real
+   *  identity into a document that leaves the machine. */
+  author?: string;
+  /** PDF date strings, as read and as written (`/CreationDate`, `/M`). */
+  created?: string;
+  modified?: string;
+  /** The `/Name` icon a viewer draws (`Comment`, `Note`, `Help`…). Kept as read so a
+   *  foreign note re-saved through here still looks like itself. */
+  icon?: string;
+  /** `/C`, as RGB in 0..1. Kept for the same reason. */
+  color?: [number, number, number];
+}
+
 /** One sheet in an arrangement: a 1-based page of some source, at some rotation. */
 export interface PageRef {
   /** Unique within its list, and stable across moves — selection keys off it. */
@@ -65,6 +133,12 @@ export interface PageRef {
    *  every op here — a moved page keeps its blackouts, a duplicate gets its own
    *  copy of them, and undo/redo needs no second history. */
   marks?: RedactRect[];
+  /** The sheet's remarks (#pdf-notes), for a sheet whose remarks the arrangement has
+   *  taken over — absent (not `[]`) while the file's own annotations are merely being
+   *  displayed, which is what keeps an untouched page's comments out of a save's way.
+   *  `[]` is a real state: every remark on the sheet was deleted. Rides on the entry
+   *  for `marks`' reason. */
+  notes?: PdfNote[];
 }
 
 /** An arrangement: the sheets, in order. The single source of truth. */
@@ -88,6 +162,36 @@ export function initialPages(pageCount: number, src: SourceId = SELF): PageList 
     page: i + 1,
     rot: 0 as Rotation,
   }));
+}
+
+/**
+ * Carry the OLD arrangement's entry ids into a fresh identity arrangement over
+ * the same file — what a recompile needs, and nothing else.
+ *
+ * A reload of the same path replaces the arrangement with a new identity one.
+ * The ids are what the viewer keys its page components by, so minting fresh ones
+ * unmounts and remounts every page — new canvas elements, no pixels, a blank
+ * document until each one has rendered again. That is the flash a LaTeX build
+ * used to put on screen. Keeping the id keeps the canvas, which is what lets the
+ * page render decide (by fingerprint) that it has nothing to repaint at all.
+ *
+ * An id is reused only where the old entry at that index was the identity entry
+ * for the same sheet — same source, same page number, unturned. Anywhere else
+ * (the old list was reordered or turned, the document grew) the entry is new, so
+ * a kept canvas can never end up standing for a different page than it painted.
+ */
+export function keepPageIds(prev: PageList, next: PageList): PageList {
+  return next.map((ref, i) => {
+    const old = prev[i];
+    const reusable =
+      old != null &&
+      old.src === ref.src &&
+      old.page === ref.page &&
+      old.rot === ref.rot &&
+      old.marks == null &&
+      old.notes == null;
+    return reusable ? { ...ref, id: old.id } : ref;
+  });
 }
 
 /** Build entries for `pageCount` pages of `src` — the pages a merge splices in. */
@@ -147,7 +251,20 @@ export function duplicatePages(list: PageList, ids: readonly string[]): PageList
     // pure, so sharing it would be safe today, but a shared array is exactly the
     // kind of aliasing that makes a later in-place edit black out two sheets.
     copying.has(r.id)
-      ? [r, { ...r, id: newPageId(), ...(r.marks ? { marks: [...r.marks] } : {}) }]
+      ? [
+          r,
+          {
+            ...r,
+            id: newPageId(),
+            ...(r.marks ? { marks: [...r.marks] } : {}),
+            // A highlight's `quads` is copied too, not shared: the twin's remarks are
+            // its own from here on, and a list held in common would make an edit to
+            // one sheet's highlight an edit to the other's.
+            ...(r.notes
+              ? { notes: r.notes.map((n) => ({ ...n, ...(n.quads ? { quads: n.quads.map((q) => ({ ...q })) } : {}) })) }
+              : {}),
+          },
+        ]
       : [r],
   );
 }
@@ -166,14 +283,39 @@ export function insertPages(list: PageList, refs: PageList, atIndex: number): Pa
 /**
  * True when `list` is still the untouched identity arrangement over a `pageCount`-page
  * document: same length, original order, nothing turned, nothing merged in, nothing
- * marked for blacking out. Drives the "Reset pages" affordance and the viewer's dirty
- * marker.
+ * marked for blacking out, no sheet's remarks taken over. Drives the "Reset pages"
+ * affordance and the viewer's dirty marker.
+ *
+ * `notes` is tested for *presence*, not for content: it is only ever set by a remark
+ * being added, edited or deleted (see `lib/viewers/pdfNotes`), so a sheet holding one
+ * is a sheet that was edited — and undo, which restores an earlier list, takes the
+ * key away again with it.
  */
 export function isPristine(list: PageList, pageCount: number): boolean {
   return (
     list.length === pageCount &&
     list.every(
-      (r, i) => r.src === SELF && r.page === i + 1 && r.rot === 0 && !r.marks?.length,
+      (r, i) =>
+        r.src === SELF && r.page === i + 1 && r.rot === 0 && !r.marks?.length && !r.notes,
     )
+  );
+}
+
+/**
+ * True when the ONLY thing edited about `list` is its remarks: the identity
+ * arrangement, nothing turned, nothing merged in, nothing marked for blacking out —
+ * but sheets may have taken their remarks over.
+ *
+ * This is what autosaving a remark is gated on. A save writes the whole arrangement,
+ * so an autosave fired by a comment would otherwise also commit a page reorder the
+ * reader was still deciding about, or — worse — flatten a sheet somebody had drawn a
+ * blackout on, which is the one edit in this viewer that cannot be undone. Writing a
+ * remark on its own is safe in a way that writing "everything pending" is not, so the
+ * two are told apart here rather than by the caller's memory of what it changed last.
+ */
+export function isPristineExceptNotes(list: PageList, pageCount: number): boolean {
+  return (
+    list.length === pageCount &&
+    list.every((r, i) => r.src === SELF && r.page === i + 1 && r.rot === 0 && !r.marks?.length)
   );
 }

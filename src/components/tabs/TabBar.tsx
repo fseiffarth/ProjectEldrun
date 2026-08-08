@@ -1159,12 +1159,14 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         // The placeholder slot previewing where the dragged tab will land — shown
         // immediately before the tab occupying the resolved insertion index.
         const showMarkerBefore = isDropTarget && reorderIndex === index;
-        // Whole-tab status glow (no dot, no width change):
-        //  - working (green pulse): PTY producing sustained output.
-        //  - needs-decision (orange pulse): an agent went quiet with a
-        //    choice/permission prompt on its screen.
-        //  - finished (green steady): an agent you're not looking at went quiet
-        //    with no prompt — its turn is done and its result is unread.
+        // Whole-tab status ring (no dot, no width change, nothing animated —
+        // see `--status-*` in themes.css):
+        //  - working (green, dotted): PTY producing sustained output.
+        //  - finished (green, solid): an agent you're not looking at went quiet
+        //    with no prompt — the same work as above, done, its result unread.
+        //  - needs-decision (amber, solid): an agent went quiet with a
+        //    choice/permission prompt on its screen. Its own colour because it
+        //    is the one state that is about you rather than about the agent.
         // Working wins. Working and finished are about output you HAVEN'T seen, so
         // they never show on the viewed tab — its screen says it better. A pending
         // decision is the exception: it's about an agent that is BLOCKED, and it

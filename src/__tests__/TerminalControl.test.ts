@@ -6,6 +6,8 @@ import {
   decodeOsc52Clipboard,
   initialInputForPty,
   isTerminalIdentityResponse,
+  isTerminalReport,
+  stripTerminalQueries,
 } from "../lib/terminalControl";
 
 describe("terminal control helpers", () => {
@@ -34,6 +36,42 @@ describe("terminal control helpers", () => {
     expect(claimInitialInput("p:shell-1", "bash 'install.sh'")).toBe(false);
     expect(claimInitialInput("p:shell-2", "bash 'install.sh'")).toBe(true);
     expect(claimInitialInput("p:shell-1", "bash 'other.sh'")).toBe(true);
+  });
+});
+
+describe("replayed output can no longer answer a query on the user's behalf", () => {
+  it("strips the probes tmux/vim send on attach — the `0;276;0c` bug", () => {
+    // tmux's attach burst: primary + secondary DA, XTVERSION, background colour.
+    const burst = "\x1b[c\x1b[>c\x1b[>0q\x1b]11;?\x07";
+    expect(stripTerminalQueries(`hello${burst}world`)).toBe("helloworld");
+    expect(stripTerminalQueries("\x1b[5n\x1b[6n\x1b[?6n")).toBe("");
+    expect(stripTerminalQueries("\x1b[?2026$p")).toBe("");
+    expect(stripTerminalQueries("\x1bP$qm\x1b\\")).toBe("");
+  });
+
+  it("leaves everything that draws alone", () => {
+    const frame = "\x1b[2J\x1b[1;1H\x1b[31mred\x1b[0m\r\n\x1b]0;a title\x07$ ls\r\n";
+    expect(stripTerminalQueries(frame)).toBe(frame);
+    // A cursor-style set ends in `q` too, but is not a query.
+    expect(stripTerminalQueries("\x1b[5 q")).toBe("\x1b[5 q");
+    // Plain output never even runs the regex.
+    expect(stripTerminalQueries("total 4\r\n")).toBe("total 4\r\n");
+  });
+
+  it("recognizes the replies to those probes, and no keystroke", () => {
+    expect(isTerminalReport("\x1b[>0;276;0c")).toBe(true);
+    expect(isTerminalReport("\x1b[?1;2c")).toBe(true);
+    expect(isTerminalReport("\x1b[24;1R")).toBe(true);
+    expect(isTerminalReport("\x1b[0n")).toBe(true);
+    expect(isTerminalReport("\x1b[?2026;2$y")).toBe(true);
+    expect(isTerminalReport("\x1b]11;rgb:1e1e/1e1e/1e1e\x07")).toBe(true);
+    expect(isTerminalReport("\x1bP1$r0m\x1b\\")).toBe(true);
+    // Real user input, including the keys that come closest.
+    expect(isTerminalReport("ls -la")).toBe(false);
+    expect(isTerminalReport("\r")).toBe(false);
+    expect(isTerminalReport("\x1b[A")).toBe(false); // arrow up
+    expect(isTerminalReport("\x1bOR")).toBe(false); // F3 — SS3, not CSI
+    expect(isTerminalReport("\x1b")).toBe(false); // Escape
   });
 });
 

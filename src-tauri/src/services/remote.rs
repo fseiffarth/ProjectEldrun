@@ -657,6 +657,7 @@ mod tests {
             auto_connect: None,
             key_auth: None,
             persist_sessions: None,
+            vm: None,
             label: None,
             extra: HashMap::new(),
         }
@@ -722,6 +723,7 @@ mod tests {
                 auto_connect: None,
                 key_auth: None,
                 persist_sessions: None,
+                vm: None,
                 label: None,
                 extra: HashMap::new(),
             },

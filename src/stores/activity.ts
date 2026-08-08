@@ -187,6 +187,7 @@ export function _clearPtyActivityForTest() {
     attentionByTab: {},
     attentionByScope: {},
     statusCountsByScope: {},
+    statusTabsByScope: {},
   });
 }
 
@@ -284,6 +285,32 @@ function sameCounts(a: TabStatusCounts, b: TabStatusCounts): boolean {
   return a.working === b.working && a.decision === b.decision && a.done === b.done;
 }
 
+/** One non-idle tab of a scope: WHICH tab a status bar stands for, so the bar
+ *  can be clicked to jump to it. The `state` is the bar's own CSS class, i.e.
+ *  the same three words the tab glow uses. */
+export interface StatusTab {
+  /** The tab's key within its scope (not the composed PTY id). */
+  key: string;
+  state: "working" | "needs-decision" | "finished";
+}
+
+function sameTabs(a: StatusTab[], b: StatusTab[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((t, i) => t.key === b[i].key && t.state === b[i].state);
+}
+
+/** True when two per-tab status maps hold the same tabs in the same states.
+ *  Relies on `computeStatusScopes` preserving object identity for unchanged
+ *  scopes, exactly as `sameCountMaps` does. */
+function sameTabMaps(
+  a: Record<string, StatusTab[]>,
+  b: Record<string, StatusTab[]>,
+): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((k) => a[k] === b[k]);
+}
+
 /** True when two count maps are equivalent. Relies on `countStatusScopes`
  *  preserving object identity for unchanged scopes, so a per-scope `===` is a
  *  full comparison. */
@@ -309,26 +336,43 @@ function sameCountMaps(
  *  its working tabs and its unanswered prompts — see `attentionFor`.
  *  Scopes whose counts are unchanged keep their previous object identity, so a
  *  tab going busy in one project doesn't re-render every other project's pill. */
-function countStatusScopes(
+function computeStatusScopes(
   busyByTab: Record<string, boolean>,
   attentionByTab: Record<string, AttentionKind>,
-  prev: Record<string, TabStatusCounts>,
-): Record<string, TabStatusCounts> {
+  prevCounts: Record<string, TabStatusCounts>,
+  prevTabs: Record<string, StatusTab[]>,
+): { counts: Record<string, TabStatusCounts>; tabs: Record<string, StatusTab[]> } {
   const { tabsByScope } = useTabsStore.getState();
-  const next: Record<string, TabStatusCounts> = {};
+  const counts: Record<string, TabStatusCounts> = {};
+  const byScope: Record<string, StatusTab[]> = {};
   for (const [scope, tabs] of Object.entries(tabsByScope)) {
-    const counts: TabStatusCounts = { working: 0, decision: 0, done: 0 };
+    const tally: TabStatusCounts = { working: 0, decision: 0, done: 0 };
+    // Most urgent state first, so the strip's bars and this list are one order —
+    // a bar's position IS its tab, which is what makes a click on it addressable.
+    const working: StatusTab[] = [];
+    const decision: StatusTab[] = [];
+    const done: StatusTab[] = [];
     for (const t of tabs) {
       const ptyId = `${scope}:${t.key}`;
-      if (isPtyTabKind(t.kind) && busyByTab[ptyId]) counts.working++;
-      else if (attentionByTab[ptyId] === "decision") counts.decision++;
-      else if (attentionByTab[ptyId] === "done") counts.done++;
+      if (isPtyTabKind(t.kind) && busyByTab[ptyId]) {
+        tally.working++;
+        working.push({ key: t.key, state: "working" });
+      } else if (attentionByTab[ptyId] === "decision") {
+        tally.decision++;
+        decision.push({ key: t.key, state: "needs-decision" });
+      } else if (attentionByTab[ptyId] === "done") {
+        tally.done++;
+        done.push({ key: t.key, state: "finished" });
+      }
     }
-    if (!counts.working && !counts.decision && !counts.done) continue;
-    const before = prev[scope];
-    next[scope] = before && sameCounts(before, counts) ? before : counts;
+    if (!tally.working && !tally.decision && !tally.done) continue;
+    const beforeCounts = prevCounts[scope];
+    counts[scope] = beforeCounts && sameCounts(beforeCounts, tally) ? beforeCounts : tally;
+    const list = [...working, ...decision, ...done];
+    const beforeTabs = prevTabs[scope];
+    byScope[scope] = beforeTabs && sameTabs(beforeTabs, list) ? beforeTabs : list;
   }
-  return next;
+  return { counts, tabs: byScope };
 }
 
 /** True when two string sets hold exactly the same members. */
@@ -364,6 +408,12 @@ interface ActivityStore {
    *  Drives the per-tab status bars along the bottom of the project pill. Scopes
    *  with nothing to report are absent. */
   statusCountsByScope: Record<string, TabStatusCounts>;
+  /** Scope → the same tabs the counts tally, named and in the strip's own order,
+   *  so each bar knows which tab it stands for and a click can jump there.
+   *  Kept beside the counts rather than derived from them at render: the strip is
+   *  drawn from one walk of the tabs, and a second walk in the component could
+   *  order the bars differently from the tally they came from. */
+  statusTabsByScope: Record<string, StatusTab[]>;
   /** Record a terminal bell from a PTY (`ptyId` is the composed `<scope>:<key>`).
    *  Only a hint that the agent wants attention now — WHAT it wants is worked out
    *  from its output on the next `recompute`, which doesn't race the paint the way
@@ -396,6 +446,7 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
   attentionByTab: {},
   attentionByScope: {},
   statusCountsByScope: {},
+  statusTabsByScope: {},
   runningScripts: new Set(),
   runningRunFiles: new Set(),
 
@@ -416,14 +467,17 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     if (kind === "decision" && tailLooksLikeDecision(ptyId)) return;
     const attentionByTab = { ...get().attentionByTab };
     delete attentionByTab[ptyId];
+    const status = computeStatusScopes(
+      get().busyByTab,
+      attentionByTab,
+      get().statusCountsByScope,
+      get().statusTabsByScope,
+    );
     set({
       attentionByTab,
       attentionByScope: rollupAttentionScopes(attentionByTab),
-      statusCountsByScope: countStatusScopes(
-        get().busyByTab,
-        attentionByTab,
-        get().statusCountsByScope,
-      ),
+      statusCountsByScope: status.counts,
+      statusTabsByScope: status.tabs,
     });
   },
 
@@ -541,16 +595,23 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
 
     const attnChanged = !sameAttention(prevAttn, nextAttn);
     const prevCounts = get().statusCountsByScope;
-    const nextCounts = countStatusScopes(nextTab, nextAttn, prevCounts);
+    const prevStatusTabs = get().statusTabsByScope;
+    const status = computeStatusScopes(nextTab, nextAttn, prevCounts, prevStatusTabs);
+    const nextCounts = status.counts;
     // The tally can move even when no tab flipped busy — a tab carrying an
     // attention flag was closed, say — so it gates the publish independently.
     const countsChanged = !sameCountMaps(prevCounts, nextCounts);
+    // The per-tab list can move while the tally stands still: one tab going quiet
+    // as another goes busy keeps "1 working" true but changes WHICH tab the bar
+    // aims at, so it gates its own publish.
+    const statusTabsChanged = !sameTabMaps(prevStatusTabs, status.tabs);
     // The run-file set can move independently of `busyByTab` — a run tab going
     // busy flips both, but a run tab closing while still "busy" drops out here
     // via `live` even if some other tab keeps the same busy tally — so gate it
     // on its own comparison, same as the other maps.
     const runFilesChanged = !sameStringSet(get().runningRunFiles, nextRunFiles);
-    if (!changed && !attnChanged && !countsChanged && !runFilesChanged) return;
+    if (!changed && !attnChanged && !countsChanged && !statusTabsChanged && !runFilesChanged)
+      return;
     // Only re-publish the maps that actually moved: every tab bar subscribes to
     // the whole `busyByTab` object, so handing it a fresh-but-equal one on each
     // interval tick would re-render them all for nothing.
@@ -560,6 +621,7 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
         ? { attentionByTab: nextAttn, attentionByScope: rollupAttentionScopes(nextAttn) }
         : {}),
       ...(countsChanged ? { statusCountsByScope: nextCounts } : {}),
+      ...(statusTabsChanged ? { statusTabsByScope: status.tabs } : {}),
       ...(runFilesChanged ? { runningRunFiles: nextRunFiles } : {}),
     });
   },

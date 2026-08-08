@@ -281,6 +281,13 @@ pub fn switch(
                 let live = registry.lock().unwrap().any_live_for_scope(&prev);
                 if !live {
                     crate::services::sandbox::down_for_project(&prev);
+                    // The container rule, verbatim, for the VM tier
+                    // (`docs/vm_projects_plan.md`): a deactivated VM project
+                    // with no live tabs powers its VM down; live tabs keep it
+                    // up until they close. No-op for every other project.
+                    if crate::services::vm::is_running(&prev) {
+                        crate::services::vm::shutdown(&prev);
+                    }
                 }
             }
             if let Some(next) = next {

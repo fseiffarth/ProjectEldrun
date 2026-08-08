@@ -14,7 +14,7 @@ import { RunHostPicker } from "../tabs/TabLocalityBadges";
 import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFilesSettings";
 import { useImportDrop } from "./importDrop";
 import { logoutRemote, useProjectsStore } from "../../stores/projects";
-import { useSyncStore, amberPaths } from "../../stores/sync";
+import { useSyncStore, amberPaths, localNewPaths } from "../../stores/sync";
 import { confirmSyncTransfer } from "../../stores/syncConfirm";
 import { openLinkedFile } from "../embed/FileViewerPane";
 import { useWindowsStore } from "../../stores/windows";
@@ -458,6 +458,10 @@ export function ProjectFilesView({
   // need a human to pick a side.
   const syncMap = useSyncStore((s) => (projectId ? s.byProject[projectId] : undefined));
   const orangeFiles = useMemo(() => amberPaths(syncMap), [syncMap]);
+  // NEW local-only files (never synced — the host has no copy). A separate list
+  // from the amber one on purpose: these have nothing to merge and no remote
+  // side to take, so their whole vocabulary is "upload" or "leave local".
+  const newLocalFiles = useMemo(() => localNewPaths(syncMap), [syncMap]);
   // The local mirror root, to open an amber file's mirror copy for inspection.
   const mirrorRoot = resolveLocalMirror(project) ?? (projectDir ? `${projectDir}/mirror` : null);
 
@@ -1375,16 +1379,25 @@ export function ProjectFilesView({
         ))}
         {/* Orange (diverged) files: a dedicated toggle for remote projects,
             badged with the count so conflicts are visible at a glance. Auto-sync
-            never touches these, so this is where they get resolved. */}
+            never touches these, so this is where they get resolved. The badge
+            also counts NEW local-only files — a file the host has never seen is
+            invisible in the remote tree, so this count is where its existence
+            first shows up at all. */}
         {!activeBox && project?.remote && projectId && (
           <button
             className={`tab-add-btn right-panel-orange-btn${view === "orange" ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "orange"}
             onClick={() => setView((v) => (v === "orange" ? "files" : "orange"))}
-            title={t("projectFilesView.divergedFilesTitle", { count: orangeFiles.length })}
+            title={t("projectFilesView.divergedFilesTitle", {
+              count: orangeFiles.length + newLocalFiles.length,
+            })}
           >
-            ± {orangeFiles.length > 0 && <span className="right-panel-orange-count">{orangeFiles.length}</span>}
+            ± {orangeFiles.length + newLocalFiles.length > 0 && (
+              <span className="right-panel-orange-count">
+                {orangeFiles.length + newLocalFiles.length}
+              </span>
+            )}
           </button>
         )}
         {/* Persistent (tmux) sessions on the host (TODO #85): remote-only, badged
@@ -1613,7 +1626,7 @@ export function ProjectFilesView({
 
       {view === "orange" && (
         <div className="right-panel-scroll right-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
-          {orangeFiles.length === 0 ? (
+          {orangeFiles.length === 0 && newLocalFiles.length === 0 ? (
             <div className="right-panel-orange-empty">{t("projectFilesView.noDivergedFiles")}</div>
           ) : (
             <>
@@ -1623,6 +1636,7 @@ export function ProjectFilesView({
                   goes through the shared transfer confirmation, which names the
                   losing files rather than only counting them. Header + icon
                   buttons (not a text button per row) so the bar stays compact. */}
+              {orangeFiles.length > 0 && (
               <div className="orange-bulk-bar">
                 <span className="orange-bulk-count">
                   {t("projectFilesView.divergedCount", { count: orangeFiles.length })}
@@ -1685,6 +1699,7 @@ export function ProjectFilesView({
                   </button>
                 </div>
               </div>
+              )}
               {orangeFiles.map((rel) => {
                 const rowHostMtime = syncMap?.[rel]?.hostMtime;
                 const rowLocalMtime = syncMap?.[rel]?.localMtime;
@@ -1871,6 +1886,105 @@ export function ProjectFilesView({
                   </div>
                 );
               })}
+              {/* NEW local-only files: exist in the mirror, never synced, so
+                  the host has no copy. A section of its own rather than rows in
+                  the amber list above, because the vocabulary differs — nothing
+                  to merge, no remote side to take, no deletion to complete; the
+                  whole offer is "upload" (or leave it local). Without this
+                  section such a file was invisible everywhere: the remote tree
+                  lists the host's readdir, and the amber list only knows files
+                  the manifest has seen. */}
+              {newLocalFiles.length > 0 && (
+                <>
+                  <div className="orange-bulk-bar">
+                    <span className="orange-bulk-count">
+                      {t("projectFilesView.newLocalCount", { count: newLocalFiles.length })}
+                    </span>
+                    <UntestedTag />
+                    <div className="orange-file-actions">
+                      <button
+                        type="button"
+                        className="orange-file-act orange-file-act--icon orange-file-act--local"
+                        aria-label={t("projectFilesView.uploadNewAllAria")}
+                        title={t("projectFilesView.uploadNewAllTitle")}
+                        disabled={remoteBlocked}
+                        onClick={() => {
+                          if (!projectId) return;
+                          void (async () => {
+                            const ok = await confirmSyncTransfer({
+                              projectId,
+                              direction: "push",
+                              relPath: "",
+                              isDir: true,
+                              label: project?.name ?? projectId,
+                              relPaths: newLocalFiles,
+                            });
+                            if (!ok) return;
+                            await useSyncStore
+                              .getState()
+                              .resolveAll(projectId, newLocalFiles, "local");
+                          })();
+                        }}
+                      >
+                        ⬆
+                      </button>
+                    </div>
+                  </div>
+                  {newLocalFiles.map((rel) => (
+                    <div key={rel} className="orange-file-row" title={rel}>
+                      <button
+                        type="button"
+                        className="orange-file-name"
+                        disabled={!mirrorRoot}
+                        title={
+                          mirrorRoot
+                            ? t("projectFilesView.openFileTitle", { rel })
+                            : rel
+                        }
+                        onClick={() => {
+                          if (!mirrorRoot) return;
+                          const abs = `${mirrorRoot}/${rel}`;
+                          // Plain open (no merge viewer): there is no host copy
+                          // to merge against — this is just the local file.
+                          openLinkedFile(undefined, dirname(abs), {
+                            path: abs,
+                            label: basename(abs),
+                          });
+                        }}
+                      >
+                        <span className="orange-file-dot orange-file-dot--new" aria-hidden="true">
+                          +
+                        </span>
+                        {rel}
+                      </button>
+                      <div className="orange-file-actions">
+                        <button
+                          type="button"
+                          className="orange-file-act orange-file-act--icon orange-file-act--local"
+                          aria-label={t("projectFilesView.uploadNewAria")}
+                          title={t("projectFilesView.uploadNewTitle")}
+                          disabled={remoteBlocked}
+                          onClick={() => {
+                            if (!projectId) return;
+                            void (async () => {
+                              const ok = await confirmSyncTransfer({
+                                projectId,
+                                direction: "push",
+                                relPath: rel,
+                                isDir: false,
+                                label: basename(rel) || rel,
+                              });
+                              if (ok) await useSyncStore.getState().push(projectId, rel);
+                            })();
+                          }}
+                        >
+                          ⬆
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
             </>
           )}
         </div>

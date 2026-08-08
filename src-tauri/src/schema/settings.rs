@@ -285,6 +285,15 @@ pub struct Settings {
     /// so nothing in the backend reads this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deck_presenter: Option<bool>,
+    /// EXPERIMENTAL, default OFF. Paint terminals with xterm's WebGL renderer
+    /// (GPU glyph atlas) instead of the canvas renderer. Opt-in because it rides
+    /// the same GPU/driver path the DMABUF re-test failed on for this class of
+    /// machine (flicker, missing content, renderer crash —
+    /// `docs/typing_latency_plan.md` Step 4); the frontend demotes a failing
+    /// terminal back to canvas on its own. Purely a frontend gate — nothing in
+    /// the backend reads it, the renderer is an xterm.js concern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_webgl: Option<bool>,
     /// EXPERIMENTAL, default OFF. The in-app browser (TODO J #61,
     /// `docs/browser_plan_{a,b,c}.md`): a JS-free reader tab plus a separate
     /// hardened live-page window. Read via `web_browser()`, which applies the

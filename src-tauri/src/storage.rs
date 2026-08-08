@@ -86,6 +86,17 @@ pub fn state_dir() -> std::path::PathBuf {
     }
 }
 
+/// The scope id of the root terminal — the one scope that is not a project and
+/// is always there. It is what the frontend's `tabsByScope`/usage keys call it
+/// (`stores/tabs`' `ROOT_SCOPE`), what `load_tab_session`/`save_tab_layout`
+/// receive as a `project_id`, and — `project_key` being the identity on an
+/// all-alphanumeric string — the name of its directory under the state dir.
+///
+/// Declared here, beside [`root_work_dir`] and [`project_key`], because the
+/// backend's whole knowledge of the root scope is "this id maps to that folder,
+/// and it is in no project list".
+pub const ROOT_SCOPE: &str = "root";
+
 /// Working directory for terminals that are not attached to a project.
 pub fn root_work_dir() -> std::path::PathBuf {
     paths::root_work_dir()

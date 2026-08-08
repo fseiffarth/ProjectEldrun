@@ -54,6 +54,12 @@ const LAG_STALL_MS = 60;
 
 /** localStorage key arming react-scan at the next boot (and live, best-effort). */
 export const REACT_SCAN_KEY = "eldrun-dev-react-scan";
+/** react-scan's OWN persisted options. It reads this back inside `setOptions`
+ * and lets a stored `enabled` win over the value just passed, so switching the
+ * scan off has to clear the key or the next call re-enables it. */
+const REACT_SCAN_OPTIONS_KEY = "react-scan-options";
+/** The id of react-scan's shadow host, appended to `documentElement`. */
+export const REACT_SCAN_ROOT_ID = "react-scan-root";
 
 type InvokeFn = (cmd: string, args?: unknown, options?: unknown) => Promise<unknown>;
 
@@ -208,10 +214,62 @@ async function startReactScan(st: PerfState, late: boolean): Promise<void> {
 }
 
 /**
+ * Take react-scan's UI off the screen. `scan({ enabled: false })` alone does
+ * not: it pauses the instrumentation, but the toolbar is only torn down when
+ * `showToolbar` is *present* in the passed options (`setOptions` gates that on
+ * `"showToolbar" in options`), and the shadow host it appends to
+ * `documentElement` is never removed by the library at all. So an off used to
+ * leave a draggable widget sitting over the app — above this panel, since it
+ * carries a near-max z-index — with no control of its own to dismiss it.
+ *
+ * Every step here is best-effort and independent: this runs against a library
+ * whose teardown is not part of its public contract, so a step that throws or
+ * finds nothing must not stop the ones after it.
+ */
+async function stopReactScan(): Promise<void> {
+  try {
+    const { scan } = await import("react-scan");
+    // showToolbar must be passed, not merely false by default, or the toolbar
+    // is left mounted.
+    scan({ enabled: false, showToolbar: false });
+  } catch {
+    // Was on, so the module is loaded; an import failure here can't happen in
+    // practice. The DOM sweep below is the net under it either way.
+  }
+  const w = window as unknown as {
+    reactScanCleanupListeners?: () => void;
+    __REACT_SCAN_TOOLBAR_CONTAINER__?: { remove?: () => void };
+  };
+  try {
+    w.reactScanCleanupListeners?.();
+  } catch {
+    /* the library's own cleanup; a throw here is not ours to handle */
+  }
+  try {
+    w.__REACT_SCAN_TOOLBAR_CONTAINER__?.remove?.();
+    document.getElementById(REACT_SCAN_ROOT_ID)?.remove();
+  } catch {
+    /* nothing mounted */
+  }
+  try {
+    // Otherwise the stored `enabled: true` wins inside the next `setOptions`,
+    // and a reload re-arms the scan we just switched off.
+    localStorage.removeItem(REACT_SCAN_OPTIONS_KEY);
+  } catch {
+    /* localStorage unavailable */
+  }
+}
+
+/**
  * The panel's toggle. Turning it on mid-session still tries (`on-late`), but
  * react-scan's fiber hook only fully instruments when it loads before
  * react-dom — which is why the armed flag is read at boot in `installDevPerf`
  * and the UI says "full coverage after reload" for a late enable.
+ *
+ * Off is not symmetric with on: see `stopReactScan`. It also runs even when
+ * this session never turned the scan on, because a page armed at boot, or a
+ * widget left behind by an earlier build, is exactly the state that needs a
+ * way out.
  */
 export async function setReactScan(on: boolean): Promise<void> {
   const st = ensureState();
@@ -223,14 +281,8 @@ export async function setReactScan(on: boolean): Promise<void> {
   if (on) {
     if (st.reactScan === "on" || st.reactScan === "on-late") return;
     await startReactScan(st, true);
-  } else if (st.reactScan === "on" || st.reactScan === "on-late") {
-    try {
-      const { scan } = await import("react-scan");
-      scan({ enabled: false });
-    } catch {
-      // Was on, so the module is loaded; an import failure here can't happen
-      // in practice, and if it does the overlay simply stays until reload.
-    }
+  } else {
+    await stopReactScan();
     st.reactScan = "off";
   }
 }

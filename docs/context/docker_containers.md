@@ -18,6 +18,47 @@ becomes a one-click build tab. Flipping the toggle respawns every live tab —
 the pill confirms when a non-resumable agent conversation would be lost.
 Local projects only; hidden on Windows.
 
+**What it applies to is a second choice** (`SandboxSpec.scope`, the pill's
+"What runs in the container"), because the container's job is to keep *the
+agent* away from the rest of the machine and a project's other tabs are the
+user's own hands. `All` is the strict reading and the default — an older spec
+with no `scope` key deserializes to it, so no project loses containment on
+upgrade. `Agents` contains agent tabs only and leaves shells, scripts and the
+viewer's Run/Debug on the host.
+
+That option exists because of a failure that reads as a broken Run button. A
+venv is **not self-contained**: `bin/python` is a symlink to the base
+interpreter recorded in `pyvenv.cfg`, and identical-path mounting brings the
+`.venv` directory in while leaving that interpreter on the host. So the venv is
+right there, fully readable, and headless — and the reference image (`node:22`)
+carried no Python at all, so the fallback did not exist either. Three answers,
+and they are deliberately separate: the image now ships `python3` (an agent that
+cannot run Python in a Python project fails at its first attempt to check its
+own work — that one is independent of scope); `commands::python` probes **inside
+the container** for a `scope: All` project, using the *same* script the remote
+branch runs, so a venv whose base interpreter is missing is skipped rather than
+handed over as a dangling symlink; and `Agents` is the way to keep the host
+toolchain — venv, conda, pyenv — without turning the container off.
+
+Classification is by **the command that actually executes** (`is_agent_cmd`,
+reading `commands::agents::AGENTS` so the classifier and the + menu are one
+list), not by a tab `kind` the renderer sends: `kind` is a label, `cmd` is the
+argv. The scope **narrows and never grants** — it is read only after the toggle
+has already said yes — and it lives in the state-dir mirror like the rest of the
+spec, so it is not a spec the renderer can write. `CenterPanel` keeps a copy of
+the rule for the one thing the backend cannot do: the flag is a spawn
+dependency, so changing the scope respawns exactly the tabs whose side changed
+(without it, a shell would go on running inside the container after the switch).
+
+What `Agents` costs, stated in the dialog rather than buried: the agent still
+writes into the project folder, so a script it wrote is one ▶ click from the
+whole machine. It cannot take that step by itself — no in-project file is read
+back as executable intent since session state moved to the state dir
+(`docs/sandbox_hardening_plan.md` Phase 1) — but it is a human-in-the-loop
+boundary, not a mechanical one. For code expected to be *hostile* rather than
+merely unreviewed, the container is the wrong tier and
+`docs/vm_projects_plan.md` is the right one: it shares no filesystem at all.
+
 **It is also asked at creation** (`ProjectDialog`), because that is the one
 moment it is free: flipping it later restarts every tab. The row defaults **on
 for an import** (a folder, a clone, a fork — code the user hasn't read, whose

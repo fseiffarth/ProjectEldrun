@@ -75,8 +75,29 @@ export function readFileText(path: string, projectId: string | null): Promise<st
   return invoke<string>("read_file_text", { path, projectId });
 }
 
-export function readFileBytes(path: string, projectId: string | null): Promise<number[]> {
-  return invoke<number[]>("read_file_bytes", { path, projectId });
+/**
+ * Read a file's bytes.
+ *
+ * The command answers with a **raw** IPC body, so what arrives is an `ArrayBuffer`
+ * — the bytes, once — rather than a JSON array with one decimal literal per byte.
+ * That distinction is the difference between a 130 MB PDF opening and the window
+ * freezing for several seconds on ~400 MB of JSON and a number array it then has to
+ * copy; see `read_file_bytes` in `commands/fs.rs`.
+ *
+ * A `number[]` is still accepted and converted, because that is what the tests' mocked
+ * `invoke` returns (and what an older backend would answer) — the conversion costs
+ * nothing on the array sizes a test uses and keeps every caller on one return type.
+ *
+ * The returned view owns its buffer and is handed out fresh on every call, which is
+ * what lets a caller pass it straight to pdf.js — that DETACHES the buffer, so a
+ * shared one would be pulled out from under the next reader.
+ */
+export async function readFileBytes(
+  path: string,
+  projectId: string | null,
+): Promise<Uint8Array> {
+  const out = await invoke<ArrayBuffer | number[]>("read_file_bytes", { path, projectId });
+  return out instanceof ArrayBuffer ? new Uint8Array(out) : Uint8Array.from(out);
 }
 
 export function writeFileText(
@@ -87,12 +108,31 @@ export function writeFileText(
   return invoke("write_file_text", { path, content, projectId });
 }
 
+/**
+ * Write a file's bytes.
+ *
+ * The bytes ride as the invoke's **raw body** and the two scalars as headers, which
+ * is the only shape Tauri offers for a binary upload (one raw body per call). The
+ * reason is `readFileBytes`' in reverse: this used to be `Array.from(content)` and
+ * let it be JSON — a JS array as long as the file, then its JSON text — which for a
+ * rebuilt PDF of any size is the step that takes the renderer down. A remark
+ * autosave reaches this with no click behind it, so it must not be the costly path.
+ *
+ * `encodeURIComponent` because a header is ASCII and a project path is not; the
+ * backend decodes it and confines it to the same roots as before.
+ */
 export function writeFileBytes(
   path: string,
   content: number[] | Uint8Array,
   projectId: string | null,
 ): Promise<void> {
-  return invoke("write_file_bytes", { path, content: Array.from(content), projectId });
+  const bytes = content instanceof Uint8Array ? content : Uint8Array.from(content);
+  return invoke("write_file_bytes", bytes, {
+    headers: {
+      "x-eldrun-path": encodeURIComponent(path),
+      "x-eldrun-project": encodeURIComponent(projectId ?? ""),
+    },
+  });
 }
 
 export function fileMtime(path: string, projectId: string | null): Promise<number> {

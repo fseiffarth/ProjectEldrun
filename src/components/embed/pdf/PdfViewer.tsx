@@ -9,7 +9,7 @@
  * shared viewer plumbing back from `FileViewerPane`; the resulting import cycle is
  * the established pattern here and is safe because every use is at call time.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
@@ -37,13 +37,33 @@ import {
 import {
   SELF,
   initialPages,
+  keepPageIds,
   insertPages,
   deletePages,
   pagesOf,
   isPristine,
+  isPristineExceptNotes,
   type PageList,
+  type PageRef,
   type RedactRect,
+  type PdfNote,
+  type PdfQuad,
 } from "../../../lib/viewers/pageModel";
+import {
+  newNoteId,
+  toPdfDate,
+  addNote,
+  updateNote,
+  removeNote,
+  noteCount,
+  notedSheetCount,
+  placedNotes,
+  stepNote,
+  isHighlight,
+  quadsAnchor,
+  type PlacedNote,
+} from "../../../lib/viewers/pdfNotes";
+import { fingerprintPage, samePage, type PageFingerprint } from "./pageFingerprint";
 import {
   rectFromDrag,
   isDraggedFar,
@@ -58,6 +78,7 @@ import {
 } from "../../../lib/viewers/redact";
 import {
   openSource,
+  sourceBytes,
   newSourceId,
   buildPdf,
   readPdfMetadata,
@@ -75,6 +96,16 @@ import {
   type PdfDest,
 } from "./outline";
 import { loadPageLinks, destTopInBigPoints, type PdfLink } from "./links";
+import { HIGHLIGHT_COLORS, loadPageNotes } from "./notes";
+import {
+  PdfNoteLayer,
+  type NoteMenuState,
+  type NoteEditState,
+} from "./PdfNoteLayer";
+import { PdfNotesPane } from "./PdfNotesPane";
+import { PdfTextLayer } from "./PdfTextLayer";
+import { PdfSelectionBar, selectionBarPos } from "./PdfSelectionBar";
+import { readViewerSelection, type ViewerSelection } from "./selection";
 import { PdfLinkConfirmDialog } from "./PdfLinkDialog";
 import { openRoutedUri } from "../../../lib/linkTarget";
 import { useSettingsStore } from "../../../stores/settings";
@@ -116,6 +147,27 @@ const RELOAD_POLL_MS = 1500;
  *  error, at this spacing, while the last good document stays on screen. */
 const RELOAD_RETRY_MS = 250;
 const RELOAD_MAX_RETRIES = 12;
+
+/** How long after the last remark edit the file is written, when autosaving remarks
+ *  is on (#pdf-notes). Long enough that writing a sentence, correcting it and moving
+ *  its marker is one write rather than three; short enough that a reader who closes
+ *  the tab straight after typing does not lose the remark. */
+const NOTE_AUTOSAVE_MS = 1200;
+
+/**
+ * How many pages the viewer asks the pdf.js worker about at once, for the two
+ * whole-document passes that are not rendering: the intrinsic page sizes taken at
+ * load, and the text extraction the find bar and the blackout tool share.
+ *
+ * The worker is single-threaded, so a `Promise.all` over a 200-page document does
+ * not finish any sooner than a queue — it just holds every page's parsed content at
+ * the same time and cannot be stopped part-way. Small enough that a cancelled scan
+ * costs at most this many pages of wasted work, large enough that the round trip to
+ * the worker is never the bottleneck.
+ */
+const PAGE_SCAN_CONCURRENCY = 8;
+/** The find bar's text extraction reads far more per page, so it goes narrower. */
+const TEXT_SCAN_CONCURRENCY = 4;
 
 const PDF_MIN_SCALE = 0.1;
 const PDF_MAX_SCALE = 8;
@@ -162,15 +214,46 @@ async function pageTextItemBoxes(
   const items: TextItemBox[] = [];
   for (const it of content.items) {
     // Skip marked-content markers (no `str`/`transform`).
-    if (!("str" in it) || typeof it.str !== "string" || !it.str) continue;
+    if (!("str" in it) || typeof it.str !== "string") continue;
+    if (!it.str) {
+      // An empty run is pdf.js's bare end-of-line marker. It has no geometry to keep,
+      // but the fact that a line ended there is exactly what the search needs to join
+      // a word split across two lines — so it is folded into the run before it rather
+      // than dropped with the rest of the empty runs.
+      if (it.hasEOL && items.length > 0) items[items.length - 1].eol = true;
+      continue;
+    }
     const tx = pdfjs.Util.transform(viewport.transform, it.transform);
     const em = Math.hypot(tx[2], tx[3]); // scaled font size (em) in big points
     const ascent = em * 0.8;
     const descent = em * 0.2;
-    items.push({ str: it.str, x: tx[4], y: tx[5] - ascent, w: it.width, h: ascent + descent });
+    items.push({
+      str: it.str,
+      x: tx[4],
+      y: tx[5] - ascent,
+      w: it.width,
+      h: ascent + descent,
+      ...(it.hasEOL ? { eol: true } : {}),
+    });
   }
   return items;
 }
+
+/**
+ * How every page in this viewer is rendered, thumbnails and rasters included.
+ *
+ * `ENABLE_STORAGE` rather than the default, for exactly one thing: a highlight the
+ * viewer has read out of the file is drawn by the viewer itself — as boxes that can be
+ * clicked, recoloured, remarked on and deleted — so the page render must stop painting
+ * the file's own copy underneath, or every marked sentence would wear two washes of
+ * colour and the top one would be inert. pdf.js's annotation storage is the supported
+ * way to say so (`{ noView: true }` keyed by the annotation's id, honoured by
+ * `mustBeViewed` in the worker), and this mode is what makes the worker read it.
+ *
+ * Nothing else in the storage is ever written, so for a document with no highlights
+ * this is the default mode with an extra empty map.
+ */
+const ANNOT_MODE = pdfjs.AnnotationMode.ENABLE_STORAGE;
 
 /** Height in CSS px of a page rail thumbnail. The width follows the page's aspect. */
 const RAIL_THUMB_H = 96;
@@ -285,11 +368,22 @@ function PdfPageCanvas({
   onLink,
   destMark,
   marks,
+  notes,
+  fileNotes,
+  noteAuthor,
+  noteFocus,
+  noteAutosave,
   redacting,
   copySelecting,
+  hiddenHighlights = "",
+  selBar,
   textItems,
   onRedactAdd,
   onRedactRemove,
+  onNeedNotes,
+  onNoteAdd,
+  onNoteUpdate,
+  onNoteDelete,
   onCopySelection,
 }: {
   doc: PDFDocumentProxy;
@@ -335,10 +429,62 @@ function PdfPageCanvas({
    *  saved page will look like, and showing it only in an editing mode would hide
    *  from the reader exactly what is about to be destroyed. */
   marks?: readonly RedactRect[];
+  /** The sheet's remarks (#pdf-notes) — sticky notes and highlights alike — where the
+   *  arrangement has taken them over. Absent means the file's own are shown, read
+   *  lazily here — which is also the BASELINE every edit is applied to, so the first
+   *  remark on a page adopts the ones already in the document rather than replacing
+   *  them. */
+  notes?: readonly PdfNote[];
+  /** The file's own remarks on this sheet, as read from its annotations — the
+   *  BASELINE every edit adopts. Owned by the viewer rather than read here, because
+   *  the remarks panel lists sheets this canvas has never painted and a second read
+   *  would mint a second set of ids for the same comments; `undefined` means "not
+   *  read yet", which is what withholds the placing action. */
+  fileNotes?: readonly PdfNote[];
+  /** The name a new remark is signed with (the viewer remembers the last one). */
+  noteAuthor?: string;
+  /** The remark the panel is walking through, when it is on this sheet: scrolled to
+   *  and flashed, and opened for editing when `edit` is set. */
+  noteFocus?: { noteId: string; x: number; y: number; nonce: number; edit: boolean } | null;
+  /** Remarks are written into the file as they are made — said in the card. */
+  noteAutosave?: boolean;
+  /** A remark was written on this sheet. `baseline` is the file's own set, so the
+   *  handler can adopt it; without a handler the page carries no remark layer at all,
+   *  the rule the link layer follows. */
+  onNoteAdd?: (note: PdfNote, baseline: readonly PdfNote[]) => void;
+  onNoteUpdate?: (
+    noteId: string,
+    patch: Partial<Omit<PdfNote, "id">>,
+    baseline: readonly PdfNote[],
+  ) => void;
+  onNoteDelete?: (noteId: string, baseline: readonly PdfNote[]) => void;
+  /** This sheet is near the viewport and its remarks are wanted. Called instead of
+   *  reading them here, so one owner holds one set of ids for one page. */
+  onNeedNotes?: () => void;
   /** The blackout tool is armed: a drag over the page marks an area. */
   redacting?: boolean;
   /** The image-copy tool is armed: a drag copies that page region as a PNG. */
   copySelecting?: boolean;
+  /** The ids of the file's own highlight annotations on this sheet that the viewer
+   *  is drawing itself, joined — so the canvas repaints when the set changes. The
+   *  suppression itself is a write into the document's annotation storage, made once
+   *  by the viewer when a page's remarks are read; this is only what tells the page
+   *  that its pixels are out of date because of it. */
+  hiddenHighlights?: string;
+  /** The bar over a selection on THIS sheet (#pdf-textselect): where it goes, and
+   *  what its buttons do. Absent on every sheet the selection did not end on. */
+  selBar?: {
+    x: number;
+    y: number;
+    /** The height of the line it hangs off, so it can flip below at the page top. */
+    lineHeight: number;
+    /** Selecting text copies it by itself; and it just did, for this selection. */
+    copyOn: boolean;
+    copied: boolean;
+    onHighlight: (color: readonly [number, number, number]) => void;
+    onRemark: () => void;
+    onToggleCopy: () => void;
+  } | null;
   /** This page's text runs (big points), so a drag can be snapped out to whole
    *  words. Absent = mark exactly what was dragged. */
   textItems?: readonly TextItemBox[];
@@ -389,16 +535,46 @@ function PdfPageCanvas({
     return () => io.disconnect();
   }, []);
 
+  // What is currently ON this canvas: the fingerprint of the content it was
+  // painted from, and the geometry it was painted at. A recompile hands the
+  // viewer a brand-new document object for the same file, which re-ran this
+  // effect for every mounted page — so a build that changed one sentence
+  // repainted the whole document, and the reader saw the page blink. With this,
+  // a page whose drawing instructions are unchanged at the same size keeps the
+  // pixels it already has and the effect does nothing at all.
+  const painted = useRef<{
+    fp: PageFingerprint | null;
+    scale: number;
+    rot: number;
+    dpr: number;
+    /** Which of the file's own highlights were suppressed when these pixels were
+     *  painted. Part of the record for the fingerprint's reason: a page that keeps
+     *  its pixels because nothing it *draws* changed would otherwise keep painting a
+     *  highlight the viewer has since taken over and is now drawing itself. */
+    hidden: string;
+  } | null>(null);
+
   useEffect(() => {
     // Scrolled well away: release the backing store (keeping the reserved CSS
     // box) so a long document holds only the pages around the viewport. Repainted
-    // on return.
+    // on return — and the record of what is painted goes with the pixels, or the
+    // page would come back blank and be told it is already up to date.
     if (!near) {
       const canvas = canvasRef.current;
       if (canvas && canvas.width > 0) {
         canvas.width = 0;
         canvas.height = 0;
       }
+      painted.current = null;
+      // Give the page's own parse back too, not only its pixels. pdf.js caches what
+      // it built to draw a page — the decoded images above all — on the page object,
+      // and that cache is what a document made of scanned or figure-heavy pages
+      // really costs: dropping the canvas alone left a 130 MB thesis growing by
+      // every page ever scrolled past, since nothing here ever asked for it back.
+      // `cleanup()` keeps the page itself (so returning to it re-renders from the
+      // file rather than reloading the document) and refuses while a render is in
+      // flight, which is exactly the case this must not disturb.
+      void doc.getPage(pageNumber).then((p) => p.cleanup()).catch(() => {});
       return;
     }
     let cancelled = false;
@@ -414,22 +590,91 @@ function PdfPageCanvas({
       const canvas = canvasRef.current;
       const ctx = canvas?.getContext("2d");
       if (!canvas || !ctx) return;
-      canvas.width = Math.floor(viewport.width);
-      canvas.height = Math.floor(viewport.height);
-      canvas.style.width = `${viewport.width / dpr}px`;
-      canvas.style.height = `${viewport.height / dpr}px`;
-      task = page.render({ canvasContext: ctx, viewport });
-      try {
-        await task.promise;
-      } catch {
-        /* render cancelled by a newer scale — ignore */
+      const w = Math.floor(viewport.width);
+      const h = Math.floor(viewport.height);
+      const prev = painted.current;
+      const sameGeometry =
+        prev != null &&
+        canvas.width === w &&
+        canvas.height === h &&
+        prev.scale === scale &&
+        prev.rot === rot &&
+        prev.dpr === dpr &&
+        prev.hidden === hiddenHighlights;
+      // Only ask what the page draws when the pixels could actually be reused —
+      // a zoom or a turn has to repaint whatever the answer would be.
+      const fp = sameGeometry ? await fingerprintPage(page, rot) : null;
+      if (cancelled) return;
+      if (sameGeometry && samePage(fp, prev.fp)) {
+        // Already on screen, at this size, drawing this. Nothing to do — which is
+        // the whole point: no clear, no repaint, no flash.
+        return;
       }
+      // From here the canvas is going to change, and any interruption (a zoom
+      // mid-render, an unmount, a second build) leaves it holding something no
+      // record describes — so give up the record first and re-earn it on success.
+      // A missing record only ever costs one extra repaint; a wrong one would
+      // skip a page the reader needs to see.
+      painted.current = null;
+      // Paint OFF SCREEN and swap the finished image in. Rendering straight onto
+      // the visible canvas means sizing it first, and sizing a canvas clears it —
+      // so the page went blank for however long the render took (a whole second
+      // on a dense page) on every zoom step and every build. jsdom has no 2D
+      // context to render into, so tests keep the direct path.
+      const off = typeof document !== "undefined" ? document.createElement("canvas") : null;
+      const offCtx = off ? off.getContext("2d") : null;
+      if (off && offCtx) {
+        off.width = w;
+        off.height = h;
+        task = page.render({ canvasContext: offCtx, viewport, annotationMode: ANNOT_MODE });
+        try {
+          await task.promise;
+        } catch {
+          /* render cancelled by a newer scale — leave the old pixels up */
+          off.width = 0;
+          off.height = 0;
+          return;
+        }
+        if (cancelled) {
+          off.width = 0;
+          off.height = 0;
+          return;
+        }
+        // One synchronous block: resize (which clears) and blit, so the compositor
+        // never gets a frame of the cleared canvas.
+        canvas.width = w;
+        canvas.height = h;
+        canvas.style.width = `${viewport.width / dpr}px`;
+        canvas.style.height = `${viewport.height / dpr}px`;
+        ctx.drawImage(off, 0, 0);
+        off.width = 0;
+        off.height = 0;
+      } else {
+        canvas.width = w;
+        canvas.height = h;
+        canvas.style.width = `${viewport.width / dpr}px`;
+        canvas.style.height = `${viewport.height / dpr}px`;
+        task = page.render({ canvasContext: ctx, viewport, annotationMode: ANNOT_MODE });
+        try {
+          await task.promise;
+        } catch {
+          /* render cancelled by a newer scale — ignore */
+          return;
+        }
+        if (cancelled) return;
+      }
+      // Record what is up there. The fingerprint is taken from the page that was
+      // just painted, so the next document's page is compared against what the
+      // reader is actually looking at.
+      const finalFp = fp ?? (await fingerprintPage(page, rot));
+      if (cancelled) return;
+      painted.current = { fp: finalFp, scale, rot, dpr, hidden: hiddenHighlights };
     })();
     return () => {
       cancelled = true;
       task?.cancel();
     };
-  }, [doc, pageNumber, rot, scale, near]);
+  }, [doc, pageNumber, rot, scale, near, hiddenHighlights]);
 
   // The page's own hyperlinks (#pdf-links). Keyed off the sheet and its turn but
   // NOT off `scale` — the boxes are stored in big points and multiplied into CSS
@@ -456,6 +701,44 @@ function PdfPageCanvas({
     // re-read every page's annotations.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc, pageNumber, rot, onLink == null, near]);
+
+  // The page's own remarks (#pdf-notes) — the `/Text` annotations any PDF reader
+  // shows as sticky notes. ASKED FOR here, read by the viewer: one owner mints one
+  // set of remark ids per sheet, which is what lets the remarks panel address the
+  // same comment this page is drawing. (A second read here would produce a second
+  // set of ids for the same annotations, and the panel's "go to this one" would
+  // then be pointing at a remark the page has never heard of.)
+  //
+  // The request is gated on `near` exactly as the link read is, and for the same
+  // reason: reading every page's annotations at load would cost the whole document
+  // on the reload of every recompile. Opening the panel asks for the rest.
+  useEffect(() => {
+    if (!onNoteAdd || !near) return;
+    onNeedNotes?.();
+    // `onNoteAdd`/`onNeedNotes` are read for their presence and identity-stable;
+    // a caller re-creating one must not re-request every page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, pageNumber, rot, onNoteAdd == null, near]);
+
+  /** What is shown: the arrangement's set once it has taken this sheet over, else
+   *  the file's own. One list, so a marker cannot be drawn twice. */
+  const shownNotes = notes ?? fileNotes ?? [];
+  /** The page's own remarks have landed. Not cosmetic: that list is the BASELINE a
+   *  remark is added to, so placing one before the read would adopt "this page has no
+   *  remarks" and quietly delete the ones already in the file at the next save. */
+  const notesReady = fileNotes != null;
+  const baseline = fileNotes ?? [];
+  const [noteMenu, setNoteMenu] = useState<NoteMenuState | null>(null);
+  const [noteEdit, setNoteEdit] = useState<NoteEditState | null>(null);
+
+  // The panel asked for a remark to be opened. Consumed by nonce, so asking twice
+  // re-opens it; the scroll and the flash are the layer's own.
+  useEffect(() => {
+    if (noteFocus?.edit) {
+      setNoteEdit({ noteId: noteFocus.noteId, x: noteFocus.x, y: noteFocus.y });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [noteFocus?.nonce]);
 
   // Narrow the SyncTeX line box to the clicked word: pull this page's text runs
   // (big points, top-left origin, at viewport scale 1) and find the word nearest
@@ -517,13 +800,6 @@ function PdfPageCanvas({
     if (clickTimer.current != null) window.clearTimeout(clickTimer.current);
     clickTimer.current = window.setTimeout(() => setClickMark(null), 2000);
     onSyncClick(pageNumber, x, y);
-  };
-
-  const onClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    // Reverse search is a Ctrl/⌘-click affordance; plain clicks stay free for
-    // text selection in the PDF.
-    if (!onSyncClick || !(e.ctrlKey || e.metaKey)) return;
-    syncClickAt(e.clientX, e.clientY);
   };
 
   // ── Blacking an area out (#pdf-redact) ──────────────────────────────────
@@ -660,7 +936,36 @@ function PdfPageCanvas({
   const box = highlight ? bigPointsToCssRect(refined ?? highlight.rect, scale) : null;
 
   return (
-    <div className="file-viewer-pdf-page-wrap" ref={wrapRef}>
+    <div
+      className="file-viewer-pdf-page-wrap"
+      ref={wrapRef}
+      // Remarks are placed by right-clicking the page (#pdf-notes) — the gesture
+      // every other PDF reader uses, and the one that needs no tool armed first. The
+      // handler sits on the WRAPPER rather than on the canvas so a right-click that
+      // lands on a link box, a search hit or the blackout layer still means "here on
+      // the page", which is the same reasoning `syncClickAt` follows for Ctrl-click.
+      onContextMenu={
+        onNoteAdd
+          ? (e) => {
+              e.preventDefault();
+              const p = pointInPage(e.clientX, e.clientY);
+              setNoteMenu({ clientX: e.clientX, clientY: e.clientY, x: p.x, y: p.y });
+            }
+          : undefined
+      }
+      // The text layer covers the canvas, so the canvas's own click handler never
+      // fires — and reverse search is a gesture over the WHOLE page, not a property
+      // of whatever happens to be on top of it. Handled here, where every layer's
+      // click bubbles to; the link boxes bow out of a modified click for the same
+      // reason, so it arrives exactly once however it entered.
+      onClick={
+        onSyncClick
+          ? (e) => {
+              if (e.ctrlKey || e.metaKey) syncClickAt(e.clientX, e.clientY);
+            }
+          : undefined
+      }
+    >
       <canvas
         ref={canvasRef}
         className={`file-viewer-pdf-page${onSyncClick && syncArmed ? " is-syncable" : ""}`}
@@ -669,8 +974,18 @@ function PdfPageCanvas({
         // immediately and a restored scroll position is reachable on the first
         // ResizeObserver tick rather than only after every page has rendered.
         style={cssSize ? { width: cssSize.w * scale, height: cssSize.h * scale } : undefined}
-        onClick={onClick}
       />
+      {/* Selectable text (#pdf-textselect), directly over the canvas and under every
+          overlay: it is the page's own words, so it belongs where the words are. It
+          is up on every near page and is armed by nothing, because selecting a
+          sentence in a document you are reading is not a mode — it is what a pointer
+          over text does everywhere else. What used to make it one was that the layer
+          takes the pointer over the whole sheet; the layers above it (links, search
+          hits, markers, highlights, the blackout and copy surfaces) are stacked over
+          it and keep their own clicks, which is the arrangement pdf.js's own viewer
+          uses and which leaves the plain drag — the one gesture nothing else wants —
+          to the text. */}
+      {near && <PdfTextLayer doc={doc} pageNumber={pageNumber} rot={rot} scale={scale} />}
       {searchMatches?.map((m, mi) =>
         m.rects.map((r, ri) => {
           const css = bigPointsToCssRect(r, scale);
@@ -718,10 +1033,10 @@ function PdfPageCanvas({
                   })
             }
             onClick={(e) => {
-              if ((e.ctrlKey || e.metaKey) && onSyncClick) {
-                syncClickAt(e.clientX, e.clientY);
-                return;
-              }
+              // Ctrl/⌘ is the reverse-search gesture over the whole page, so a `\ref`
+              // sitting where the reader clicked must not steal it: the click is left
+              // to bubble to the wrapper, which is the one place it is answered.
+              if ((e.ctrlKey || e.metaKey) && onSyncClick) return;
               onLink?.(l);
             }}
           />
@@ -815,6 +1130,86 @@ function PdfPageCanvas({
           <div key={m.id} className="file-viewer-pdf-redact-box" style={style} aria-hidden="true" />
         );
       })}
+      {/* The remark layer (#pdf-notes), above everything else on the page: a marker
+          stands for something a person wrote, so it must never end up under a link
+          box or a search highlight. */}
+      {onNoteAdd && (
+        <PdfNoteLayer
+          notes={shownNotes}
+          scale={scale}
+          pageWidth={cssSize?.w}
+          pageHeight={cssSize?.h}
+          menu={noteMenu}
+          edit={noteEdit}
+          focus={noteFocus}
+          ready={notesReady}
+          author={noteAuthor ?? ""}
+          autosave={noteAutosave ?? false}
+          onMenu={setNoteMenu}
+          onCloseMenu={() => setNoteMenu(null)}
+          onEdit={setNoteEdit}
+          onDelete={(noteId) => onNoteDelete?.(noteId, baseline)}
+          onRecolor={(noteId, color) =>
+            onNoteUpdate?.(noteId, { color, modified: toPdfDate(new Date()) }, baseline)
+          }
+          onMove={(noteId, x, y) => {
+            onNoteUpdate?.(noteId, { x, y, modified: toPdfDate(new Date()) }, baseline);
+            // The card is anchored to the marker, so a remark moved while its card is
+            // open takes the card with it rather than leaving it beside the old spot.
+            setNoteEdit((cur) => (cur?.noteId === noteId ? { ...cur, x, y } : cur));
+          }}
+          onSave={(edit, text, author) => {
+            const body = text.trim();
+            if (edit.noteId) {
+              // Emptying a STICKY NOTE deletes it: a marker with nothing behind it is
+              // noise in every viewer that opens the file afterwards. Emptying a
+              // highlight does not — the mark on the sentence is a complete thing on
+              // its own, and the remark was the optional half. Deleting one is the
+              // menu's own action, and has to stay that way: a reader clearing a
+              // sentence they no longer agree with must not lose the mark with it.
+              const held = shownNotes.find((n) => n.id === edit.noteId);
+              if (!body && !(held && isHighlight(held))) {
+                onNoteDelete?.(edit.noteId, baseline);
+                return;
+              }
+              onNoteUpdate?.(
+                edit.noteId,
+                { text: body, ...(author ? { author } : {}), modified: toPdfDate(new Date()) },
+                baseline,
+              );
+              return;
+            }
+            if (!body) return;
+            const stamp = toPdfDate(new Date());
+            onNoteAdd(
+              {
+                id: newNoteId(),
+                x: edit.x,
+                y: edit.y,
+                text: body,
+                ...(author ? { author } : {}),
+                created: stamp,
+                modified: stamp,
+              },
+              baseline,
+            );
+          }}
+        />
+      )}
+      {/* The bar over a selection (#pdf-textselect), on the sheet the drag ended on.
+          Above the remark layer because it is a live control over what the reader is
+          doing right now, while a marker stands for something already written. */}
+      {selBar && (
+        <PdfSelectionBar
+          left={selectionBarPos(selBar.x, selBar.y, scale, selBar.lineHeight).left}
+          top={selectionBarPos(selBar.x, selBar.y, scale, selBar.lineHeight).top}
+          copyOn={selBar.copyOn}
+          copied={selBar.copied}
+          onHighlight={selBar.onHighlight}
+          onRemark={selBar.onRemark}
+          onToggleCopy={selBar.onToggleCopy}
+        />
+      )}
       <div className="file-viewer-pdf-page-gap" aria-hidden="true">
         {pageNumber} / {doc.numPages}
       </div>
@@ -1322,14 +1717,39 @@ function PdfCanvas({
     };
   }, [metaOpen, doc, meta]);
 
-  /** Record an arrangement edit, making it undoable. */
-  const applyEdit = useCallback((next: PageList) => {
-    setPages((cur) => {
-      setPast((p) => [...p, cur]);
-      setFuture([]);
-      return next;
-    });
+  /**
+   * Take hold of the pristine bytes of every open source that is not holding them.
+   *
+   * The viewed file is opened WITHOUT a copy of its own bytes (see `PdfSource`), so
+   * that a reader who only reads a large document does not carry it twice. A save
+   * needs them, and re-reading at save time would be too late: from the first edit
+   * onwards the file on disk can be replaced under us — a LaTeX recompile is the
+   * ordinary case — while the arrangement still describes the pages of the document
+   * that is on screen. So the copy is taken at the first EDIT, which is the moment
+   * the ability to rebuild those exact pages starts to be worth something.
+   *
+   * Fire-and-forget: it races nothing (the read is idempotent and cached onto the
+   * source), and a failure is not reported here — `buildPdf` asks again at save time
+   * and reports it there, where the reader is waiting for an answer.
+   */
+  const materializeSourceBytes = useCallback(() => {
+    for (const src of sourcesRef.current.values()) {
+      if (!src.bytes) void sourceBytes(src).catch(() => {});
+    }
   }, []);
+
+  /** Record an arrangement edit, making it undoable. */
+  const applyEdit = useCallback(
+    (next: PageList) => {
+      materializeSourceBytes();
+      setPages((cur) => {
+        setPast((p) => [...p, cur]);
+        setFuture([]);
+        return next;
+      });
+    },
+    [materializeSourceBytes],
+  );
 
   const undo = useCallback(() => {
     setPast((p) => {
@@ -1370,6 +1790,269 @@ function PdfCanvas({
     () => applyEdit(clearMarks(pagesRef.current)),
     [applyEdit],
   );
+
+  // ── Remarks (#pdf-notes) ─────────────────────────────────────────────────
+  // Writing, changing and deleting a remark are ordinary arrangement edits, for the
+  // blackouts' reason: undo/redo, the dirty flag, the save and a page dragged into
+  // another document all cover remarks without knowing anything about them. What each
+  // one carries in addition is the `baseline` — the file's own remarks on that sheet,
+  // as read by the page — because the first edit on a page ADOPTS them; without it a
+  // new remark would be the only one the save wrote out.
+  /** The name new remarks are signed with. Remembered for the session only, and only
+   *  because it was typed: nothing here invents an author, and the OS login is
+   *  deliberately not consulted — a document leaves the machine, a real name with it. */
+  const [noteAuthor, setNoteAuthor] = useState("");
+  // ── The file's own remarks, read once per sheet ──────────────────────────
+  // Hoisted out of the page canvas because two things now need the same list and must
+  // agree about it: the page, which draws the markers, and the remarks panel, which
+  // lists every remark in the document — including on sheets nobody has scrolled to.
+  // Ids are minted at the read (a PDF's annotation reference is document-scoped and
+  // is rewritten on every save), so two reads of one page produce two sets of ids for
+  // the same comments and "go to this remark" would address one the page has never
+  // heard of. One read, one owner.
+  //
+  // Keyed by what the remarks actually depend on — which page, of which document, at
+  // which turn — rather than by position in the arrangement, so reordering the sheets
+  // moves nothing here and two copies of one page share the file's set until each is
+  // edited.
+  const noteKey = useCallback((r: PageRef) => `${r.src}:${r.page}:${r.rot}`, []);
+  const [fileNotes, setFileNotes] = useState<Map<string, PdfNote[]>>(() => new Map());
+  /** Per sheet, the file's own highlight annotations the viewer has taken over the
+   *  drawing of — see where it is written for why it is not derived from the map
+   *  above. Read by the page canvas as its repaint key. */
+  const [hiddenHl, setHiddenHl] = useState<Map<string, string>>(() => new Map());
+  // Bumped on every document load: a read still in flight when the file is replaced
+  // belongs to the old bytes and must not land on the new ones.
+  const noteGen = useRef(0);
+  const noteAsked = useRef<Set<string>>(new Set());
+  // Dropped DURING RENDER rather than in an effect, which is the one thing about this
+  // that is not obvious. Effects flush child-first, so a page canvas asking for its
+  // remarks on the commit that loaded a new document would be asking under the *old*
+  // generation — its answer discarded by the guard below, its key already marked as
+  // asked, and nothing left to ask again. Resetting here means every request in that
+  // commit is already the new document's. (React's own "adjust state when a prop
+  // changes" shape: the re-render happens before children are committed.)
+  const [notesDoc, setNotesDoc] = useState<PDFDocumentProxy | null>(null);
+  if (notesDoc !== doc) {
+    setNotesDoc(doc);
+    setFileNotes(new Map());
+    setHiddenHl(new Map());
+    noteGen.current += 1;
+    noteAsked.current = new Set();
+  }
+  /** Read the remarks of every named sheet that has not been read yet. Idempotent and
+   *  safe to call from a render effect — a sheet is asked for once. */
+  const ensureNotes = useCallback((refs: readonly PageRef[]) => {
+    const want = refs.map((r) => `${r.src}:${r.page}:${r.rot}`).filter((k, i, all) => {
+      if (noteAsked.current.has(k)) return false;
+      return all.indexOf(k) === i;
+    });
+    if (want.length === 0) return;
+    for (const k of want) noteAsked.current.add(k);
+    const gen = noteGen.current;
+    void (async () => {
+      const pairs = await Promise.all(
+        want.map(async (k) => {
+          const cut = k.lastIndexOf(":");
+          const mid = k.lastIndexOf(":", cut - 1);
+          const src = k.slice(0, mid);
+          const d = sourcesRef.current.get(src)?.doc;
+          const notes = d
+            ? await loadPageNotes(d, Number(k.slice(mid + 1, cut)), Number(k.slice(cut + 1)))
+            : [];
+          // The viewer draws the highlights it has just read, so the page render must
+          // stop drawing the file's own copies of them — see `ANNOT_MODE`. Written
+          // here, at the read, because that is the moment the two would start
+          // disagreeing, and because a suppression made anywhere else would have to
+          // re-derive which annotation each remark came from.
+          if (d) {
+            for (const n of notes) {
+              if (n.srcId) d.annotationStorage.setValue(n.srcId, { noView: true });
+            }
+          }
+          return [k, notes] as const;
+        }),
+      );
+      if (gen !== noteGen.current) return;
+      setFileNotes((prev) => {
+        const next = new Map(prev);
+        for (const [k, v] of pairs) next.set(k, v);
+        return next;
+      });
+      // The repaint key that goes with the suppression above. Held on its own rather
+      // than derived from `fileNotes`, and that is not tidiness: an autosave replaces
+      // a sheet's cached remarks with the ones it just WROTE, which carry no `srcId`
+      // because they were never read from an annotation — so a derived key would empty
+      // itself, the page would repaint without the suppression, and the file's
+      // original highlights (still in the document object, which a silent save
+      // deliberately does not reload) would come back underneath the ones on screen.
+      // It is only ever added to, and only the whole map is dropped, when the document
+      // is replaced.
+      setHiddenHl((prev) => {
+        const next = new Map(prev);
+        for (const [k, v] of pairs) {
+          const ids = v.filter((n) => n.srcId && isHighlight(n)).map((n) => n.srcId!);
+          if (ids.length > 0 || !next.has(k)) next.set(k, ids.join(","));
+        }
+        return next;
+      });
+    })();
+  }, []);
+
+
+  // ── The remarks panel (#pdf-notes) ───────────────────────────────────────
+  /** The panel is open. While it is, every sheet's remarks are read — that is what
+   *  makes it a list of the document rather than of the pages that happen to have
+   *  been scrolled past. */
+  const [notesOpen, setNotesOpen] = useState(false);
+  useEffect(() => {
+    if (notesOpen) ensureNotes(pages);
+  }, [notesOpen, pages, ensureNotes]);
+  /** Every remark in the arrangement, in reading order — the walk's own order. */
+  const placed = useMemo(
+    () => placedNotes(pages, pages.map((r) => fileNotes.get(noteKey(r)))),
+    [pages, fileNotes, noteKey],
+  );
+  /** The remark the walk is parked on, and the request the page consumes to scroll to
+   *  it. Kept as one piece of state so the highlighted row and the flashed marker are
+   *  the same remark by construction. */
+  const [noteFocus, setNoteFocus] = useState<
+    { entryId: string; noteId: string; sheet: number; x: number; y: number; nonce: number; edit: boolean } | null
+  >(null);
+  const goToNote = useCallback((p: PlacedNote, edit = false) => {
+    setNoteFocus((cur) => ({
+      entryId: p.entryId,
+      noteId: p.note.id,
+      sheet: p.sheet,
+      x: p.note.x,
+      y: p.note.y,
+      nonce: (cur?.nonce ?? 0) + 1,
+      edit,
+    }));
+  }, []);
+  const stepToNote = useCallback(
+    (step: 1 | -1) => {
+      const next = stepNote(placed, noteFocus?.noteId ?? null, step);
+      if (next) goToNote(next);
+    },
+    [placed, noteFocus?.noteId, goToNote],
+  );
+
+  // ── Autosaving a remark (#pdf-notes) ─────────────────────────────────────
+  // A remark is a thing you write while reading, and a reader who writes one has said
+  // everything they mean to say about it — so the file is written for them, shortly
+  // after they stop, rather than waiting for a Save they have no reason to expect.
+  //
+  // The safety is entirely in what it REFUSES to carry along. A save writes the whole
+  // arrangement, so an autosave that fired with a page move pending would commit the
+  // move, and one that fired with a blackout pending would flatten the sheet — the
+  // single irreversible edit in this viewer, and one that is deliberately confirmed.
+  // Hence the gate: remarks may be the ONLY thing pending (`isPristineExceptNotes`),
+  // the file must not have changed underneath, and a pending metadata deletion counts
+  // as something else. When it is holding, the panel says so rather than leaving a
+  // switch that is on and doing nothing.
+  const [autosaveNotes, setAutosaveNotes] = useState(
+    () => viewPos.initial?.pdfAutosaveNotes !== false,
+  );
+  const autosaveRef = useRef(autosaveNotes);
+  autosaveRef.current = autosaveNotes;
+  const setAutosaveNotesPersisted = useCallback(
+    (on: boolean) => {
+      setAutosaveNotes(on);
+      viewPos.persist({ pdfAutosaveNotes: on });
+    },
+    [viewPos],
+  );
+  /** Can an autosave run right now? Read by the panel, and re-derived at the timer
+   *  from the refs below — this is the display copy, that one is the decision. */
+  const notesAutosavable =
+    doc != null && !stripMeta && !staleOnDisk && isPristineExceptNotes(pages, doc.numPages);
+  const docRef = useRef(doc);
+  docRef.current = doc;
+  /** A write is in flight. A ref rather than the `saving` flag, because that one is
+   *  now only the *button's* spinner — a silent save deliberately does not raise it —
+   *  and the "don't write the same file twice at once" guard has to cover both. */
+  const writing = useRef(false);
+  /** A silent (remark) save is in flight. Shown in the remarks panel and nowhere
+   *  else. */
+  const [autosaving, setAutosaving] = useState(false);
+  const staleRef = useRef(staleOnDisk);
+  staleRef.current = staleOnDisk;
+  const stripMetaRef = useRef(stripMeta);
+  stripMetaRef.current = stripMeta;
+  /** Set after `handleSave` is defined; calling it is what a scheduled autosave does. */
+  const noteSaveRef = useRef<(() => void) | null>(null);
+  const autosaveTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (autosaveTimer.current != null) window.clearTimeout(autosaveTimer.current);
+    },
+    [],
+  );
+  /** Write the pending remarks shortly after the last one is made. Debounced rather
+   *  than immediate because a remark is typically one of several — moving three
+   *  markers should be one write of the file, not three. */
+  const scheduleNoteAutosave = useCallback(() => {
+    if (!autosaveRef.current) return;
+    if (autosaveTimer.current != null) window.clearTimeout(autosaveTimer.current);
+    autosaveTimer.current = window.setTimeout(() => {
+      autosaveTimer.current = null;
+      if (!autosaveRef.current) return;
+      const d = docRef.current;
+      const list = pagesRef.current;
+      if (!d || notedSheetCount(list) === 0) return;
+      if (stripMetaRef.current || staleRef.current) return;
+      if (!isPristineExceptNotes(list, d.numPages)) return;
+      // A save already running has its own bytes in flight; wait it out rather than
+      // queueing a second write of the same file.
+      if (writing.current) {
+        scheduleNoteAutosave();
+        return;
+      }
+      noteSaveRef.current?.();
+    }, NOTE_AUTOSAVE_MS);
+  }, []);
+
+  // The three edits themselves. Ordinary arrangement edits (see above), each followed
+  // by the autosave nudge — which is where writing-on-its-own is armed for *every*
+  // way a remark can change, rather than at the card, which is only one of them.
+  const addPdfNote = useCallback(
+    (entryId: string, note: PdfNote, baseline: readonly PdfNote[]) => {
+      if (note.author) setNoteAuthor(note.author);
+      applyEdit(addNote(pagesRef.current, entryId, baseline, note));
+      scheduleNoteAutosave();
+    },
+    [applyEdit, scheduleNoteAutosave],
+  );
+  const updatePdfNote = useCallback(
+    (
+      entryId: string,
+      noteId: string,
+      patch: Partial<Omit<PdfNote, "id">>,
+      baseline: readonly PdfNote[],
+    ) => {
+      if (patch.author) setNoteAuthor(patch.author);
+      applyEdit(updateNote(pagesRef.current, entryId, baseline, noteId, patch));
+      scheduleNoteAutosave();
+    },
+    [applyEdit, scheduleNoteAutosave],
+  );
+  const deletePdfNote = useCallback(
+    (entryId: string, noteId: string, baseline: readonly PdfNote[]) => {
+      applyEdit(removeNote(pagesRef.current, entryId, baseline, noteId));
+      scheduleNoteAutosave();
+    },
+    [applyEdit, scheduleNoteAutosave],
+  );
+  /** How many remarks a save would write out. Only sheets the arrangement has taken
+   *  over are counted — an untouched page's remarks are the file's own and are copied
+   *  across rather than rewritten. */
+  const notesTotal = noteCount(pages);
+  /** How many sheets a save would rewrite the remarks of. Not the same question as
+   *  the count above, and it is the one that decides whether anything is pending at
+   *  all: deleting the last remark on a page leaves nothing to count and still has to
+   *  be written. */
+  const notedSheets = notedSheetCount(pages);
   // Restore the saved zoom if there is one; otherwise the load effect fits the
   // page width. `1.2` is only the pre-load placeholder.
   const [scale, setScale] = useState(viewPos.initial?.scale ?? 1.2);
@@ -1489,6 +2172,179 @@ function PdfCanvas({
     [highlight, pages],
   );
 
+  // ── Selecting text on the page (#pdf-textselect) ─────────────────────────
+  // The selection itself is the browser's — the text layer puts a transparent span
+  // over every run of glyphs and an ordinary drag does the rest. What is owned here is
+  // everything that happens *because* of one: the words on the clipboard, and the bar
+  // that turns a selection into a highlight.
+  //
+  // It is read in ONE place rather than per page, and that is what makes a drag across
+  // a page break work: to the engine that is one selection, to a PDF it is one
+  // annotation per sheet, and only something holding all the page boxes at once can
+  // divide it up (`selection.ts`).
+  const [sel, setSel] = useState<ViewerSelection | null>(null);
+  /** Bumped when the current selection was copied — the bar's "Copied" flash, and
+   *  nothing else: the copy itself has already happened by then. */
+  const [copiedNonce, setCopiedNonce] = useState(0);
+  /** The text most recently put on the clipboard by this viewer — the once-per-
+   *  selection guard the copy effect below explains. */
+  const lastCopied = useRef<string | null>(null);
+  const [copyOnSelect, setCopyOnSelect] = useState(
+    () => viewPos.initial?.pdfCopyOnSelect !== false,
+  );
+  const setCopyOnSelectPersisted = useCallback(
+    (on: boolean) => {
+      setCopyOnSelect(on);
+      // Turning it back on has to be able to copy the selection that is up right now:
+      // the once-per-selection guard below would otherwise treat it as already done.
+      if (on) lastCopied.current = null;
+      viewPos.persist({ pdfCopyOnSelect: on });
+    },
+    [viewPos],
+  );
+  const copyOnSelectRef = useRef(copyOnSelect);
+  copyOnSelectRef.current = copyOnSelect;
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
+
+  /** Re-read the selection. Cheap enough to run on every `selectionchange` (it is
+   *  rectangles off a live range), and it has to be: the bar has to follow a drag
+   *  rather than appear where it started. */
+  const readSelection = useCallback(() => {
+    const host = contentRef.current;
+    setSel(host ? readViewerSelection(host, scaleRef.current) : null);
+  }, []);
+
+  useEffect(() => {
+    if (!doc) return;
+    // `selectionchange` is the only event that fires for every way a selection can
+    // come about — a drag, a double-click on a word, Shift+arrow, Ctrl+A — which is
+    // exactly why the bar is driven off it rather than off pointerup.
+    document.addEventListener("selectionchange", readSelection);
+    return () => document.removeEventListener("selectionchange", readSelection);
+  }, [doc, readSelection]);
+  // A zoom does not change the selection, but it changes where it is on screen, so
+  // the boxes the bar is placed from have to be measured again.
+  useEffect(() => { readSelection(); }, [scale, readSelection]);
+
+  /**
+   * Put the selected words on the clipboard, once the gesture has settled.
+   *
+   * On `mouseup`/`keyup` rather than on `selectionchange`, and that is the whole
+   * subtlety: a drag fires the latter on every pixel, so copying there would write the
+   * clipboard a hundred times for one sentence and leave whichever partial selection
+   * happened to be last if the reader let go outside the window.
+   *
+   * Each selection is written **once**, and that guard is not an optimization. Both
+   * events fire for things that have nothing to do with this viewer — a key pressed in
+   * a terminal in the next pane, a button clicked anywhere in the window — while a
+   * selection made minutes ago is still up on the page. Without it, everything the
+   * reader copied in between would be silently overwritten by the same old sentence,
+   * over and over, which is the worst thing a feature like this can do.
+   *
+   * A failed write is swallowed. The clipboard can be refused (no permission, no
+   * clipboard in the environment) and this is a convenience nobody asked for in the
+   * moment — reporting it would be an error banner over a document for something the
+   * reader did not ask to happen.
+   */
+  useEffect(() => {
+    if (!doc) return;
+    const settle = () => {
+      if (!copyOnSelectRef.current) return;
+      const host = contentRef.current;
+      const now = host ? readViewerSelection(host, scaleRef.current) : null;
+      if (!now || now.text === lastCopied.current) return;
+      lastCopied.current = now.text;
+      navigator.clipboard?.writeText(now.text).catch(() => {});
+      setCopiedNonce((n) => n + 1);
+    };
+    window.addEventListener("mouseup", settle);
+    window.addEventListener("keyup", settle);
+    return () => {
+      window.removeEventListener("mouseup", settle);
+      window.removeEventListener("keyup", settle);
+    };
+  }, [doc]);
+
+  /** The flash belongs to the selection that was copied, so a new one starts unflashed
+   *  rather than inheriting the last one's "Copied". */
+  const copiedFor = useRef<{ nonce: number; text: string } | null>(null);
+  if (copiedFor.current?.nonce !== copiedNonce) {
+    copiedFor.current = { nonce: copiedNonce, text: sel?.text ?? "" };
+  }
+  const copiedNow = !!sel && copiedFor.current?.text === sel.text;
+
+  /**
+   * Mark the current selection, and optionally open the card to write about it.
+   *
+   * One highlight **per sheet**, because an annotation belongs to a page: a drag
+   * across a page break produces two, which is what the file would have to hold
+   * anyway and what every other reader shows.
+   *
+   * The card is opened on the highlight that sits on the sheet the drag *ended* on —
+   * the one the reader is looking at. Its id is minted here rather than read back off
+   * the arrangement, because the add is a state update and the card has to be aimed in
+   * the same commit; going through the store would mean opening it a frame later, at
+   * which point the reader has already started typing into the page.
+   *
+   * A sheet whose own remarks have not been read yet is skipped rather than marked.
+   * That list is the baseline an edit adopts, and marking against an empty one would
+   * delete every comment already in the file at the next save — the same rule the
+   * right-click menu is disabled by, applied where there is no menu to disable.
+   */
+  const highlightSelection = useCallback(
+    (color: readonly [number, number, number], andRemark: boolean) => {
+      const current = sel;
+      if (!current) return;
+      const stamp = toPdfDate(new Date());
+      let open: { entryId: string; noteId: string; x: number; y: number } | null = null;
+      for (const part of current.pages) {
+        const ref = pagesRef.current[part.index];
+        if (!ref) continue;
+        const baseline = fileNotes.get(noteKey(ref));
+        if (!baseline) continue;
+        const quads: PdfQuad[] = part.quads.map((q) => ({ ...q }));
+        const at = quadsAnchor(quads);
+        const note: PdfNote = {
+          id: newNoteId(),
+          x: at.x,
+          y: at.y,
+          quads,
+          // The whole selection's words on every sheet it covers, deliberately: a
+          // sentence broken over a page break is one sentence, and half of it in each
+          // of two cards is worse than the same sentence in both.
+          quote: current.text.trim(),
+          text: "",
+          ...(noteAuthor ? { author: noteAuthor } : {}),
+          color: [...color] as [number, number, number],
+          created: stamp,
+          modified: stamp,
+        };
+        addPdfNote(ref.id, note, baseline);
+        if (part.index === current.focusIndex) {
+          open = { entryId: ref.id, noteId: note.id, x: at.x, y: at.y };
+        }
+      }
+      // The selection has been turned into something; leaving it up would leave the
+      // bar over the mark it just made, offering to make it again.
+      window.getSelection()?.removeAllRanges();
+      setSel(null);
+      const aim = open;
+      if (andRemark && aim) {
+        setNoteFocus((cur) => ({
+          entryId: aim.entryId,
+          noteId: aim.noteId,
+          sheet: current.focusIndex + 1,
+          x: aim.x,
+          y: aim.y,
+          nonce: (cur?.nonce ?? 0) + 1,
+          edit: true,
+        }));
+      }
+    },
+    [sel, fileNotes, noteKey, noteAuthor, addPdfNote],
+  );
+
   // ── Ctrl+F text search (#71) ───────────────────────────────────────
   // A floating find bar over the page stack with next/previous navigation, a
   // live match count, and a case toggle. Matches are found in each page's
@@ -1523,14 +2379,33 @@ function PdfCanvas({
   /**
    * Write the arrangement back to the file. The ONLY place a PDF is written.
    *
-   * After a successful save the reader must be showing exactly what is now on disk,
-   * so rather than trying to reconcile the arrangement in place we bump `diskVersion`
-   * and let the load effect re-read the file — which resets the arrangement to the
-   * identity, clears the history and frees any merged-in sources. `lastMtime` is
-   * advanced first so our OWN write can't also trip the external-change poll.
+   * After a successful save the reader must be showing exactly what is now on disk.
+   * For a save the reader *asked for* that is done by bumping `diskVersion` and
+   * letting the load effect re-read the file — which resets the arrangement to the
+   * identity, clears the history and frees any merged-in sources, i.e. the honest
+   * reconciliation for a save that may have reordered, merged or flattened pages.
+   * `lastMtime` is advanced first so our OWN write can't also trip the
+   * external-change poll.
+   *
+   * A **silent** save (`silent`, which only the remark autosave passes) must not do
+   * that, and the difference is the whole point of autosaving: a reload re-parses the
+   * document, repaints every canvas, resets the scroll, throws away the undo history
+   * and re-mints every remark id — a visible event, once per comment, in the middle of
+   * reading. So it reconciles in place instead: the sheets that were written give up
+   * their ownership (`notes` back to absent, so the arrangement is pristine and the
+   * Save button goes clean) and what was written becomes the file's own remarks in the
+   * cache, under the SAME ids. Nothing re-reads, nothing moves, the open card stays
+   * addressed at the remark it was opened on.
+   *
+   * Two things make that reconciliation safe rather than clever, and both are
+   * guarantees of the autosave gate rather than of this function: it only ever runs
+   * over the identity arrangement (`isPristineExceptNotes` — no merges, no duplicates,
+   * no turns), so a sheet's cache key is unique and cannot stand for two entries; and
+   * a sheet whose remarks changed *while* the bytes were in flight keeps its
+   * ownership, since its `notes` array is no longer the one that was written.
    */
-  const handleSave = useCallback(async (redactConfirmed = false) => {
-    if (!dirty || saving) return;
+  const handleSave = useCallback(async (redactConfirmed = false, silent = false) => {
+    if (!dirty || writing.current) return;
     // Blackouts are burned in by rasterising the sheets that carry them, which
     // destroys their text for good. Ask first — the same Save also writes ordinary
     // page moves, and "I reordered two pages" must not silently flatten a page.
@@ -1539,10 +2414,18 @@ function PdfCanvas({
       return;
     }
     setConfirmRedact(false);
-    setSaving(true);
+    writing.current = true;
+    // The Save button's spinner is feedback for a click; an autosave had no click, so
+    // flashing it once per comment is chrome twitching at the reader. The panel says
+    // "saving…" instead, where somebody who wants to know is already looking.
+    if (silent) setAutosaving(true);
+    else setSaving(true);
     setEditError(null);
+    // The exact list the bytes are built from, so the reconciliation below can tell
+    // what was written from what has been edited since.
+    const written = pages;
     try {
-      const bytes = await buildPdf(pages, sources, {
+      const bytes = await buildPdf(written, sources, {
         emptyMsg: t("pdfViewer.pdfBuildEmpty"),
         sourceClosedMsg: t("pdfViewer.pdfSourceClosed"),
         redactDpi,
@@ -1552,13 +2435,48 @@ function PdfCanvas({
       const m = await fileMtime(path, scope).catch(() => null);
       if (m != null) lastMtime.current = m;
       setStaleOnDisk(false);
-      setDiskVersion((v) => v + 1);
+      if (!silent) {
+        setDiskVersion((v) => v + 1);
+        return;
+      }
+      // What was just written IS the file's own set now — same remarks, same ids.
+      setFileNotes((prev) => {
+        const next = new Map(prev);
+        for (const r of written) {
+          if (r.notes) next.set(noteKey(r), r.notes.map((n) => ({ ...n })));
+        }
+        return next;
+      });
+      // …so the arrangement stops owning them and is pristine again. Deliberately
+      // NOT through `applyEdit`: writing the file is not an edit of the document, and
+      // making it undoable would put a step in the history that undoes nothing the
+      // reader did.
+      setPages((cur) =>
+        cur.map((r) => {
+          const w = written.find((x) => x.id === r.id);
+          // Changed since the write went out: still pending, still owned.
+          if (!w || !r.notes || r.notes !== w.notes) return r;
+          const { notes: _written, ...rest } = r;
+          return rest;
+        }),
+      );
     } catch (e) {
+      // A failed write is reported even when the save was the app's own idea: silent
+      // is about the successful case, and a remark that did not reach the file is
+      // exactly what the reader has to be told.
       setEditError(e instanceof Error ? e.message : String(e));
     } finally {
+      writing.current = false;
       setSaving(false);
+      setAutosaving(false);
     }
-  }, [dirty, saving, pages, sources, path, scope, redactDpi, stripMeta, t]);
+  }, [dirty, pages, sources, path, scope, redactDpi, stripMeta, noteKey, t]);
+
+  // What a scheduled remark autosave calls. Through a ref because the timer is armed
+  // by an edit made long before this render's `handleSave` exists, and because the
+  // save closes over the arrangement it must write — the one from the render that
+  // last saw it, not the one from the render that armed the timer.
+  noteSaveRef.current = () => void handleSave(false, true);
 
   // ── Merge: splice another PDF's pages into this arrangement ──────────────
   // The project the viewed file belongs to (the longest project directory that is a
@@ -1604,8 +2522,10 @@ function PdfCanvas({
     async (abs: string) => {
       setEditError(null);
       try {
-        const bytes = await readFileBytes(abs, scope);
-        await spliceIn(new Uint8Array(bytes), insertAt());
+        // `readFileBytes` already hands back a fresh `Uint8Array` that owns its
+        // buffer, which is what `openSource` needs (pdf.js detaches it) — copying
+        // it again would only double a whole document in memory.
+        await spliceIn(await readFileBytes(abs, scope), insertAt());
       } catch (e) {
         setEditError(
           t("pdfViewer.insertFailed", { name: basename(abs), msg: e instanceof Error ? e.message : String(e) }),
@@ -1736,12 +2656,27 @@ function PdfCanvas({
     let cancelled = false;
     void (async () => {
       try {
-        const texts = await Promise.all(
-          pages.map((ref) => {
-            const d = sources.get(ref.src)?.doc;
-            return d ? pageTextItemBoxes(d, ref.page, ref.rot) : Promise.resolve([]);
-          }),
-        );
+        // A FEW AT A TIME, not all at once. `Promise.all` over the arrangement asks
+        // the pdf.js worker for every sheet's text content simultaneously, so on a
+        // 200-page document opening the find bar queued 200 page parses before the
+        // first character was typed — the worker is single-threaded, so they do not
+        // finish any sooner, and every page's parsed content is held at once while
+        // they queue. A small window keeps the worker busy, lets a cancelled search
+        // stop after the pages in flight rather than after all of them, and holds
+        // only what has actually been read.
+        const texts: TextItemBox[][] = new Array(pages.length);
+        for (let i = 0; i < pages.length && !cancelled; i += TEXT_SCAN_CONCURRENCY) {
+          const slice = pages.slice(i, i + TEXT_SCAN_CONCURRENCY);
+          const done = await Promise.all(
+            slice.map((ref) => {
+              const d = sources.get(ref.src)?.doc;
+              return d ? pageTextItemBoxes(d, ref.page, ref.rot) : Promise.resolve([]);
+            }),
+          );
+          done.forEach((boxes, j) => {
+            texts[i + j] = boxes;
+          });
+        }
         if (!cancelled) setPageText(texts);
       } catch {
         if (!cancelled) setPageText([]); // give up gracefully — search finds nothing
@@ -2231,6 +3166,13 @@ function PdfCanvas({
     const freePrev = () => {
       for (const s of prevSources.values()) s.doc.destroy();
     };
+    // Whether a failure may stay silent: only when a last good document is
+    // actually on screen to fall back on. `samePathReload` alone is not that —
+    // StrictMode's dev double-mount re-runs this effect with `loadedPath`
+    // already set, so a FIRST load that fails (e.g. the backend refusing the
+    // read) matched the reload case and swallowed its error into a permanent
+    // "Loading…".
+    const hasPrevDoc = prevSources.size > 0;
     // A same-path reload keeps the current document on screen while the fresh
     // bytes load — blanking it would flash the page (and, on a truncated
     // mid-compile read, an error) on every poll of a multi-second compile. A
@@ -2255,9 +3197,15 @@ function PdfCanvas({
         try {
           const bytes = await readFileBytes(path, scope);
           if (cancelled) return;
-          // `openSource` keeps a pristine copy of the bytes for pdf-lib: pdf.js
-          // DETACHES the buffer it is handed, so a save could not reuse them.
-          const src = await openSource(new Uint8Array(bytes));
+          // pdf.js DETACHES the buffer it is handed, so a save cannot reuse these
+          // bytes — pdf-lib needs its own. For the file being VIEWED that copy is
+          // not kept: it is re-read from disk instead, the first time an edit makes
+          // it matter (`materializeSourceBytes` below). Reading a large document is
+          // the common case and was paying the whole file twice for a save that
+          // usually never comes.
+          const src = await openSource(bytes, {
+            reread: () => readFileBytes(path, scope),
+          });
           if (cancelled) {
             src.doc.destroy();
             return;
@@ -2268,7 +3216,11 @@ function PdfCanvas({
           // the change instead of flashing empty.
           sourcesRef.current = new Map([[SELF, src]]);
           setSources(sourcesRef.current);
-          setPages(initialPages(src.doc.numPages));
+          setPages(
+            samePathReload
+              ? keepPageIds(pagesRef.current, initialPages(src.doc.numPages))
+              : initialPages(src.doc.numPages),
+          );
           setPast([]);
           setFuture([]);
           // The metadata is a property of the bytes, so a reload re-reads it and
@@ -2303,7 +3255,7 @@ function PdfCanvas({
           // Out of retries. On a reload there is a last good document to keep
           // showing (the next mtime poll will try the fresh file again), so say
           // nothing; on a first load there is nothing to fall back on.
-          if (!samePathReload) {
+          if (!samePathReload || !hasPrevDoc) {
             freePrev();
             setError(String(e));
           }
@@ -2345,20 +3297,28 @@ function PdfCanvas({
     let cancelled = false;
     void (async () => {
       try {
-        const sizes = await Promise.all(
-          pages.map(async (ref) => {
-            const d = sources.get(ref.src)?.doc;
-            if (!d) return { w: 0, h: 0 };
-            const page = await d.getPage(ref.page);
-            // A quarter turn swaps the sheet's box; asking for the rotated viewport
-            // means the reserved height is right for turned pages too.
-            const vp = page.getViewport({
-              scale: 1,
-              rotation: (((page.rotate + ref.rot) % 360) + 360) % 360,
-            });
-            return { w: vp.width, h: vp.height };
-          }),
-        );
+        const measure = async (ref: (typeof pages)[number]) => {
+          const d = sources.get(ref.src)?.doc;
+          if (!d) return { w: 0, h: 0 };
+          const page = await d.getPage(ref.page);
+          // A quarter turn swaps the sheet's box; asking for the rotated viewport
+          // means the reserved height is right for turned pages too.
+          const vp = page.getViewport({
+            scale: 1,
+            rotation: (((page.rotate + ref.rot) % 360) + 360) % 360,
+          });
+          return { w: vp.width, h: vp.height };
+        };
+        // Windowed for the reason the text scan is (see `PAGE_SCAN_CONCURRENCY`):
+        // this runs on every load, so on a long document it is the first thing
+        // between the reader and their pages.
+        const sizes: { w: number; h: number }[] = new Array(pages.length);
+        for (let i = 0; i < pages.length && !cancelled; i += PAGE_SCAN_CONCURRENCY) {
+          const done = await Promise.all(pages.slice(i, i + PAGE_SCAN_CONCURRENCY).map(measure));
+          done.forEach((s, j) => {
+            sizes[i + j] = s;
+          });
+        }
         if (!cancelled) setPageSizes(sizes);
       } catch {
         /* leave heights unreserved — restore falls back to the old behaviour */
@@ -2490,6 +3450,11 @@ function PdfCanvas({
             const size = Math.hypot(tx[2], tx[3]);
             runs.push({ str: it.str, size, page: p, x: tx[4], y: tx[5] - size });
           }
+          // Hand the page's parse back before moving on. This walks the WHOLE
+          // document, so without it a scan of a long one ends holding every page
+          // pdf.js had to parse to answer — and the pages the reader is looking at
+          // are re-rendered from the file when they are next painted anyway.
+          page.cleanup();
         } catch {
           /* skip an unreadable page */
         }
@@ -2603,6 +3568,24 @@ function PdfCanvas({
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, [onWheel]);
+
+  // Settle a same-path reload's saved position the moment the fresh document is
+  // up. The ResizeObserver below is the one that used to do this, and it only
+  // fires when the page stack CHANGES SIZE — which a recompile that kept every
+  // page's geometry no longer does, now that unchanged pages keep their canvases.
+  // Left pending, the target would still be sitting there at the next build and
+  // would yank the reader back to where they were two compiles ago (the 4 s
+  // fallback timer in the load effect is what used to mask that). Applying it
+  // here is also simply correct: nothing moved, so the position is already right
+  // and this clears the request.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const target = restoreScroll.current;
+    if (!doc || !el || !target) return;
+    el.scrollTop = target.top;
+    el.scrollLeft = target.left;
+    if (el.scrollTop >= target.top - 1) restoreScroll.current = null;
+  }, [doc]);
 
   // Apply a pending cursor-anchored scroll target once the page content has
   // resized after a zoom (the observer fires when the canvases repaint).
@@ -2743,6 +3726,9 @@ function PdfCanvas({
         >
           🔍
         </button>
+        {/* There is deliberately no "select text" button beside this one any more.
+            It was a mode, and selecting words in a document is not one — see the
+            text layer in `PdfPageCanvas`. */}
         {/* Black out text (#pdf-redact). Beside the find button because the two work
             as a pair — search for the name, black out every hit. */}
         <button
@@ -2773,6 +3759,21 @@ function PdfCanvas({
         >
           ✂
         </button>
+        {/* The remarks panel (#pdf-notes) — the document's comments as a list, and
+            the way to walk them. A panel rather than a mode: reading the remarks is
+            not a thing you stop doing to the page, so it arms nothing and turns
+            nothing off. */}
+        <button
+          className={`file-viewer-zoom-btn${notesOpen ? " active" : ""}`}
+          onClick={() => setNotesOpen((v) => !v)}
+          disabled={!doc}
+          title={t("pdfNotes.paneTitle")}
+          aria-label={t("pdfNotes.paneTitle")}
+          aria-pressed={notesOpen}
+        >
+          💬
+        </button>
+        <UntestedTag />
         {/* Delete the metadata (#pdf-meta). Beside the blackout tool because the two
             are the same job on the file's two halves — what is on the page, and what
             the file says about itself off it. */}
@@ -2837,6 +3838,17 @@ function PdfCanvas({
           save={() => void handleSave()}
           title={dirty ? t("pdfViewer.saveDirtyTitle") : t("pdfViewer.saveCleanTitle")}
         />
+        {/* Pending remarks (#pdf-notes), beside the Save that writes them. Shown by
+            the number of SHEETS being rewritten rather than of remarks, because
+            deleting the last remark on a page leaves nothing to count and is still a
+            pending change — a readout that vanished at that moment would say the
+            edit had been lost. */}
+        {notedSheets > 0 && (
+          <span className="file-viewer-pdf-note-pending" title={t("pdfNotes.pendingTitle")}>
+            💬 {t("pdfNotes.pending", { n: notesTotal, pages: notedSheets })}
+            <UntestedTag />
+          </span>
+        )}
         <button
           className={`file-viewer-print file-viewer-pdf-print${printing ? " is-busy" : ""}`}
           onClick={() => void handlePrint()}
@@ -2975,7 +3987,13 @@ function PdfCanvas({
               are not in it. */}
           <button
             className={`file-viewer-zoom-btn file-viewer-zoom-text${stripMeta ? " active" : ""}`}
-            onClick={() => setStripMeta((v) => !v)}
+            onClick={() => {
+              // A pending deletion makes the file dirty without going through
+              // `applyEdit`, so it has to take hold of the source bytes itself —
+              // it is a change waiting to be written like any other.
+              materializeSourceBytes();
+              setStripMeta((v) => !v);
+            }}
             aria-pressed={stripMeta}
             title={t("pdfMeta.deleteAllTitle")}
           >
@@ -3085,6 +4103,26 @@ function PdfCanvas({
             onJump={jumpToPage}
           />
         )}
+        {notesOpen && doc && (
+          // The remarks panel, on the same side as the contents sidebar and wearing
+          // its chrome: both are lists of what is in the document, read beside it.
+          <PdfNotesPane
+            placed={placed}
+            currentId={noteFocus?.noteId ?? null}
+            autosave={autosaveNotes}
+            autosavable={notesAutosavable}
+            saving={autosaving}
+            onSetAutosave={setAutosaveNotesPersisted}
+            onGo={(p) => goToNote(p)}
+            onStep={stepToNote}
+            onEditNote={(p) => goToNote(p, true)}
+            onDeleteNote={(p) => {
+              const ref = pagesRef.current.find((r) => r.id === p.entryId);
+              if (ref) deletePdfNote(p.entryId, p.note.id, fileNotes.get(noteKey(ref)) ?? []);
+            }}
+            onClose={() => setNotesOpen(false)}
+          />
+        )}
         {railOpen && doc && (
           // The page rail: the SAME <PageStrip> the print preview uses, stood on its
           // side. Drag to reorder, shift-click for a range, right-click for the rest.
@@ -3161,8 +4199,35 @@ function PdfCanvas({
                     onLink={ref.src === SELF ? onPdfLink : undefined}
                     destMark={destMark && destMark.index === i ? destMark : null}
                     marks={ref.marks}
+                    notes={ref.notes}
+                    fileNotes={fileNotes.get(noteKey(ref))}
+                    noteAuthor={noteAuthor}
+                    noteFocus={noteFocus && noteFocus.entryId === ref.id ? noteFocus : null}
+                    noteAutosave={autosaveNotes}
+                    onNeedNotes={() => ensureNotes([ref])}
+                    onNoteAdd={(note, baseline) => addPdfNote(ref.id, note, baseline)}
+                    onNoteUpdate={(noteId, patch, baseline) =>
+                      updatePdfNote(ref.id, noteId, patch, baseline)
+                    }
+                    onNoteDelete={(noteId, baseline) => deletePdfNote(ref.id, noteId, baseline)}
                     redacting={redacting}
                     copySelecting={copySelecting && !copyBusy}
+                    hiddenHighlights={hiddenHl.get(noteKey(ref)) ?? ""}
+                    selBar={
+                      sel && sel.focusIndex === i
+                        ? {
+                            x: sel.barX,
+                            y: sel.barY,
+                            lineHeight:
+                              sel.pages.find((pp) => pp.index === i)?.quads[0]?.h ?? 12,
+                            copyOn: copyOnSelect,
+                            copied: copiedNow,
+                            onHighlight: (c) => highlightSelection(c, false),
+                            onRemark: () => highlightSelection(HIGHLIGHT_COLORS[0], true),
+                            onToggleCopy: () => setCopyOnSelectPersisted(!copyOnSelect),
+                          }
+                        : null
+                    }
                     textItems={snap ? pageText?.[i] : undefined}
                     onRedactAdd={(rect) => addRedactMark(ref.id, rect)}
                     onRedactRemove={(markId) => removeRedactMark(ref.id, markId)}

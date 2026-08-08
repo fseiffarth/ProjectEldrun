@@ -7,7 +7,7 @@ import { IS_MAC } from "../../lib/platform";
 import { trackWindowMove } from "../../stores/windowMove";
 import { AppResourceDisplay } from "../header/AppResourceDisplay";
 import { Clock } from "../header/Clock";
-import { useEnergySaver, saverInterval, usePowerStore } from "../../stores/power";
+import { useQuiesce, saverInterval, usePowerStore } from "../../stores/power";
 import { ConnTypeIcon } from "../header/ConnTypeIcon";
 import { BatteryIndicator } from "../header/BatteryIndicator";
 import { VpnIndicator } from "../header/VpnIndicator";
@@ -61,7 +61,7 @@ export function HeaderBar() {
   const t = useT();
   const [online, setOnline] = useState(navigator.onLine);
   const [connType, setConnType] = useState<string | null>(null);
-  const energySaver = useEnergySaver();
+  const quiesce = useQuiesce();
   const batterySupported = usePowerStore((s) => s.supported);
   const batteryPercentage = usePowerStore((s) => s.percentage);
   const onBattery = usePowerStore((s) => s.onBattery);
@@ -88,9 +88,9 @@ export function HeaderBar() {
         .then(setConnType)
         .catch(() => {});
     poll();
-    const id = setInterval(poll, saverInterval(10_000, energySaver));
+    const id = setInterval(poll, saverInterval(10_000, quiesce));
     return () => clearInterval(id);
-  }, [energySaver]);
+  }, [quiesce]);
 
   const connKind =
     connType === "lan" ? "lan" : connType === "wlan" ? "wlan" : null;

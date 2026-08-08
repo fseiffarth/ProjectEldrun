@@ -1373,3 +1373,53 @@ connection and get none of the warm-reconnect benefit.
   first reconnect does not re-prompt for credentials.
 
 ---
+
+### G.26 — VM projects (`docs/vm_projects_plan.md`): the third trust tier
+
+Implemented 2026-08-07 (Phases 0–4 + the mirrorless sync posture; all
+automated tests green, **nothing live-tested** — the whole tier wears the
+untested tag until a VM has actually booted on this machine).
+
+- [x] Phases 0–1 — `services::vm`: doctor probe, base-image fetch
+  (checksum-verified, build-tab script), qcow2 overlay + cloud-init seed +
+  per-VM keypair, QEMU boot (daemonize/pidfile/QMP), SSH-readiness poll,
+  shutdown w/ escalation, startup orphan sweep, per-boot port allocation +
+  `RemoteSpec` rewrite. Per-VM `UserKnownHostsFile`/`IdentityFile` injected at
+  the `ssh_common`/`ssh_pty_args` choke points.
+- [x] Phase 2 — creation path (`create_project` synthesizes the loopback
+  remote; no mirror, no lockstep), boot-on-connect inside `remote_connect`,
+  teardown on deactivate (container rule) / exit, archive/restore/delete move
+  the VM state dir, sandbox↔VM mutual exclusion both ways, the
+  **no-local-fallback spawn guard** (`vm_spawn_refusal`, `ELDRUN_VM_DOWN`
+  sentinel), frontend locality pinning (`effectiveTabLocation` `vmProject`),
+  and the "Download to…" size-confirmed SFTP exit in the file tree.
+- [x] Phase 3 — `bake-base.sh` build-tab command (provisioning boot streams
+  the serial console into the tab; converts to `eldrun-base-1.qcow2`).
+- [x] Phase 4 — `services::vm_proxy` allowlisting CONNECT proxy, guestfwd
+  wiring, three-mode egress knob, blocked-CONNECT log surfaced in the VM
+  settings dialog, clone-time temporary allow.
+- [x] Phase 5 (partial) — mirrorless-by-default posture + `vm_unpushed_commits`
+  surfacing.
+- [ ] Phase 5 (rest) — the **opt-in mirror flow** for an existing VM project
+  (pair a local mirror later), **manual-pull-only** gating in `git_peer`
+  scheduling, and the view-diff-before-pull viewer (also on `ssh_sync_plan`'s
+  deferred list).
+- [ ] Frontend follow-ups — an `ELDRUN_VM_DOWN` spawn error currently renders
+  as terminal text; turn it into a "Boot VM" placeholder action (like
+  `RemotePaneHold`). The locality *badges* (`TabLocalityBadges`) still label a
+  VM project's agent tabs with the per-kind default; the spawn path is pinned,
+  only the glyph can mislabel. Surface `vm_unpushed_commits` in the pill.
+- [ ] Phase 6 (deferred by plan) — macOS/Windows backends, snapshots,
+  background-running VMs, local-model-only closed profile, "convert existing
+  project to VM" data move.
+- [x] 🤖 Automated tests — doctor verdict, qemu/netdev argv per egress mode,
+  cloud-init user-data/instance-id, seed-iso argv, df parse, ssh-opts registry
+  scoping (`services::vm`); allowlist matching/composition, CONNECT parsing,
+  real-socket deny/temp-allow/405 (`services::vm_proxy`); spawn-refusal matrix
+  (`commands::terminal`); download path traversal + name guards
+  (`commands::vm`); locality pinning (`src/__tests__/VmTabLocation.test.ts`).
+- [ ] 🖐️ **Manual test (Phase 1 QA)** — fetch the base image, create a VM
+  project, watch it boot, ssh lamp green, open a shell tab (lands in
+  `/home/eldrun/project`), `git init` + commit inside, deactivate (VM powers
+  down), reactivate, delete. Then a clone-into-VM import against a real repo,
+  and a blocked-CONNECT check (curl example.com from inside → 403 + pill log).

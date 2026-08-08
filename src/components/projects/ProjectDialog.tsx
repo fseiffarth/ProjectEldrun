@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
-import type { ProjectEntry, SandboxToggleOutcome } from "../../types";
+import type { ProjectEntry, SandboxToggleOutcome, VmDoctorReport } from "../../types";
 import { resolveProjectDirectory } from "../../types";
 import { basename } from "../../lib/paths";
 import { cmdToKind, useTabsStore } from "../../stores/tabs";
@@ -98,10 +98,18 @@ export function ProjectDialog({
   const [gitType, setGitType] = useState("local");
   const [mode, setMode] = useState("keep");
   const [skipScaffold, setSkipScaffold] = useState(false);
-  // Project container (#38) at creation time. `null` = untouched, so the row
-  // tracks the source default until the user states a preference; an explicit
-  // choice then sticks even if the import source changes under it.
-  const [containerChoice, setContainerChoice] = useState<boolean | null>(null);
+  // Trust tier at creation time (`docs/vm_projects_plan.md`): where the
+  // project's tabs — and for the VM tier, its whole tree — live. `null` =
+  // untouched, so the row tracks the source default until the user states a
+  // preference; an explicit choice then sticks even if the import source
+  // changes under it. (Subsumes the old boolean container choice.)
+  const [tierChoice, setTierChoice] = useState<"local" | "container" | "vm" | null>(null);
+  // `vm_doctor`'s verdict — probed once per dialog open; `null` while pending
+  // (the VM option simply isn't offered until it answers).
+  const [vmDoctor, setVmDoctor] = useState<VmDoctorReport | null>(null);
+  // A VM boot in flight after create — first boot runs cloud-init and can take
+  // a minute, so the dialog says what it is waiting on.
+  const [bootingVm, setBootingVm] = useState(false);
   const [sourceDir, setSourceDir] = useState("");
   // Import source: an existing local folder, or a clone from GitHub/GitLab.
   const [importSource, setImportSource] = useState<ImportSource>(initialImportSource);
@@ -212,19 +220,48 @@ export function ProjectDialog({
   // its host, and the backend refuses on Windows (host paths mean nothing inside
   // a Linux container).
   const containerAvailable = !isRemoteProject && !IS_WINDOWS;
-  // Default ON for code that arrived from somewhere else (a folder import, a
-  // clone, a fork) and OFF for a project scaffolded from scratch: an import is
-  // exactly the case where build scripts and agent-facing docs the user hasn't
-  // read are about to be run, while a new project starts empty — there is
-  // nothing to contain yet, and the image/toolchain cost would be paid for a
-  // folder holding a README.
-  const containerDefault = kind === "import";
-  const runInContainer = containerAvailable && (containerChoice ?? containerDefault);
+  // The VM tier is offered for a NEW project or a plain clone import — the two
+  // creation shapes whose bytes can land inside the guest directly (a clone
+  // runs *inside* the VM; a new project starts empty there). A folder/fork
+  // import would need a host→VM data move that v1 doesn't do, and an SSH
+  // remote project already has its own host.
+  const vmSelectable =
+    !isRemoteProject && (kind === "new" || (kind === "import" && importSource === "git"));
+  const vmOk = vmSelectable && vmDoctor?.ok === true;
+  // Recommended tier: an import (a folder, a clone, a fork) is exactly the
+  // case where build scripts and agent-facing docs the user hasn't read are
+  // about to run — recommend the **VM** when the doctor probe passes
+  // (`docs/vm_projects_plan.md`), falling back to the container as before. A
+  // new project starts empty; nothing to contain yet, so Local.
+  const tierDefault: "local" | "container" | "vm" =
+    kind === "import"
+      ? vmOk
+        ? "vm"
+        : containerAvailable
+          ? "container"
+          : "local"
+      : "local";
+  // The effective tier: the explicit choice (degraded to an available tier if
+  // the import source moved under it), else the recommendation.
+  const tierRaw = tierChoice ?? tierDefault;
+  const tier: "local" | "container" | "vm" =
+    tierRaw === "vm" && !vmOk
+      ? containerAvailable && kind === "import"
+        ? "container"
+        : "local"
+      : tierRaw === "container" && !containerAvailable
+        ? "local"
+        : tierRaw;
+  const runInContainer = tier === "container";
+  const isVmProject = tier === "vm";
   // A git repo is created LOCALLY even for a remote (SSH) project — the local
   // mirror scaffolds with `git init` the same way a local project does — so this
   // gates on the chosen git type alone, not on isRemoteProject. A clone import
   // needs `git` too (`git_clone` shells out to it) regardless of gitType.
-  const needsGitInstall = gitAvailable === false && (gitType !== "none" || isCloneImport);
+  // A VM project's git work (init/clone) runs inside the guest, whose baked
+  // image carries git — the local machine's PATH is irrelevant there.
+  const needsGitInstall =
+    !isVmProject && gitAvailable === false && (gitType !== "none" || isCloneImport);
 
   // Switching the import source resets the git-hosting default to the one that
   // fits it: a clone comes from a host, a plain folder does not. Both remain
@@ -257,6 +294,15 @@ export function ProjectDialog({
 
   useEffect(() => {
     invoke<boolean>("git_available").then(setGitAvailable).catch(() => setGitAvailable(false));
+  }, []);
+
+  // The VM doctor probe (qemu/KVM/seed tool/base image), once per open — it
+  // decides whether the VM tier is offered at all, and carries the one-click
+  // fetch/bake commands for a missing base image.
+  useEffect(() => {
+    invoke<VmDoctorReport>("vm_doctor")
+      .then(setVmDoctor)
+      .catch(() => setVmDoctor(null));
   }, []);
 
   // Probe the fork provider's CLI whenever the resolved provider changes (it
@@ -472,10 +518,70 @@ export function ProjectDialog({
     onClose();
   };
 
+  /** The host of a clone URL, for the egress proxy's temporary allow —
+   *  https/ssh-scheme URLs parse, scp-style `git@host:path` is matched. */
+  const cloneUrlHost = (url: string): string => {
+    try {
+      return new URL(url).hostname;
+    } catch {
+      const m = url.trim().match(/^[^@\s]+@([^:\s]+):/);
+      return m ? m[1] : "";
+    }
+  };
+
+  /** VM-tier creation (`docs/vm_projects_plan.md`): create (the backend
+   *  synthesizes the loopback RemoteSpec; no mirror, no lockstep), boot, and
+   *  for a clone run it **inside** the VM through a temporary proxy allow —
+   *  the untrusted bytes never land on the host. */
+  const submitVmProject = async () => {
+    const project = await invoke<ProjectEntry>("create_project", {
+      req: {
+        name,
+        directory: "",
+        description,
+        gitType,
+        skipScaffold,
+        vm: { enabled: true },
+      },
+    });
+    setBootingVm(true);
+    try {
+      await invoke("vm_boot", { projectId: project.id });
+    } finally {
+      setBootingVm(false);
+    }
+    await onProject(project);
+    if (isCloneImport && repoUrl.trim()) {
+      const host = cloneUrlHost(repoUrl);
+      if (host) {
+        // Best-effort: under Open egress there may be no proxy to widen.
+        await invoke("vm_allow_temporarily", { projectId: project.id, host }).catch(() => {});
+      }
+      // House convention: the clone is a visible one-click tab, not a hidden
+      // backend call — and this tab runs in the VM (the project is remote, so
+      // the spawn wraps over ssh into /home/eldrun/project).
+      const tabsStore = useTabsStore.getState();
+      tabsStore.setScope(project.id);
+      tabsStore.addTab({
+        label: "Clone into VM",
+        cmd: "git",
+        args: ["clone", "--progress", repoUrl.trim(), "."],
+        env: {},
+        cwd: "",
+        kind: "shell",
+      });
+    }
+    onClose();
+  };
+
   const submit = async () => {
     setError("");
     setBusy(true);
     try {
+      if (isVmProject) {
+        await submitVmProject();
+        return;
+      }
       // Remote scaffold filling runs over the local mount; for v1 we skip the
       // local-disk-only scaffold-fill agent tabs on import when remote.
       const scaffoldAgentFills =
@@ -629,7 +735,13 @@ export function ProjectDialog({
     // know *which* provider (a self-hosted host names neither).
     !needsForkCliInstall &&
     (!isForkImport || forkProviderResolved !== "") &&
-    (isRemoteProject
+    (isVmProject
+      ? // VM tier: the tree lives inside the guest, so no local folder and no
+        // mirror are needed — a name (and for a clone, a plausible URL) is all.
+        Boolean(
+          name.trim() && safeName && !bootingVm && (!isCloneImport || isCloneUrl(repoUrl)),
+        )
+      : isRemoteProject
       ? // Remote mode: ready (live session when headless, typed path otherwise)
         // and has a remote folder.
         !remoteReady
@@ -986,23 +1098,61 @@ export function ProjectDialog({
           {t("projectDialog.skipScaffoldLabel")}
         </label>
 
-        {containerAvailable && (
-          <label className="skip-scaffold-row" title={t("pill.containerRunTitle")}>
-            <Toggle
-              size="sm"
-              checked={runInContainer}
-              onChange={(e) => setContainerChoice(e.target.checked)}
+        {(containerAvailable || vmSelectable) && (
+          <label title={t("projectDialog.trustTierTitle")}>
+            {t("projectDialog.trustTierLabel")}
+            <Dropdown
+              className="dropdown-block"
+              value={tier}
+              onChange={(v) => setTierChoice(v as "local" | "container" | "vm")}
+              options={[
+                { value: "local", label: t("projectDialog.tierLocalOpt") },
+                ...(containerAvailable
+                  ? [{ value: "container", label: t("projectDialog.tierContainerOpt") }]
+                  : []),
+                ...(vmOk ? [{ value: "vm", label: t("projectDialog.tierVmOpt") }] : []),
+              ]}
             />
-            {t("projectDialog.runInContainerLabel")}
             <UntestedTag />
           </label>
         )}
-        {containerAvailable && runInContainer && (
+        {runInContainer && (
           <div className="project-dialog-path">
             {kind === "import"
               ? t("projectDialog.runInContainerImportHint")
               : t("projectDialog.runInContainerHint")}
           </div>
+        )}
+        {isVmProject && (
+          <div className="project-dialog-path">
+            {t("projectDialog.tierVmHint")}
+            {isCloneImport ? ` ${t("projectDialog.tierVmCloneHint")}` : ""}
+          </div>
+        )}
+        {isVmProject && vmDoctor && !vmDoctor.base_image_ready && (
+          <div className="project-dialog-path">
+            {t("projectDialog.vmBaseMissing")}{" "}
+            {vmDoctor.fetch_command && (
+              <button
+                type="button"
+                onClick={() =>
+                  runInstallInTab("VM base image", vmDoctor.fetch_command!, "bash")
+                }
+              >
+                {t("projectDialog.vmFetchBaseBtn")}
+              </button>
+            )}
+          </div>
+        )}
+        {/* The tier is supported here but something is missing — name it, with
+            the doctor's own actionable sentences. */}
+        {vmSelectable && vmDoctor && vmDoctor.supported && !vmDoctor.ok && (
+          <div className="project-dialog-path">
+            {t("projectDialog.vmUnavailable")} {vmDoctor.reasons.join(" ")}
+          </div>
+        )}
+        {bootingVm && (
+          <div className="project-dialog-path">{t("projectDialog.vmBooting")}</div>
         )}
 
         {/* The scaffold preview reads the source folder off the disk, so it only

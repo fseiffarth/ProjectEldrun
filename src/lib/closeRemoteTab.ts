@@ -42,7 +42,9 @@ export function persistentSessionOf(
   if (scope === "root") return null;
   const project = useProjectsStore.getState().projects.find((p) => p.id === scope);
   if (!project?.remote) return null;
-  const rawHostId = remoteHostIdOf(effectiveTabLocation(tab));
+  const rawHostId = remoteHostIdOf(
+    effectiveTabLocation(tab, { vmProject: !!project.vm?.enabled }),
+  );
   if (rawHostId === null) return null; // a local-running tab has no host session
   const hostId =
     rawHostId !== "primary" && !project.compute_hosts?.some((h) => h.id === rawHostId)
@@ -56,15 +58,21 @@ export function persistentSessionOf(
 
 /**
  * The persistent **local** tmux session a tab owns, or `null`. Mirrors
- * `shouldPersistLocalTab`: a shell tab in a project scope running on the local
- * machine (a local project, or a remote project's local/mirror tab) with the
- * `persist_local_sessions` setting on — and never on Windows (no tmux).
+ * `shouldPersistLocalTab` — and must keep mirroring it, or the Sessions view
+ * marks the wrong rows as owned: a shell tab running on the local machine (a
+ * local project, or a remote project's local/mirror tab, **or the root
+ * terminal**) with the `persist_local_sessions` setting on, and never on
+ * Windows (no tmux). The root scope resolves no project here and needs none —
+ * `localRunning` is what a project would have been consulted for, and a scope
+ * with no project is never remote.
  */
 export function localPersistentSessionOf(scope: string, tab: TabEntry): string | null {
-  if (scope === "root" || IS_WINDOWS) return null;
+  if (IS_WINDOWS || scope.startsWith("box:")) return null;
   if (tab.kind !== "shell" || !tab.tmuxSession) return null;
   const project = useProjectsStore.getState().projects.find((p) => p.id === scope);
-  const localRunning = !project?.remote || effectiveTabLocation(tab) === "local";
+  const localRunning =
+    !project?.remote ||
+    effectiveTabLocation(tab, { vmProject: !!project?.vm?.enabled }) === "local";
   if (!localRunning) return null;
   if (useSettingsStore.getState().settings?.persist_local_sessions === false) return null;
   return tab.tmuxSession;

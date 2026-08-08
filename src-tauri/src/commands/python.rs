@@ -399,12 +399,39 @@ async fn run_off_thread<T: Send + 'static>(
         .map_err(|e| format!("python task failed: {e}"))?
 }
 
-/// Every interpreter offered for `project_dir` — the dialog's dropdown. Probes the
-/// **host** for a remote project (that is where its run tab will run).
+/// Every interpreter offered for `project_dir` — the dialog's dropdown. Probes
+/// whichever machine the run tab will actually run on: the **host** for a remote
+/// project, **inside the container** for a containerized one, else this machine.
+///
+/// The container branch exists because the host answer is wrong there in a way
+/// that looks like a broken Run button. The project directory is bind-mounted at
+/// its identical path, so a host-detected `.venv/bin/python` *is* present inside
+/// the container — as a symlink to a system interpreter that is not, since a venv
+/// records its base interpreter in `pyvenv.cfg` and carries no copy of it. Handing
+/// that path to a container tab produced `no such file or directory` for a
+/// directory the user can see in the file tree.
+///
+/// The probe is the SAME script the remote branch runs, which is what makes the
+/// two answers comparable: `[ -x … ]` follows symlinks, so a venv whose base
+/// interpreter is missing from the image is simply not emitted, and the image's
+/// own `python3` is the last-resort entry that wins instead. What it cannot see is
+/// a venv whose interpreter resolves but whose compiled wheels were built against
+/// host libraries; that one fails at `import`, and no cheap probe distinguishes it.
 fn python_interpreters_blocking(project_dir: &str) -> Result<Vec<PyInterpreter>, String> {
     if let Some(target) = crate::services::remote::remote_target_for_dir(project_dir) {
         let out = crate::services::ssh_exec::run_remote_script(&target.spec, REMOTE_PROBE)?;
         return Ok(parse_remote_probe(&String::from_utf8_lossy(&out.stdout)));
+    }
+    if let Some(project_id) = crate::services::sandbox::containerized_project_for_dir(project_dir) {
+        // A container that is not up answers nothing rather than being started for
+        // a probe — fall through to the host scan, whose in-tree venv is at least
+        // the right *path* (the mount makes it identical) even if this cannot yet
+        // confirm the interpreter behind it resolves in there.
+        if let Some(stdout) =
+            crate::services::sandbox::run_in_container(&project_id, project_dir, REMOTE_PROBE)
+        {
+            return Ok(parse_remote_probe(&stdout));
+        }
     }
     Ok(discover_local(Path::new(project_dir)))
 }

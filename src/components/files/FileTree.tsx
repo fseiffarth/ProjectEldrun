@@ -1,5 +1,6 @@
 import React, { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { confirm as dialogConfirm, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Toggle } from "../common/Toggle";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -2100,6 +2101,43 @@ export function FileTree({
     probeClipboardImage();
   }
 
+  /** "Download to…" (`docs/vm_projects_plan.md` Phase 2): SFTP-copy a remote
+   *  file/folder to a locally picked destination, size-confirmed. Built for
+   *  the mirrorless VM posture — the existing tree-transfer buttons all assume
+   *  a mirror destination, so without this a mirrorless project has no casual
+   *  per-file exit — but offered on every remote listing (a worker's outputs
+   *  want the same door). Every crossing is user-clicked: pick a folder,
+   *  read the numbers, confirm. */
+  async function downloadEntryTo(entry: FileEntry) {
+    setContextMenu(null);
+    if (!projectId) return;
+    try {
+      const rel = relForEntry(entry);
+      const size = await invoke<{ files: number; bytes: number }>("remote_download_size", {
+        projectId,
+        relPath: rel,
+      });
+      const dest = await openDialog({ directory: true, multiple: false });
+      if (typeof dest !== "string") return;
+      const ok = await dialogConfirm(
+        t("fileTree.downloadToConfirm", {
+          name: entry.name,
+          files: size.files,
+          size: fmtSize(size.bytes),
+          dest,
+        }),
+        { title: t("fileTree.downloadToTitle") },
+      );
+      if (!ok) return;
+      setLoading(true);
+      await invoke("remote_download_to", { projectId, relPath: rel, destDir: dest });
+      setLoading(false);
+    } catch (err) {
+      setError(String(err));
+      setLoading(false);
+    }
+  }
+
   async function stageEntry(entry: FileEntry) {
     setContextMenu(null);
     setLoading(true);
@@ -2880,7 +2918,9 @@ export function FileTree({
     const agg = dirSyncAgg[relPath];
     const state: SyncFileState = agg?.any
       ? agg.allGreen
-        ? "green"
+        ? agg.anyNew
+          ? "localnew"
+          : "green"
         : "amber"
       : (syncStatus?.[relPath]?.state ?? "none");
     const label = relPath
@@ -2909,6 +2949,28 @@ export function FileTree({
         >
           ±
         </span>
+      );
+    }
+    // Otherwise in sync, but holding NEW local-only files the host has never
+    // seen: the actionable upload, always ⬆ push whichever tree is showing —
+    // the new bytes are on the local side by definition.
+    if (state === "localnew") {
+      const busy = !!syncProgress;
+      return (
+        <button
+          type="button"
+          className="orange-file-act orange-file-act--icon orange-file-act--slot orange-file-act--local"
+          title={t("fileTree.folderHasNewFiles")}
+          aria-label={t("fileTree.folderHasNewFiles")}
+          disabled={busy}
+          onClick={(ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            void pushRelToHost(relPath, label, true);
+          }}
+        >
+          ⬆
+        </button>
       );
     }
     // In sync: still shown, quietly. An empty slot is the state the root had
@@ -3323,18 +3385,24 @@ export function FileTree({
           // A folder with no manifest entry of its own falls back to the rolled-up
           // state of its tracked descendants (`dirSyncAgg`): green when it contains
           // tracked files and they are all green (so no misleading red push button),
-          // amber when a tracked descendant diverged. Edge cases: a folder with
-          // only untracked ("none") descendants has `any: false` → "none" → shows
-          // the action button (correct — there IS something to transfer); a folder
-          // with an own manifest entry keeps its authoritative lookup (unchanged);
-          // backend dir rows always report green, so own-entry dirs never enter
-          // the aggregate path. `none` remains the default when nothing is known.
+          // amber when a tracked descendant diverged — except that an otherwise
+          // all-green folder holding a NEW local-only file reads `localnew`, the
+          // actionable "upload what's new" state: in the REMOTE tree the folder is
+          // the only place that file can surface at all (the host readdir doesn't
+          // list it). Edge cases: a folder with only untracked ("none") or only
+          // new descendants has `any: false` → "none" → shows the action button
+          // (correct — there IS something to transfer); a folder with an own
+          // manifest entry keeps its authoritative lookup (unchanged); backend dir
+          // rows always report green, so own-entry dirs never enter the aggregate
+          // path. `none` remains the default when nothing is known.
           const syncState: SyncFileState = !syncTracked
             ? "none"
             : syncStatus?.[rel]?.state ??
               (e.is_dir && dirSyncAgg[rel]?.any
                 ? dirSyncAgg[rel].allGreen
-                  ? "green"
+                  ? dirSyncAgg[rel].anyNew
+                    ? "localnew"
+                    : "green"
                   : "amber"
                 : "none");
           // Auto-sync glyph: shown on both the remote and local trees when this
@@ -3425,6 +3493,35 @@ export function FileTree({
                             }}
                           >
                             {thisBusy ? <span className="file-run-spinner" /> : remoteListing ? "⬇" : "⬆"}
+                          </button>
+                        );
+                      })()}
+                      {/* NEW local-only content: this file (or something inside
+                          this folder) exists in the mirror and was never synced,
+                          so the host has no copy. The only meaningful action is
+                          the upload, whichever tree is showing — hence always ⬆
+                          and always the push handler, unlike the "none" slot
+                          above whose direction follows the listing side. */}
+                      {syncState === "localnew" && (() => {
+                        const anyBusy = !!syncProgress;
+                        const thisBusy = syncProgress?.rel === rel;
+                        const title = t(
+                          e.is_dir ? "fileTree.folderHasNewFiles" : "fileTree.pushNewFile",
+                        );
+                        return (
+                          <button
+                            type="button"
+                            className={`orange-file-act orange-file-act--icon orange-file-act--slot orange-file-act--local${thisBusy ? " busy" : ""}`}
+                            title={title}
+                            aria-label={title}
+                            disabled={anyBusy}
+                            onClick={(ev) => {
+                              ev.preventDefault();
+                              ev.stopPropagation();
+                              void pushEntryToHost(e);
+                            }}
+                          >
+                            {thisBusy ? <span className="file-run-spinner" /> : "⬆"}
                           </button>
                         );
                       })()}
@@ -3997,6 +4094,14 @@ export function FileTree({
                     }}
                   >
                     {t("sendToProject.menuItem")}
+                    <UntestedTag />
+                  </button>
+                )}
+                {/* The per-file/folder SFTP exit — the one casual way bytes
+                    leave a mirrorless (VM) project, size-confirmed. */}
+                {remoteListing && (
+                  <button className="untested" onClick={() => void downloadEntryTo(entry)}>
+                    {t("fileTree.downloadToMenuItem")}
                     <UntestedTag />
                   </button>
                 )}

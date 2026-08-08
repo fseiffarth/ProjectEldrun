@@ -83,6 +83,7 @@ you're touching; never read speculatively.
 | `multi_host_remote.md` | Worker/compute hosts: push-only sync, read-only files, pull-outputs. |
 | `tmux_sessions.md` | Shell/script tabs surviving SSH drops and crashes; Sessions view. |
 | `docker_containers.md` | Per-project session container: toggle semantics, lifecycle. |
+| `vm_projects.md` | The VM trust tier: why a VM project is just a remote project, the no-shared-fs boundary, the inverse sync posture, the honest egress knob. |
 | `agent_authority.md` | How sandbox / tab location / agentMode compose. |
 | `hpc_careful_mode.md` | What probes stop collecting on a cluster login node, and how hosts are classified. |
 | `mail_encryption.md` | The sealed local store and the OpenPGP track: what each actually protects, and the invariants that make them worth having. |

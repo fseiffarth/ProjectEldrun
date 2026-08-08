@@ -212,6 +212,17 @@ fn find_spec(id: &str) -> Option<&'static AgentSpec> {
     AGENTS.iter().find(|a| a.id == id)
 }
 
+/// Every agent CLI's binary name — the registry as a plain set, for callers that
+/// only need "is this command an agent?".
+///
+/// It exists so `services::sandbox::is_agent_cmd` (which decides whether a spawn
+/// is containerized under `SandboxScope::Agents`) reads the *same* table the +
+/// menu lists from. A hand-copied second list is how an agent added here would
+/// silently start running outside the container.
+pub fn agent_bins() -> Vec<&'static str> {
+    AGENTS.iter().map(|a| a.bin).collect()
+}
+
 /// POSIX login-shell script used by the explicit "install on remote machine"
 /// action. Agent ids resolve through the same registry as local installation,
 /// so the frontend never supplies executable text. Probe before and after: a

@@ -600,6 +600,11 @@ pub fn run() {
             // skips the exit teardown) and the staged config copies. Off-thread:
             // docker may be slow or absent, and neither may block startup.
             std::thread::spawn(services::sandbox::sweep_orphans);
+            // Reap project VMs a previous (crashed) run left behind, by
+            // pidfile — a VM's lifetime is its app session, so anything alive
+            // at startup is an orphan (`docs/vm_projects_plan.md`). Off-thread,
+            // same posture as the container sweep above.
+            std::thread::spawn(services::vm::sweep_orphans);
             // Unlink ssh ControlMaster sockets a previous run left behind. The
             // master is killed by signal rather than `ssh -O exit`, so the socket
             // outlives it — and a stale one makes OpenSSH disable multiplexing for
@@ -654,6 +659,17 @@ pub fn run() {
             commands::projects::set_project_name,
             commands::projects::set_project_sandbox,
             commands::projects::set_project_sandbox_spec,
+            commands::vm::vm_doctor,
+            commands::vm::vm_status,
+            commands::vm::vm_boot,
+            commands::vm::vm_shutdown,
+            commands::vm::vm_rebuild,
+            commands::vm::vm_blocked,
+            commands::vm::vm_allow_temporarily,
+            commands::vm::vm_set_spec,
+            commands::vm::vm_unpushed_commits,
+            commands::vm::remote_download_size,
+            commands::vm::remote_download_to,
             commands::projects::set_project_remote_control,
             commands::projects::sandbox_preflight,
             commands::python::python_interpreters,
@@ -1035,6 +1051,9 @@ pub fn run() {
             commands::terminal::pty_write,
             commands::terminal::pty_resize,
             commands::terminal::pty_kill,
+            commands::terminal::pty_set_visible,
+            commands::terminal::pty_watch,
+            commands::terminal::pty_unwatch,
             commands::terminal::local_tmux_list,
             commands::terminal::local_tmux_kill,
             commands::terminal::local_tmux_rename,
@@ -1251,6 +1270,10 @@ pub fn run() {
                 // Remove every project container this run created — container
                 // lifetime is the project session, never longer than the app.
                 services::sandbox::down_all();
+                // Shut down every project VM this run booted — VM lifetime is
+                // the app session, like the containers above (ACPI powerdown
+                // via QMP, escalating to a kill after a short grace).
+                services::vm::down_all();
                 // Tear down pooled SSH/SFTP connections. This ends the `ssh`
                 // *clients* Eldrun spawned; the ControlMaster behind them is a
                 // separate backgrounded process (`ssh: … [mux]`, reparented to

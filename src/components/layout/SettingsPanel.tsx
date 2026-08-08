@@ -831,6 +831,24 @@ export function SettingsDialog({
               }
             />
 
+            {/* An experiment rather than the default because WebGL rides the
+                GPU/driver path the DMABUF re-test failed on (flicker, missing
+                content, renderer crash — docs/typing_latency_plan.md Step 4):
+                canvas is the safe renderer, and a terminal whose WebGL fails
+                demotes itself back to it (TerminalView's renderer ladder). */}
+            <div className="settings-toggle-card">
+              <label className="settings-toggle-card-row">
+                <span>
+                  {t("settings.terminalWebgl")} <UntestedTag />
+                </span>
+                <Toggle
+                  checked={experimentalEnabled(settings, "terminal_webgl")}
+                  onChange={(e) => void updateSettings({ terminal_webgl: e.target.checked })}
+                />
+              </label>
+              <p className="settings-help">{t("settings.terminalWebglHelp")}</p>
+            </div>
+
             {/* Mail is ONE switch. It used to be two — this gate plus a
                 `mail_global_app` sub-toggle deciding whether the header button
                 appeared *as well as* the mail tab — but the tab is retired, so

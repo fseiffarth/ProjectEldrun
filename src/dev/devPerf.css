@@ -9,7 +9,10 @@
   position: fixed;
   right: 10px;
   bottom: 10px;
-  z-index: 10000;
+  /* Max int32 — the value every larger one clamps to, react-scan's included.
+     Winning the resulting tie is tree order's job, which is why the panel is
+     portaled to the end of <html> (see DevPerfHost's perfLayer). */
+  z-index: 2147483647;
   width: 30px;
   height: 30px;
   border-radius: 50%;
@@ -30,7 +33,10 @@
   position: fixed;
   right: 10px;
   bottom: 10px;
-  z-index: 10000;
+  /* Max int32 — the value every larger one clamps to, react-scan's included.
+     Winning the resulting tie is tree order's job, which is why the panel is
+     portaled to the end of <html> (see DevPerfHost's perfLayer). */
+  z-index: 2147483647;
   width: 560px;
   max-width: calc(100vw - 20px);
   max-height: 72vh;
@@ -161,4 +167,19 @@
   margin-top: 6px;
   cursor: pointer;
   color: var(--text-secondary);
+}
+
+.dev-perf-scan-clear {
+  margin-top: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.dev-perf-scan-clear:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
 }

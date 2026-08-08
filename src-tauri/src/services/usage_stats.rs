@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 use notify::{recommended_watcher, EventKind, RecursiveMode, Watcher};
 
 use crate::schema::usage_stats::{metric, Counters};
+use crate::storage::ROOT_SCOPE;
 
 /// How long after counting an event for a path we ignore further events for it.
 ///
@@ -213,7 +214,18 @@ impl UsageWatchState {
 /// Resolved here rather than passed in by the frontend: which directory actually
 /// holds a project's files is a backend fact (the mirror path is derived, not
 /// stored on the project), and the frontend has no business knowing it.
+///
+/// The **root scope** resolves the same way, to `~/eldrun/root`. It is not in
+/// `projects.json` — it has no entry to look up and never will — so the id is
+/// matched literally, exactly as `storage::project_key` and the tab-session
+/// files already treat it. Without this the one scope whose whole purpose is
+/// holding files that have not found a project yet was the one scope whose file
+/// churn was never counted.
 pub fn watch_root_for(project_id: &str) -> Option<PathBuf> {
+    if project_id == ROOT_SCOPE {
+        let dir = crate::storage::root_work_dir();
+        return dir.is_dir().then_some(dir);
+    }
     if crate::services::remote::remote_target_for(project_id).is_some() {
         let mirror = crate::services::remote_sync::mirror_dir(project_id);
         return mirror.is_dir().then_some(mirror);
@@ -387,6 +399,27 @@ mod tests {
 
     fn p(s: &str) -> PathBuf {
         PathBuf::from(s)
+    }
+
+    // ── watch_root_for ─────────────────────────────────────────────────────
+
+    /// The root scope is watched at `~/eldrun/root`, like a local project is
+    /// watched at its own directory. It is in no project list, so it can only
+    /// be matched literally — before the lookup, which would answer `None` and
+    /// leave the one scope built for files-without-a-project uncounted.
+    ///
+    /// Asserts WHICH path is named, never `Some`/`None`: whether that directory
+    /// exists is a property of the machine running the test, and the `is_dir`
+    /// guard is the same one both project branches apply.
+    #[test]
+    fn the_root_scope_is_watched_at_the_root_work_dir() {
+        match watch_root_for(ROOT_SCOPE) {
+            Some(dir) => assert_eq!(dir, crate::storage::root_work_dir()),
+            None => assert!(
+                !crate::storage::root_work_dir().is_dir(),
+                "root work dir exists but was not offered for watching"
+            ),
+        }
     }
 
     // ── is_ignored ─────────────────────────────────────────────────────────

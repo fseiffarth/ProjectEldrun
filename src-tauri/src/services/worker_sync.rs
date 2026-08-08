@@ -632,6 +632,7 @@ mod tests {
                 auto_connect: None,
                 key_auth: None,
                 persist_sessions: None,
+                vm: None,
                 label: None,
                 extra: Default::default(),
             },

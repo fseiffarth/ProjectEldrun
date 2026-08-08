@@ -10,7 +10,7 @@ use eldrun_lib::commands::projects::{
     set_project_sandbox_spec, CreateProjectRequest, ImportProjectRequest,
 };
 use eldrun_lib::schema::project::{
-    RemoteSpec, SandboxSourceDecision, SandboxSpec, SandboxToggleOutcome,
+    RemoteSpec, SandboxScope, SandboxSourceDecision, SandboxSpec, SandboxToggleOutcome,
 };
 use tempfile::{Builder, TempDir};
 
@@ -174,6 +174,7 @@ fn create_project_preserves_existing_scaffolds() {
             skip_scaffold: false,
             remote: None,
             mirror_parent: None,
+            vm: None,
         };
 
         let entry = create_project(req).expect("create project");
@@ -224,10 +225,12 @@ fn create_remote_project_enables_lockstep_when_git_backed() {
                 auto_connect: None,
                 key_auth: None,
                 persist_sessions: None,
+                vm: None,
                 label: None,
                 extra: Default::default(),
             }),
             mirror_parent: Some(mirror_parent.path().to_string_lossy().to_string()),
+            vm: None,
         };
 
         let entry = create_project(req).expect("create remote git project");
@@ -261,10 +264,12 @@ fn create_remote_project_leaves_lockstep_off_without_git() {
                 auto_connect: None,
                 key_auth: None,
                 persist_sessions: None,
+                vm: None,
                 label: None,
                 extra: Default::default(),
             }),
             mirror_parent: Some(mirror_parent.path().to_string_lossy().to_string()),
+            vm: None,
         };
 
         let entry = create_project(req).expect("create remote non-git project");
@@ -300,10 +305,12 @@ fn create_remote_project_scaffolds_the_local_mirror() {
                 auto_connect: None,
                 key_auth: None,
                 persist_sessions: None,
+                vm: None,
                 label: None,
                 extra: Default::default(),
             }),
             mirror_parent: Some(mirror_parent.path().to_string_lossy().to_string()),
+            vm: None,
         };
 
         let entry = create_project(req).expect("create remote project");
@@ -518,6 +525,7 @@ fn set_project_description_writes_both_projects_json_and_project_json() {
             skip_scaffold: false,
             remote: None,
             mirror_parent: None,
+            vm: None,
         })
         .expect("create project");
 
@@ -561,6 +569,7 @@ fn new_local_project(name: &str, target: &Path) -> eldrun_lib::schema::projects:
         skip_scaffold: false,
         remote: None,
         mirror_parent: None,
+        vm: None,
     })
     .expect("create project")
 }
@@ -687,6 +696,7 @@ fn set_project_sandbox_preserves_spec_and_confirms_dockerfile() {
         // re-ask — the same content was already decided about.
         let tuned = SandboxSpec {
             enabled: true,
+            scope: SandboxScope::Agents,
             image: None,
             dockerfile: Some("Dockerfile".to_string()),
             pids_limit: Some(256),
@@ -718,6 +728,9 @@ fn set_project_sandbox_preserves_spec_and_confirms_dockerfile() {
         assert_eq!(on.network.as_deref(), Some("none"));
         assert!(on.readonly_rootfs);
         assert_eq!(on.dockerfile.as_deref(), Some("Dockerfile"));
+        // …including the scope: a disable/enable round-trip must not quietly put
+        // the user's shells back inside the container (or take them out of it).
+        assert_eq!(on.scope, SandboxScope::Agents);
 
         // Both stores carry the tuned spec: the projects.json mirror (what the
         // spawn path reads) and the project's own project.json.
@@ -899,10 +912,12 @@ fn set_project_auto_connect_writes_both_copies_and_clears() {
                 auto_connect: None,
                 key_auth: None,
                 persist_sessions: None,
+                vm: None,
                 label: None,
                 extra: Default::default(),
             }),
             mirror_parent: Some(mirror_parent.path().to_string_lossy().to_string()),
+            vm: None,
         })
         .expect("create remote project");
 
@@ -950,6 +965,7 @@ fn set_project_auto_connect_rejects_local_and_unknown_projects() {
             skip_scaffold: true,
             remote: None,
             mirror_parent: None,
+            vm: None,
         })
         .expect("create local project");
 

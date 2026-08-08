@@ -12,7 +12,10 @@ import { create } from "zustand";
  * Plan: docs/ssh_sync_plan.md.
  */
 
-export type SyncFileState = "green" | "amber" | "none";
+/** `localnew` = exists in the local mirror but was never synced (no manifest
+ *  entry): a NEW local file the host doesn't have yet, offered for upload.
+ *  Reported by the backend's `sync_status` new-local-file pass. */
+export type SyncFileState = "green" | "amber" | "none" | "localnew";
 
 /** One status row as returned by the `sync_status` command. */
 interface SyncStatusEntry {
@@ -309,6 +312,15 @@ function indexStatus(rows: SyncStatusEntry[]): Record<string, SyncEntryStatus> {
  *  successful push. `any` = the folder contains a TRACKED file (green/amber);
  *  `allGreen` = all tracked descendants are green.
  *
+ *  A NEW local-only file (`localnew`) rolls up as its own bit, `anyNew`,
+ *  rather than voting against `allGreen`: a folder holding one wants the
+ *  actionable ⬆ upload affordance, not the inert "diverged" ± that an amber
+ *  vote would draw — and in the REMOTE tree an ancestor folder is the only
+ *  place the new file can surface at all (the host readdir doesn't list it,
+ *  so it has no row of its own there). It does NOT set `any` either, so a
+ *  folder with ONLY new files keeps `any: false` → state "none" → the red
+ *  push button, exactly what it showed before this state existed.
+ *
  *  The **root** ("") is rolled up like any other ancestor. It has no row in the
  *  tree, so this used to stop one level short of it — which left the one folder
  *  every project has, and the one the file view opens on, with no state to show
@@ -316,8 +328,8 @@ function indexStatus(rows: SyncStatusEntry[]): Record<string, SyncEntryStatus> {
  *  this key). A file at the top level contributes to "" and to nothing else. */
 export function dirSyncAggregate(
   byPath: Record<string, SyncEntryStatus> | undefined,
-): Record<string, { any: boolean; allGreen: boolean }> {
-  const agg: Record<string, { any: boolean; allGreen: boolean }> = {};
+): Record<string, { any: boolean; allGreen: boolean; anyNew: boolean }> {
+  const agg: Record<string, { any: boolean; allGreen: boolean; anyNew: boolean }> = {};
   if (!byPath) return agg;
   for (const [p, s] of Object.entries(byPath)) {
     if (s.isDir) continue; // dir entries are authoritative on their own row
@@ -325,9 +337,13 @@ export function dirSyncAggregate(
     const parts = p.split("/");
     for (let i = 0; i < parts.length; i++) {
       const dir = parts.slice(0, i).join("/");
-      const cur = agg[dir] ?? { any: false, allGreen: true };
-      cur.any = true;
-      if (s.state !== "green") cur.allGreen = false;
+      const cur = agg[dir] ?? { any: false, allGreen: true, anyNew: false };
+      if (s.state === "localnew") {
+        cur.anyNew = true;
+      } else {
+        cur.any = true;
+        if (s.state !== "green") cur.allGreen = false;
+      }
       agg[dir] = cur;
     }
   }
@@ -345,6 +361,23 @@ export function amberPaths(
   if (!byPath) return [];
   return Object.entries(byPath)
     .filter(([, s]) => s.state === "amber")
+    .map(([rel]) => rel)
+    .sort();
+}
+
+/**
+ * All NEW local-only paths (state `localnew`) — files the mirror holds that
+ * were never synced, so the host has no copy. Deliberately a separate list
+ * from `amberPaths`: an amber row has content on BOTH sides (merge / pick a
+ * winner), a new row has one side only (upload or ignore), and mixing them
+ * would offer merge/take-remote actions that have nothing to act on.
+ */
+export function localNewPaths(
+  byPath: Record<string, SyncEntryStatus> | undefined,
+): string[] {
+  if (!byPath) return [];
+  return Object.entries(byPath)
+    .filter(([, s]) => s.state === "localnew")
     .map(([rel]) => rel)
     .sort();
 }
