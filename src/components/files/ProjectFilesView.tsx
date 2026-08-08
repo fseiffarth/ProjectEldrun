@@ -16,7 +16,7 @@ import { useImportDrop } from "./importDrop";
 import { logoutRemote, useProjectsStore } from "../../stores/projects";
 import { useSyncStore, amberPaths, localNewPaths } from "../../stores/sync";
 import { confirmSyncTransfer } from "../../stores/syncConfirm";
-import { openLinkedFile } from "../embed/FileViewerPane";
+import { openLinkedFile, viewerForPath } from "../embed/FileViewerPane";
 import { useWindowsStore } from "../../stores/windows";
 import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
 import { resolveLocalMirror, type ProjectEntry } from "../../types";
@@ -1948,6 +1948,7 @@ export function ProjectFilesView({
                           // to merge against — this is just the local file.
                           openLinkedFile(undefined, dirname(abs), {
                             path: abs,
+                            viewer: viewerForPath(abs),
                             label: basename(abs),
                           });
                         }}
