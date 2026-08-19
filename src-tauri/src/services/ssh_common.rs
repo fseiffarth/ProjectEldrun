@@ -292,6 +292,12 @@ pub fn ssh_base_args(
         "StrictHostKeyChecking=accept-new".to_string(),
     ];
 
+    // A live project VM's forwarded port gets its per-VM identity + known_hosts
+    // (`services::vm::vm_ssh_opts`; empty for every other target): a recreated
+    // VM has a new host key, and the user's real known_hosts must never collect
+    // `[127.0.0.1]:<port>` entries.
+    args.extend(crate::services::vm::vm_ssh_opts(host, port));
+
     // Reuse (never create) the multiplexing master the pooled connection / an
     // interactive login may have opened (see `ssh_exec::interactive_login_command`
     // and `services::remote`). With `ControlMaster=no` + the shared `cm-%C`
@@ -479,6 +485,10 @@ pub fn ssh_master_base_args(
         "-o".to_string(),
         "ServerAliveCountMax=3".to_string(),
     ];
+
+    // Per-VM identity + known_hosts for a live project VM's forwarded port
+    // (empty for every other target) — see `ssh_base_args`.
+    args.extend(crate::services::vm::vm_ssh_opts(host, port));
 
     #[cfg(not(target_os = "windows"))]
     for opt in control_master_opts() {

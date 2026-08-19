@@ -4,6 +4,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { onMailSync, mailAiAllowed } from "../../lib/mail";
 import { useT } from "../../lib/i18n";
 import { Toggle } from "../common/Toggle";
+import { UntestedTag } from "../common/UntestedTag";
 import type { MailAccount, MailHeader, MailPriority } from "../../types/mail";
 import { MailList } from "./MailList";
 import { MailMessageView } from "./MailMessageView";
@@ -169,6 +170,27 @@ export function MailPane({ visible }: MailPaneProps) {
   const selectedFolder = folders.find((f) => f.id === selectedFolderId);
   const folderUnread = selectedFolder?.unread ?? 0;
 
+  // The open priority list's own size — the *whole* list, not this page, for
+  // "Mark all as read"'s reason one control over: the button acts on every
+  // message carrying the mark, including the ones the pager has not reached.
+  const priorityListCount = selectedPriority
+    ? selectedPriority === "urgent"
+      ? priorityCounts.urgent
+      : priorityCounts.important
+    : 0;
+  // Emptying a list is the only bulk *unmark* there is, and it is asked about
+  // first: nothing moves and nothing is deleted (a mark is not a folder), but
+  // the filing is the user's own work and there is no undo for it. The confirm
+  // says both — what goes and what does not.
+  const clearPriorityList = () => {
+    if (!selectedPriority || priorityListCount === 0) return;
+    const name = t(selectedPriority === "urgent" ? "mail.urgent" : "mail.important");
+    if (!window.confirm(t("mail.confirmClearPriority", { name, count: priorityListCount }))) {
+      return;
+    }
+    void useMailStore.getState().clearPriority(selectedPriority);
+  };
+
   return (
     /* Hidden by style, not by the `hidden` attribute: `.mail-pane` sets
        `display: flex`, which would override the UA's `[hidden] { display: none }`
@@ -198,7 +220,17 @@ export function MailPane({ visible }: MailPaneProps) {
             <button
               key={a.id}
               type="button"
-              className={`mail-account-chip${a.id === selectedAccountId ? " selected" : ""}`}
+              /* Lit only while a *folder* of it is on screen. The account
+                 selection itself survives a priority list — the rail below
+                 still needs an account to list folders for, and leaving the
+                 list has to put you back where you were — but the chip is a
+                 claim about what you are *reading*, and a cross-account list
+                 is not this account's mail. The header dropdown
+                 (`MailIndicator`) already draws its account rows by exactly
+                 this rule; this is that rule, not a second one. */
+              className={`mail-account-chip${
+                a.id === selectedAccountId && !selectedPriority ? " selected" : ""
+              }`}
               title={a.address}
               onClick={() => void useMailStore.getState().selectAccount(a.id)}
               onDoubleClick={() => setAccountDialog({ account: a })}
@@ -370,6 +402,25 @@ export function MailPane({ visible }: MailPaneProps) {
           >
             {t("mail.markAllRead", { count: folderUnread })}
           </button>
+        )}
+        {/* The priority list's counterpart to it, in the same slot and with the
+            same shape — the count in the label, hidden rather than disabled when
+            there is nothing to clear. It is the only way back to an empty list:
+            marks accumulate and are never consumed (a list you file into is not
+            an inbox and does not empty as it is read), so without this the way
+            out is one right-click per message. */}
+        {selectedPriority && priorityListCount > 0 && (
+          <>
+            <button
+              type="button"
+              className="mail-btn"
+              title={t("mail.clearPriorityTitle")}
+              onClick={clearPriorityList}
+            >
+              {t("mail.clearPriority", { count: priorityListCount })}
+            </button>
+            <UntestedTag />
+          </>
         )}
         {/* Everything to the left of this acts on the selected account or its
             open folder; everything to the right is the mailbox as a whole (the

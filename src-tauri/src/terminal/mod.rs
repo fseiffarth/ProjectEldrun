@@ -3,7 +3,9 @@
 //! Design constraints from TauriRust.md Phase 3:
 //! - portable-pty for cross-platform PTY creation.
 //! - Bounded per-PTY output channels (backpressure via mpsc).
-//! - Batched/throttled Tauri events (max one emit per 16 ms).
+//! - Batched/throttled Tauri events (max one emit per 16 ms mid-burst; the
+//!   first chunk after quiet flushes immediately, and an idle PTY parks with
+//!   no timer at all — see `batch_output`).
 //! - UTF-8 lossy output; binary-safe read loop.
 //! - Crash-loop protection: tracks last-exit timestamps.
 //! - Explicit terminal-ready event when the shell starts.
@@ -11,8 +13,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
@@ -30,6 +32,252 @@ pub const SCROLLBACK_LIMIT: usize = 5000;
 
 /// Internal channel capacity — limits buffered output chunks.
 const CHANNEL_CAP: usize = 64;
+
+// ── Visible-only streaming ────────────────────────────────────────────────
+//
+// A hidden pane's PTY used to stream every chunk over IPC anyway: the frontend
+// buffered it instead of feeding xterm (its half of the fix), but each emit
+// still woke the GTK main thread and a JS listener — with dozens of streaming
+// agent tabs the renderer was poked constantly and never reached idle, which
+// is what forfeits the scheduler's interactive fast path
+// (docs/typing_latency_plan.md). So the gate moved backend-side: a PTY whose
+// pane is hidden stops emitting `terminal-output` entirely. Its output
+// accumulates in an in-Rust `pending` buffer (front-trimmed at
+// `ROUTE_PENDING_CAP`; agent TUIs repaint whole screens, so the replay
+// converges on the current frame), and the pills stay honest through
+// `terminal-activity` digests: the accumulated tail, emitted leading-edge and
+// then at most once per `ACTIVITY_INTERVAL`, with a trailing flush so the
+// decision prompt that arrives right before quiet is still reported.
+//
+// Showing the pane again (`pty_set_visible`) drains `pending` as ONE
+// `terminal-replay` event — a separate event name because replayed output is
+// STALE output written late: the frontend must route it through its
+// stripTerminalQueries guard, never a bare `term.write` (a terminal query in
+// it would be answered on parse and typed into the shell). The drain is
+// emitted while the routes lock is held; every live chunk emit also takes
+// that lock first, so the replay provably precedes any output produced after
+// the flip.
+//
+// `watchers` is the override for consumers that scan a possibly-hidden PTY's
+// raw stream for markers (`useRemoteSession`/`useRemoteReconnect`'s login
+// terminals): while a watch is held the PTY streams `terminal-output` as if
+// visible. A watch's rising edge drains `pending` the same way, so the hidden
+// pane's own buffer stays in byte order across the watch.
+
+/// How often a hidden PTY's buffered output is condensed into a
+/// `terminal-activity` digest. Must stay well under the activity store's
+/// BUSY_WINDOW_MS (800 ms): the "working" classifier treats a gap that long
+/// as the end of a burst, so a slower cadence would make every hidden
+/// streaming tab read as idle between digests.
+const ACTIVITY_INTERVAL: Duration = Duration::from_millis(500);
+
+/// How much hidden-spell output is retained for the show-again replay.
+/// Mirrors the frontend's PENDING_OUTPUT_CAP.
+const ROUTE_PENDING_CAP: usize = 1_000_000;
+
+/// How much tail one `terminal-activity` digest carries — enough for the
+/// activity store's 8 KB decision-prompt scan.
+const ACTIVITY_TAIL_CAP: usize = 8192;
+
+/// Per-PTY routing state. `visible` defaults to true so a freshly spawned PTY
+/// streams until its pane reports otherwise (the safe direction: at worst it
+/// costs what every PTY used to cost).
+struct OutputRoute {
+    visible: bool,
+    watchers: u32,
+    /// Output accumulated while unsubscribed, replayed on the next rising edge.
+    pending: Vec<u8>,
+    /// Output since the last activity digest (tail-capped).
+    digest: Vec<u8>,
+    /// When the last digest was emitted; `None` = the next one is leading-edge.
+    last_activity: Option<Instant>,
+    /// A trailing-flush task is sleeping toward `last_activity + interval`.
+    digest_armed: bool,
+    /// Spawn generation, so a respawn under the same id survives the previous
+    /// spawn's task-end cleanup.
+    seq: u64,
+}
+
+impl Default for OutputRoute {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            watchers: 0,
+            pending: Vec::new(),
+            digest: Vec::new(),
+            last_activity: None,
+            digest_armed: false,
+            seq: 0,
+        }
+    }
+}
+
+impl OutputRoute {
+    fn subscribed(&self) -> bool {
+        self.visible || self.watchers > 0
+    }
+
+    /// Drain the hidden-spell buffer for a replay emit. Also drops the digest:
+    /// its bytes are a subset of `pending` and have just been delivered.
+    fn take_pending(&mut self) -> Option<String> {
+        self.digest.clear();
+        if self.pending.is_empty() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&self.pending).into_owned();
+        self.pending.clear();
+        Some(text)
+    }
+}
+
+fn routes() -> &'static Mutex<HashMap<String, OutputRoute>> {
+    static ROUTES: OnceLock<Mutex<HashMap<String, OutputRoute>>> = OnceLock::new();
+    ROUTES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+static ROUTE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Trim with hysteresis (the frontend buffer's rule): cutting exactly to the
+/// cap on every chunk past it re-copies the whole buffer per chunk; letting it
+/// grow to 2× and cutting back costs one copy per cap's worth of new output.
+/// The cut may land mid-UTF-8-sequence; the lossy conversion at read time
+/// degrades that to one replacement char, same as the frontend's slice did.
+fn trim_with_hysteresis(buf: &mut Vec<u8>, cap: usize) {
+    if buf.len() > cap * 2 {
+        let cut = buf.len() - cap;
+        buf.drain(..cut);
+    }
+}
+
+/// What the batcher should do with one flushed chunk.
+enum Routed {
+    /// Subscribed: emit as ordinary `terminal-output`.
+    Data(String),
+    /// Hidden, digest due: emit as `terminal-activity`.
+    Activity(String),
+    /// Hidden, inside the digest window: spawn a trailing flush for this
+    /// deadline (nothing was armed yet).
+    ArmDigest(Instant),
+    /// Hidden, a trailing flush is already armed: nothing to do.
+    Quiet,
+}
+
+fn route_chunk_at(id: &str, bytes: &[u8], now: Instant) -> Routed {
+    let mut map = routes().lock().unwrap();
+    let route = map.entry(id.to_string()).or_default();
+    if route.subscribed() {
+        return Routed::Data(String::from_utf8_lossy(bytes).into_owned());
+    }
+    route.pending.extend_from_slice(bytes);
+    trim_with_hysteresis(&mut route.pending, ROUTE_PENDING_CAP);
+    route.digest.extend_from_slice(bytes);
+    trim_with_hysteresis(&mut route.digest, ACTIVITY_TAIL_CAP);
+    let due = route
+        .last_activity
+        .is_none_or(|t| now.duration_since(t) >= ACTIVITY_INTERVAL);
+    if due {
+        route.last_activity = Some(now);
+        let text = String::from_utf8_lossy(&route.digest).into_owned();
+        route.digest.clear();
+        Routed::Activity(text)
+    } else if !route.digest_armed {
+        route.digest_armed = true;
+        // `!due` implies `last_activity` is Some.
+        Routed::ArmDigest(route.last_activity.unwrap() + ACTIVITY_INTERVAL)
+    } else {
+        Routed::Quiet
+    }
+}
+
+fn route_chunk(id: &str, bytes: &[u8]) -> Routed {
+    route_chunk_at(id, bytes, Instant::now())
+}
+
+/// The trailing digest flush: drain whatever the window's remaining chunks
+/// left, so the last output before a quiet spell (the decision prompt, above
+/// all) always reaches the activity store.
+fn route_digest_take_at(id: &str, now: Instant) -> Option<String> {
+    let mut map = routes().lock().unwrap();
+    let route = map.get_mut(id)?;
+    route.digest_armed = false;
+    if route.subscribed() || route.digest.is_empty() {
+        return None;
+    }
+    route.last_activity = Some(now);
+    let text = String::from_utf8_lossy(&route.digest).into_owned();
+    route.digest.clear();
+    Some(text)
+}
+
+fn route_digest_take(id: &str) -> Option<String> {
+    route_digest_take_at(id, Instant::now())
+}
+
+/// Register a (re)spawn: keep the pane's visibility and any watchers, drop
+/// stale buffers, and mint the generation the task-end cleanup is guarded by.
+fn route_open(id: &str) -> u64 {
+    let seq = ROUTE_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    let mut map = routes().lock().unwrap();
+    let route = map.entry(id.to_string()).or_default();
+    route.pending.clear();
+    route.digest.clear();
+    route.last_activity = None;
+    route.seq = seq;
+    seq
+}
+
+/// Task-end cleanup, guarded by generation so an old spawn's exit can never
+/// remove the route a respawn under the same id just opened.
+fn route_close(id: &str, seq: u64) {
+    let mut map = routes().lock().unwrap();
+    if map.get(id).is_some_and(|r| r.seq == seq) {
+        map.remove(id);
+    }
+}
+
+/// Emit a rising edge's replay while STILL holding the routes lock: every live
+/// chunk emit also takes this lock first (`route_chunk`), so the replay is
+/// guaranteed to precede any output produced after the flip.
+fn emit_replay(app: &AppHandle, id: &str, route: &mut OutputRoute) {
+    if let Some(text) = route.take_pending() {
+        let _ = app.emit(
+            "terminal-replay",
+            TerminalOutput { id: id.to_string(), data: text },
+        );
+    }
+}
+
+/// The pane's visibility report (`pty_set_visible`).
+pub fn route_set_visible(app: &AppHandle, id: &str, visible: bool) {
+    let mut map = routes().lock().unwrap();
+    let route = map.entry(id.to_string()).or_default();
+    let was = route.subscribed();
+    route.visible = visible;
+    if !was && route.subscribed() {
+        emit_replay(app, id, route);
+    }
+}
+
+/// A marker-watcher's hold (`pty_watch`): stream this PTY as if visible.
+pub fn route_watch(app: &AppHandle, id: &str) {
+    let mut map = routes().lock().unwrap();
+    let route = map.entry(id.to_string()).or_default();
+    let was = route.subscribed();
+    route.watchers += 1;
+    if !was {
+        emit_replay(app, id, route);
+    }
+}
+
+/// Release a watch. Unbalanced releases are harmless (saturating), and a
+/// watch leaked by a webview reload merely leaves the PTY streaming — today's
+/// behaviour, the fail-open direction.
+pub fn route_unwatch(id: &str) {
+    let mut map = routes().lock().unwrap();
+    if let Some(route) = map.get_mut(id) {
+        route.watchers = route.watchers.saturating_sub(1);
+    }
+}
 
 // ── Public data types ──────────────────────────────────────────────────────
 
@@ -134,7 +382,7 @@ fn invalidate_proc_tree_cache() {
 }
 
 /// How aggressively [`reap_child_subtree`] signals a doomed process subtree.
-enum ReapMode {
+pub(crate) enum ReapMode {
     /// SIGTERM now, then SIGKILL any survivors after a short grace period on a
     /// detached thread. Used on tab close / respawn, where the app stays alive
     /// long enough to deliver the escalation.
@@ -142,6 +390,16 @@ enum ReapMode {
     /// SIGKILL immediately. Used at app exit, where a delayed escalation thread
     /// would be torn down with the process before it could fire.
     Immediate,
+    /// SIGTERM now, then SIGKILL whatever is still alive when `grace` runs out —
+    /// escalated on the **calling** thread, and returning as soon as the subtree
+    /// is gone. This is the mode for an exit-time teardown that must let the
+    /// process shut itself down first: [`ReapMode::Graceful`]'s escalation thread
+    /// dies with the app before it can fire, and [`ReapMode::Immediate`] never
+    /// offers the chance. The caller pays the wait, so keep the grace short.
+    ///
+    /// The grace is unread on Windows, where `TerminateProcess` is the only
+    /// per-pid primitive and every mode reaps immediately.
+    GracefulBlocking(#[cfg_attr(not(unix), allow(dead_code))] Duration),
 }
 
 /// Best-effort abort of a PTY child's **entire process subtree**.
@@ -155,7 +413,7 @@ enum ReapMode {
 ///
 /// The leader pid is included in the returned set; re-signalling a leader the
 /// caller also `Child::kill`s is a harmless no-op (a dead pid yields ESRCH).
-fn reap_child_subtree(leader_pid: u32, mode: ReapMode) {
+pub(crate) fn reap_child_subtree(leader_pid: u32, mode: ReapMode) {
     // Force a fresh process-tree walk rather than reusing a cached CPU sample
     // that may predate a just-spawned child.
     crate::sysstat::invalidate_descendant_cache();
@@ -186,6 +444,21 @@ fn reap_pids(pids: Vec<u32>, mode: ReapMode) {
                 std::thread::sleep(Duration::from_secs(2));
                 signal(&pids, libc::SIGKILL);
             });
+        }
+        ReapMode::GracefulBlocking(grace) => {
+            signal(&pids, libc::SIGTERM);
+            let deadline = Instant::now() + grace;
+            while Instant::now() < deadline {
+                // SAFETY: `kill(pid, 0)` probes existence without signalling.
+                let any_alive = pids
+                    .iter()
+                    .any(|&pid| unsafe { libc::kill(pid as libc::pid_t, 0) } == 0);
+                if !any_alive {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            signal(&pids, libc::SIGKILL);
         }
     }
 }
@@ -415,7 +688,7 @@ pub fn spawn_pty(
     let _ = app.emit("terminal-ready", TerminalReady { id: opts.id.clone() });
 
     // Channel: blocking reader thread → async emitter task.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(CHANNEL_CAP);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(CHANNEL_CAP);
 
     let dead_reader = dead.clone();
     let _id_reader = opts.id.clone();
@@ -443,54 +716,42 @@ pub fn spawn_pty(
     // tracking and mints a new token, so the old process exiting below can only
     // ever tear down its own.
     let bind_seq = crate::services::codex_bind::current_seq(&opts.id);
+    let route_seq = route_open(&opts.id);
     tokio::spawn(async move {
-        let mut batch: Vec<u8> = Vec::with_capacity(BATCH_MAX_BYTES);
-        let mut last_emit = Instant::now();
-
-        loop {
-            // Poll with a short timeout so we can flush on the interval even
-            // if no new data arrives.
-            let chunk = tokio::time::timeout(BATCH_INTERVAL, rx.recv()).await;
-
-            match chunk {
-                Ok(Some(data)) => batch.extend_from_slice(&data),
-                Ok(None) => {
-                    // Channel closed = reader thread exited.
-                    break;
-                }
-                Err(_timeout) => {} // Normal: flush on interval.
-            }
-
-            let now = Instant::now();
-            let should_flush = !batch.is_empty()
-                && (batch.len() >= BATCH_MAX_BYTES
-                    || now.duration_since(last_emit) >= BATCH_INTERVAL);
-
-            if should_flush {
-                let text = String::from_utf8_lossy(&batch).into_owned();
-                let _ = app.emit(
+        let emitter = app.clone();
+        batch_output(rx, |bytes| match route_chunk(&id, bytes) {
+            Routed::Data(text) => {
+                let _ = emitter.emit(
                     "terminal-output",
-                    TerminalOutput {
-                        id: id.clone(),
-                        data: text,
-                    },
+                    TerminalOutput { id: id.clone(), data: text },
                 );
-                batch.clear();
-                last_emit = now;
             }
-        }
-
-        // Final flush.
-        if !batch.is_empty() {
-            let text = String::from_utf8_lossy(&batch).into_owned();
-            let _ = app.emit(
-                "terminal-output",
-                TerminalOutput {
-                    id: id.clone(),
-                    data: text,
-                },
-            );
-        }
+            Routed::Activity(text) => {
+                let _ = emitter.emit(
+                    "terminal-activity",
+                    TerminalOutput { id: id.clone(), data: text },
+                );
+            }
+            Routed::ArmDigest(deadline) => {
+                // A short-lived task per digest window, only while a hidden PTY
+                // is mid-burst — an idle or visible PTY arms nothing, keeping
+                // the zero-idle-wakeups discipline of `batch_output` intact.
+                let app2 = emitter.clone();
+                let id2 = id.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                    if let Some(text) = route_digest_take(&id2) {
+                        let _ = app2.emit(
+                            "terminal-activity",
+                            TerminalOutput { id: id2, data: text },
+                        );
+                    }
+                });
+            }
+            Routed::Quiet => {}
+        })
+        .await;
+        route_close(&id, route_seq);
         // The child exited on its own; its subtree is gone, so the next CPU
         // sample must rebuild rather than count dead pids.
         invalidate_proc_tree_cache();
@@ -502,6 +763,65 @@ pub fn spawn_pty(
     });
 
     Ok(())
+}
+
+/// Drain a PTY's output channel into batched `flush` calls.
+///
+/// The wakeup discipline is the whole point (typing-latency plan, step 2): an
+/// idle terminal must cost **zero** timer wakeups. The old loop re-armed a
+/// 16 ms `timeout` unconditionally, so every idle tab woke a tokio task
+/// 62.5×/s forever — with ~50 open PTYs that alone was ~647 context switches
+/// per second at rest. The rules:
+///
+/// - Batch empty → park on `recv()` with no timer at all.
+/// - A chunk arriving with `last_emit` a full window ago flushes immediately —
+///   the leading edge. This is every keystroke echo at typing speed (inter-key
+///   gaps far exceed the window), so echo latency stays ~0 ms.
+/// - A chunk arriving inside the window arms one timeout for the *remainder*
+///   of the window, coalescing a burst; `BATCH_MAX_BYTES` flushes early.
+async fn batch_output<F: FnMut(&[u8])>(
+    mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    mut flush: F,
+) {
+    let mut batch: Vec<u8> = Vec::with_capacity(BATCH_MAX_BYTES);
+    // Start stale by one full window so the very first chunk takes the
+    // leading-edge flush too (checked_sub: an Instant can't go below the
+    // platform's epoch; the fallback merely delays the first flush one window).
+    let mut last_emit = Instant::now()
+        .checked_sub(BATCH_INTERVAL)
+        .unwrap_or_else(Instant::now);
+
+    loop {
+        if batch.is_empty() {
+            match rx.recv().await {
+                Some(data) => batch.extend_from_slice(&data),
+                None => break, // Channel closed = reader thread exited.
+            }
+        } else {
+            let deadline = tokio::time::Instant::from_std(last_emit + BATCH_INTERVAL);
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Some(data)) => batch.extend_from_slice(&data),
+                Ok(None) => break,
+                Err(_expired) => {} // Window over with data pending: flush below.
+            }
+        }
+
+        let now = Instant::now();
+        let should_flush = !batch.is_empty()
+            && (batch.len() >= BATCH_MAX_BYTES
+                || now.duration_since(last_emit) >= BATCH_INTERVAL);
+
+        if should_flush {
+            flush(&batch);
+            batch.clear();
+            last_emit = now;
+        }
+    }
+
+    // Final flush.
+    if !batch.is_empty() {
+        flush(&batch);
+    }
 }
 
 /// Resize an existing PTY.
@@ -604,6 +924,232 @@ fn build_command(opts: &PtyOptions) -> CommandBuilder {
     }
 
     cmd
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    type Flushes = Arc<Mutex<Vec<Vec<u8>>>>;
+
+    /// Spawn `batch_output` collecting flushes into a shared list.
+    fn collectors() -> (
+        tokio::sync::mpsc::Sender<Vec<u8>>,
+        Flushes,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(CHANNEL_CAP);
+        let flushes: Flushes = Arc::new(Mutex::new(Vec::new()));
+        let sink = flushes.clone();
+        let handle = tokio::spawn(async move {
+            batch_output(rx, |bytes| sink.lock().unwrap().push(bytes.to_vec())).await;
+        });
+        (tx, flushes, handle)
+    }
+
+    /// Let the batcher task run without advancing the paused clock: yielding
+    /// keeps this task ready, so tokio's auto-advance never fires.
+    async fn settle() {
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// The keystroke-echo invariant: the first chunk after quiet flushes with
+    /// no batching delay at all. The clock is paused, so if the batcher waited
+    /// on any timer the flush could not have happened yet.
+    #[tokio::test(start_paused = true)]
+    async fn first_chunk_after_quiet_flushes_immediately() {
+        let (tx, flushes, _h) = collectors();
+        tx.send(b"x".to_vec()).await.unwrap();
+        settle().await;
+        assert_eq!(*flushes.lock().unwrap(), vec![b"x".to_vec()]);
+    }
+
+    /// Chunks landing inside the window coalesce into one flush at the
+    /// window's trailing edge — not one emit per chunk.
+    #[tokio::test(start_paused = true)]
+    async fn mid_burst_chunks_coalesce_until_window() {
+        let (tx, flushes, _h) = collectors();
+        tx.send(b"a".to_vec()).await.unwrap();
+        settle().await; // leading-edge flush of "a"; window opens now
+        tx.send(b"b".to_vec()).await.unwrap();
+        settle().await;
+        tx.send(b"c".to_vec()).await.unwrap();
+        settle().await;
+        // Sleeping past the window lets the paused clock auto-advance to the
+        // batcher's armed deadline.
+        tokio::time::sleep(BATCH_INTERVAL * 2).await;
+        settle().await;
+        assert_eq!(
+            *flushes.lock().unwrap(),
+            vec![b"a".to_vec(), b"bc".to_vec()]
+        );
+    }
+
+    /// A full batch flushes immediately even inside the window.
+    #[tokio::test(start_paused = true)]
+    async fn max_bytes_flushes_inside_window() {
+        let (tx, flushes, _h) = collectors();
+        tx.send(b"a".to_vec()).await.unwrap();
+        settle().await;
+        tx.send(vec![b'z'; BATCH_MAX_BYTES]).await.unwrap();
+        settle().await; // clock never advanced: only the size rule can flush
+        assert_eq!(flushes.lock().unwrap().len(), 2);
+        assert_eq!(flushes.lock().unwrap()[1].len(), BATCH_MAX_BYTES);
+    }
+
+    /// Data pending when the channel closes is not lost.
+    #[tokio::test(start_paused = true)]
+    async fn close_flushes_remainder() {
+        let (tx, flushes, h) = collectors();
+        tx.send(b"a".to_vec()).await.unwrap();
+        settle().await;
+        tx.send(b"tail".to_vec()).await.unwrap(); // inside the window: batched
+        settle().await;
+        drop(tx);
+        h.await.unwrap();
+        assert_eq!(
+            *flushes.lock().unwrap(),
+            vec![b"a".to_vec(), b"tail".to_vec()]
+        );
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+
+    /// Flip a route's visibility without an AppHandle (the command wrapper's
+    /// only extra is the replay emit); returns what that emit would carry.
+    fn set_visible(id: &str, visible: bool) -> Option<String> {
+        let mut map = routes().lock().unwrap();
+        let route = map.entry(id.to_string()).or_default();
+        let was = route.subscribed();
+        route.visible = visible;
+        if !was && route.subscribed() { route.take_pending() } else { None }
+    }
+
+    #[test]
+    fn subscribed_by_default_streams_data() {
+        let id = "route-t-default";
+        let seq = route_open(id);
+        assert!(matches!(
+            route_chunk_at(id, b"hello", Instant::now()),
+            Routed::Data(t) if t == "hello"
+        ));
+        route_close(id, seq);
+    }
+
+    #[test]
+    fn hidden_digests_leading_edge_then_coalesces() {
+        let id = "route-t-digest";
+        let seq = route_open(id);
+        assert_eq!(set_visible(id, false), None);
+        let t0 = Instant::now();
+        // First hidden chunk: leading-edge digest, no batching delay.
+        assert!(matches!(
+            route_chunk_at(id, b"abc", t0),
+            Routed::Activity(t) if t == "abc"
+        ));
+        // Inside the window: buffered, one trailing flush armed at the window end.
+        assert!(matches!(
+            route_chunk_at(id, b"def", t0 + Duration::from_millis(10)),
+            Routed::ArmDigest(d) if d == t0 + ACTIVITY_INTERVAL
+        ));
+        assert!(matches!(
+            route_chunk_at(id, b"ghi", t0 + Duration::from_millis(20)),
+            Routed::Quiet
+        ));
+        // The trailing flush drains what the window accumulated — the decision
+        // prompt that arrived right before quiet is never stranded.
+        assert_eq!(
+            route_digest_take_at(id, t0 + ACTIVITY_INTERVAL).as_deref(),
+            Some("defghi")
+        );
+        assert_eq!(route_digest_take_at(id, t0 + ACTIVITY_INTERVAL), None);
+        route_close(id, seq);
+    }
+
+    #[test]
+    fn showing_replays_every_hidden_byte_once() {
+        let id = "route-t-replay";
+        let seq = route_open(id);
+        set_visible(id, false);
+        let t0 = Instant::now();
+        let _ = route_chunk_at(id, b"abc", t0);
+        let _ = route_chunk_at(id, b"def", t0 + Duration::from_millis(10));
+        // The replay carries ALL hidden bytes — including those a digest
+        // already summarized (the digest fed the pills, not the pane).
+        assert_eq!(set_visible(id, true).as_deref(), Some("abcdef"));
+        // And streaming resumes.
+        assert!(matches!(
+            route_chunk_at(id, b"live", Instant::now()),
+            Routed::Data(t) if t == "live"
+        ));
+        // No leftover digest fires after the drain.
+        assert_eq!(route_digest_take_at(id, t0 + ACTIVITY_INTERVAL), None);
+        route_close(id, seq);
+    }
+
+    #[test]
+    fn a_watch_streams_a_hidden_pty() {
+        let id = "route-t-watch";
+        let seq = route_open(id);
+        set_visible(id, false);
+        let t0 = Instant::now();
+        let _ = route_chunk_at(id, b"early", t0);
+        // Rising edge drains pending (byte order across the watch) …
+        {
+            let mut map = routes().lock().unwrap();
+            let route = map.get_mut(id).unwrap();
+            let was = route.subscribed();
+            route.watchers += 1;
+            assert!(!was);
+            assert_eq!(route.take_pending().as_deref(), Some("early"));
+        }
+        // … then the hidden PTY streams like a visible one.
+        assert!(matches!(
+            route_chunk_at(id, b"marker", Instant::now()),
+            Routed::Data(t) if t == "marker"
+        ));
+        route_unwatch(id);
+        // Released: back to buffering (leading-edge digest again).
+        assert!(matches!(
+            route_chunk_at(id, b"after", t0 + ACTIVITY_INTERVAL * 2),
+            Routed::Activity(t) if t == "after"
+        ));
+        route_close(id, seq);
+    }
+
+    #[test]
+    fn pending_is_capped_with_hysteresis() {
+        let mut buf = vec![b'x'; ROUTE_PENDING_CAP * 2];
+        trim_with_hysteresis(&mut buf, ROUTE_PENDING_CAP);
+        assert_eq!(buf.len(), ROUTE_PENDING_CAP * 2, "at 2x nothing is cut yet");
+        buf.push(b'y');
+        trim_with_hysteresis(&mut buf, ROUTE_PENDING_CAP);
+        assert_eq!(buf.len(), ROUTE_PENDING_CAP, "past 2x it cuts back to the cap");
+        assert_eq!(*buf.last().unwrap(), b'y', "the newest bytes survive");
+    }
+
+    #[test]
+    fn respawn_survives_the_old_spawns_cleanup() {
+        let id = "route-t-respawn";
+        let old = route_open(id);
+        set_visible(id, false);
+        let new = route_open(id);
+        route_close(id, old); // the old spawn's task ends late
+        assert!(
+            routes().lock().unwrap().contains_key(id),
+            "the respawn's route must survive"
+        );
+        // And the respawn kept the pane's hidden state.
+        assert!(!routes().lock().unwrap().get(id).unwrap().subscribed());
+        route_close(id, new);
+        assert!(!routes().lock().unwrap().contains_key(id));
+    }
 }
 
 #[cfg(all(test, unix))]

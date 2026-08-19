@@ -25,10 +25,27 @@
 
 FROM node:22-bookworm-slim
 
-# Tools agents commonly shell out to. Add your project toolchain (python, go,
-# rustup, etc.) here if your agents need to build/run code inside the sandbox.
+# Tools agents commonly shell out to. Add the rest of your project toolchain (go,
+# rustup, a JDK, …) here if your agents need to build/run code inside the sandbox.
+#
+# Python is included rather than left as an exercise because its absence is not a
+# missing convenience, it is a broken feature: an agent in a Python project that
+# cannot run `python3` fails at its first attempt to check its own work, and the
+# viewer's Run/Debug button (which opens an ordinary terminal tab, so it lands
+# inside the container like everything else) reported `python3: not found`.
+#
+# It does NOT make a host `.venv` work. A venv is not self-contained: its
+# `bin/python` is a symlink to the system interpreter recorded in `pyvenv.cfg`,
+# and the project directory being bind-mounted brings the venv in while leaving
+# that interpreter on the host. If the version below matches the one the venv was
+# built against, the symlink resolves and it works; otherwise the venv is skipped
+# as unusable (see `commands::python`'s in-container probe) and the image's own
+# python3 is used, without the project's dependencies. Two ways out: build a venv
+# inside the container, or set the container to "Agent tabs only" so Run/Debug
+# stays on the host with the host's environment.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git ca-certificates ripgrep less procps curl \
+        python3 python3-venv python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 # Agent CLIs. Pin versions in your own fork if you want reproducible builds.

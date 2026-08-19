@@ -66,12 +66,69 @@ fn cwd_within(cwd: &str, allowed: &std::path::Path) -> bool {
     std::path::Path::new(cwd).starts_with(allowed)
 }
 
+/// The VM tier's spawn-refusal decision (`docs/vm_projects_plan.md`), pure so
+/// the no-local-fallback guard is testable: for a VM project a local spawn is
+/// refused outright (the untrusted agent stepping outside the boundary, never
+/// a downgrade), and a spawn while the VM is down refuses with the
+/// `ELDRUN_VM_DOWN` sentinel the frontend turns into a boot action. `None`
+/// (spawn proceeds) for every non-VM project.
+fn vm_spawn_refusal(
+    is_vm: bool,
+    vm_running: bool,
+    local_only: bool,
+    tab_id: &str,
+) -> Option<String> {
+    if !is_vm {
+        return None;
+    }
+    if local_only {
+        return Some(
+            "This project lives inside its VM — tabs never run on the host. \
+             Open the tab on the VM instead."
+                .to_string(),
+        );
+    }
+    if !vm_running {
+        return Some(format!(
+            "ELDRUN_VM_DOWN: the VM for this project is not running; tab '{tab_id}' was not spawned. Boot the VM (activate the project or click its lamp) and retry."
+        ));
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::schema::projects::ProjectEntry;
     use std::collections::HashMap;
     use std::path::Path;
+
+    // ── vm_spawn_refusal: the VM tier's no-local-fallback guard ────────────
+
+    #[test]
+    fn non_vm_projects_spawn_freely() {
+        assert_eq!(vm_spawn_refusal(false, false, true, "t1"), None);
+        assert_eq!(vm_spawn_refusal(false, false, false, "t1"), None);
+    }
+
+    #[test]
+    fn vm_local_spawn_is_refused_even_with_the_vm_up() {
+        // The refusal is about the boundary, not availability: a host shell
+        // for a VM project is never a fallback, running VM or not.
+        assert!(vm_spawn_refusal(true, true, true, "t1").is_some());
+        assert!(vm_spawn_refusal(true, false, true, "t1").is_some());
+    }
+
+    #[test]
+    fn vm_down_refuses_with_the_boot_sentinel() {
+        let msg = vm_spawn_refusal(true, false, false, "t1").unwrap();
+        assert!(msg.starts_with("ELDRUN_VM_DOWN:"), "{msg}");
+    }
+
+    #[test]
+    fn vm_up_remote_spawn_proceeds() {
+        assert_eq!(vm_spawn_refusal(true, true, false, "t1"), None);
+    }
 
     #[test]
     fn cwd_within_accepts_project_dir_and_subdirs() {
@@ -157,6 +214,26 @@ pub async fn pty_spawn(
     // docker wrap and the ssh wrap and ran its argv on the host. Runs first, so
     // every step below sees the enforced values.
     crate::services::sandbox::enforce_spawn_authority(&mut opts);
+
+    // VM-tier hard refusals (`docs/vm_projects_plan.md`): for a VM project the
+    // remote→local fallback that exists elsewhere is not a perf surprise but
+    // the untrusted agent stepping outside the boundary — so a local spawn is
+    // refused outright, and a spawn while the VM is down refuses with a
+    // sentinel (the frontend offers a boot action) rather than downgrading to
+    // a host shell. Checked against the state-dir `projects.json` (the record
+    // an in-VM agent cannot write), like the authority flags above.
+    if let Some(pid) = opts.project_id.as_deref() {
+        let is_vm = crate::services::remote::remote_target_for(pid)
+            .is_some_and(|t| crate::services::vm::is_vm_spec(&t.spec));
+        if let Some(refusal) = vm_spawn_refusal(
+            is_vm,
+            is_vm && crate::services::vm::is_running(pid),
+            opts.local_only,
+            &opts.id,
+        ) {
+            return Err(refusal);
+        }
+    }
 
     // SSH-sync Phase 1: a LOCAL-running tab on a REMOTE project runs in the
     // project's local mirror — it can't reach the remote tree. Resolve the cwd to
@@ -438,6 +515,32 @@ pub async fn pty_resize(
     rows: u16,
 ) -> Result<(), String> {
     crate::terminal::resize_pty(registry.inner(), &id, cols, rows)
+}
+
+/// A pane's visibility report (visible-only streaming): a hidden pane's PTY
+/// stops emitting `terminal-output` over IPC entirely — the backend buffers it
+/// and condenses throttled `terminal-activity` digests for the pill
+/// indicators — and re-showing drains the buffer as one `terminal-replay`.
+/// See the routing block in `terminal/mod.rs`.
+#[tauri::command]
+pub async fn pty_set_visible(app: AppHandle, id: String, visible: bool) -> Result<(), String> {
+    crate::terminal::route_set_visible(&app, &id, visible);
+    Ok(())
+}
+
+/// Hold a marker-watch on a PTY: stream its output as if its pane were
+/// visible, for the login flows that scan a possibly-hidden terminal's raw
+/// stream (`useRemoteSession`/`useRemoteReconnect`).
+#[tauri::command]
+pub async fn pty_watch(app: AppHandle, id: String) -> Result<(), String> {
+    crate::terminal::route_watch(&app, &id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn pty_unwatch(id: String) -> Result<(), String> {
+    crate::terminal::route_unwatch(&id);
+    Ok(())
 }
 
 #[tauri::command]

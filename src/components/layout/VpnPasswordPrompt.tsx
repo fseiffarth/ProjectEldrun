@@ -1,8 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Toggle } from "../common/Toggle";
-import { UntestedTag } from "../common/UntestedTag";
 import { listen } from "@tauri-apps/api/event";
+import { UntestedTag } from "../common/UntestedTag";
+import { SavePasswordRow } from "../projects/SavePasswordRow";
+import {
+  useSavedCredentialSource,
+  type SavedPasswordState,
+} from "../projects/useSavedCredential";
 import { useVpnPromptStore } from "../../stores/vpnPrompt";
 import { useVpnStatusStore } from "../../stores/vpnStatus";
 import { ConnectionLog, type LogLine } from "../common/ConnectionLog";
@@ -45,6 +49,25 @@ export function VpnPasswordPrompt() {
   // Opt-in "Save passphrase" (default off). Pre-checked when a credential is
   // already saved for this config, so the box mirrors the true keychain state.
   const [remember, setRemember] = useState(false);
+  // **The tri-state behind that box** (G.24). This read used to be a bare
+  // `vpn_has_saved_password` boolean, and against a *locked* Secret Service a
+  // boolean cannot be right: a locked collection answers every lookup exactly
+  // like an empty one, so the row reported "(not stored)" over a config whose
+  // password is sitting on the ring — and offered to save it again. The SSH side
+  // grew `remote_saved_password_state` for this; `vpn_saved_password_state` is
+  // its twin, and reusing `useSavedCredentialSource`/`SavePasswordRow` means the
+  // 4 s bound, the "unknown is not absence" rule and the Unlock-keyring banner
+  // are the SSH implementation rather than a fourth copy of it.
+  const vpnConfig = pending?.config ?? "";
+  const readVpnCredential = useCallback(
+    () => invoke<SavedPasswordState>("vpn_saved_password_state", { config: vpnConfig }),
+    [vpnConfig],
+  );
+  const forgetVpnCredential = useCallback(
+    () => invoke<void>("vpn_forget_password", { config: vpnConfig }).then(() => undefined),
+    [vpnConfig],
+  );
+  const credential = useSavedCredentialSource(vpnConfig, readVpnCredential, forgetVpnCredential);
   // Live OpenVPN handshake output streamed from the backend, shown read-only so
   // the connect isn't an opaque spinner. Reset per prompt and per attempt.
   const [log, setLog] = useState<LogLine[]>([]);
@@ -69,12 +92,10 @@ export function VpnPasswordPrompt() {
       // The caller's seed wins where it has one: a prompt opened *as* the save action
       // ("Save login credentials" in the VPN menu) has nothing saved yet, so asking
       // the keychain would tick the box off and quietly not save what was asked for.
+      // With no seed the box follows the hook's resolved state (below) — and only a
+      // *confident* `saved`, never a `false` from a store we could not read.
       const seeded = pending.remember;
       if (seeded !== undefined) setRemember(seeded);
-      else
-        void invoke<boolean>("vpn_has_saved_password", { config })
-          .then((v) => !cancelled && setRemember(v))
-          .catch(() => {});
       void invoke<VpnAuthNeeds>("openvpn_auth_needs", { config })
         .then((v) => !cancelled && setNeeds(v))
         .catch(() => {});
@@ -83,6 +104,26 @@ export function VpnPasswordPrompt() {
       };
     }
   }, [pending?.config]);
+
+  // Seed the box from the *resolved* credential, once per prompt. Gated on a ref
+  // rather than run on every state change so a later `applyOutcome`/`refresh`
+  // cannot silently retick a box the user has just unticked. `checking` seeds
+  // nothing — and neither does `unreadable`, since `credential.saved` is false
+  // there and an unticked box must not be an assertion that nothing is stored.
+  const seededFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!pending) {
+      seededFor.current = null;
+      return;
+    }
+    if (pending.remember !== undefined) {
+      seededFor.current = pending.config;
+      return;
+    }
+    if (credential.checking || seededFor.current === pending.config) return;
+    seededFor.current = pending.config;
+    setRemember(credential.saved);
+  }, [pending, credential.checking, credential.saved]);
 
   // Stream the live handshake for this prompt's config into the log.
   useEffect(() => {
@@ -209,7 +250,12 @@ export function VpnPasswordPrompt() {
         <label>
           {needs.username ? t("vpnPrompt.password") : t("vpnPrompt.passphrase")}{" "}
           <span className="ssh-optional-hint">
-            {t(remember ? "vpnPrompt.savedInKeychain" : "vpnPrompt.notStored")}
+            {/* "(not stored)" is a claim about the keychain, so it may only be
+                made when the keychain was actually readable — a locked store
+                answers every lookup like an empty one. */}
+            {credential.unreadable
+              ? t("savePassword.hintUnreadable")
+              : t(remember ? "vpnPrompt.savedInKeychain" : "vpnPrompt.notStored")}
           </span>
           <PasswordInput
             ref={inputRef}
@@ -234,16 +280,21 @@ export function VpnPasswordPrompt() {
             <span className="ssh-optional-hint">{t("vpnPrompt.keyPassphraseHint")}</span>
           </label>
         )}
-        <label className="remote-connect-remember">
-          <Toggle
-            size="sm"
-            checked={remember}
-            disabled={connecting}
-            onChange={(e) => setRemember(e.target.checked)}
-          />
-          {t(needsKeyPassphrase ? "vpnPrompt.saveVpnCredentials" : "vpnPrompt.savePassphrase")}
-          <span className="ssh-optional-hint">{t("vpnPrompt.storedSecurely")}</span>
-        </label>
+        {/* The SSH side's row, reused rather than re-drawn — which is what brings
+            the locked-keyring banner and its Unlock button here.
+            Unticking is deliberately **inert**: `stores/vpnPrompt` sends
+            `remember ? true : null`, never `false`, so an untick leaves the
+            keychain alone. Deleting a VPN credential stays an explicit act, in
+            the header's VPN menu, exactly as it was. */}
+        <SavePasswordRow
+          credential={credential}
+          checked={remember}
+          disabled={connecting}
+          onChange={setRemember}
+          labelText={t(
+            needsKeyPassphrase ? "vpnPrompt.saveVpnCredentials" : "vpnPrompt.savePassphrase",
+          )}
+        />
         {(connecting || log.length > 0) && <ConnectionLog lines={log} busy={connecting} />}
         {connected && (
           <div className="vpn-prompt-connected" role="status">

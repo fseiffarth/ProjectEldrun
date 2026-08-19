@@ -42,6 +42,15 @@ function snapshotLabels(): string[] {
   return payload.previousSnapshot.tabLayout.map((t) => t.label);
 }
 
+/** The raw previousSnapshot tab entries (for asserting field preservation). */
+function snapshotTabs(): Array<Record<string, unknown>> {
+  const call = invoke.mock.calls.find((c) => c[0] === "switch_project_runtime");
+  const payload = call?.[1] as {
+    previousSnapshot: { tabLayout: Array<Record<string, unknown>> };
+  };
+  return payload.previousSnapshot.tabLayout;
+}
+
 describe("setActive — snapshots the PREVIOUS scope, not the drifted current one", () => {
   beforeEach(() => {
     invoke.mockReset();
@@ -88,5 +97,42 @@ describe("setActive — snapshots the PREVIOUS scope, not the drifted current on
     await useProjectsStore.getState().setActive("b");
 
     expect(snapshotLabels()).toEqual(["A-shell"]);
+  });
+
+  it("carries the persisted tmux fields through the switch (reattach, not fork)", async () => {
+    // The switch snapshot OVERWRITES the outgoing project's terminals.json — the
+    // very file `loadFromLayout` reads on the next relaunch. If it drops
+    // `tmuxSession`, restore mints a fresh name and `tmux new-session -A` forks a
+    // SECOND remote session instead of reattaching the running one. So the snapshot
+    // must stay in step with `persistScope`'s field set.
+    const remoteShell: TabEntry = {
+      ...shellTab("ta1", "a", "A-shell"),
+      location: "remote",
+      tmuxSession: "eldrun-a--shell-fixed-uuid",
+      hostBoundUid: "hb-1",
+      ephemeral: true,
+    };
+    const attachTab: TabEntry = {
+      ...shellTab("ta2", "a", "A-attach"),
+      location: "remote",
+      tmuxAttach: "train",
+    };
+    useTabsStore.setState({
+      scope: "a",
+      tabs: [remoteShell, attachTab],
+      activeKey: "ta1",
+      layout: group("ga", ["ta1", "ta2"]),
+      tabsByScope: { a: [remoteShell, attachTab] },
+      layoutByScope: { a: group("ga", ["ta1", "ta2"]) },
+      focusedGroupByScope: { a: "ga" },
+    });
+
+    await useProjectsStore.getState().setActive("b");
+
+    const [shell, attach] = snapshotTabs();
+    expect(shell.tmuxSession).toBe("eldrun-a--shell-fixed-uuid");
+    expect(shell.hostBoundUid).toBe("hb-1");
+    expect(shell.ephemeral).toBe(true);
+    expect(attach.tmuxAttach).toBe("train");
   });
 });

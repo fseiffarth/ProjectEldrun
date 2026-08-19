@@ -51,6 +51,7 @@ export const EXPERIMENTAL_FLAGS = [
   "deck_presenter",
   "mail_client",
   "web_browser",
+  "terminal_webgl",
 ] as const;
 
 export type ExperimentalFlag = (typeof EXPERIMENTAL_FLAGS)[number];

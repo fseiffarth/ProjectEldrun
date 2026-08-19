@@ -8,7 +8,7 @@ import { resolveProjectDirectory, type ProjectBox, type ProjectEntry } from "../
 import { ActivityCalendar } from "../projects/ActivityCalendar";
 import { CategoryEditor } from "../projects/CategoryEditor";
 import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/categoryColor";
-import { energySaverActive } from "../../stores/power";
+import { quiesceActive } from "../../stores/power";
 import {
   type FileEntry,
   fileIcon,
@@ -139,7 +139,7 @@ interface BlobMenu {
  * refs means a slow spin and a 60fps drag never thrash React. Each node is also
  * depth-shaded (front bright, back dim) so the cloud reads as a solid sphere.
  */
-export function ProjectBlobPane() {
+export function ProjectBlobPane({ visible = true }: { visible?: boolean } = {}) {
   const t = useT();
   const projects = useProjectsStore((s) => s.projects);
   const activeId = useProjectsStore((s) => s.activeId);
@@ -353,12 +353,18 @@ export function ProjectBlobPane() {
   );
 
   // rAF loop: rotate + project every node and pin the hover card. Auto-spins
-  // gently while the user isn't dragging.
+  // gently while the user isn't dragging. Mounted only while the pane is laid
+  // out: panes stay mounted across scope switches, and a hidden pane's loop —
+  // even one that skips its work — kept a 60fps rAF alive for the whole session
+  // whenever another project was current. `lastTs` resets on re-show so the
+  // first frame's dt doesn't bank the hidden spell as elapsed animation time.
   useEffect(() => {
+    if (!visible) return;
+    lastTs.current = 0;
     let raf = 0;
     const frame = (ts: number) => {
-      // Panes stay mounted across scope switches; skip all work (and the spin)
-      // while this one is hidden (display:none → no offsetParent).
+      // Belt-and-braces: skip the work while the box has no layout (mid-restore,
+      // display:none for a reason the prop can't see).
       if (!viewportRef.current?.offsetParent) {
         lastTs.current = ts;
         raf = requestAnimationFrame(frame);
@@ -379,7 +385,7 @@ export function ProjectBlobPane() {
       // Energy Saver freezes the idle auto-spin: a static scene re-projects to
       // identical positions, so the per-frame trig stops mattering. Drag/hover
       // still work (they mutate rotY/convergeId directly).
-      if (!dragging.current && !energySaverActive()) rotY.current += AUTO_SPIN;
+      if (!dragging.current && !quiesceActive()) rotY.current += AUTO_SPIN;
       const rx = rotX.current;
       const ry = rotY.current;
       const scene = sceneRef.current;
@@ -478,7 +484,7 @@ export function ProjectBlobPane() {
     };
     raf = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(raf);
-  }, []);
+  }, [visible]);
 
   // Pointer-drag to orbit. Movement beyond a small threshold marks the gesture a
   // drag (so the pointerup isn't treated as a node click).

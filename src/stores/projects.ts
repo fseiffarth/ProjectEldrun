@@ -19,6 +19,7 @@ import {
 import {
   cmdToKind,
   isRestorableTab,
+  ROOT_SCOPE,
   useTabsStore,
   type SavedLayoutTree,
   type TabKind,
@@ -722,6 +723,19 @@ interface ProjectRuntimeSwitchedPayload {
     agentMode?: AgentMode;
     /** A "projectfiles" tab's browsed folder (see TabEntry.folder). */
     folder?: string;
+    /** A "browser" tab's committed address (see TabEntry.url). */
+    url?: string;
+    /** A restart-resumable custom agent's resume flag (see TabEntry.resumeArgs). */
+    resumeArgs?: string[];
+    /** The stable tmux session name / Sessions-view attach target — carried
+     *  through a switch so `loadFromLayout` REATTACHES rather than forking a
+     *  second remote session (see TabEntry.tmuxSession/tmuxAttach). */
+    tmuxSession?: string;
+    tmuxAttach?: string;
+    /** Host-bound container-exemption marker (see TabEntry.hostBoundUid, #150). */
+    hostBoundUid?: string;
+    /** The "never tmux-wrap this tab" marker (see TabEntry.ephemeral). */
+    ephemeral?: boolean;
   }>;
   // Opaque split/group layout tree (camelCased by the backend's serde rename);
   // absent → restored as a single group.
@@ -872,8 +886,18 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       invoke<string>("root_work_dir").catch(() => null),
     ]);
     const projects = [...raw].sort((a, b) => a.position - b.position);
-    const current = projects.find((p) => p.status === "current");
-    const activeId = current?.id ?? projects[0]?.id ?? null;
+    // NO project marked "current" means the root scope was open when the app was
+    // last closed — that is exactly how `setActive(null)` records it (the root
+    // terminal is the absence of a current project, and the demotion to "active"
+    // is persisted by the `save_projects` in that same call). So the answer here
+    // is `null`, i.e. the root scope, and never "then open the first pill":
+    // that fallback made a session ended at the root terminal come back inside
+    // whichever project happened to sort first, with the root's own restored
+    // tabs sitting one click away and looking lost. It also fired for a list
+    // whose projects are ALL inactive, where `projects[0]` is a project with no
+    // pill in the strip at all. A fresh install has no projects and lands on the
+    // root scope by the same rule rather than by a special case.
+    const activeId = projects.find((p) => p.status === "current")?.id ?? null;
     // Restore the active project's right-panel subfolder before any component
     // mounts, so the file tree opens straight to the saved folder on startup.
     // (Switching projects already restores via switch_project_runtime; this
@@ -954,9 +978,25 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // + detached re-dock + prune behind a single tabs-store method, so this store
     // no longer reaches into the tabs store's internal maps / tree helpers
     // (Struct #3 decoupling; the walk also collapses per Eff #13).
-    const prevScopeKey = previousId ?? "root";
+    const prevScopeKey = previousId ?? ROOT_SCOPE;
     const { tabs, tabGroups, activeTabIndex } =
       useTabsStore.getState().snapshotScopeForSwitch(prevScopeKey);
+    // Leaving the ROOT scope saves its layout HERE, because the switch cannot.
+    // `switch_project_runtime` writes the outgoing scope's layout from the
+    // snapshot below, but only for a scope it can resolve a `local_file` for —
+    // and the root has none and never will (it has no `project.json`). Its
+    // layout therefore rode entirely on `CenterPanel`'s 300 ms debounced
+    // `persistScope`, whose timer this very switch CANCELS: the effect's cleanup
+    // clears it and re-schedules for the scope being switched TO. So a tab
+    // opened, closed or moved at the root terminal and followed within 300 ms by
+    // a click on a project pill was simply never written. `persistScope` is
+    // scope-addressed (it reads `tabsByScope[scope]`, not the live scope), so
+    // calling it here is safe however far the switch has progressed; it is
+    // fire-and-forget for the same reason the switch is — nothing about
+    // activating a project waits on the outgoing scope's bookkeeping.
+    if (previousId === null) {
+      void useTabsStore.getState().persistScope(ROOT_SCOPE, "").catch(() => {});
+    }
 
     let nextProjects: ProjectEntry[] = [];
     set((state) => {
@@ -1036,6 +1076,23 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
           location: t.location,
           agentMode: t.agentMode,
           folder: t.folder,
+          // A "browser" tab's committed address.
+          url: t.url,
+          // A restart-resumable custom agent's resume flag.
+          resumeArgs: t.resumeArgs,
+          // The stable tmux session name + any Sessions-view attach target. Without
+          // these the previous project's persisted session name is WIPED on every
+          // switch-away (this snapshot overwrites its terminals.json), so on the
+          // next relaunch `loadFromLayout` mints a fresh name and `tmux new-session
+          // -A` FORKS a second remote session instead of reattaching the running one.
+          tmuxSession: t.tmuxSession,
+          tmuxAttach: t.tmuxAttach,
+          // The host-bound marker id (#150), so a local-model tab keeps its
+          // container exemption across a switch.
+          hostBoundUid: t.hostBoundUid,
+          // The no-tmux marker, so a SLURM log tab is not re-wrapped in tmux (and
+          // left leaking a `tail -F` daemon) after a switch-away + relaunch.
+          ephemeral: t.ephemeral,
         })),
         tabGroups,
         activeTabIndex,
@@ -1596,7 +1653,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
 export function listenProjectRuntimeSwitched(): Promise<() => void> {
   return listen<ProjectRuntimeSwitchedPayload>("project-runtime-switched", (ev) => {
     const payload = ev.payload;
-    const scopeKey = payload.projectId ?? "root";
+    const scopeKey = payload.projectId ?? ROOT_SCOPE;
     const tabsStore = useTabsStore.getState();
     // Keep shell/files/network tabs, resumable agent tabs (Claude with a sessionId), and
     // in-app file-viewer embeds; other agent tabs (and external-app embeds) are

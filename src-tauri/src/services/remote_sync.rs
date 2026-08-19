@@ -21,7 +21,7 @@
 //!   [`SyncManifestState`] serializes every mutation (G7), and SFTP transfers run
 //!   with the lock released.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -113,6 +113,12 @@ pub enum SyncState {
     Amber,
     /// Not synced (no mirror copy / not selected).
     None,
+    /// Exists in the local mirror but was never synced (no manifest entry) —
+    /// a NEW local file the host doesn't have yet, offered for upload. Emitted
+    /// only by `sync_status`'s local-new pass, never by `compute_state`: the
+    /// manifest can't compute a state for a file it has no record of.
+    #[serde(rename = "localnew")]
+    LocalNew,
 }
 
 /// Tauri-managed, single-writer cache of per-project manifests (G7). Every mutate
@@ -272,6 +278,25 @@ pub fn divergence(
     (host_diverged, local_diverged)
 }
 
+/// Whether a tracked FILE entry should be pruned from the manifest during a
+/// status pass. Each side is a TRI-STATE stat result — `Ok(Some(..))` present,
+/// `Ok(None)` **positively gone** (the SFTP `NoSuchFile` status / io
+/// `NotFound`), `Err` could-not-check — and the prune fires only when BOTH
+/// sides are positively gone on an entry we HAD synced: nothing left on either
+/// side to compare, resolve, or protect. An `Err` never counts as gone — a
+/// dropped session mid-refresh stats every entry as `Err`, and reading that as
+/// "deleted" would prune the whole manifest in one pass. Never fires for
+/// one-side deletions (real conflicts by design) or never-synced markers.
+/// Pure, unit-tested.
+pub fn should_prune(
+    entry: &SyncEntry,
+    host: &Result<Option<(u64, Option<u64>)>, String>,
+    local: &Result<Option<(u64, Option<u64>)>, String>,
+) -> bool {
+    let ever_synced = entry.last_pull_ts.is_some() || entry.last_push_ts.is_some();
+    !entry.is_dir && ever_synced && matches!(host, Ok(None)) && matches!(local, Ok(None))
+}
+
 /// Whether an amber verdict is worth confirming against the actual bytes rather
 /// than trusting the size+mtime heuristic. Size+mtime only *approximates*
 /// divergence: a re-save with identical bytes (or a bare `touch`) moves the mtime
@@ -365,6 +390,44 @@ pub fn is_excluded(manifest: &Manifest, rel: &str, under: &str) -> bool {
             None => return false,
         };
     }
+}
+
+/// Which mirror files count as **new local files** for the status view — files
+/// the manifest has never seen, i.e. the host doesn't have them and no sync
+/// state exists to paint them green or amber. Without this pass they were
+/// invisible everywhere: `sync_status` iterates the manifest, so a file created
+/// after the last transfer had no row, no tree badge, no diverged-list entry —
+/// nothing saying "this exists only locally and can be uploaded" (the SimpleGNN
+/// report that motivated the pass).
+///
+/// `all` is the mirror-side file listing (git-derived or a raw walk — the
+/// caller decides); the filter is what's pure and tested here:
+/// - anything with a manifest entry already has a row (whatever its state);
+/// - with lockstep on, git-TRACKED files belong to lockstep (#28p D1 — they
+///   travel as commits, and reporting them "new" would invite a byte-push that
+///   lands them untracked on the peer and wedges the fast-forward);
+/// - an effectively excluded path (own or inherited marker) is out of byte-sync
+///   scope entirely — flagging it "uploadable" would contradict the marker;
+/// - the result is sorted (stable UI order) and capped: the fallback raw walk
+///   of a mirror with a giant data/ tree can yield tens of thousands of
+///   candidates, and the row list is advisory, not an inventory.
+pub fn local_new_candidates(
+    manifest: &Manifest,
+    all: impl IntoIterator<Item = String>,
+    tracked: &HashSet<String>,
+    lockstep_enabled: bool,
+    cap: usize,
+) -> Vec<String> {
+    let mut out: Vec<String> = all
+        .into_iter()
+        .filter(|rel| !rel.is_empty())
+        .filter(|rel| !manifest.contains_key(rel))
+        .filter(|rel| !(lockstep_enabled && tracked.contains(rel)))
+        .filter(|rel| !is_excluded(manifest, rel, ""))
+        .collect();
+    out.sort();
+    out.truncate(cap);
+    out
 }
 
 /// Borrow (loading from disk on first touch) the project's manifest from the
@@ -753,14 +816,34 @@ pub async fn push_file_atomic(
     }
     let bytes = std::fs::read(local).map_err(|e| e.to_string())?;
     // Temp path beside the target (same dir → same filesystem → atomic rename).
-    // The single-writer manifest lock serializes pushes per project, so a fixed
-    // suffix can't collide with a concurrent push of the same file.
-    let tmp = format!("{host_abs}.eldrun-sync-tmp");
+    // The suffix must be UNIQUE per in-flight write: the manifest lock is held only
+    // per file (not for a whole push), so a manual `sync_push` and a background
+    // `reconcile_pass` — or two manual pushes — can be writing the same file at
+    // once, and a fixed temp name lets one push rename the tmp out from under the
+    // other (the loser's rename then fails on a vanished source). A process-wide
+    // counter plus the pid keeps every concurrent write on its own tmp.
+    let seq = {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static PUSH_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+        PUSH_TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    };
+    let tmp = format!("{host_abs}.eldrun-sync-tmp.{}.{seq}", std::process::id());
     sftp::write_file_on(sftp, &tmp, &bytes).await?;
     sftp::rename_on(sftp, &tmp, host_abs).await?;
     // Re-stat the host to capture the new base (mtime is the host's, post-write).
-    let (h_size, h_mtime) = sftp::metadata_on(sftp, host_abs).await.unwrap_or((bytes.len() as u64, None));
-    Ok((h_size, h_mtime))
+    // The bytes DID land by this point — this error exists because recording a
+    // made-up base of (len, None) guarantees a false amber on the next status
+    // pass, while an unrecorded base only degrades to a conflict prompt (the
+    // safe direction). One retry covers a transient hiccup on the pooled session.
+    match sftp::metadata_on(sftp, host_abs).await {
+        Ok(hm) => Ok(hm),
+        Err(_) => match sftp::metadata_on(sftp, host_abs).await {
+            Ok(hm) => Ok(hm),
+            Err(e) => Err(format!(
+                "pushed '{host_abs}' but could not re-stat it to record the new base: {e}"
+            )),
+        },
+    }
 }
 
 /// Record a freshly-pushed file in the manifest: keep it selected and stamp the
@@ -1062,6 +1145,48 @@ mod tests {
     }
 
     #[test]
+    fn local_new_candidates_filters_manifest_tracked_and_excluded() {
+        let mut m = Manifest::new();
+        m.insert("synced.txt".into(), SyncEntry { selected: true, ..Default::default() });
+        m.insert("data".into(), excluded_dir());
+        let all = vec![
+            "synced.txt".to_string(),      // manifest'd → has a row already
+            "src/lib.rs".to_string(),      // tracked → lockstep's when enabled
+            "data/cache.bin".to_string(),  // under an excluded folder marker
+            "configs/new_v10.yml".to_string(), // genuinely new
+            "".to_string(),                // defensive: never a file
+        ];
+        let tracked: HashSet<String> = ["src/lib.rs".to_string()].into_iter().collect();
+
+        // Lockstep on: the tracked file belongs to lockstep (#28p D1), not here.
+        let with_lockstep =
+            local_new_candidates(&m, all.clone(), &tracked, true, 100);
+        assert_eq!(with_lockstep, vec!["configs/new_v10.yml".to_string()]);
+
+        // Lockstep off: byte-sync owns the tracked tree too, so a tracked file
+        // the manifest never saw IS new and reportable.
+        let without = local_new_candidates(&m, all, &tracked, false, 100);
+        assert_eq!(
+            without,
+            vec!["configs/new_v10.yml".to_string(), "src/lib.rs".to_string()],
+        );
+    }
+
+    #[test]
+    fn local_new_candidates_sorts_and_caps() {
+        let m = Manifest::new();
+        let all = vec!["b".to_string(), "c".to_string(), "a".to_string()];
+        let none = HashSet::new();
+        // Sorted for a stable UI order, then capped — the row list is advisory,
+        // not an inventory, so the cap keeps a raw-walk fallback's tens of
+        // thousands of candidates from flooding the IPC payload.
+        assert_eq!(
+            local_new_candidates(&m, all, &none, true, 2),
+            vec!["a".to_string(), "b".to_string()],
+        );
+    }
+
+    #[test]
     fn compute_state_green_when_base_matches() {
         let e = SyncEntry {
             selected: true,
@@ -1185,6 +1310,37 @@ mod tests {
         );
         // Host not stat'd (cold) → host side never flagged.
         assert_eq!(divergence(&e, None, Some((10, Some(50)))), (false, false));
+    }
+
+    #[test]
+    fn both_gone_after_sync_is_pruned() {
+        let synced = SyncEntry {
+            selected: true,
+            host_size: 10,
+            host_mtime: Some(100),
+            local_size: 10,
+            local_mtime: Some(50),
+            last_pull_ts: Some(1),
+            ..Default::default()
+        };
+        let gone: Result<Option<(u64, Option<u64>)>, String> = Ok(None);
+        let present: Result<Option<(u64, Option<u64>)>, String> = Ok(Some((10, Some(100))));
+        let err: Result<Option<(u64, Option<u64>)>, String> = Err("session dropped".into());
+        // Positively gone on BOTH sides after a sync → nothing left to compare
+        // → prune.
+        assert!(should_prune(&synced, &gone, &gone));
+        // Host still present → a real one-side deletion, never pruned.
+        assert!(!should_prune(&synced, &present, &gone));
+        // Local still present → same, the conflict machinery owns it.
+        assert!(!should_prune(&synced, &gone, &present));
+        // Never synced → a bare marker, nothing to forget.
+        let never = SyncEntry { selected: true, ..Default::default() };
+        assert!(!should_prune(&never, &gone, &gone));
+        // A stat ERROR is "could not check", NEVER "gone": a dropped session
+        // mid-refresh must not read as every file deleted (mass-prune hazard).
+        assert!(!should_prune(&synced, &err, &gone));
+        assert!(!should_prune(&synced, &gone, &err));
+        assert!(!should_prune(&synced, &err, &err));
     }
 
     #[test]

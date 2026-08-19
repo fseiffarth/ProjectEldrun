@@ -115,6 +115,8 @@ import { useFileSourcesStore } from "../../stores/fileSources";
 import {
   FileScopeContext,
   useFileScope,
+  PaneVisibleContext,
+  usePaneVisible,
   fileSource,
   type FileSource,
   readFileText,
@@ -166,9 +168,9 @@ import {
   gatherTexStructure,
   type TexStructure,
   type TexFileNode,
-  type SyncSource,
 } from "../../lib/viewers/tex";
 import { TexStructureSidebar } from "./tex/TexStructureSidebar";
+import { focusTexWorkspaceForSource } from "./openTexWorkspace";
 import { PdfView } from "./pdf/PdfViewer";
 import { DeckView } from "./deck/DeckView";
 import { YamlTree } from "./YamlTree";
@@ -289,9 +291,11 @@ interface Props {
   /** This viewer tab's key, so opened file links route to the SAME subwindow by
    *  default and drag-to-set-default can key its session-only override (#50). */
   tabKey?: string;
-  /** Whether this pane is the active/visible tab of its group. Unused — the
-   *  parent `.center-pane` already hides inactive panes via display:none — but
-   *  accepted for call-site parity with the other pane components. */
+  /** Whether this pane is the active/visible tab of its group. Published to the
+   *  nested viewers via `PaneVisibleContext`: display:none hides the pixels, but
+   *  the standing work — the `file_mtime` auto-reload polls (an SFTP round trip
+   *  each for a remote project), GIF playback — must stop too, or every hidden
+   *  tab of every backgrounded project keeps paying it forever. */
   visible?: boolean;
   /** The subwindow (group) id hosting this pane, for proportional scroll-linking
    *  between two side-by-side viewer subwindows (see stores/scrollSync). Null/
@@ -326,7 +330,7 @@ interface Props {
  *                  PATH; it degrades to exactly the "text" editor otherwise.
  * An "Open externally" button is always offered as a fallback.
  */
-export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Props) {
+export function FileViewerPane({ viewer, path, projectId, tabKey, visible = true, groupId }: Props) {
   const fileName = basename(path) || path;
 
   // The native presenter is experimental; with the flag off a deck opens as the
@@ -423,13 +427,17 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
   const remoteRoot = project?.remote?.remote_path;
   useEffect(() => {
     setRemoteMissing(false);
-    if (!remoteRoot || !rel || sshState !== "connected") return;
+    // `visible`: a hidden viewer needs no live switch state — without the gate,
+    // every mounted viewer tab of every backgrounded remote project fired an
+    // SFTP stat the moment the pool (re)connected. Re-shown, this re-runs and
+    // probes once.
+    if (!remoteRoot || !rel || sshState !== "connected" || !visible) return;
     let cancelled = false;
     fileMtime(resolvePath(remoteRoot, rel), projectId)
       .then(() => { if (!cancelled) setRemoteMissing(false); })
       .catch(() => { if (!cancelled) setRemoteMissing(true); });
     return () => { cancelled = true; };
-  }, [remoteRoot, rel, sshState, projectId]);
+  }, [remoteRoot, rel, sshState, projectId, visible]);
   // Mirror the Local/Remote switch out to the tab strip so its file-source badge
   // is a clickable toggle (not just a glyph): switching applies only when this
   // remote project's file has a counterpart on the other side (`rel`). Cleared
@@ -489,10 +497,11 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
     view = <TexView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "texworkspace") {
     // The LaTeX workspace: one tab hosting a structure sidebar + a center that
-    // switches between the TeX editor and the image viewer for the selected
-    // file, plus a docked SyncTeX PDF pane. `mainPath` is the EFFECTIVE path so
-    // children enumerate on the same side (host SFTP vs local mirror) as the
-    // shown main — the workspace follows one side per tab.
+    // switches between the TeX editor and the image viewer for the selected file.
+    // The compiled PDF opens as its OWN tab (SyncTeX both ways still works — the
+    // reveal/jump channels are path-keyed, so they cross tab and window). `mainPath`
+    // is the EFFECTIVE path so children enumerate on the same side (host SFTP vs
+    // local mirror) as the shown main — the workspace follows one side per tab.
     view = (
       <TexWorkspaceView
         mainPath={effectivePath}
@@ -552,6 +561,7 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
       : null;
   return (
     <FileScopeContext.Provider value={projectId}>
+      <PaneVisibleContext.Provider value={visible}>
       <ViewerHeaderInfoContext.Provider value={{ path: effectivePath, projectId, sourceSwitch }}>
         {/* A single relative host so the marker/laser presentation overlay can
             sit over ANY viewer without each one wiring it in (see
@@ -568,6 +578,7 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
           {!presenting && <PresentationOverlay />}
         </div>
       </ViewerHeaderInfoContext.Provider>
+      </PaneVisibleContext.Provider>
     </FileScopeContext.Provider>
   );
 }
@@ -840,18 +851,65 @@ function isMainWindow(): boolean {
   }
 }
 
+/** A `.tex` source may be owned by an open TeX workspace tab (which hosts its
+ *  editor in-tab, the PDF being a separate tab). */
+function isTexSource(path: string): boolean {
+  return /\.tex$/i.test(path);
+}
+
+/**
+ * Route a reverse-search jump into an already-open TeX workspace when one owns
+ * the source, and report whether it did. On a hit it focuses the workspace and
+ * switches its center to `input` ({@link focusTexWorkspaceForSource}) and posts
+ * the scroll to the editor-jump store; `fallback` runs only when no workspace
+ * owns the file. Non-`.tex` sources skip straight to the fallback.
+ *
+ * This has to run BEFORE the standalone `hasMountedEditor`/tab probes: a
+ * workspace child sits mounted-but-hidden in the LRU, so it already satisfies
+ * `hasMountedEditor` and a bare `requestJump` would scroll an invisible pane
+ * instead of switching the center to it.
+ */
+function routeSourceJump(
+  input: string,
+  line: number,
+  column: number,
+  fallback: () => void,
+) {
+  if (!isTexSource(input)) {
+    fallback();
+    return;
+  }
+  focusTexWorkspaceForSource(input)
+    .then((handled) => {
+      if (handled) useEditorJumpStore.getState().requestJump(input, line, column);
+      else fallback();
+    })
+    .catch(() => fallback());
+}
+
 /** Open/re-activate the source tab in THIS window and post the editor jump to its
- *  local editorJump store. The local half of {@link jumpToSource}. `anchorPath`
- *  is the main `.tex` that produces the PDF: when the source is not already open,
- *  the new editor tab opens in the subwindow that already holds that main `.tex`
- *  (resolved to its tab here, so the group lookup runs in the window that owns the
- *  layout) rather than in whichever group happens to be focused. */
-function applySourceJump(input: string, line: number, column: number, anchorPath?: string) {
+ *  local editorJump store. The standalone (non-workspace) half of
+ *  {@link jumpToSource}. `anchorPath` is the main `.tex` that produces the PDF:
+ *  when the source is not already open, the new editor tab opens in the subwindow
+ *  that already holds that main `.tex` (resolved to its tab here, so the group
+ *  lookup runs in the window that owns the layout) rather than in whichever group
+ *  happens to be focused. */
+function openStandaloneSourceTab(input: string, line: number, column: number, anchorPath?: string) {
   const dir = dirname(input) || "/";
   const label = basename(input);
   const linkingTabKey = anchorPath ? tabKeyForPath(anchorPath) : undefined;
   openLinkedFile(linkingTabKey, dir, { path: input, viewer: viewerForPath(input), label });
   useEditorJumpStore.getState().requestJump(input, line, column);
+}
+
+/** Handle a reverse-search jump in THIS window: into an open TeX workspace when
+ *  one owns the source, else open/focus the standalone source tab. The local half
+ *  of {@link jumpToSource}, and what {@link listenSourceJump} runs for a jump
+ *  broadcast from a detached PDF window. */
+function applySourceJump(input: string, line: number, column: number, anchorPath?: string) {
+  routeSourceJump(input, line, column, () =>
+    openStandaloneSourceTab(input, line, column, anchorPath),
+  );
 }
 
 /**
@@ -881,6 +939,17 @@ function applySourceJump(input: string, line: number, column: number, anchorPath
  * happens to be focused.
  */
 export function jumpToSource(input: string, line: number, column = 0, anchorPath?: string) {
+  // A `.tex` source owned by an open workspace is centered there first (in this
+  // window, or wherever the workspace lives — the store write reaches it); only a
+  // source no workspace owns falls through to the standalone routing below.
+  routeSourceJump(input, line, column, () =>
+    jumpToStandaloneSource(input, line, column, anchorPath),
+  );
+}
+
+/** The standalone (non-workspace) reverse-search routing: scroll an already-open
+ *  editor, open/focus the source tab here, or delegate to the main window. */
+function jumpToStandaloneSource(input: string, line: number, column: number, anchorPath?: string) {
   if (hasMountedEditor(input)) {
     useEditorJumpStore.getState().requestJump(input, line, column);
     return;
@@ -890,7 +959,7 @@ export function jumpToSource(input: string, line: number, column = 0, anchorPath
     .getState()
     .tabs.some((t) => t.kind === "embed" && t.viewer === viewer && t.embedPath === input);
   if (hasTab || isMainWindow()) {
-    applySourceJump(input, line, column, anchorPath);
+    openStandaloneSourceTab(input, line, column, anchorPath);
     return;
   }
   // Detached window without the source tab: ask the main window to handle it.
@@ -1117,6 +1186,7 @@ const RELOAD_POLL_MS = 1500;
  */
 export function useEditableFile(path: string) {
   const scope = useFileScope();
+  const paneVisible = usePaneVisible();
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [baseline, setBaseline] = useState<string | null>(null);
@@ -1208,11 +1278,15 @@ export function useEditableFile(path: string) {
   }, [autosave, isDirty, draft, save]);
 
   // #43 diff-aware reload: poll mtime; on an external advance, re-read into a
-  // clean buffer silently, or flag a banner if the buffer is dirty.
+  // clean buffer silently, or flag a banner if the buffer is dirty. Only while
+  // the pane is on screen — every tab of every scope stays mounted, so a hidden
+  // viewer's poll would otherwise run forever (an SFTP round trip per tick for a
+  // remote project). The immediate check on re-show catches whatever changed on
+  // disk while the pane was hidden, against the baseline seeded at load time.
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !paneVisible) return;
     let cancelled = false;
-    const id = setInterval(() => {
+    const check = () => {
       fileMtime(path, scope)
         .then((m) => {
           if (cancelled || lastMtime.current == null) return;
@@ -1229,9 +1303,11 @@ export function useEditableFile(path: string) {
             .catch(() => {});
         })
         .catch(() => {});
-    }, RELOAD_POLL_MS);
+    };
+    check();
+    const id = setInterval(check, RELOAD_POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
-  }, [path, scope, loaded, seedFromDisk]);
+  }, [path, scope, loaded, paneVisible, seedFromDisk]);
 
   // Banner actions (#43): take the disk version, or keep mine (dismiss banner +
   // adopt current mtime so the next external change re-triggers).
@@ -1344,6 +1420,7 @@ export function escapeHtmlText(s: string): string {
  */
 export function useReadonlyFile(path: string) {
   const scope = useFileScope();
+  const paneVisible = usePaneVisible();
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const lastMtime = useRef<number | null>(null);
@@ -1363,10 +1440,12 @@ export function useReadonlyFile(path: string) {
   }, [path, scope]);
 
   // Diff-aware reload: poll mtime and silently re-read on an external advance.
+  // Visible panes only (hidden ones stay mounted forever); the immediate check
+  // on re-show catches a change made while the pane was hidden.
   useEffect(() => {
-    if (content == null) return;
+    if (content == null || !paneVisible) return;
     let cancelled = false;
-    const id = setInterval(() => {
+    const check = () => {
       fileMtime(path, scope)
         .then((m) => {
           if (cancelled || lastMtime.current == null || m <= lastMtime.current) return;
@@ -1376,9 +1455,11 @@ export function useReadonlyFile(path: string) {
             .catch(() => {});
         })
         .catch(() => {});
-    }, RELOAD_POLL_MS);
+    };
+    check();
+    const id = setInterval(check, RELOAD_POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
-  }, [path, scope, content]);
+  }, [path, scope, content, paneVisible]);
 
   return { content, error, loaded: content != null };
 }
@@ -1954,6 +2035,19 @@ function citeDetail(e: { title?: string; author?: string; year?: string }): stri
   return head || e.title;
 }
 
+/** Is the screen point `x,y` inside a `.file-link` span's box? A **collapsed**
+ *  rect never counts, however the point compares to it: a zero-by-zero box is
+ *  not a hit target — it is a span that isn't laid out (an unmounted or hidden
+ *  link layer) — and `0 >= 0 && 0 <= 0` is true on both axes, so the naive
+ *  comparison reports a hit on the FIRST link in the document for any click at
+ *  the viewport origin. Under jsdom, where every `getBoundingClientRect()` is
+ *  all-zeros and a synthetic click defaults to `clientX/clientY = 0`, that made
+ *  every Ctrl+click resolve the file's first link regardless of where it landed. */
+function linkRectHit(r: DOMRect, x: number, y: number): boolean {
+  if (r.width <= 0 || r.height <= 0) return false;
+  return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+}
+
 function CodeEditor({
   error,
   draft,
@@ -2102,9 +2196,11 @@ function CodeEditor({
   // hovering a link (no mouse move) can still update the cursor.
   const lastMouse = useRef<{ x: number; y: number } | null>(null);
 
-  // Ctrl/Cmd+wheel resizes the font. Bound non-passively (see useNonPassiveWheel)
-  // so it never falls through to native scrolling.
-  const wheelRef = useNonPassiveWheel((e) => onCtrlWheelFont(e, incFont, decFont));
+  // Ctrl/Cmd+wheel resizes the font. Bound non-passively (see
+  // useZoomModifierWheel) so it never falls through to native scrolling — and
+  // only while the modifier is down, so a plain scroll of a long file isn't
+  // main-thread-bound by a listener that would ignore it anyway.
+  const wheelRef = useZoomModifierWheel((e) => onCtrlWheelFont(e, incFont, decFont));
 
   // Resolve the link affordances for the screen point `x,y`. The link layer is
   // scroll-synced to sit exactly over the textarea text, so its `.file-link` span
@@ -2120,7 +2216,7 @@ function CodeEditor({
       let hit: DOMRect | null = null;
       for (const span of layer.querySelectorAll<HTMLElement>(".file-link")) {
         const r = span.getBoundingClientRect();
-        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+        if (linkRectHit(r, x, y)) {
           hit = r;
           break;
         }
@@ -2141,7 +2237,7 @@ function CodeEditor({
     if (!layer) return null;
     for (const span of layer.querySelectorAll<HTMLElement>(".file-link")) {
       const r = span.getBoundingClientRect();
-      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+      if (linkRectHit(r, x, y)) {
         const off = span.getAttribute("data-off");
         return off != null ? Number(off) : null;
       }
@@ -2362,8 +2458,16 @@ function CodeEditor({
   // final resting position.
   const persistTimer = useRef<number | null>(null);
   const onScroll = () => {
-    syncScroll();
+    // Report BEFORE syncing the overlays, and never the other way round. When
+    // this pane is scroll-linked, `reportScrollSync` reads `scrollHeight` —
+    // a layout-flushing read. Running it after `syncScroll` has just written a
+    // `transform` to the gutter and every overlay layer means the read has to
+    // flush those pending writes first, i.e. a forced style+layout pass over
+    // the whole document on every scroll event. Reading first costs nothing:
+    // scrolling on its own doesn't dirty layout, so the geometry is already
+    // current, and the writes then land against a clean tree.
     reportScrollSync();
+    syncScroll();
     if (!onScrollPersist || !restoredScroll.current) return;
     const ta = textareaRef.current;
     if (!ta) return;
@@ -4700,6 +4804,106 @@ export function useNonPassiveWheel(handler: (e: WheelEvent) => void) {
   }, []);
 }
 
+/** A Ctrl/⌘-held tracker shared by every viewer, with imperative subscribers.
+ *
+ *  Deliberately NOT React state: `useZoomModifierWheel` is used by the code
+ *  editor and the markdown/text viewers, so a `setState` per modifier press
+ *  would re-render those (very large) panes on every Ctrl+S, Ctrl+F, Ctrl+Z and
+ *  Ctrl+C — a re-render to answer a question nothing renders. The window
+ *  listeners are keyboard-only and bind once for the app's lifetime; they cost
+ *  nothing on the scroll path, which is the whole point of the exercise. */
+const zoomModSubs = new Set<(held: boolean) => void>();
+let zoomModHeld = false;
+let zoomModBound = false;
+
+function setZoomModHeld(next: boolean) {
+  if (next === zoomModHeld) return;
+  zoomModHeld = next;
+  for (const fn of zoomModSubs) fn(next);
+}
+
+function subscribeZoomMod(fn: (held: boolean) => void): () => void {
+  zoomModSubs.add(fn);
+  if (!zoomModBound) {
+    zoomModBound = true;
+    const sync = (e: KeyboardEvent) => setZoomModHeld(e.ctrlKey || e.metaKey);
+    window.addEventListener("keydown", sync, true);
+    window.addEventListener("keyup", sync, true);
+    // A modifier released while another window holds focus never delivers its
+    // keyup here, so without this the wheel listener would stay bound for good
+    // — exactly the state this hook exists to avoid.
+    window.addEventListener("blur", () => setZoomModHeld(false));
+  }
+  return () => {
+    zoomModSubs.delete(fn);
+  };
+}
+
+/** macOS trackpad pinch arrives as a `ctrlKey` wheel event with no preceding
+ *  keydown, so there is no modifier press to gate on there and the listener has
+ *  to stay bound. Not preventing it would let the pinch zoom the whole webview
+ *  instead of the viewer's font. */
+const WHEEL_ALWAYS_BOUND = IS_MAC;
+
+/** {@link useNonPassiveWheel} for a handler that only ever acts on Ctrl/⌘+wheel
+ *  (the font-zoom viewers), binding the listener ONLY while such a modifier is
+ *  actually held.
+ *
+ *  A `{ passive: false }` wheel listener tells the engine the default action may
+ *  be cancelled, so every wheel tick has to round-trip through the main thread
+ *  before the element is allowed to scroll at all — the scroll can never outrun
+ *  whatever else the main thread is doing (a terminal painting in another pane,
+ *  a React commit), which reads as stuttering and stalling. Under WebKitGTK,
+ *  where compositing is already software (DMABUF is off), that hop is the
+ *  difference between a scroll the compositor can serve and one it cannot.
+ *
+ *  The gesture we need it for is keyboard-modified, so the binding can follow
+ *  the modifier instead of being permanent: plain scrolling leaves the scroller
+ *  with no wheel handler at all, and Ctrl+wheel still gets its
+ *  `preventDefault()` because the keydown lands before the wheel tick. */
+export function useZoomModifierWheel(handler: (e: WheelEvent) => void) {
+  const cb = useRef(handler);
+  cb.current = handler;
+  const elRef = useRef<HTMLElement | null>(null);
+  const detach = useRef<(() => void) | null>(null);
+
+  const unbind = useCallback(() => {
+    detach.current?.();
+    detach.current = null;
+  }, []);
+  const bind = useCallback(() => {
+    const el = elRef.current;
+    if (!el || detach.current) return;
+    const listener = (e: WheelEvent) => cb.current(e);
+    el.addEventListener("wheel", listener, { passive: false });
+    detach.current = () => el.removeEventListener("wheel", listener);
+  }, []);
+
+  useEffect(() => {
+    const unsub = subscribeZoomMod((held) => {
+      // Releasing the modifier must NOT unbind where the binding is permanent
+      // (macOS), or the first pinch after any Ctrl press would zoom the webview.
+      if (held) bind();
+      else if (!WHEEL_ALWAYS_BOUND) unbind();
+    });
+    return () => {
+      unsub();
+      unbind();
+    };
+  }, [bind, unbind]);
+
+  return useCallback(
+    (el: HTMLElement | null) => {
+      unbind();
+      elRef.current = el;
+      // Mounting mid-gesture (a pane revealed while Ctrl is already down) still
+      // has to arrive bound — the keydown that would have bound it is past.
+      if (el && (WHEEL_ALWAYS_BOUND || zoomModHeld)) bind();
+    },
+    [bind, unbind],
+  );
+}
+
 /**
  * Per-TAB editor font size (text-size +/− control, #48). The zoom is tab-local:
  * changing it resizes only this viewer tab, not every other tab of the same
@@ -5646,7 +5850,7 @@ function TextView({
   }, [gotoNonce, structured]);
 
   const showEditor = (!previewKind && !structured) || mode === "edit";
-  const wheelRef = useNonPassiveWheel((e) => {
+  const wheelRef = useZoomModifierWheel((e) => {
     onCtrlWheelFont(e, font.inc, font.dec);
   });
 
@@ -5917,7 +6121,7 @@ function MarkdownView({
   const [mode, setMode] = useState<"preview" | "edit">("preview");
   const [compareOpen, setCompareOpen] = useState(false);
   const font = useEditorFontSize(tabKey, "markdown");
-  const wheelRef = useNonPassiveWheel((e) => onCtrlWheelFont(e, font.inc, font.dec));
+  const wheelRef = useZoomModifierWheel((e) => onCtrlWheelFont(e, font.inc, font.dec));
   // Proportional scroll-link (preview mode only — edit mode links via CodeEditor's
   // textarea). `.file-viewer-body` is the overflow:auto scroller for the preview.
   const bodyScrollRef = useRef<HTMLDivElement | null>(null);
@@ -6214,6 +6418,7 @@ function MarkdownView({
  *  URL is revoked then, and the last URL is revoked on unmount. */
 function useBlobUrl(path: string, type: string) {
   const scope = useFileScope();
+  const paneVisible = usePaneVisible();
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const urlRef = useRef<string | null>(null);
@@ -6259,13 +6464,22 @@ function useBlobUrl(path: string, type: string) {
     [],
   );
 
-  // Poll mtime; on an external advance, bump diskVersion to re-read fresh bytes.
+  // Seed the mtime baseline once per file, visible or not, so it pairs with the
+  // bytes the load effect read — the re-show catch-up below compares against it.
   useEffect(() => {
     let cancelled = false;
     fileMtime(path, scope)
       .then((m) => { if (!cancelled) lastMtime.current = m; })
       .catch(() => {});
-    const id = setInterval(() => {
+    return () => { cancelled = true; };
+  }, [path, scope]);
+
+  // Poll mtime; on an external advance, bump diskVersion to re-read fresh bytes.
+  // Visible panes only; the immediate check on re-show catches a hidden-time change.
+  useEffect(() => {
+    if (!paneVisible) return;
+    let cancelled = false;
+    const check = () => {
       fileMtime(path, scope)
         .then((m) => {
           if (cancelled || lastMtime.current == null || m <= lastMtime.current) return;
@@ -6273,9 +6487,11 @@ function useBlobUrl(path: string, type: string) {
           setDiskVersion((v) => v + 1);
         })
         .catch(() => {});
-    }, RELOAD_POLL_MS);
+    };
+    check();
+    const id = setInterval(check, RELOAD_POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
-  }, [path, scope]);
+  }, [path, scope, paneVisible]);
 
   return { url, error };
 }
@@ -6328,14 +6544,15 @@ function texWorkspaceContains(structure: TexStructure, path: string): boolean {
 // used CLEAN pane is dropped; a dirty pane (or the main file) is never evicted.
 const TEX_WS_MAX_PANES = 12;
 const TEX_WS_SIDEBAR_DEFAULT = 240;
-const TEX_WS_PDF_SPLIT_DEFAULT = 0.42;
 
 /**
- * The LaTeX WORKSPACE host: one tab that composes the left structure sidebar, a
- * keep-mounted center that switches between the reused `TexView` (a `.tex`) and
- * `ImageView`/`PdfView`/`TextView` (a graphic) for the selected file, and a
- * docked SyncTeX PDF pane — forward search (the compile's `requestReveal`) lands
- * in it and a reverse click routes back through `onReverseSource` to the center.
+ * The LaTeX WORKSPACE host: one tab that composes the left structure sidebar and
+ * a keep-mounted center that switches between the reused `TexView` (a `.tex`) and
+ * `ImageView`/`PdfView`/`TextView` (a graphic) for the selected file. The
+ * compiled PDF is its OWN tab, opened beside the workspace via `openLinkedFile`.
+ * SyncTeX still works both ways across that tab boundary: forward search lands via
+ * the path-keyed `pdfSync` reveal, and a reverse click's `jumpToSource` routes
+ * back into this workspace (`focusTexWorkspaceForSource`) to switch the center.
  *
  * It reuses the existing viewer components verbatim; the only new pieces are the
  * sidebar (a separate leaf) and this thin host. Everything the host needs is
@@ -6381,14 +6598,14 @@ function TexWorkspaceView({
     return () => { cancelled = true; };
   }, [mainPath, projectId, structureVersion]);
 
-  // Where this tab's ViewerState (the centered file, the docked-PDF flag/split,
-  // the sidebar width) actually lives. In the MAIN window the layout store owns
-  // it, and the reads below are reactive so a sidebar/link switch re-renders. In
-  // a DETACHED popout the store has NO entry for the tab — its tabs render from a
-  // Tauri seed into local React state (see `seedViewerState`) — so a store read
-  // is forever undefined and a store WRITE is a silent no-op, which pinned the
-  // center to the main file and killed the docked PDF and sidebar-resize in a
-  // popout. So keep a local mirror seeded from the persisted state, treat the
+  // Where this tab's ViewerState (the centered file, the sidebar width) actually
+  // lives. In the MAIN window the layout store owns it, and the reads below are
+  // reactive so a sidebar/link switch re-renders. In a DETACHED popout the store
+  // has NO entry for the tab — its tabs render from a Tauri seed into local React
+  // state (see `seedViewerState`) — so a store read is forever undefined and a
+  // store WRITE is a silent no-op, which pinned the center to the main file and
+  // killed the sidebar-resize in a popout. So keep a local mirror seeded from the
+  // persisted state, treat the
   // store as the source of truth only when it actually holds the tab, and persist
   // to BOTH (the store write round-trips through the main window's layout save;
   // in a popout it is a harmless no-op and the local mirror drives the UI).
@@ -6450,69 +6667,44 @@ function TexWorkspaceView({
     });
   }, [activePath, mainPath]);
 
-  // The compiled PDF this workspace docks. Seeded from convention (the root's
-  // `.pdf` sibling) and updated to the compile's ACTUAL output (which honours the
-  // #54 out-dir) via `onCompiled`. Re-seeded when the root/side changes.
-  const [pdfPath, setPdfPath] = useState<string>(() => mainPath.replace(/\.tex$/i, ".pdf"));
-  useEffect(() => {
-    setPdfPath(mainPath.replace(/\.tex$/i, ".pdf"));
-  }, [mainPath]);
+  // Non-null inside a detached popout: the workspace's tabs render from a Tauri
+  // seed into LOCAL state and the main tab store isn't ours, so a PDF tab has to
+  // stream into THIS window through the file-drop controller (the Python-Run
+  // seam), not `openLinkedFile` — which would silently add the tab to the main
+  // window's store where this popout never renders it (the reported bug).
+  const fileDrop = useContext(FileDropContext);
 
-  // Whether that PDF is actually on disk. The docked pane mounts pdf.js only when
-  // it is — so a never-compiled workspace (and every jsdom test that doesn't
-  // compile) keeps the worker unmounted, and a restore with `texPdfOpen` but no
-  // file shows nothing rather than a broken canvas. Probed on mount / path change,
-  // and set true optimistically the instant a compile writes it.
-  const [pdfExists, setPdfExists] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    fileMtime(pdfPath, projectId)
-      .then(() => { if (!cancelled) setPdfExists(true); })
-      .catch(() => { if (!cancelled) setPdfExists(false); });
-    return () => { cancelled = true; };
-  }, [pdfPath, projectId]);
+  // "Show the PDF" — the single path that puts the compiled PDF on screen, used
+  // by both the compile's forward-search and the explicit Open-PDF button. The
+  // PDF is its OWN tab, not docked in-tab, deduped by path so a recompile
+  // refocuses the same tab (its own mtime poll reloads the fresh bytes) rather
+  // than stacking a duplicate — in the main window via `openLinkedFile`, in a
+  // popout via `fileDrop.openTab` (`addDetachedTab` does the same path dedupe).
+  // Either way it lands in the workspace's own subwindow. TexView only calls this
+  // once a PDF exists, so there is nothing to probe here.
+  const openPdfTab = useCallback(
+    (pdf: string) => {
+      const label = basename(pdf);
+      const cwd = dirname(pdf) || dirname(mainPath) || "/";
+      if (fileDrop) {
+        fileDrop.openTab({ label, cmd: "", cwd, kind: "embed", embedPath: pdf, viewer: "pdf" });
+        return;
+      }
+      openLinkedFile(tabKey, cwd, { path: pdf, viewer: "pdf", label });
+    },
+    [tabKey, mainPath, fileDrop],
+  );
 
   // A successful compile (from any mounted editor — a child builds the root too):
-  // remember the output PDF, reveal the docked pane, and re-gather the structure
-  // (a build may add an \input or a figure). Never auto-compiles on restore — this
+  // remember the output PDF, open/refocus its tab, and re-gather the structure (a
+  // build may add an \input or a figure). Never auto-compiles on restore — this
   // only ever fires from an explicit build.
   const onCompiled = useCallback(
     (info: { pdfPath: string; pdfVersion: number }) => {
-      setPdfPath(info.pdfPath);
-      setPdfExists(true);
       setStructureVersion((v) => v + 1);
-      patchViewerState({ texPdfOpen: true });
+      openPdfTab(info.pdfPath);
     },
-    [patchViewerState],
-  );
-
-  // "Show the PDF" from the center editor (the compile's forward-search, or the
-  // explicit Open-PDF button): dock it in-tab instead of opening a separate PDF
-  // tab. TexView only calls this once a PDF has been built, so the file exists.
-  const onOpenPdf = useCallback(
-    (pdf: string) => {
-      setPdfPath(pdf);
-      setPdfExists(true);
-      patchViewerState({ texPdfOpen: true });
-    },
-    [patchViewerState],
-  );
-
-  // Reverse search (a Ctrl/⌘-click in the docked PDF): switch the center to the
-  // producing source when it is in THIS workspace (no new tab — the editor lives
-  // in the same tab, so `tabKey`/`structure` are already in scope), else fall back
-  // to the module jump for an out-of-tree target. The center child consumes the
-  // retained `requestJump` via its own `useEditorJump(path)` subscription.
-  const onReverseSource = useCallback(
-    (src: SyncSource, anchor: string) => {
-      if (src.input === mainPath || (structure && texWorkspaceContains(structure, src.input))) {
-        setActivePath(src.input);
-        useEditorJumpStore.getState().requestJump(src.input, src.line, src.column);
-      } else {
-        jumpToSource(src.input, src.line, src.column, anchor);
-      }
-    },
-    [mainPath, structure, setActivePath],
+    [openPdfTab],
   );
 
   // In-structure link/error targets switch the center; out-of-tree ones fall back
@@ -6546,45 +6738,6 @@ function TexWorkspaceView({
     [patchViewerState],
   );
 
-  // Docked PDF pane visibility/split (persisted per tab). Default collapsed — the
-  // pane is revealed by the first compile or the Open-PDF button, so pdf.js's
-  // worker stays unmounted until there is something to show.
-  const pdfOpen = (storeVs?.texPdfOpen ?? localVs.texPdfOpen) ?? false;
-  const pdfSplit = (storeVs?.texPdfSplit ?? localVs.texPdfSplit) ?? TEX_WS_PDF_SPLIT_DEFAULT;
-  const closePdf = useCallback(() => patchViewerState({ texPdfOpen: false }), [patchViewerState]);
-
-  // Live split fraction while the divider between the center and the PDF pane is
-  // being dragged; persisted (as `texPdfSplit`) on pointer-up, mirroring the
-  // sidebar's resize. Measured against the workspace's own width so the fraction
-  // is exact regardless of the sidebar.
-  const workspaceRef = useRef<HTMLDivElement | null>(null);
-  const [livePdfSplit, setLivePdfSplit] = useState<number | null>(null);
-  const shownSplit = livePdfSplit ?? pdfSplit;
-  const startPdfResize = useCallback(
-    (e: React.PointerEvent) => {
-      e.preventDefault();
-      (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-      const rect = workspaceRef.current?.getBoundingClientRect();
-      const total = rect?.width ?? 0;
-      const right = rect?.right ?? 0;
-      let last = shownSplit;
-      const onMove = (ev: PointerEvent) => {
-        if (total <= 0) return;
-        last = Math.max(0.2, Math.min(0.8, (right - ev.clientX) / total));
-        setLivePdfSplit(last);
-      };
-      const onUp = () => {
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
-        setLivePdfSplit(null);
-        patchViewerState({ texPdfSplit: last });
-      };
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
-    },
-    [shownSplit, patchViewerState],
-  );
-
   const centerFor = (p: string) => {
     const v = viewerForPath(p);
     const paneKey = p === mainPath ? tabKey : tabKey ? `${tabKey}#${p}` : undefined;
@@ -6594,7 +6747,7 @@ function TexWorkspaceView({
           path={p}
           tabKey={paneKey}
           onOpenExternally={onOpenExternally}
-          onOpenPdf={onOpenPdf}
+          onOpenPdf={openPdfTab}
           onFollowChild={onFollowChild}
           onJumpToSource={onJumpToSource}
           onDirtyChange={dirtyHandlerFor(p)}
@@ -6612,13 +6765,8 @@ function TexWorkspaceView({
     return <TextView path={p} tabKey={paneKey} onOpenExternally={onOpenExternally} groupId={groupId} />;
   };
 
-  // The docked PDF is shown only when explicitly open AND actually on disk, so a
-  // restored `texPdfOpen` with no compiled file (or a jsdom test) never mounts
-  // pdf.js, and a build never dials out to re-create it.
-  const showPdf = pdfOpen && pdfExists;
-
   return (
-    <div className="tex-workspace" ref={workspaceRef}>
+    <div className="tex-workspace">
       {structure ? (
         <TexStructureSidebar
           structure={structure}
@@ -6646,47 +6794,6 @@ function TexWorkspaceView({
           </div>
         ))}
       </div>
-      {/* Docked SyncTeX PDF pane: the same real PdfView a standalone PDF tab
-          renders, re-hosted in-tab. Forward search lands here (the compile's
-          `requestReveal` targets this pdfPath, now mounted), and a reverse click
-          routes back through `onReverseSource` to switch the center — both
-          directions in one tab, both stores untouched (they are path-keyed). */}
-      {showPdf && (
-        <div
-          className="tex-workspace-pdf"
-          style={{ width: `${(shownSplit * 100).toFixed(3)}%` }}
-        >
-          <div
-            className="tex-workspace-pdf-resize"
-            role="separator"
-            aria-orientation="vertical"
-            onPointerDown={startPdfResize}
-          />
-          <div className="tex-workspace-pdf-head">
-            <span className="tex-workspace-pdf-title" title={pdfPath}>
-              {basename(pdfPath)}
-            </span>
-            <button
-              type="button"
-              className="tex-workspace-pdf-close"
-              onClick={closePdf}
-              title={t("texWorkspace.hidePdf")}
-              aria-label={t("texWorkspace.hidePdf")}
-            >
-              ×
-            </button>
-          </div>
-          <div className="tex-workspace-pdf-body">
-            <PdfView
-              path={pdfPath}
-              tabKey={tabKey ? `${tabKey}#pdf` : undefined}
-              onOpenExternally={onOpenExternally}
-              groupId={groupId}
-              onReverseSource={onReverseSource}
-            />
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -6707,9 +6814,10 @@ function TexView({
   tabKey?: string;
   // --- TeX workspace host seams (all optional; absent ⇒ today's standalone
   //     behavior, so a plain `viewer:"tex"` tab and its tests are unaffected) ---
-  /** Show the compiled PDF. When present, `openPdf` calls this INSTEAD of opening
-   *  a separate PDF tab — the workspace docks the PDF in-tab. Absent ⇒ the
-   *  standalone tab's default (open/refocus a separate PDF tab). */
+  /** Show the compiled PDF. When present, `openPdf` calls this INSTEAD of the
+   *  standalone tab's own open — the workspace routes the PDF tab into its own
+   *  subwindow (via the workspace's real `tabKey`). Absent ⇒ the standalone tab's
+   *  default (open/refocus a separate PDF tab keyed on this editor's tab). */
   onOpenPdf?: (pdf: string) => void;
   /** Follow an `\input`/`\includegraphics` target. Return true when the host
    *  handled it (an in-structure child/graphic switched the workspace center);
@@ -6724,7 +6832,7 @@ function TexView({
    *  cache never evicts a pane with unsaved edits. */
   onDirtyChange?: (dirty: boolean) => void;
   /** A successful compile finished: the actual output PDF and the bumped version.
-   *  Drives the docked PDF pane and a structure re-gather. */
+   *  Opens/refocuses the PDF tab and drives a structure re-gather. */
   onCompiled?: (info: { pdfPath: string; pdfVersion: number }) => void;
 }) {
   const t = useT();
@@ -6909,8 +7017,8 @@ function TexView({
   // so a reused tab reloads the freshly compiled bytes on its own.
   const openPdf = useCallback(
     (pdf: string) => {
-      // In a workspace the host docks the PDF in-tab; standalone opens/refocuses
-      // a separate PDF tab.
+      // In a workspace the host opens the PDF tab in the workspace's own
+      // subwindow; standalone opens/refocuses a separate PDF tab keyed on this tab.
       if (onOpenPdf) {
         onOpenPdf(pdf);
         return;
@@ -7008,8 +7116,8 @@ function TexView({
         const nextVersion = pdfVersionRef.current + 1;
         pdfVersionRef.current = nextVersion;
         setPdfVersion(nextVersion);
-        // Tell the workspace host a build landed (drives the docked PDF pane and a
-        // structure re-gather); no-op for a standalone tab.
+        // Tell the workspace host a build landed (opens/refocuses the PDF tab and
+        // re-gathers the structure); no-op for a standalone tab.
         // The PDF is shown/refreshed FIRST, before any forward search — so a
         // SyncTeX miss (or SyncTeX being unavailable) can never keep the compiled
         // PDF off screen. Jump-to-cursor is a best-effort extra on top.

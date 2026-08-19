@@ -600,6 +600,11 @@ pub fn run() {
             // skips the exit teardown) and the staged config copies. Off-thread:
             // docker may be slow or absent, and neither may block startup.
             std::thread::spawn(services::sandbox::sweep_orphans);
+            // Reap project VMs a previous (crashed) run left behind, by
+            // pidfile — a VM's lifetime is its app session, so anything alive
+            // at startup is an orphan (`docs/vm_projects_plan.md`). Off-thread,
+            // same posture as the container sweep above.
+            std::thread::spawn(services::vm::sweep_orphans);
             // Unlink ssh ControlMaster sockets a previous run left behind. The
             // master is killed by signal rather than `ssh -O exit`, so the socket
             // outlives it — and a stale one makes OpenSSH disable multiplexing for
@@ -654,6 +659,17 @@ pub fn run() {
             commands::projects::set_project_name,
             commands::projects::set_project_sandbox,
             commands::projects::set_project_sandbox_spec,
+            commands::vm::vm_doctor,
+            commands::vm::vm_status,
+            commands::vm::vm_boot,
+            commands::vm::vm_shutdown,
+            commands::vm::vm_rebuild,
+            commands::vm::vm_blocked,
+            commands::vm::vm_allow_temporarily,
+            commands::vm::vm_set_spec,
+            commands::vm::vm_unpushed_commits,
+            commands::vm::remote_download_size,
+            commands::vm::remote_download_to,
             commands::projects::set_project_remote_control,
             commands::projects::sandbox_preflight,
             commands::python::python_interpreters,
@@ -794,6 +810,7 @@ pub fn run() {
             commands::mail::mail_priority_set,
             commands::mail::mail_priority_page,
             commands::mail::mail_priority_counts,
+            commands::mail::mail_priority_clear,
             // The keyword rules that set those marks automatically. Local for
             // the same reason: a rule writes the same column the right-click
             // menu writes, so nothing here reaches a server either.
@@ -923,6 +940,7 @@ pub fn run() {
             commands::sync::sync_status,
             commands::sync::sync_file_meta,
             commands::sync::sync_resolve_if_identical,
+            commands::sync::sync_apply_delete,
             commands::sync::sync_diff,
             commands::ssh::ssh_tooling_status,
             commands::ssh::ssh_host_key_preview,
@@ -939,6 +957,7 @@ pub fn run() {
             commands::openvpn::openvpn_connect,
             commands::openvpn::openvpn_auth_needs,
             commands::openvpn::vpn_has_saved_password,
+            commands::openvpn::vpn_saved_password_state,
             commands::openvpn::vpn_can_connect_silently,
             commands::openvpn::vpn_forget_password,
             commands::openvpn::openvpn_login_command,
@@ -1032,6 +1051,9 @@ pub fn run() {
             commands::terminal::pty_write,
             commands::terminal::pty_resize,
             commands::terminal::pty_kill,
+            commands::terminal::pty_set_visible,
+            commands::terminal::pty_watch,
+            commands::terminal::pty_unwatch,
             commands::terminal::local_tmux_list,
             commands::terminal::local_tmux_kill,
             commands::terminal::local_tmux_rename,
@@ -1156,6 +1178,8 @@ pub fn run() {
             commands::agents::list_agents,
             commands::agents::codex_hook_status,
             commands::agents::install_agent,
+            commands::agents::install_agent_remote,
+            commands::agents::install_agent_remote_command,
             commands::agents::uninstall_agent,
             commands::ollama::ollama_is_running,
             commands::ollama::ollama_status,
@@ -1230,6 +1254,13 @@ pub fn run() {
                 // container. Dropping the registry alone would kill only the
                 // shell leaders and orphan everything they spawned.
                 _app.state::<RegistryState>().lock().unwrap().kill_all();
+                // Stop the Ollama server *this run started* — the spawned
+                // `ollama serve` (with the runner child holding the weights) or
+                // the systemd unit that was inactive until Eldrun asked for it.
+                // A server that was already running, or one on another machine,
+                // is deliberately left alone: Ollama is a machine service as
+                // often as it is an Eldrun detail.
+                commands::ollama::shutdown_owned_server();
                 // Tear down any OpenVPN tunnels brought up for VPN-gated
                 // remote projects so no privileged tunnel outlives the app.
                 // Best-effort: a tunnel the close-path already asked about and was
@@ -1239,8 +1270,18 @@ pub fn run() {
                 // Remove every project container this run created — container
                 // lifetime is the project session, never longer than the app.
                 services::sandbox::down_all();
-                // Tear down pooled SSH/SFTP connections so no ssh ControlMaster
-                // child (and the master socket it owns) outlives Eldrun.
+                // Shut down every project VM this run booted — VM lifetime is
+                // the app session, like the containers above (ACPI powerdown
+                // via QMP, escalating to a kill after a short grace).
+                services::vm::down_all();
+                // Tear down pooled SSH/SFTP connections. This ends the `ssh`
+                // *clients* Eldrun spawned; the ControlMaster behind them is a
+                // separate backgrounded process (`ssh: … [mux]`, reparented to
+                // init) that `ControlPersist` keeps for its idle window whatever
+                // we do here, so it is deliberately left with its socket intact
+                // rather than orphaned socketless — the next launch's
+                // `sweep_stale_control_sockets` finds it still answering, keeps
+                // it, and the first reconnect rides it with no re-auth.
                 // Stop every auto-sync task first (cancel loops + drop watchers)
                 // so none races the pool teardown below.
                 let auto = _app

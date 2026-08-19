@@ -27,6 +27,7 @@ type ReadyHandler = () => void;
 type ExitHandler = (code: number | null) => void;
 
 const outputHandlers = new Map<string, Set<OutputHandler>>();
+const replayHandlers = new Map<string, Set<OutputHandler>>();
 const readyHandlers = new Map<string, Set<ReadyHandler>>();
 const exitHandlers = new Map<string, Set<ExitHandler>>();
 
@@ -38,6 +39,16 @@ function ensureStarted() {
 
   listen<TerminalOutput>("terminal-output", (ev) => {
     const set = outputHandlers.get(ev.payload.id);
+    if (!set) return;
+    for (const h of set) h(ev.payload.data);
+  }).catch(() => {});
+
+  // The backend's replay of output it buffered while the pane was hidden
+  // (visible-only streaming). A separate event from `terminal-output` on
+  // purpose: replayed output is STALE output written late, and the pane must
+  // route it through its strip-terminal-queries path, never a bare write.
+  listen<TerminalOutput>("terminal-replay", (ev) => {
+    const set = replayHandlers.get(ev.payload.id);
     if (!set) return;
     for (const h of set) h(ev.payload.data);
   }).catch(() => {});
@@ -71,6 +82,10 @@ function subscribe<H>(registry: Map<string, Set<H>>, id: string, handler: H): ()
 
 export function onTerminalOutput(id: string, handler: OutputHandler): () => void {
   return subscribe(outputHandlers, id, handler);
+}
+
+export function onTerminalReplay(id: string, handler: OutputHandler): () => void {
+  return subscribe(replayHandlers, id, handler);
 }
 
 export function onTerminalReady(id: string, handler: ReadyHandler): () => void {

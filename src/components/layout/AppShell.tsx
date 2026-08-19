@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useEffect,
   useRef,
   useState,
@@ -13,7 +15,12 @@ import { listen } from "@tauri-apps/api/event";
 import { PLATFORM } from "../../lib/dragPlatform";
 import { nextWindowState } from "../../lib/windowState";
 import { notePtyOutput, useActivityStore } from "../../stores/activity";
-import { usePowerStore, useEnergySaver, saverInterval } from "../../stores/power";
+import {
+  usePowerStore,
+  useQuiesce,
+  saverInterval,
+  startFocusTracking,
+} from "../../stores/power";
 import { useOllamaAutoloadOnLaunch } from "../../stores/ollamaAutoload";
 import { useRendererWatchdog } from "../../lib/rendererWatchdog";
 import { CenterPanel } from "./CenterPanel";
@@ -64,11 +71,18 @@ import { listenEditorJump } from "../../stores/editorJump";
 import { listenSourceJump } from "../embed/FileViewerPane";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
 import { useSettingsStore } from "../../stores/settings";
-import { useTabsStore } from "../../stores/tabs";
+import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { useTimerStore } from "../../stores/timer";
 import { flushUsage } from "../../stores/usage";
 import { useKeyboard } from "../../hooks/useKeyboard";
 import { useT, useI18nStore, translate } from "../../lib/i18n";
+
+// Dev-only perf panel (src/dev/). The ternary is statically resolved at build
+// time (`import.meta.env.DEV` → false), so in a shipped bundle the lazy() —
+// and with it the whole src/dev/ chunk — is dead code and never emitted.
+const DevPerfHost = import.meta.env.DEV
+  ? lazy(() => import("../../dev/DevPerfHost").then((m) => ({ default: m.DevPerfHost })))
+  : null;
 
 // Width of the right-edge band that reveals the (unpinned) right panel on hover.
 // Kept wide because on Windows/WebView2 the window often isn't true-fullscreen
@@ -136,17 +150,24 @@ export function AppShell() {
   );
   const loadBoxes = useBoxesStore((s) => s.load);
   const activeId = useProjectsStore((s) => s.activeId);
+  const rootDir = useProjectsStore((s) => s.rootDir);
   const scope = useTabsStore((s) => s.scope);
   // The right panel also opens for an active box scope (multi-root file view),
-  // even when no project is the current activeId.
-  const panelTarget = activeId !== null || scope.startsWith(BOX_SCOPE_PREFIX);
+  // even when no project is the current activeId — and for the ROOT scope, whose
+  // `~/eldrun/root` is the app's unfiled/scratch area: the place data lands while
+  // it is only being looked at, or before it belongs to any one project. That
+  // folder had a terminal but no file view, so the only way to see what was in it
+  // was to `ls`. Gated on `rootDir` because it arrives with the projects load —
+  // an empty root would give the panel no tree to mount.
+  const panelTarget =
+    activeId !== null || scope.startsWith(BOX_SCOPE_PREFIX) || (scope === ROOT_SCOPE && !!rootDir);
   const switchToast = useProjectsStore((s) => s.switchToast);
   const clearSwitchToast = useProjectsStore((s) => s.clearSwitchToast);
   const connToast = useProjectsStore((s) => s.connToast);
   const clearConnToast = useProjectsStore((s) => s.clearConnToast);
   const initTimer = useTimerStore((s) => s.init);
   const flushTimer = useTimerStore((s) => s.flush);
-  const energySaver = useEnergySaver();
+  const quiesce = useQuiesce();
   // Load the armed local (Ollama) models into memory at launch — main window
   // only, and skipped (loudly) while Energy Saver is on. See stores/ollamaAutoload.
   useOllamaAutoloadOnLaunch();
@@ -618,13 +639,21 @@ export function AppShell() {
     return () => clearInterval(id);
   }, []);
 
-  // Point the file-churn watcher at the active project, so the recap's
+  // Point the file-churn watcher at the active scope, so the recap's
   // created/modified/deleted counts follow whatever the user is working on. The
   // backend resolves which directory that is (a remote project is watched through
   // its local mirror; one with no mirror is not watchable at all, since inotify
   // cannot see an SFTP tree, and records no file stats).
+  //
+  // The ROOT scope is a scope like any other here — `~/eldrun/root` is a real
+  // local tree, its terminals already file every other counter under `"root"`
+  // (`stores/usage`), and it is where a file that has not found a project yet
+  // gets worked on. This used to send `""`, the backend's "watch nothing", so
+  // that half of the recap silently reported zero for it. `?? ROOT_SCOPE`, not
+  // `?? ""`: the empty string still means stop watching, and nothing here wants
+  // that.
   useEffect(() => {
-    void invoke("usage_watch_project", { projectId: activeId ?? "" }).catch(() => {});
+    void invoke("usage_watch_project", { projectId: activeId ?? ROOT_SCOPE }).catch(() => {});
   }, [activeId]);
 
   // Track per-project terminal activity for the running-task pill indicator.
@@ -632,40 +661,57 @@ export function AppShell() {
   // emitting even while their tab views are unmounted).
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let unlistenDigest: (() => void) | undefined;
     listen<{ id: string; data: string }>("terminal-output", (ev) => {
-      // The chunk itself rides along: it is the ONLY view of a tab's screen that
-      // exists for a pane the user has never opened (those buffer their output
-      // instead of writing it to an xterm), and the store classifies a quiet
-      // agent tab — finished vs blocked on a prompt — off its tail.
+      // The chunk itself rides along: the store classifies a quiet agent tab —
+      // finished vs blocked on a prompt — off its tail.
       notePtyOutput(ev.payload.id, ev.payload.data);
     })
       .then((fn) => { unlisten = fn; })
       .catch(() => {});
-    return () => { unlisten?.(); };
+    // A HIDDEN pane's PTY emits no terminal-output at all (visible-only
+    // streaming): the backend condenses its output into these throttled
+    // digests, which carry the same tail the classifier needs — so background
+    // agent tabs keep their working/decision/done pills without their full
+    // streams ever crossing IPC. (`terminal-replay`, the show-again catch-up,
+    // is deliberately NOT fed in here: its bytes were already digested live,
+    // and re-noting them would flash a quiet tab "working" on every show.)
+    listen<{ id: string; data: string }>("terminal-activity", (ev) => {
+      notePtyOutput(ev.payload.id, ev.payload.data);
+    })
+      .then((fn) => { unlistenDigest = fn; })
+      .catch(() => {});
+    return () => { unlisten?.(); unlistenDigest?.(); };
   }, []);
 
   // Recompute the running-task indicators on a fixed cadence. Split from the
-  // listener above so re-arming it on an Energy Saver flip doesn't drop the
-  // terminal-output listener. On battery the pill lags a little more but the
-  // 300ms churn stops.
+  // listener above so re-arming it on a quiesce flip doesn't drop the
+  // terminal-output listener. On battery — or unfocused — the pill lags a
+  // little more but the 300ms churn stops.
   useEffect(() => {
     const id = setInterval(
       () => useActivityStore.getState().recompute(),
-      saverInterval(300, energySaver),
+      saverInterval(300, quiesce),
     );
     return () => clearInterval(id);
-  }, [energySaver]);
+  }, [quiesce]);
 
   // Poll AC/battery state so Energy Saver ("on battery") can react to plug/unplug.
   useEffect(() => usePowerStore.getState().start(), []);
 
-  // Publish the effective Energy Saver state on the document root so the CSS in
-  // themes.css can collapse continuous idle animations (`[data-energy-saver]`).
+  // Track window focus: blur engages the same throttles as Energy Saver, plus
+  // the wholesale animation pause (`[data-blurred]` in themes.css) — a blurred
+  // window that keeps animating never lets its render thread reach idle.
+  useEffect(() => startFocusTracking(), []);
+
+  // Publish the effective quiesce state (Energy Saver OR blurred) on the
+  // document root so the CSS in themes.css can collapse continuous idle
+  // animations (`[data-energy-saver]`).
   useEffect(() => {
     const root = document.documentElement;
-    if (energySaver) root.dataset.energySaver = "on";
+    if (quiesce) root.dataset.energySaver = "on";
     else delete root.dataset.energySaver;
-  }, [energySaver]);
+  }, [quiesce]);
 
   useEffect(() => {
     if (projectsLoaded) {
@@ -885,6 +931,13 @@ export function AppShell() {
       <HintHost />
       <TourHost />
       <StatsRecapHost />
+      {/* Dev-only floating perf monitor (Ctrl+Alt+P). Main window only, like
+          the renderer watchdog; null in production builds by construction. */}
+      {DevPerfHost && (
+        <Suspense fallback={null}>
+          <DevPerfHost />
+        </Suspense>
+      )}
       {showHowToStart && (
         <HowToStart
           onClose={() => {

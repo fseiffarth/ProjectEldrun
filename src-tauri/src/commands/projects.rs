@@ -628,6 +628,15 @@ pub fn archive_project(project_id: String, archived_at: String) -> Result<(), St
         if let Some(mirror) = entry_mirror(&entry) {
             move_tree(Path::new(&mirror), &dest.join("mirror"))?;
         }
+        // A VM project's "host tree" is its overlay disk in the local VM state
+        // dir — for a mirrorless VM project that overlay IS the working tree,
+        // so it archives with the project (and deletes with the archive; the
+        // confirm dialog names that). Shut the VM down first.
+        let vm_state = crate::services::vm::vm_dir(&project_id);
+        if vm_state.exists() {
+            crate::services::vm::shutdown(&project_id);
+            move_tree(&vm_state, &dest.join("vm"))?;
+        }
     } else if let Some(dir) = entry_directory(&entry) {
         move_tree(Path::new(&dir), &dest.join("dir"))?;
     }
@@ -705,6 +714,12 @@ pub fn restore_archived_project(project_id: String) -> Result<ProjectEntry, Stri
                     Value::String(target.to_string_lossy().to_string()),
                 );
             }
+        }
+        // A VM project's overlay/state dir moves back where the boot expects
+        // it (keyed by id, so the original path is free again).
+        let vm_src = dest.join("vm");
+        if vm_src.exists() {
+            move_tree(&vm_src, &crate::services::vm::vm_dir(&project_id))?;
         }
     } else if let Some(dir) = entry_directory(&entry) {
         let target = free_target(Path::new(&dir));
@@ -1021,6 +1036,23 @@ pub fn set_project_sandbox(
         .iter_mut()
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("project '{project_id}' not found"))?;
+
+    // The trust tiers are exclusive (`docs/vm_projects_plan.md`): a project
+    // living inside a VM must never also enable the Docker sandbox — the
+    // container's bind-mount is precisely the shared filesystem the VM tier
+    // exists to not have.
+    if enabled
+        && entry
+            .extra
+            .get("vm")
+            .and_then(|v| v.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    {
+        return Err(
+            "This project lives inside a VM; the VM and container tiers are exclusive.".to_string(),
+        );
+    }
 
     // Existing spec: the `projects.json` mirror in the state dir is the ONLY
     // source. There used to be a `project.json` fallback for entries predating the
@@ -1854,8 +1886,9 @@ pub fn save_project(local_file: String, project: Project) -> Result<(), String> 
 }
 
 /// Save only the tab layout — into `<state_dir>/sessions/<project_id>/`, plus the
-/// export copy in the project folder. `project_id` is what it is keyed by; a
-/// `None` id (the root scope) persists nothing.
+/// export copy in the project folder. `project_id` is what it is keyed by; the
+/// root scope passes the literal `"root"` (persisted like any project, minus the
+/// export copy, since it has no project folder). A bare `None` persists nothing.
 ///
 /// `allow_clear` licenses an EMPTY `tabs` to erase the saved layout. The frontend
 /// sets it only for a scope it has actually hydrated and that genuinely holds no
@@ -1879,9 +1912,23 @@ pub fn save_tab_layout(
     )
 }
 
+/// `~/eldrun/root` — the working directory of everything that belongs to no
+/// project (the root control terminal, and now the right panel's file tree over
+/// the same folder, which is where data lands while it is only being looked at
+/// or before it has a project to belong to).
+///
+/// It is **created here**, not only by the first root terminal that spawns into
+/// it (`pty_spawn`). That used to be the only path, so a session where no root
+/// terminal was ever opened had no such folder at all — and a file view is the
+/// one surface that reads the directory rather than being handed to a shell
+/// that would create it. A create that fails is not reported: the answer is the
+/// path either way, and every command that then touches it fails with its own,
+/// more specific error.
 #[tauri::command]
 pub fn root_work_dir() -> String {
-    storage::root_work_dir().to_string_lossy().to_string()
+    let dir = storage::root_work_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    dir.to_string_lossy().to_string()
 }
 
 #[tauri::command]
@@ -2484,25 +2531,64 @@ pub struct CreateProjectRequest {
     /// `<mirror_parent>/<name>`. Absent → the default `projects-ssh` root.
     #[serde(default)]
     pub mirror_parent: Option<String>,
+    /// When present (and enabled), the project is a **VM project**
+    /// (`docs/vm_projects_plan.md`): the whole tree lives inside a locally
+    /// booted QEMU/KVM guest, and a `remote` spec pointing at the VM's
+    /// forwarded loopback port is synthesized here — the caller never supplies
+    /// one. Chosen at creation only (the boundary is a data move, not a
+    /// toggle). Mutually exclusive with `remote`.
+    #[serde(default)]
+    pub vm: Option<crate::schema::project::VmSpec>,
 }
 
 #[tauri::command]
-pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String> {
+pub fn create_project(mut req: CreateProjectRequest) -> Result<ProjectEntry, String> {
     let id = uuid_v4();
+
+    // A VM project IS a remote project (the one architectural decision of
+    // `docs/vm_projects_plan.md`): synthesize its RemoteSpec here. Host and
+    // port are placeholders until the first boot rewrites them
+    // (`services::vm::record_vm_endpoint`); `key_auth`/`auto_connect` are by
+    // construction — the per-VM keypair authenticates, and boot-on-activate
+    // rides the ordinary armed auto-connect path with no prompt possible.
+    let is_vm = req.vm.as_ref().is_some_and(|v| v.enabled);
+    if is_vm {
+        if req.remote.is_some() {
+            return Err("a VM project cannot also have an SSH remote".to_string());
+        }
+        req.remote = Some(RemoteSpec {
+            user: Some(crate::services::vm::VM_USER.to_string()),
+            host: "127.0.0.1".to_string(),
+            port: None,
+            remote_path: crate::services::vm::VM_PROJECT_DIR.to_string(),
+            openvpn: None,
+            auto_connect: Some(true),
+            key_auth: Some(true),
+            persist_sessions: None,
+            vm: Some(true),
+            label: Some("VM".to_string()),
+            extra: HashMap::new(),
+        });
+    }
 
     // Refuse a site another project already owns — BEFORE any of the filesystem
     // work below (a remote `mkdir`, a scaffold, a `git init`). "New project"
     // pointed at a folder that is already a project used to register a second
     // entry straight over the first, and scaffold it while it was at it.
     let registered = read_projects_list();
-    let site = match req.remote.as_ref() {
-        Some(spec) => ProjectSite::Remote { spec },
-        None => ProjectSite::Local {
-            dir: &req.directory,
-        },
-    };
-    if let Some(conflict) = find_project_conflict(&registered, &site, None) {
-        return Err(conflict_message(&conflict));
+    // VM projects are exempt from the duplicate gate: every one synthesizes
+    // the same loopback target + in-guest path, but each names its own,
+    // freshly created virtual machine — the site can never collide.
+    if !is_vm {
+        let site = match req.remote.as_ref() {
+            Some(spec) => ProjectSite::Remote { spec },
+            None => ProjectSite::Local {
+                dir: &req.directory,
+            },
+        };
+        if let Some(conflict) = find_project_conflict(&registered, &site, None) {
+            return Err(conflict_message(&conflict));
+        }
     }
 
     // Mount-free remote: a remote project's `directory` is a LOCAL per-project
@@ -2513,11 +2599,16 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
     // Local projects use the chosen directory unchanged.
     let dir = match req.remote.as_ref() {
         Some(remote) => {
-            if let Err(e) = crate::services::ssh_exec::remote_mkdir_p(remote) {
-                eprintln!(
-                    "create_project: remote mkdir '{}' failed (create it on the host if needed): {e}",
-                    remote.remote_path
-                );
+            // A VM project's host doesn't exist yet — its project dir is
+            // created by cloud-init at first boot, so there is nothing to
+            // mkdir over SSH here.
+            if !is_vm {
+                if let Err(e) = crate::services::ssh_exec::remote_mkdir_p(remote) {
+                    eprintln!(
+                        "create_project: remote mkdir '{}' failed (create it on the host if needed): {e}",
+                        remote.remote_path
+                    );
+                }
             }
             remote_project_state_dir(&id)
         }
@@ -2529,10 +2620,18 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
 
     // Remote projects mirror into `<name>` under the chosen "Local location"
     // (`mirror_parent`), defaulting to the top-level `eldrun/projects-ssh/` root;
-    // relocatable later. None for local projects.
-    let mirror = req.remote.as_ref().map(|_| {
-        resolve_remote_mirror(req.mirror_parent.as_deref(), &req.name, &id, &registered)
-    });
+    // relocatable later. None for local projects — and None for VM projects,
+    // whose sync posture is the *inverse* of a network remote's
+    // (`docs/vm_projects_plan.md`, "Sync posture"): remote-only by default,
+    // zero agent-written bytes on the host, a mirror only ever by explicit
+    // later opt-in.
+    let mirror = if is_vm {
+        None
+    } else {
+        req.remote.as_ref().map(|_| {
+            resolve_remote_mirror(req.mirror_parent.as_deref(), &req.name, &id, &registered)
+        })
+    };
 
     // A remote project's local `directory` only holds project.json (created
     // below); its scaffold belongs in the local **mirror** twin — the working
@@ -2567,7 +2666,9 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
     // `remote-private`, whose pill shows a hosting badge — with no repo on disk.
     // `.exists()` (not `is_dir`) is deliberate: `.git` is a *file* in a linked
     // worktree. `skip_scaffold` never runs `git init`, so it is left untouched.
-    if git_type != "none" && !req.skip_scaffold {
+    // …except a VM project, which has no local tree at all to check — its repo
+    // materializes inside the guest (the in-VM clone, or a `git init` there).
+    if git_type != "none" && !req.skip_scaffold && !is_vm {
         let git_target = mirror.as_deref().map(Path::new).unwrap_or(dir.as_path());
         if !git_target.join(".git").exists() {
             eprintln!(
@@ -2591,6 +2692,7 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
         created_at: Some(now),
         remote: req.remote.clone(),
         mirror: mirror.clone(),
+        vm: req.vm.clone(),
         ..Default::default()
     };
 
@@ -2605,7 +2707,14 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
         vec![]
     };
     let position = next_position(&list);
-    let extra = project_extra(directory, git_type, description, req.remote.as_ref(), mirror.as_deref());
+    let mut extra = project_extra(directory, git_type, description, req.remote.as_ref(), mirror.as_deref());
+    // Mirror the VM spec into the pill-list entry (like `remote`/`sandbox`) —
+    // the always-local copy `services::vm` trusts.
+    if let Some(vm_spec) = req.vm.as_ref().filter(|v| v.enabled) {
+        if let Ok(value) = serde_json::to_value(vm_spec) {
+            extra.insert("vm".to_string(), value);
+        }
+    }
 
     let entry = ProjectEntry {
         id: id.clone(),
@@ -3443,6 +3552,7 @@ mod tests {
             auto_connect: None,
             key_auth: None,
             persist_sessions: None,
+            vm: None,
             label: None,
             extra: HashMap::new(),
         }

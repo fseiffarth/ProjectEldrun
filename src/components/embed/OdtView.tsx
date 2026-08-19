@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { unzipSync } from "fflate";
 import { ViewerHeader, useViewerState } from "./FileViewerPane";
-import { useFileScope, readFileBytes, fileMtime } from "./fileAccess";
+import { useFileScope, usePaneVisible, readFileBytes, fileMtime } from "./fileAccess";
 import { extractOdt, renderOdtDocument } from "../../lib/viewers/odt";
 import { useT } from "../../lib/i18n";
 
@@ -33,6 +33,7 @@ export function OdtView({
   // tabKey accepted for call-site parity; no persisted reader position yet.
   useViewerState(tabKey);
   const scope = useFileScope();
+  const paneVisible = usePaneVisible();
 
   const [html, setHtml] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -61,11 +62,13 @@ export function OdtView({
       .catch(() => {});
   }, [path, scope, load]);
 
-  // Diff-aware reload: poll mtime; re-render on an external advance.
+  // Diff-aware reload: poll mtime; re-render on an external advance. Visible
+  // panes only (hidden ones stay mounted forever); the immediate check on
+  // re-show catches a change made while the pane was hidden.
   useEffect(() => {
-    if (html == null) return;
+    if (html == null || !paneVisible) return;
     let cancelled = false;
-    const id = setInterval(() => {
+    const check = () => {
       fileMtime(path, scope)
         .then((m) => {
           if (cancelled || lastMtime.current == null || m <= lastMtime.current) return;
@@ -73,9 +76,11 @@ export function OdtView({
           void load();
         })
         .catch(() => {});
-    }, RELOAD_POLL_MS);
+    };
+    check();
+    const id = setInterval(check, RELOAD_POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
-  }, [path, scope, html, load]);
+  }, [path, scope, html, paneVisible, load]);
 
   const loaded = html != null;
   return (

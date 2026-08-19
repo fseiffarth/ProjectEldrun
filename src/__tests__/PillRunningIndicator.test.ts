@@ -458,6 +458,28 @@ describe("activity store per-scope status counts (pill status bars)", () => {
     });
   });
 
+  it("tallies the root scope like any project", () => {
+    // The root terminal runs the same agents in the same kind of tabs, so its
+    // pill wears the same strip (ProjectSwitcher's .root-pill → PillStatusBars).
+    // A bare root pill could only be read as "nothing is running in there".
+    useTabsStore.setState({
+      tabsByScope: {
+        root: [{ key: "agent-r", label: "r", cmd: "claude", cwd: "/r", kind: "agent" }],
+      },
+      scope: "proj-b",
+      layoutByScope: {
+        root: { type: "group", id: "g-root", tabKeys: ["agent-r"], activeKey: "agent-r" },
+      },
+    });
+    sustainOutput("root:agent-r");
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().statusCountsByScope["root"]).toEqual({
+      working: 1,
+      decision: 0,
+      done: 0,
+    });
+  });
+
   it("tallies decision and done bars separately", () => {
     runThenPrompt("proj-a:agent-1");
     runThenFinish("proj-a:agent-2");
@@ -545,5 +567,119 @@ describe("activity store per-scope status counts (pill status bars)", () => {
     const first = useActivityStore.getState().statusCountsByScope["proj-a"];
     useActivityStore.getState().recompute();
     expect(useActivityStore.getState().statusCountsByScope["proj-a"]).toBe(first);
+  });
+
+  // ── Which tab each bar stands for (the bars are clickable) ────────────────
+  it("names the tab behind every bar, most urgent state first", () => {
+    // The bars are buttons that open their own tab, so the list must be in the
+    // same order the strip draws — position IS identity here.
+    runThenFinish("proj-a:agent-3");
+    runThenPrompt("proj-a:agent-2");
+    sustainOutput("proj-a:agent-1");
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().statusTabsByScope["proj-a"]).toEqual([
+      { key: "agent-1", state: "working" },
+      { key: "agent-2", state: "needs-decision" },
+      { key: "agent-3", state: "finished" },
+    ]);
+  });
+
+  it("keeps the per-tab list identical when nothing changed", () => {
+    sustainOutput("proj-a:agent-1");
+    useActivityStore.getState().recompute();
+    const first = useActivityStore.getState().statusTabsByScope["proj-a"];
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().statusTabsByScope["proj-a"]).toBe(first);
+  });
+
+  it("re-aims the bars when the tally stands still but the tabs change", () => {
+    // One tab going quiet as another goes busy keeps "1 working" true — and the
+    // bar would still point at the tab that stopped.
+    sustainOutput("proj-a:agent-1");
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().statusTabsByScope["proj-a"]).toEqual([
+      { key: "agent-1", state: "working" },
+    ]);
+
+    // 850ms + agent-2's own 1600ms of output leaves agent-1 quiet for 2450ms:
+    // past BUSY_WINDOW_MS (800) so it stops working, short of DONE_QUIET_MS
+    // (2500) so it raises no flag either — the tally is 1 working throughout.
+    vi.advanceTimersByTime(850);
+    sustainOutput("proj-a:agent-2");
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().statusCountsByScope["proj-a"]).toEqual({
+      working: 1,
+      decision: 0,
+      done: 0,
+    });
+    expect(useActivityStore.getState().statusTabsByScope["proj-a"]).toEqual([
+      { key: "agent-2", state: "working" },
+    ]);
+  });
+
+  it("drops a scope from the per-tab map with its counts", () => {
+    sustainOutput("proj-a:agent-1");
+    useActivityStore.getState().recompute();
+    vi.advanceTimersByTime(1000);
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().statusTabsByScope["proj-a"]).toBeUndefined();
+  });
+});
+
+describe("revealTabInScope (clicking a pill status bar)", () => {
+  beforeEach(() => {
+    useTabsStore.setState({
+      tabsByScope: {
+        "proj-a": [
+          { key: "agent-1", label: "a1", cmd: "claude", cwd: "/a", kind: "agent" },
+          { key: "agent-2", label: "a2", cmd: "claude", cwd: "/a", kind: "agent" },
+        ],
+      },
+      scope: "proj-b", // looking at another project, as a pill click does
+      layoutByScope: {
+        "proj-a": {
+          type: "group",
+          id: "g-a",
+          tabKeys: ["agent-1", "agent-2"],
+          activeKey: "agent-1",
+        },
+      },
+      focusedGroupByScope: {},
+      detachedGroupsByScope: {},
+      hiddenGroupsByScope: {},
+      fullscreenGroupId: null,
+    });
+  });
+
+  it("activates the tab in a scope that is not the current one", () => {
+    // The click writes the target scope's own layout, so the tab is already the
+    // visible one by the time the project switch mirrors it in.
+    expect(useTabsStore.getState().revealTabInScope("proj-a", "agent-2")).toBe(true);
+    const layout = useTabsStore.getState().layoutByScope["proj-a"];
+    expect(layout?.type === "group" && layout.activeKey).toBe("agent-2");
+    expect(useTabsStore.getState().focusedGroupByScope["proj-a"]).toBe("g-a");
+    // The current scope's live mirror is untouched — proj-a is not on screen.
+    expect(useTabsStore.getState().scope).toBe("proj-b");
+  });
+
+  it("mirrors into the live state when the scope IS the current one", () => {
+    useTabsStore.setState({ scope: "proj-a" });
+    expect(useTabsStore.getState().revealTabInScope("proj-a", "agent-2")).toBe(true);
+    expect(useTabsStore.getState().activeKey).toBe("agent-2");
+  });
+
+  it("leaves fullscreen when the tab lives in another subwindow", () => {
+    // A fullscreened other group would swallow the jump: the tab becomes active
+    // in a group nothing is rendering, so the click looks like a no-op.
+    useTabsStore.setState({ scope: "proj-a", fullscreenGroupId: "g-other" });
+    useTabsStore.getState().revealTabInScope("proj-a", "agent-2");
+    expect(useTabsStore.getState().fullscreenGroupId).toBeNull();
+  });
+
+  it("reports false for a tab that is not in the scope's visible tree", () => {
+    // Hidden subwindow / detached window: the caller still switches project,
+    // which is the half of the jump that can be honoured.
+    expect(useTabsStore.getState().revealTabInScope("proj-a", "agent-9")).toBe(false);
+    expect(useTabsStore.getState().revealTabInScope("proj-z", "agent-1")).toBe(false);
   });
 });

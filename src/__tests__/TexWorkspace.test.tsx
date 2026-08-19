@@ -5,22 +5,22 @@
  *      it rather than spawning a second tab.
  *  (b) Clicking a sidebar entry switches the center via `setViewerState`
  *      (texActivePath) — never `addTab`.
- *  (c) A compile docks the PDF in-tab (texPdfOpen) and adds NO PDF tab; the
- *      forward-search reveal targets the docked PDF's path.
- *  (d) A reverse-search click on the docked PDF switches the center to the
- *      producing in-structure child and its `requestJump` reaches it — no new tab.
+ *  (c) A compile opens the PDF as its OWN tab (not docked) beside the workspace;
+ *      the forward-search reveal targets that PDF's path.
+ *  (d) A reverse-search from the (standalone) PDF routes back INTO the workspace,
+ *      switching the center to the producing in-structure child and reaching it
+ *      via `requestJump` — no scattered standalone source tab.
  *
  * The real `PdfView` pulls pdf.js (which jsdom can't run), so it is stubbed to a
- * marker that captures the `onReverseSource` seam; every other component (the
- * sidebar, the center `TexView`) is the real one.
+ * bare marker; every other component (the sidebar, the center `TexView`) is the
+ * real one.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const { mockInvoke, capture } = vi.hoisted(() => ({
+const { mockInvoke } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
-  capture: { reverse: null as null | ((s: unknown, a: string) => void), path: "" },
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
@@ -47,17 +47,14 @@ vi.mock("../stores/settings", () => {
 });
 
 // Stub the PDF viewer: jsdom can't run pdf.js. Keep every other export intact so
-// the rest of the viewer graph is unaffected, and capture the reverse-search seam.
+// the rest of the viewer graph is unaffected.
 vi.mock("../components/embed/pdf/PdfViewer", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../components/embed/pdf/PdfViewer")>();
   const React = await import("react");
   return {
     ...actual,
-    PdfView: (props: { path: string; onReverseSource?: (s: unknown, a: string) => void }) => {
-      capture.reverse = props.onReverseSource ?? null;
-      capture.path = props.path;
-      return React.createElement("div", { "data-testid": "docked-pdf", "data-path": props.path });
-    },
+    PdfView: (props: { path: string }) =>
+      React.createElement("div", { "data-testid": "pdf-view", "data-path": props.path }),
   };
 });
 
@@ -172,11 +169,9 @@ describe("openTexWorkspace — one tab per document", () => {
   });
 });
 
-describe("TeX workspace — center switching + docked SyncTeX", () => {
+describe("TeX workspace — center switching + SyncTeX", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
-    capture.reverse = null;
-    capture.path = "";
     await resetStores();
   });
 
@@ -221,57 +216,55 @@ describe("TeX workspace — center switching + docked SyncTeX", () => {
     expect(useTabsStore.getState().tabs).toHaveLength(1);
   });
 
-  it("(c) a compile docks the PDF in-tab and adds no PDF tab", async () => {
+  it("(c) a compile opens the PDF as its own tab (not docked)", async () => {
     setupInvoke([{ page: 1, x: 10, y: 20, w: 100, h: 12 }]);
-    const { tabKey, useTabsStore } = await renderWorkspace();
+    const { useTabsStore } = await renderWorkspace();
 
-    // No docked PDF until a build.
-    expect(screen.queryByTestId("docked-pdf")).toBeNull();
-
-    const compileBtn = await screen.findByRole("button", { name: /compile/i });
-    await act(async () => {
-      await userEvent.click(compileBtn);
-    });
-
-    // The docked PDF appears (texPdfOpen flips) — mounted at the compile's output.
-    const docked = await screen.findByTestId("docked-pdf");
-    expect(docked.getAttribute("data-path")).toBe("/p/main.pdf");
-    await waitFor(() =>
-      expect(
-        useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState?.texPdfOpen,
-      ).toBe(true),
-    );
-    // Exactly one tab — the PDF did NOT open as its own tab.
+    // Only the workspace tab before a build.
+    await screen.findByRole("button", { name: /compile/i });
     expect(useTabsStore.getState().tabs).toHaveLength(1);
 
-    // Forward search revealed the caret's box in the docked PDF (path-keyed store).
-    const { usePdfSyncStore } = await import("../stores/pdfSync");
-    expect(usePdfSyncStore.getState().byPath["/p/main.pdf"]).toMatchObject({
-      rect: { page: 1, x: 10, y: 20, w: 100, h: 12 },
-    });
-  });
-
-  it("(d) a reverse-search click on the docked PDF centers the producing child, no new tab", async () => {
-    setupInvoke([{ page: 1, x: 10, y: 20, w: 100, h: 12 }]);
-    const { tabKey, useTabsStore } = await renderWorkspace();
-
-    // Compile to reveal the docked pane and capture its onReverseSource seam.
     const compileBtn = await screen.findByRole("button", { name: /compile/i });
     await act(async () => {
       await userEvent.click(compileBtn);
     });
-    await screen.findByTestId("docked-pdf");
-    expect(capture.reverse).toBeTruthy();
+
+    // A second tab — the compiled PDF — opened beside the workspace (deduped, so
+    // the double open/refocus from the compile still yields exactly one).
+    await waitFor(() =>
+      expect(
+        useTabsStore
+          .getState()
+          .tabs.find((t) => t.kind === "embed" && t.viewer === "pdf" && t.embedPath === "/p/main.pdf"),
+      ).toBeTruthy(),
+    );
+    expect(useTabsStore.getState().tabs).toHaveLength(2);
+
+    // Forward search revealed the caret's box in that PDF (path-keyed store).
+    const { usePdfSyncStore } = await import("../stores/pdfSync");
+    await waitFor(() =>
+      expect(usePdfSyncStore.getState().byPath["/p/main.pdf"]).toMatchObject({
+        rect: { page: 1, x: 10, y: 20, w: 100, h: 12 },
+      }),
+    );
+  });
+
+  it("(d) reverse search routes back into the workspace, switching the center", async () => {
+    setupInvoke([{ page: 1, x: 10, y: 20, w: 100, h: 12 }]);
+    const { tabKey, useTabsStore } = await renderWorkspace();
+    await screen.findByRole("button", { name: /compile/i });
 
     // Watch the jump channel: the child editor mounted by the center switch
-    // consumes the request almost immediately, so spy on the emit rather than
-    // race its retained value.
+    // consumes the request almost immediately, so spy rather than race the value.
     const { useEditorJumpStore } = await import("../stores/editorJump");
     const jumpSpy = vi.spyOn(useEditorJumpStore.getState(), "requestJump");
 
-    // Simulate the PDF resolving a Ctrl-click to a line in the in-structure child.
+    // A standalone PDF tab's reverse-click calls the module `jumpToSource`; for a
+    // `.tex` source owned by an open workspace it focuses that workspace and
+    // switches its center to the source instead of opening a scattered tab.
+    const { jumpToSource } = await import("../components/embed/FileViewerPane");
     await act(async () => {
-      capture.reverse!({ input: CHILD, line: 2, column: 1 }, MAIN);
+      jumpToSource(CHILD, 2, 1, MAIN);
     });
 
     // The center switched to the child and a jump request reached it — no new tab.
@@ -350,5 +343,49 @@ describe("TeX workspace — center switching + docked SyncTeX", () => {
     // never gained an entry — the local mirror drove it.
     await waitFor(() => expect(screen.getByDisplayValue(/child body/)).toBeTruthy());
     expect(useTabsStore.getState().tabs.find((t) => t.key === "detached-tex")).toBeUndefined();
+  });
+
+  it("(g) in a detached popout a compile streams the PDF tab via the file-drop controller", async () => {
+    // A popout's tabs aren't in the main store, so `openLinkedFile` there would add
+    // the PDF tab to a window that never renders it (the reported bug). With a
+    // `FileDropController` in context the workspace must route the PDF through
+    // `openTab` — the same seam the Python ▶ Run uses — so it lands in the popout.
+    setupInvoke([{ page: 1, x: 10, y: 20, w: 100, h: 12 }]);
+    vi.resetModules();
+    const { useTabsStore } = await import("../stores/tabs");
+    useTabsStore.getState().setScope("p");
+    const tab = useTabsStore.getState().addTab({
+      label: "main.tex",
+      cmd: "",
+      cwd: "/p",
+      kind: "embed",
+      embedPath: MAIN,
+      viewer: "texworkspace",
+    });
+    const { FileViewerPane } = await import("../components/embed/FileViewerPane");
+    const { FileDropContext } = await import("../components/files/fileDropContext");
+    const openTab = vi.fn();
+    const controller = { resolveTarget: vi.fn(), commit: vi.fn(), openTab };
+    await act(async () => {
+      render(
+        <FileDropContext.Provider value={controller}>
+          <FileViewerPane viewer="texworkspace" path={MAIN} projectId="p" tabKey={tab.key} />
+        </FileDropContext.Provider>,
+      );
+    });
+
+    const compileBtn = await screen.findByRole("button", { name: /compile/i });
+    await act(async () => {
+      await userEvent.click(compileBtn);
+    });
+
+    // The PDF was streamed into the popout via the controller — never added to the
+    // main store, which still holds only the workspace tab.
+    await waitFor(() =>
+      expect(openTab).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "embed", viewer: "pdf", embedPath: "/p/main.pdf" }),
+      ),
+    );
+    expect(useTabsStore.getState().tabs).toHaveLength(1);
   });
 });

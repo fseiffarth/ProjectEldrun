@@ -780,6 +780,17 @@ export async function renderPdfPagesToImages(
       for (const m of ref.marks) ctx.fillRect(m.x * scale, m.y * scale, m.w * scale, m.h * scale);
     }
     urls.push(canvas.toDataURL("image/png"));
+    // Give the backing store back before rasterising the next sheet. An A4 page at
+    // this scale is ~2 megapixels — 8 MB of pixels — and the canvas is only garbage
+    // once the collector gets to it, so printing a 200-page document otherwise held
+    // every page's raster AND its data URL at the same time. The URL is already
+    // taken; the pixels are finished with.
+    canvas.width = 0;
+    canvas.height = 0;
+    // The page's parse is finished with too: this walks the whole arrangement, and
+    // a print of a long document must not leave every sheet's decoded images behind
+    // in the worker (the viewer repaints from the file on its own).
+    page.cleanup();
   }
   return urls;
 }

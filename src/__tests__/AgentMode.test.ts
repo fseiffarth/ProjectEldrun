@@ -20,9 +20,8 @@ import { useSettingsStore } from "../stores/settings";
 const invokeMock = vi.mocked(invoke);
 
 function resetStore() {
-  // The mode feature is experimental, and the fail-closed Plan default on restore
-  // is gated on it being live (see loadFromLayout) — with no UI to leave Plan mode
-  // there would be nothing to protect and no way out.
+  // The mode feature is experimental; the badge that flips a tab only renders while
+  // it is live.
   useSettingsStore.setState({ settings: { agent_mode_toggle: true } });
   useTabsStore.setState({
     scope: "p",
@@ -215,7 +214,28 @@ describe("agentMode round-trips through save/load", () => {
     expect(tabs[0].args).toEqual(["--resume", "uuid-1", "--permission-mode", "plan"]);
   });
 
-  it("a mode-capable tab with NO persisted mode fails CLOSED — it comes back in Plan", () => {
+  it("restores Auto as Auto — the resumed tab is not quietly re-planned", () => {
+    useTabsStore.getState().loadFromLayout(
+      [
+        {
+          key: "agent-8",
+          label: "Claude",
+          cmd: "claude",
+          cwd: "/p",
+          kind: "agent",
+          sessionId: "uuid-4",
+          agentMode: "auto",
+        },
+      ],
+      "/p",
+      "p",
+    );
+    const tabs = useTabsStore.getState().tabsByScope["p"];
+    expect(tabs[0].agentMode).toBe("auto");
+    expect(tabs[0].args).toEqual(["--resume", "uuid-4", "--permission-mode", "acceptEdits"]);
+  });
+
+  it("a mode-capable tab with NO persisted mode comes back UNSET, in the agent's own default", () => {
     useTabsStore.getState().loadFromLayout(
       [
         {
@@ -231,15 +251,18 @@ describe("agentMode round-trips through save/load", () => {
       "p",
     );
     const tabs = useTabsStore.getState().tabsByScope["p"];
-    // The layout this field is read from lives inside the project tree, so an
-    // absent `agentMode` must not mean "the agent's default permissions" —
-    // deleting the field from a tab entry would otherwise promote a planner tab
-    // into a doer on the next restart.
-    expect(tabs[0].args).toEqual(["--resume", "uuid-1", "--permission-mode", "plan"]);
-    expect(tabs[0].agentMode).toBe("plan");
+    // Unset is a mode, not a missing value: the badge's `◇` state is a tab that
+    // launched with no `--permission-mode` at all, which is every agent tab nobody
+    // ever clicked it on. This used to fail closed into Plan, which changed the
+    // mode of a resumed session on every single relaunch — see loadFromLayout for
+    // why neither half of that rationale survives.
+    expect(tabs[0].args).toEqual(["--resume", "uuid-1"]);
+    expect(tabs[0].agentMode).toBeUndefined();
   });
 
-  it("does NOT default to Plan while the mode feature is off — there'd be no way out", () => {
+  it("the restored mode does not depend on the experimental flag", () => {
+    // The mode is a property of the tab, not of whether its badge is on screen —
+    // so switching the feature off must not silently relaunch a tab differently.
     useSettingsStore.setState({ settings: { agent_mode_toggle: false } });
     useTabsStore.getState().loadFromLayout(
       [
@@ -250,14 +273,24 @@ describe("agentMode round-trips through save/load", () => {
           cwd: "/p",
           kind: "agent",
           sessionId: "uuid-3",
+          agentMode: "plan",
+        },
+        {
+          key: "agent-12",
+          label: "Claude",
+          cmd: "claude",
+          cwd: "/p",
+          kind: "agent",
+          sessionId: "uuid-5",
         },
       ],
       "/p",
       "p",
     );
     const tabs = useTabsStore.getState().tabsByScope["p"];
-    expect(tabs[0].args).toEqual(["--resume", "uuid-3"]);
-    expect(tabs[0].agentMode).toBeUndefined();
+    expect(tabs[0].args).toEqual(["--resume", "uuid-3", "--permission-mode", "plan"]);
+    expect(tabs[1].args).toEqual(["--resume", "uuid-5"]);
+    expect(tabs[1].agentMode).toBeUndefined();
   });
 
   it("an agent with no mode support is still restored with no mode flag at all", () => {

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
-import { type AgentMode, supportsAgentMode, withAgentMode } from "../components/tabs/agentModes";
+import { type AgentMode, withAgentMode } from "../components/tabs/agentModes";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
 import type { AutocompleteMode } from "../types";
 import { forgetPty } from "../lib/promptCount";
@@ -10,7 +10,7 @@ import { useLinkRoutingStore } from "./linkRouting";
 import { bumpUsage } from "./usage";
 import { newTmuxSessionName } from "../lib/tmuxSession";
 import { useRunHostPrefStore } from "./runHostPref";
-import { experimentalEnabled, withdrawnTabKinds } from "../lib/experimental";
+import { withdrawnTabKinds } from "../lib/experimental";
 import { useSettingsStore } from "./settings";
 
 /** A shell tab, or a remote agent tab (Claude/Codex/…), gets a stable persisted
@@ -26,7 +26,7 @@ function withTmuxSession(
   scope: string,
 ): Omit<TabEntry, "key"> {
   if ((tab.kind === "shell" || tab.kind === "agent") && !tab.tmuxSession && !tab.tmuxAttach) {
-    return { ...tab, tmuxSession: newTmuxSessionName(scope) };
+    return { ...tab, tmuxSession: newTmuxSessionName(scope, tab.kind === "agent" ? "agent" : "shell") };
   }
   return tab;
 }
@@ -47,6 +47,56 @@ function withRunHostDefault(
   if (tab.kind !== "shell" || tab.location !== undefined) return tab;
   const pref = useRunHostPrefStore.getState().byProject[scope];
   return pref ? { ...tab, location: pref } : tab;
+}
+
+/**
+ * The launch spec for a COPY of `tab` — what "Duplicate" means, kept pure and
+ * separate from the store action so it is testable and so the rule lives in one
+ * place.
+ *
+ * The whole job is telling apart what *describes* a tab (its command, args, cwd,
+ * locality, browsed folder, viewer position — all copied verbatim, or the copy
+ * would open something else) from what *identifies* it. Every identity is
+ * re-minted or dropped, because two tabs sharing one are not two tabs:
+ *
+ * - `sessionId` is an agent's conversation. It is minted fresh AND substituted
+ *   wherever the old one was baked in at creation — `--session-id <uuid>` in
+ *   `args`, `ELDRUN_TAB_UID` in `env` (see `buildStaticTabSpec`) — since two
+ *   agents launched onto one session id is a collision, not a duplicate.
+ * - `tmuxSession` is dropped so `withTmuxSession` mints a new one; keeping it
+ *   would make the copy REATTACH to the original's session instead of running.
+ * - `tmuxAttach` is dropped for the same reason at the other end: a duplicate of
+ *   a tab adopted from the Sessions view is a fresh shell on that host, not a
+ *   second window onto the one session.
+ * - `hostBoundUid` is dropped because the grant is a file the backend writes
+ *   against a specific uid; the caller re-registers one and passes it back in
+ *   (a store action cannot await). Without it the copy simply runs inside the
+ *   project's container, which is the safe direction (`lib/hostBound.ts`).
+ */
+export function duplicateSpec(tab: TabEntry): Omit<TabEntry, "key"> {
+  const {
+    key: _key,
+    sessionId,
+    tmuxSession: _tmux,
+    tmuxAttach: _attach,
+    hostBoundUid: _hostBound,
+    ...rest
+  } = tab;
+  if (!sessionId) return rest;
+  const nextId = crypto.randomUUID();
+  const swap = (v: string) => (v === sessionId ? nextId : v);
+  return {
+    ...rest,
+    sessionId: nextId,
+    ...(rest.args ? { args: rest.args.map(swap) } : {}),
+    ...(rest.env
+      ? {
+          env: Object.fromEntries(
+            Object.entries(rest.env).map(([k, v]) => [k, swap(v)]),
+          ),
+        }
+      : {}),
+  };
 }
 
 export type TabKind =
@@ -125,6 +175,14 @@ export function localityHostLabel(
 export function workerRunnable(h: LocalityHost): boolean {
   return !!h.shared_fs || h.sync_code !== false;
 }
+
+/**
+ * The scope that belongs to no project: the root control terminal's, and the
+ * scope every tab opened outside a project lands in. Its working directory is
+ * `~/eldrun/root` (`root_work_dir`), which the right panel browses as the app's
+ * unfiled/scratch area.
+ */
+export const ROOT_SCOPE = "root";
 
 export const FILES_TAB_CMD = "__eldrun_files__";
 
@@ -263,9 +321,11 @@ export const PRINTING_TAB_CMD = "__eldrun_printing__";
  *    which tab opened it, and install/uninstall act on the one project the
  *    scope names — a second tab would show exactly the same thing, hence
  *    `ensureTab` rather than `addTab` (the bargain calendar/printing make).
- *  - **Project-scoped only.** Unlike the calendar/print manager it needs
- *    somewhere to install INTO, so it is offered only where `scope !== "root"`
- *    and hidden at the root scope rather than shown disabled.
+ *  - **Offered at the root scope too**, which it was not at first: it needs
+ *    somewhere to install INTO, and the personal scope (`~/.claude/skills/`,
+ *    read by every project on this machine) is exactly that, so the tab has a
+ *    job with no project open. The install target is the view's own state; see
+ *    `NewTabMenu`/`TabBar`, which carry the entry unconditionally.
  *  - **A restored one re-reads, it does not fetch.** Coming back costs a local
  *    disk read (installed list + whatever catalog was already cached); no
  *    source is cloned/pulled without an explicit Refresh click.
@@ -342,6 +402,21 @@ export interface ViewerState {
   // highlighted) and its children below. Absent/unmatched = the top overview.
   // Re-derived on every parse, so a stale id is inert (falls back to overview).
   gridFocus?: string;
+  // Whether the PDF viewer writes a remark into the file on its own, shortly after
+  // it is made (#pdf-notes). Absent means ON — the ordinary behaviour, so only the
+  // reader who turned it *off* stores anything, and a tab that predates the feature
+  // gets it. Per tab rather than per app because it is a statement about a document
+  // ("this one I am commenting on") rather than about the person.
+  pdfAutosaveNotes?: boolean;
+  // Whether selecting text on a PDF page puts it on the clipboard by itself
+  // (#pdf-textselect). Absent means ON: selecting words in a document is almost
+  // always the first half of pasting them somewhere, and the second half was a
+  // keystroke that had to be remembered on a surface where Ctrl+C had never done
+  // anything before. Per tab, `pdfAutosaveNotes`'s reason — a paper being quoted from
+  // and one being read are different jobs — and reversible from the bar that appears
+  // over a selection, because writing the clipboard is not this viewer's to keep
+  // doing if the reader was only pointing at a sentence.
+  pdfCopyOnSelect?: boolean;
   // The table viewer's column separator (#40), as the literal character. Absent
   // means "auto" — sniffed from the content on every open. It is persisted only
   // when the reader *overrides* the guess, because that is the case the sniffer
@@ -377,14 +452,6 @@ export interface ViewerState {
   // Validated against the parsed structure on read; an unresolved path falls back
   // to the root inertly.
   texActivePath?: string;
-  // Whether the docked SyncTeX PDF pane is shown. Default-collapsed: absent/false
-  // keeps pdf.js unmounted until the first compile or an explicit toggle (also the
-  // no-engine and jsdom-test degrade path). On restore the pane is shown only when
-  // this was true AND a PDF exists on disk, and never auto-compiles.
-  texPdfOpen?: boolean;
-  // The docked PDF pane's split fraction (0–1) of the workspace width. Absent uses
-  // the computed default; only written on an explicit divider drag.
-  texPdfSplit?: number;
   // The left structure sidebar's width in px. Absent uses the default; only
   // written on an explicit resize.
   texSidebarWidth?: number;
@@ -783,6 +850,16 @@ interface TabsStore {
   focusGroup: (groupId: string) => void;
   setActive: (key: string) => void; // activate tab + focus its group
   setGroupActive: (groupId: string, key: string) => void;
+  // `setActive` for a scope that is not necessarily the current one: activate the
+  // tab within its subwindow and focus that subwindow in THAT scope's own tree,
+  // so a caller can aim a click at a project before switching to it (the project
+  // pill's status bars). Writing the scope map ahead of the switch is what makes
+  // the two one gesture: `setScope` mirrors whatever it finds there, so the tab
+  // is already the visible one by the time the project comes up. Returns false
+  // when the tab is not in that scope's visible tree — it sits in a hidden
+  // subwindow or a detached window — so the caller can still do the part of the
+  // jump it can (switching scope) rather than believing it landed.
+  revealTabInScope: (scope: string, key: string) => boolean;
 
   // tab lifecycle
   // `seeded` marks a tab Eldrun opened by itself rather than one the user asked
@@ -795,6 +872,13 @@ interface TabsStore {
   // scope this behaves exactly like `addTab`; otherwise the tab is written into
   // that scope's maps only (the user sees it after switching to it).
   addTabToScope: (scope: string, tab: Omit<TabEntry, "key">) => TabEntry;
+  // Open a second tab like an existing one (the tab context menu's "Duplicate"),
+  // landing directly to its RIGHT rather than at the end of the group — a copy
+  // that appears eight tabs away doesn't read as a copy. Everything that
+  // IDENTIFIES the original rather than describing it is re-minted or dropped
+  // (see `duplicateSpec`); `overrides` is for the one such field the store can't
+  // mint synchronously, `hostBoundUid` (registering it is a backend round trip).
+  duplicateTab: (key: string, overrides?: Partial<TabEntry>) => TabEntry | null;
   ensureTab: (
     tab: Omit<TabEntry, "key">,
     matches: (tab: TabEntry) => boolean,
@@ -1909,6 +1993,27 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
+  revealTabInScope: (scope, key) => {
+    const layout = get().layoutByScope[scope] ?? null;
+    const found = findGroupOfTab(layout, key);
+    if (!found || !layout) return false;
+    set((s) => {
+      const tabs = s.tabsByScope[scope] ?? [];
+      const cur = s.layoutByScope[scope] ?? null;
+      if (!cur) return {};
+      const next = mapGroup(cur, found.group.id, (g) => ({ ...g, activeKey: key }));
+      const base = writeScope(s, scope, tabs, next, found.group.id);
+      // A fullscreened OTHER subwindow would swallow the jump: the tab is now the
+      // active one in a group nothing is rendering, so the click would look like a
+      // no-op. Leaving fullscreen shows the tab that was asked for, which is the
+      // whole request.
+      return s.scope === scope && s.fullscreenGroupId && s.fullscreenGroupId !== found.group.id
+        ? { ...base, fullscreenGroupId: null }
+        : base;
+    });
+    return true;
+  },
+
   addTab: (tab, opts) => {
     const key = nextKey(tab.kind);
     // Spread first so a stray `key` on the payload can't shadow the minted one.
@@ -1981,6 +2086,38 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         activeKey: key,
       }));
       return writeScope(s, scope, nextTabs, next, target.id);
+    });
+    return entry;
+  },
+
+  duplicateTab: (key, overrides) => {
+    const { tabs, layout } = currentScopeState(get());
+    const source = tabs.find((t) => t.key === key);
+    if (!source) return null;
+    const found = findGroupOfTab(layout, key);
+    if (!found) return null;
+    const nextKeyValue = nextKey(source.kind);
+    const entry: TabEntry = {
+      ...withTmuxSession(
+        withRunHostDefault(get().scope, { ...duplicateSpec(source), ...overrides }),
+        get().scope,
+      ),
+      key: nextKeyValue,
+    };
+    countTabOpen(get().scope, entry);
+    set((s) => {
+      const { tabs: cur, layout: curLayout } = currentScopeState(s);
+      // Re-resolve inside the setter: the group (and the source's index in it)
+      // may have moved between the read above and this write.
+      const at = curLayout ? findGroupOfTab(curLayout, key) : null;
+      if (!at || !curLayout) return {};
+      const next = mapGroup(curLayout, at.group.id, (g) => {
+        const i = g.tabKeys.indexOf(key);
+        const tabKeys = [...g.tabKeys];
+        tabKeys.splice(i + 1, 0, nextKeyValue);
+        return { ...g, tabKeys, activeKey: nextKeyValue };
+      });
+      return writeScope(s, s.scope, [...cur, entry], next, at.group.id);
     });
     return entry;
   },
@@ -2228,12 +2365,10 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         cur.autocomplete === merged.autocomplete &&
         cur.autocompleteMode === merged.autocompleteMode &&
         cur.grammarCheck === merged.grammarCheck &&
-        // TeX workspace: switching the centered file, toggling/splitting the PDF
-        // pane and resizing the sidebar all patch these, so each must be compared
-        // or a change-only patch would be swallowed by the guard.
+        // TeX workspace: switching the centered file and resizing the sidebar both
+        // patch these, so each must be compared or a change-only patch would be
+        // swallowed by the guard.
         cur.texActivePath === merged.texActivePath &&
-        cur.texPdfOpen === merged.texPdfOpen &&
-        cur.texPdfSplit === merged.texPdfSplit &&
         cur.texSidebarWidth === merged.texSidebarWidth &&
         // New array ref on every change, so this term is false exactly when a card
         // was folded/unfolded — which is what lets a collapse-only patch through the
@@ -3273,20 +3408,46 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   },
 
   addDetachedTab: (scope, detachedGroupId, tab, targetGroupId) => {
-    const key = nextKey(tab.kind);
-    // Spread first so a stray `key` on the payload can't shadow the minted one;
-    // stamp the owning scope (this path never touches the in-window layout, so it
-    // does writeScope's scope-stamp itself). Mint the tmux session name like the
-    // in-window adds, so a Python/shell run STREAMED into a detached popout (its
-    // Run button places the tab here, not via addTabToScope) is persistence-
-    // eligible instead of silently skipping the tmux wrap.
-    const entry: TabEntry = { ...withTmuxSession(tab, scope), key, scope };
     let created: string | null = null;
     set((s) => {
       const entries = s.detachedGroupsByScope[scope] ?? [];
       const idx = entries.findIndex((d) => d.id === detachedGroupId);
       if (idx < 0) return {};
       const rec = entries[idx];
+
+      // Dedupe an EMBED viewer already open in THIS popout (a recompiled PDF, a
+      // re-opened linked file): refocus it in place rather than stack a second
+      // copy — the popout's mirror of `openLinkedFile`'s path dedupe. Non-embed
+      // tabs (a Python/shell run) carry no `embedPath` and always add a fresh one.
+      if (tab.kind === "embed" && tab.embedPath) {
+        const payloads = s.tabsByScope[scope] ?? [];
+        const keysInPopout = new Set(allGroups(rec.subtree).flatMap((g) => g.tabKeys));
+        const existing = payloads.find(
+          (p) =>
+            keysInPopout.has(p.key) &&
+            p.kind === "embed" &&
+            p.viewer === tab.viewer &&
+            p.embedPath === tab.embedPath,
+        );
+        if (existing) {
+          created = existing.key;
+          const grp = allGroups(rec.subtree).find((g) => g.tabKeys.includes(existing.key));
+          if (!grp || grp.activeKey === existing.key) return {}; // already the active tab
+          const nextSub = mapGroup(rec.subtree, grp.id, (g) => ({ ...g, activeKey: existing.key }));
+          const nextEntries = [...entries];
+          nextEntries[idx] = { ...rec, subtree: nextSub };
+          return { detachedGroupsByScope: { ...s.detachedGroupsByScope, [scope]: nextEntries } };
+        }
+      }
+
+      // Spread first so a stray `key` on the payload can't shadow the minted one;
+      // stamp the owning scope (this path never touches the in-window layout, so it
+      // does writeScope's scope-stamp itself). Mint the tmux session name like the
+      // in-window adds, so a Python/shell run STREAMED into a detached popout (its
+      // Run button places the tab here, not via addTabToScope) is persistence-
+      // eligible instead of silently skipping the tmux wrap.
+      const key = nextKey(tab.kind);
+      const entry: TabEntry = { ...withTmuxSession(tab, scope), key, scope };
       // Land the tab in the requested pane; fall back to the popout's first group
       // (a single-pane popout, or a stale target id).
       const target = findGroup(rec.subtree, targetGroupId) ?? allGroups(rec.subtree)[0];
@@ -3685,25 +3846,26 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // agent's default mode — half the point of the toggle is that the split
       // survives a restart.
       //
-      // A mode-capable agent tab with NO persisted `agentMode` fails **closed**:
-      // it comes back in Plan. Absence used to mean "no mode flag", i.e. the
-      // agent's own default permissions, and the layout this field is read from
-      // lives inside the project tree — so deleting `"agentMode":"plan"` from a
-      // tab entry silently promoted a planner into a doer on the next restart.
-      // Plan is the safe direction, and the only tabs it changes are ones that
-      // predate the field (one toggle to correct).
+      // **A tab comes back in the mode it was in, and absence is one of those
+      // modes.** The badge has three states (`◇` unset / `⏸` plan / `⚡` auto) and
+      // unset is not a missing value: it is the tab launching with no
+      // `--permission-mode` at all, i.e. the agent's own default, which is what
+      // every agent tab nobody ever clicked the badge on is running in. Restoring
+      // that as Plan changed the mode of a resumed session on every relaunch — the
+      // one thing the persistence is here to prevent.
       //
-      // Gated on the mode feature actually being available, for the reason the
-      // gate exists at all: with `agent_mode_toggle` off there is no UI to leave
-      // Plan mode — and no tab was ever *in* Plan mode either, so there is nothing
-      // for the default to protect. Failing closed into a mode the user cannot
-      // exit would be a worse bargain than the hole it closes.
-      const modeFeatureLive = experimentalEnabled(
-        useSettingsStore.getState().settings,
-        "agent_mode_toggle",
-      );
-      const restoredMode =
-        t.agentMode ?? (modeFeatureLive && supportsAgentMode(t.cmd) ? "plan" : undefined);
+      // It used to fail **closed** into Plan for a mode-capable tab with no
+      // persisted mode, on the grounds that the layout was read out of the project
+      // tree and deleting `"agentMode":"plan"` from an entry would promote a
+      // planner into a doer. Both halves of that have since stopped holding.
+      // `load_terminal_session` reads `<state_dir>/sessions/<id>/terminals.json`
+      // and nothing else (`sandbox_hardening_plan` Phase 1 / #142) — the
+      // project-tree copy is export-only. And against a layout that genuinely IS
+      // attacker-written the default buys nothing anyway: `sanitize_tab_layout`
+      // keeps `agentMode` for a known `cmd`, so such a file writes
+      // `"agentMode":"auto"` outright and never takes the absent branch. It cost a
+      // real behaviour and closed nothing.
+      const restoredMode = t.agentMode;
       const args = restoredMode ? withAgentMode(t.cmd, base, restoredMode) : base;
       return {
         key: freshKey,
@@ -3740,7 +3902,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         tmuxSession:
           t.tmuxSession ??
           ((kind === "shell" || kind === "agent") && !t.tmuxAttach
-            ? newTmuxSessionName(targetScope ?? get().scope)
+            ? newTmuxSessionName(targetScope ?? get().scope, kind === "agent" ? "agent" : "shell")
             : undefined),
         // A Sessions-view attach tab reattaches to its tmux session on restart.
         tmuxAttach: t.tmuxAttach,
@@ -3865,7 +4027,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // Anything else: the backend keeps what it has. Worst case we persist a layout one
     // save late; the alternative loses conversations.
     const hydrated = Object.prototype.hasOwnProperty.call(get().tabsByScope, scope);
-    const allowClear = hydrated && scopeTabs.length === 0;
+    // The seeded 3D-blob (`projects3d`, root scope only) is Eldrun's own default
+    // tab, never restorable and never persisted — so a root holding only it IS an
+    // empty root, and must license a clear or a closed-back-to-default root would
+    // resurrect its old tabs on every relaunch. It only ever exists at root, so
+    // excluding it changes nothing for a project scope.
+    const meaningfulCount = scopeTabs.filter((t) => t.kind !== "projects3d").length;
+    const allowClear = hydrated && meaningfulCount === 0;
     // Order the flat tab union by the tree's stable left-to-right order so the
     // persisted `tabs` array and `groups` tree agree.
     const keyOrder = orderedTabKeys(layout);
@@ -3948,9 +4116,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // The layout is keyed by PROJECT ID now, not by the path to a
         // project.json: it lives in the state dir, because the host reads it back
         // as commands to run and its old home was inside the container's
-        // writable mount. `scope` IS the project id (or "root", which persists
-        // nothing — the root scope's tabs were never restored from disk).
-        projectId: scope === "root" ? null : scope,
+        // writable mount. `scope` IS the project id — or the literal `"root"`,
+        // which now persists too (under `<state_dir>/sessions/root/`), so the
+        // root scope's shells/files/viewers survive a relaunch like a project's.
+        // `project_key("root")` is `"root"`, and the root scope has no
+        // project.json, so `localFile` is empty and the backend simply skips the
+        // export copy for it.
+        projectId: scope,
         localFile,
         tabs: tabLayout,
         groups,
@@ -4261,7 +4433,18 @@ export function defaultLocationForKind(kind: TabKind): TabLocation {
  */
 export function effectiveTabLocation(
   tab: { kind: TabKind; location?: TabLocation },
+  opts?: {
+    /** VM tier (`docs/vm_projects_plan.md`): the owning project lives inside
+     *  a VM, so locality is PINNED to the VM host — the agents-default-local
+     *  rule below is precisely the escape that tier forbids, and any stored
+     *  `location: "local"` (e.g. a persisted layout an in-VM agent could have
+     *  written) is overridden, never honored. The backend's spawn guard
+     *  refuses a local spawn outright as the hard boundary; this keeps the
+     *  frontend from ever building one. */
+    vmProject?: boolean;
+  },
 ): TabLocation {
+  if (opts?.vmProject && !isLocalAgentKind(tab.kind)) return "remote";
   if (isLocalAgentKind(tab.kind)) return "local";
   return tab.location ?? defaultLocationForKind(tab.kind);
 }

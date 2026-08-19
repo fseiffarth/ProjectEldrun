@@ -57,6 +57,23 @@ Referenced from `CLAUDE.md`.
   state, never as `GitPeerState::default()` — `load_state` falls back to that
   default for every project with no state file, so flipping it there would silently
   enable lockstep on existing projects that never opted in.
+- **A file the manifest has never seen is still reported** (`sync_status`'s
+  new-local-file pass → `SyncState::LocalNew`). Everything else in the status
+  view iterates the manifest, so a file *created* in the mirror after the last
+  transfer used to be invisible everywhere at once: the remote tree lists the
+  host's readdir (which doesn't have it), the amber list only knows manifest'd
+  files, and no auto marker meant no engine pass ever discovered it — SimpleGNN
+  accumulated ten new configs/tests with nothing anywhere saying "these exist
+  only locally". The pass lists the mirror (git-backed: `ls-files -co
+  --exclude-standard`, because .gitignore is the honest noise filter there —
+  the caches/venvs a raw walk would report as thousands of "new" files are
+  exactly what the user chose not to version; non-repo mirrors fall back to the
+  raw walk, capped), drops manifest'd, excluded and — with lockstep on —
+  tracked paths (those travel as commits, #28p D1), and reports the rest as
+  upload-offers: a green ⬆ on the file row and its ancestor folders, and a
+  "new local files" section beside the diverged list. Deliberately **advisory,
+  one-directional and unsynced-by-default** — nothing transfers until the
+  click, and the click is the ordinary confirmed push.
 - **Byte-sync is opt-in per path and does not read `.gitignore`.** Scope comes from
   an explicit manifest (`is_auto`: nearest marker wins, root `""` = project-wide);
   no marker ⇒ nothing crosses. This is what leaves a remote project's *deliberately

@@ -62,6 +62,25 @@ export interface CredentialTarget {
  *  Same bound (and same reason) as `VpnIndicator`'s keyring probes. */
 const READ_TIMEOUT_MS = 4000;
 
+/**
+ * How long the identity has to hold still before the store is asked about it
+ * (G.24).
+ *
+ * The `key` is `user@host:port` built from **address fields being typed into**,
+ * so it changes on every keystroke — and each read is now two keychain
+ * operations (the lock-state probe plus the lookup), i.e. two D-Bus round trips
+ * per character against a service that is slow while its daemon starts and
+ * blocks outright while the collection is locked. Typing `user@host.example`
+ * fired eighteen of those, seventeen of them about hosts that were only ever
+ * prefixes of the real one.
+ *
+ * Short enough to feel immediate once typing stops, long enough that a name is
+ * asked about once rather than per character. It costs nothing on the paths that
+ * matter most — a dialog opened on an already-filled target, or a `refresh()`
+ * after an unlock — because those settle immediately and never move again.
+ */
+const SETTLE_MS = 300;
+
 function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve(fallback), ms);
@@ -159,33 +178,42 @@ export function useSavedCredentialSource(
       return;
     }
     let cancelled = false;
+    // `checking` goes up immediately, before the settle wait: the row must not
+    // keep showing the *previous* target's answer while the new one is pending,
+    // which for a half-typed host would read as a confident "nothing saved".
     setState("checking");
     setSaveError("");
-    void withTimeout(
-      io.current.read().catch(
-        // The command is declared infallible, so a rejection means the bridge
-        // itself is gone — which tells us nothing about the store.
-        () => ({ saved: false, keyring: "unavailable" as KeyringState }),
-      ),
-      READ_TIMEOUT_MS,
-      // A read that never came back is a locked collection until proven otherwise:
-      // "locked" is the state with an unlock behind it.
-      { saved: false, keyring: "locked" as KeyringState },
-    ).then((answer) => {
-      if (cancelled) return;
-      // An answer that arrived but carries nothing gets read as the same
-      // unreadable store a timeout does, rather than destructured blind: this
-      // runs inside an unawaited promise, so a `null` from the bridge would
-      // surface only as an unhandled rejection — the row would sit on
-      // "checking" forever with nothing on screen saying why.
-      const res: SavedPasswordState = answer ?? { saved: false, keyring: "unavailable" };
-      setKeyring(res.keyring);
-      // A `false` from a store we could not read is not evidence of absence — the
-      // whole point of the tri-state. A `true` is still trustworthy either way.
-      setState(res.saved ? "saved" : res.keyring === "unlocked" ? "notSaved" : "unreadable");
-    });
+    // Debounced (see SETTLE_MS): the identity is typed, so most values this
+    // effect sees are prefixes nobody is asking about. A superseded key clears
+    // its own timer below, so only the settled one ever reaches the keychain.
+    const timer = setTimeout(() => {
+      void withTimeout(
+        io.current.read().catch(
+          // The command is declared infallible, so a rejection means the bridge
+          // itself is gone — which tells us nothing about the store.
+          () => ({ saved: false, keyring: "unavailable" as KeyringState }),
+        ),
+        READ_TIMEOUT_MS,
+        // A read that never came back is a locked collection until proven otherwise:
+        // "locked" is the state with an unlock behind it.
+        { saved: false, keyring: "locked" as KeyringState },
+      ).then((answer) => {
+        if (cancelled) return;
+        // An answer that arrived but carries nothing gets read as the same
+        // unreadable store a timeout does, rather than destructured blind: this
+        // runs inside an unawaited promise, so a `null` from the bridge would
+        // surface only as an unhandled rejection — the row would sit on
+        // "checking" forever with nothing on screen saying why.
+        const res: SavedPasswordState = answer ?? { saved: false, keyring: "unavailable" };
+        setKeyring(res.keyring);
+        // A `false` from a store we could not read is not evidence of absence — the
+        // whole point of the tri-state. A `true` is still trustworthy either way.
+        setState(res.saved ? "saved" : res.keyring === "unlocked" ? "notSaved" : "unreadable");
+      });
+    }, SETTLE_MS);
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [key, enabled, nonce]);
 

@@ -24,6 +24,10 @@ interface PowerStore {
   percentage: number | null;
   /** Whether the poll loop has produced at least one reading. */
   ready: boolean;
+  /** True while this window is unfocused (typing-latency plan, step 3). Fed by
+   *  {@link startFocusTracking}; per-window by construction, since a popout is
+   *  its own JS context with its own copy of this store. */
+  blurred: boolean;
   /** Begin polling; returns a stop function that clears the interval. Idempotent
    *  enough for React StrictMode double-mount (the stop from the first run tears
    *  the first interval down). */
@@ -35,6 +39,7 @@ export const usePowerStore = create<PowerStore>((set) => ({
   supported: false,
   percentage: null,
   ready: false,
+  blurred: false,
 
   start: () => {
     const poll = async () => {
@@ -57,6 +62,30 @@ export const usePowerStore = create<PowerStore>((set) => ({
     return () => clearInterval(id);
   },
 }));
+
+/** Track this window's focus so background quiescence can engage while the
+ *  user works elsewhere (typing-latency plan, step 3: the renderer never
+ *  reaching idle is what forfeits the scheduler's interactive treatment).
+ *  Writes the store's `blurred` and mirrors it as `data-blurred` on the
+ *  document root, where themes.css pauses every animation wholesale. Returns
+ *  a stop function; call once per window root (AppShell / DetachedApp). */
+export function startFocusTracking(): () => void {
+  const apply = (blurred: boolean) => {
+    usePowerStore.setState({ blurred });
+    const root = document.documentElement;
+    if (blurred) root.dataset.blurred = "on";
+    else delete root.dataset.blurred;
+  };
+  const onBlur = () => apply(true);
+  const onFocus = () => apply(false);
+  apply(!document.hasFocus());
+  window.addEventListener("blur", onBlur);
+  window.addEventListener("focus", onFocus);
+  return () => {
+    window.removeEventListener("blur", onBlur);
+    window.removeEventListener("focus", onFocus);
+  };
+}
 
 /** Resolve the effective mode + power state into "is Energy Saver active right
  *  now". Shared by the hook and the non-hook getter so the rule lives once. */
@@ -85,6 +114,25 @@ export function useEnergySaver(): boolean {
 export function energySaverActive(): boolean {
   const mode = useSettingsStore.getState().settings?.energy_saver;
   return isActive(mode, usePowerStore.getState().onBattery);
+}
+
+/** Reactive: true when background activity should be throttled — Energy Saver
+ *  active OR this window unfocused. The blur half exists for the scheduler,
+ *  not the battery: a renderer that keeps repainting while nobody looks at it
+ *  never sleeps, and a thread that never sleeps is round-robined against batch
+ *  load instead of getting the interactive fast path. Feed this (not
+ *  {@link useEnergySaver}) to `saverInterval` timer sites and the CSS collapse;
+ *  keep decisions about *power* (e.g. model autoload) on the saver reading. */
+export function useQuiesce(): boolean {
+  const saver = useEnergySaver();
+  const blurred = usePowerStore((s) => s.blurred);
+  return saver || blurred;
+}
+
+/** Non-reactive snapshot of {@link useQuiesce}, for reads inside animation
+ *  loops that must not resubscribe per frame. */
+export function quiesceActive(): boolean {
+  return energySaverActive() || usePowerStore.getState().blurred;
 }
 
 /** Widen a base interval (ms) when Energy Saver is active. Kept here so the

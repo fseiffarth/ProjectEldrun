@@ -50,4 +50,7 @@ pub mod terminal;
 pub mod tex;
 pub mod timer;
 pub mod usage_stats;
+// Project VMs (docs/vm_projects_plan.md): doctor/boot/shutdown/knobs + the
+// "Download to…" SFTP exit for mirrorless remote projects.
+pub mod vm;
 pub mod workspace;

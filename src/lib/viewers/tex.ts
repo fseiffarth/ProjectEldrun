@@ -297,16 +297,117 @@ export function bigPointsToCssRect(
 }
 
 /**
- * Find every occurrence of `query` in a PDF page's extracted text runs,
- * returning one entry per match — each a list of big-point boxes ({@link
- * SyncRect}) covering it. Most matches yield a single box; a match that straddles
- * text-run boundaries yields one box per run it touches. Case-insensitive unless
- * `caseSensitive`. The runs are concatenated in reading order exactly as pdf.js
- * emits them (no inserted separators), so a query matches the text a reader sees;
- * each run's box is sliced by the matched character span using its uniform
- * per-character width. An empty query (or no items) yields no matches. Pure —
- * unit-tested; the caller derives `items` via `getTextContent()` at scale 1, the
- * same boxes SyncTeX word-refinement uses, so highlights sit on the glyphs.
+ * The characters a word is broken with at the end of a line. A hyphen-minus, the
+ * typographic hyphen, and the soft hyphen — deliberately **not** an en or em dash,
+ * which at a line end is ordinary punctuation ("pages 3–\n4") rather than a word cut
+ * in half, and dropping one would join two words that are not one.
+ */
+const LINE_BREAK_HYPHENS = new Set(["-", "‐", "­"]);
+
+/**
+ * Do these two runs sit on different lines?
+ *
+ * pdf.js's own `hasEOL` is asked first, because it is the producer's answer rather
+ * than a guess. Where it is missing the geometry stands in: the next run sits clearly
+ * below this one, or starts back to the left of where it began (a wrapped line, or
+ * the next column).
+ */
+function breaksLine(a: TextItemBox, b: TextItemBox): boolean {
+  if (a.eol) return true;
+  return Math.abs(b.y - a.y) > Math.max(a.h, b.h) * 0.5 || b.x + 1 < a.x;
+}
+
+/** The text a page is searched over, plus, per character, which run it came from and
+ *  where in that run — so a match can be sliced back into boxes exactly. */
+interface PageHaystack {
+  text: string;
+  /** Run index per character of `text`; -1 for a character this module inserted. */
+  item: number[];
+  /** Index within that run; -1 for an inserted character. */
+  char: number[];
+  /** Runs whose trailing hyphen was dropped as a line break. */
+  dehyphenated: Set<number>;
+}
+
+/**
+ * A page's runs joined into one searchable string, **with the line breaks read**.
+ *
+ * This is the whole of "find a word that is split across two lines". A PDF has no
+ * words and no lines — it has positioned runs of glyphs — so a paragraph that wraps
+ * arrives as `…"hyphen-"` then `"ation"…`, and joining the runs end to end (which is
+ * what this did before) produces `hyphen-ation`: a reader searching for *hyphenation*
+ * finds nothing, on a page where the word is plainly printed. Worse, two whole words
+ * either side of a line break joined into `theend`, so a phrase that happened to wrap
+ * could not be searched for at all.
+ *
+ * So a break is not nothing. Where a run ends a line:
+ *
+ * - a trailing hyphen is **dropped**, joining the two halves into the word the
+ *   typesetter split (`hyphen-` + `ation` → `hyphenation`);
+ * - otherwise a **space** is inserted, because that is what the break means to a
+ *   reader — unless one of the two sides already carries whitespace, or the query
+ *   would need two spaces where the page shows one break.
+ *
+ * The per-character map is what keeps the highlight honest through all of that: the
+ * boxes are still sliced out of the runs' own geometry, so a match across a break is
+ * drawn as one box per line, and the dropped hyphen is included in the box (a
+ * highlight stopping just short of the hyphen it matched *through* reads as a bug).
+ *
+ * Case folding happens **here**, character by character, rather than by lowercasing
+ * the joined string: a few characters (`İ`, `ẞ` in some locales) fold to two, which
+ * would shift every index after them and slide the highlights off the words. A
+ * character that does not fold to exactly one is kept as it is — it will only ever
+ * fail to match case-insensitively, which is a smaller wrong than a misplaced box.
+ */
+function pageHaystack(items: readonly TextItemBox[], caseSensitive: boolean): PageHaystack {
+  let text = "";
+  const item: number[] = [];
+  const char: number[] = [];
+  const dehyphenated = new Set<number>();
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const next = items[i + 1];
+    const broken = next != null && breaksLine(it, next);
+    const cut =
+      broken && it.str.length > 0 && LINE_BREAK_HYPHENS.has(it.str[it.str.length - 1]) ? 1 : 0;
+    if (cut) dehyphenated.add(i);
+    for (let c = 0; c < it.str.length - cut; c++) {
+      const ch = it.str[c];
+      if (caseSensitive) {
+        text += ch;
+      } else {
+        const low = ch.toLowerCase();
+        text += low.length === 1 ? low : ch;
+      }
+      item.push(i);
+      char.push(c);
+    }
+    if (broken && !cut && text.length > 0) {
+      const hasSpace = /\s$/.test(it.str) || /^\s/.test(next.str);
+      if (!hasSpace) {
+        text += " ";
+        item.push(-1);
+        char.push(-1);
+      }
+    }
+  }
+  return { text, item, char, dehyphenated };
+}
+
+/**
+ * Find every occurrence of `query` in a PDF page's extracted text runs, returning one
+ * entry per match — each a list of big-point boxes ({@link SyncRect}) covering it.
+ * Most matches yield a single box; a match that straddles text-run boundaries — or a
+ * line break — yields one box per run it touches. Case-insensitive unless
+ * `caseSensitive`.
+ *
+ * The runs are joined by {@link pageHaystack}, which reads the line breaks rather than
+ * ignoring them, so a word the typesetter split across two lines is found under the
+ * word a reader would type. Each run's box is sliced by the matched character span
+ * using its uniform per-character width. An empty query (or no items) yields no
+ * matches. Pure — unit-tested; the caller derives `items` via `getTextContent()` at
+ * scale 1, the same boxes SyncTeX word-refinement uses, so highlights sit on the
+ * glyphs.
  */
 export function pdfPageMatches(
   items: TextItemBox[],
@@ -315,30 +416,44 @@ export function pdfPageMatches(
   caseSensitive: boolean,
 ): SyncRect[][] {
   if (!query) return [];
-  // Concatenate the runs, remembering each run's start offset in the joined text.
-  let text = "";
-  const starts: number[] = [];
-  for (const it of items) {
-    starts.push(text.length);
-    text += it.str;
-  }
-  const hay = caseSensitive ? text : text.toLowerCase();
-  const needle = caseSensitive ? query : query.toLowerCase();
+  const { text, item, char, dehyphenated } = pageHaystack(items, caseSensitive);
+  // The query is folded the same way the page was, and for the same reason.
+  const needle = caseSensitive
+    ? query
+    : [...query].map((c) => (c.toLowerCase().length === 1 ? c.toLowerCase() : c)).join("");
   const out: SyncRect[][] = [];
   for (let from = 0; ; ) {
-    const idx = hay.indexOf(needle, from);
+    const idx = text.indexOf(needle, from);
     if (idx < 0) break;
     const end = idx + needle.length;
+    // Which characters of which runs the match covers. Insertion order is run order,
+    // so the boxes come out in reading order without a second sort.
+    const spans = new Map<number, { a: number; b: number }>();
+    for (let k = idx; k < end; k++) {
+      const i = item[k];
+      if (i < 0) continue; // an inserted space stands for a break, not for a glyph
+      const span = spans.get(i);
+      if (!span) spans.set(i, { a: char[k], b: char[k] + 1 });
+      else {
+        span.a = Math.min(span.a, char[k]);
+        span.b = Math.max(span.b, char[k] + 1);
+      }
+    }
     const rects: SyncRect[] = [];
-    for (let i = 0; i < items.length; i++) {
+    const runs = [...spans.keys()];
+    for (const i of runs) {
       const it = items[i];
-      const s = starts[i];
-      const e = s + it.str.length;
-      if (e <= idx || s >= end || it.w <= 0 || it.str.length === 0) continue;
-      const a = Math.max(idx, s) - s; // first matched char within this run
-      const b = Math.min(end, e) - s; // one past the last matched char
+      const span = spans.get(i)!;
+      if (it.w <= 0 || it.str.length === 0) continue;
+      // A match that runs THROUGH a dropped hyphen covers it: the glyph is on the
+      // page, inside the word that was matched, and a highlight stopping one
+      // character short of it looks like the search missed the end of the word.
+      const b =
+        dehyphenated.has(i) && i !== runs[runs.length - 1] && span.b === it.str.length - 1
+          ? it.str.length
+          : span.b;
       const charW = it.w / it.str.length;
-      rects.push({ page, x: it.x + a * charW, y: it.y, w: (b - a) * charW, h: it.h });
+      rects.push({ page, x: it.x + span.a * charW, y: it.y, w: (b - span.a) * charW, h: it.h });
     }
     if (rects.length) out.push(rects);
     from = end; // non-overlapping, mirroring findMatches
@@ -500,6 +615,10 @@ export interface TextItemBox {
   w: number;
   /** Run height (≈ font size). */
   h: number;
+  /** This run ends a line (pdf.js's own `hasEOL`). Optional because the geometry
+   *  answers the same question well enough when it is missing — see
+   *  {@link breaksLine} — but the flag is the producer's word and is trusted first. */
+  eol?: boolean;
 }
 
 /** A single positioned PDF word (normalised text + its box in big points). */

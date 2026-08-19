@@ -18,3 +18,15 @@ project a respawn reattaches to the project's latest session, not necessarily
 this tab's (the same ambiguity their ordinary restore already has). The mode
 is persisted per tab, and re-applied onto the rebuilt args in `loadFromLayout` —
 args are NOT persisted, so without that the split would silently die on restart.
+
+**Unset is a third mode, and it restores as itself.** The badge reads `◇`/`⏸`/`⚡`,
+and `◇` is not a missing value: it is a tab launched with no mode flag at all, i.e.
+the agent's own default, which is what every agent tab nobody clicked the badge on
+is running in. `loadFromLayout` used to fail *closed* into Plan for a mode-capable
+tab with no persisted `agentMode`, which meant a resumed Claude session changed
+mode on every relaunch. Both halves of that rationale have since stopped holding:
+the layout is read from `<state_dir>/sessions/<id>/terminals.json` and no longer
+from the project tree (`sandbox_hardening_plan` Phase 1 / #142), and against a
+layout that genuinely is attacker-written the default was never the gate anyway —
+`sanitize_tab_layout` keeps `agentMode` for a known `cmd`, so such a file writes
+`"agentMode":"auto"` outright and never takes the absent branch.

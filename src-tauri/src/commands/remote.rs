@@ -108,6 +108,26 @@ pub async fn remote_connect(
     // whole change exists to close: a launch path that inherits "user-initiated"
     // by saying nothing is exactly how the cluster kept being dialled. Failing
     // closed here costs one `ELDRUN_HPC_GUARD connect …` naming the machine.
+    // A VM project boots first (`docs/vm_projects_plan.md`): the VM *is* the
+    // host, so every connect path — activation auto-connect, the lamp click,
+    // a tab's silent re-connect — funnels through ensure-booted here rather
+    // than each caller learning about VMs. Idempotent and cheap when already
+    // up; on a cold boot it blocks (off the main thread) until sshd answers,
+    // with the fresh forwarded port already rewritten into the RemoteSpec the
+    // `connect_host` below resolves.
+    if host_id == remote::PRIMARY_HOST
+        && remote::remote_target_for(&project_id)
+            .is_some_and(|t| crate::services::vm::is_vm_spec(&t.spec))
+    {
+        let boot_id = project_id.clone();
+        let name = crate::commands::vm::project_name(&project_id)
+            .unwrap_or_else(|| "project".to_string());
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::services::vm::ensure_booted(&boot_id, &name)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+    }
     let _dial = remote::remote_target_for_host(&project_id, &host_id).and_then(|t| {
         crate::services::ssh_common::declared_dial(
             background,
@@ -404,7 +424,9 @@ pub async fn remote_upload_file(
 /// List the tmux sessions running on a remote project host (TODO #85), for the
 /// Sessions view. Runs `tmux ls` over the pooled ControlMaster; an absent tmux or
 /// a not-running server yields an **empty** list, never an error (see
-/// `ssh_exec::parse_tmux_ls`). `host_id` defaults to the primary.
+/// `ssh_exec::parse_tmux_ls`) — but a failure to *reach* the host is an `Err`,
+/// never an empty list, so the view can keep its last reading instead of
+/// announcing that nothing is running. `host_id` defaults to the primary.
 ///
 /// The raw host listing is scoped to THIS project
 /// (`ssh_exec::filter_sessions_for_project`) — by session name where it carries a
@@ -431,6 +453,25 @@ pub async fn remote_tmux_list(
             &target.spec,
             crate::services::ssh_exec::tmux_ls_script(),
         )?;
+        // `run_remote_script` only errors when `ssh` fails to *spawn*; a failed
+        // login exits 255 with empty stdout, and `tmux_ls_script` ends in
+        // `|| true` so the remote side always exits 0 once the connection is up.
+        // A non-zero status therefore means the transport failed — never "no
+        // sessions" — and reporting it as an empty list is the one thing the
+        // Sessions view must not say wrongly. It happens for real: this probe
+        // spawns its own `ssh` riding the shared ControlMaster socket rather than
+        // the pooled session, so it falls back to a fresh login (with no
+        // credential to answer) for as long as that socket is missing or being
+        // replaced.
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            let detail = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+            return Err(if detail.is_empty() {
+                "could not list host sessions over ssh".to_string()
+            } else {
+                format!("could not list host sessions over ssh: {detail}")
+            });
+        }
         let sessions = crate::services::ssh_exec::parse_tmux_ls(
             &String::from_utf8_lossy(&out.stdout),
         );

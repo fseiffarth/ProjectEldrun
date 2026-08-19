@@ -31,6 +31,8 @@ import {
   type WindowBounds,
 } from "./tabs";
 import { useProjectsStore } from "./projects";
+import { sshOf, useRemoteStatusStore, type ConnState } from "./remoteStatus";
+import type { ProjectEntry } from "../types";
 
 /** Parsed `?detached=<scope>:<groupId>` query. */
 export interface DetachedParam {
@@ -253,6 +255,24 @@ export interface DetachedSeed {
 export interface DetachedRemoteInfo {
   primaryHost?: string;
   computeHosts?: LocalityHost[];
+  /**
+   * The owning project entry, streamed because the popout is inert to the
+   * projects store. Without it a docked (or popped-out) file viewer can't render
+   * its Local/Remote source switch or the run-host picker — both are gated on
+   * `project.remote`, and the popout otherwise resolves no project at all and
+   * treats the tree as a plain local folder. Same seed-time-snapshot bargain as
+   * `computeHosts`: it can go stale if the project's remote config changes while
+   * the popout is open (re-seed only on a tab add/edit).
+   */
+  project?: ProjectEntry;
+  /**
+   * The primary host's live SSH state at seed time. The popout seeds its OWN
+   * (otherwise empty) remoteStatus store with it so the file viewer's Remote side
+   * isn't reported as blocked — the backend SFTP pool is shared across windows,
+   * so a Remote read works from the popout once its status store says connected.
+   * Stale between re-seeds (a connect made after pop-out lands at the next seed).
+   */
+  primarySsh?: ConnState;
 }
 
 /** Build a seed payload from a detached popout's tabs + subtree. Pure. The
@@ -538,7 +558,15 @@ export function decideDetachedPaneDrop(input: {
 function remoteInfoForScope(scope: string): DetachedRemoteInfo | undefined {
   const project = useProjectsStore.getState().projects.find((p) => p.id === scope);
   if (!project?.remote) return undefined;
-  return { primaryHost: project.remote.host, computeHosts: project.compute_hosts };
+  return {
+    primaryHost: project.remote.host,
+    computeHosts: project.compute_hosts,
+    // Ship the whole entry + its primary SSH state so a docked/popped-out file
+    // viewer can render the source switch + run-host picker and actually read the
+    // host tree over the shared SFTP pool (see DetachedRemoteInfo).
+    project,
+    primarySsh: sshOf(useRemoteStatusStore.getState(), project.id),
+  };
 }
 
 /**

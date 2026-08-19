@@ -46,6 +46,12 @@ pub mod sync_auto;
 pub mod terminal_service;
 pub mod tmux_local;
 pub mod usage_stats;
+// Project VMs (`docs/vm_projects_plan.md`): the third trust tier — the whole
+// project inside a QEMU/KVM guest reached only over SSH/SFTP (no shared
+// filesystem), plus its allowlisting egress proxy. Linux-only at runtime;
+// compiles everywhere (the doctor reports `supported: false` elsewhere).
+pub mod vm;
+pub mod vm_proxy;
 // Shared web-safety primitives (URL policy, host display, filename sanitizing)
 // used by BOTH the mail client and the in-app browser. `mail_sanitize`
 // re-exports what it used to own.

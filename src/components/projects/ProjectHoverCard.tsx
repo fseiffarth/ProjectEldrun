@@ -58,7 +58,11 @@ export function formatGitRemote(url?: string): string | null {
  *  from the hovering element's bounding rect. */
 export function useProjectHoverCard(project: ProjectEntry | undefined) {
   const projectId = project?.id;
-  const [popupPos, setPopupPos] = useState<{ x: number; y: number } | null>(null);
+  const [popupPos, setPopupPos] = useState<{
+    x: number;
+    y: number;
+    alignment: "center" | "start";
+  } | null>(null);
   const [timeToday, setTimeToday] = useState<number | null>(null);
   const [cpu, setCpu] = useState<number | null>(null);
   // Resolved once per hover (cheap local-FS stat, no SFTP).
@@ -120,9 +124,13 @@ export function useProjectHoverCard(project: ProjectEntry | undefined) {
   }, [popupPos, projectId]);
 
   const open = useCallback(
-    async (rect: DOMRect) => {
+    async (rect: DOMRect, alignment: "center" | "start" = "center") => {
       if (!projectId) return;
-      setPopupPos({ x: rect.left + rect.width / 2, y: rect.bottom });
+      setPopupPos({
+        x: alignment === "start" ? rect.left : rect.left + rect.width / 2,
+        y: rect.bottom,
+        alignment,
+      });
       try {
         if (isLiveProject) {
           setTimeToday(getProjectSecs());
@@ -171,7 +179,10 @@ export function ProjectHoverCard({
   const typeTags = showTags ? projectTypeTags(project, scaffoldMissing) : [];
 
   return createPortal(
-    <div className="project-pill-popup" style={{ left: popupPos.x, top: popupPos.y }}>
+    <div
+      className={`project-pill-popup${popupPos.alignment === "start" ? " anchor-start" : ""}`}
+      style={{ left: popupPos.x, top: popupPos.y }}
+    >
       {description && <span className="pill-popup-description">{description}</span>}
       {typeTags.length > 0 && (
         <span className="pill-popup-tags">

@@ -114,6 +114,48 @@ describe("buildPdf", () => {
     const orphan = pagesOf("gone", 1);
     await expect(buildPdf(orphan, sources)).rejects.toThrow(/no longer open/);
   });
+
+  // A source may hold no bytes at all and say where to get them instead — which is
+  // how the viewed file is opened, so that reading a 130 MB document does not also
+  // carry a 130 MB copy for a save that usually never comes.
+  it("re-reads a source that holds no bytes, once for the whole save", async () => {
+    const bytes = await makePdf([100, 200]);
+    let reads = 0;
+    const sources: PdfSources = new Map([
+      [
+        SELF,
+        {
+          reread: async () => {
+            reads += 1;
+            return bytes;
+          },
+          doc: undefined as never,
+        },
+      ],
+    ]);
+
+    const pages = initialPages(2);
+    expect(await widthsOf(await buildPdf(movePages(pages, [pages[1].id], 0), sources))).toEqual([
+      200, 100,
+    ]);
+    expect(reads).toBe(1);
+    // …and the read is cached onto the source, so a second save costs no third read.
+    await buildPdf(pages, sources);
+    expect(reads).toBe(1);
+  });
+
+  it("reports a source whose bytes cannot be re-read as one that is not open", async () => {
+    const sources: PdfSources = new Map([
+      [
+        SELF,
+        {
+          reread: () => Promise.reject(new Error("This file no longer exists.")),
+          doc: undefined as never,
+        },
+      ],
+    ]);
+    await expect(buildPdf(initialPages(1), sources)).rejects.toThrow(/no longer open/);
+  });
 });
 
 /**

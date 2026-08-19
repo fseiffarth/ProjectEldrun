@@ -118,7 +118,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::Serialize;
 
 use crate::paths;
-use crate::schema::project::{DetectedSpecKind, DetectedSpecSource, SandboxSpec};
+use crate::schema::project::{DetectedSpecKind, DetectedSpecSource, SandboxScope, SandboxSpec};
 use crate::storage;
 use crate::terminal::PtyOptions;
 
@@ -502,6 +502,29 @@ pub fn is_host_bound_local_agent(cmd: &str, marker: bool) -> bool {
     marker && HOST_BOUND_LOCAL_AGENT_CMDS.contains(&cmd)
 }
 
+/// Whether a spawn's command launches an AI coding agent — the question
+/// [`SandboxScope::Agents`] turns on. Mirrors `commands::agents::AGENTS` (the
+/// registry the + menu lists) and the frontend's `AGENT_CMDS`; the three are the
+/// same set by construction and `agent_registry_matches_classifier` fails if the
+/// registry grows an entry this misses.
+///
+/// **Classified by the command that actually executes**, deliberately, and not by
+/// a tab `kind` the renderer sends: `kind` is a label, `cmd` is the argv. A
+/// renderer that lies about `cmd` does not win an exemption, it runs a different
+/// program. The one thing this cannot see through is an agent launched
+/// *indirectly* (`sh -c 'claude'`, a wrapper script), which under `Agents` runs on
+/// the host — the same class of gap the host-bound marker documents, with the same
+/// answer: it takes a renderer that can already spawn, which is the CSP's problem
+/// and not this function's. Nothing in Eldrun's own UI opens an agent that way.
+///
+/// Matched on the **basename**, so a pinned `/usr/local/bin/claude` or a
+/// `~/.local/bin/codex` is still an agent.
+pub fn is_agent_cmd(cmd: &str) -> bool {
+    let base = cmd.rsplit(['/', '\\']).next().unwrap_or(cmd);
+    let base = base.strip_suffix(".exe").unwrap_or(base);
+    crate::commands::agents::agent_bins().contains(&base)
+}
+
 /// Re-derive a spawn's authority flags from the trustworthy project record.
 ///
 /// - **No owning project** (root/global scope, connection terminals): pass through
@@ -513,13 +536,20 @@ pub fn is_host_bound_local_agent(cmd: &str, marker: bool) -> bool {
 /// - **Local project, toggle off**: `sandbox` forced off (the renderer must not be
 ///   able to invent a container spec); `local_only` is irrelevant — with no remote
 ///   to wrap, both values spawn on the host.
-/// - **Local project, toggle on**: everything is containerized. `local_only` is
-///   ignored — the ONLY exception is a host-bound local-model driver tab, which
-///   keeps running on the host exactly as before.
+/// - **Local project, toggle on**: containerized, subject to `scope`. `local_only`
+///   is ignored — the exceptions are a host-bound local-model driver tab, which
+///   keeps running on the host exactly as before, and (under
+///   [`SandboxScope::Agents`]) any spawn whose command is not an agent CLI.
+///
+/// **`scope` narrows, never widens.** It is read from the same trusted record as
+/// `toggle_on` and is only ever consulted *after* the toggle has already said yes,
+/// so a spec the renderer cannot write cannot be used to grant a container that
+/// the project record does not.
 pub fn resolve_spawn_authority(
     has_project: bool,
     is_remote: bool,
     toggle_on: bool,
+    scope: SandboxScope,
     requested: SpawnAuthority,
     cmd: &str,
     host_bound_marker: bool,
@@ -539,6 +569,16 @@ pub fn resolve_spawn_authority(
             local_only: true,
         };
     }
+    // Agents-only: a shell, a script, a viewer Run/Debug tab runs on the host with
+    // the host's toolchain. `local_only` is left as the renderer asked, exactly as
+    // in the toggle-off case — with no remote to wrap it changes nothing, and on a
+    // remote project this branch is unreachable (handled above).
+    if scope == SandboxScope::Agents && !is_agent_cmd(cmd) {
+        return SpawnAuthority {
+            sandbox: false,
+            local_only: requested.local_only,
+        };
+    }
     SpawnAuthority {
         sandbox: true,
         local_only: false,
@@ -553,7 +593,9 @@ pub fn enforce_spawn_authority(opts: &mut PtyOptions) {
         return;
     };
     let is_remote = crate::services::remote::remote_target_for(&project_id).is_some();
-    let toggle_on = sandbox_spec_for(&project_id).is_some_and(|s| s.enabled);
+    let spec = sandbox_spec_for(&project_id);
+    let toggle_on = spec.as_ref().is_some_and(|s| s.enabled);
+    let scope = spec.as_ref().map(|s| s.scope).unwrap_or_default();
     // The container exemption is looked up in the state dir, never taken from the
     // spawn's own env — see `is_host_bound_local_agent`.
     let marker = opts
@@ -564,6 +606,7 @@ pub fn enforce_spawn_authority(opts: &mut PtyOptions) {
         true,
         is_remote,
         toggle_on,
+        scope,
         SpawnAuthority {
             sandbox: opts.sandbox,
             local_only: opts.local_only,
@@ -1172,6 +1215,59 @@ pub fn project_dir_for(project_id: &str) -> Option<String> {
     let project: crate::schema::project::Project =
         storage::read_json(Path::new(&entry.local_file)).ok()?;
     (!project.directory.is_empty()).then_some(project.directory)
+}
+
+/// The project id whose tabs at `project_dir` would run **inside a container** —
+/// i.e. the id to run an in-container probe against, or `None` when a tab opened
+/// there runs on the host.
+///
+/// The reverse lookup is `remote_target_for_dir`'s (an entry's stored
+/// `extra["directory"]`, matched verbatim), because the callers that need this
+/// are the same ones: they hold a `project_dir`, not an id.
+///
+/// Three conditions, and the third is the point: the toggle is on, the project is
+/// local (a container never applies to a remote one), **and** the scope is
+/// [`SandboxScope::All`]. Under `Agents` a shell tab — which is what the viewer's
+/// Run/Debug is — spawns on the host, so probing the container would answer a
+/// question about the wrong machine. The rule that decides where the tab runs is
+/// therefore the same rule that decides where we look for its interpreter, rather
+/// than two conditions that can drift apart.
+pub fn containerized_project_for_dir(project_dir: &str) -> Option<String> {
+    let list_path = storage::state_dir().join("projects.json");
+    let list: crate::schema::projects::ProjectsList = storage::read_json(&list_path).ok()?;
+    let entry = list.iter().find(|e| {
+        e.extra
+            .get("directory")
+            .and_then(|v| v.as_str())
+            .is_some_and(|d| d == project_dir)
+    })?;
+    if crate::services::remote::remote_target_for(&entry.id).is_some() {
+        return None;
+    }
+    let spec = sandbox_spec_for(&entry.id)?;
+    (spec.enabled && spec.scope == SandboxScope::All).then(|| entry.id.clone())
+}
+
+/// Run a **constant** POSIX-`sh` script inside a project's session container and
+/// return its stdout — the `docker exec` twin of
+/// `ssh_exec::run_remote_script`, and bound by the same contract: nothing may be
+/// interpolated into `script`, because it is handed to `sh -c` verbatim.
+///
+/// Deliberately **does not `up()` the container.** This serves probes (which
+/// interpreter is in there?), and a probe must not be able to pull a multi-second
+/// image start into a dialog that is merely being opened — nor start a container
+/// for a project the user is only inspecting. A container that is not running
+/// answers `None`, and the caller falls back rather than waiting.
+pub fn run_in_container(project_id: &str, cwd: &str, script: &str) -> Option<String> {
+    let name = container_name_for(project_id);
+    if !probe_container(&name).running {
+        return None;
+    }
+    let out = docker(&["exec", "-w", cwd, &name, "sh", "-c", script]).ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 fn project_entry_value(project_id: &str, key: &str) -> Option<serde_json::Value> {
@@ -2114,30 +2210,48 @@ mod tests {
         SpawnAuthority { sandbox, local_only }
     }
 
+    /// `resolve_spawn_authority` under the default (contain everything) scope —
+    /// the shape every pre-`scope` test was written against.
+    fn resolve_all(
+        has_project: bool,
+        is_remote: bool,
+        toggle_on: bool,
+        requested: SpawnAuthority,
+        cmd: &str,
+        marker: bool,
+    ) -> SpawnAuthority {
+        resolve_spawn_authority(
+            has_project,
+            is_remote,
+            toggle_on,
+            SandboxScope::All,
+            requested,
+            cmd,
+            marker,
+        )
+    }
+
     #[test]
     fn a_toggled_local_project_containerizes_regardless_of_the_renderers_flags() {
         // The S-2 escape: a persisted tab declaring itself local (which makes
         // `pty_spawn` skip BOTH the docker and the ssh wrap) is overruled.
-        let resolved = resolve_spawn_authority(true, false, true, want(false, true), "bash", false);
+        let resolved = resolve_all(true, false, true, want(false, true), "bash", false);
         assert_eq!(resolved, want(true, false));
 
         // …including when it also claims to be a `local_agent` kind by naming an
         // agent CLI, but holds no registered host-bound marker.
-        let resolved =
-            resolve_spawn_authority(true, false, true, want(false, true), "claude", false);
+        let resolved = resolve_all(true, false, true, want(false, true), "claude", false);
         assert_eq!(resolved, want(true, false));
     }
 
     #[test]
     fn host_bound_local_model_tabs_still_run_on_the_host() {
         for cmd in HOST_BOUND_LOCAL_AGENT_CMDS {
-            let resolved =
-                resolve_spawn_authority(true, false, true, want(false, true), cmd, true);
+            let resolved = resolve_all(true, false, true, want(false, true), cmd, true);
             assert_eq!(resolved, want(false, true), "{cmd} must stay on the host");
         }
         // The marker alone is not enough — the command must be a known driver.
-        let resolved =
-            resolve_spawn_authority(true, false, true, want(false, true), "/tmp/pwn.sh", true);
+        let resolved = resolve_all(true, false, true, want(false, true), "/tmp/pwn.sh", true);
         assert_eq!(resolved, want(true, false));
         // …and a known driver alone is not enough either. This is #150: the grant
         // used to be the tab's `ELDRUN_LOCAL_MODEL` env var, which is a label the
@@ -2161,17 +2275,17 @@ mod tests {
     fn toggle_off_and_remote_projects_can_never_be_told_they_are_sandboxed() {
         // Toggle off: the renderer cannot invent a container.
         assert_eq!(
-            resolve_spawn_authority(true, false, false, want(true, false), "bash", false),
+            resolve_all(true, false, false, want(true, false), "bash", false),
             want(false, false)
         );
         // Remote project: containers are local-only, but `local_only` is a real
         // per-tab choice there (mirror vs. host) and is left alone.
         assert_eq!(
-            resolve_spawn_authority(true, true, true, want(true, true), "claude", false),
+            resolve_all(true, true, true, want(true, true), "claude", false),
             want(false, true)
         );
         assert_eq!(
-            resolve_spawn_authority(true, true, true, want(true, false), "claude", false),
+            resolve_all(true, true, true, want(true, false), "claude", false),
             want(false, false)
         );
     }
@@ -2181,9 +2295,138 @@ mod tests {
         // Root scope / connection terminals: no project record to consult.
         let requested = want(false, true);
         assert_eq!(
-            resolve_spawn_authority(false, false, false, requested, "", false),
+            resolve_all(false, false, false, requested, "", false),
             requested
         );
+    }
+
+    // ── Agents-only scope ─────────────────────────────────────────────────
+
+    fn resolve_agents_only(cmd: &str) -> SpawnAuthority {
+        resolve_spawn_authority(
+            true,
+            false,
+            true,
+            SandboxScope::Agents,
+            want(false, false),
+            cmd,
+            false,
+        )
+    }
+
+    #[test]
+    fn agents_only_contains_the_agent_and_leaves_the_shell_alone() {
+        // The whole point of the scope: the model's tab is boxed, the user's is not.
+        for agent in ["claude", "codex", "gemini", "aider"] {
+            assert_eq!(resolve_agents_only(agent), want(true, false), "{agent}");
+        }
+        // A shell tab spawns with an EMPTY cmd (the host default shell) — the case
+        // that has to work, since it is what every `+ Shell` and every viewer
+        // Run/Debug tab is.
+        for host_side in ["", "bash", "sh", "python3", "/usr/bin/make", "npm"] {
+            assert_eq!(
+                resolve_agents_only(host_side),
+                want(false, false),
+                "{host_side:?} must run on the host"
+            );
+        }
+    }
+
+    #[test]
+    fn agents_only_matches_an_agent_by_basename_not_by_the_bare_word() {
+        // A pinned absolute path is still that agent; PATH layout is not a
+        // containment decision.
+        assert!(is_agent_cmd("/home/u/.local/bin/claude"));
+        assert!(is_agent_cmd("claude.exe"));
+        assert!(is_agent_cmd(r"C:\tools\codex.exe"));
+        // …and a lookalike is not.
+        assert!(!is_agent_cmd("claude-wrapper"));
+        assert!(!is_agent_cmd("myclaude"));
+        assert!(!is_agent_cmd(""));
+    }
+
+    #[test]
+    fn the_scope_can_only_narrow_never_grant() {
+        // Toggle off + agents-only must not containerize an agent: `scope` is read
+        // only after the toggle already said yes.
+        assert_eq!(
+            resolve_spawn_authority(
+                true,
+                false,
+                false,
+                SandboxScope::Agents,
+                want(true, false),
+                "claude",
+                false
+            ),
+            want(false, false)
+        );
+        // A remote project is still never docker-wrapped, whatever the scope says.
+        assert_eq!(
+            resolve_spawn_authority(
+                true,
+                true,
+                true,
+                SandboxScope::Agents,
+                want(true, false),
+                "claude",
+                false
+            ),
+            want(false, false)
+        );
+    }
+
+    #[test]
+    fn a_host_bound_local_model_tab_outranks_the_scope() {
+        // Both exemptions point the same way; check they compose rather than one
+        // shadowing the other into a container.
+        assert_eq!(
+            resolve_spawn_authority(
+                true,
+                false,
+                true,
+                SandboxScope::Agents,
+                want(false, true),
+                "vibe",
+                true
+            ),
+            want(false, true)
+        );
+    }
+
+    #[test]
+    fn an_older_spec_with_no_scope_key_still_contains_everything() {
+        // The migration-free promise: a `sandbox` object written before `scope`
+        // existed must not silently drop to agents-only on upgrade.
+        let spec: SandboxSpec =
+            serde_json::from_str(r#"{"enabled":true,"network":"none"}"#).unwrap();
+        assert_eq!(spec.scope, SandboxScope::All);
+        assert_eq!(
+            resolve_spawn_authority(
+                true,
+                false,
+                spec.enabled,
+                spec.scope,
+                want(false, true),
+                "bash",
+                false
+            ),
+            want(true, false)
+        );
+    }
+
+    #[test]
+    fn agent_registry_matches_classifier() {
+        // `is_agent_cmd` reads `commands::agents::AGENTS`; this is the tripwire for
+        // the frontend's `AGENT_CMDS`, which is a hand-kept copy of the same set.
+        // An agent missing from the classifier runs OUTSIDE the container under
+        // agents-only scope, which is exactly the silent failure worth a test.
+        for bin in crate::commands::agents::agent_bins() {
+            assert!(is_agent_cmd(bin), "{bin} is in the registry but not classified");
+        }
+        // The registry is non-empty (a `Vec::new()` refactor would make every
+        // assertion above vacuous and every agent escape the container).
+        assert!(crate::commands::agents::agent_bins().len() >= 10);
     }
 
     // ── Mount narrowing (S-3) ─────────────────────────────────────────────

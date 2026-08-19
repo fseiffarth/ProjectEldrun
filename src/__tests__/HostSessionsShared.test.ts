@@ -149,6 +149,40 @@ describe("the shared session poll", () => {
     release(PID);
   });
 
+  it("keeps a host's rows when ITS read fails — a failed probe is not 'nothing is running'", async () => {
+    const { retain, release } = useHostSessionsStore.getState();
+    retain(PID);
+    await settle();
+    expect(useHostSessionsStore.getState().byProject[PID]).toHaveLength(1);
+
+    // The probe spawns its own `ssh` on the shared ControlMaster socket, so a
+    // socket being replaced under it fails one tick and succeeds on the next.
+    // Swallowing that into an empty list blanked the Sessions view for 7 s and
+    // reported "no persistent sessions on the host".
+    invoke.mockImplementation((cmd: string) =>
+      cmd === "remote_tmux_list" ? Promise.reject(new Error("ssh: connect failed")) : Promise.resolve(null),
+    );
+    await vi.advanceTimersByTimeAsync(7000);
+    expect(useHostSessionsStore.getState().byProject[PID]).toHaveLength(1);
+    release(PID);
+  });
+
+  it("still drops a host's rows when its read SUCCEEDS with nothing", async () => {
+    const { retain, release } = useHostSessionsStore.getState();
+    retain(PID);
+    await settle();
+    expect(useHostSessionsStore.getState().byProject[PID]).toHaveLength(1);
+
+    // The other half of the same rule: an answered "there is nothing here" must
+    // still empty the list, or a killed session would never leave it.
+    invoke.mockImplementation((cmd: string) =>
+      cmd === "remote_tmux_list" ? Promise.resolve([]) : Promise.resolve(null),
+    );
+    await vi.advanceTimersByTimeAsync(7000);
+    expect(useHostSessionsStore.getState().byProject[PID]).toEqual([]);
+    release(PID);
+  });
+
   it("re-polls the moment a host connects, rather than up to a tick later", async () => {
     useRemoteStatusStore.getState().setSsh(PID, "off");
     const { retain, release } = useHostSessionsStore.getState();

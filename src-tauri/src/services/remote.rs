@@ -290,6 +290,9 @@ pub async fn connect_host(
         let _ = std::fs::create_dir_all(crate::services::remote_sync::mirror_dir(project_id));
     }
     let key = conn_key(project_id, host_id);
+    // A live entry whose ControlMaster socket has gone missing: reopen it, and
+    // swap the fresh connection in only once it is actually up (see below).
+    let mut refreshing = false;
     {
         // Liveness-checked, not mere presence: a pooled ssh child can have exited
         // long after connect (keepalive kill on a dropped VPN/network, laptop
@@ -307,7 +310,35 @@ pub async fn connect_host(
             Some(true) => {
                 guard.conns.remove(&key);
             }
-            Some(false) => return Ok(()), // already connected and alive
+            Some(false) => {
+                // Alive is not the same as *usable by anything but this entry*.
+                // The pooled SFTP rides a channel that is already open, so it
+                // keeps working even after the master's socket is gone from disk
+                // — but the socket is what every OTHER consumer finds the master
+                // by (`ssh_pty_args`, git-over-ssh, sync, the SLURM/tmux probes),
+                // and its absence turns each of them into its own login, i.e. a
+                // key-passphrase prompt on a project reporting itself connected.
+                //
+                // It goes missing for reasons outside this entry's control: any
+                // sibling pool entry on the same SSH target used to unlink it on
+                // teardown (fixed there), and a `-O exit` / manual cleanup can do
+                // it at any time. Treating "child alive" as the whole liveness
+                // test meant this — the call `pty_spawn` makes before every remote
+                // tab — returned `Ok` and the prompt was permanent for the run.
+                //
+                // A plain `stat` is all it takes and it is cheap enough to hold
+                // the lock across; `ssh -O check` (a spawn) belongs nowhere near
+                // here (see the `ssh -G` note below).
+                let lost = guard
+                    .conns
+                    .get(&key)
+                    .and_then(|conn| conn.control_path.as_deref())
+                    .is_some_and(|path| !path.exists());
+                if !lost {
+                    return Ok(()); // already connected and alive
+                }
+                refreshing = true;
+            }
             None => {}
         }
     }
@@ -349,7 +380,12 @@ pub async fn connect_host(
     let mut guard = pool.lock().await;
     // A concurrent connect may have won the race while we were handshaking. If so
     // keep theirs and tear ours down rather than leaking a second ssh child.
-    if guard.conns.contains_key(&key) {
+    // `refreshing` is the deliberate exception: the entry sitting there is the one
+    // whose master we are replacing, so finding it is the expected case, not a
+    // lost race. Reopening BEFORE evicting it is what keeps a failed refresh
+    // harmless — a host we cannot re-authenticate (no saved credential) leaves the
+    // working SFTP session in place instead of trading it for nothing.
+    if !refreshing && guard.conns.contains_key(&key) {
         drop(guard);
         teardown_session(sftp, child).await;
         return Ok(());
@@ -360,7 +396,7 @@ pub async fn connect_host(
     // by itself, so it must not be refused on a host tagged HPC. The guard lives
     // *in* the pool entry, so it is released however that entry dies.
     let dial = crate::services::ssh_common::user_dial(&spec.user, &spec.host, spec.port);
-    guard.conns.insert(
+    let replaced = guard.conns.insert(
         key,
         PooledRemote {
             sftp: Arc::new(sftp),
@@ -369,6 +405,15 @@ pub async fn connect_host(
             _dial: dial,
         },
     );
+    drop(guard);
+    // The socketless entry this refresh replaced. Torn down after the swap and
+    // outside the lock: its `ssh` client is still holding a channel on the
+    // orphaned master, and nothing else will ever reach that one again. The
+    // teardown's own socket check now sees the master we just opened at the same
+    // path and so leaves the *new* socket alone.
+    if let Some(prev) = replaced {
+        teardown_pooled(prev).await;
+    }
     Ok(())
 }
 
@@ -558,9 +603,35 @@ async fn teardown_pooled(conn: PooledRemote) {
         Err(arc) => drop(arc),
     }
     let _ = child.kill().await;
+    // The socket is NOT this entry's to delete just because this entry is going
+    // away, and both halves of that sentence were once wrong here.
+    //
+    // It is keyed by *SSH target* (`cm-%C` hashes user/host/port) while the pool
+    // is keyed by `(project, host)`, so several pooled entries — four projects on
+    // one lab machine, a worker shared by two of them — name the same file. It
+    // also outlives the child we just killed: with `ControlMaster=auto` +
+    // `ControlPersist`, `ssh` forks a *separate* backgrounded master (`ssh: …
+    // [mux]`, reparented to init) and the client we own is merely its first
+    // channel. So an unconditional unlink here deleted a live master's socket and
+    // left the master itself running, unreachable — every later `ssh` to that
+    // host (a shell tab, git, sync) then found no socket, opened its own login,
+    // and asked for the key passphrase on a project whose lamp was green.
+    //
+    // Ask the master instead. Nothing listening ⇒ a genuine leftover (the master
+    // was killed by signal / a crash), which is what the unlink is for; a master
+    // that answers is left alone and cleans up its own socket when it exits.
+    #[cfg(not(target_os = "windows"))]
     if let Some(path) = control_path {
-        let _ = std::fs::remove_file(path);
+        // `ssh -O check` is a process spawn, so it goes off the async worker.
+        let _ = tokio::task::spawn_blocking(move || {
+            if !crate::services::ssh_exec::control_master_alive(&path) {
+                let _ = std::fs::remove_file(&path);
+            }
+        })
+        .await;
     }
+    #[cfg(target_os = "windows")]
+    let _ = control_path;
 }
 
 /// Gracefully close a freshly-opened, not-yet-pooled session (the lost-race path
@@ -586,6 +657,7 @@ mod tests {
             auto_connect: None,
             key_auth: None,
             persist_sessions: None,
+            vm: None,
             label: None,
             extra: HashMap::new(),
         }
@@ -651,6 +723,7 @@ mod tests {
                 auto_connect: None,
                 key_auth: None,
                 persist_sessions: None,
+                vm: None,
                 label: None,
                 extra: HashMap::new(),
             },

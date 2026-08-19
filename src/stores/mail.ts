@@ -7,6 +7,7 @@ import {
   mailFolders,
   mailHeaders,
   mailMarkFolderRead,
+  mailPriorityClear,
   mailPriorityCounts,
   mailPriorityPage,
   mailPrioritySet,
@@ -184,6 +185,11 @@ interface MailStore {
   /** Mark — or with `null`, unmark — one message. The right-click action.
    *  Reaches no server (`MailPriority`), so this is safe from any path. */
   setPriority: (messageId: string, priority: MailPriority | null) => Promise<void>;
+  /** Empty a whole list — unmark **every** message carrying `priority`. The
+   *  bulk form of `setPriority(…, null)`, local like it, and asked about by the
+   *  caller before it gets here: a mark is not a folder, so nothing moves and
+   *  nothing is deleted, but the filing itself is the user's own work. */
+  clearPriority: (priority: MailPriority) => Promise<void>;
   /** Re-read both badge counts (local). */
   refreshPriorityCounts: () => Promise<void>;
   setQuery: (query: string) => Promise<void>;
@@ -436,6 +442,23 @@ export const useMailStore = create<MailStore>((set, get) => ({
     // Unmarking from *inside* a priority list removes the row from that list, so
     // the page has to be re-read; nothing else here changes what a folder shows.
     if (get().selectedPriority) await get().loadPage(get().headerOffset);
+  },
+
+  clearPriority: async (priority) => {
+    // No optimistic patch, unlike `setPriority`: this one empties the list the
+    // user is most likely looking at, so a page blanked before the write landed
+    // would be indistinguishable from a write that failed and took the mail with
+    // it. The command is a single local statement — there is nothing slow to
+    // paper over.
+    const cleared = await mailPriorityClear(priority).catch((err) => {
+      set({ error: reason(err) });
+      return null;
+    });
+    if (cleared === null) return;
+    await get().refreshPriorityCounts();
+    // Only the list that was emptied is on screen-relevant; a folder shows the
+    // same mail either way, and the other priority list was not touched.
+    if (get().selectedPriority === priority) await get().loadPage(0);
   },
 
   refreshPriorityCounts: async () => {

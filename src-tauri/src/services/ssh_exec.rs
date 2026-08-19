@@ -106,54 +106,185 @@ pub fn resolve_control_path(spec: &RemoteSpec) -> Option<PathBuf> {
     }
 }
 
-/// Remove `cm-*` sockets in [`control_dir`] whose master is gone — a startup
-/// sweep beside `sandbox::sweep_orphans` / `openvpn::adopt_orphans`.
+/// Whether a ControlMaster is still listening on `path`. `ssh -O check` against
+/// the explicit socket answers in microseconds and touches no network; the host
+/// argument is required by the CLI but unused, since the socket is named outright
+/// with `-o ControlPath`.
 ///
-/// Masters are killed by signal (`services::remote::teardown_pooled`, and rather
-/// more abruptly by a crash or an OOM), which leaves the socket file behind. A
-/// leftover socket is not inert: the next `ssh` to that target logs "ControlSocket
-/// … already exists, disabling multiplexing" and then **opens its own login** —
-/// so a single stale file silently converts every later channel on that host from
-/// one shared authenticated master into one connection each, for the rest of the
-/// run. `ssh -O check` against the explicit socket answers in microseconds and
-/// touches no network; a non-zero exit means nothing is listening, so unlink.
+/// **`true` is the safe answer and therefore the default whenever we cannot
+/// tell.** A spawn failure (no `ssh` on `PATH`, fork failure, `EMFILE`) is not
+/// evidence about the socket, and every caller acts on a `false` by *deleting* —
+/// so reading "could not ask" as "gone" would unlink live masters, whose channels
+/// would then each need a credential nobody stored.
+#[cfg(not(target_os = "windows"))]
+pub fn control_master_alive(path: &std::path::Path) -> bool {
+    crate::paths::command_no_window("ssh")
+        .arg("-o")
+        .arg(format!("ControlPath={}", path.to_string_lossy()))
+        .arg("-O")
+        .arg("check")
+        .arg("eldrun-control-probe")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(true)
+}
+
+/// The ControlMaster socket a process-table row belongs to, when that row is one
+/// of **our** masters: a `[mux]`-titled `ssh` naming a `cm-*` path inside
+/// `control_dir`. `None` for anything else, which is the whole safety property —
+/// a foreign `ssh`, a user's own `ssh -M` and another tool's mux socket all fall
+/// through untouched.
 ///
-/// Best effort throughout: a socket we cannot classify is left alone (a live
-/// master from a *concurrent* Eldrun would answer the check and be kept).
+/// OpenSSH's mux master retitles itself `<control_path> [mux]` (`setproctitle` in
+/// `muxserver_listen`), and on Linux that rewrites the argv area, so it is what
+/// both `ps` and `/proc/<pid>/cmdline` report. The path is taken by anchoring on
+/// the *whole* `<control_dir>/cm-` prefix and reading to the next whitespace —
+/// not by splitting the row on spaces, which a state directory inside a home with
+/// a space in it would defeat. The socket's own name (`cm-` + a hex hash) never
+/// contains one.
+///
+/// Pure, so the predicate the sweep kills on is testable without a process table.
+#[cfg(not(target_os = "windows"))]
+pub fn mux_socket_in_row(row: &str, control_dir: &std::path::Path) -> Option<PathBuf> {
+    if !row.contains("[mux]") {
+        return None;
+    }
+    let anchor = format!("{}/cm-", control_dir.to_string_lossy());
+    let start = row.find(&anchor)?;
+    // Scan for the end of the token from *after* the anchor, never from `start`:
+    // the directory half may legitimately contain a space (a home directory with
+    // one), and only the `cm-<hash>` filename is guaranteed not to.
+    let after = start + anchor.len();
+    let end = row[after..]
+        .find(char::is_whitespace)
+        .map(|i| after + i)
+        .unwrap_or(row.len());
+    Some(PathBuf::from(&row[start..end]))
+}
+
+/// One `(pid, argv)` row of the process table, or `None` for a header/blank line.
+#[cfg(not(target_os = "windows"))]
+fn parse_ps_row(row: &str) -> Option<(i32, &str)> {
+    let row = row.trim_start();
+    let split = row.find(char::is_whitespace)?;
+    let pid = row[..split].parse::<i32>().ok()?;
+    Some((pid, row[split..].trim_start()))
+}
+
+/// The machine's process table as `(pid, argv)` rows. One `ps` spawn, which works
+/// the same on Linux and macOS — deliberately not a `/proc` walk, which would be
+/// Linux-only and would need a second implementation for the other Unix Eldrun
+/// ships on.
+#[cfg(not(target_os = "windows"))]
+fn process_rows() -> Vec<(i32, String)> {
+    let Ok(out) = crate::paths::command_no_window("ps")
+        .args(["-eo", "pid=,args="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| parse_ps_row(l).map(|(pid, args)| (pid, args.to_string())))
+        .collect()
+}
+
+/// Ask a `[mux]` master naming `path` to go away. SIGTERM only: the master's own
+/// shutdown unlinks its socket and closes its channels, where a SIGKILL would
+/// leave exactly the litter this function exists to collect.
+#[cfg(not(target_os = "windows"))]
+fn reap_masters_for(path: &std::path::Path, rows: &[(i32, String)]) -> usize {
+    let dir = control_dir();
+    let mut killed = 0;
+    for (pid, args) in rows {
+        if mux_socket_in_row(args, &dir).as_deref() == Some(path) {
+            // SAFETY: `kill` takes no pointers; a pid that has already exited
+            // fails harmlessly with ESRCH.
+            if unsafe { libc::kill(*pid as libc::pid_t, libc::SIGTERM) } == 0 {
+                killed += 1;
+            }
+        }
+    }
+    killed
+}
+
+/// Reconcile [`control_dir`] with the machine's actual ControlMasters — a startup
+/// sweep beside `sandbox::sweep_orphans` / `openvpn::adopt_orphans`. Two failures,
+/// which are each other's mirror image, and neither used to be reachable.
+///
+/// **A socket with no master.** Masters are killed by signal
+/// (`services::remote::teardown_pooled`, and rather more abruptly by a crash or an
+/// OOM), which leaves the socket file behind. A leftover socket is not inert: the
+/// next `ssh` to that target logs "ControlSocket … already exists, disabling
+/// multiplexing" and then **opens its own login** — so a single stale file
+/// silently converts every later channel on that host from one shared
+/// authenticated master into one connection each, for the rest of the run.
+/// `ssh -O check` against the explicit socket answers in microseconds and touches
+/// no network; a non-zero exit means nothing is listening, so unlink.
+///
+/// **A master with no socket** (G.25, observed 2026-08-03: four `[mux]` masters
+/// alive with an *empty* control dir, each holding an ESTABLISHED `:22`
+/// connection, two of them 2–3× past `ControlPersist=600`). That state was
+/// unreachable by every mechanism we had — `ssh_close_master` asks *over* the
+/// socket, the sweep above iterates files, and `ControlPersist` is the master's
+/// own timer and had visibly not fired — so the only handle left is the pid.
+/// Such a master is also unusable *as* a master: nobody can adopt a socket that
+/// is gone, so we pay the open connection and get none of the warm-reconnect
+/// benefit `RunEvent::Exit` deliberately leaves them up for. The predicate is safe
+/// by construction, including against a **concurrent** Eldrun, whose masters all
+/// still have their files.
+///
+/// The two halves are also each other's fix. [`control_master_alive`] keeps its
+/// conservative `true` default — "could not ask" genuinely is not evidence of
+/// death, and reading it as death is what would unlink a *live* master's socket —
+/// so instead the unlink no longer merely removes the file: it signals whatever
+/// master still names it. Unlinking without killing is precisely what mints an
+/// orphan, and that is the one step of the cycle we control.
+///
+/// Best effort throughout: a socket we cannot classify is left alone.
 #[cfg(not(target_os = "windows"))]
 pub fn sweep_stale_control_sockets() {
     let dir = control_dir();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("cm-"))
-        {
+    let rows = process_rows();
+
+    // 1. Sockets whose master is gone (or unlinked-but-still-running).
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("cm-"))
+            {
+                continue;
+            }
+            // Only an `ssh` that actually RAN and said "not alive" licenses the
+            // unlink — see [`control_master_alive`] for why "could not ask" counts
+            // as alive here.
+            if !control_master_alive(&path) {
+                // Signal first, unlink second. If the check was a false negative
+                // (a live master too busy to answer), removing the file alone
+                // would strand it exactly as an orphan; asking it to exit means
+                // the worst case is a master we shut down early, which the next
+                // connect simply reopens.
+                reap_masters_for(&path, &rows);
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+
+    // 2. Masters whose socket is gone. Nothing on disk names these, so they are
+    //    reachable only from the process table.
+    for (pid, args) in &rows {
+        let Some(path) = mux_socket_in_row(args, &dir) else {
+            continue;
+        };
+        if path.exists() {
             continue;
         }
-        // The host argument is required by the CLI but unused here: the socket is
-        // named outright with `-o ControlPath`, so `-O check` asks *that* file.
-        let alive = crate::paths::command_no_window("ssh")
-            .arg("-o")
-            .arg(format!("ControlPath={}", path.to_string_lossy()))
-            .arg("-O")
-            .arg("check")
-            .arg("eldrun-control-probe")
-            .output()
-            .map(|o| o.status.success())
-            // Only an `ssh` that actually RAN and said "not alive" licenses the
-            // unlink. A spawn failure (no `ssh` on PATH, fork failure, EMFILE) is
-            // not evidence about the socket, and reading it as one would delete
-            // every master in the directory — including a live one belonging to a
-            // concurrently-running Eldrun, whose channels would then each need a
-            // password nobody stored.
-            .unwrap_or(true);
-        if !alive {
-            let _ = std::fs::remove_file(&path);
+        // SAFETY: `kill` takes no pointers; an already-exited pid fails with ESRCH.
+        unsafe {
+            libc::kill(*pid as libc::pid_t, libc::SIGTERM);
         }
     }
 }
@@ -579,6 +710,12 @@ pub fn ssh_pty_args(remote: &RemoteSpec, remote_command: &str) -> Result<Vec<Str
 
     let mut args: Vec<String> = vec!["-tt".to_string()];
 
+    // Per-VM identity + known_hosts when this tab targets a live project VM's
+    // forwarded port (`services::vm::vm_ssh_opts`; empty otherwise) — the tab
+    // must authenticate with the per-VM key and never touch the user's real
+    // `~/.ssh/known_hosts` for a host key we minted ourselves.
+    args.extend(crate::services::vm::vm_ssh_opts(&remote.host, remote.port));
+
     // Connection multiplexing (ControlMaster/ControlPath/ControlPersist) is a
     // Unix-only OpenSSH feature: it relies on a Unix-domain control socket with
     // file-descriptor passing, which the Windows OpenSSH client does not
@@ -846,6 +983,18 @@ pub fn interactive_login_command(
     host: &str,
     port: Option<u16>,
 ) -> Result<String, String> {
+    Ok(quote_join(&interactive_login_args(user, host, port)?))
+}
+
+/// The argv behind [`interactive_login_command`], before quoting — so a caller
+/// that needs to append to it (a remote command to run in that same login, see
+/// [`interactive_exec_command`]) builds on one definition of "how Eldrun opens
+/// an interactive ssh" rather than a second copy of the option list.
+fn interactive_login_args(
+    user: &Option<String>,
+    host: &str,
+    port: Option<u16>,
+) -> Result<Vec<String>, String> {
     let target = ssh_target(user, host)?;
     let mut args: Vec<String> = vec!["ssh".to_string()];
 
@@ -869,12 +1018,39 @@ pub fn interactive_login_command(
         args.push(port.to_string());
     }
     args.push(target);
+    Ok(args)
+}
 
-    Ok(args
-        .iter()
+/// [`interactive_login_command`] with a command to **run** on the host instead of
+/// a login shell — the visible-terminal counterpart of a headless
+/// `run_ssh_auth`, for a one-off the user is meant to watch (the explicit
+/// "install this agent CLI on that machine, in a terminal" action).
+///
+/// `-t` is what makes that worth doing: a PTY on the remote side means the
+/// installer's own progress output arrives as it is written and an interactive
+/// prompt it raises (a `sudo` password, a package manager's confirmation) is
+/// answered in the terminal tab, exactly as the headless path cannot do. The
+/// remote command is shell-quoted as a single argv item, so the caller composes
+/// it as ordinary text without it being re-split by the local shell.
+pub fn interactive_exec_command(
+    user: &Option<String>,
+    host: &str,
+    port: Option<u16>,
+    remote_command: &str,
+) -> Result<String, String> {
+    let mut args = interactive_login_args(user, host, port)?;
+    args.push("-t".to_string());
+    args.push(remote_command.to_string());
+    Ok(quote_join(&args))
+}
+
+/// Shell-quote each argv item and join — so spaces/metacharacters stay inert in
+/// the command line the frontend types into a shell tab.
+fn quote_join(args: &[String]) -> String {
+    args.iter()
         .map(|a| shell_quote(a))
         .collect::<Vec<_>>()
-        .join(" "))
+        .join(" ")
 }
 
 /// If `opts` belongs to a remote project, rewrite it in place to run the
@@ -960,6 +1136,7 @@ mod tests {
             auto_connect: None,
             key_auth: None,
             persist_sessions: None,
+            vm: None,
             label: None,
             extra: HashMap::new(),
         }
@@ -1012,10 +1189,124 @@ mod tests {
         assert!(cmd.starts_with("cd '/srv/p' && exec \"${SHELL:-/bin/bash}\" -lc "));
         // … with a detect-and-install prelude for the known CLI …
         assert!(cmd.contains("command -v claude >/dev/null 2>&1"));
-        assert!(cmd.contains("npm install -g @anthropic-ai/claude-code"));
+        assert!(cmd.contains("curl -fsSL https://claude.ai/install.sh | bash"));
         assert!(cmd.contains("exit 127"));
         // … finally exec'ing the agent (single quotes escaped by the outer wrap).
         assert!(cmd.contains("exec '\\''claude'\\''"));
+    }
+
+    /// #28b's open half: the prelude used to fire for `claude` alone, so a Codex
+    /// or Gemini tab on a host without the CLI exec'd straight into a bare
+    /// "command not found". The recipe table decides; this pins that the seam
+    /// actually consults it for more than one agent.
+    #[test]
+    fn remote_command_bootstraps_the_other_agent_clis() {
+        for (bin, needle) in [
+            ("codex", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"),
+            ("gemini", "npm install -g @google/gemini-cli"),
+            ("vibe", "curl -LsSf https://mistral.ai/vibe/install.sh | bash"),
+            ("opencode", "curl -fsSL https://opencode.ai/install | bash"),
+        ] {
+            let cmd = remote_command(bin, &[], &HashMap::new(), "/srv/p", None);
+            assert!(
+                cmd.contains(&format!("command -v {bin} >/dev/null 2>&1")),
+                "{bin} gets no probe"
+            );
+            assert!(cmd.contains(needle), "{bin} gets no installer");
+            assert!(cmd.contains("exit 127"), "{bin} does not abort on failure");
+        }
+    }
+
+    /// An unrecognised command still gets **no** prelude — we never try to
+    /// install something we don't know, and the generalization must not have
+    /// turned the lookup into a catch-all.
+    #[test]
+    fn remote_command_leaves_an_unknown_cli_alone() {
+        let cmd = remote_command("mytool", &[], &HashMap::new(), "/srv/p", None);
+        assert!(!cmd.contains("command -v"));
+        assert!(!cmd.contains("exit 127"));
+    }
+
+    /// **G.25's kill predicate.** The sweep signals a pid, so the one thing that
+    /// must never be loose is *which rows it claims*: socketless-ours → reapable,
+    /// socket-present-ours → left alone, anything foreign → not ours at all.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn mux_row_predicate_claims_only_our_own_masters() {
+        let dir = std::path::Path::new("/home/u/.local/share/eldrun/ssh-control");
+        let ours = "ssh: /home/u/.local/share/eldrun/ssh-control/cm-a1b2c3 [mux]";
+        assert_eq!(
+            mux_socket_in_row(ours, dir).as_deref(),
+            Some(std::path::Path::new(
+                "/home/u/.local/share/eldrun/ssh-control/cm-a1b2c3"
+            ))
+        );
+
+        // Somebody else's multiplexer, in somebody else's directory.
+        assert!(mux_socket_in_row("ssh: /tmp/other/cm-a1b2c3 [mux]", dir).is_none());
+        // Our directory, but not a mux master — an ordinary session that merely
+        // names the socket on its command line must never be signalled.
+        assert!(mux_socket_in_row(
+            "ssh -o ControlPath=/home/u/.local/share/eldrun/ssh-control/cm-a1b2c3 host",
+            dir
+        )
+        .is_none());
+        // A mux master of a *different* tool.
+        assert!(mux_socket_in_row("ssh: /home/u/.ssh/cm-a1b2c3 [mux]", dir).is_none());
+        // Unrelated processes.
+        assert!(mux_socket_in_row("sshd: u@pts/3", dir).is_none());
+        assert!(mux_socket_in_row("", dir).is_none());
+    }
+
+    /// A state directory inside a path with a space in it is why the path is read
+    /// by anchoring on the whole prefix rather than by splitting the row.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn mux_row_predicate_survives_a_space_in_the_state_dir() {
+        let dir = std::path::Path::new("/home/My User/.local/share/eldrun/ssh-control");
+        let row = "ssh: /home/My User/.local/share/eldrun/ssh-control/cm-ff00 [mux]";
+        assert_eq!(
+            mux_socket_in_row(row, dir).as_deref(),
+            Some(std::path::Path::new(
+                "/home/My User/.local/share/eldrun/ssh-control/cm-ff00"
+            ))
+        );
+    }
+
+    /// The sweep reads `ps -eo pid=,args=`, whose rows are right-aligned pids
+    /// followed by a full argv. A header or a blank line yields nothing.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn ps_rows_split_into_pid_and_argv() {
+        assert_eq!(
+            parse_ps_row("  12345 ssh: /x/cm-a [mux]"),
+            Some((12345, "ssh: /x/cm-a [mux]"))
+        );
+        assert_eq!(parse_ps_row("1 init"), Some((1, "init")));
+        assert!(parse_ps_row("  PID COMMAND").is_none());
+        assert!(parse_ps_row("").is_none());
+        assert!(parse_ps_row("noPidHere").is_none());
+    }
+
+    /// The reaper resolves rows to pids by socket path, so a sweep of one dead
+    /// socket cannot take a *sibling* master (a different host, its own live
+    /// socket) down with it.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn reaping_a_socket_never_matches_a_sibling_master() {
+        let dir = control_dir();
+        let target = dir.join("cm-dead");
+        let sibling = dir.join("cm-live");
+        let rows = [
+            (111, format!("ssh: {} [mux]", target.display())),
+            (222, format!("ssh: {} [mux]", sibling.display())),
+        ];
+        let matched: Vec<i32> = rows
+            .iter()
+            .filter(|(_, args)| mux_socket_in_row(args, &dir).as_deref() == Some(target.as_path()))
+            .map(|(pid, _)| *pid)
+            .collect();
+        assert_eq!(matched, vec![111]);
     }
 
     #[test]
@@ -1101,7 +1392,7 @@ mod tests {
         let cmd = remote_command("claude", &[], &HashMap::new(), "/srv/p", Some(&wrap));
         // The agent bootstrap prelude is nested INSIDE the tmux target unchanged…
         assert!(cmd.contains("command -v claude >/dev/null 2>&1"));
-        assert!(cmd.contains("npm install -g @anthropic-ai/claude-code"));
+        assert!(cmd.contains("curl -fsSL https://claude.ai/install.sh | bash"));
         // …and the whole `$SHELL -lc '<prelude; exec claude>'` line is tmux's
         // (quoted) command argument on the persistent session.
         assert!(cmd.contains("exec tmux new-session -A -D -s 'eldrun-p1_a1' "));
@@ -1126,7 +1417,7 @@ mod tests {
         assert!(cmd.starts_with("cd '/srv/p' && "));
         // The bootstrap prelude is nested inside the tmux target unchanged…
         assert!(cmd.contains("command -v claude >/dev/null 2>&1"));
-        assert!(cmd.contains("npm install -g @anthropic-ai/claude-code"));
+        assert!(cmd.contains("curl -fsSL https://claude.ai/install.sh | bash"));
         // …the resume args survive into the nested exec (run only on a fresh create)…
         assert!(cmd.contains("--resume"));
         assert!(cmd.contains("sess-abc"));

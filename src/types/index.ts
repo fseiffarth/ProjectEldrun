@@ -1,4 +1,5 @@
 import type { LinkOpenTarget } from "./browser";
+import type { PyMainVerdict } from "../lib/pythonMainCache";
 
 export interface GlobalAppEntry {
   exec: string;
@@ -335,6 +336,16 @@ export interface Settings {
    *  Eldrun restart. Round-trips through the backend's `extra` catch-all — no Rust
    *  field needed. An entry set to "" means "cleared" and is pruned. */
   python_run_args?: Record<string, string>;
+  /** Cached "is this a runnable script" verdicts for `.py` files (#py), keyed by
+   *  absolute path — what gates the file tree's ▶ Run button. Each entry carries
+   *  the `(size, mtime)` it was computed from, so an edited file is re-read and an
+   *  untouched one never is, across viewer reopens and restarts alike. Persisted
+   *  here precisely because the check needs the file's *content*: on a remote
+   *  listing that is an SFTP round trip per file, which is why it used to be
+   *  skipped there (and ▶ wrongly shown on every `.py`). Bounded and pruned by
+   *  `lib/pythonMainCache`. Round-trips through the backend's `extra` catch-all —
+   *  no Rust field needed. */
+  python_main_scripts?: Record<string, PyMainVerdict>;
   run_scripts_in_background?: boolean;
   /** Header resource-monitor row toggles. Each defaults ON (undefined → shown).
    *  Independent of `debug`; the pill is available in every build. */
@@ -370,6 +381,13 @@ export interface Settings {
    *  presenter. Gated because it is the largest single viewer surface in the app
    *  and still moving — it registers a viewer, a file type, and a fullscreen mode. */
   deck_presenter?: boolean;
+  /** EXPERIMENTAL, default OFF. Paint terminals with xterm's WebGL renderer (GPU
+   *  glyph atlas — the tier VS Code ships) instead of the canvas renderer. Opt-in
+   *  because it rides the GPU/driver path the DMABUF re-test failed on for this
+   *  class of machine (flicker, missing content, renderer crash —
+   *  `docs/typing_latency_plan.md` Step 4); a terminal whose WebGL fails, at load
+   *  or via runtime context loss, demotes itself back to canvas. */
+  terminal_webgl?: boolean;
   /** Persistent LOCAL (tmux) sessions (TODO #85): when true (the default on Unix),
    *  a local project's shell/script tabs run inside a tmux session on the machine,
    *  so a long run keeps going if Eldrun crashes and the tab reattaches on restart.
@@ -623,6 +641,72 @@ export interface RemoteSpec {
    *  restore (`tmux new-session -A` reattaches the live process, else runs `--resume`).
    *  See `persistSessionsEnabled`. */
   persist_sessions?: boolean;
+  /** This spec reaches a **project VM** Eldrun itself booted
+   *  (`docs/vm_projects_plan.md`): host is loopback and port the per-boot QEMU
+   *  forward. Written by the backend at creation/boot, never user-set. What a
+   *  VM-aware surface (the pill glyph, the spawn guard) dispatches on. */
+  vm?: boolean;
+}
+
+/** Egress policy for a project VM (`docs/vm_projects_plan.md`): `off` = the
+ *  guest reaches nothing; `proxy` (default) = only the allowlisting CONNECT
+ *  proxy (agent APIs; denied CONNECTs are logged and surfaced); `open` = full
+ *  NAT. The honest caveat the UI states for `proxy`: the agent can still
+ *  exfiltrate *to the allowed endpoints* — the proxy narrows the channel, it
+ *  cannot close it while a cloud agent runs. */
+export type VmEgress = "off" | "proxy" | "open";
+
+/** Per-project VM config (`docs/vm_projects_plan.md`) — the third trust tier:
+ *  the whole project inside a locally booted QEMU/KVM VM, reached exclusively
+ *  over SSH/SFTP, **no shared filesystem**. Chosen at creation (not a
+ *  flip-anytime toggle); mutually exclusive with `sandbox`. */
+export interface VmSpec {
+  enabled: boolean;
+  /** Guest memory in MiB (default 4096). */
+  memory_mb?: number;
+  /** Guest vCPUs (default 2). */
+  cpus?: number;
+  /** Overlay disk virtual size in GiB (default 32; qcow2 grows on demand). */
+  disk_gb?: number;
+  egress?: VmEgress;
+  /** Extra allowlisted hosts for `proxy` egress (exact host or ".suffix"). */
+  allow_hosts?: string[];
+  /** Allow github.com (+ API/raw hosts) through the proxy. Opt-in, default
+   *  off — the initial clone uses a *temporary* allow instead. */
+  allow_github?: boolean;
+}
+
+/** `vm_doctor`'s verdict: can this machine boot project VMs, and if not, why
+ *  (actionable, one reason per failed probe). A missing base image is not a
+ *  failure — `fetch_command` is the one-click build-tab fetch. */
+export interface VmDoctorReport {
+  supported: boolean;
+  ok: boolean;
+  qemu: boolean;
+  kvm: boolean;
+  qemu_img: boolean;
+  iso_tool?: string;
+  disk_free_gb?: number;
+  base_image_ready: boolean;
+  baked_image_ready: boolean;
+  reasons: string[];
+  fetch_command?: string;
+  bake_command?: string;
+}
+
+/** `vm_status`'s answer — what the pill glyph + VM settings render from. */
+export interface VmStatus {
+  configured: boolean;
+  running: boolean;
+  ssh_port?: number;
+  egress?: VmEgress;
+  blocked: VmBlockedReport;
+}
+
+/** Denied CONNECTs through the VM egress proxy — the exfiltration tripwire. */
+export interface VmBlockedReport {
+  total: number;
+  recent: { target: string; at_secs: number }[];
 }
 
 /** An extra SSH "worker" machine a project runs experiments on
@@ -655,8 +739,21 @@ export interface ComputeHost extends RemoteSpec {
  *  its identical host path. Absent = run on host. The hardening fields below
  *  are optional overrides; unset means the built-in default (see
  *  `services::sandbox` in the backend). */
+/** Which of a project's tabs the container applies to.
+ *
+ *  `all` is the strict reading and the default (an older spec with no `scope`
+ *  key deserializes to it, so no project loses containment on upgrade).
+ *  `agents` contains agent tabs only and leaves shells, scripts and the viewer's
+ *  Run/Debug tabs on the host — which is what makes a host toolchain (a `.venv`
+ *  whose interpreter is a host symlink, conda, pyenv) usable without switching
+ *  the container off. Classification is by the command that actually executes;
+ *  see `services::sandbox::is_agent_cmd`. */
+export type SandboxScope = "all" | "agents";
+
 export interface SandboxSpec {
   enabled: boolean;
+  /** Which tabs the container applies to. Unset = `"all"`. */
+  scope?: SandboxScope;
   image?: string;
   /** In-repo Dockerfile (relative to the project dir); when set, the container
    *  is built from it (`eldrun-<id>:latest`) instead of pulling `image`. */
@@ -732,6 +829,10 @@ export interface ProjectEntry {
   compute_hosts?: ComputeHost[];
   /** Docker sandbox config; when `enabled`, agent tabs run in a container. */
   sandbox?: SandboxSpec;
+  /** Project-VM config (`docs/vm_projects_plan.md`): present iff this project
+   *  lives inside a locally booted VM (its `remote` then points at the VM's
+   *  forwarded loopback port). Mutually exclusive with `sandbox`. */
+  vm?: VmSpec;
   /** The interpreter the code viewer's Run/Debug buttons use (#87). Absent =
    *  auto-detect, which is right for almost every project; pinning it is for the
    *  environments auto-detect cannot see (a conda env, a Poetry venv outside the

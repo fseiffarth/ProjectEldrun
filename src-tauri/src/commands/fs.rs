@@ -127,7 +127,7 @@ pub fn list_dir_local(project_dir: &str, rel_path: &str) -> Result<Vec<FileEntry
         }
         result.push(file_entry_from(&path, &meta, name));
     }
-    result.sort_by_key(|entry| (!entry.is_dir, entry.name.to_lowercase()));
+    result.sort_by_cached_key(|entry| (!entry.is_dir, entry.name.to_lowercase()));
     Ok(result)
 }
 
@@ -1246,8 +1246,24 @@ pub fn file_source(path: String, project_id: Option<String>) -> String {
 /// Largest text file we will load into an in-app viewer (8 MiB). Larger files
 /// are refused rather than risking a multi-MB string crossing the IPC bridge.
 const MAX_TEXT_VIEW_BYTES: u64 = 8 * 1024 * 1024;
-/// Largest binary (PDF) we will load into the in-app viewer (64 MiB).
-const MAX_BINARY_VIEW_BYTES: u64 = 64 * 1024 * 1024;
+/// Largest binary (PDF) we will load into the in-app viewer.
+///
+/// This used to be 64 MiB, and the number was doing two jobs at once: it bounded
+/// what the renderer would hold, *and* it stood in for the fact that bytes crossed
+/// the IPC bridge as a **JSON array of numbers** — one decimal literal per byte. A
+/// 64 MiB file was therefore ~200 MB of JSON to serialize, parse, and materialize as
+/// a 67-million-element JS array before a single page could be drawn, so the limit
+/// was really the point at which that transport stopped being survivable rather than
+/// a statement about the document.
+///
+/// `read_file_bytes`/`write_file_bytes` now use Tauri's **raw** IPC body
+/// (`ipc::Response` / `ipc::Request`), i.e. an `ArrayBuffer` straight across with no
+/// text encoding in between, which removes that cost entirely and leaves only the
+/// honest question: how large a file may the webview hold? A PDF is held twice while
+/// open (the buffer pdf.js parses, plus its own internal copy), so this is set where
+/// a real document — a figure-heavy LaTeX thesis is the case that forced it — opens
+/// while a pathological one is still refused rather than taking the renderer down.
+const MAX_BINARY_VIEW_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Read an absolute file path as UTF-8 text for the in-app text/markdown viewer.
 ///
@@ -1360,10 +1376,85 @@ pub fn write_file_text_local(path: &str, content: &str, scope_id: Option<&str>) 
 /// (Security #1). Unlike `write_file_text` this may create a new file (so the
 /// image annotator can "Save as…" a sibling PNG), but still refuses paths
 /// outside the allowed roots and oversized payloads.
+///
+/// The bytes arrive as the invoke's **raw body** and the two scalars ride in
+/// headers, which is the shape Tauri offers for a binary upload (one raw body per
+/// call, so anything alongside it has to be a header). The reason is the read side's
+/// in reverse: a JSON argument would have been `Array.from(bytes)` in the renderer —
+/// a number array as long as the file, then its JSON text — which for a rebuilt PDF
+/// of any size is the renderer-killing step, and the remark autosave would have run
+/// straight into it without anyone clicking anything.
+///
+/// The header values are `encodeURIComponent`-encoded, because a header is ASCII and
+/// a path is not: `~/eldrun/projects/Übung/…` would otherwise be unsendable. Nothing
+/// about that is a trust boundary — the decoded path goes through exactly the same
+/// `confine_abs_write` as before.
 #[tauri::command]
 pub async fn write_file_bytes(
+    request: tauri::ipc::Request<'_>,
+    pool: tauri::State<'_, RemotePoolState>,
+) -> Result<(), String> {
+    let path = request_header(&request, "x-eldrun-path")
+        .ok_or_else(|| "write_file_bytes: missing path".to_string())?;
+    let project_id = request_header(&request, "x-eldrun-project").filter(|s| !s.is_empty());
+    // The raw body is the whole point of this command. A JSON one is still accepted,
+    // because Tauri has a documented fallback (the postMessage interface, used when
+    // the custom-protocol IPC is blocked) that carries the headers but re-encodes the
+    // payload — and a *save* silently failing there would be the worst possible place
+    // to be strict. Anything that is not a byte array is refused rather than written.
+    let decoded: Vec<u8>;
+    let content: &[u8] = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes,
+        tauri::ipc::InvokeBody::Json(value) => {
+            decoded = json_byte_array(value)
+                .ok_or_else(|| "write_file_bytes: body is not bytes".to_string())?;
+            &decoded
+        }
+    };
+    write_file_bytes_routed(path, content, project_id, pool).await
+}
+
+/// A JSON array of byte-sized integers as bytes; `None` for anything else.
+fn json_byte_array(value: &Value) -> Option<Vec<u8>> {
+    let items = value.as_array()?;
+    items
+        .iter()
+        .map(|v| u8::try_from(v.as_u64()?).ok())
+        .collect()
+}
+
+/// A percent-decoded request header, or `None` when it is absent or not valid UTF-8.
+fn request_header(request: &tauri::ipc::Request<'_>, name: &str) -> Option<String> {
+    let raw = request.headers().get(name)?.to_str().ok()?;
+    percent_decode(raw)
+}
+
+/// Decode an `encodeURIComponent` string. Hand-rolled rather than pulling in a
+/// crate: this is the only place a header carries one, and the whole grammar is
+/// "%XX is a byte, everything else is itself" (a `+` is a literal here — JS's
+/// `encodeURIComponent` never emits one as a space).
+fn percent_decode(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = s.get(i + 1..i + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Route a byte write to the host or the local fs — the pre-raw-IPC body, unchanged
+/// except for taking the content by reference (it is borrowed from the request).
+async fn write_file_bytes_routed(
     path: String,
-    content: Vec<u8>,
+    content: &[u8],
     project_id: Option<String>,
     pool: tauri::State<'_, RemotePoolState>,
 ) -> Result<(), String> {
@@ -1379,11 +1470,11 @@ pub async fn write_file_bytes(
                         MAX_BINARY_VIEW_BYTES
                     ));
                 }
-                return remote_write(pool.inner(), &target, &path, &content).await;
+                return remote_write(pool.inner(), &target, &path, content).await;
             }
         }
     }
-    write_file_bytes_local(&path, &content, project_id.as_deref())
+    write_file_bytes_local(&path, content, project_id.as_deref())
 }
 
 /// Local-fs byte write (may create a new file) — byte-identical pre-Phase-3 body.
@@ -1403,10 +1494,30 @@ pub fn write_file_bytes_local(path: &str, content: &[u8], scope_id: Option<&str>
 /// Read an absolute file path as raw bytes for the in-app PDF viewer.
 ///
 /// Confined to Eldrun's known roots (Security #1). Refuses files over
-/// `MAX_BINARY_VIEW_BYTES`. The frontend wraps the returned bytes in a Blob URL
-/// so the PDF renders in-tab without an external viewer.
+/// `MAX_BINARY_VIEW_BYTES`.
+///
+/// Answers with a **raw** IPC body (`ipc::Response`), not a serialized `Vec<u8>`.
+/// That is the whole difference between a large PDF opening and not: a JSON-encoded
+/// byte array costs ~3 bytes of text per byte of file and lands in the renderer as a
+/// number array that then has to be copied into a `Uint8Array`, so a 130 MB thesis
+/// meant roughly 400 MB of JSON and a multi-second freeze of the whole window before
+/// pdf.js was even handed anything. A raw body arrives as an `ArrayBuffer` — the
+/// bytes, once — which is also why the frontend wrapper hands one straight to pdf.js
+/// instead of re-wrapping it.
 #[tauri::command]
 pub async fn read_file_bytes(
+    path: String,
+    project_id: Option<String>,
+    pool: tauri::State<'_, RemotePoolState>,
+) -> Result<tauri::ipc::Response, String> {
+    read_file_bytes_any(path, project_id, pool)
+        .await
+        .map(tauri::ipc::Response::new)
+}
+
+/// The read itself, kept separate from the IPC shape so the routing stays testable
+/// and so a Rust caller is not made to build a `Response` to get at bytes.
+async fn read_file_bytes_any(
     path: String,
     project_id: Option<String>,
     pool: tauri::State<'_, RemotePoolState>,
@@ -1510,7 +1621,7 @@ pub fn file_mtime_local(path: &str, scope_id: Option<&str>) -> Result<u64, Strin
 fn allowed_roots(scope_id: Option<&str>) -> Vec<PathBuf> {
     let projects: ProjectsList = read_state_json("projects.json");
     let boxes: BoxesList = read_state_json("boxes.json");
-    compute_allowed_roots(&projects, &boxes, scope_id)
+    compute_allowed_roots(&projects, &boxes, scope_id, &storage::root_work_dir())
 }
 
 /// Pure core of [`allowed_roots`], split out so the project/box scoping logic is
@@ -1519,14 +1630,30 @@ fn compute_allowed_roots(
     projects: &ProjectsList,
     boxes: &BoxesList,
     scope_id: Option<&str>,
+    root_work: &Path,
 ) -> Vec<PathBuf> {
+    // The ROOT scope — a viewer with no owning project (`scope_id: None`), i.e.
+    // the right panel's root view and any root-scope tab — browses the root
+    // terminal folder `~/eldrun/root`. Its *listing* passes confinement because
+    // `list_dir` confines against the project_dir argument, but every absolute-
+    // path read a viewer then makes (`read_file_bytes`, `file_mtime`, …) lands
+    // here — and a roots set without that folder refused each one, so a PDF
+    // opened from the root tree sat on "Loading" forever. Only the no-project
+    // scope gains it: a project-scoped viewer stays project-isolated.
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if scope_id.is_none() {
+        roots.push(root_work.to_path_buf());
+    }
     // Anchor on the scope project when one is named, else the current project.
     let anchor = match scope_id {
         Some(id) => projects.iter().find(|e| e.id == id),
         None => projects.iter().find(|e| e.status == "current"),
     };
     let Some(anchor) = anchor else {
-        return Vec::new();
+        // No current project: the root scope still reads its own folder.
+        roots.iter_mut()
+            .for_each(|r| *r = r.canonicalize().unwrap_or_else(|_| r.clone()));
+        return roots;
     };
 
     // Start with the anchor project, then fold in every member of any box the
@@ -1543,7 +1670,7 @@ fn compute_allowed_roots(
     }
 
     let in_scope = || projects.iter().filter(|e| ids.contains(e.id.as_str()));
-    let mut roots: Vec<PathBuf> = in_scope().filter_map(project_dir).collect();
+    roots.extend(in_scope().filter_map(project_dir));
     // For a remote (SSH) project the tree the user actually browses is the local
     // *mirror*, not the state dir that `project_dir` returns. The default mirror
     // lives under the state dir (already covered above), but an explicit
@@ -1879,6 +2006,42 @@ pub fn list_dirs(path: String) -> Result<DirListing, String> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    // ── The raw-body write's two decoders ──────────────────────────────────
+    // `write_file_bytes` takes its path from a header (a header is ASCII; a project
+    // path is not) and, on Tauri's postMessage fallback, its content as JSON. Both
+    // decode a value the *renderer* wrote, so both are worth pinning down.
+
+    #[test]
+    fn percent_decode_reads_what_encode_uri_component_writes() {
+        assert_eq!(
+            percent_decode("/home/f/eldrun/projects/thesis/thesis.pdf").as_deref(),
+            Some("/home/f/eldrun/projects/thesis/thesis.pdf")
+        );
+        // Non-ASCII: `encodeURIComponent("Übung")` is the UTF-8 bytes, percent-escaped.
+        assert_eq!(percent_decode("%C3%9Cbung/a%20b.pdf").as_deref(), Some("Übung/a b.pdf"));
+        // A `+` is a literal here — encodeURIComponent never writes one for a space.
+        assert_eq!(percent_decode("a+b").as_deref(), Some("a+b"));
+    }
+
+    #[test]
+    fn percent_decode_refuses_a_malformed_escape() {
+        assert_eq!(percent_decode("%zz"), None);
+        assert_eq!(percent_decode("trailing%"), None);
+        // Valid escapes that are not valid UTF-8 are refused rather than lossily
+        // replaced: a path is being reconstructed, not text being displayed.
+        assert_eq!(percent_decode("%FF%FE"), None);
+    }
+
+    #[test]
+    fn json_byte_array_accepts_only_bytes() {
+        assert_eq!(json_byte_array(&serde_json::json!([37, 80, 68, 70])), Some(vec![37, 80, 68, 70]));
+        assert_eq!(json_byte_array(&serde_json::json!([])), Some(vec![]));
+        assert_eq!(json_byte_array(&serde_json::json!([256])), None);
+        assert_eq!(json_byte_array(&serde_json::json!([-1])), None);
+        assert_eq!(json_byte_array(&serde_json::json!({ "content": [1] })), None);
+        assert_eq!(json_byte_array(&serde_json::json!("nope")), None);
+    }
 
     // ── join_remote_dir / remote_file_entry ────────────────────────────────
 
@@ -2431,6 +2594,9 @@ mod tests {
         }
     }
 
+    /// The root terminal folder the tests thread through `compute_allowed_roots`.
+    const ROOT_WORK: &str = "/home/u/eldrun/root";
+
     #[test]
     fn allowed_roots_scoped_to_named_project_not_current() {
         // The scope is the *viewer's own* project, not whichever is current. A
@@ -2440,7 +2606,7 @@ mod tests {
             entry("x", "current", "/home/u/code/projectx"),
             entry("y", "inactive", "/home/u/code/projecty"),
         ];
-        let roots = compute_allowed_roots(&projects, &Vec::new(), Some("y"));
+        let roots = compute_allowed_roots(&projects, &Vec::new(), Some("y"), Path::new(ROOT_WORK));
         assert!(
             roots.iter().any(|r| r.ends_with("projecty")),
             "the scope project must be reachable even when it is not current"
@@ -2458,7 +2624,7 @@ mod tests {
             entry("x", "current", "/home/u/code/projectx"),
             entry("y", "inactive", "/home/u/code/projecty"),
         ];
-        let roots = compute_allowed_roots(&projects, &Vec::new(), None);
+        let roots = compute_allowed_roots(&projects, &Vec::new(), None, Path::new(ROOT_WORK));
         assert!(roots.iter().any(|r| r.ends_with("projectx")));
         assert!(!roots.iter().any(|r| r.ends_with("projecty")));
     }
@@ -2477,7 +2643,7 @@ mod tests {
             ..Default::default()
         }];
         // Scope is Y; its box sibling Z is co-accessible, X (current) is not.
-        let roots = compute_allowed_roots(&projects, &boxes, Some("y"));
+        let roots = compute_allowed_roots(&projects, &boxes, Some("y"), Path::new(ROOT_WORK));
         assert!(roots.iter().any(|r| r.ends_with("projecty")));
         assert!(roots.iter().any(|r| r.ends_with("projectz")));
         assert!(
@@ -2496,7 +2662,7 @@ mod tests {
             "mirror".to_string(),
             Value::String("/home/u/eldrun/projects-ssh/myproj".to_string()),
         );
-        let roots = compute_allowed_roots(&vec![r], &Vec::new(), Some("r"));
+        let roots = compute_allowed_roots(&vec![r], &Vec::new(), Some("r"), Path::new(ROOT_WORK));
         assert!(
             roots.iter().any(|p| p.ends_with("projects-ssh/myproj")),
             "the relocated local mirror must be an allowed root"
@@ -2507,13 +2673,36 @@ mod tests {
     fn allowed_roots_empty_when_scope_unknown() {
         let projects = vec![entry("x", "current", "/home/u/code/projectx")];
         // An unknown scope id resolves to no project → fail closed.
-        assert!(compute_allowed_roots(&projects, &Vec::new(), Some("nope")).is_empty());
+        assert!(compute_allowed_roots(&projects, &Vec::new(), Some("nope"), Path::new(ROOT_WORK)).is_empty());
     }
 
     #[test]
-    fn allowed_roots_empty_when_no_current_and_no_scope() {
+    fn allowed_roots_no_current_and_no_scope_is_root_folder_only() {
+        // With no owning project and no current one, the root scope can still
+        // read its own folder — and nothing else.
         let projects = vec![entry("x", "inactive", "/home/u/code/projectx")];
-        assert!(compute_allowed_roots(&projects, &Vec::new(), None).is_empty());
+        let roots = compute_allowed_roots(&projects, &Vec::new(), None, Path::new(ROOT_WORK));
+        assert_eq!(roots, vec![PathBuf::from(ROOT_WORK)]);
+    }
+
+    #[test]
+    fn allowed_roots_root_scope_includes_root_folder_beside_current() {
+        // The ROOT scope (scope_id None) reads the root terminal folder — the
+        // regression here was a PDF opened from the root tree failing every
+        // byte read and hanging on "Loading" (~/eldrun/root was never a root).
+        let projects = vec![entry("x", "current", "/home/u/code/projectx")];
+        let roots = compute_allowed_roots(&projects, &Vec::new(), None, Path::new(ROOT_WORK));
+        assert!(roots.iter().any(|r| r == Path::new(ROOT_WORK)));
+        assert!(roots.iter().any(|r| r.ends_with("projectx")));
+    }
+
+    #[test]
+    fn allowed_roots_project_scope_excludes_root_folder() {
+        // A project-scoped viewer stays project-isolated: it does not gain the
+        // root terminal folder.
+        let projects = vec![entry("x", "current", "/home/u/code/projectx")];
+        let roots = compute_allowed_roots(&projects, &Vec::new(), Some("x"), Path::new(ROOT_WORK));
+        assert!(!roots.iter().any(|r| r == Path::new(ROOT_WORK)));
     }
 
     #[test]

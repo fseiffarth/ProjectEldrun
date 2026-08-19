@@ -2559,12 +2559,98 @@ fn ollama_listening() -> bool {
         .unwrap_or(false)
 }
 
+// ── What Eldrun started, and therefore may stop ───────────────────────────
+
+/// How the Ollama server currently answering came to be running — recorded by
+/// [`ensure_ollama_running`] and read by nothing but [`shutdown_owned_server`].
+///
+/// The whole point is the *absence* of a third variant: a server that was
+/// already listening when Eldrun asked, or one running on another machine, is
+/// never recorded, so exit-time teardown cannot reach it. Ollama is a machine
+/// service as often as it is an Eldrun detail — a terminal running `ollama run`,
+/// another editor's completion plugin, a unit the user enabled at boot — and
+/// killing one Eldrun merely *used* would take those down with it.
+enum OwnedServer {
+    /// An `ollama serve` this process spawned (`spawn_reaped`, so the pid is
+    /// ours and its subtree is walkable).
+    Process(u32),
+    /// The systemd unit, which was **inactive** until this run started it. Only
+    /// recorded on Linux and only for the default address — the same two
+    /// conditions under which it is started.
+    #[cfg(target_os = "linux")]
+    SystemdUnit,
+}
+
+static OWNED_SERVER: std::sync::Mutex<Option<OwnedServer>> = std::sync::Mutex::new(None);
+
+fn record_owned_server(owned: OwnedServer) {
+    if let Ok(mut slot) = OWNED_SERVER.lock() {
+        // A previous entry can only be a server that has since died (we reach
+        // the start paths at all only when nothing is listening), so replacing
+        // it is right: the live one is the one worth stopping.
+        *slot = Some(owned);
+    }
+}
+
+/// Stop the Ollama server **this run started**, if any. Called once from
+/// `RunEvent::Exit`; a server Eldrun only talked to is left alone (see
+/// [`OwnedServer`]).
+///
+/// A spawned server is TERMed with its whole subtree — the `ollama runner` child
+/// holding the weights is a separate process, and it is the one actually sitting
+/// on several GB of VRAM — and given a short blocking grace before SIGKILL, so
+/// the ordinary case is a clean shutdown rather than a killed server that leaves
+/// its runner behind. The unit is stopped with `--no-block`: exit must not wait
+/// on systemd's job queue, and the elevation was already granted on the start
+/// that this undoes.
+pub fn shutdown_owned_server() {
+    let owned = match OWNED_SERVER.lock() {
+        Ok(mut slot) => slot.take(),
+        Err(_) => return,
+    };
+    match owned {
+        None => {}
+        Some(OwnedServer::Process(pid)) => {
+            crate::terminal::reap_child_subtree(
+                pid,
+                crate::terminal::ReapMode::GracefulBlocking(Duration::from_millis(1500)),
+            );
+        }
+        #[cfg(target_os = "linux")]
+        Some(OwnedServer::SystemdUnit) => {
+            let _ = std::process::Command::new("systemctl")
+                .args(["stop", "--no-block", "ollama"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+}
+
+/// Whether the systemd unit is already active. Asked *before* `systemctl start`
+/// so ownership is recorded only when this run genuinely brought the unit up: a
+/// unit that was active but not answering at the address we were waiting on (a
+/// half-started service, a unit bound elsewhere) is the machine's, not ours.
+#[cfg(target_os = "linux")]
+fn systemd_ollama_active() -> bool {
+    std::process::Command::new("systemctl")
+        .args(["is-active", "--quiet", "ollama"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Ensure the Ollama server is running, starting it in the background if not.
 /// Prefers the system service (`systemctl start ollama`) so that all models
 /// installed by the system user are visible. Falls back to spawning
 /// `ollama serve` with `OLLAMA_MODELS` pointing to the system models
 /// directory when detected.
 /// Waits up to 8 seconds for the server to become reachable.
+///
+/// Whatever it starts is recorded in [`OWNED_SERVER`] so that exactly that much
+/// is torn down again at exit — see [`shutdown_owned_server`].
 #[tauri::command]
 pub async fn ensure_ollama_running() -> Result<(), String> {
     // Resolve first, so a misconfigured `ollama_host` reports *that* instead of
@@ -2592,6 +2678,7 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
     // for a server that is not the one being waited on.
     #[cfg(target_os = "linux")]
     if addr == DEFAULT_OLLAMA_ADDR {
+        let was_active = systemd_ollama_active();
         let service_started = std::process::Command::new("systemctl")
             .args(["start", "ollama"])
             .stdout(std::process::Stdio::null())
@@ -2603,6 +2690,9 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
         if service_started {
             let deadline = Instant::now() + Duration::from_secs(8);
             if wait_for_ollama(deadline) {
+                if !was_active {
+                    record_owned_server(OwnedServer::SystemdUnit);
+                }
                 return Ok(());
             }
         }
@@ -2652,7 +2742,12 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
         cmd.env(IGPU_ENABLE_VAR, "1");
     }
 
-    crate::paths::spawn_reaped(cmd).map_err(|e| format!("failed to start ollama serve: {e}"))?;
+    let pid =
+        crate::paths::spawn_reaped(cmd).map_err(|e| format!("failed to start ollama serve: {e}"))?;
+    // Recorded before the wait, not after: a server that came up too slowly for
+    // the 8 s deadline is still *ours* and still running, and forgetting it here
+    // is precisely how one outlives the app.
+    record_owned_server(OwnedServer::Process(pid));
 
     let deadline = Instant::now() + Duration::from_secs(8);
     if wait_for_ollama(deadline) {
@@ -3935,6 +4030,71 @@ fn ollama_model_block(model: &str, alias: &str) -> String {
     format!(
         "\n[[models]]\nname = \"{model}\"\nprovider = \"ollama\"\nalias = \"{alias}\"\ntemperature = 0.2\ninput_price = 0.0\noutput_price = 0.0\nthinking = \"off\"\nauto_compact_threshold = 200000\n"
     )
+}
+
+#[cfg(all(test, unix))]
+mod owned_server_tests {
+    use super::*;
+
+    /// The whole shutdown contract in one pass, deliberately as a single test:
+    /// `OWNED_SERVER` is process-global, so two tests taking turns with it would
+    /// race and each would occasionally reap the other's child.
+    #[test]
+    fn shutdown_reaps_only_a_server_this_run_started() {
+        // The reap walks (and invalidates) the shared process-tree cache the
+        // sysstat tests seed synthetic entries into — share their lock.
+        let _cache_guard = crate::sysstat::lock_cache_for_test();
+
+        // SAFETY: `kill(pid, 0)` probes existence without signalling.
+        let alive = |pid: u32| unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+
+        // Nothing started → nothing stopped, and no panic on the empty slot.
+        assert!(OWNED_SERVER.lock().unwrap().is_none());
+        shutdown_owned_server();
+
+        // Stand in for `ollama serve` + its runner child: the trailing `; true`
+        // defeats the shell's exec optimization, so `sleep` is a real child of
+        // the pid we recorded rather than the pid itself.
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "sleep 300; true"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let leader = crate::paths::spawn_reaped(cmd).expect("spawn stand-in server");
+        record_owned_server(OwnedServer::Process(leader));
+
+        let mut child = None;
+        for _ in 0..100 {
+            crate::sysstat::invalidate_descendant_cache();
+            if let Some(&pid) = crate::sysstat::descendant_pids(&[leader])
+                .iter()
+                .find(|&&p| p != leader)
+            {
+                child = Some(pid);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let child = child.expect("the stand-in server should have spawned a child");
+
+        shutdown_owned_server();
+
+        // The subtree is gone — the leader *and* the child holding the weights.
+        for pid in [leader, child] {
+            let mut gone = false;
+            for _ in 0..250 {
+                if !alive(pid) {
+                    gone = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(gone, "pid {pid} must not outlive the app");
+        }
+
+        // Ownership is consumed, so a second teardown pass cannot signal a pid
+        // the OS has since handed to somebody else.
+        assert!(OWNED_SERVER.lock().unwrap().is_none());
+    }
 }
 
 #[cfg(test)]

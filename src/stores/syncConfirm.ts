@@ -26,15 +26,19 @@ import { create } from "zustand";
  *
  * A **failed** preview never becomes a silent yes: the dialog says it could not
  * price the transfer and still requires the click.
+ *
+ * The same gate also fronts the orange view's **delete-the-other-copy** actions
+ * (`SyncDeleteRequest`): not a transfer, but destructive to one side in exactly
+ * the way a forced transfer is — and worse, since the copy it removes is the
+ * file's last one anywhere. One dialog for both, so no second copy of the
+ * question can drift.
  */
 
 /** Which way the bytes move. Mirrors the backend command's `direction`. */
 export type SyncDirection = "pull" | "push";
 
-/** What the dialog is being asked about. */
-export interface SyncConfirmRequest {
+interface SyncConfirmBase {
   projectId: string;
-  direction: SyncDirection;
   /** Project-relative root of the transfer; `""` is the whole project. */
   relPath: string;
   /** Whether `relPath` names a folder (so the dialog can say "and everything in it"). */
@@ -48,6 +52,33 @@ export interface SyncConfirmRequest {
    *  view's take-this-side actions). That turns what would have been a blocked
    *  conflict into a destroyed file, which is exactly what the dialog must say. */
   force?: boolean;
+}
+
+/** An ordinary transfer (pull or push). */
+export interface SyncTransferRequest extends SyncConfirmBase {
+  direction: SyncDirection;
+  deleteSide?: undefined;
+}
+
+/** Propagating a one-sided deletion (the orange view's delete-the-other-copy
+ *  actions): `"host"` deletes the host copy of a locally-deleted file, `"local"`
+ *  deletes the mirror copy of a host-deleted file. No transfer preview applies —
+ *  the store prices it with `sync_file_meta` (the doomed copy's size/mtime)
+ *  instead, and the dialog's load-bearing sentence is that this removes the
+ *  file's LAST remaining copy on either side. */
+export interface SyncDeleteRequest extends SyncConfirmBase {
+  deleteSide: "host" | "local";
+  direction?: undefined;
+}
+
+/** What the dialog is being asked about. */
+export type SyncConfirmRequest = SyncTransferRequest | SyncDeleteRequest;
+
+/** One side's metadata from `sync_file_meta` (the doomed copy, for a delete ask). */
+export interface SyncDoomedMeta {
+  exists: boolean;
+  size: number;
+  mtime: number | null;
 }
 
 /** The read-only answer to "what would this transfer actually do?". */
@@ -65,13 +96,16 @@ export interface SyncTransferPreview {
   exact: boolean;
 }
 
-interface Pending extends SyncConfirmRequest {
+type Pending = SyncConfirmRequest & {
   preview: SyncTransferPreview | null;
+  /** The copy a delete ask would destroy (from `sync_file_meta`); null while
+   *  loading / failed / not a delete ask. */
+  doomed: SyncDoomedMeta | null;
   loading: boolean;
   /** Why the preview could not be read, when it could not. */
   error: string | null;
   resolve: (proceed: boolean) => void;
-}
+};
 
 interface SyncConfirmState {
   pending: Pending | null;
@@ -94,10 +128,38 @@ export const useSyncConfirmStore = create<SyncConfirmState>((set, get) => ({
         resolve(false);
         return;
       }
-      set({ pending: { ...req, preview: null, loading: true, error: null, resolve } });
+      set({
+        pending: { ...req, preview: null, doomed: null, loading: true, error: null, resolve },
+      });
       // Price it in the background. The dialog is already up and already
       // requires a click, so a slow or failing preview costs information, never
-      // the gate itself.
+      // the gate itself. A delete ask is priced with the doomed copy's own
+      // metadata (`sync_file_meta`) instead of a transfer preview — there is no
+      // transfer, only one named copy about to end.
+      if (req.deleteSide) {
+        const side = req.deleteSide;
+        void invoke<{ local: SyncDoomedMeta; host: SyncDoomedMeta }>("sync_file_meta", {
+          projectId: req.projectId,
+          relPath: req.relPath,
+        })
+          .then((meta) => {
+            const p = get().pending;
+            if (!p || p.resolve !== resolve) return;
+            set({
+              pending: {
+                ...p,
+                doomed: side === "host" ? meta.host : meta.local,
+                loading: false,
+              },
+            });
+          })
+          .catch((e) => {
+            const p = get().pending;
+            if (!p || p.resolve !== resolve) return;
+            set({ pending: { ...p, loading: false, error: String(e) } });
+          });
+        return;
+      }
       void invoke<SyncTransferPreview>("sync_transfer_preview", {
         projectId: req.projectId,
         relPath: req.relPath,

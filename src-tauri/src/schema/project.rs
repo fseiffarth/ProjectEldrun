@@ -120,6 +120,17 @@ pub struct RemoteSpec {
     /// `projects.json` entry's `extra["remote"]`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub persist_sessions: Option<bool>,
+    /// This spec reaches a **project VM** Eldrun itself booted
+    /// (`docs/vm_projects_plan.md`): `host` is loopback and `port` the QEMU
+    /// slirp forward, rewritten by `services::vm` on every boot. The marker is
+    /// what authorizes the per-VM SSH identity/known_hosts handling (a
+    /// recreated VM has a new host key; the user's real `~/.ssh/known_hosts`
+    /// must never collect `[127.0.0.1]:<port>` entries) and what turns the
+    /// spawn path's remote→local fallback into a hard refusal — for this tier
+    /// a downgrade to a host shell is the untrusted agent stepping outside the
+    /// boundary, not a perf surprise. Written at creation, never user-set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vm: Option<bool>,
     /// Display name for this machine, e.g. "gpu-2"; falls back to `host`. Shown
     /// wherever a project's hosts are listed side by side (the System Monitor's
     /// source picker, the pill's connection lamps, `hostsForProject`) so a host is
@@ -201,6 +212,35 @@ pub struct OpenVpnSpec {
     pub extra: HashMap<String, Value>,
 }
 
+/// Which of a project's tabs the container actually applies to.
+///
+/// The distinction exists because the container's job is to keep **the agent**
+/// away from the rest of the machine, and a project's other tabs are the user's
+/// own hands. `All` is the strict reading and stays the default; `Agents` says
+/// "contain what the model drives, leave my shell alone", which is what makes a
+/// host toolchain (a `.venv` whose interpreter is a host symlink, a conda env, a
+/// pyenv build — none of which exist inside the image) usable again without
+/// turning the container off altogether.
+///
+/// What `Agents` costs is worth stating plainly: an agent still writes into the
+/// project directory, and a script it wrote is one ▶ click from running
+/// unconfined. What it does *not* cost is a path the agent can take by itself —
+/// an in-project file is never read back as a host spawn (`terminal_service`'s
+/// export-only rule, `docs/sandbox_hardening_plan.md` Phase 1), so crossing the
+/// line takes a human. For code that is expected to be hostile rather than
+/// merely unreviewed, the answer is the VM tier (`docs/vm_projects_plan.md`),
+/// which shares no filesystem at all — not a stricter container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxScope {
+    /// Every shell/agent tab of the project (the pre-existing behaviour, and
+    /// what an older `sandbox` object with no `scope` key deserializes to).
+    #[default]
+    All,
+    /// Agent tabs only; shells, scripts and viewer Run/Debug tabs stay on the host.
+    Agents,
+}
+
 /// Per-project container config (TODO #38). When present and `enabled`, every
 /// terminal/agent tab of this project execs into ONE session-lived,
 /// capability-dropped Docker container (`eldrun-<id>`) that mounts only the
@@ -213,6 +253,10 @@ pub struct OpenVpnSpec {
 pub struct SandboxSpec {
     /// Whether this project's tabs run inside the container.
     pub enabled: bool,
+    /// Which tabs the container applies to. Defaults to [`SandboxScope::All`],
+    /// so a spec written before this field existed keeps containing everything.
+    #[serde(default)]
+    pub scope: SandboxScope,
     /// Optional image override; falls back to the built-in default image when
     /// absent (and is ignored while `dockerfile` is set).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -252,6 +296,94 @@ pub struct SandboxSpec {
     pub spec_source_hash: Option<String>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+}
+
+/// Egress policy for a project VM (`docs/vm_projects_plan.md`). Three-valued
+/// and explicit because a truly no-egress VM cannot run a cloud agent — the
+/// knob states plainly which channel stays open rather than pretending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VmEgress {
+    /// slirp `restrict=on`, no proxy: the guest reaches nothing, including the
+    /// host. Local-model / pure build-test isolation only; agent tabs are
+    /// unavailable with the reason.
+    Off,
+    /// slirp `restrict=on` plus a guestfwd channel to Eldrun's allowlisting
+    /// HTTP CONNECT proxy. Default: agents reach their APIs, denied CONNECTs
+    /// are logged and surfaced (an exfiltration tripwire). The honest caveat,
+    /// stated in the UI: the agent can still exfiltrate *to the allowed
+    /// endpoints* — Proxy narrows the channel, it cannot close it.
+    #[default]
+    Proxy,
+    /// slirp default NAT — full egress, for work that needs the network
+    /// (package installs, integration tests). One click back to Proxy.
+    Open,
+}
+
+fn default_vm_memory() -> u32 {
+    4096
+}
+fn default_vm_cpus() -> u32 {
+    2
+}
+fn default_vm_disk() -> u32 {
+    32
+}
+
+/// Per-project VM config (`docs/vm_projects_plan.md`) — the third trust tier,
+/// above the Docker container: the whole project lives inside a locally booted
+/// QEMU/KVM VM reached exclusively over SSH/SFTP, **no shared filesystem**.
+/// Present iff the project was created as a VM project (chosen at creation,
+/// not a flip-anytime toggle — the boundary is the absence of a shared
+/// filesystem, and flipping it would be a data move). Mirrored into the
+/// `projects.json` entry's `extra["vm"]`, the always-local copy
+/// `services::vm` trusts. Mutually exclusive with `sandbox`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VmSpec {
+    /// Whether this project's tree/tabs live inside the VM. (Kept for schema
+    /// symmetry with `SandboxSpec`; a VM project is created with `true` and
+    /// there is no in-place disable — see the type doc.)
+    pub enabled: bool,
+    /// Guest memory in MiB.
+    #[serde(default = "default_vm_memory")]
+    pub memory_mb: u32,
+    /// Guest vCPUs.
+    #[serde(default = "default_vm_cpus")]
+    pub cpus: u32,
+    /// Overlay disk's virtual size in GiB (qcow2 grows on demand).
+    #[serde(default = "default_vm_disk")]
+    pub disk_gb: u32,
+    /// Egress policy (see [`VmEgress`]).
+    #[serde(default)]
+    pub egress: VmEgress,
+    /// Extra allowlisted hosts for [`VmEgress::Proxy`], each an exact hostname
+    /// or a `.suffix` matching any subdomain. Adds to the built-in agent-API
+    /// list (`services::vm_proxy::DEFAULT_ALLOW`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_hosts: Vec<String>,
+    /// Allow `github.com` (and its API/raw hosts) through the proxy. Opt-in,
+    /// default off — for an untrusted import, cloning happens once at creation
+    /// through a *temporary* allow, and a standing hole to a code-hosting site
+    /// is exactly the exfiltration channel the tier narrows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_github: bool,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+impl Default for VmSpec {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            memory_mb: default_vm_memory(),
+            cpus: default_vm_cpus(),
+            disk_gb: default_vm_disk(),
+            egress: VmEgress::default(),
+            allow_hosts: Vec::new(),
+            allow_github: false,
+            extra: HashMap::new(),
+        }
+    }
 }
 
 /// What an in-repo `Dockerfile`/devcontainer `image` declares, reported by
@@ -378,6 +510,12 @@ pub struct Project {
     /// Docker sandbox config for agent tabs. Absent = run agents on the host.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<SandboxSpec>,
+    /// Project-VM config (`docs/vm_projects_plan.md`): present iff this project
+    /// lives inside a locally booted VM (which also carries a synthesized
+    /// `remote` spec pointing at the forwarded loopback port). Mutually
+    /// exclusive with `sandbox`. Mirrored into `projects.json` `extra["vm"]`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vm: Option<VmSpec>,
     /// The interpreter the code viewer's Run/Debug buttons use for this project
     /// (#87). Absent = **auto-detect** (see `commands::python`), which is what the
     /// overwhelming majority of projects want; this pins it for the ones auto-detect

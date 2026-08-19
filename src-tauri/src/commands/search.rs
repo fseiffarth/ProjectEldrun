@@ -53,19 +53,18 @@ fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(BINARY_SNIFF_BYTES).any(|&b| b == 0)
 }
 
-/// Find the 1-based char column of the first occurrence of `needle` in `hay`,
-/// honouring case sensitivity. Returns `None` when absent.
-fn first_match_col(hay: &str, needle: &str, case_sensitive: bool) -> Option<u32> {
-    let byte_idx = if case_sensitive {
-        hay.find(needle)
-    } else {
-        // Case-insensitive: lower-case both sides. The byte index into the
+/// Find the 1-based char column of the first occurrence of `needle` in `hay`.
+/// For a case-insensitive search the caller passes the already-lower-cased
+/// needle in `needle_lower` (computed once per file, not once per line);
+/// `None` there means a case-sensitive search. Returns `None` when absent.
+fn first_match_col(hay: &str, needle: &str, needle_lower: Option<&str>) -> Option<u32> {
+    let byte_idx = if let Some(needle_l) = needle_lower {
+        // Case-insensitive: lower-case the haystack. The byte index into the
         // lower-cased haystack maps back to a char column because lower-casing
         // is done per the original char order; we recompute the column by
         // counting chars of the original string up to the matched char count.
         let hay_l = hay.to_lowercase();
-        let needle_l = needle.to_lowercase();
-        hay_l.find(&needle_l).map(|lower_idx| {
+        hay_l.find(needle_l).map(|lower_idx| {
             // Count chars in the lower-cased prefix; that char count is also the
             // char count of the original prefix (lower-casing preserves char
             // order, though not necessarily byte length per char).
@@ -77,6 +76,8 @@ fn first_match_col(hay: &str, needle: &str, case_sensitive: bool) -> Option<u32>
                 .map(|(b, _)| b)
                 .unwrap_or(hay.len())
         })
+    } else {
+        hay.find(needle)
     }?;
     // Convert a byte index in `hay` to a 1-based char column.
     let col = hay[..byte_idx].chars().count() as u32 + 1;
@@ -109,11 +110,13 @@ fn scan_file(
     }
     let content = String::from_utf8_lossy(&bytes);
     let path_str = path.to_string_lossy().to_string();
+    // Lower-case the needle once per file rather than once per line.
+    let needle_lower = (!case_sensitive).then(|| query.to_lowercase());
     for (i, raw_line) in content.lines().enumerate() {
         if out.len() >= max_results {
             return;
         }
-        if let Some(col) = first_match_col(raw_line, query, case_sensitive) {
+        if let Some(col) = first_match_col(raw_line, query, needle_lower.as_deref()) {
             out.push(SearchMatch {
                 path: path_str.clone(),
                 rel: rel.to_string(),

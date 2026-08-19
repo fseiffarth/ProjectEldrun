@@ -5,10 +5,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PLATFORM } from "../../lib/dragPlatform";
 import { IS_MAC } from "../../lib/platform";
 import { trackWindowMove } from "../../stores/windowMove";
-import { AppTimerDisplay } from "../header/AppTimerDisplay";
 import { AppResourceDisplay } from "../header/AppResourceDisplay";
 import { Clock } from "../header/Clock";
-import { useEnergySaver, saverInterval, usePowerStore } from "../../stores/power";
+import { useQuiesce, saverInterval, usePowerStore } from "../../stores/power";
 import { ConnTypeIcon } from "../header/ConnTypeIcon";
 import { BatteryIndicator } from "../header/BatteryIndicator";
 import { VpnIndicator } from "../header/VpnIndicator";
@@ -20,13 +19,7 @@ import { WindowControls } from "../header/WindowControls";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { GlobalAppMenu } from "./GlobalAppMenu";
 import { LocalModelMenu } from "./LocalModelMenu";
-import { StarIcon } from "./StarIcon";
-import { useProjectsStore } from "../../stores/projects";
 import { useT } from "../../lib/i18n";
-// Single source of truth for the displayed version: read package.json (kept in
-// lockstep with src-tauri/Cargo.toml + tauri.conf.json on every bump) so the
-// header never drifts behind a release.
-import { version as APP_VERSION } from "../../../package.json";
 
 interface WorkspaceInfo {
   label: string;
@@ -68,9 +61,7 @@ export function HeaderBar() {
   const t = useT();
   const [online, setOnline] = useState(navigator.onLine);
   const [connType, setConnType] = useState<string | null>(null);
-  const activeId = useProjectsStore((s) => s.activeId);
-  const setActive = useProjectsStore((s) => s.setActive);
-  const energySaver = useEnergySaver();
+  const quiesce = useQuiesce();
   const batterySupported = usePowerStore((s) => s.supported);
   const batteryPercentage = usePowerStore((s) => s.percentage);
   const onBattery = usePowerStore((s) => s.onBattery);
@@ -97,11 +88,10 @@ export function HeaderBar() {
         .then(setConnType)
         .catch(() => {});
     poll();
-    const id = setInterval(poll, saverInterval(10_000, energySaver));
+    const id = setInterval(poll, saverInterval(10_000, quiesce));
     return () => clearInterval(id);
-  }, [energySaver]);
+  }, [quiesce]);
 
-  const isDev = import.meta.env.DEV;
   const connKind =
     connType === "lan" ? "lan" : connType === "wlan" ? "wlan" : null;
 
@@ -123,25 +113,8 @@ export function HeaderBar() {
         >
           ⠿
         </span>
-        <button
-          type="button"
-          className={`root-logo-btn no-drag ${activeId === null ? "active" : ""}`}
-          title={t("header.rootTerminal")}
-          aria-label={t("header.rootTerminal")}
-          onClick={() => void setActive(null)}
-        >
-          <StarIcon className="app-logo" />
-        </button>
-        <div className="app-version-stack">
-          {isDev && <span className="debug-badge">DEBUG</span>}
-          <span className="app-version-label">v{APP_VERSION}</span>
-        </div>
-        {(connKind || !online) && (
-          <ConnTypeIcon type={connKind ?? "wlan"} online={online} />
-        )}
-        {batterySupported && (
-          <BatteryIndicator percentage={batteryPercentage} plugged={!onBattery} />
-        )}
+        <Clock />
+        <span className="project-switcher-separator" aria-hidden="true" />
       </div>
 
       <div className="header-center no-drag">
@@ -157,11 +130,16 @@ export function HeaderBar() {
         <ProjectSwitcher open />
       </div>
       <div className="header-right no-drag">
+        {(connKind || !online) && (
+          <ConnTypeIcon type={connKind ?? "wlan"} online={online} />
+        )}
+        {batterySupported && (
+          <BatteryIndicator percentage={batteryPercentage} plugged={!onBattery} />
+        )}
         <VpnIndicator />
         <MachinesIndicator />
         <AppResourceDisplay />
-        <AppTimerDisplay />
-        <Clock />
+        <span className="project-switcher-separator" aria-hidden="true" />
         <WindowControls />
       </div>
     </header>

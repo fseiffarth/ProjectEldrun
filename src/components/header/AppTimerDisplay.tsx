@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import { useTimerStore } from "../../stores/timer";
-import { useEnergySaver, saverInterval } from "../../stores/power";
+import { useQuiesce, saverInterval } from "../../stores/power";
 import { ActivityCalendar } from "../projects/ActivityCalendar";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
@@ -46,13 +46,13 @@ function GlobalActivityWindow({ onClose }: { onClose: () => void }) {
   );
 }
 
-export function AppTimerDisplay() {
+export function AppTimerDisplay({ inMenu = false }: { inMenu?: boolean }) {
   const t = useT();
   const paused = useTimerStore((s) => s.paused);
   const toggle = useTimerStore((s) => s.toggle);
   const [displayText, setDisplayText] = useState(t("projectHoverCard.timeUnderMinute"));
   const [showActivity, setShowActivity] = useState(false);
-  const energySaver = useEnergySaver();
+  const quiesce = useQuiesce();
 
   useEffect(() => {
     const update = () => {
@@ -60,14 +60,14 @@ export function AppTimerDisplay() {
     };
     update();
     if (paused) return;
-    const id = setInterval(update, saverInterval(1000, energySaver));
+    const id = setInterval(update, saverInterval(1000, quiesce));
     return () => clearInterval(id);
-  }, [paused, energySaver, t]);
+  }, [paused, quiesce, t]);
 
   return (
     <>
       <button
-        className={`app-timer-btn${paused ? " paused" : ""}`}
+        className={`${inMenu ? "tab-new-menu-item app-timer-menu-item" : "app-timer-btn"}${paused ? " paused" : ""}`}
         title={`${t("projectHoverCard.todayPrefix")} ${displayText}\n${paused ? t("appTimer.pausedResumeHint") : t("appTimer.clickPauseHint")}`}
         onClick={() => void toggle()}
         onContextMenu={(e) => {

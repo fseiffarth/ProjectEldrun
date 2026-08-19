@@ -138,8 +138,19 @@ export function useScrollSync(
     const gid = gidRef.current;
     const el = elRef.current;
     if (!gid || !el) return;
+    // Check for a partner BEFORE touching any geometry. `scrollHeight` and
+    // `clientHeight` are layout-flushing reads: asking for either forces a
+    // synchronous style+layout pass over the whole pane, and this handler runs
+    // on EVERY scroll event of documents that are routinely tens of thousands
+    // of nodes deep (a code file's gutter is one element per line, its
+    // highlight <pre> one span per token). Linking two subwindows is the rare
+    // case, so the common path was paying a full forced layout per wheel tick
+    // only to discover in `report` that there is nobody to forward to — which
+    // is what made scrolling a large .py or a long rendered .md crawl.
+    const store = useScrollSyncStore.getState();
+    if (!store.links[gid]) return;
     const max = el.scrollHeight - el.clientHeight;
-    useScrollSyncStore.getState().report(gid, max > 0 ? el.scrollTop / max : 0);
+    store.report(gid, max > 0 ? el.scrollTop / max : 0);
   });
   return onScrollRef.current;
 }

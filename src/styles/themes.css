@@ -253,6 +253,35 @@ html, body, #root {
   --accent-active: #1ca7d8;
   --accent-secondary: #b388ff;
   --info: #6cb6ff;
+  /* ── Agent-status palette ────────────────────────────────────────────────
+     THREE states — a tab (or a pill bar, or a hidden-subwindow chip) is either
+     working, waiting on an answer, or finished-and-unread — read from TWO
+     colours and a stroke style, with nothing animated:
+       working  → green, DOTTED  (the agent's own work, still going: · · ·)
+       done     → green, SOLID   (the same work, complete and unread)
+       decision → amber, solid   (it stopped and wants an answer from you)
+     Working and done deliberately share a colour: they are the same thing at two
+     points in its life, and the one state that is categorically different — the
+     one that is about YOU rather than about the agent — is the one that gets its
+     own hue. Dotted-vs-solid then reads as unfinished-vs-finished the way an
+     ellipsis has always read, and it survives the colour being glanced at rather
+     than looked at.
+
+     This replaced a PULSE as the working/done distinction. The pulse was
+     load-bearing — you had to watch a tab for a second to read it — and it was
+     also the most expensive thing in the switcher, animating forever on every
+     busy tab. A stroke style says it at rest.
+
+     Declared once here, in the base block that every theme's root element also
+     matches, so each resolves against that theme's own --success/--warning
+     rather than being restated five times. Every surface that shows agent state
+     reads these names and no other colour. The two green names are kept
+     separate, rather than folded into one, so a surface still says WHICH state
+     it is painting — and so the pair can be pulled apart again from one line
+     here if the shared colour ever proves too subtle. */
+  --status-working: var(--success);
+  --status-decision: var(--warning);
+  --status-done: var(--success);
   /* Header logo: pure black on light themes, pure white on dark. Defaulted on
      :root so the plain `dark` theme inherits #fff without redeclaring it. */
   --logo-color: #fff;
@@ -892,7 +921,9 @@ select option {
 .wm-close::after { transform: rotate(-45deg); }
 
 /* ── App logo ────────────────────────────────────────────────────────── */
-.app-logo {
+/* The star inside the root-terminal pill (the pill itself is .root-pill, down
+   with the project pills it is the first of). */
+.root-pill-star {
   height: 20px;
   width: 20px;
   object-fit: contain;
@@ -926,29 +957,56 @@ select option {
 }
 
 /* The logo doubles as the root-terminal switch button. */
-.root-logo-btn {
+/* The root terminal as the pill row's fixed first tab. Deliberately the
+   .project-pill box copied rather than a treatment of its own — same 40px
+   height, same reserved-transparent 3px top border, same accent line + side
+   shadow when it is the current scope — so the row reads as one strip of tabs
+   whose first one happens to wear the mark instead of a name. It sits outside
+   .project-pills-scroll, which is what keeps it put while the rest scroll. */
+.root-pill {
+  box-sizing: border-box;
+  /* Anchors the bottom status-bar strip (.pill-status-bars), exactly as
+     .project-pill does — the root terminal shows its working tabs like any
+     other scope. */
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 4px;
-  margin-right: 2px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  cursor: pointer;
   flex-shrink: 0;
-  transition: background-color var(--transition), border-color var(--transition);
+  height: 40px;
+  padding: 0 10px;
+  border: none;
+  border-top: 3px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color var(--transition), border-color var(--transition);
 }
 
-.root-logo-btn:hover {
-  background: var(--control-bg);
-  border-color: var(--control-border);
+/* The switch inside the box (the .pill-main of the root pill): bare, so the box
+   above keeps owning the border, the height and the hover/active colour, and the
+   status strip can sit beside it rather than inside a button. */
+.root-pill-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
 }
 
-.root-logo-btn.active {
-  background: var(--pill-active-bg);
-  border-color: var(--pill-active-border);
-  box-shadow: inset 0 4px 0 var(--accent);
+.root-pill:hover {
+  color: var(--text-primary);
+}
+
+.root-pill.active {
+  color: var(--text-primary);
+  border-top-color: var(--accent);
+  box-shadow: 3px 0 4.5px -2px rgba(0, 0, 0, 0.4), -3px 0 4.5px -2px rgba(0, 0, 0, 0.4);
 }
 
 /* ── Version / debug / conn-type ─────────────────────────────────────── */
@@ -958,6 +1016,20 @@ select option {
   align-items: center;
   gap: 1px;
   line-height: 1;
+}
+
+/* The release label lives at the bottom of the docked file viewer rather than
+   competing with project controls in the top frame. */
+.right-panel-frame-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  min-height: 20px;
+  padding: 2px 10px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  flex-shrink: 0;
 }
 
 .app-version-label {
@@ -1052,9 +1124,25 @@ select option {
 /* ── Clock ───────────────────────────────────────────────────────────── */
 .header-clock {
   font-size: 11px;
+  font-weight: 700;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
+}
+
+/* The clock is a header hover-menu trigger, like the neighbouring top-bar
+   controls. Its width follows the rendered time rather than the standard icon
+   button's 32px minimum. */
+.clock-menu-btn {
+  min-width: 0;
+  padding: 0 5px;
+}
+.clock-menu-btn[aria-expanded="true"] .header-clock,
+.clock-menu-btn:hover .header-clock {
+  color: var(--text-primary);
+}
+.clock-menu-popover {
+  min-width: 104px;
 }
 
 /* ── App timer ───────────────────────────────────────────────────────── */
@@ -1067,6 +1155,7 @@ select option {
   cursor: pointer;
   color: var(--text-secondary);
   font-size: 11px;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
   padding: 2px 5px;
   border-radius: var(--radius-sm);
@@ -1089,6 +1178,20 @@ select option {
   background: var(--text-muted);
 }
 .app-timer-btn.paused .app-timer-text {
+  color: var(--text-muted);
+}
+/* The clock's counter is a menu row, while retaining its pause/resume and
+   activity interactions from the former standalone header control. */
+.app-timer-menu-item {
+  width: 100%;
+  justify-content: flex-start;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.app-timer-menu-item.paused .app-timer-dot {
+  background: var(--text-muted);
+}
+.app-timer-menu-item.paused .app-timer-text {
   color: var(--text-muted);
 }
 .project-pill.timer-paused .pill-folder-icon {
@@ -5071,6 +5174,8 @@ select option {
    light and dark themes (mirrors the editor's search highlight colours). */
 .file-viewer-pdf-search-hit {
   position: absolute;
+  /* Paint above the text layer; it never takes a click (see `pointer-events`). */
+  z-index: 2;
   pointer-events: none;
   border-radius: 1px;
   background: rgba(255, 213, 0, 0.4);
@@ -5093,6 +5198,10 @@ select option {
   border: 0;
   border-radius: 0;
   background: #000;
+  /* A mark is a preview of the saved page, so it paints over every layer including
+     the drag surface it is removed from — and over the text layer, whose spans would
+     otherwise sit above the black and let the covered words be selected. */
+  z-index: 6;
   pointer-events: none;
 }
 .file-viewer-pdf-redact-box.is-armed {
@@ -5114,6 +5223,10 @@ select option {
   inset: 0;
   cursor: crosshair;
   touch-action: none;
+  /* Over everything on the page, the text layer included. An armed tool owns the
+     plain drag — that is what arming it means — and the drag it owns is the same one
+     text selection would otherwise take. */
+  z-index: 5;
 }
 .file-viewer-pdf-redact-draft {
   position: absolute;
@@ -5132,6 +5245,8 @@ select option {
   left: 0;
   cursor: crosshair;
   touch-action: none;
+  /* The blackout surface's reason: an armed tool owns the plain drag. */
+  z-index: 5;
 }
 .file-viewer-pdf-copy-draft {
   position: absolute;
@@ -5224,6 +5339,431 @@ select option {
    with the panel closed. */
 .file-viewer-zoom-btn.is-armed {
   box-shadow: inset 0 -2px 0 var(--warning, #d29922);
+}
+
+/* ── Remarks (#pdf-notes) ─────────────────────────────────────────────────
+   A marker is a PIN, not an area: it stands for something somebody wrote rather
+   than covering a region of the page, so unlike a blackout box or a search hit it
+   is a FIXED size and does not grow with the zoom (the same thing a PDF's own
+   `NoZoom` annotation flag asks for). Its colours are the document's, not the
+   theme's — the yellow every other reader draws a comment in — because it sits on
+   white paper, which is the rule the link layer already follows. */
+.file-viewer-pdf-note {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+  /* `grab`, not `pointer`: the marker both opens its card and drags to a new spot,
+     and the drag is the half nothing else on the page would ever suggest. */
+  cursor: grab;
+  border: 1px solid rgba(120, 90, 0, 0.65);
+  border-radius: 4px 4px 4px 0;
+  background: #ffd75e;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  /* Above the links (3): a marker stands for something a person wrote, and it must
+     never end up under a cross-reference box it happens to overlap. */
+  z-index: 4;
+}
+.file-viewer-pdf-note:hover,
+.file-viewer-pdf-note:focus-visible {
+  background: #ffe490;
+}
+.file-viewer-pdf-note.is-open {
+  outline: 2px solid var(--accent, #4493f8);
+  outline-offset: 1px;
+}
+/* Being dragged. No transition on the position, or the pin would lag the cursor. */
+.file-viewer-pdf-note.is-dragging {
+  cursor: grabbing;
+  opacity: 0.85;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.45);
+}
+/* The remark the panel has walked to. A ring rather than a colour change: the pin's
+   yellow is what makes it recognisable as a comment across every reader, so the
+   emphasis goes around it. Animated so a second visit to the same remark is visible
+   as a flash rather than as nothing having happened. */
+.file-viewer-pdf-note.is-focus {
+  outline: 2px solid var(--accent, #4493f8);
+  outline-offset: 2px;
+  animation: pdf-note-flash 1.2s ease-out 1;
+}
+@keyframes pdf-note-flash {
+  0% { box-shadow: 0 0 0 0 rgba(68, 147, 248, 0.6); }
+  100% { box-shadow: 0 0 0 14px rgba(68, 147, 248, 0); }
+}
+
+/* The card a remark is written in. App chrome rather than paper — it is Eldrun's
+   editor, not part of the document — and it sits above every page overlay. */
+.file-viewer-pdf-note-card {
+  position: absolute;
+  z-index: 6;
+  width: 260px;
+  /* The page wrapper zeroes its line-height so a canvas sits flush in it; the card
+     is text and has to put it back, or every line in it collapses onto one. */
+  line-height: normal;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+.file-viewer-pdf-note-by {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.file-viewer-pdf-note-author {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.file-viewer-pdf-note-text,
+.file-viewer-pdf-note-author-input {
+  width: 100%;
+  box-sizing: border-box;
+  color: var(--text-primary);
+  background: var(--control-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+}
+.file-viewer-pdf-note-text {
+  resize: vertical;
+  min-height: 60px;
+}
+.file-viewer-pdf-note-actions {
+  display: flex;
+  gap: 6px;
+}
+.file-viewer-pdf-note-del {
+  margin-left: auto;
+  color: var(--danger, #e05252);
+}
+.file-viewer-pdf-note-hint {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+/* The words a highlight covers, quoted in its card. Document text rather than app
+   chrome — it is the paper's own sentence — so it is set apart with a rule and left
+   in the reading colour rather than dressed as a field. */
+.file-viewer-pdf-note-quote {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-style: italic;
+  max-height: 4.5em;
+  overflow: auto;
+  padding-left: 6px;
+  border-left: 2px solid var(--border-color);
+  overflow-wrap: anywhere;
+}
+
+/* ── Highlights (#pdf-textselect) ─────────────────────────────────────────
+   A highlight is drawn as the boxes it covers, in the colour it carries (set
+   inline, since it is the annotation's own `/C` and travels with the file). The
+   colour is applied by MULTIPLYING rather than laying a wash on top: at 40% a
+   plain fill drags black glyphs towards the fill colour and a marked sentence
+   comes out greyer than the one beside it, which is the opposite of what marking
+   it was for. Multiply is also what the appearance stream written into the PDF
+   uses (`HIGHLIGHT_ALPHA` in `pdfDoc.ts`), so the page on screen and the page in
+   somebody else's reader are the same page. */
+.file-viewer-pdf-hl {
+  position: absolute;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 1px;
+  cursor: pointer;
+  mix-blend-mode: multiply;
+  /* Above the text layer (1), below the links (3) and the markers (4). */
+  z-index: 2;
+}
+/* Something was written about it. A dotted underline rather than a second colour:
+   the colour is the reader's own filing system, and overriding it to say "this one
+   has a comment" would take that away — while an underline reads as an annotation
+   in every document that has ever had one. */
+.file-viewer-pdf-hl.has-remark {
+  border-bottom: 1px dotted rgba(0, 0, 0, 0.55);
+}
+.file-viewer-pdf-hl:hover,
+.file-viewer-pdf-hl:focus-visible {
+  outline: 1px solid rgba(0, 0, 0, 0.35);
+  outline-offset: 0;
+}
+.file-viewer-pdf-hl.is-open {
+  outline: 2px solid var(--accent, #4493f8);
+}
+/* The one the remarks panel has walked to. Blend mode is dropped for the flash, or
+   the ring would be multiplied into the paper and barely visible. */
+.file-viewer-pdf-hl.is-focus {
+  mix-blend-mode: normal;
+  outline: 2px solid var(--accent, #4493f8);
+  outline-offset: 1px;
+  animation: pdf-note-flash 1.2s ease-out 1;
+}
+
+/* ── The bar over a selection (#pdf-textselect) ───────────────────────────
+   App chrome over the document, like the remark card, and above it: it is a live
+   control over what the reader is doing right now. */
+.file-viewer-pdf-sel-bar {
+  position: absolute;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  /* Centred on the end of the selection — `left` is that point, not the corner. */
+  transform: translateX(-50%);
+  padding: 4px 6px;
+  line-height: normal;
+  color: var(--text-primary);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  /* The bar must not be selectable itself, or dragging onto it extends the very
+     selection it is offering to act on. */
+  user-select: none;
+}
+.file-viewer-pdf-sel-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.file-viewer-pdf-sel-swatch:hover,
+.file-viewer-pdf-sel-swatch:focus-visible {
+  outline: 2px solid var(--accent, #4493f8);
+  outline-offset: 1px;
+}
+.file-viewer-pdf-sel-copy.active {
+  color: var(--accent, #4493f8);
+}
+/* The recolour row in a highlight's context menu. */
+.file-viewer-pdf-note-menu-colors {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+}
+
+/* Pending remarks, beside the Save that writes them. */
+.file-viewer-pdf-note-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* ── The remarks panel (#pdf-notes) ───────────────────────────────────────
+   Wears the contents sidebar's chrome (`.file-viewer-pdf-outline`) rather than a
+   look of its own: both are lists of what is in the document, read beside it, and
+   two different-looking sidebars in one viewer would say they are different kinds
+   of thing. Only what a remark list needs on top of that is here. */
+.file-viewer-pdf-notes-pane {
+  width: 280px;
+}
+.file-viewer-pdf-notes-count {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.file-viewer-pdf-notes-close {
+  margin-left: auto;
+}
+.file-viewer-pdf-notes-walk {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.file-viewer-pdf-notes-pos {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.file-viewer-pdf-notes-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.file-viewer-pdf-notes-row.current {
+  background: var(--control-bg);
+}
+.file-viewer-pdf-notes-row .file-viewer-pdf-notes-actions {
+  /* The row's own actions appear on hover or while it is the one being walked:
+     two glyphs per row on a forty-remark list is a wall of controls. */
+  opacity: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 4px 0 0;
+}
+.file-viewer-pdf-notes-row:hover .file-viewer-pdf-notes-actions,
+.file-viewer-pdf-notes-row:focus-within .file-viewer-pdf-notes-actions,
+.file-viewer-pdf-notes-row.current .file-viewer-pdf-notes-actions {
+  opacity: 1;
+}
+.file-viewer-pdf-notes-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 4px 6px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.file-viewer-pdf-notes-body:hover {
+  color: var(--accent, #4493f8);
+}
+.file-viewer-pdf-notes-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+/* The sheet number as a chip: it is what the row is addressed by, and the one part
+   of a remark that is about the document rather than about the comment. */
+.file-viewer-pdf-notes-sheet {
+  flex: 0 0 auto;
+  min-width: 18px;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-secondary, var(--text-primary));
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.file-viewer-pdf-notes-author {
+  color: var(--text-secondary, var(--text-primary));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-viewer-pdf-notes-date {
+  margin-left: auto;
+  white-space: nowrap;
+}
+/* The remark itself, wrapped and never clipped — this is where remarks are read. */
+/* A highlight's own words, above whatever was written about them. */
+.file-viewer-pdf-notes-quote {
+  display: block;
+  font-style: italic;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+/* The colour a highlight was made in, in its row. */
+.file-viewer-pdf-notes-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.3);
+}
+.file-viewer-pdf-notes-text {
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.file-viewer-pdf-notes-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+.file-viewer-pdf-notes-saving {
+  margin-left: 6px;
+  color: var(--text-muted);
+}
+
+/* ── Selectable text (#pdf-textselect) ────────────────────────────────────
+   pdf.js's own TextLayer, whose spans this positions: transparent, one per text
+   run, laid out in the page's units and scaled by `--scale-factor` (set inline by
+   the component). Copied from `pdfjs-dist/web/pdf_viewer.css` rather than imported
+   — that file also styles a whole viewer application we do not use, and would
+   arrive with its own opinions about the surroundings. */
+.file-viewer-pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  text-align: initial;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  /* Over the canvas, under every overlay: it is the page's own words. */
+  z-index: 1;
+}
+/* A turned sheet. pdf.js lays the spans out in the page's UNROTATED space (their
+   left/top are percentages of the unrotated page) and stamps the container with
+   `data-main-rotation`, leaving the turn to CSS — in its own viewer, to a global
+   `[data-main-rotation]` rule from `pdf_viewer.css`. That rule is not something to
+   import app-wide, so it is scoped to this layer; without it a page turned in the
+   rail selects text from wherever the words used to be. Rotated about the top-left
+   (`transform-origin: 0 0` above), hence the translate that brings it back on. */
+.file-viewer-pdf-text-layer[data-main-rotation="90"] {
+  transform: rotate(90deg) translateY(-100%);
+}
+.file-viewer-pdf-text-layer[data-main-rotation="180"] {
+  transform: rotate(180deg) translate(-100%, -100%);
+}
+.file-viewer-pdf-text-layer[data-main-rotation="270"] {
+  transform: rotate(270deg) translateX(-100%);
+}
+.file-viewer-pdf-text-layer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+.file-viewer-pdf-text-layer > :not(.markedContent),
+.file-viewer-pdf-text-layer .markedContent span:not(.markedContent) {
+  z-index: 1;
+}
+.file-viewer-pdf-text-layer span.markedContent {
+  top: 0;
+  height: 0;
+}
+/* A figure's alt text is not text on the page; it must not join a selection. */
+.file-viewer-pdf-text-layer span[role="img"] {
+  user-select: none;
+  cursor: default;
+}
+/* The selection is the one part of this layer that is visible at all, so it is
+   drawn in the app's accent rather than the engine's default — over white paper,
+   where the link colours already live. */
+.file-viewer-pdf-text-layer ::selection {
+  background: rgba(68, 147, 248, 0.35);
+}
+.file-viewer-pdf-text-layer br::selection {
+  background: transparent;
 }
 
 /* The page stack lives in an inner wrapper so a Ctrl+wheel zoom can grow it past
@@ -5400,6 +5940,11 @@ select option {
 .file-viewer-pdf-link {
   --pdf-link-color: #1d4ed8;
   position: absolute;
+  /* Above the text layer (1) and above a highlight (2). The text layer is up on
+     every page now, so without this a `\ref` would be under a transparent sheet of
+     selectable glass and simply stop being clickable; and a link inside a marked
+     sentence has to stay reachable, which is why it also outranks the highlight. */
+  z-index: 3;
   padding: 0;
   margin: 0;
   border: 0;
@@ -7206,6 +7751,38 @@ select option {
   cursor: default;
 }
 
+/* Send-to-project dialog (file-tree right-click → copy into another project).
+   Reuses the folder-picker chrome; these are the few bits it adds. */
+.send-to-project-source {
+  margin: 4px 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.send-to-project-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.send-to-project-tag {
+  flex-shrink: 0;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: lowercase;
+}
+.send-to-project-done {
+  padding: 14px 4px 6px;
+}
+.send-to-project-done-title {
+  margin: 0 0 4px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .right-panel-scroll::-webkit-scrollbar,
 .file-browser-main::-webkit-scrollbar,
 .file-browser-sidebar::-webkit-scrollbar,
@@ -7345,19 +7922,22 @@ select option {
   color: var(--text-muted);
   font-size: 12px;
 }
-/* Same three states (and the same pulse timings) as `.tab.working` etc — a
-   hidden group's row-level rollup and its header dot use a colour+opacity pulse
-   since they're a single glyph rather than a whole tab's fillable box. */
+/* Same three states as `.tab.working` etc (`--status-*`), and nothing pulses
+   here either. This one glyph is the ONE place the working/finished distinction
+   cannot be drawn: it is a single character, so it has no stroke to break into
+   dashes and no fill to hollow out, and the two states share a colour by design.
+   It is a row-level ROLLUP — "something in this collapsed group wants you" — and
+   the chips beside it carry which state each tab is actually in, so the glyph
+   deliberately says the coarser thing rather than inventing a fourth encoding
+   nobody would learn. */
 .hidden-sw-icon.working {
-  color: var(--success);
-  animation: pill-bar-working 1.5s ease-in-out infinite;
+  color: var(--status-working);
 }
 .hidden-sw-icon.needs-decision {
-  color: var(--warning);
-  animation: pill-bar-decision 1.2s ease-in-out infinite;
+  color: var(--status-decision);
 }
 .hidden-sw-icon.finished {
-  color: var(--success);
+  color: var(--status-done);
 }
 .hidden-sw-status-dot {
   flex-shrink: 0;
@@ -7367,16 +7947,18 @@ select option {
   margin-left: 2px;
   text-transform: none;
 }
+/* A 6px dot has no room for dots of its own, so working/finished part as HOLLOW vs
+   FILLED — the same "not closed up yet" reading at the one size that can carry
+   it. `box-shadow` rather than `border`, which would shrink the 6px box. */
 .hidden-sw-status-dot.working {
-  background: var(--success);
-  animation: pill-bar-working 1.5s ease-in-out infinite;
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--status-working);
 }
 .hidden-sw-status-dot.needs-decision {
-  background: var(--warning);
-  animation: pill-bar-decision 1.2s ease-in-out infinite;
+  background: var(--status-decision);
 }
 .hidden-sw-status-dot.finished {
-  background: var(--success);
+  background: var(--status-done);
 }
 .hidden-sw-chips {
   display: flex;
@@ -7400,35 +7982,30 @@ select option {
   text-overflow: ellipsis;
   cursor: pointer;
 }
+/* Same ring as `.tab.working`/`.needs-decision`/`.finished` — a hidden tab's PTY
+   is still mounted and running, so its chip keeps reporting status, and it has
+   to say which of the three states it is in the same way a visible tab does. A
+   chip already has a border of its own, so the state recolours that border (and
+   for working, breaks it into dots) rather than adding a second ring inside it.
+   Declared ABOVE `:hover`, which carries the same specificity: a pointer on a
+   chip has to be able to say "this one" over the top of whatever state it is
+   in. */
+.hidden-sw-chip.working {
+  border-style: dotted;
+  border-color: var(--status-working);
+  background: color-mix(in srgb, var(--status-working) 12%, var(--bg-main));
+}
+.hidden-sw-chip.needs-decision {
+  border-color: var(--status-decision);
+  background: color-mix(in srgb, var(--status-decision) 12%, var(--bg-main));
+}
+.hidden-sw-chip.finished {
+  border-color: var(--status-done);
+  background: color-mix(in srgb, var(--status-done) 12%, var(--bg-main));
+}
 .hidden-sw-chip:hover {
   border-color: var(--accent);
   color: var(--accent);
-}
-/* Same glow as `.tab.working`/`.needs-decision`/`.finished` — a hidden tab's PTY
-   is still mounted and running, so its chip keeps reporting status. */
-.hidden-sw-chip.working,
-.hidden-sw-chip.needs-decision {
-  position: relative;
-  z-index: 0;
-}
-.hidden-sw-chip.working::after,
-.hidden-sw-chip.needs-decision::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-}
-.hidden-sw-chip.working::after {
-  background: color-mix(in srgb, var(--success) 26%, transparent);
-  animation: tab-glow-working 1.5s ease-in-out infinite;
-}
-.hidden-sw-chip.needs-decision::after {
-  background: color-mix(in srgb, var(--warning) 34%, transparent);
-  animation: tab-glow-decision 1.2s ease-in-out infinite;
-}
-.hidden-sw-chip.finished {
-  box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--success) 16%, transparent);
 }
 .hidden-sw-btn {
   flex-shrink: 0;
@@ -8457,6 +9034,31 @@ select option {
   color: var(--text-primary);
 }
 
+/* ── Project-VM state glyph (docs/vm_projects_plan.md) ──────────────── */
+/* Always visible (unlike the hover-only close button): whether the VM is up
+   is standing state, not an affordance. Filled ▣ = running, hollow ▢ = off. */
+.pill-vm-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--transition), color var(--transition);
+  flex-shrink: 0;
+}
+
+.pill-vm-glyph:hover {
+  background-color: var(--control-hover-bg);
+  color: var(--text-primary);
+}
+
 /* ── Project box chip ───────────────────────────────────────────────── */
 /* A box groups member pills behind a labelled chip, visually distinct from a
    plain project pill (accent-tinted frame + ▣ badge + member count). */
@@ -8750,6 +9352,13 @@ select option {
   pointer-events: none;
   z-index: 9999;
   box-shadow: var(--shadow-2);
+}
+
+/* A project name in a left-docked file viewer sits at the outer window edge.
+   Keep its card under that name, but grow it inward (to the right) instead of
+   centering it across the window border. */
+.project-pill-popup.anchor-start {
+  transform: translate(0, 6px);
 }
 
 .pill-popup-path {
@@ -9137,180 +9746,189 @@ select option {
   outline: none;
 }
 
-/* ── Tab status glow ─────────────────────────────────────────────────────
-   The WHOLE tab tints/pulses to show agent state — an inset box-shadow fill
-   painted behind the label, so it never changes the tab's width and the text
-   stays crisp. Three states:
-   - working        (green, pulsing): PTY producing sustained output.
-   - needs-decision (orange, pulsing): agent gone quiet with a choice/permission
+/* ── Tab status ring ─────────────────────────────────────────────────────
+   A tab shows agent state as a RING, drawn on an `::after` overlay so it never
+   changes the tab's width and the text stays crisp. Three states from two
+   colours and a stroke style, nothing animated (`--status-*`):
+   - working        (green, DOTTED): PTY producing sustained output.
+   - finished       (green, solid): agent rang the bell having simply finished —
+     the same work as above, now complete, hence the same colour with the dots
+     closed up.
+   - needs-decision (amber, solid): agent gone quiet with a choice/permission
      prompt on screen — shown on the viewed tab too, since an agent blocked on
-     you stays blocked while you look at it. The glow is an inset fill, so it
-     composites over the active tab's gradient without fighting it.
-   - finished       (green, steady): agent rang the bell having simply finished.
+     you stays blocked while you look at it.
    Working and finished clear the moment the tab is viewed; a pending decision
-   clears when it is ANSWERED. */
-/* The glow is an `::after` overlay, not an animated shadow — see the keyframes
-   below for why. `z-index: -1` inside the tab's own stacking context puts it
-   above the tab's (transparent) background and below its label, which is
-   exactly where the inset box-shadow used to paint, so the look is unchanged. */
+   clears when it is ANSWERED.
+
+   This replaced a pulsing fill. The pulse was what told working from finished,
+   which made the animation the thing you had to read rather than decoration on
+   top of something already readable; a dotted ring says it at rest. The ring
+   also leaves the tab's own background alone, so it stacks with the active tab's
+   bottom accent instead of washing over it.
+
+   The overlay is inset to the PADDING box (a `position: absolute` child is), so
+   the 3px bottom border the active tab recolours stays visible underneath the
+   ring rather than being covered by it — a working tab you are looking at still
+   reads as the current one. `z-index: -1` inside the tab's own stacking context
+   puts the ring above the tab's (transparent) background and below its label. */
 .tab.working,
-.tab.needs-decision {
+.tab.needs-decision,
+.tab.finished {
   position: relative;
   z-index: 0;
 }
 
 .tab.working::after,
-.tab.needs-decision::after {
+.tab.needs-decision::after,
+.tab.finished::after {
   content: "";
   position: absolute;
   inset: 0;
   z-index: -1;
   pointer-events: none;
+  border: 2px var(--tab-status-stroke, solid) var(--tab-status-color);
+  border-radius: var(--radius-sm);
+  /* A whisper of fill behind the label, so the state still reads on a narrow
+     tab where the ring is mostly corner. Mixed once; nothing re-evaluates it.
+     Kept identical for working and finished — the fill is "this tab has
+     something to say", the ring is which of the two it is. */
+  background: color-mix(in srgb, var(--tab-status-color) 12%, transparent);
 }
 
-.tab.working::after {
-  background: color-mix(in srgb, var(--success) 26%, transparent);
-  animation: tab-glow-working 1.5s ease-in-out infinite;
+.tab.working {
+  --tab-status-color: var(--status-working);
+  --tab-status-stroke: dotted;
 }
-
-.tab.needs-decision::after {
-  background: color-mix(in srgb, var(--warning) 34%, transparent);
-  animation: tab-glow-decision 1.2s ease-in-out infinite;
-}
-
-.tab.finished {
-  box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--success) 16%, transparent);
-}
-
-/* Opacity-only pulse. These used to animate `box-shadow: inset … color-mix(…)`
-   directly, which is the most expensive way to express this glow: `box-shadow`
-   is not a compositable property, so every frame forced a full re-rasterization
-   of the tab bar, and the `color-mix()` was re-evaluated per frame on top. With
-   WEBKIT_DISABLE_DMABUF_RENDERER=1 (forced in `lib.rs` after the Mesa/SIGBUS
-   crash) that rasterization is pure CPU — so a couple of working agent tabs
-   alone kept the renderer's main thread pegged at ~a full core, and the UI had
-   no headroom left to answer input. `opacity` is compositor-driven, so the
-   pulse now costs no repaint at all.
-
-   The colour is static on the `::after` overlay below (mixed ONCE, not per
-   frame); these keyframes only fade it between the original endpoints —
-   5%→26% for working, 8%→34% for decision, i.e. the low end is expressed as a
-   fraction of the peak alpha (5/26, 8/34) so the glow looks unchanged. */
-@keyframes tab-glow-working {
-  0%, 100% { opacity: 0.192; }
-  50%      { opacity: 1; }
-}
-
-@keyframes tab-glow-decision {
-  0%, 100% { opacity: 0.235; }
-  50%      { opacity: 1; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  /* Collapse the pulse to a steady tint — the state is still visible. */
-  .tab.working,
-  .hidden-sw-chip.working {
-    animation: none;
-    box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--success) 16%, transparent);
-  }
-  .tab.needs-decision,
-  .hidden-sw-chip.needs-decision {
-    animation: none;
-    box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--warning) 22%, transparent);
-  }
-}
+.tab.needs-decision { --tab-status-color: var(--status-decision); }
+.tab.finished { --tab-status-color: var(--status-done); }
 
 /* ── Project pill status bars ────────────────────────────────────────────
    A strip of little bars along the pill's bottom edge — ONE PER NON-IDLE TAB of
    that project, so the switcher shows both what a project's tabs are doing and
-   how many are doing it. Same three states, and the same pulse timings, as the
-   tab glow:
-   - working        (green, pulsing): PTY producing sustained output.
-   - needs-decision (orange, pulsing): agent waiting on a decision.
-   - finished       (green, steady): agent finished, tab not yet seen.
+   how many are doing it. Same three states, and the same reading, as the tab
+   status ring (`--status-*`), none of them animated:
+   - working        (green, BROKEN into dots): PTY producing sustained output.
+   - finished       (green, unbroken): agent finished, tab not yet seen.
+   - needs-decision (amber, unbroken): agent waiting on a decision.
+   A bar is a stroke rather than a box, so the tab ring's dotted border becomes a
+   row of dots along the BAR here — the same "unfinished" mark expressed in the
+   one dimension a 6px bar has. It is a background gradient rather than a
+   `border-style`, which a filled bar has nowhere to put.
    The strip is the pill's only status signal — the pill body no longer tints, so
-   it can't fight the active gradient or the category top stripe. */
+   it can't fight the active gradient or the category top stripe.
+
+   Each bar is also the BUTTON that opens its own tab, which is what sets the
+   sizes: a 3px sliver reads fine but cannot be hit, so the bar is 6px tall with
+   a transparent ::after extending its target up into the pill's lower edge. The
+   strip itself keeps `pointer-events: none` so the GAPS between bars still fall
+   through to the pill body underneath — clicking beside a bar switches project,
+   as it always did. */
 .pill-status-bars {
   position: absolute;
   left: 6px;
   right: 6px;
-  bottom: 2px;
+  bottom: 3px;
   display: flex;
-  gap: 2px;
-  height: 3px;
+  gap: 3px;
+  height: 6px;
   pointer-events: none;
+}
+
+/* The root pill is only as wide as the star it holds — far narrower than a
+   named project's — so its strip runs closer to the edges, which is what lets a
+   full six bars fit at their minimum width instead of spilling out of it. */
+.root-pill .pill-status-bars {
+  left: 3px;
+  right: 3px;
 }
 
 .pill-status-bar {
   /* Shrinks (never grows) so a full strip still fits a narrow pill. */
-  flex: 0 1 12px;
-  min-width: 4px;
-  border-radius: 1px;
+  flex: 0 1 18px;
+  min-width: 6px;
+  border-radius: 2px;
+  position: relative;
+  /* Button reset — the element is a <button> so a bar can be clicked and
+     keyboard-focused; its look is entirely the strip's. */
+  appearance: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  /* Re-enable the pointer the strip switched off, for the bars only. */
+  pointer-events: auto;
+  transition: filter var(--transition);
 }
 
+/* The clickable area, larger than the paint: up into the pill's bottom edge and
+   a hair to each side, so a 6px bar is a target you can actually land on
+   without the strip growing into the pill's label. */
+.pill-status-bar::after {
+  content: "";
+  position: absolute;
+  inset: -6px -2px -3px;
+}
+
+.pill-status-bar:hover {
+  filter: brightness(1.35);
+}
+
+.pill-status-bar:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Dots along the bar's length — literally "· · ·", the ellipsis of a thing still
+   going. Round rather than square marks, because at 6px a square dash and a
+   solid bar are the same silhouette to a glance while a row of circles is not:
+   a radial-gradient tile 6px wide holding one ~3.5px dot, repeated across, which
+   at the bar's 18px preferred width is three dots and at its 6px minimum is one
+   — never a length that reads as solid. `background-color` stays unset so the
+   gaps are the pill behind them, and the 0.25px feather is what keeps the dots
+   from aliasing into diamonds. */
 .pill-status-bar.working {
-  background-color: var(--success);
-  animation: pill-bar-working 1.5s ease-in-out infinite;
+  background-image: radial-gradient(
+    circle,
+    var(--status-working) 1.75px,
+    transparent 2px
+  );
+  background-size: 6px 100%;
+  background-position: center;
+  background-repeat: repeat-x;
 }
 
 .pill-status-bar.needs-decision {
-  background-color: var(--warning);
-  animation: pill-bar-decision 1.2s ease-in-out infinite;
+  background-color: var(--status-decision);
 }
 
 .pill-status-bar.finished {
-  background-color: var(--success);
+  background-color: var(--status-done);
 }
 
-@keyframes pill-bar-working {
-  0%, 100% { opacity: 0.3; }
-  50%      { opacity: 1; }
-}
-
-@keyframes pill-bar-decision {
-  0%, 100% { opacity: 0.35; }
-  50%      { opacity: 1; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  /* Collapse the pulse to a steady bar — the state is still visible. */
-  .pill-status-bar.working,
-  .pill-status-bar.needs-decision,
-  .hidden-sw-icon.working,
-  .hidden-sw-icon.needs-decision,
-  .hidden-sw-status-dot.working,
-  .hidden-sw-status-dot.needs-decision {
-    animation: none;
-    opacity: 0.85;
-  }
-}
-
-/* Energy Saver: the agent-status glows/pulses can animate indefinitely (as long
-   as a tab is working or waiting on a prompt), so collapse them to the same
-   steady tints reduced-motion uses. The state stays fully visible; only the
-   continuous repaint stops. Driven by [data-energy-saver="on"] on the document
-   root (set in AppShell from the power/settings signal). */
-:root[data-energy-saver="on"] .tab.working,
-:root[data-energy-saver="on"] .hidden-sw-chip.working {
-  animation: none;
-  box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--success) 16%, transparent);
-}
-:root[data-energy-saver="on"] .tab.needs-decision,
-:root[data-energy-saver="on"] .hidden-sw-chip.needs-decision {
-  animation: none;
-  box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--warning) 22%, transparent);
-}
-:root[data-energy-saver="on"] .pill-status-bar.working,
-:root[data-energy-saver="on"] .pill-status-bar.needs-decision,
-:root[data-energy-saver="on"] .hidden-sw-icon.working,
-:root[data-energy-saver="on"] .hidden-sw-icon.needs-decision,
-:root[data-energy-saver="on"] .hidden-sw-status-dot.working,
-:root[data-energy-saver="on"] .hidden-sw-status-dot.needs-decision {
-  animation: none;
-  opacity: 0.85;
-}
+/* Nothing in the agent-status vocabulary animates any more (see the
+   `--status-*` block): the three states are three colours, at rest, so the
+   reduced-motion and Energy Saver collapses that used to exist here have
+   nothing left to switch off. Both settings still govern the rest of the app;
+   this is simply one fewer thing they have to. */
 :root[data-energy-saver="on"] .tab-new-btn.empty-hint {
   animation: none;
+}
+
+/* Window blur: pause EVERY animation wholesale (typing-latency plan, step 3).
+   With DMABUF off the renderer rasterizes in software on one thread, so any
+   running animation keeps that thread permanently runnable — and a thread that
+   never sleeps is scheduled like a batch job, which is what makes typing slow
+   under machine load. A blurred window is the one state where nothing on it is
+   being watched, so a blanket pause is safe: paused animations stop ticking
+   (no repaints), the elements keep their mid-state visuals, and everything
+   resumes on focus. Driven by [data-blurred] on the document root, set per
+   window by startFocusTracking (stores/power.ts). The energy-saver collapse
+   above also engages on blur (AppShell/DetachedApp publish saver OR blurred),
+   so the known glows show their steady tints rather than a mid-frame freeze;
+   this rule catches every animation the collapse doesn't name. */
+:root[data-blurred] *,
+:root[data-blurred] *::before,
+:root[data-blurred] *::after {
+  animation-play-state: paused !important;
 }
 
 .tab-close {
@@ -10412,7 +11030,10 @@ select option {
   word-break: break-word;
 }
 
-.file-tree-remote-bar {
+/* The remote bar and its local twin share one shape so the ↻ sits in exactly the
+   same spot on either side — switching Remote/Local must not move the button. */
+.file-tree-remote-bar,
+.file-tree-local-bar {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -10430,12 +11051,38 @@ select option {
   opacity: 0.7;
 }
 
-/* SSH-sync Phase 1: in-flight transfer counter in the remote bar. */
+/* SSH-sync Phase 1: in-flight transfer counter, in the remote bar, the local bar
+   and the files pane's whole-tree sync row (all three start the same transfer). */
 .file-tree-sync-progress {
   font-size: 10px;
   color: var(--success, #3fb950);
   margin-left: auto;
   white-space: nowrap;
+}
+
+/* What the last whole-tree sync/push did, under the row that started it. Long
+   enough to hold a host error message, so it wraps rather than clipping — a
+   truncated "permission denied on …" is the half without the answer in it. */
+.project-files-sync-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 3px 6px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.project-files-sync-result span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.project-files-sync-result--bad {
+  color: var(--error, #f85149);
 }
 
 /* SSH-sync Phase 1: local/remote source toggle row in the files view. */
@@ -11174,8 +11821,10 @@ select option {
   border-color: var(--success);
 }
 
-/* A running tab-backed or detached run pulses green — the app's shared "PTY
-   producing sustained output" vocabulary (cf. @keyframes tab-glow-working). The
+/* A running tab-backed or detached run pulses green. This is a RUN button, not
+   agent status — the three-colour `--status-*` vocabulary next door says which
+   of three states a tab is in and is deliberately at rest, whereas this says
+   only "still going" about a thing the user just started and is watching. The
    detached `.sh` path also sets `disabled`, hence the default cursor. */
 .file-run-btn.running {
   cursor: default;
@@ -11210,10 +11859,10 @@ select option {
   to { transform: rotate(360deg); }
 }
 
-/* SSH-sync: actionable buttons shown left of the icon per sync state — red on an
-   unsynced row (pull from host / push from the mirror), orange on a diverged row
-   (view the host-vs-mirror diff). Shared box geometry; the accent color differs.
-   `--danger` = not synced, `#d29922` (amber) = diverged. */
+/* SSH-sync: actionable buttons shown left of the icon per sync state — an
+   unsynced row wears the orange list's own take-remote/keep-local controls
+   (`.orange-file-act--slot` below), a diverged row the amber diff button.
+   `#d29922` (amber) = diverged. */
 /* Fixed-width gutter reserving space for the sync/diff button so file & folder
    names stay left-aligned across a sync-tracked tree even on rows with no button
    (in-sync/green). Sits between the git-status marker and the file icon. */
@@ -11225,7 +11874,6 @@ select option {
   flex-shrink: 0;
 }
 
-.file-sync-btn,
 .file-diff-btn {
   display: inline-flex;
   align-items: center;
@@ -11241,16 +11889,6 @@ select option {
   cursor: pointer;
 }
 
-.file-sync-btn {
-  border: 1px solid color-mix(in srgb, var(--danger) 70%, transparent);
-  color: var(--danger);
-}
-
-.file-sync-btn:hover {
-  background: color-mix(in srgb, var(--danger) 14%, transparent);
-  border-color: var(--danger);
-}
-
 .file-diff-btn {
   border: 1px solid color-mix(in srgb, #d29922 70%, transparent);
   color: #d29922;
@@ -11261,7 +11899,6 @@ select option {
   border-color: #d29922;
 }
 
-.file-sync-btn:disabled,
 .file-diff-btn:disabled {
   cursor: default;
   opacity: 0.5;
@@ -11466,6 +12103,13 @@ select option {
   flex-shrink: 0;
 }
 
+/* NEW local-only file (never synced — the host has no copy): the same dot
+   slot, tinted the keep-local/push green so "upload me" reads in the view's
+   existing color language rather than a third tone. */
+.orange-file-dot--new {
+  color: var(--success, #3fb950);
+}
+
 /* Timestamp-only comparison for a diverged pair: a small pill, tinted by
    which side it points at (remote vs local) using the same theme tokens as
    the take-remote/keep-local icon buttons below, so the two read as one
@@ -11524,13 +12168,11 @@ select option {
   text-overflow: ellipsis;
 }
 
-/* Working indicator (TODO #85): the active pane is running something other
-   than a bare shell — reuses the "host has live work on it" pulse vocabulary
-   `.conn-lamp-busy` already established for the connection lamps, so a
-   breathing dot means the same thing everywhere in the app. `opacity`-only
-   animation on a pseudo-element, not `box-shadow` on the dot itself — see the
-   perf note above `.conn-lamp-busy` (rasterising a blurred shadow every frame
-   is pure CPU with the DMABUF renderer disabled). */
+/* Working indicator (TODO #85): the active pane is running something other than
+   a bare shell — the SOLID half of the `.conn-lamp-busy` vocabulary, so a filled
+   green dot means "work is running here" everywhere in the app. It does not
+   breathe any more, for the reasons written above `.conn-lamp-idle`; a row with
+   no work simply has no dot, which is this list's version of the hollow one. */
 .tmux-work-dot {
   position: relative;
   flex-shrink: 0;
@@ -11539,18 +12181,7 @@ select option {
   margin-left: 2px;
   border-radius: 50%;
   background: var(--success);
-}
-.tmux-work-dot::after {
-  content: "";
-  position: absolute;
-  inset: -3px;
-  border-radius: 50%;
-  pointer-events: none;
-  box-shadow:
-    0 0 6px color-mix(in srgb, var(--success) 90%, transparent),
-    0 0 10px color-mix(in srgb, var(--success) 45%, transparent);
-  will-change: opacity;
-  animation: conn-lamp-busy-pulse 1.8s ease-in-out infinite;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--success) 80%, transparent);
 }
 
 /* Machine sections in the persistent-session view. Uses the shared elevation,
@@ -11571,6 +12202,26 @@ select option {
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+/* Session-type sub-grouping within a machine (TODO #85): Agents / Shells / Other.
+   A quieter heading than the machine title — the machine is the primary grouping,
+   the type a secondary split under it. */
+.tmux-kind-group-title {
+  padding: 3px 7px 3px 14px;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-secondary, var(--text-primary));
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Only the very last row of a machine group drops its divider; a row that is last
+   within its own kind bucket keeps one, so the next sub-heading sits on a clean
+   edge. */
+.tmux-kind-group:not(:last-child) .orange-file-row:last-child {
+  border-bottom: 1px solid var(--border-color);
 }
 
 /* The Sessions view's project-scope escape hatch (TODO #85): off (the default)
@@ -11661,6 +12312,58 @@ select option {
   color: var(--success);
   background: color-mix(in srgb, var(--success) 16%, transparent);
   border-color: var(--success);
+}
+
+/* Delete-the-other-copy variant (a file deleted on exactly one side): tinted
+   --danger, because unlike the arrows it does not move bytes — it ends the
+   file's last remaining copy. Same control shape as its two siblings. */
+.orange-file-act--icon.orange-file-act--delete {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+}
+
+.orange-file-act--icon.orange-file-act--delete:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  border-color: var(--danger);
+}
+
+/* Tree-slot size variant: the same take-remote/keep-local controls, shrunk to
+   the 16px .file-sync-slot. Colors stay the orange list's — one shared class,
+   never a re-tinted copy (feedback: copy the working sibling). */
+.orange-file-act--icon.orange-file-act--slot {
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+}
+
+/* Non-interactive "this folder contains diverged files" marker — the ± in the
+   amber the .file-diff-btn wears, minus the border/hover of a control. */
+.file-sync-dir-diverged {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
+  line-height: 1;
+  color: #d29922;
+}
+
+/* The tree head's folder-level "in sync with the host" marker. Deliberately dim
+   and non-interactive: it is only there so the browsed folder's sync slot is
+   never *empty*, which is indistinguishable from a control that failed to
+   render — the state the project root was in before the slot existed. */
+.file-sync-folder-green {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--success, #3fb950);
+  opacity: 0.75;
 }
 
 /* Nested-repo toggle: segmented control shown atop the git view when the browsed
@@ -11763,6 +12466,15 @@ select option {
   text-transform: none;
   color: var(--text-muted);
   flex-shrink: 0;
+}
+
+/* A total still missing at least one folder's walk (`≥ 1.2 MB`, or `…` before
+   anything has landed). Dimmed and italic so it reads as a figure in progress
+   rather than a measured one — the number itself already says `≥`, this only
+   keeps it from being mistaken for the settled total at a glance. */
+.file-tree-path-total.partial {
+  opacity: 0.65;
+  font-style: italic;
 }
 
 .file-tree-scaffold-toggle {
@@ -12570,20 +13282,24 @@ select option {
   opacity: 0.7;
 }
 
-.project-search-entry:hover {
+.project-search-entry:hover:not(:focus) {
   border-color: var(--control-border);
   background: var(--control-bg);
 }
 
-.project-search-entry:focus {
-  border-color: var(--accent);
+.project-search-entry:focus,
+.project-search-entry:focus-visible {
+  border-color: transparent;
   background: var(--control-bg);
+  outline: none;
 }
 
+/* Right-anchored: the box sits right of the + now, i.e. in the header's right
+   half, where a 360px panel hung off its left edge would run past the window. */
 .project-search-popover {
   position: absolute;
   top: calc(100% + 4px);
-  left: 0;
+  right: 0;
   width: min(360px, 80vw);
   max-height: 420px;
   overflow-y: auto;
@@ -13958,6 +14674,52 @@ select option {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+/* The container-scope radio group (#38): which tabs the container applies to.
+   A bordered fieldset rather than two loose labels — the two options are one
+   decision, and the dialog's other rows are independent knobs. */
+.project-dialog .container-scope-fieldset {
+  border: 1px solid var(--border-subtle, var(--border));
+  border-radius: 6px;
+  padding: 8px 12px 10px;
+  margin: 0 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.project-dialog .container-scope-fieldset legend {
+  padding: 0 4px;
+  font-size: 0.85em;
+  opacity: 0.75;
+}
+
+/* The radio sits beside a two-line block (label + its help line), so the row is
+   a grid rather than a flex baseline — a flex row centres the input against the
+   whole block and puts it next to the help text on a wrapped option. */
+.project-dialog label.container-scope-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.project-dialog label.container-scope-option input[type="radio"] {
+  width: auto;
+  margin: 2px 0 0;
+  cursor: pointer;
+}
+
+.project-dialog label.container-scope-option > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-dialog label.container-scope-option .settings-help {
+  margin: 0;
 }
 
 .project-dialog input,
@@ -16097,6 +16859,33 @@ select option {
   justify-content: space-between;
   gap: 10px;
 }
+.agent-remote-install-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.agent-remote-install-row {
+  flex-wrap: wrap;
+}
+/* The themed `Dropdown` sits where a native <select> used to; it is an
+   inline-flex wrapper, so the flex basis goes on it and the trigger fills it. */
+.agent-remote-install-row .agent-remote-machine-picker {
+  min-width: 0;
+  flex: 1 1 180px;
+}
+.agent-remote-install-row .agent-remote-machine-picker .dropdown-trigger {
+  width: 100%;
+  justify-content: space-between;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.agent-remote-result {
+  margin-top: 6px;
+  color: var(--success);
+  font-size: 11px;
+}
 /* Enabled/Disabled toggle on an installed agent's row: hides it from tab-choice
    menus (add-tab Agents group, Local Model drivers) without uninstalling it. */
 .agent-disable-toggle {
@@ -16167,6 +16956,14 @@ select option {
    backgrounds only, never a blurred shadow (the WebKit software-rendering rule).
    The 4px top margin is what separates a header from the section above it; the
    first one drops it, having nothing to be separated from. */
+/* The tallest menu in the app — four sections of two- and three-line rows — so
+   it is bounded and its body scrolls (the pinned first title + `.menu-scroll-
+   region`, the unified scrolling-menu shape). Without a cap a machine with
+   several agents and models ran the Machine section off the bottom of a short
+   window, unreachable. */
+.local-model-menu {
+  max-height: min(80vh, 640px);
+}
 .local-model-menu .tab-new-menu-group-label {
   display: flex;
   align-items: center;
@@ -16403,7 +17200,7 @@ select option {
 /* ── Remote-connection status lamps (SSH / OpenVPN) ───────────────────────────
    Red/orange/green dots shown in the project dialog (next to the connect
    controls) and in the header (active remote project). Modeled on the
-   resident-model lamp above; the connecting state pulses to read as "in flight". */
+   resident-model lamp above. NOTHING here animates — see `.conn-lamp-idle`. */
 .conn-lamp {
   display: inline-block;
   width: 8px;
@@ -16420,127 +17217,48 @@ select option {
 .conn-lamp-connecting {
   background: var(--warning);
   box-shadow: 0 0 5px color-mix(in srgb, var(--warning) 75%, transparent);
-  animation: conn-lamp-pulse 1.1s ease-in-out infinite;
 }
 .conn-lamp-error {
   background: var(--danger);
   box-shadow: 0 0 5px color-mix(in srgb, var(--danger) 75%, transparent);
 }
-@keyframes conn-lamp-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.35;
-  }
-}
-/* A CONNECTED host with live work on it (≥1 tmux session, `stores/hostBusy`).
-   Deliberately not the `connecting` pulse: that one fades the dot most of the
-   way out, which reads as "pending / not there yet". This one keeps the dot at
-   full opacity and breathes its halo instead, so it reads as a heartbeat — the
-   machine is up AND something is running on it. Same green, so the connection
-   state it carries is never in doubt, and it never adds a lamp: a busy fleet
-   pulses the green lamp it already had.
 
-   Two intensities on purpose. In the **top bar** the lamp is an ambient badge
-   sitting in permanent peripheral vision, so it only breathes its halo — a dot
-   that visibly grew and shrank up there all day would be a nag. In a **menu or
-   dialog** (below) the lamp is something you opened to read, and it has to be
-   unmistakable at a glance across sixteen rows, so it also scales. */
-/* The halo lives on a pseudo-element whose box-shadow is STATIC, and the pulse
-   animates that element's `opacity` (+ `transform` for the strong variant). This
-   is not a style preference — it is the difference between a composited animation
-   and a repainting one. `box-shadow` is a paint property: animating it re-rasterises
-   a blurred shadow every frame, and with the DMABUF renderer disabled (see
-   `lib.rs`) that rasterisation is pure CPU. Sixteen rows of it saturated a core for
-   as long as the Machines menu was open. `opacity`/`transform` animate on the
-   already-rasterised layer instead, so the same visual costs ~nothing. */
+/* ── Up vs. working ───────────────────────────────────────────────────────
+   A machine that is CONNECTED but has nothing running on it is drawn HOLLOW —
+   an outline of the same green — and one with live work on it (≥1 tmux session,
+   `stores/hostBusy`) stays the solid dot. It is the tab ring's vocabulary at dot
+   scale: same colour for the same subject, the shape saying whether it is under
+   way. With a fleet held open all day "connected" is the resting state and stops
+   distinguishing anything, so what the lamp usefully answers is "where am I
+   actually running something?" — and now it answers it at rest.
+
+   This replaced a PULSE, in two intensities, on the busy lamp. Three things were
+   wrong with it. It made the animation load-bearing: you had to watch a lamp for
+   a second to read it, and a still screenshot said nothing. It could only ever
+   emphasise the busy case, so an idle machine looked exactly like a lamp whose
+   pulse you had not waited for. And it was the most expensive thing on screen —
+   sixteen rows of animated halo in an open Machines menu, rasterised on the CPU
+   with the DMABUF renderer disabled (`lib.rs`), saturated a core for as long as
+   the menu stayed open. Nothing on a lamp animates any more, `connecting`
+   included, which is also why the reduced-motion block that used to sit here is
+   gone: there is no motion left for it to switch off.
+
+   Written as a two-class selector rather than relying on source order, since
+   both it and `.conn-lamp-connected` are single-class rules and this one has to
+   win wherever a theme re-orders them. */
+.conn-lamp-connected.conn-lamp-idle {
+  background: transparent;
+  /* The ring and a dimmer halo in one declaration — an idle machine should be
+     findable in a row list without shouting over the ones doing work. */
+  box-shadow:
+    inset 0 0 0 2px var(--success),
+    0 0 4px color-mix(in srgb, var(--success) 45%, transparent);
+}
+/* Solid, and glowing a little harder than a plain `connected` lamp, so "which of
+   these machines is actually working" is answerable across a long list without
+   reading a label. Static: the emphasis is brightness, never movement. */
 .conn-lamp-busy {
-  position: relative;
-}
-.conn-lamp-busy::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  pointer-events: none;
-  box-shadow:
-    0 0 9px color-mix(in srgb, var(--success) 95%, transparent),
-    0 0 14px color-mix(in srgb, var(--success) 45%, transparent);
-  will-change: opacity;
-  animation: conn-lamp-busy-pulse 1.8s ease-in-out infinite;
-}
-@keyframes conn-lamp-busy-pulse {
-  0%,
-  100% {
-    opacity: 0.4;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-/* The louder pulse, scoped to the surfaces you deliberately open: the header
-   Machines/VPN menus' rows and the Remote-machines hub's host cards. The dot
-   swells and its halo doubles, so "which of these machines is actually working"
-   is answerable without reading a single label. `transform` + `box-shadow` only,
-   so nothing reflows and a 16-row list stays cheap to animate. */
-.machines-indicator-menu .conn-lamp-busy,
-.vpn-indicator-menu .conn-lamp-busy,
-.remote-machine-card .conn-lamp-busy {
-  animation: conn-lamp-busy-pulse-strong 1.5s ease-in-out infinite;
-  will-change: transform;
-}
-/* The dot scales; its halo (the ::after above) swells and brightens with it. Both
-   keyframe tracks are transform/opacity only — see the note on `.conn-lamp-busy`. */
-.machines-indicator-menu .conn-lamp-busy::after,
-.vpn-indicator-menu .conn-lamp-busy::after,
-.remote-machine-card .conn-lamp-busy::after {
-  box-shadow:
-    0 0 10px var(--success),
-    0 0 18px color-mix(in srgb, var(--success) 55%, transparent);
-  animation: conn-lamp-busy-halo-strong 1.5s ease-in-out infinite;
-}
-@keyframes conn-lamp-busy-halo-strong {
-  0%,
-  100% {
-    opacity: 0.3;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-/* The trough goes well BELOW the resting dot size, not down to it: swinging
-   0.45→1.45 makes the beat read across a long row list from the corner of the
-   eye, where a 1.0→1.45 swell just looks like a slightly bigger dot. The lamp
-   never disappears at the trough — a lamp that blinks out reads as a connection
-   dropping, which is the one thing this must not say. */
-@keyframes conn-lamp-busy-pulse-strong {
-  0%,
-  100% {
-    transform: scale(0.45);
-  }
-  50% {
-    transform: scale(1.45);
-  }
-}
-/* Respect a reduced-motion preference: keep the stronger halo (the busy state is
-   still distinguishable at a glance) but stop the animation. */
-@media (prefers-reduced-motion: reduce) {
-  .conn-lamp-busy,
-  .machines-indicator-menu .conn-lamp-busy,
-  .vpn-indicator-menu .conn-lamp-busy,
-  .remote-machine-card .conn-lamp-busy {
-    animation: none;
-    transform: none;
-  }
-  .conn-lamp-busy::after,
-  .machines-indicator-menu .conn-lamp-busy::after,
-  .vpn-indicator-menu .conn-lamp-busy::after,
-  .remote-machine-card .conn-lamp-busy::after {
-    animation: none;
-    opacity: 1;
-  }
+  box-shadow: 0 0 8px color-mix(in srgb, var(--success) 90%, transparent);
 }
 /* A status lamp aggregated over several hosts: the dot plus a small count of how
    many hosts share that state (shown only when more than one). */
@@ -17742,6 +18460,15 @@ select option {
   align-items: center;
   gap: 6px;
 }
+/* A machine row is two lines: the name (+ lamp, badges, expand toggle) on the
+   first, the action icons on a second below it — so a long machine name is not
+   crowded into the buttons in the narrow (280px) menu. `flex-wrap` + a
+   full-width `.machines-row-actions` is what breaks the icons onto their own
+   line; the expand toggle sits before the actions in the DOM so it stays up on
+   the first row with the name. */
+.machines-indicator-row .vpn-indicator-head {
+  flex-wrap: wrap;
+}
 .vpn-indicator-config {
   font-family: var(--mono-font, monospace);
   font-size: 12px;
@@ -17885,6 +18612,10 @@ select option {
    different (the draggable rows, the drop-zone highlight) gets its own class. */
 .machines-indicator-menu {
   width: 280px;
+  /* This trigger lives in the header's right cluster. Grow the fixed-width
+     menu inward from its right edge so it cannot cross the window border. */
+  right: 0;
+  left: auto;
 }
 .machines-indicator-row {
   cursor: grab;
@@ -17917,17 +18648,17 @@ select option {
   background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
 }
 
-/* A row's steady-state actions are ICONS on the SAME line as the lamp, the label
-   and the ▸ expand toggle: four worded buttons ("Reconnect", "Disconnect",
-   "Edit…", "Remove") wrapped onto two lines in a 280px menu and cost every row a
-   second row of height. The words survive as title/aria-label, so nothing is lost
-   to a hover or a screen reader — and the *armed* confirm states (Remove /
-   Disconnect / Retry / Edit) still replace them with worded buttons below, because
-   a destructive confirm must never be a glyph.
-   The label flexes so a long machine name ellipsizes into the icons rather than
-   pushing them off the row; `margin-left: auto` on the group is what puts the icon
-   cluster + expand toggle hard right (the expand button drops its own auto margin,
-   or the two autos would split the slack and strand it mid-row). */
+/* A row's steady-state actions are ICONS on a SECOND line, below the lamp, the
+   label and the ▸ expand toggle: four worded buttons ("Reconnect", "Disconnect",
+   "Edit…", "Remove") wrapped onto two lines in a 280px menu and cost too much
+   width beside a real machine name. The words survive as title/aria-label, so
+   nothing is lost to a hover or a screen reader — and the *armed* confirm states
+   (Remove / Disconnect / Retry / Edit) still replace them with worded buttons
+   below, because a destructive confirm must never be a glyph.
+   The label flexes so a long machine name ellipsizes rather than pushing the
+   expand toggle off the first row; the actions take a full row of their own
+   (`flex-basis: 100%` against the head's `flex-wrap`), so the name has the whole
+   first line to itself. */
 .vpn-indicator-head .vpn-indicator-config {
   flex: 1;
   min-width: 0;
@@ -17936,14 +18667,9 @@ select option {
   display: flex;
   align-items: center;
   gap: 4px;
-  margin-left: auto;
+  flex-basis: 100%;
   flex-shrink: 0;
-}
-/* The expand toggle keeps a slightly wider gap than the icons keep between
-   themselves — it is a different kind of control (it opens the row, it doesn't
-   act on the machine), so it reads as its own thing rather than a fifth action. */
-.machines-row-actions + .machines-row-expand-btn {
-  margin-left: 2px;
+  margin-top: 6px;
 }
 
 .machines-row-action {
@@ -23075,6 +23801,27 @@ select option {
   padding: 12px;
   overflow-x: auto;
   overflow-y: hidden;
+  /* A fixed-width column set commonly exceeds the overlay's width (5 seeded
+     columns + the add-column tile run past ~1600px), so a right-hand column
+     like Archived routinely sits off screen. WebKitGTK's default scrollbar is
+     an invisible overlay that only appears on hover, which left that overflow
+     with no visible affordance at all — the board looked like it had 4
+     columns and a scrollbar nobody could see. Styling it (as `.project-dialog`
+     already does for its own scroller) forces a classic, always-rendered
+     scrollbar instead. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.todo-board::-webkit-scrollbar {
+  height: 10px;
+}
+.todo-board::-webkit-scrollbar-track {
+  background: transparent;
+}
+.todo-board::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 6px;
+  border: transparent;
 }
 /* While a card is in flight the cards stop answering `elementFromPoint`, so the
    hit-test reaches the `.todo-column` underneath — the same trick
@@ -26757,72 +27504,4 @@ handle — it swallows the pointer before the card ever sees it. */
 .tex-workspace-pane {
   position: absolute;
   inset: 0;
-}
-
-.tex-workspace-pdf {
-  position: relative;
-  flex: 0 0 auto;
-  min-width: 180px;
-  display: flex;
-  flex-direction: column;
-  border-left: 1px solid var(--border-color);
-  overflow: hidden;
-}
-
-/* Drag handle on the pane's LEFT edge — dragging left widens the PDF. */
-.tex-workspace-pdf-resize {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 5px;
-  height: 100%;
-  cursor: col-resize;
-  touch-action: none;
-  background: transparent;
-  z-index: 2;
-}
-.tex-workspace-pdf-resize:hover {
-  background: var(--accent);
-}
-
-.tex-workspace-pdf-head {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 6px 4px 10px;
-  border-bottom: 1px solid var(--border-color);
-  border-top: 2px solid var(--accent);
-}
-
-.tex-workspace-pdf-title {
-  flex: 1 1 auto;
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--text-secondary, var(--text-primary));
-}
-
-.tex-workspace-pdf-close {
-  flex: 0 0 auto;
-  border: none;
-  background: transparent;
-  color: var(--text-primary);
-  font-size: 15px;
-  line-height: 1;
-  padding: 2px 6px;
-  cursor: pointer;
-  border-radius: 4px;
-}
-.tex-workspace-pdf-close:hover {
-  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
-}
-
-.tex-workspace-pdf-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  position: relative;
-  overflow: hidden;
 }

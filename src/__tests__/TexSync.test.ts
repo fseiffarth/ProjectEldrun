@@ -89,6 +89,90 @@ describe("pdfPageMatches (#71 — Ctrl+F over a PDF page's text)", () => {
     expect(pdfPageMatches(oneRun, 1, "", false)).toEqual([]);
     expect(pdfPageMatches(oneRun, 1, "zzz", false)).toEqual([]);
   });
+
+  describe("a word the typesetter split across two lines", () => {
+    // "hyphen-" ending one line, "ation" beginning the next — what a wrapped
+    // paragraph actually looks like in a PDF's text content.
+    const split: TextItemBox[] = [
+      { str: "hyphen-", x: 0, y: 0, w: 70, h: 10 },
+      { str: "ation", x: 0, y: 12, w: 50, h: 10 },
+    ];
+
+    it("is found under the word a reader would type", () => {
+      // Both halves boxed, on their own lines — and the first box covers the hyphen
+      // the match ran through, rather than stopping one glyph short of it.
+      expect(pdfPageMatches(split, 1, "hyphenation", false)).toEqual([
+        [
+          { page: 1, x: 0, y: 0, w: 70, h: 10 },
+          { page: 1, x: 0, y: 12, w: 50, h: 10 },
+        ],
+      ]);
+    });
+
+    it("is found from either half on its own, too", () => {
+      expect(pdfPageMatches(split, 1, "hyphen", false)).toEqual([
+        [{ page: 1, x: 0, y: 0, w: 60, h: 10 }],
+      ]);
+      expect(pdfPageMatches(split, 1, "ation", false)).toEqual([
+        [{ page: 1, x: 0, y: 12, w: 50, h: 10 }],
+      ]);
+    });
+
+    it("trusts pdf.js's own end-of-line flag over the geometry", () => {
+      // Same line by every geometric measure, but the producer said the line ended
+      // there — which is the case a two-column layout produces.
+      const flagged: TextItemBox[] = [
+        { str: "hyphen-", x: 0, y: 0, w: 70, h: 10, eol: true },
+        { str: "ation", x: 70, y: 0, w: 50, h: 10 },
+      ];
+      expect(pdfPageMatches(flagged, 1, "hyphenation", false)).toHaveLength(1);
+    });
+
+    it("reads an unhyphenated break as the space it is", () => {
+      const wrapped: TextItemBox[] = [
+        { str: "the", x: 0, y: 0, w: 30, h: 10 },
+        { str: "end", x: 0, y: 12, w: 30, h: 10 },
+      ];
+      // The phrase as it is read — which joining the runs end to end ("theend")
+      // could not match at all.
+      expect(pdfPageMatches(wrapped, 1, "the end", false)).toEqual([
+        [
+          { page: 1, x: 0, y: 0, w: 30, h: 10 },
+          { page: 1, x: 0, y: 12, w: 30, h: 10 },
+        ],
+      ]);
+      expect(pdfPageMatches(wrapped, 1, "theend", false)).toEqual([]);
+    });
+
+    it("does not add a second space where the runs already have one", () => {
+      const spaced: TextItemBox[] = [
+        { str: "the ", x: 0, y: 0, w: 40, h: 10 },
+        { str: "end", x: 0, y: 12, w: 30, h: 10 },
+      ];
+      expect(pdfPageMatches(spaced, 1, "the end", false)).toHaveLength(1);
+    });
+
+    it("leaves a dash that is punctuation alone", () => {
+      // An en dash at a line end is a range, not a word cut in half: joining these
+      // would invent the word "34".
+      const dashed: TextItemBox[] = [
+        { str: "pages 3–", x: 0, y: 0, w: 80, h: 10 },
+        { str: "4", x: 0, y: 12, w: 10, h: 10 },
+      ];
+      expect(pdfPageMatches(dashed, 1, "34", false)).toEqual([]);
+      expect(pdfPageMatches(dashed, 1, "3– 4", false)).toHaveLength(1);
+    });
+
+    it("still joins runs that merely continue the same line", () => {
+      // Same y, running left to right: no break, so nothing is inserted and a match
+      // across the join reads exactly as before.
+      const sameLine: TextItemBox[] = [
+        { str: "foo", x: 0, y: 0, w: 30, h: 10 },
+        { str: "bar", x: 30, y: 0, w: 30, h: 10 },
+      ];
+      expect(pdfPageMatches(sameLine, 1, "foobar", false)).toHaveLength(1);
+    });
+  });
 });
 
 describe("sourceColumnFraction (caret position along its source line)", () => {

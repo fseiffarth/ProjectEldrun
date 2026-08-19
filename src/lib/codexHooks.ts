@@ -21,7 +21,16 @@ export type CodexHookState =
   | "disabled"
   | "enabled";
 
-/** The hook exists but Codex won't run it → resume is running on the fallback. */
+/**
+ * The hook exists but Codex won't run it → resume is running on the fallback.
+ *
+ * Both states land here and they are **not** the same problem, which is why the
+ * notice branches on the value rather than on this boolean: `untrusted` has no
+ * verdict recorded at all (review it), while `disabled` already carries a
+ * `trusted_hash` in `~/.codex/config.toml` and is merely toggled off (switch it
+ * on — there is nothing left to approve). Telling the second user to "trust it"
+ * sends them looking for an action they have already taken.
+ */
 export function codexHookNeedsTrust(state: CodexHookState | null): boolean {
   return state === "untrusted" || state === "disabled";
 }
@@ -52,6 +61,7 @@ export function openCodexHooksTab(): void {
     initialInput: "/hooks",
   });
   useProjectsStore.setState({
-    switchToast: "Opened Codex in the root terminal — enable Eldrun's hook in the list",
+    switchToast:
+      "Opened Codex in the root terminal — in the list, switch on the “When a new session starts” row whose command is eldrun_session_start",
   });
 }

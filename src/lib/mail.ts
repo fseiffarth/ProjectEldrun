@@ -211,7 +211,7 @@ export function mailMove(messageIds: string[], destFolderId: string): Promise<vo
 
 // ── Priority marks (Important / Urgent) ──────────────────────────────────────
 //
-// The only three wrappers here that reach no network in either direction, and
+// The only four wrappers here that reach no network in either direction, and
 // that is the feature rather than an omission: Important and Urgent are lists
 // spanning EVERY account, and no IMAP folder can hold two accounts' mail — so
 // the mark is a local column, not a move. `types/mail.ts`'s `MailPriority`
@@ -248,6 +248,15 @@ export function mailPriorityPage(
     sort,
     desc,
   });
+}
+
+/** Empty one list: clear the mark from **every** message carrying `priority`,
+ *  resolving with how many rows changed. The bulk form of `mailPrioritySet(…,
+ *  null)`, and no more destructive than it is — a mark is not a folder, so no
+ *  message moves and nothing is deleted; what goes is the filing. The caller
+ *  asks before it calls, because that filing is the user's own work. */
+export function mailPriorityClear(priority: MailPriority): Promise<number> {
+  return invoke<number>("mail_priority_clear", { priority });
 }
 
 /** Both rail badges in one read, so they cannot disagree on screen. */

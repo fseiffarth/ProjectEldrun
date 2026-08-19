@@ -190,6 +190,10 @@ export function MachinesIndicator() {
   const register = useGlobalMachinesStore((s) => s.register);
   const add = useGlobalMachinesStore((s) => s.add);
   const update = useGlobalMachinesStore((s) => s.update);
+  // The terminal-login edit path adopts a session the user opened in the root
+  // terminal, so it persists the identity with `connect: false` and lights the
+  // lamp itself — `setStatus` is what `lib/machineSync`'s subscription propagates.
+  const setStatus = useGlobalMachinesStore((s) => s.setStatus);
   const setAutoConnect = useGlobalMachinesStore((s) => s.setAutoConnect);
   const reorder = useGlobalMachinesStore((s) => s.reorder);
   const exportMachines = useGlobalMachinesStore((s) => s.exportMachines);
@@ -378,6 +382,26 @@ export function MachinesIndicator() {
   const [editSave, setEditSave] = useState(false);
   const [editError, setEditError] = useState("");
   const [editBusy, setEditBusy] = useState(false);
+  // ── "Sign in in a terminal" on the EDIT form ─────────────────────────────────
+  // The add form's escape hatch, applied to an existing machine's re-authenticate:
+  // one password field cannot answer a challenge/OTP/expired-password prompt, so a
+  // host that starts asking for one can no longer be reconnected from the plain
+  // form. Default **on** in non-headless mode, exactly as the add form's is. The
+  // login rides the root terminal (this is a header menu, no place for a live PTY),
+  // and on success the edited identity is persisted with `connect: false` — the
+  // terminal already opened the session, so a second `ssh_connect` would be a
+  // pointless (and possibly prompting) re-login.
+  const [editViaTerminal, setEditViaTerminal] = useState(!headless);
+  // A login is open in the root terminal for the edited target and we are polling
+  // to adopt it (mirror of `addWaiting`; see `pollEditLogin`).
+  const [editWaiting, setEditWaiting] = useState(false);
+  const editPoll = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Live mirror of the label, which the poll writes onto the machine and which
+  // outlives the render that scheduled it (the `labelRef` reason on the add path).
+  const editLabelRef = useRef(editLabel);
+  useEffect(() => {
+    editLabelRef.current = editLabel;
+  }, [editLabel]);
 
   // Import / export sub-flows. `ioMode` picks which panel replaces the normal
   // machine list + add-form; both are one-off modal flows within the menu.
@@ -940,6 +964,11 @@ export function MachinesIndicator() {
     setEditLabel(m.label ?? "");
     setEditSave(false);
     setEditError("");
+    // Same default as the add form's toggle, and drop any stale wait/poll from a
+    // previous row's terminal login.
+    setEditViaTerminal(!headless);
+    setEditWaiting(false);
+    clearEditPoll();
   };
   const submitEdit = async (id: string) => {
     const orig = machines.find((m) => m.id === id);
@@ -974,6 +1003,124 @@ export function MachinesIndicator() {
       setEditBusy(false);
     }
   };
+
+  // ── Terminal sign-in on edit: log in in the root terminal, then adopt it ──────
+  // The `pollAddLogin` twin, for an existing machine. It shares that path's honest
+  // caveat: `ssh_connect` may succeed on the first poll via key/agent/saved
+  // credentials without the terminal login mattering, so this is a *readiness*
+  // poll — "can Eldrun authenticate this (possibly re-addressed) target yet" —
+  // backed off and capped so a wrong answer is cheap. Adopting a session Eldrun
+  // could have opened itself is harmless; the terminal path is there for the host
+  // that only a terminal login can get through.
+  const clearEditPoll = () => {
+    if (editPoll.current) {
+      clearTimeout(editPoll.current);
+      editPoll.current = null;
+    }
+  };
+
+  const finishTerminalEdit = async (
+    id: string,
+    target: { user: string | null; host: string; port: number | null },
+  ) => {
+    // Persist the edited identity WITHOUT reconnecting — the terminal login has
+    // already opened the session, so `connect: false` avoids a second (possibly
+    // prompting) `ssh_connect`. `remember` is left unset: a terminal login is one
+    // Eldrun never sees, so there is no new secret to save and nothing to clear.
+    await update(
+      id,
+      {
+        user: target.user ?? undefined,
+        host: target.host,
+        port: target.port ?? undefined,
+        label: editLabelRef.current.trim() || undefined,
+      },
+      { connect: false },
+    );
+    // The session exists, so light the lamp — `setStatus` is the write
+    // `lib/machineSync`'s subscription propagates onto a project holding this host.
+    setStatus(id, "connected");
+    setEditId(null);
+    setEditPassword("");
+    setEditWaiting(false);
+  };
+
+  const pollEditLogin = (
+    id: string,
+    target: { user: string | null; host: string; port: number | null },
+    attempt = 0,
+  ) => {
+    void invoke<void>("ssh_connect", {
+      user: target.user,
+      host: target.host,
+      port: target.port,
+      password: null,
+      background: false,
+    })
+      .then(async () => {
+        clearEditPoll();
+        setEditWaiting(false);
+        await finishTerminalEdit(id, target).catch((e) => setEditError(String(e)));
+      })
+      .catch(() => {
+        if (attempt + 1 >= POLL_MAX_ATTEMPTS) {
+          clearEditPoll();
+          setEditWaiting(false);
+          setEditError(t("machines.err.noLoginYetEdit"));
+          return;
+        }
+        editPoll.current = setTimeout(() => pollEditLogin(id, target, attempt + 1), pollDelayMs(attempt));
+      });
+  };
+
+  const startTerminalEdit = async (id: string) => {
+    const parsed = parseSshAddress(editAddress);
+    if (!parsed) {
+      setEditError(t("machines.err.address"));
+      return;
+    }
+    const target = {
+      user: parsed.user ?? (editUser.trim() || null),
+      host: parsed.host,
+      port: parsed.port ?? null,
+    };
+    setEditError("");
+    try {
+      const command = await invoke<string>("remote_login_command", {
+        user: target.user,
+        host: target.host,
+        port: target.port,
+      });
+      const tabLabel = `ssh · ${target.user ? `${target.user}@` : ""}${target.host}`;
+      openConnectionInRoot({
+        label: tabLabel,
+        command,
+        dedupeKey: `ssh:${target.user ? `${target.user}@` : ""}${target.host}:${target.port ?? ""}`,
+      });
+      setEditWaiting(true);
+      clearEditPoll();
+      pollEditLogin(id, target);
+    } catch (e) {
+      setEditError(String(e));
+    }
+  };
+
+  /** Re-arm the poll — for a login finished after the bound ran out (add's twin). */
+  const retryTerminalEdit = (id: string) => {
+    const parsed = parseSshAddress(editAddress);
+    if (!parsed) return;
+    setEditError("");
+    setEditWaiting(true);
+    clearEditPoll();
+    pollEditLogin(id, {
+      user: parsed.user ?? (editUser.trim() || null),
+      host: parsed.host,
+      port: parsed.port ?? null,
+    });
+  };
+
+  // The menu unmounts on close; a timer firing into it afterwards is nobody's.
+  useEffect(() => clearEditPoll, []);
 
   const startExport = () => {
     setAdding(false);
@@ -1516,6 +1663,19 @@ export function MachinesIndicator() {
                       {t(badge)}
                     </span>
                   )}
+                  <button
+                    type="button"
+                    className="machines-row-expand-btn"
+                    aria-label={t(expandedIds.has(m.id) ? "machines.hideDetailsAria" : "machines.showDetailsAria")}
+                    aria-expanded={expandedIds.has(m.id)}
+                    title={t(expandedIds.has(m.id) ? "machines.hideDetailsTitle" : "machines.showDetailsTitle")}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleExpanded(m.id);
+                    }}
+                  >
+                    {expandedIds.has(m.id) ? "▾" : "▸"}
+                  </button>
                   {!rowFormOpen && (
                     <div className="machines-row-actions">
                       {/* The connect, and — for a tagged cluster — the ONLY way it
@@ -1629,19 +1789,6 @@ export function MachinesIndicator() {
                       </button>
                     </div>
                   )}
-                  <button
-                    type="button"
-                    className="machines-row-expand-btn"
-                    aria-label={t(expandedIds.has(m.id) ? "machines.hideDetailsAria" : "machines.showDetailsAria")}
-                    aria-expanded={expandedIds.has(m.id)}
-                    title={t(expandedIds.has(m.id) ? "machines.hideDetailsTitle" : "machines.showDetailsTitle")}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleExpanded(m.id);
-                    }}
-                  >
-                    {expandedIds.has(m.id) ? "▾" : "▸"}
-                  </button>
                 </div>
                 {/* Why the row says what it says — shown as soon as anything
                     fails, not only once the user opens Retry. This is what tells
@@ -1860,20 +2007,39 @@ export function MachinesIndicator() {
                         spellCheck={false}
                       />
                     </label>
-                    <label>
-                      {t("machines.password")}
-                      <PasswordInput
-                        placeholder={t("machines.editPasswordPlaceholder")}
-                        value={editPassword}
-                        autoComplete="off"
-                        onChange={(e) => setEditPassword(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") void submitEdit(m.id);
-                        }}
+                    {!editViaTerminal && (
+                      <label>
+                        {t("machines.password")}
+                        <PasswordInput
+                          placeholder={t("machines.editPasswordPlaceholder")}
+                          value={editPassword}
+                          autoComplete="off"
+                          onChange={(e) => setEditPassword(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") void submitEdit(m.id);
+                          }}
+                        />
+                      </label>
+                    )}
+                    {/* Disabled rather than hidden in the terminal path, the add
+                        form's rule: a terminal login is one Eldrun never sees, so it
+                        stores nothing new and clears nothing — a saved password for
+                        this host stays as it is, and a vanishing row would read as
+                        one that was dropped. */}
+                    <label
+                      className="vpn-indicator-auto"
+                      title={t(
+                        editViaTerminal
+                          ? "machines.savePasswordTerminalTitle"
+                          : "machines.savePasswordTitle",
+                      )}
+                    >
+                      <Toggle
+                        checked={editSave}
+                        disabled={editViaTerminal}
+                        onChange={(e) => setEditSave(e.target.checked)}
+                        size="sm"
                       />
-                    </label>
-                    <label className="vpn-indicator-auto">
-                      <Toggle checked={editSave} onChange={(e) => setEditSave(e.target.checked)} size="sm" />
                       <span>
                         {t("machines.savePassword")}
                         <UntestedTag />
@@ -1888,17 +2054,64 @@ export function MachinesIndicator() {
                         spellCheck={false}
                       />
                     </label>
+                    <TerminalSignInToggle
+                      channel="ssh"
+                      checked={editViaTerminal}
+                      busy={editWaiting}
+                      onChange={setEditViaTerminal}
+                    />
+                    {/* The login is a root-terminal tab, not something in this menu —
+                        which closes the moment the pointer leaves it — so say where
+                        it went. */}
+                    {editViaTerminal && editWaiting && (
+                      <div className="settings-help" role="status">
+                        {t("machines.terminalLoginHint.pre")}{" "}
+                        <strong>{t("machines.rootTerminal")}</strong>{" "}
+                        {t("machines.terminalEditHint.post")}
+                      </div>
+                    )}
                     {editError && <div className="vpn-indicator-error">{editError}</div>}
                     <div className="vpn-indicator-actions">
+                      {editViaTerminal ? (
+                        <button
+                          type="button"
+                          className="vpn-indicator-connect"
+                          disabled={editWaiting}
+                          title={t("machines.loginInTerminalTitle")}
+                          onClick={() => void startTerminalEdit(m.id)}
+                        >
+                          {editWaiting ? t("machines.waitingForLogin") : t("machines.loginInTerminal")}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="vpn-indicator-connect"
+                          disabled={editBusy}
+                          onClick={() => void submitEdit(m.id)}
+                        >
+                          {editBusy ? t("machines.saving") : t("machines.saveChanges")}
+                        </button>
+                      )}
+                      {/* Only after the poll has given up: a login finished late is
+                          still a login, and re-arming beats retyping the form. */}
+                      {editViaTerminal && !editWaiting && editError && (
+                        <button
+                          type="button"
+                          className="vpn-indicator-connect"
+                          onClick={() => retryTerminalEdit(m.id)}
+                        >
+                          {t("machines.loggedInEdit")}
+                        </button>
+                      )}
                       <button
                         type="button"
-                        className="vpn-indicator-connect"
-                        disabled={editBusy}
-                        onClick={() => void submitEdit(m.id)}
+                        className="vpn-indicator-remove"
+                        onClick={() => {
+                          clearEditPoll();
+                          setEditWaiting(false);
+                          setEditId(null);
+                        }}
                       >
-                        {editBusy ? t("machines.saving") : t("machines.saveChanges")}
-                      </button>
-                      <button type="button" className="vpn-indicator-remove" onClick={() => setEditId(null)}>
                         {t("common.cancel")}
                       </button>
                     </div>

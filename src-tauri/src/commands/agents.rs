@@ -212,6 +212,126 @@ fn find_spec(id: &str) -> Option<&'static AgentSpec> {
     AGENTS.iter().find(|a| a.id == id)
 }
 
+/// Every agent CLI's binary name — the registry as a plain set, for callers that
+/// only need "is this command an agent?".
+///
+/// It exists so `services::sandbox::is_agent_cmd` (which decides whether a spawn
+/// is containerized under `SandboxScope::Agents`) reads the *same* table the +
+/// menu lists from. A hand-copied second list is how an agent added here would
+/// silently start running outside the container.
+pub fn agent_bins() -> Vec<&'static str> {
+    AGENTS.iter().map(|a| a.bin).collect()
+}
+
+/// POSIX login-shell script used by the explicit "install on remote machine"
+/// action. Agent ids resolve through the same registry as local installation,
+/// so the frontend never supplies executable text. Probe before and after: a
+/// repeat click is harmless, and installer success without a reachable binary
+/// is reported as failure rather than as a false green result.
+fn remote_install_script(spec: &AgentSpec) -> String {
+    format!(
+        "if command -v {bin} >/dev/null 2>&1; then \
+           echo '{label} is already installed on this machine.'; \
+           exit 0; \
+         fi; \
+         echo 'Installing {label} on this machine...'; \
+         {install}; \
+         install_status=$?; \
+         if [ \"$install_status\" -ne 0 ]; then exit \"$install_status\"; fi; \
+         hash -r 2>/dev/null || true; \
+         if command -v {bin} >/dev/null 2>&1; then \
+           echo '{label} installed successfully.'; \
+         else \
+           echo '{label} installer finished, but {bin} is not on the login-shell PATH.' >&2; \
+           exit 127; \
+         fi",
+        bin = spec.bin,
+        label = spec.label,
+        install = spec.install_cmd,
+    )
+}
+
+/// Install a known agent CLI on one configured global remote machine.
+///
+/// This is an explicit user gesture, so the SSH dial is declared foreground.
+/// Authentication follows the same saved-password/key/ControlMaster path as
+/// the global machine monitor. The command itself is registry-owned and runs in
+/// the remote account's login shell, where npm/nvm and user install paths live.
+#[tauri::command]
+pub async fn install_agent_remote(
+    agent_id: String,
+    machine_id: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let spec = find_spec(&agent_id)
+            .ok_or_else(|| format!("unknown agent: {agent_id}"))?;
+        let machine = crate::commands::global_machines::find_by_id(&machine_id)
+            .ok_or_else(|| "remote machine is no longer configured".to_string())?;
+
+        use crate::services::remote_credentials as creds;
+        let _dial = crate::services::ssh_common::declared_dial(
+            Some(false),
+            &machine.user,
+            &machine.host,
+            machine.port,
+        );
+        let account = creds::ssh_account(&machine.user, &machine.host, machine.port);
+        let password = creds::get(&account);
+        let script = remote_install_script(spec);
+        let quoted = crate::services::ssh_exec::shell_quote(&script);
+        let command = format!("exec \"${{SHELL:-/bin/sh}}\" -lc {quoted}");
+        crate::commands::ssh::run_ssh_auth(
+            &machine.user,
+            &machine.host,
+            machine.port,
+            password.as_deref(),
+            &[&command],
+        )
+    })
+    .await
+    .map_err(|e| format!("remote agent installer task failed: {e}"))?
+}
+
+/// The same install, as a command line for a **visible terminal tab** instead of
+/// a headless run.
+///
+/// `install_agent_remote` reports one string when it is over and nothing while it
+/// runs, which is the wrong shape for the thing that actually goes wrong here: an
+/// npm install on someone else's machine takes minutes, prints its progress, and
+/// can stop on a question (a `sudo` password, an nvm shell that has to be sourced,
+/// a host key). All of that is invisible headlessly, so a slow install and a hung
+/// one look identical and a prompt is simply never answered.
+///
+/// Same registry-owned script (`remote_install_script`) and the same machine
+/// lookup — the frontend supplies an agent id and a machine id, never executable
+/// text. What differs is only the transport: `ssh -t` into the login shell, typed
+/// into a root-scope shell tab, where the user reads the output and answers what
+/// it asks.
+///
+/// Deliberately **not** registered with `credentials::note_minted_login`: this
+/// command line does not stop at a login prompt, it goes on to run an installer,
+/// so a "type my saved password" paste aimed at it could land in whatever prompt
+/// the installer happens to be showing. The interactive login is still typed by
+/// hand, or ridden for free off the shared ControlMaster.
+#[tauri::command]
+pub fn install_agent_remote_command(
+    agent_id: String,
+    machine_id: String,
+) -> Result<String, String> {
+    let spec = find_spec(&agent_id).ok_or_else(|| format!("unknown agent: {agent_id}"))?;
+    let machine = crate::commands::global_machines::find_by_id(&machine_id)
+        .ok_or_else(|| "remote machine is no longer configured".to_string())?;
+    let script = remote_install_script(spec);
+    let quoted = crate::services::ssh_exec::shell_quote(&script);
+    let remote = format!("\"${{SHELL:-/bin/sh}}\" -lc {quoted}");
+    crate::services::ssh_exec::interactive_exec_command(
+        &machine.user,
+        &machine.host,
+        machine.port,
+        &remote,
+    )
+}
+
 /// Where `spec`'s binary actually lives — on `PATH` (including Eldrun's
 /// supplemental Windows/macOS fallback dirs) or in one of its well-known
 /// per-user install locations — or `None` when it isn't installed. The single
@@ -760,6 +880,70 @@ mod tests {
                 matches!(shell_kind, "bash" | "powershell" | "default"),
                 "{} has an invalid shell kind",
                 spec.id
+            );
+        }
+    }
+
+    #[test]
+    fn remote_install_uses_the_registry_command_and_probes_both_sides() {
+        let gemini = find_spec("gemini").expect("gemini in registry");
+        let script = remote_install_script(gemini);
+        assert!(script.contains("npm install -g @google/gemini-cli"));
+        assert_eq!(script.matches("command -v gemini").count(), 2);
+        assert!(script.contains("hash -r"));
+        assert!(script.contains("exit 127"));
+    }
+
+    /// The terminal variant runs the SAME script over an interactive ssh: same
+    /// probe-install-probe text, a remote PTY (`-t`) so the installer's prompts
+    /// are answerable, and the script carried as one shell-quoted argument.
+    #[test]
+    fn remote_install_terminal_command_runs_the_same_script_on_a_pty() {
+        let gemini = find_spec("gemini").expect("gemini in registry");
+        let script = remote_install_script(gemini);
+        let quoted = crate::services::ssh_exec::shell_quote(&script);
+        let remote = format!("\"${{SHELL:-/bin/sh}}\" -lc {quoted}");
+        let cmd = crate::services::ssh_exec::interactive_exec_command(
+            &Some("alice".to_string()),
+            "host.example",
+            Some(2222),
+            &remote,
+        )
+        .expect("command builds");
+        assert!(cmd.starts_with("'ssh' "));
+        assert!(cmd.contains("'alice@host.example'"));
+        assert!(cmd.contains("'-p' '2222'"));
+        assert!(cmd.contains("'-t'"));
+        // The whole remote command is one argv item, so the local shell can't
+        // re-split the installer script on its spaces.
+        assert!(cmd.contains("npm install -g @google/gemini-cli"));
+        assert!(cmd.trim_end().ends_with('\''));
+    }
+
+    /// **Tripwire: the two install tables must not drift** (#28b).
+    ///
+    /// `services::remote_agents::RECIPES` restates a few of these rows as
+    /// fragments of a remote shell script — it is a `services/` module and cannot
+    /// reach this one — and the pair had already drifted once: this registry moved
+    /// Claude to the official `install.sh` while the remote bootstrap went on
+    /// running `npm install -g @anthropic-ai/claude-code`, so the same agent name
+    /// installed two different binaries depending on which machine it landed on.
+    ///
+    /// Nothing forces the tables to agree at compile time, so it is asserted here:
+    /// every remote recipe must name an agent this registry knows, with the same
+    /// Unix install command. Adding an agent stays a one-row edit; adding it in
+    /// only one of the two places is what fails.
+    #[test]
+    fn every_remote_recipe_matches_its_registry_row() {
+        for recipe in crate::services::remote_agents::recipes() {
+            let spec = AGENTS
+                .iter()
+                .find(|a| a.bin == recipe.bin)
+                .unwrap_or_else(|| panic!("remote recipe '{}' names no known agent", recipe.bin));
+            assert_eq!(
+                spec.install_cmd, recipe.install,
+                "'{}' installs differently locally and remotely",
+                recipe.bin
             );
         }
     }

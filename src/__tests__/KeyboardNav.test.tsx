@@ -175,6 +175,32 @@ describe("#62 keyboard nav wiring", () => {
     expect(setActive).toHaveBeenCalledWith("p2");
   });
 
+  it("Shift+Ctrl+Tab wraps through the ROOT scope, not past it", () => {
+    // The root terminal is the pill strip's first pill, so the cycle stops
+    // there. It used to be reachable only by leaving it: `null` matched no
+    // pill, so cycling out worked and cycling back in was impossible.
+    useProjectsStore.setState({
+      projects: [
+        { id: "p1", name: "P1", status: "active", position: 1 } as never,
+        { id: "p2", name: "P2", status: "current", position: 2 } as never,
+      ],
+      activeId: "p2",
+    });
+    const setActive = vi.fn().mockResolvedValue(undefined);
+    useProjectsStore.setState({ setActive });
+    render(<Harness />);
+
+    // Last pill → wraps to the root scope.
+    key({ key: "Tab", shiftKey: true, ctrlKey: true });
+    expect(setActive).toHaveBeenCalledWith(null);
+
+    // And out of the root scope again, into the first pill.
+    setActive.mockClear();
+    useProjectsStore.setState({ activeId: null });
+    key({ key: "Tab", shiftKey: true, ctrlKey: true });
+    expect(setActive).toHaveBeenCalledWith("p1");
+  });
+
   it("uses a custom binding from settings when present", () => {
     // Rebind closeTab from Ctrl+W to Ctrl+Q.
     useSettingsStore.setState({

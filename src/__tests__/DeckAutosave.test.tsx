@@ -30,19 +30,28 @@ const files = new Map<string, string>();
 const writes: Array<{ path: string; text: string }> = [];
 
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (cmd: string, args: Record<string, unknown> = {}) => {
-    switch (cmd) {
+  invoke: vi.fn(
+    async (
+      cmd: string,
+      args: Record<string, unknown> | Uint8Array = {},
+      options?: { headers?: Record<string, string> },
+    ) => {
+      const arg = (k: string) =>
+        args instanceof Uint8Array ? undefined : (args as Record<string, unknown>)[k];
+      switch (cmd) {
       case "read_file_text": {
-        const hit = files.get(String(args.path));
+        const hit = files.get(String(arg("path")));
         if (hit === undefined) throw new Error("No such file or directory");
         return hit;
       }
+      // Bytes cross as the invoke's RAW BODY now, with the path in a header — see
+      // `writeFileBytes`. The fake backend mirrors that shape rather than the old
+      // `{path, content}` one, so the test exercises the real call.
       case "write_file_bytes": {
-        const text = new TextDecoder().decode(
-          new Uint8Array(args.content as ArrayLike<number>),
-        );
-        files.set(String(args.path), text);
-        writes.push({ path: String(args.path), text });
+        const path = decodeURIComponent(options?.headers?.["x-eldrun-path"] ?? "");
+        const text = new TextDecoder().decode(args as Uint8Array);
+        files.set(path, text);
+        writes.push({ path, text });
         return null;
       }
       case "read_file_bytes":
@@ -55,8 +64,9 @@ vi.mock("@tauri-apps/api/core", () => ({
         return { available: false, engines: [], bibtex: false, latexmk: false };
       default:
         return null;
-    }
-  }),
+      }
+    },
+  ),
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }));

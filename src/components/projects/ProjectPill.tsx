@@ -10,10 +10,11 @@ import {
   type GitProvider,
   type ProjectEntry,
   type PublishFrom,
+  type SandboxScope,
   type SandboxSpec,
 } from "../../types";
 import { useTimerStore } from "../../stores/timer";
-import { useActivityStore, type TabStatusCounts } from "../../stores/activity";
+import { PillStatusBars } from "./PillStatusBars";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { cmdToKind, isResumableAgentTab, isRestorableTab, useTabsStore } from "../../stores/tabs";
@@ -35,6 +36,7 @@ import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { FolderPickerDialog } from "../common/FolderPickerDialog";
 import { RemoteConnMenu } from "../header/RemoteConnMenu";
+import { VmSettingsDialog } from "./VmSettingsDialog";
 import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/categoryColor";
 import { usePillDragStore } from "../../stores/pillDrag";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
@@ -77,30 +79,6 @@ const GIT_ICON_TITLE_KEY: Record<GitDirtyState, TranslationKey> = {
   unpushed: "pill.gitUnpushed",
   broken: "pill.gitBroken",
 };
-
-/** Most status bars the pill will draw. A project with more busy tabs than this
- *  would overflow a narrow pill, so the strip stops here and the tooltip carries
- *  the true tally. */
-const MAX_STATUS_BARS = 6;
-
-/** The strip's bars, most urgent state first, one per tab. */
-function statusBarKinds(c: TabStatusCounts): string[] {
-  const kinds = [
-    ...Array<string>(c.working).fill("working"),
-    ...Array<string>(c.decision).fill("needs-decision"),
-    ...Array<string>(c.done).fill("finished"),
-  ];
-  return kinds.slice(0, MAX_STATUS_BARS);
-}
-
-/** Tooltip spelling out the tally the bars stand for (never truncated). */
-function statusBarTitle(c: TabStatusCounts, t: (key: TranslationKey, params?: Record<string, string | number>) => string): string {
-  const parts: string[] = [];
-  if (c.working) parts.push(t("pill.statusWorking", { count: c.working }));
-  if (c.decision) parts.push(t("pill.statusWaiting", { count: c.decision }));
-  if (c.done) parts.push(t("pill.statusFinished", { count: c.done }));
-  return parts.join(" · ");
-}
 
 interface ContextMenuPos { x: number; y: number }
 
@@ -854,6 +832,9 @@ function ContainerSettingsWindow({
   const [cpus, setCpus] = useState(spec?.cpus ?? "");
   const [pids, setPids] = useState(spec?.pids_limit ? String(spec.pids_limit) : "");
   const [readonly, setReadonly] = useState(spec?.readonly_rootfs ?? false);
+  // Unset means "all" — the backend's default, restated here rather than left to
+  // `undefined`, so the radio always has a checked option to render.
+  const [scope, setScope] = useState<SandboxScope>(spec?.scope ?? "all");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -868,6 +849,11 @@ function ContainerSettingsWindow({
     setError("");
     const next: SandboxSpec = {
       enabled: spec?.enabled ?? false,
+      scope,
+      // Carried through, not rebuilt: it records which in-repo Dockerfile the
+      // user was last asked about, and dropping it here would make the next
+      // enable re-raise the adopt dialog for a file nothing changed about.
+      spec_source_hash: spec?.spec_source_hash,
       dockerfile: dockerfile.trim() || undefined,
       image: image.trim() || undefined,
       network: network.trim() || undefined,
@@ -893,6 +879,49 @@ function ContainerSettingsWindow({
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <p className="settings-help">{t("pill.containerAppliedNote")}</p>
+        {/* First, because it decides what the rest of the knobs even apply to.
+            A radio rather than a toggle: neither value is an "off", and a switch
+            labelled "agents only" reads as a weakening of a default that is not
+            obviously the safer one for every project. */}
+        <fieldset className="container-scope-fieldset">
+          <legend>{t("pill.containerScopeLegend")} <UntestedTag /></legend>
+          <label className="container-scope-option">
+            <input
+              type="radio"
+              name="container-scope"
+              checked={scope === "all"}
+              onChange={() => setScope("all")}
+            />
+            <span>
+              <strong>{t("pill.containerScopeAll")}</strong>
+              <span className="settings-help">{t("pill.containerScopeAllHelp")}</span>
+            </span>
+          </label>
+          <label className="container-scope-option">
+            <input
+              type="radio"
+              name="container-scope"
+              checked={scope === "agents"}
+              onChange={() => setScope("agents")}
+            />
+            <span>
+              <strong>{t("pill.containerScopeAgents")}</strong>
+              <span className="settings-help">{t("pill.containerScopeAgentsHelp")}</span>
+            </span>
+          </label>
+        </fieldset>
+        {/* Unlike the knobs below (which take effect at the next container
+            start), changing this moves live tabs across the boundary — the flag
+            is a spawn dependency, so saving respawns exactly the tabs whose side
+            changed. Said here rather than left to be discovered by a restarted
+            shell. */}
+        <p className="settings-help">{t("pill.containerScopeRestartNote")}</p>
+        {/* Tied to the SELECTED mode, not to whether it changed: the caveat
+            describes what agents-only means, and it has to be readable by someone
+            reopening the dialog to check what this project is set to. */}
+        {scope === "agents" && (
+          <p className="settings-help">{t("pill.containerScopeAgentsCaveat")}</p>
+        )}
         <label>
           {t("pill.buildFromDockerfile")}
           <input
@@ -1265,16 +1294,6 @@ export function ProjectPill({
   const catColor = primaryCategoryColor(categories);
 
   const timerPaused = useTimerStore((s) => s.paused);
-  // One little bar per non-idle tab along the bottom edge of the pill, so a
-  // glance at the switcher says how many tabs of each project are working
-  // (green, pulsing), waiting on a decision (orange, pulsing) or finished unseen
-  // (green, steady). This replaced a whole-pill tint that could only ever show
-  // one state and said nothing about how many tabs were in it.
-  // The SELECTED project keeps its bars: the strip is a tally of what the project
-  // is doing, not a list of what still needs a glance, and the project you are in
-  // is the one whose agents you most need to see running. Only "finished unseen"
-  // is inherently about unread output, and it can't arise for a tab on screen.
-  const statusCounts = useActivityStore((s) => s.statusCountsByScope[project.id]);
   const gitDirty = useGitDirtyStore((s) => s.byId[project.id]);
   const updateProjectDescription = useProjectsStore((s) => s.updateProjectDescription);
   const renameProject = useProjectsStore((s) => s.renameProject);
@@ -1282,6 +1301,27 @@ export function ProjectPill({
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
   const setProjectRemoteControl = useProjectsStore((s) => s.setProjectRemoteControl);
   const [showContainerSettings, setShowContainerSettings] = useState(false);
+  // VM tier (`docs/vm_projects_plan.md`): the settings dialog, plus a light
+  // running/off poll for the pill's VM glyph — a local registry read, only
+  // ever scheduled for a project that actually carries a VM spec.
+  const [showVmSettings, setShowVmSettings] = useState(false);
+  const isVmProject = Boolean(project.vm?.enabled);
+  const [vmRunning, setVmRunning] = useState(false);
+  useEffect(() => {
+    if (!isVmProject) return;
+    let cancelled = false;
+    const poll = () => {
+      invoke<{ running: boolean }>("vm_status", { projectId: project.id })
+        .then((s) => !cancelled && setVmRunning(s.running))
+        .catch(() => {});
+    };
+    poll();
+    const timer = window.setInterval(poll, 6000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [isVmProject, project.id]);
   const openRemoteMachines = useRemoteMachinesStore((s) => s.open);
   // A global machine picked for THIS (local) project in the header's Machines
   // menu: that menu can't own the extend dialog, so it parks the request here
@@ -1855,6 +1895,24 @@ export function ProjectPill({
           {/* Runtime */}
           <div className="context-menu-group">
             <div className="context-menu-group-label">{t("pill.runtimeGroup")}</div>
+            {/* VM tier (`docs/vm_projects_plan.md`): boot/shutdown + the knobs
+                dialog. Chosen at creation, so shown only for projects that
+                carry a VM spec — there is no "turn this project into a VM"
+                here (that's a data move, not a toggle). */}
+            {isVmProject && (
+              <button
+                className="untested"
+                onClick={() => {
+                  setContextMenu(null);
+                  setShowVmSettings(true);
+                }}
+                title={t("pill.vmSettingsMenuTitle")}
+              >
+                {vmRunning ? "▣ " : "▢ "}
+                {t("pill.vmSettingsEllipsis")}
+                <UntestedTag />
+              </button>
+            )}
             {/* Project container (#38): local projects only (a remote project's
                 tabs already run on its host), hidden on Windows (the backend
                 refuses — host paths mean nothing inside a Linux container). */}
@@ -2159,6 +2217,11 @@ export function ProjectPill({
         />
       )}
 
+      {/* VM knobs (memory/cpus/egress/allowlist) + boot/shutdown/rebuild */}
+      {showVmSettings && (
+        <VmSettingsDialog project={project} onClose={() => setShowVmSettings(false)} />
+      )}
+
 
       {/* Which Python the viewer's Run/Debug buttons use (#87) */}
       {showPythonSettings && (
@@ -2297,6 +2360,21 @@ export function ProjectPill({
             ))}
           </span>
         )}
+        {/* VM state glyph (`docs/vm_projects_plan.md`): the standard remote
+            lamps already say "connected" — this adds the one thing they can't,
+            whether the machine itself is up. Click opens the VM dialog. */}
+        {isVmProject && (
+          <button
+            className="pill-vm-glyph"
+            title={vmRunning ? t("pill.vmGlyphRunning") : t("pill.vmGlyphOff")}
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowVmSettings(true);
+            }}
+          >
+            {vmRunning ? "▣" : "▢"}
+          </button>
+        )}
         {project.remote && <RemoteConnMenu project={project} compact />}
         <button
           className="pill-close-btn"
@@ -2305,13 +2383,7 @@ export function ProjectPill({
         >
           ×
         </button>
-        {statusCounts && (
-          <span className="pill-status-bars" title={statusBarTitle(statusCounts, t)}>
-            {statusBarKinds(statusCounts).map((kind, i) => (
-              <span key={i} className={`pill-status-bar ${kind}`} />
-            ))}
-          </span>
-        )}
+        <PillStatusBars scope={project.id} />
       </div>
     </>
   );

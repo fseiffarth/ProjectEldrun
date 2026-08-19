@@ -205,12 +205,28 @@ export const useHostSessionsStore = create<HostSessionsStore>((set, get) => ({
         connected.map((h) =>
           invoke<TmuxSession[]>("remote_tmux_list", { projectId, hostId: h.id, includeAll })
             .then((ss) => ss.map((session) => ({ hostId: h.id, hostLabel: h.label, session })))
-            .catch(() => [] as SessionRow[]),
+            // A host whose read FAILED contributes `null`, not an empty list. The
+            // two are the same shape and mean opposite things, and the empty one
+            // is exactly what the view must never say wrongly — the same rule
+            // `release` keeps the last reading for. This probe spawns its own
+            // `ssh` on the shared ControlMaster socket, so a socket being
+            // replaced under it (or any transient drop) fails one tick and
+            // succeeds on the next, which used to blank the Sessions view for 7 s
+            // and report "no persistent sessions on the host".
+            .catch(() => null),
         ),
       );
       // Superseded (the question changed) or nobody left watching: don't write.
       if ((gens.get(projectId) ?? 0) !== gen || !refs.get(projectId)) return;
-      set((s) => ({ byProject: { ...s.byProject, [projectId]: lists.flat() } }));
+      set((s) => {
+        const prev = s.byProject[projectId] ?? EMPTY;
+        const rows = lists.flatMap((list, i) =>
+          // Carry the failed host's previous rows forward untouched; every other
+          // host is replaced by what it just reported.
+          list ?? prev.filter((r) => r.hostId === connected[i].id),
+        );
+        return { byProject: { ...s.byProject, [projectId]: rows } };
+      });
     } finally {
       const left = (inFlight.get(projectId) ?? 1) - 1;
       if (left > 0) inFlight.set(projectId, left);

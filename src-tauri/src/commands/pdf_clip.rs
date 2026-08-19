@@ -20,8 +20,14 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-/// Mirrors `fs::MAX_BINARY_VIEW_BYTES`: the ceiling on a PDF Eldrun will read or
-/// write, applied here too so a drag cannot become an unbounded allocation.
+/// The ceiling on one transfer, so a drag cannot become an unbounded allocation.
+///
+/// It used to mirror `fs::MAX_BINARY_VIEW_BYTES` and deliberately no longer does:
+/// that limit rose once file bytes stopped crossing the IPC bridge as JSON, and this
+/// slot's bytes still do (`pdf_clip_set` takes a `Vec<u8>` argument, i.e. one decimal
+/// literal per byte in each direction). What is dragged is a handful of *pages* — a
+/// few MB even out of a large document — so the old number stays until the transfer
+/// itself is moved onto a raw body.
 const MAX_CLIP_BYTES: usize = 64 * 1024 * 1024;
 
 /// How many transfers to keep. More than one so a drop can still find its bytes if

@@ -14,9 +14,9 @@ import { RunHostPicker } from "../tabs/TabLocalityBadges";
 import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFilesSettings";
 import { useImportDrop } from "./importDrop";
 import { logoutRemote, useProjectsStore } from "../../stores/projects";
-import { useSyncStore, amberPaths } from "../../stores/sync";
+import { useSyncStore, amberPaths, localNewPaths } from "../../stores/sync";
 import { confirmSyncTransfer } from "../../stores/syncConfirm";
-import { openLinkedFile } from "../embed/FileViewerPane";
+import { openLinkedFile, viewerForPath } from "../embed/FileViewerPane";
 import { useWindowsStore } from "../../stores/windows";
 import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
 import { resolveLocalMirror, type ProjectEntry } from "../../types";
@@ -26,8 +26,9 @@ import { projectTypeTags } from "../projects/projectTypeTags";
 import { ProjectHoverCard, useProjectHoverCard } from "../projects/ProjectHoverCard";
 import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { UntestedTag } from "../common/UntestedTag";
-import { useTabsStore, type TabEntry } from "../../stores/tabs";
+import { ROOT_SCOPE, useTabsStore, type TabEntry } from "../../stores/tabs";
 import { persistentSessionOf } from "../../lib/closeRemoteTab";
+import { sessionKindFromName, type TmuxSessionKind } from "../../lib/tmuxSession";
 import { useRemoteStatusStore, sshOf } from "../../stores/remoteStatus";
 import {
   sessionHostsOf,
@@ -82,6 +83,15 @@ function sessionDisplayName(
   return name.startsWith("eldrun-") ? t("projectFilesView.sessionLabel") : name;
 }
 
+/** The Sessions view's per-machine session-type sub-heading (TODO #85): one label
+ *  per {@link TmuxSessionKind} bucket. `other` groups foreign/legacy/renamed
+ *  sessions the name cannot attribute to an agent or a shell. */
+const SESSION_KIND_LABEL: Record<TmuxSessionKind, TranslationKey> = {
+  agent: "projectFilesView.sessionKindAgents",
+  shell: "projectFilesView.sessionKindShells",
+  other: "projectFilesView.sessionKindOther",
+};
+
 /** Absolute local-time readout for a host-clock epoch timestamp, for the
  *  session-stats popup (the row itself only ever shows relative age). */
 function absoluteTime(epochSecs: number): string {
@@ -121,25 +131,28 @@ interface MtimeCue {
   title: string;
 }
 
-/** Which copy has the later recorded mtime, as a small badge. Remote (host)
- *  and local clocks may differ, so this is intentionally a timestamp cue,
- *  never an automatic resolution — the full "modified when" detail lives in
- *  the tooltip rather than the badge itself. Tone always names the side the
- *  text is about: remote = --warning (orange), local = --success (green),
- *  matching the take-remote/keep-local icon buttons below.
+/** Which side moved, as a small badge. The verdict comes from the backend's
+ *  `host_diverged`/`local_diverged` — each side compared to its own recorded
+ *  base, so host/local clock skew can never pick the wrong authority. The
+ *  mtimes are kept purely as DISPLAY metadata (the tooltip's "modified when"
+ *  lines); the badge's tone/text no longer trusts them. Tone always names the
+ *  side the text is about: remote = --warning (orange), local = --success
+ *  (green), matching the take-remote/keep-local icon buttons below.
  *
  *  A row only reaches this list once the manifest has recorded a synced base
  *  for it (`amberPaths` reads `state === "amber"`, which `compute_state`
  *  never sets for an untracked path) — so a null mtime here is never "this
  *  file was never synced," it's "this file WAS synced and one side's copy
  *  has since been deleted." The tooltip says so explicitly, since the badge
- *  text alone ("Remote only") reads ambiguously otherwise. */
-function mtimeDivergenceCue(
+ *  text alone ("Remote only") reads ambiguously otherwise. Exported for tests. */
+export function mtimeDivergenceCue(
   t: (key: TranslationKey, params?: Record<string, string | number>) => string,
   hostMtime: number | null | undefined,
   localMtime: number | null | undefined,
-): MtimeCue | null {
-  if (hostMtime == null && localMtime == null) return null;
+  hostDiverged: boolean,
+  localDiverged: boolean,
+  hostChecked: boolean,
+): MtimeCue {
   const hostLabel =
     hostMtime != null
       ? t("projectFilesView.remoteModified", { when: fmtModified(hostMtime) })
@@ -149,10 +162,26 @@ function mtimeDivergenceCue(
       ? t("projectFilesView.localModified", { when: fmtModified(localMtime) })
       : t("projectFilesView.localDeletedSinceSync");
   const title = `${hostLabel}\n${localLabel}`;
+  if (hostMtime == null && localMtime == null) {
+    // "Gone on both sides" is a host fact — only claim it when this pass
+    // actually asked the host. A cold pool (or an errored stat) reports every
+    // host mtime as null, and asserting a deletion out of that would put the
+    // Forget action under a false sentence.
+    if (!hostChecked) {
+      const uncheckedLabel = t("projectFilesView.localGoneHostUnchecked");
+      return { text: uncheckedLabel, tone: "neutral", title: `${uncheckedLabel}\n${localLabel}` };
+    }
+    return { text: t("projectFilesView.goneBothSides"), tone: "neutral", title };
+  }
   if (hostMtime == null) return { text: t("projectFilesView.localOnly"), tone: "local", title };
   if (localMtime == null) return { text: t("projectFilesView.remoteOnly"), tone: "remote", title };
-  if (hostMtime > localMtime) return { text: t("projectFilesView.remoteNewer"), tone: "remote", title };
-  if (localMtime > hostMtime) return { text: t("projectFilesView.localNewer"), tone: "local", title };
+  // Both present: use the backend's per-side base comparison, never a
+  // cross-machine mtime comparison.
+  if (hostDiverged && localDiverged)
+    return { text: t("projectFilesView.bothChanged"), tone: "neutral", title };
+  if (hostDiverged) return { text: t("projectFilesView.remoteNewer"), tone: "remote", title };
+  if (localDiverged) return { text: t("projectFilesView.localNewer"), tone: "local", title };
+  // Neither flagged (a self-heal race): nothing actually diverged.
   return { text: t("projectFilesView.sameTime"), tone: "neutral", title };
 }
 
@@ -185,8 +214,8 @@ const EMPTY_SCOPE_TABS: TabEntry[] = [];
  * in the projects store, a tab's on its `TabEntry`), where the Remote/Local
  * switch's `useFileSource` hook lives, and the panel-only window chrome (pin,
  * resize border, the "Hidden subwindows" list) which comes in through the
- * `resizeHandle` / `pin` / `hidden` ReactNode slots — meaningless in a tab, so a
- * tab simply passes none.
+ * `resizeHandle` / `pin` / `hidden` / `footer` ReactNode slots — meaningless in
+ * a tab, so a tab simply passes none.
  */
 export interface ProjectFilesViewProps {
   /** The scope: a project id, a `box:<id>` scope, or "root". */
@@ -240,6 +269,8 @@ export interface ProjectFilesViewProps {
   resizeHandle?: React.ReactNode;
   pin?: React.ReactNode;
   hidden?: React.ReactNode;
+  /** Panel-only bottom frame chrome, rendered outside the scrollable viewer. */
+  footer?: React.ReactNode;
 }
 
 export function ProjectFilesView({
@@ -260,6 +291,7 @@ export function ProjectFilesView({
   resizeHandle,
   pin,
   hidden,
+  footer,
   compact,
 }: ProjectFilesViewProps) {
   const t = useT();
@@ -426,6 +458,10 @@ export function ProjectFilesView({
   // need a human to pick a side.
   const syncMap = useSyncStore((s) => (projectId ? s.byProject[projectId] : undefined));
   const orangeFiles = useMemo(() => amberPaths(syncMap), [syncMap]);
+  // NEW local-only files (never synced — the host has no copy). A separate list
+  // from the amber one on purpose: these have nothing to merge and no remote
+  // side to take, so their whole vocabulary is "upload" or "leave local".
+  const newLocalFiles = useMemo(() => localNewPaths(syncMap), [syncMap]);
   // The local mirror root, to open an amber file's mirror copy for inspection.
   const mirrorRoot = resolveLocalMirror(project) ?? (projectDir ? `${projectDir}/mirror` : null);
 
@@ -524,7 +560,25 @@ export function ProjectFilesView({
       if (group) group.rows.push(row);
       else groups.set(row.hostId, { hostId: row.hostId, hostLabel: row.hostLabel, rows: [row] });
     }
-    return [...groups.values()].filter((group) => group.rows.length > 0);
+    // Within each machine, split the sessions by the kind of tab they back
+    // (`sessionKindFromName`), in a fixed order so the sub-headings never reshuffle
+    // as sessions come and go. An empty bucket is dropped — a header for a type this
+    // host is not running would be noise — and `other` (foreign/legacy/renamed
+    // sessions) only appears when there is at least one, so an ordinary all-Eldrun
+    // host shows just Agents/Shells.
+    return [...groups.values()]
+      .filter((group) => group.rows.length > 0)
+      .map((group) => {
+        const byKind = new Map<TmuxSessionKind, SessionRow[]>();
+        for (const row of group.rows) {
+          const kind = sessionKindFromName(row.session.name);
+          (byKind.get(kind) ?? byKind.set(kind, []).get(kind)!).push(row);
+        }
+        const kindGroups = (["agent", "shell", "other"] as const)
+          .map((kind) => ({ kind, rows: byKind.get(kind) ?? [] }))
+          .filter((kg) => kg.rows.length > 0);
+        return { ...group, kindGroups };
+      });
   }, [sessionHosts, sessionRows]);
 
   // The (host, session) each open shell tab of this scope owns, so a Sessions row
@@ -858,10 +912,16 @@ export function ProjectFilesView({
   // Same hover card as the project pill, shown when hovering the project name
   // here — minus the type tags, which already sit beside the name below.
   const nameHover = useProjectHoverCard(project ?? undefined);
+  const leftDockedPanel = containerClassName.includes("right-panel left");
 
   // A box scope shows a multi-root file view (the box folder + every member
   // project's root) instead of one project tree; the pane renders it.
   const { activeBox } = useBoxRoots(scope);
+  // The root scope's own tree (`~/eldrun/root`): a real folder with no project
+  // record behind it — no project.json, no git provider, no settings dialog — so
+  // it is named for what it is rather than falling back to a bare "Files". The
+  // check is the scope's, not "no project": a box scope has none either.
+  const isRootScope = !project && !activeBox && scope === ROOT_SCOPE;
 
   const openInOsBrowser = () => {
     if (!projectDir) return;
@@ -995,13 +1055,27 @@ export function ProjectFilesView({
           }}
           onMouseEnter={
             !activeBox && project
-              ? (e) => void nameHover.open(e.currentTarget.getBoundingClientRect())
+              ? (e) => void nameHover.open(
+                e.currentTarget.getBoundingClientRect(),
+                leftDockedPanel ? "start" : "center",
+              )
               : undefined
           }
           onMouseLeave={!activeBox && project ? () => nameHover.close() : undefined}
+          // The root scope has no project to hover a card for, so what it is
+          // rather than what it holds goes in the plain tooltip: the path, and
+          // the one sentence saying this folder is the scratch area.
+          title={isRootScope ? `${projectDir}\n${t("projectFilesView.rootScopeTitle")}` : undefined}
         >
-          {activeBox ? `▣ ${activeBox.name}` : project ? project.name : t("projectFilesView.filesFallbackName")}
+          {activeBox
+            ? `▣ ${activeBox.name}`
+            : project
+              ? project.name
+              : isRootScope
+                ? `✦ ${t("projectFilesView.rootScopeName")}`
+                : t("projectFilesView.filesFallbackName")}
         </span>
+        {isRootScope && <UntestedTag />}
         {!activeBox && project && (
           <ProjectHoverCard project={project} state={nameHover} showTags={false} />
         )}
@@ -1305,16 +1379,25 @@ export function ProjectFilesView({
         ))}
         {/* Orange (diverged) files: a dedicated toggle for remote projects,
             badged with the count so conflicts are visible at a glance. Auto-sync
-            never touches these, so this is where they get resolved. */}
+            never touches these, so this is where they get resolved. The badge
+            also counts NEW local-only files — a file the host has never seen is
+            invisible in the remote tree, so this count is where its existence
+            first shows up at all. */}
         {!activeBox && project?.remote && projectId && (
           <button
             className={`tab-add-btn right-panel-orange-btn${view === "orange" ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "orange"}
             onClick={() => setView((v) => (v === "orange" ? "files" : "orange"))}
-            title={t("projectFilesView.divergedFilesTitle", { count: orangeFiles.length })}
+            title={t("projectFilesView.divergedFilesTitle", {
+              count: orangeFiles.length + newLocalFiles.length,
+            })}
           >
-            ± {orangeFiles.length > 0 && <span className="right-panel-orange-count">{orangeFiles.length}</span>}
+            ± {orangeFiles.length + newLocalFiles.length > 0 && (
+              <span className="right-panel-orange-count">
+                {orangeFiles.length + newLocalFiles.length}
+              </span>
+            )}
           </button>
         )}
         {/* Persistent (tmux) sessions on the host (TODO #85): remote-only, badged
@@ -1543,7 +1626,7 @@ export function ProjectFilesView({
 
       {view === "orange" && (
         <div className="right-panel-scroll right-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
-          {orangeFiles.length === 0 ? (
+          {orangeFiles.length === 0 && newLocalFiles.length === 0 ? (
             <div className="right-panel-orange-empty">{t("projectFilesView.noDivergedFiles")}</div>
           ) : (
             <>
@@ -1553,10 +1636,12 @@ export function ProjectFilesView({
                   goes through the shared transfer confirmation, which names the
                   losing files rather than only counting them. Header + icon
                   buttons (not a text button per row) so the bar stays compact. */}
+              {orangeFiles.length > 0 && (
               <div className="orange-bulk-bar">
                 <span className="orange-bulk-count">
                   {t("projectFilesView.divergedCount", { count: orangeFiles.length })}
                 </span>
+                <UntestedTag />
                 <div className="orange-file-actions">
                   <button
                     type="button"
@@ -1614,22 +1699,51 @@ export function ProjectFilesView({
                   </button>
                 </div>
               </div>
+              )}
               {orangeFiles.map((rel) => {
                 const rowHostMtime = syncMap?.[rel]?.hostMtime;
                 const rowLocalMtime = syncMap?.[rel]?.localMtime;
-                const mtimeCue = mtimeDivergenceCue(t, rowHostMtime, rowLocalMtime);
+                const rowHostChecked = syncMap?.[rel]?.hostChecked ?? false;
+                const mtimeCue = mtimeDivergenceCue(
+                  t,
+                  rowHostMtime,
+                  rowLocalMtime,
+                  syncMap?.[rel]?.hostDiverged ?? false,
+                  syncMap?.[rel]?.localDiverged ?? false,
+                  rowHostChecked,
+                );
                 // "Remote only" / "Local only": the other side has no file at
                 // all, so the action that would act on it is a no-op — disable
-                // it rather than leave a button that errors when clicked.
+                // it rather than leave a button that errors when clicked. What a
+                // one-sided deletion gets INSTEAD is the 🗑 action below: the
+                // arrows can only undo the deletion (restore the gone side from
+                // the surviving copy), so without it a file deleted locally kept
+                // resurrecting from the host however often it was deleted.
                 const noHostFile = rowHostMtime == null;
                 const noLocalFile = rowLocalMtime == null;
+                // Which side a 🗑 would delete: the surviving copy of a file
+                // deleted on exactly one side. Deleting the mirror copy is only
+                // offered when the host was actually consulted and positively
+                // reported the file gone (`hostChecked`) — a cold pool reports
+                // every host mtime as null without asking. The backend re-verifies
+                // either premise against live state before deleting anything.
+                const deleteSide: "host" | "local" | null =
+                  noLocalFile && !noHostFile
+                    ? "host"
+                    : noHostFile && !noLocalFile && rowHostChecked
+                      ? "local"
+                      : null;
+                // Deleted on BOTH sides since the last sync: nothing to
+                // transfer, nothing to merge — the only sensible action left is
+                // to stop tracking the entry.
+                const goneBoth = noHostFile && noLocalFile;
                 return (
                   <div key={rel} className="orange-file-row" title={rel}>
                 <button
                   type="button"
                   className="orange-file-name"
-                  disabled={!mirrorRoot}
-                  title={mirrorRoot ? t("projectFilesView.openFileTitle", { rel }) : rel}
+                  disabled={!mirrorRoot || goneBoth}
+                  title={mirrorRoot && !goneBoth ? t("projectFilesView.openFileTitle", { rel }) : rel}
                   onClick={() => {
                     if (!mirrorRoot) return;
                     const abs = `${mirrorRoot}/${rel}`;
@@ -1655,6 +1769,29 @@ export function ProjectFilesView({
                     {mtimeCue.text}
                   </span>
                 )}
+                {goneBoth ? (
+                  <div className="orange-file-actions">
+                    {/* Deselecting drops the row to state "none" immediately and
+                        stops tracking; the manifest keeps an inert unselected
+                        marker (the backend prune only runs for entries still
+                        selected). No transfer, nothing deleted. */}
+                    <button
+                      type="button"
+                      className="orange-file-act"
+                      title={t(
+                        rowHostChecked
+                          ? "projectFilesView.forgetFileTitle"
+                          : "projectFilesView.forgetFileUncheckedTitle",
+                      )}
+                      onClick={() => {
+                        if (projectId)
+                          void useSyncStore.getState().markSelected(projectId, [rel], false, false);
+                      }}
+                    >
+                      {t("projectFilesView.forgetFile")}
+                    </button>
+                  </div>
+                ) : (
                 <div className="orange-file-actions">
                   <button
                     type="button"
@@ -1705,10 +1842,150 @@ export function ProjectFilesView({
                   >
                     ⬆
                   </button>
+                  {deleteSide && (
+                    <button
+                      type="button"
+                      className="orange-file-act orange-file-act--icon orange-file-act--delete"
+                      aria-label={t(
+                        deleteSide === "host"
+                          ? "projectFilesView.deleteHostAria"
+                          : "projectFilesView.deleteLocalAria",
+                      )}
+                      title={t(
+                        deleteSide === "host"
+                          ? "projectFilesView.deleteHostTitle"
+                          : "projectFilesView.deleteLocalTitle",
+                      )}
+                      disabled={remoteBlocked}
+                      // Complete the deletion instead of undoing it: delete the
+                      // surviving copy on the other side. Destroys the file's
+                      // LAST copy anywhere, so it goes through the shared sync
+                      // confirm dialog's delete variant, which says exactly that.
+                      onClick={() => {
+                        if (!projectId) return;
+                        void (async () => {
+                          const ok = await confirmSyncTransfer({
+                            projectId,
+                            deleteSide,
+                            relPath: rel,
+                            isDir: false,
+                            label: basename(rel) || rel,
+                          });
+                          if (ok)
+                            await useSyncStore
+                              .getState()
+                              .applyDelete(projectId, rel, deleteSide);
+                        })();
+                      }}
+                    >
+                      🗑
+                    </button>
+                  )}
                 </div>
+                )}
                   </div>
                 );
               })}
+              {/* NEW local-only files: exist in the mirror, never synced, so
+                  the host has no copy. A section of its own rather than rows in
+                  the amber list above, because the vocabulary differs — nothing
+                  to merge, no remote side to take, no deletion to complete; the
+                  whole offer is "upload" (or leave it local). Without this
+                  section such a file was invisible everywhere: the remote tree
+                  lists the host's readdir, and the amber list only knows files
+                  the manifest has seen. */}
+              {newLocalFiles.length > 0 && (
+                <>
+                  <div className="orange-bulk-bar">
+                    <span className="orange-bulk-count">
+                      {t("projectFilesView.newLocalCount", { count: newLocalFiles.length })}
+                    </span>
+                    <UntestedTag />
+                    <div className="orange-file-actions">
+                      <button
+                        type="button"
+                        className="orange-file-act orange-file-act--icon orange-file-act--local"
+                        aria-label={t("projectFilesView.uploadNewAllAria")}
+                        title={t("projectFilesView.uploadNewAllTitle")}
+                        disabled={remoteBlocked}
+                        onClick={() => {
+                          if (!projectId) return;
+                          void (async () => {
+                            const ok = await confirmSyncTransfer({
+                              projectId,
+                              direction: "push",
+                              relPath: "",
+                              isDir: true,
+                              label: project?.name ?? projectId,
+                              relPaths: newLocalFiles,
+                            });
+                            if (!ok) return;
+                            await useSyncStore
+                              .getState()
+                              .resolveAll(projectId, newLocalFiles, "local");
+                          })();
+                        }}
+                      >
+                        ⬆
+                      </button>
+                    </div>
+                  </div>
+                  {newLocalFiles.map((rel) => (
+                    <div key={rel} className="orange-file-row" title={rel}>
+                      <button
+                        type="button"
+                        className="orange-file-name"
+                        disabled={!mirrorRoot}
+                        title={
+                          mirrorRoot
+                            ? t("projectFilesView.openFileTitle", { rel })
+                            : rel
+                        }
+                        onClick={() => {
+                          if (!mirrorRoot) return;
+                          const abs = `${mirrorRoot}/${rel}`;
+                          // Plain open (no merge viewer): there is no host copy
+                          // to merge against — this is just the local file.
+                          openLinkedFile(undefined, dirname(abs), {
+                            path: abs,
+                            viewer: viewerForPath(abs),
+                            label: basename(abs),
+                          });
+                        }}
+                      >
+                        <span className="orange-file-dot orange-file-dot--new" aria-hidden="true">
+                          +
+                        </span>
+                        {rel}
+                      </button>
+                      <div className="orange-file-actions">
+                        <button
+                          type="button"
+                          className="orange-file-act orange-file-act--icon orange-file-act--local"
+                          aria-label={t("projectFilesView.uploadNewAria")}
+                          title={t("projectFilesView.uploadNewTitle")}
+                          disabled={remoteBlocked}
+                          onClick={() => {
+                            if (!projectId) return;
+                            void (async () => {
+                              const ok = await confirmSyncTransfer({
+                                projectId,
+                                direction: "push",
+                                relPath: rel,
+                                isDir: false,
+                                label: basename(rel) || rel,
+                              });
+                              if (ok) await useSyncStore.getState().push(projectId, rel);
+                            })();
+                          }}
+                        >
+                          ⬆
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
             </>
           )}
         </div>
@@ -1740,62 +2017,67 @@ export function ProjectFilesView({
               )}
             </div>
           ) : (
-            sessionGroups.map(({ hostId, hostLabel, rows }) => (
+            sessionGroups.map(({ hostId, hostLabel, kindGroups }) => (
               <section
                 className="tmux-machine-group"
                 key={hostId}
                 aria-label={t("projectFilesView.persistentSessionsOnHostAria", { host: hostLabel })}
               >
                 <div className="tmux-machine-group-title">{hostLabel}</div>
-                {rows.map(({ session: s }) => {
-                  const owned = sessionOwners.has(`${hostId} ${s.name}`);
-                  return (
-                    <div
-                      key={`${hostId} ${s.name}`}
-                      className="orange-file-row"
-                      onMouseEnter={(e) => handleSessionRowMouseEnter(e, hostId, s.name)}
-                      onMouseLeave={handleSessionRowMouseLeave}
-                    >
-                      <button
-                        type="button"
-                        className="orange-file-name"
-                        title={t(
-                          owned ? "projectFilesView.revealTabRunning" : "projectFilesView.attachTo",
-                          { name: s.name },
-                        )}
-                        onClick={() => openSession(hostId, s.name)}
-                      >
-                        <span className="orange-file-dot" aria-hidden="true">
-                          {s.attached ? "●" : "○"}
-                        </span>
-                        {s.working && (
-                          <span className="tmux-work-dot" aria-hidden="true" title={t("projectFilesView.workingTitle")} />
-                        )}
-                        <span className="tmux-session-label">{sessionDisplayName(t, s.name)}</span>
-                        {owned && <span className="tmux-session-meta">{t("projectFilesView.openMeta")}</span>}
-                      </button>
-                      <div className="orange-file-actions">
-                        <button
-                          type="button"
-                          className="orange-file-act"
-                          title={t("projectFilesView.renameSessionTitle")}
-                          onClick={() => renameSession(hostId, s.name)}
+                {kindGroups.map(({ kind, rows }) => (
+                  <div className="tmux-kind-group" key={kind}>
+                    <div className="tmux-kind-group-title">{t(SESSION_KIND_LABEL[kind])}</div>
+                    {rows.map(({ session: s }) => {
+                      const owned = sessionOwners.has(`${hostId} ${s.name}`);
+                      return (
+                        <div
+                          key={`${hostId} ${s.name}`}
+                          className="orange-file-row"
+                          onMouseEnter={(e) => handleSessionRowMouseEnter(e, hostId, s.name)}
+                          onMouseLeave={handleSessionRowMouseLeave}
                         >
-                          {t("projectFilesView.rename")}
-                        </button>
-                        <button
-                          type="button"
-                          className="orange-file-act"
-                          title={t("projectFilesView.killSessionTitle")}
-                          aria-label={t("projectFilesView.killSessionAria", { name: s.name })}
-                          onClick={() => killSession(hostId, s.name)}
-                        >
-                          ×
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
+                          <button
+                            type="button"
+                            className="orange-file-name"
+                            title={t(
+                              owned ? "projectFilesView.revealTabRunning" : "projectFilesView.attachTo",
+                              { name: s.name },
+                            )}
+                            onClick={() => openSession(hostId, s.name)}
+                          >
+                            <span className="orange-file-dot" aria-hidden="true">
+                              {s.attached ? "●" : "○"}
+                            </span>
+                            {s.working && (
+                              <span className="tmux-work-dot" aria-hidden="true" title={t("projectFilesView.workingTitle")} />
+                            )}
+                            <span className="tmux-session-label">{sessionDisplayName(t, s.name)}</span>
+                            {owned && <span className="tmux-session-meta">{t("projectFilesView.openMeta")}</span>}
+                          </button>
+                          <div className="orange-file-actions">
+                            <button
+                              type="button"
+                              className="orange-file-act"
+                              title={t("projectFilesView.renameSessionTitle")}
+                              onClick={() => renameSession(hostId, s.name)}
+                            >
+                              {t("projectFilesView.rename")}
+                            </button>
+                            <button
+                              type="button"
+                              className="orange-file-act"
+                              title={t("projectFilesView.killSessionTitle")}
+                              aria-label={t("projectFilesView.killSessionAria", { name: s.name })}
+                              onClick={() => killSession(hostId, s.name)}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
               </section>
             ))
           )}
@@ -1984,6 +2266,7 @@ export function ProjectFilesView({
           projectDir={projectDir}
           folder={folder}
           onFolderChange={onFolderChange}
+          active={active}
           source={source}
           hiddenEndings={filters.hiddenEndings}
           hiddenPaths={filters.hiddenPaths}
@@ -2033,6 +2316,7 @@ export function ProjectFilesView({
           )}
         </div>
       )}
+      {footer}
       {showSettings && project && localFile && (
         <ProjectFilesSettingsDialog
           localFile={localFile}

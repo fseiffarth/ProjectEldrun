@@ -22,6 +22,43 @@ import { UntestedTag } from "./UntestedTag";
  * dialog says so and keeps asking, because a preview is information and the
  * click is the gate.
  */
+/**
+ * The dialog's headline sentence, indexed by direction × does-it-replace-anything
+ * × scope. Written out as a table rather than assembled from key fragments so
+ * every sentence the dialog can show is greppable and type-checked as a
+ * translation key.
+ */
+const BODY_KEYS = {
+  pull: {
+    over: {
+      selected: "syncConfirm.pullSelected",
+      project: "syncConfirm.pullProject",
+      folder: "syncConfirm.pullFolder",
+      file: "syncConfirm.pullFile",
+    },
+    new: {
+      selected: "syncConfirm.pullSelectedNew",
+      project: "syncConfirm.pullProjectNew",
+      folder: "syncConfirm.pullFolderNew",
+      file: "syncConfirm.pullFileNew",
+    },
+  },
+  push: {
+    over: {
+      selected: "syncConfirm.pushSelected",
+      project: "syncConfirm.pushProject",
+      folder: "syncConfirm.pushFolder",
+      file: "syncConfirm.pushFile",
+    },
+    new: {
+      selected: "syncConfirm.pushSelectedNew",
+      project: "syncConfirm.pushProjectNew",
+      folder: "syncConfirm.pushFolderNew",
+      file: "syncConfirm.pushFileNew",
+    },
+  },
+} as const;
+
 export function SyncConfirmDialog() {
   const t = useT();
   const pending = useSyncConfirmStore((s) => s.pending);
@@ -29,7 +66,9 @@ export function SyncConfirmDialog() {
   const cancel = useSyncConfirmStore((s) => s.cancel);
 
   if (!pending) return null;
-  const { direction, isDir, relPath, label, relPaths, force, preview, loading, error } = pending;
+  const { direction, isDir, relPath, label, relPaths, force, preview, doomed, loading, error } =
+    pending;
+  const deleteSide = pending.deleteSide;
   const pull = direction === "pull";
   // An explicit file list (the diverged-files view's bulk resolve) is its own
   // scope: it is neither the folder it happens to sit under nor the whole
@@ -44,6 +83,65 @@ export function SyncConfirmDialog() {
   // Nothing to move — offer only a way out rather than a confirm button that
   // would transfer nothing.
   const empty = !!preview && preview.files === 0;
+  // Does the receiving side actually hold anything this would replace? Only an
+  // EXACT preview can answer: `exact: false` means the tree was too big to stat
+  // up front, and a missing preview means the check hasn't landed (or failed).
+  // In both of those the destructive wording stands, because an unknown price is
+  // not an implicit "nothing to lose". But when the answer is a settled zero —
+  // a first push, a folder the host doesn't have — "will be written over the
+  // host's copy" names a loss that cannot happen, and a warning that cries wolf
+  // on the safe case is how the same warning stops being read on the lossy one.
+  const replaces = !preview || !preview.exact || preview.overwrites > 0;
+
+  // Propagating a one-sided deletion: no transfer preview applies — the question
+  // is one named copy, and the load-bearing sentence is that it is the file's
+  // LAST copy on either side (the other side is already gone).
+  if (deleteSide) {
+    const host = deleteSide === "host";
+    return (
+      <div className="modal-backdrop" onMouseDown={cancel}>
+        <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
+          <h2>
+            {t(host ? "syncConfirm.deleteHostTitle" : "syncConfirm.deleteLocalTitle")}{" "}
+            <UntestedTag />
+          </h2>
+          <p>
+            {t(host ? "syncConfirm.deleteHostBody" : "syncConfirm.deleteLocalBody", {
+              name: label,
+            })}
+          </p>
+          <div className="file-delete-path">{relPath}</div>
+          {loading && <p className="sync-confirm-note">{t("syncConfirm.checking")}</p>}
+          {error && <p className="sync-confirm-note">{t("syncConfirm.previewFailed", { error })}</p>}
+          {doomed &&
+            (doomed.exists ? (
+              <p className="sync-confirm-note">
+                {t("syncConfirm.deleteDoomedMeta", {
+                  size: fmtSize(doomed.size),
+                  date:
+                    doomed.mtime != null
+                      ? new Date(doomed.mtime * 1000).toLocaleString()
+                      : "—",
+                })}
+              </p>
+            ) : (
+              <p className="sync-confirm-note">{t("syncConfirm.deleteAlreadyGone")}</p>
+            ))}
+          <div className="sync-confirm-loss">
+            <strong>{t("syncConfirm.deleteLastCopyNote")}</strong>
+          </div>
+          <div className="file-delete-actions">
+            <button type="button" onClick={cancel}>
+              {t("common.cancel")}
+            </button>
+            <button type="button" className="danger" onClick={proceed}>
+              {t("syncConfirm.confirmDelete")}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     // Backdrop-dismissable: "I didn't mean to click that" is the most likely
@@ -54,24 +152,10 @@ export function SyncConfirmDialog() {
           {t(pull ? "syncConfirm.pullTitle" : "syncConfirm.pushTitle")} <UntestedTag />
         </h2>
         <p>
-          {t(
-            pull
-              ? scope === "selected"
-                ? "syncConfirm.pullSelected"
-                : scope === "project"
-                  ? "syncConfirm.pullProject"
-                  : scope === "folder"
-                    ? "syncConfirm.pullFolder"
-                    : "syncConfirm.pullFile"
-              : scope === "selected"
-                ? "syncConfirm.pushSelected"
-                : scope === "project"
-                  ? "syncConfirm.pushProject"
-                  : scope === "folder"
-                    ? "syncConfirm.pushFolder"
-                    : "syncConfirm.pushFile",
-            { name: label, count: relPaths?.length ?? 0 },
-          )}
+          {t(BODY_KEYS[pull ? "pull" : "push"][replaces ? "over" : "new"][scope], {
+            name: label,
+            count: relPaths?.length ?? 0,
+          })}
         </p>
         <div className="file-delete-path">
           {relPaths
@@ -152,7 +236,19 @@ export function SyncConfirmDialog() {
               }
               onClick={proceed}
             >
-              {t(pull ? "syncConfirm.confirmPull" : "syncConfirm.confirmPush")}
+              {/* The button is a promise about what the click does, so it follows
+                  the same settled-zero rule as the sentence above: "Overwrite
+                  host" on a transfer that overwrites nothing is the same lie in
+                  two words. */}
+              {t(
+                pull
+                  ? replaces
+                    ? "syncConfirm.confirmPull"
+                    : "syncConfirm.confirmPullNew"
+                  : replaces
+                    ? "syncConfirm.confirmPush"
+                    : "syncConfirm.confirmPushNew",
+              )}
             </button>
           )}
         </div>

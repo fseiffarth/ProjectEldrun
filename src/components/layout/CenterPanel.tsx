@@ -189,31 +189,65 @@ export function CenterPanel() {
     const nextScope = activeId ?? "root";
     setScope(nextScope);
 
-    if (!activeId || !localFile) {
-      // Root context: the 3D project-blob is the default tab. Seed it the first
-      // time the root scope is entered this session, but only when projects
-      // exist (an empty cloud has nothing to show) and the scope hasn't been
-      // initialized yet — so an intentionally-closed/emptied root stays empty
-      // and we never clobber existing root tabs.
-      if (
-        !activeId &&
-        useProjectsStore.getState().projects.length > 0 &&
-        !("root" in useTabsStore.getState().tabsByScope)
-      ) {
-        useTabsStore.getState().addTab(
-          {
-            label: "Projects",
-            cmd: BLOB_TAB_CMD,
-            cwd: "",
-            kind: "projects3d",
-          },
-          // Eldrun opened this, not the user — it must not show up in the usage
-          // recap as a tab they opened.
-          { seeded: true },
-        );
-      }
+    type LayoutEntry = { key: string; label: string; cmd: string; cwd: string; kind?: TabKind; type?: string; env?: Record<string, string>; sessionId?: string; embedPath?: string; embedExec?: string; viewer?: "pdf" | "image" | "markdown" | "text" };
+    // Keep shell/files/network tabs, resumable agent tabs (Claude with a sessionId,
+    // resumed via --resume), and in-app file-viewer embeds; other agent/embed tabs
+    // (including external-app embeds) are dropped. Derive kind from the saved entry
+    // or its command. The saved groups tree self-heals (loadFromLayout drops
+    // dropped keys).
+    const restorableOf = (raw: LayoutEntry[]) =>
+      raw.filter((t) =>
+        isRestorableTab({
+          kind: t.kind ?? cmdToKind(t.cmd || (t.type === "files" ? FILES_TAB_CMD : "")),
+          cmd: t.cmd,
+          sessionId: t.sessionId,
+          viewer: t.viewer,
+        }),
+      );
+
+    if (!activeId) {
+      // Root context. Its tabs now persist under the `"root"` id (state dir), so
+      // restore them on the first visit this session exactly as a project's are;
+      // later visits trust the in-memory state. When nothing restorable was saved
+      // (a fresh install, or a root left at its default), seed the 3D project-blob
+      // — the root's default tab — but only when projects exist (an empty cloud
+      // has nothing to show).
+      if ("root" in useTabsStore.getState().tabsByScope) return;
+      const seedBlob = () => {
+        if (
+          useProjectsStore.getState().projects.length > 0 &&
+          !("root" in useTabsStore.getState().tabsByScope)
+        ) {
+          useTabsStore.getState().addTab(
+            { label: "Projects", cmd: BLOB_TAB_CMD, cwd: "", kind: "projects3d" },
+            // Eldrun opened this, not the user — it must not show up in the usage
+            // recap as a tab they opened.
+            { seeded: true },
+          );
+        }
+      };
+      invoke<Record<string, unknown>>("load_tab_session", { projectId: "root" })
+        .then(async (proj) => {
+          // Another effect run may have hydrated root while we awaited.
+          if ("root" in useTabsStore.getState().tabsByScope) return;
+          const restorable = restorableOf((proj.tabLayout as LayoutEntry[] | undefined) ?? []);
+          if (restorable.length === 0) {
+            seedBlob();
+            return;
+          }
+          // Restored root tabs carry their own cwd; the root work dir is only the
+          // fallback for any that saved an empty one (e.g. a files tab).
+          const rootCwd = await invoke<string>("root_work_dir").catch(() => "");
+          if ("root" in useTabsStore.getState().tabsByScope) return;
+          const groups = proj.tabGroups as SavedLayoutTree | undefined;
+          loadFromLayout(restorable, rootCwd, "root", groups ?? undefined);
+        })
+        .catch(() => seedBlob());
       return;
     }
+
+    // A project with no local_file isn't ready to restore yet.
+    if (!localFile) return;
 
     // Scope was already initialized this session (tabs may be empty by user intent).
     // Trust in-memory state rather than re-reading disk — avoids restoring
@@ -223,27 +257,13 @@ export function CenterPanel() {
 
     // Project context: restore saved tab layout from disk (first visit this session).
     const scopeForLoad = nextScope;
-    type LayoutEntry = { key: string; label: string; cmd: string; cwd: string; kind?: TabKind; type?: string; env?: Record<string, string>; sessionId?: string; embedPath?: string; embedExec?: string; viewer?: "pdf" | "image" | "markdown" | "text" };
     // The saved layout comes from `<state_dir>/sessions/<id>/`, not from the
     // project's own `project.json` — that file lives in the project container's
     // writable mount and in any cloned repository, and everything restored here
     // becomes a `pty_spawn`. `load_project` no longer serves it at all.
     invoke<Record<string, unknown>>("load_tab_session", { projectId: nextScope })
       .then((proj) => {
-        const raw = (proj.tabLayout as LayoutEntry[] | undefined) ?? [];
-        // Keep shell/files/network tabs, resumable agent tabs (Claude with a sessionId,
-        // resumed via --resume), and in-app file-viewer embeds; other agent/embed
-        // tabs (including external-app embeds) are dropped. Derive kind from the
-        // saved entry or its command. The saved groups tree self-heals
-        // (loadFromLayout drops dropped keys).
-        const restorable = raw.filter((t) =>
-          isRestorableTab({
-            kind: t.kind ?? cmdToKind(t.cmd || (t.type === "files" ? FILES_TAB_CMD : "")),
-            cmd: t.cmd,
-            sessionId: t.sessionId,
-            viewer: t.viewer,
-          }),
-        );
+        const restorable = restorableOf((proj.tabLayout as LayoutEntry[] | undefined) ?? []);
         // Guard: don't overwrite tabs that switch_project_runtime already loaded.
         if (scopeForLoad in useTabsStore.getState().tabsByScope) return;
         // A freshly-visited project with NO restorable tabs stays empty (shows the
@@ -279,9 +299,14 @@ export function CenterPanel() {
   }, [activeId, updateTabEnv]);
 
   useEffect(() => {
-    if (!activeId || !localFile) return;
+    // Root persists under the `"root"` id with no export copy (it has no
+    // project.json, so `localFile` is empty and the backend skips it). A project
+    // without a `local_file` isn't ready to persist yet.
+    if (activeId && !localFile) return;
+    const scopeToPersist = activeId ?? "root";
+    const file = localFile ?? "";
     const timer = window.setTimeout(() => {
-      persistScope(activeId, localFile).catch(() => {});
+      persistScope(scopeToPersist, file).catch(() => {});
     }, 300);
     return () => window.clearTimeout(timer);
   }, [activeId, localFile, tabs, layout, detachedGroups, persistScope]);
@@ -1004,7 +1029,9 @@ export function CenterPanel() {
           // down: spawning `ssh -tt` now would block on the dead pool. Multi-host:
           // a pane on gpu-2 holds iff gpu-2 is down, independent of the primary
           // (plan §4.5).
-          const rawHostId = remoteHostIdOf(effectiveTabLocation(tab));
+          const rawHostId = remoteHostIdOf(
+            effectiveTabLocation(tab, { vmProject: !!paneProject?.vm?.enabled }),
+          );
           // A tab naming a worker that no longer exists (machine removed) falls
           // back to the primary — matching the backend's wrap_pty_options (plan §8).
           const paneHostId =
@@ -1063,8 +1090,19 @@ export function CenterPanel() {
           // are covered too. NOTE: this flag is in TerminalView's spawn deps —
           // flipping the toggle respawns every live tab (ProjectPill confirms when
           // that would destroy a non-resumable agent conversation).
+          //
+          // `scope: "agents"` narrows it to agent tabs, leaving shells (and the
+          // viewer's Run/Debug, which IS a shell tab) on the host. This mirrors
+          // `services::sandbox::resolve_spawn_authority`, which re-derives the same
+          // answer from the trusted project record and remains the authority — the
+          // copy is here for the two things only the renderer can do: keep a live
+          // shell from staying inside the container after the scope changes (the
+          // flag is a spawn dep, so the change respawns exactly the affected tabs),
+          // and avoid claiming a container the backend is about to take away.
+          const containerScope = paneProject?.sandbox?.scope ?? "all";
           const sandbox =
             (tab.kind === "agent" || tab.kind === "shell") &&
+            (containerScope === "all" || tab.kind === "agent") &&
             scopeKey !== "root" &&
             !!paneProject?.sandbox?.enabled &&
             !paneProject?.remote;
@@ -1078,7 +1116,8 @@ export function CenterPanel() {
           // (`shouldPersistLocalTab`); never the root scope. In TerminalView's spawn
           // deps, so toggling respawns the tab. Undefined ⇒ no tmux wrap.
           const localRunning =
-            !paneProject?.remote || effectiveTabLocation(tab) === "local";
+            !paneProject?.remote ||
+            effectiveTabLocation(tab, { vmProject: !!paneProject?.vm?.enabled }) === "local";
           const tmuxSession =
             shouldPersistTab(tab.kind, paneHostId, paneProject?.remote, tab.ephemeral) ||
             shouldPersistLocalTab(tab.kind, scopeKey, localRunning, localPersistEnabled)
@@ -1122,6 +1161,7 @@ export function CenterPanel() {
                 terminalCwd={terminalCwd}
                 sandbox={sandbox}
                 tmuxSession={tmuxSession}
+                vmProject={!!paneProject?.vm?.enabled}
               />
             </div>
           );
@@ -1500,8 +1540,25 @@ function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split
     if (!container) return;
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
 
+    // The container is not itself resized by a divider drag, so its rect is
+    // constant for the gesture — measure it once instead of forcing a reflow to
+    // re-read it on every pointermove (the flex writes below invalidate layout,
+    // so a per-event read would flush a synchronous reflow each time).
+    const rect = container.getBoundingClientRect();
+    // Coalesce the pane re-measure (props.onResized → getBoundingClientRect per
+    // open pane, a forced reflow) into at most one call per animation frame:
+    // pointermove fires faster than paint, and only the last position per frame
+    // is visible anyway.
+    let rafId: number | null = null;
+    const scheduleResize = () => {
+      if (rafId != null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        props.onResized();
+      });
+    };
+
     const onMove = (ev: PointerEvent) => {
-      const rect = container.getBoundingClientRect();
       // The new fraction is the pointer position within the SPAN of the two
       // children adjacent to this divider, measured from the container origin.
       const isRow = node.dir === "row";
@@ -1533,13 +1590,15 @@ function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split
       dragSizesRef.current = sizes;
       applyDragSizes();
       // Panes live in CenterPanel's flat overlay, sized to measured rects — they
-      // don't reflow with the flex box, so re-measure to reposition them.
-      props.onResized();
+      // don't reflow with the flex box, so re-measure to reposition them (once
+      // per frame, not once per pointermove).
+      scheduleResize();
     };
     const onUp = (ev: PointerEvent) => {
       (e.target as HTMLElement).releasePointerCapture?.(ev.pointerId);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      if (rafId != null) cancelAnimationFrame(rafId);
       // Commit the final position to the store ONCE. The next render writes these
       // same sizes via `node.sizes`, matching the DOM, so there's no visual jump;
       // clear the override first so the layout effect stops re-asserting it.

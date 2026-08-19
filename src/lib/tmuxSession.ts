@@ -36,9 +36,43 @@ function sanitizeForTmuxName(id: string): string {
  * Sessions view (`remote_tmux_list`) can tell one project's sessions apart from
  * another's on a host multiple projects share, instead of listing every session
  * on the host for every project.
+ *
+ * `kind` (`"agent"` for a Claude/Codex tab, `"shell"` for an interactive shell or
+ * a Python/script run) is embedded as a token right after the `--`, i.e. at the
+ * *front* of the uuid half — never before the `--`, so it cannot disturb the
+ * project-id prefix the Sessions view filters by (`session_visible_for_project`).
+ * It is what lets the Sessions view group a machine's sessions by type; a uuid is
+ * hex (`[0-9a-f-]`) and can never begin with `agent`/`shell`, so an older name
+ * with no token (or a hand-renamed one) reads back as `"other"` and is never
+ * misclassified. See {@link sessionKindFromName}.
  */
-export function newTmuxSessionName(scope: string): string {
-  return `eldrun-${sanitizeForTmuxName(scope)}--${crypto.randomUUID()}`;
+export function newTmuxSessionName(scope: string, kind: TmuxSessionKind = "shell"): string {
+  return `eldrun-${sanitizeForTmuxName(scope)}--${kind}-${crypto.randomUUID()}`;
+}
+
+/**
+ * The kind of tab a persistent tmux session backs, for the Sessions view's
+ * per-machine grouping. `"other"` is every session whose name carries no
+ * recognizable token: a foreign/hand-started one, one hand-renamed through the
+ * Sessions view, or one Eldrun minted before the token existed.
+ */
+export type TmuxSessionKind = "agent" | "shell" | "other";
+
+/**
+ * Classify a tmux session by its name — the inverse of {@link newTmuxSessionName}.
+ * Reads the token at the front of the uuid half (`eldrun-<scope>--<kind>-<uuid>`),
+ * which is the only place a kind is recorded; anything the token does not name is
+ * `"other"`, so an unrecognized/foreign/legacy session degrades gracefully rather
+ * than being forced into one of the two real buckets. Pure — the Sessions view's
+ * grouping is a function of the name and nothing the backend has to report.
+ */
+export function sessionKindFromName(name: string): TmuxSessionKind {
+  const sep = name.indexOf("--");
+  if (!name.startsWith("eldrun-") || sep < 0) return "other";
+  const rest = name.slice(sep + 2);
+  if (rest.startsWith("agent-")) return "agent";
+  if (rest.startsWith("shell-")) return "shell";
+  return "other";
 }
 
 /**
@@ -90,10 +124,20 @@ export function shouldPersistTab(
 /**
  * Whether THIS tab should be tmux-wrapped **locally** (TODO #85): a **shell** tab
  * (interactive shells + Python/script runs) that runs on the **local machine** —
- * a local project's tab, or a remote project's local (mirror) tab — in a project
- * scope. `localEnabled` folds the `persist_local_sessions` setting **and** the
- * platform check (off on Windows, where there is no tmux). Keeps the run alive
- * across an Eldrun crash and reattaches on restart.
+ * a local project's tab, or a remote project's local (mirror) tab. `localEnabled`
+ * folds the `persist_local_sessions` setting **and** the platform check (off on
+ * Windows, where there is no tmux). Keeps the run alive across an Eldrun crash
+ * and reattaches on restart.
+ *
+ * The **root** scope is included, and the `scopeKey !== "root"` gate that used to
+ * exclude it was left over from when root tabs were not persisted at all: with
+ * nothing restoring them, a surviving tmux session had no tab to reattach to and
+ * was a daemon nobody could reach. Root tabs restore like a project's now, and
+ * they already carry a minted `tmuxSession` name (`withTmuxSession` never
+ * excluded root) — so the exclusion had stopped meaning anything except that a
+ * long build started in the root terminal was the one shell an Eldrun crash
+ * still killed. `scopeKey` stays a parameter: a **box** scope is genuinely
+ * session-only, so it must keep failing this.
  */
 export function shouldPersistLocalTab(
   kind: string,
@@ -101,5 +145,10 @@ export function shouldPersistLocalTab(
   localRunning: boolean,
   localEnabled: boolean,
 ): boolean {
-  return kind === "shell" && scopeKey !== "root" && localRunning && localEnabled;
+  return (
+    kind === "shell" &&
+    !scopeKey.startsWith("box:") &&
+    localRunning &&
+    localEnabled
+  );
 }
