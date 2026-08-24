@@ -62,10 +62,11 @@ vi.mock("../stores/tabs", async (importActual) => {
 
 const SOURCE = "hello\nworld\n";
 const TAB_KEY = "t1";
+let source = SOURCE;
 
 function setup() {
   mockInvoke.mockImplementation((cmd: string) => {
-    if (cmd === "read_file_text") return Promise.resolve(SOURCE);
+    if (cmd === "read_file_text") return Promise.resolve(source);
     if (cmd === "file_mtime") return Promise.resolve(1000);
     return Promise.resolve(null);
   });
@@ -92,6 +93,7 @@ describe("editor text-size control", () => {
     vi.clearAllMocks();
     prefsRef.current = {};
     tabsRef.current = [{ key: TAB_KEY, kind: "embed", viewerState: {} }];
+    source = SOURCE;
     setup();
   });
 
@@ -189,6 +191,14 @@ describe("editor text-size control", () => {
     });
     expect(mockSetViewerState).toHaveBeenCalledWith(TAB_KEY, { fontSize: 13 });
     expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("shows a resolved destination while hovering a Markdown link", async () => {
+    source = "[guide](docs/guide.md)";
+    await renderMarkdownView();
+    const link = await screen.findByRole("link", { name: "guide" });
+    fireEvent.mouseMove(link);
+    expect((await screen.findByRole("tooltip")).textContent).toBe("/p/docs/guide.md");
   });
 
   it("copies a selection contained by the markdown preview on mouse release", async () => {

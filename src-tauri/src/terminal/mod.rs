@@ -6,7 +6,7 @@
 //! - Batched/throttled Tauri events (max one emit per 16 ms mid-burst; the
 //!   first chunk after quiet flushes immediately, and an idle PTY parks with
 //!   no timer at all — see `batch_output`).
-//! - UTF-8 lossy output; binary-safe read loop.
+//! - Stateful UTF-8 output decoding; binary-safe read loop.
 //! - Crash-loop protection: tracks last-exit timestamps.
 //! - Explicit terminal-ready event when the shell starts.
 //! - Linux XDG sandbox env in a cfg(target_os="linux") block.
@@ -32,6 +32,10 @@ pub const SCROLLBACK_LIMIT: usize = 5000;
 
 /// Internal channel capacity — limits buffered output chunks.
 const CHANNEL_CAP: usize = 64;
+/// Per-PTY input queue capacity. The frontend keeps one write in flight and
+/// coalesces ordinary keystrokes, so this is primarily a bounded safety net for
+/// other callers rather than a source of typing latency.
+const INPUT_CHANNEL_CAP: usize = 64;
 
 // ── Visible-only streaming ────────────────────────────────────────────────
 //
@@ -79,16 +83,21 @@ const ROUTE_PENDING_CAP: usize = 1_000_000;
 /// activity store's 8 KB decision-prompt scan.
 const ACTIVITY_TAIL_CAP: usize = 8192;
 
-/// Per-PTY routing state. `visible` defaults to true so a freshly spawned PTY
-/// streams until its pane reports otherwise (the safe direction: at worst it
-/// costs what every PTY used to cost).
+/// Per-PTY routing state. Fresh output buffers until a concrete TerminalView
+/// reports itself visible; this avoids a spawn race without inventing a global
+/// last-writer-wins view.
 struct OutputRoute {
-    visible: bool,
+    /// Stable TerminalView instances currently reporting themselves visible.
+    /// A PTY can be rendered in both the main and a detached webview, so a
+    /// single last-writer-wins boolean is not sufficient.
+    visible_viewers: HashMap<String, (bool, u64)>,
     watchers: u32,
     /// Output accumulated while unsubscribed, replayed on the next rising edge.
-    pending: Vec<u8>,
+    pending: String,
     /// Output since the last activity digest (tail-capped).
-    digest: Vec<u8>,
+    digest: String,
+    /// UTF-8 decoder state shared by every output chunk for this spawn.
+    decoder: Utf8StreamDecoder,
     /// When the last digest was emitted; `None` = the next one is leading-edge.
     last_activity: Option<Instant>,
     /// A trailing-flush task is sleeping toward `last_activity + interval`.
@@ -101,10 +110,11 @@ struct OutputRoute {
 impl Default for OutputRoute {
     fn default() -> Self {
         Self {
-            visible: true,
+            visible_viewers: HashMap::new(),
             watchers: 0,
-            pending: Vec::new(),
-            digest: Vec::new(),
+            pending: String::new(),
+            digest: String::new(),
+            decoder: Utf8StreamDecoder::default(),
             last_activity: None,
             digest_armed: false,
             seq: 0,
@@ -114,7 +124,7 @@ impl Default for OutputRoute {
 
 impl OutputRoute {
     fn subscribed(&self) -> bool {
-        self.visible || self.watchers > 0
+        self.visible_viewers.values().any(|(visible, _)| *visible) || self.watchers > 0
     }
 
     /// Drain the hidden-spell buffer for a replay emit. Also drops the digest:
@@ -124,9 +134,60 @@ impl OutputRoute {
         if self.pending.is_empty() {
             return None;
         }
-        let text = String::from_utf8_lossy(&self.pending).into_owned();
-        self.pending.clear();
-        Some(text)
+        Some(std::mem::take(&mut self.pending))
+    }
+}
+
+#[derive(Default)]
+struct Utf8StreamDecoder {
+    pending: Vec<u8>,
+}
+
+impl Utf8StreamDecoder {
+    /// Decode all complete UTF-8 in `bytes`, retaining only an incomplete suffix
+    /// for the next PTY read. Invalid sequences are replaced exactly once.
+    fn push(&mut self, bytes: &[u8]) -> String {
+        self.pending.extend_from_slice(bytes);
+        let mut out = String::new();
+        loop {
+            match std::str::from_utf8(&self.pending) {
+                Ok(valid) => {
+                    out.push_str(valid);
+                    self.pending.clear();
+                    break;
+                }
+                Err(err) => {
+                    let valid_up_to = err.valid_up_to();
+                    if valid_up_to > 0 {
+                        out.push_str(
+                            std::str::from_utf8(&self.pending[..valid_up_to])
+                                .expect("Utf8Error::valid_up_to must be valid UTF-8"),
+                        );
+                    }
+                    match err.error_len() {
+                        Some(invalid_len) => {
+                            out.push('\u{fffd}');
+                            self.pending.drain(..valid_up_to + invalid_len);
+                        }
+                        None => {
+                            self.pending.drain(..valid_up_to);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn finish(&mut self) -> String {
+        if self.pending.is_empty() {
+            String::new()
+        } else {
+            let text = String::from_utf8_lossy(&self.pending).into_owned();
+            self.pending.clear();
+            text
+        }
     }
 }
 
@@ -140,11 +201,14 @@ static ROUTE_SEQ: AtomicU64 = AtomicU64::new(0);
 /// Trim with hysteresis (the frontend buffer's rule): cutting exactly to the
 /// cap on every chunk past it re-copies the whole buffer per chunk; letting it
 /// grow to 2× and cutting back costs one copy per cap's worth of new output.
-/// The cut may land mid-UTF-8-sequence; the lossy conversion at read time
-/// degrades that to one replacement char, same as the frontend's slice did.
-fn trim_with_hysteresis(buf: &mut Vec<u8>, cap: usize) {
+/// The buffer already contains decoded text, so advance the cut to a character
+/// boundary rather than creating replacement characters during replay.
+fn trim_with_hysteresis(buf: &mut String, cap: usize) {
     if buf.len() > cap * 2 {
-        let cut = buf.len() - cap;
+        let mut cut = buf.len() - cap;
+        while cut < buf.len() && !buf.is_char_boundary(cut) {
+            cut += 1;
+        }
         buf.drain(..cut);
     }
 }
@@ -165,20 +229,23 @@ enum Routed {
 fn route_chunk_at(id: &str, bytes: &[u8], now: Instant) -> Routed {
     let mut map = routes().lock().unwrap();
     let route = map.entry(id.to_string()).or_default();
-    if route.subscribed() {
-        return Routed::Data(String::from_utf8_lossy(bytes).into_owned());
+    let text = route.decoder.push(bytes);
+    if text.is_empty() {
+        return Routed::Quiet;
     }
-    route.pending.extend_from_slice(bytes);
+    if route.subscribed() {
+        return Routed::Data(text);
+    }
+    route.pending.push_str(&text);
     trim_with_hysteresis(&mut route.pending, ROUTE_PENDING_CAP);
-    route.digest.extend_from_slice(bytes);
+    route.digest.push_str(&text);
     trim_with_hysteresis(&mut route.digest, ACTIVITY_TAIL_CAP);
     let due = route
         .last_activity
         .is_none_or(|t| now.duration_since(t) >= ACTIVITY_INTERVAL);
     if due {
         route.last_activity = Some(now);
-        let text = String::from_utf8_lossy(&route.digest).into_owned();
-        route.digest.clear();
+        let text = std::mem::take(&mut route.digest);
         Routed::Activity(text)
     } else if !route.digest_armed {
         route.digest_armed = true;
@@ -193,6 +260,29 @@ fn route_chunk(id: &str, bytes: &[u8]) -> Routed {
     route_chunk_at(id, bytes, Instant::now())
 }
 
+/// Flush an incomplete UTF-8 suffix when the PTY reaches EOF. Complete streams
+/// produce no extra event; a genuinely truncated codepoint produces one
+/// replacement character and follows the current visible/hidden route.
+fn route_finish(id: &str) -> Routed {
+    let mut map = routes().lock().unwrap();
+    let Some(route) = map.get_mut(id) else {
+        return Routed::Quiet;
+    };
+    let text = route.decoder.finish();
+    if text.is_empty() {
+        return Routed::Quiet;
+    }
+    if route.subscribed() {
+        return Routed::Data(text);
+    }
+    route.pending.push_str(&text);
+    trim_with_hysteresis(&mut route.pending, ROUTE_PENDING_CAP);
+    route.digest.push_str(&text);
+    trim_with_hysteresis(&mut route.digest, ACTIVITY_TAIL_CAP);
+    route.last_activity = Some(Instant::now());
+    Routed::Activity(std::mem::take(&mut route.digest))
+}
+
 /// The trailing digest flush: drain whatever the window's remaining chunks
 /// left, so the last output before a quiet spell (the decision prompt, above
 /// all) always reaches the activity store.
@@ -204,8 +294,7 @@ fn route_digest_take_at(id: &str, now: Instant) -> Option<String> {
         return None;
     }
     route.last_activity = Some(now);
-    let text = String::from_utf8_lossy(&route.digest).into_owned();
-    route.digest.clear();
+    let text = std::mem::take(&mut route.digest);
     Some(text)
 }
 
@@ -221,6 +310,7 @@ fn route_open(id: &str) -> u64 {
     let route = map.entry(id.to_string()).or_default();
     route.pending.clear();
     route.digest.clear();
+    route.decoder = Utf8StreamDecoder::default();
     route.last_activity = None;
     route.seq = seq;
     seq
@@ -231,7 +321,15 @@ fn route_open(id: &str) -> u64 {
 fn route_close(id: &str, seq: u64) {
     let mut map = routes().lock().unwrap();
     if map.get(id).is_some_and(|r| r.seq == seq) {
-        map.remove(id);
+        let remove = map
+            .get(id)
+            .is_some_and(|r| r.visible_viewers.is_empty() && r.watchers == 0);
+        if remove {
+            map.remove(id);
+        } else if let Some(route) = map.get_mut(id) {
+            route.seq = 0;
+            route.decoder = Utf8StreamDecoder::default();
+        }
     }
 }
 
@@ -242,20 +340,62 @@ fn emit_replay(app: &AppHandle, id: &str, route: &mut OutputRoute) {
     if let Some(text) = route.take_pending() {
         let _ = app.emit(
             "terminal-replay",
-            TerminalOutput { id: id.to_string(), data: text },
+            TerminalOutput {
+                id: id.to_string(),
+                data: text,
+            },
         );
     }
 }
 
-/// The pane's visibility report (`pty_set_visible`).
-pub fn route_set_visible(app: &AppHandle, id: &str, visible: bool) {
+/// One TerminalView instance's visibility report (`pty_set_visible`).
+pub fn route_set_visible(
+    app: &AppHandle,
+    id: &str,
+    viewer_id: &str,
+    visible: bool,
+    update_seq: u64,
+) {
     let mut map = routes().lock().unwrap();
     let route = map.entry(id.to_string()).or_default();
     let was = route.subscribed();
-    route.visible = visible;
+    let current_seq = route
+        .visible_viewers
+        .get(viewer_id)
+        .map(|(_, seq)| *seq)
+        .unwrap_or(0);
+    if update_seq < current_seq {
+        return;
+    }
+    route
+        .visible_viewers
+        .insert(viewer_id.to_string(), (visible, update_seq));
     if !was && route.subscribed() {
         emit_replay(app, id, route);
     }
+}
+
+/// Remove a TerminalView instance without changing any sibling view's state.
+pub fn route_remove_view(id: &str, viewer_id: &str, update_seq: u64) {
+    let mut map = routes().lock().unwrap();
+    let Some(route) = map.get_mut(id) else { return };
+    if route
+        .visible_viewers
+        .get(viewer_id)
+        .is_some_and(|(_, seq)| *seq > update_seq)
+    {
+        return;
+    }
+    route.visible_viewers.remove(viewer_id);
+    if route.seq == 0 && route.visible_viewers.is_empty() && route.watchers == 0 {
+        map.remove(id);
+    }
+}
+
+/// Scope teardown owns the PTY, so no view registration may keep its route
+/// alive after the process tree is reaped.
+pub fn route_remove_all_views(id: &str) {
+    routes().lock().unwrap().remove(id);
 }
 
 /// A marker-watcher's hold (`pty_watch`): stream this PTY as if visible.
@@ -367,7 +507,7 @@ pub struct TerminalReady {
 
 struct PtyEntry {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    input_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
     child: Box<dyn Child + Send + Sync>,
     dead: Arc<AtomicBool>,
     crash_times: Vec<Instant>,
@@ -522,11 +662,24 @@ impl PtyRegistry {
             }
             None => Vec::new(),
         };
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(INPUT_CHANNEL_CAP);
+        let writer_dead = dead.clone();
+        std::thread::spawn(move || {
+            let mut writer = writer;
+            while let Some(data) = input_rx.blocking_recv() {
+                if writer_dead.load(Ordering::SeqCst) {
+                    break;
+                }
+                if writer.write_all(&data).is_err() {
+                    break;
+                }
+            }
+        });
         self.entries.insert(
             id,
             PtyEntry {
                 master,
-                writer,
+                input_tx,
                 child,
                 dead,
                 crash_times,
@@ -537,11 +690,16 @@ impl PtyRegistry {
         invalidate_proc_tree_cache();
     }
 
-    pub fn write(&mut self, id: &str, data: &[u8]) -> std::io::Result<()> {
-        if let Some(e) = self.entries.get_mut(id) {
-            e.writer.write_all(data)?;
-        }
-        Ok(())
+    pub fn input_sender(&self, id: &str) -> Option<tokio::sync::mpsc::Sender<Vec<u8>>> {
+        self.entries.get(id).map(|e| e.input_tx.clone())
+    }
+
+    pub fn ids_for_scope(&self, scope: &str) -> Vec<String> {
+        self.entries
+            .keys()
+            .filter(|id| pty_id_in_scope(id, scope))
+            .cloned()
+            .collect()
     }
 
     pub fn kill(&mut self, id: &str) {
@@ -600,10 +758,9 @@ impl PtyRegistry {
     /// Used by the project-container teardown to keep a deactivated project's
     /// container alive while background tabs still run inside it.
     pub fn any_live_for_scope(&self, scope: &str) -> bool {
-        let prefix = format!("{scope}:");
         self.entries
             .iter()
-            .any(|(id, e)| id.starts_with(&prefix) && !e.dead.load(Ordering::SeqCst))
+            .any(|(id, e)| pty_id_in_scope(id, scope) && !e.dead.load(Ordering::SeqCst))
     }
 
     /// OS process id of the child for `id`, if it is still tracked.
@@ -625,6 +782,11 @@ impl PtyRegistry {
         entry.crash_times.push(now);
         true
     }
+}
+
+fn pty_id_in_scope(id: &str, scope: &str) -> bool {
+    id.strip_prefix(scope)
+        .is_some_and(|suffix| suffix.starts_with(':'))
 }
 
 // ── Spawn ─────────────────────────────────────────────────────────────────
@@ -685,7 +847,12 @@ pub fn spawn_pty(
         reg.insert(opts.id.clone(), pair.master, writer, child, dead.clone());
     }
 
-    let _ = app.emit("terminal-ready", TerminalReady { id: opts.id.clone() });
+    let _ = app.emit(
+        "terminal-ready",
+        TerminalReady {
+            id: opts.id.clone(),
+        },
+    );
 
     // Channel: blocking reader thread → async emitter task.
     let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(CHANNEL_CAP);
@@ -701,8 +868,12 @@ pub fn spawn_pty(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    // If the channel is full, drop the chunk (backpressure safety).
-                    let _ = tx.try_send(buf[..n].to_vec());
+                    // This is a dedicated reader thread, so blocking here is the
+                    // correct bounded-backpressure behaviour: the OS PTY buffer
+                    // slows the child rather than silently losing terminal bytes.
+                    if tx.blocking_send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
                 }
                 Err(_) => break,
             }
@@ -723,13 +894,19 @@ pub fn spawn_pty(
             Routed::Data(text) => {
                 let _ = emitter.emit(
                     "terminal-output",
-                    TerminalOutput { id: id.clone(), data: text },
+                    TerminalOutput {
+                        id: id.clone(),
+                        data: text,
+                    },
                 );
             }
             Routed::Activity(text) => {
                 let _ = emitter.emit(
                     "terminal-activity",
-                    TerminalOutput { id: id.clone(), data: text },
+                    TerminalOutput {
+                        id: id.clone(),
+                        data: text,
+                    },
                 );
             }
             Routed::ArmDigest(deadline) => {
@@ -743,7 +920,10 @@ pub fn spawn_pty(
                     if let Some(text) = route_digest_take(&id2) {
                         let _ = app2.emit(
                             "terminal-activity",
-                            TerminalOutput { id: id2, data: text },
+                            TerminalOutput {
+                                id: id2,
+                                data: text,
+                            },
                         );
                     }
                 });
@@ -751,6 +931,27 @@ pub fn spawn_pty(
             Routed::Quiet => {}
         })
         .await;
+        match route_finish(&id) {
+            Routed::Data(text) => {
+                let _ = emitter.emit(
+                    "terminal-output",
+                    TerminalOutput {
+                        id: id.clone(),
+                        data: text,
+                    },
+                );
+            }
+            Routed::Activity(text) => {
+                let _ = emitter.emit(
+                    "terminal-activity",
+                    TerminalOutput {
+                        id: id.clone(),
+                        data: text,
+                    },
+                );
+            }
+            Routed::ArmDigest(_) | Routed::Quiet => {}
+        }
         route_close(&id, route_seq);
         // The child exited on its own; its subtree is gone, so the next CPU
         // sample must rebuild rather than count dead pids.
@@ -779,10 +980,7 @@ pub fn spawn_pty(
 ///   gaps far exceed the window), so echo latency stays ~0 ms.
 /// - A chunk arriving inside the window arms one timeout for the *remainder*
 ///   of the window, coalescing a burst; `BATCH_MAX_BYTES` flushes early.
-async fn batch_output<F: FnMut(&[u8])>(
-    mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
-    mut flush: F,
-) {
+async fn batch_output<F: FnMut(&[u8])>(mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>, mut flush: F) {
     let mut batch: Vec<u8> = Vec::with_capacity(BATCH_MAX_BYTES);
     // Start stale by one full window so the very first chunk takes the
     // leading-edge flush too (checked_sub: an Instant can't go below the
@@ -808,8 +1006,7 @@ async fn batch_output<F: FnMut(&[u8])>(
 
         let now = Instant::now();
         let should_flush = !batch.is_empty()
-            && (batch.len() >= BATCH_MAX_BYTES
-                || now.duration_since(last_emit) >= BATCH_INTERVAL);
+            && (batch.len() >= BATCH_MAX_BYTES || now.duration_since(last_emit) >= BATCH_INTERVAL);
 
         if should_flush {
             flush(&batch);
@@ -892,7 +1089,11 @@ fn command_for_resolved(path: std::path::PathBuf) -> CommandBuilder {
 }
 
 fn build_command(opts: &PtyOptions) -> CommandBuilder {
-    let cmd_str = if opts.cmd.is_empty() { default_shell() } else { opts.cmd.clone() };
+    let cmd_str = if opts.cmd.is_empty() {
+        default_shell()
+    } else {
+        opts.cmd.clone()
+    };
     // A bare tool name (e.g. "vibe"/"ollama") that Eldrun detected as installed
     // may still not be launchable on Windows: winget/uv/npm install into per-user
     // dirs (%LOCALAPPDATA%\Programs, %USERPROFILE%\.local\bin, %APPDATA%\npm, …)
@@ -1027,18 +1228,33 @@ mod route_tests {
         let mut map = routes().lock().unwrap();
         let route = map.entry(id.to_string()).or_default();
         let was = route.subscribed();
-        route.visible = visible;
-        if !was && route.subscribed() { route.take_pending() } else { None }
+        if visible {
+            route
+                .visible_viewers
+                .insert("test-view".to_string(), (true, 1));
+        } else {
+            route
+                .visible_viewers
+                .insert("test-view".to_string(), (false, 1));
+        }
+        if !was && route.subscribed() {
+            route.take_pending()
+        } else {
+            None
+        }
     }
 
     #[test]
-    fn subscribed_by_default_streams_data() {
+    fn registered_view_streams_data() {
         let id = "route-t-default";
         let seq = route_open(id);
+        set_visible(id, true);
         assert!(matches!(
             route_chunk_at(id, b"hello", Instant::now()),
             Routed::Data(t) if t == "hello"
         ));
+        set_visible(id, false);
+        route_remove_view(id, "test-view", 2);
         route_close(id, seq);
     }
 
@@ -1069,6 +1285,7 @@ mod route_tests {
             Some("defghi")
         );
         assert_eq!(route_digest_take_at(id, t0 + ACTIVITY_INTERVAL), None);
+        route_remove_view(id, "test-view", 2);
         route_close(id, seq);
     }
 
@@ -1090,6 +1307,7 @@ mod route_tests {
         ));
         // No leftover digest fires after the drain.
         assert_eq!(route_digest_take_at(id, t0 + ACTIVITY_INTERVAL), None);
+        route_remove_view(id, "test-view", 2);
         route_close(id, seq);
     }
 
@@ -1120,18 +1338,77 @@ mod route_tests {
             route_chunk_at(id, b"after", t0 + ACTIVITY_INTERVAL * 2),
             Routed::Activity(t) if t == "after"
         ));
+        route_remove_view(id, "test-view", 2);
         route_close(id, seq);
     }
 
     #[test]
     fn pending_is_capped_with_hysteresis() {
-        let mut buf = vec![b'x'; ROUTE_PENDING_CAP * 2];
+        let mut buf = "x".repeat(ROUTE_PENDING_CAP * 2);
         trim_with_hysteresis(&mut buf, ROUTE_PENDING_CAP);
         assert_eq!(buf.len(), ROUTE_PENDING_CAP * 2, "at 2x nothing is cut yet");
-        buf.push(b'y');
+        buf.push('y');
         trim_with_hysteresis(&mut buf, ROUTE_PENDING_CAP);
-        assert_eq!(buf.len(), ROUTE_PENDING_CAP, "past 2x it cuts back to the cap");
-        assert_eq!(*buf.last().unwrap(), b'y', "the newest bytes survive");
+        assert_eq!(
+            buf.len(),
+            ROUTE_PENDING_CAP,
+            "past 2x it cuts back to the cap"
+        );
+        assert!(buf.ends_with('y'), "the newest bytes survive");
+    }
+
+    #[test]
+    fn one_hidden_view_cannot_silence_another_visible_view() {
+        let id = "route-t-two-views";
+        let seq = route_open(id);
+        {
+            let mut map = routes().lock().unwrap();
+            let route = map.get_mut(id).unwrap();
+            route.visible_viewers.insert("main".to_string(), (false, 1));
+            route
+                .visible_viewers
+                .insert("detached".to_string(), (true, 1));
+        }
+        assert!(matches!(
+            route_chunk_at(id, b"still-live", Instant::now()),
+            Routed::Data(t) if t == "still-live"
+        ));
+        {
+            let mut map = routes().lock().unwrap();
+            map.get_mut(id).unwrap().visible_viewers.remove("detached");
+            map.get_mut(id).unwrap().visible_viewers.remove("main");
+        }
+        route_close(id, seq);
+    }
+
+    #[test]
+    fn utf8_decoder_preserves_codepoints_across_every_split() {
+        let source = "aé€𐍈z";
+        for split in 1..source.len() {
+            let mut decoder = Utf8StreamDecoder::default();
+            let mut decoded = decoder.push(&source.as_bytes()[..split]);
+            decoded.push_str(&decoder.push(&source.as_bytes()[split..]));
+            decoded.push_str(&decoder.finish());
+            assert_eq!(decoded, source, "split at byte {split}");
+        }
+    }
+
+    #[test]
+    fn utf8_decoder_replaces_invalid_or_truncated_input_once() {
+        let mut invalid = Utf8StreamDecoder::default();
+        assert_eq!(invalid.push(&[b'a', 0xff, b'b']), "a\u{fffd}b");
+        assert_eq!(invalid.finish(), "");
+
+        let mut truncated = Utf8StreamDecoder::default();
+        assert_eq!(truncated.push(&[0xf0, 0x9f]), "");
+        assert_eq!(truncated.finish(), "\u{fffd}");
+    }
+
+    #[test]
+    fn scope_ids_require_the_colon_boundary() {
+        assert!(pty_id_in_scope("project:tab-1", "project"));
+        assert!(!pty_id_in_scope("project-two:tab-1", "project"));
+        assert!(!pty_id_in_scope("project", "project"));
     }
 
     #[test]
@@ -1147,6 +1424,7 @@ mod route_tests {
         );
         // And the respawn kept the pane's hidden state.
         assert!(!routes().lock().unwrap().get(id).unwrap().subscribed());
+        route_remove_view(id, "test-view", 2);
         route_close(id, new);
         assert!(!routes().lock().unwrap().contains_key(id));
     }
@@ -1206,7 +1484,12 @@ mod tests {
         let _cache_guard = crate::sysstat::lock_cache_for_test();
         let pty_system = NativePtySystem::default();
         let pair = pty_system
-            .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .expect("openpty");
 
         // The trailing `; true` defeats the shell's exec-optimization so `sleep`
@@ -1243,7 +1526,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         let sleep_pid = sleep_pid.expect("sleep child should have spawned");
-        assert!(alive(sleep_pid), "sleep child should be running before kill");
+        assert!(
+            alive(sleep_pid),
+            "sleep child should be running before kill"
+        );
 
         registry.lock().unwrap().kill("test");
 
@@ -1257,6 +1543,9 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(gone, "the inner process must be aborted when the tab is closed");
+        assert!(
+            gone,
+            "the inner process must be aborted when the tab is closed"
+        );
     }
 }

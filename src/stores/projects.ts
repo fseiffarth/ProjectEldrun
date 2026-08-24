@@ -18,12 +18,17 @@ import {
 } from "../types";
 import {
   cmdToKind,
+  effectiveTabLocation,
+  isPtyTabKind,
   isRestorableTab,
+  isResumableAgentTab,
+  remoteHostIdOf,
   ROOT_SCOPE,
   useTabsStore,
   type SavedLayoutTree,
   type TabKind,
   type TabLocation,
+  type TabEntry,
   type ViewerState,
 } from "./tabs";
 import { useRunHostPrefStore } from "./runHostPref";
@@ -37,6 +42,9 @@ import { useConnectDialogStore } from "./connectDialog";
 import { connectionStillOpen, openConnectionInRoot } from "../lib/remoteConnect";
 import { describeScaffoldRepair, type ProjectScaffoldRepair } from "../components/projects/scaffold";
 import type { SavedPasswordState } from "../components/projects/useSavedCredential";
+import { IS_WINDOWS } from "../lib/platform";
+import { shouldPersistLocalTab, shouldPersistTab } from "../lib/tmuxSession";
+import { translate, useI18nStore } from "../lib/i18n";
 
 function connectionsHeadless(): boolean {
   return useSettingsStore.getState().settings?.connections_headless ?? true;
@@ -76,6 +84,7 @@ function vpnToast(name: string): string {
  * from the keychain or the dialog's own master, exactly as it did before.
  */
 const pendingRemotePassword = new Map<string, string>();
+const deactivatingProjects = new Set<string>();
 
 /** Hand `projectId`'s first pooled connect the password the dialog just used. */
 export function stashRemotePassword(projectId: string, password: string): void {
@@ -680,6 +689,53 @@ function dropRemotePool(projectId: string): void {
   void invoke("remote_disconnect_all_hosts", { projectId }).catch(() => {});
 }
 
+interface ProjectTmuxTarget {
+  session: string;
+  hostId: string | null;
+}
+
+/** Persistent sessions that the currently-loaded project tabs actually use. */
+export function projectTmuxTargets(
+  project: ProjectEntry,
+  tabs: TabEntry[],
+  localPersistenceEnabled: boolean,
+): ProjectTmuxTarget[] {
+  const targets = new Map<string, ProjectTmuxTarget>();
+  for (const tab of tabs) {
+    if (!isPtyTabKind(tab.kind)) continue;
+    let hostId = remoteHostIdOf(
+      effectiveTabLocation(tab, { vmProject: !!project.vm?.enabled }),
+    );
+    if (
+      hostId &&
+      hostId !== "primary" &&
+      !project.compute_hosts?.some((host) => host.id === hostId)
+    ) {
+      hostId = "primary";
+    }
+    const localRunning = !project.remote || hostId === null;
+    const persistent =
+      !!tab.tmuxSession &&
+      (shouldPersistTab(tab.kind, hostId, project.remote, tab.ephemeral) ||
+        shouldPersistLocalTab(
+          tab.kind,
+          project.id,
+          localRunning,
+          localPersistenceEnabled,
+          !!project.eldrun_mobile_access,
+          isResumableAgentTab(tab),
+        ));
+    const session = tab.tmuxAttach ?? (persistent ? tab.tmuxSession : undefined);
+    if (!session) continue;
+    const targetHost = localRunning ? null : (hostId ?? "primary");
+    targets.set(`${targetHost ?? "local"}\0${session}`, {
+      session,
+      hostId: targetHost,
+    });
+  }
+  return [...targets.values()];
+}
+
 /** Tear a remote project's connection down on demand (header lamp menu): drop the
  *  pooled SSH/SFTP connection and reset its lamps to disconnected. The restored
  *  tabs stay open (their sessions just go dead) until the user reconnects. */
@@ -810,6 +866,7 @@ interface ProjectsStore {
   /** Opt a remote project in/out of persistent (tmux) sessions (TODO #85). Default
    *  ON, so this only records an opt-out; re-enabling clears the field. */
   setProjectPersistSessions: (id: string, enabled: boolean) => Promise<void>;
+  setProjectMobileAccess: (id: string, enabled: boolean) => Promise<void>;
   /** Set (or clear, on blank) the display name for a remote project's PRIMARY
    *  machine — the counterpart of a worker's `label` (`patch_compute_host`).
    *  Distinct from the project name: this labels the host, shown wherever a
@@ -1090,6 +1147,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
           // The host-bound marker id (#150), so a local-model tab keeps its
           // container exemption across a switch.
           hostBoundUid: t.hostBoundUid,
+          mobileRequestHash: t.mobileRequestHash,
           // The no-tmux marker, so a SLURM log tab is not re-wrapped in tmux (and
           // left leaking a `tail -F` daemon) after a switch-away + relaunch.
           ephemeral: t.ephemeral,
@@ -1194,26 +1252,103 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
   },
 
   deactivateProject: async (id) => {
-    let nextProjects: ProjectEntry[] = [];
-    let nextActiveId: string | null = null;
-    set((state) => {
-      nextProjects = state.projects.map((project) =>
-        project.id === id && project.status !== "inactive"
-          ? { ...project, status: "inactive" }
-          : project,
+    if (deactivatingProjects.has(id)) return;
+    deactivatingProjects.add(id);
+    try {
+      const state = get();
+      const project = state.projects.find((entry) => entry.id === id);
+      if (!project || project.status === "inactive") return;
+
+      const tabsStore = useTabsStore.getState();
+      const loaded = Object.prototype.hasOwnProperty.call(tabsStore.tabsByScope, id);
+      const tabs = tabsStore.tabsByScope[id] ?? [];
+      const ptyTabs = tabs.filter((tab) => isPtyTabKind(tab.kind));
+      const localPersistenceEnabled =
+        !IS_WINDOWS &&
+        useSettingsStore.getState().settings?.persist_local_sessions !== false;
+      const tmuxTargets = projectTmuxTargets(project, tabs, localPersistenceEnabled);
+
+      if (ptyTabs.length > 0 || tmuxTargets.length > 0) {
+        const { confirm } = await import("@tauri-apps/plugin-dialog");
+        const lang = useI18nStore.getState().lang;
+        const ok = await confirm(
+          translate(lang, "projectSwitcher.stopBody", {
+            name: project.name,
+            terminals: ptyTabs.length,
+            sessions: tmuxTargets.length,
+          }),
+          { title: translate(lang, "projectSwitcher.stopTitle"), kind: "warning" },
+        );
+        if (!ok) return;
+      }
+
+      // Saving is a precondition for destructive teardown. Autosaves are allowed
+      // to fail quietly; this one is not, because the stopped tabs must restore.
+      if (loaded) {
+        await tabsStore.persistScopeStrict(id, project.local_file);
+      }
+
+      // Kill only sessions named by this project's tabs. Never use tmux
+      // kill-server: remote hosts and local tmux servers are shared with other
+      // projects and with sessions created outside Eldrun.
+      const kills = await Promise.allSettled(
+        tmuxTargets.map((target) =>
+          target.hostId === null
+            ? invoke<void>("local_tmux_kill", { session: target.session })
+            : invoke<void>("remote_tmux_kill", {
+                projectId: id,
+                hostId: target.hostId,
+                session: target.session,
+              }),
+        ),
       );
-      nextActiveId =
-        state.activeId === id
-          ? (nextProjects.find((p) => p.status === "active") ?? nextProjects[0])?.id ?? null
-          : state.activeId;
-      return { projects: nextProjects };
-    });
-    await invoke<void>("save_projects", { projects: nextProjects });
-    // Close the pooled SSH/SFTP connection for a deactivated remote project so no
-    // ssh ControlMaster child lingers for a project no longer in use (Phase 0).
-    if (nextProjects.find((p) => p.id === id)?.remote) dropRemotePool(id);
-    if (useProjectsStore.getState().activeId !== nextActiveId) {
-      await useProjectsStore.getState().setActive(nextActiveId);
+      const failures = kills.flatMap((result, index) =>
+        result.status === "rejected"
+          ? [`${tmuxTargets[index].session}: ${String(result.reason)}`]
+          : [],
+      );
+      if (failures.length > 0) {
+        throw new Error(`Could not stop every persistent session:\n${failures.join("\n")}`);
+      }
+
+      // Belt-and-suspenders cleanup catches hidden, detached, and orphaned views,
+      // and reaps each PTY's whole child subtree.
+      await invoke<string[]>("pty_kill_scope", { scope: id });
+
+      const currentProjects = get().projects;
+      const currentActiveId = get().activeId;
+      const nextProjects = currentProjects.map((entry) =>
+        entry.id === id ? { ...entry, status: "inactive" } : entry,
+      );
+      const nextActiveId =
+        currentActiveId === id
+          ? (nextProjects.find((entry) => entry.status === "active") ??
+              nextProjects.find((entry) => entry.status !== "inactive"))?.id ?? null
+          : currentActiveId;
+
+      // Persist status before exposing it in the UI. If this fails, the project
+      // remains active (with its deliberately stopped terminals) and can be
+      // retried; it never becomes an inactive project with leaked processes.
+      await invoke<void>("save_projects", { projects: nextProjects });
+      set({ projects: nextProjects });
+      if (currentActiveId !== nextActiveId) {
+        await useProjectsStore.getState().setActive(nextActiveId);
+      }
+      // setActive must snapshot the old scope while its saved tabs still exist;
+      // only then may we remove the scope's in-memory maps and native popouts.
+      await tabsStore.unloadScope(id);
+      if (project.remote) dropRemotePool(id);
+    } catch (error) {
+      const { message } = await import("@tauri-apps/plugin-dialog");
+      await message(String(error), {
+        title: translate(
+          useI18nStore.getState().lang,
+          "projectSwitcher.stopError",
+        ),
+        kind: "error",
+      });
+    } finally {
+      deactivatingProjects.delete(id);
     }
   },
 
@@ -1417,6 +1552,20 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
               ...project,
               remote: { ...project.remote, persist_sessions: result ? undefined : false },
             }
+          : project,
+      ),
+    }));
+  },
+
+  setProjectMobileAccess: async (id, enabled) => {
+    const result = await invoke<boolean>("set_project_mobile_access", {
+      projectId: id,
+      enabled,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id
+          ? { ...project, eldrun_mobile_access: result || undefined }
           : project,
       ),
     }));

@@ -590,6 +590,9 @@ export interface TabEntry {
   // grant itself is a file in the state dir; this is only the index into it, which
   // is why a planted value buys nothing.
   hostBoundUid?: string;
+  // Keyed hash of a mobile create request. It contains no client token and lets
+  // a timed-out retry resolve to this exact saved tab instead of duplicating it.
+  mobileRequestHash?: string;
 }
 
 export type SplitDir = "row" | "column";
@@ -752,6 +755,7 @@ export interface SavedTabEntry {
   ephemeral?: boolean;
   // Persisted host-bound marker id (see TabEntry.hostBoundUid, #150).
   hostBoundUid?: string;
+  mobileRequestHash?: string;
 }
 
 /** Serialized layout tree as persisted in project.json's `tab_groups`. */
@@ -921,6 +925,9 @@ interface TabsStore {
   // its PTY dies. Non-current scopes are cleared in memory only; persist
   // explicitly at the call site if the scope isn't the active project.
   closeAllTabs: (scope?: string) => void;
+  /** Remove a loaded scope from memory without changing its saved layout. Used
+   *  only after project deactivation has persisted and stopped its runtimes. */
+  unloadScope: (scope: string) => Promise<void>;
   updateTabEnv: (key: string, env: Record<string, string>) => void;
   // Persistent sessions (TODO #85): rename a tab's tmux session name after the
   // Sessions view renamed the host session, so the persisted name still matches
@@ -1240,11 +1247,27 @@ interface TabsStore {
     targetScope?: string,
     groups?: SavedLayoutTree,
   ) => void;
+  /** Atomically hydrate an inactive scope, deduplicate a Mobile request, add its
+   * desktop-built tab spec, and strictly persist the resulting target scope. */
+  hydrateThenCreateInScope: (options: {
+    scope: string;
+    cwd: string;
+    localFile: string;
+    requestHash: string;
+    spec: Omit<TabEntry, "key">;
+  }) => Promise<TabEntry>;
   // Persist an explicit scope's tabs+layout (incl. its detached groups) to its
   // project.json. `saveLayout` is the current-scope convenience over this; the
   // detached-close host path uses it to write a parked (non-active) scope, which
   // CenterPanel's current-scope save would otherwise never touch.
-  persistScope: (scope: string, localFile: string) => Promise<void>;
+  persistScope: (
+    scope: string,
+    localFile: string,
+    options?: { strict?: boolean },
+  ) => Promise<void>;
+  /** Persistence variant for destructive workflows: failures are fatal instead
+   *  of being treated as a non-critical autosave miss. */
+  persistScopeStrict: (scope: string, localFile: string) => Promise<void>;
   saveLayout: (localFile: string) => Promise<void>;
 }
 
@@ -2268,6 +2291,52 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // flat shortcuts when target is current; the flat pane layer then unmounts
       // every pane for this scope, killing its PTYs (same path as closeGroup).
       return writeScope(s, target, [], null, null);
+    });
+  },
+
+  unloadScope: async (scope) => {
+    const state = get();
+    const tabs = state.tabsByScope[scope] ?? [];
+    const detached = state.detachedGroupsByScope[scope] ?? [];
+
+    // Close native popouts first. A missing/already-closed window is harmless;
+    // the scope teardown below remains the source of truth.
+    await Promise.allSettled(
+      detached.map((entry) =>
+        invoke("attach_subwindow", { registryId: entry.label }),
+      ),
+    );
+    const purge = useLinkRoutingStore.getState().purgeForTab;
+    for (const tab of tabs) {
+      purge(tab.key);
+      forgetPty(`${scope}:${tab.key}`);
+    }
+
+    set((s) => {
+      const without = <T,>(record: Record<string, T>): Record<string, T> => {
+        if (!Object.prototype.hasOwnProperty.call(record, scope)) return record;
+        const next = { ...record };
+        delete next[scope];
+        return next;
+      };
+      const current = s.scope === scope;
+      return {
+        tabsByScope: without(s.tabsByScope),
+        layoutByScope: without(s.layoutByScope),
+        focusedGroupByScope: without(s.focusedGroupByScope),
+        detachedGroupsByScope: without(s.detachedGroupsByScope),
+        hiddenGroupsByScope: without(s.hiddenGroupsByScope),
+        pendingRespawnByScope: without(s.pendingRespawnByScope),
+        ...(current
+          ? {
+              tabs: [],
+              layout: null,
+              focusedGroupId: null,
+              activeKey: null,
+              fullscreenGroupId: null,
+            }
+          : {}),
+      };
     });
   },
 
@@ -3867,12 +3936,24 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // real behaviour and closed nothing.
       const restoredMode = t.agentMode;
       const args = restoredMode ? withAgentMode(t.cmd, base, restoredMode) : base;
+      // Codex mints its conversation id itself, so `sessionId` is Eldrun's
+      // stable *binding* key rather than a CLI argument. The backend resolves
+      // that key from ELDRUN_TAB_UID before it spawns the restored tab. Layouts
+      // written before the key was persisted in `env` (and a stale layout whose
+      // env disagrees with its sessionId) would otherwise restore a visible
+      // Codex tab but launch a fresh conversation. Rebuild this identity field
+      // from the durable sessionId, just as `buildStaticTabSpec` does for a new
+      // tab; it is not a user-configurable environment override.
+      const env = { ...(t.env ?? {}) };
+      if (t.cmd === "codex" && t.sessionId) {
+        env.ELDRUN_TAB_UID = t.sessionId;
+      }
       return {
         key: freshKey,
         label: t.label,
         cmd: t.cmd,
         args,
-        env: t.env ?? {},
+        env,
         cwd: isAgent && defaultCwd ? defaultCwd : t.cwd || defaultCwd,
         kind,
         sessionId: t.sessionId,
@@ -3911,6 +3992,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // grants nothing, and minting one on restore would be inventing an
         // authority the user never asked for.
         hostBoundUid: t.hostBoundUid,
+        mobileRequestHash: t.mobileRequestHash,
         // Restore the no-tmux marker BEFORE anything reads it: the minted name
         // above is harmless on such a tab precisely because `shouldPersistTab`
         // refuses to use it.
@@ -4005,7 +4087,49 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
-  persistScope: async (scope, localFile) => {
+  hydrateThenCreateInScope: async ({ scope, cwd, localFile, requestHash, spec }) => {
+    if (!Object.prototype.hasOwnProperty.call(get().tabsByScope, scope)) {
+      const saved = await invoke<Record<string, unknown>>("load_tab_session", {
+        projectId: scope,
+      });
+      // Another request or the ordinary UI may have hydrated the same scope while
+      // the backend read was in flight. Never overwrite that newer live state.
+      if (!Object.prototype.hasOwnProperty.call(get().tabsByScope, scope)) {
+        const layout = ((saved.tabLayout as SavedTabEntry[] | undefined) ?? []).filter((tab) =>
+          isRestorableTab({
+            kind: tab.kind ?? "shell",
+            cmd: tab.cmd,
+            sessionId: tab.sessionId,
+            resumeArgs: tab.resumeArgs,
+            viewer: tab.viewer,
+          }),
+        );
+        if (layout.length > 0) {
+          get().loadFromLayout(
+            layout,
+            cwd,
+            scope,
+            saved.tabGroups as SavedLayoutTree | undefined,
+          );
+        } else {
+          set((state) => ({
+            tabsByScope: { ...state.tabsByScope, [scope]: [] },
+            layoutByScope: { ...state.layoutByScope, [scope]: null },
+            focusedGroupByScope: { ...state.focusedGroupByScope, [scope]: null },
+          }));
+        }
+      }
+    }
+
+    const existing = get().tabsByScope[scope]?.find(
+      (tab) => tab.mobileRequestHash === requestHash,
+    );
+    const created = existing ?? get().addTabToScope(scope, { ...spec, mobileRequestHash: requestHash });
+    await get().persistScopeStrict(scope, localFile);
+    return created;
+  },
+
+  persistScope: async (scope, localFile, options) => {
     const layout = get().layoutByScope[scope] ?? null;
     const scopeTabs = get().tabsByScope[scope] ?? [];
     // Whether an EMPTY layout may erase what's on disk. Saving empty is destructive —
@@ -4099,6 +4223,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // The host-bound marker id (#150) — persisted so a restored local-model
         // tab still resolves to its registered marker in the state dir.
         hostBoundUid: t.hostBoundUid,
+        mobileRequestHash: t.mobileRequestHash,
         // Persist the no-tmux marker. Without it a restored SLURM log tab is an
         // ordinary shell tab again, gets a freshly minted session name, and leaves
         // the `tail -F` daemon on the login node the flag exists to prevent — and
@@ -4129,9 +4254,14 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         sessions,
         allowClear,
       });
-    } catch {
+    } catch (error) {
+      if (options?.strict) throw error;
       // tab layout is non-critical
     }
+  },
+
+  persistScopeStrict: async (scope, localFile) => {
+    await get().persistScope(scope, localFile, { strict: true });
   },
 
   /**
@@ -4174,6 +4304,7 @@ const AGENT_CMDS = new Set([
   "claude",
   "codex",
   "gemini",
+  "agy",
   "vibe",
   "aider",
   "opencode",
@@ -4252,9 +4383,10 @@ export function isPtyTabKind(kind: TabKind): boolean {
  *
  *  - id-based: Claude (`--resume <id>`) and Codex (`codex resume`, args injected
  *    by the backend) resume a *specific* captured session.
- *  - cwd "continue last": Qwen, OpenCode, Copilot, Cursor, Grok, Gemini and
- *    Mistral/vibe have no caller-supplied launch id, so Eldrun re-launches with
- *    their "continue the most recent session" flag. Because each agent tab
+ *  - cwd "continue last": Qwen, OpenCode, Copilot, Cursor, Grok, Gemini,
+ *    Google Antigravity and Mistral/vibe have no caller-supplied launch id, so
+ *    Eldrun re-launches with their "continue the most recent session" flag.
+ *    Because each agent tab
  *    launches in the project directory, that most-recent session IS the tab's
  *    prior conversation. These ignore the minted id (it only satisfies the
  *    persistence gate below and is set as ELDRUN_TAB_UID). Caveat: two tabs of
@@ -4281,6 +4413,8 @@ export const RESUMABLE_AGENTS: Record<string, (id: string) => string[]> = {
   // continue the project's most-recent session — not the specific one its launch
   // `--session-id <uuid>` minted. That makes it continue-last like the others.
   gemini: () => ["--resume", "latest"],
+  // Antigravity CLI: `-c`/`--continue` resumes the most recent conversation.
+  agy: () => ["--continue"],
   // Mistral/vibe: `-c/--continue` resumes the most recent saved session. (Its
   // `--resume [id]` with no id would open an interactive picker, which hangs a
   // restore — so `--continue` is the non-interactive path.)
@@ -4328,6 +4462,7 @@ export function isRestorableTab(
     kind: TabKind;
     cmd: string;
     sessionId?: string;
+    resumeArgs?: string[];
     viewer?: TabEntry["viewer"];
   },
 ): boolean {

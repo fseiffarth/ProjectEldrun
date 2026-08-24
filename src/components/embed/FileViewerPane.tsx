@@ -225,12 +225,18 @@ const OPEN_MODIFIER = IS_MAC ? "⌘" : "Ctrl";
 /** A small floating "{Ctrl}+Click to open" hint, anchored just above a hovered
  *  file link (#49). `at` is viewport coordinates of the link's top-left, or null
  *  to hide. Purely informational: pointer-events:none so it never blocks a click. */
-function LinkOpenHint({ at }: { at: { left: number; top: number } | null }) {
+function LinkOpenHint({
+  at,
+  label,
+}: {
+  at: { left: number; top: number } | null;
+  label?: string;
+}) {
   const t = useT();
   if (!at) return null;
   return (
     <div className="link-open-hint" role="tooltip" style={{ left: at.left, top: at.top }}>
-      {t("fileViewer.linkOpenHint", { modifier: OPEN_MODIFIER })}
+      {label ?? t("fileViewer.linkOpenHint", { modifier: OPEN_MODIFIER })}
     </div>
   );
 }
@@ -6161,10 +6167,14 @@ function MarkdownView({
     void enrichMarkdownDom(el);
   }, [html, mode]);
 
-  // #49/#50: local-file links in the rendered preview open in-app on
-  // Ctrl/Cmd+Click (matching the LaTeX editor). A hover hint advertises the
-  // shortcut. `linkTip` anchors that hint above the hovered link.
-  const [linkTip, setLinkTip] = useState<{ left: number; top: number } | null>(null);
+  // #49/#50: local-file links in the rendered preview open in-app. Unlike the
+  // source editor, Preview has no caret interaction to preserve, so a normal
+  // click follows the usual Markdown convention.
+  const [linkTip, setLinkTip] = useState<{
+    left: number;
+    top: number;
+    destination: string;
+  } | null>(null);
   // Kept local to the viewer rather than routed through AppShell's project toast:
   // Markdown tabs can live in detached windows, where the main shell's toast
   // would appear in the wrong window (or not be visible at all).
@@ -6225,15 +6235,29 @@ function MarkdownView({
     );
   }, [html, draft, path]);
 
+  // Every preview link reports its destination on hover. Resolve local file
+  // paths against this Markdown file so `docs/guide.md` is unambiguous even when
+  // multiple projects contain a file with that name; leave external URLs and
+  // in-document fragments as authored.
   const onPreviewMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const a = (e.target as HTMLElement).closest?.("a.file-link") as HTMLElement | null;
+    const a = (e.target as HTMLElement).closest?.("a") as HTMLAnchorElement | null;
     if (!a) {
-      setLinkTip((cur) => (cur ? null : cur));
+      setLinkTip((current) => current ? null : current);
       return;
     }
-    const r = a.getBoundingClientRect();
-    setLinkTip({ left: r.left, top: r.top });
-  }, []);
+    const href = a.getAttribute("href") ?? "";
+    const resolved = a.classList.contains("file-link")
+      ? resolveLocalHref(path, href)
+      : null;
+    const fragment = href.match(/[?#].*$/)?.[0] ?? "";
+    const destination = resolved ? `${resolved}${fragment}` : href;
+    const rect = a.getBoundingClientRect();
+    setLinkTip((current) =>
+      current?.destination === destination
+        ? current
+        : { left: rect.left, top: rect.top, destination },
+    );
+  }, [path]);
 
   // Copy-on-select for the rendered preview, matching the native terminal.
   // Mouse-up covers drag and double/triple-click selection while keeping the
@@ -6284,13 +6308,23 @@ function MarkdownView({
         if (nextSrc != null) setDraft(nextSrc);
         return;
       }
-      const a = (e.target as HTMLElement).closest?.("a.file-link") as HTMLAnchorElement | null;
+      const a = (e.target as HTMLElement).closest?.("a") as HTMLAnchorElement | null;
       if (!a) return;
-      // Always stop the anchor's own navigation (it carries target="_blank"); only
-      // a follow modifier actually opens the file, mirroring the LaTeX editor.
+      const href = a.getAttribute("href") ?? "";
+      if (href.startsWith("#")) {
+        e.preventDefault();
+        let id = href.slice(1);
+        try { id = decodeURIComponent(id); } catch { /* keep the raw fragment */ }
+        const target = Array.from(previewRef.current?.querySelectorAll<HTMLElement>("[id]") ?? [])
+          .find((element) => element.id === id);
+        target?.scrollIntoView({ block: "start" });
+        return;
+      }
+      if (!a.classList.contains("file-link")) return;
+      // Keep local paths inside Eldrun rather than allowing the webview to
+      // navigate away from the native preview.
       e.preventDefault();
-      if (!(e.ctrlKey || e.metaKey)) return;
-      const target = resolveLocalHref(path, a.getAttribute("href") ?? "");
+      const target = resolveLocalHref(path, href);
       if (!target) return;
       openLinkedFile(tabKey, dirname(path), {
         path: target,
@@ -6400,7 +6434,7 @@ function MarkdownView({
           />
         )}
       </div>
-      {mode === "preview" && <LinkOpenHint at={linkTip} />}
+      {mode === "preview" && <LinkOpenHint at={linkTip} label={linkTip?.destination} />}
       {copyNotice > 0 && (
         <div key={copyNotice} className="project-switch-toast" role="status" aria-live="polite">
           {t("fileViewer.copiedToClipboard")}

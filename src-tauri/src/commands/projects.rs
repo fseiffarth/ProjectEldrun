@@ -1348,6 +1348,35 @@ pub fn set_project_persist_sessions(project_id: String, enabled: bool) -> Result
     Ok(enabled)
 }
 
+/// Authoritative per-project opt-in for Eldrun Mobile. This flag lives in the
+/// state-dir `projects.json`, never only in project-writable `project.json`.
+#[tauri::command]
+pub fn set_project_mobile_access(project_id: String, enabled: bool) -> Result<bool, String> {
+    let mut projects = get_projects()?;
+    let project = projects.iter_mut().find(|p| p.id == project_id).ok_or("project not found")?;
+    if enabled {
+        if project.extra.get("remote").is_some_and(|v| !v.is_null()) {
+            return Err("Mobile access is available only for local projects".into());
+        }
+        let runtime_enabled = |key: &str| project.extra.get(key).and_then(|v| v.get("enabled")).and_then(Value::as_bool).unwrap_or(false);
+        if runtime_enabled("sandbox") || runtime_enabled("vm") {
+            return Err("Mobile access is unavailable for container and VM projects".into());
+        }
+        let settings: crate::schema::Settings = storage::read_json(&storage::state_dir().join("settings.json")).unwrap_or_default();
+        if !settings.persist_local_sessions() {
+            return Err("Enable persistent local terminal sessions before Mobile access".into());
+        }
+        if !crate::services::tmux_local::tmux_available() {
+            return Err("Mobile access requires tmux on this machine".into());
+        }
+        project.extra.insert("eldrun_mobile_access".into(), Value::Bool(true));
+    } else {
+        project.extra.remove("eldrun_mobile_access");
+    }
+    save_projects(projects)?;
+    Ok(enabled)
+}
+
 /// Set (or clear) the display name for a **remote** project's primary machine —
 /// the counterpart of `patch_compute_host`'s `label` for a worker. Distinct from
 /// the project name: this labels the host `Project.remote.host` reaches, shown

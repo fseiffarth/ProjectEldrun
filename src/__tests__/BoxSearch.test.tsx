@@ -86,4 +86,47 @@ describe("#41 box search results", () => {
     const rows = [...container.querySelectorAll(".project-search-row")];
     expect(rows.some((r) => !r.classList.contains("is-box") && r.textContent?.includes("paperdraft"))).toBe(true);
   });
+
+  it("navigates matching rows with arrows and opens the highlighted result", async () => {
+    const openBox = vi.fn().mockResolvedValue(undefined);
+    const setActive = vi.fn().mockResolvedValue(undefined);
+    useBoxesStore.setState({ boxes: [box("boxA", "PaperBox", ["paperdraft"])], openBox });
+    useProjectsStore.setState({
+      projects: [inactiveProj("paperdraft")],
+      activeId: null,
+      loaded: true,
+      setActive,
+    });
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<ProjectSwitcher open={true} />));
+    });
+
+    const input = container.querySelector(".project-search-entry") as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "paper" } });
+      fireEvent.keyDown(input, { key: "ArrowDown" });
+    });
+
+    const rows = [...container.querySelectorAll(".project-search-row")];
+    expect(rows[1].classList.contains("is-selected")).toBe(true);
+
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "ArrowUp" });
+    });
+    expect(rows[0].classList.contains("is-selected")).toBe(true);
+
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "ArrowDown" });
+    });
+    expect(rows[1].classList.contains("is-selected")).toBe(true);
+
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Enter" });
+    });
+
+    expect(setActive).toHaveBeenCalledWith("paperdraft");
+    expect(openBox).not.toHaveBeenCalled();
+  });
 });

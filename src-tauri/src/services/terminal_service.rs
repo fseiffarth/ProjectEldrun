@@ -207,6 +207,7 @@ const AGENT_CMDS: &[&str] = &[
     "claude",
     "codex",
     "gemini",
+    "agy",
     "vibe",
     "aider",
     "opencode",

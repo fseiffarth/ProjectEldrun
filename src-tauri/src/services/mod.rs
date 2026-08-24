@@ -22,6 +22,7 @@ pub mod mail_filters;
 pub mod mail_pgp;
 pub mod mail_sanitize;
 pub mod mail_store;
+pub mod mobile_control;
 pub mod net_usage;
 pub mod openvpn;
 pub mod project_runtime;

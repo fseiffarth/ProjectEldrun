@@ -1456,6 +1456,7 @@ export function DetachedCenterPanel({
                     tab={tab}
                     scope={scope}
                     visible={visible}
+                    focused={visible && isFocused}
                     attachOnly
                     filesProjectDir={tab.cwd}
                     terminalCwd={tab.cwd}

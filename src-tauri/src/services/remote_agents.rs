@@ -67,6 +67,12 @@ static RECIPES: &[AgentRecipe] = &[
                       (see https://github.com/openai/codex)",
     },
     AgentRecipe {
+        bin: "agy",
+        install: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+        manual_hint: "curl -fsSL https://antigravity.google/cli/install.sh | bash \
+                      (see https://antigravity.google/docs/cli/install/)",
+    },
+    AgentRecipe {
         bin: "gemini",
         install: "npm install -g @google/gemini-cli",
         manual_hint: "npm install -g @google/gemini-cli (needs a writable npm \
@@ -142,7 +148,7 @@ mod tests {
     /// Gemini tab on a host without the CLI died with a bare "command not found".
     #[test]
     fn the_generalized_agents_all_have_recipes() {
-        for bin in ["claude", "codex", "gemini", "vibe", "opencode"] {
+        for bin in ["claude", "codex", "gemini", "agy", "vibe", "opencode"] {
             assert!(recipe_for(bin).is_some(), "{bin} has no remote recipe");
         }
     }

@@ -69,14 +69,13 @@ pub fn tmux_available() -> bool {
 /// rather than re-running it — the resumable-command-tab guarantee).
 ///
 /// `-A` = attach if it exists / create otherwise (one command that is both start
-/// and resume); `-D` = detach any other client (a stale one from before a
-/// crash/reload); `status off` / `mouse on` are chained as separate tmux commands
+/// and resume). Attach is deliberately non-evicting so desktop and phone clients
+/// coexist. `status off` / `mouse on` / `window-size largest` are session-scoped
 /// after a literal `;` argv item (tmux splits its argv on a standalone `;`).
 pub fn local_tmux_args(session: &str, target_cmd: &str, target_args: &[String]) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "new-session".into(),
         "-A".into(),
-        "-D".into(),
         "-s".into(),
         session.to_string(),
     ];
@@ -92,7 +91,26 @@ pub fn local_tmux_args(session: &str, target_cmd: &str, target_args: &[String]) 
         args.push(line);
     }
     // Session options as trailing tmux commands (standalone ';' tokens split argv).
-    for tok in [";", "set", "-g", "status", "off", ";", "set", "-g", "mouse", "on"] {
+    for tok in [
+        ";",
+        "set-option",
+        "-t",
+        session,
+        "status",
+        "off",
+        ";",
+        "set-option",
+        "-t",
+        session,
+        "mouse",
+        "on",
+        ";",
+        "set-window-option",
+        "-t",
+        session,
+        "window-size",
+        "largest",
+    ] {
         args.push(tok.to_string());
     }
     args
@@ -157,9 +175,28 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "new-session", "-A", "-D", "-s", "eldrun-abc",
-                ";", "set", "-g", "status", "off",
-                ";", "set", "-g", "mouse", "on",
+                "new-session",
+                "-A",
+                "-s",
+                "eldrun-abc",
+                ";",
+                "set-option",
+                "-t",
+                "eldrun-abc",
+                "status",
+                "off",
+                ";",
+                "set-option",
+                "-t",
+                "eldrun-abc",
+                "mouse",
+                "on",
+                ";",
+                "set-window-option",
+                "-t",
+                "eldrun-abc",
+                "window-size",
+                "largest",
             ]
         );
     }
@@ -171,10 +208,15 @@ mod tests {
         let args = local_tmux_args("eldrun-x", "python", &["train.py".into()]);
         assert_eq!(args[0], "new-session");
         assert!(args.iter().any(|a| a == "eldrun-x"));
-        let target = &args[5];
-        assert_eq!(target, "'python' 'train.py'; exec \"${SHELL:-/bin/bash}\" -l");
+        let target = &args[4];
+        assert_eq!(
+            target,
+            "'python' 'train.py'; exec \"${SHELL:-/bin/bash}\" -l"
+        );
         // Options still trail.
-        assert!(args.windows(2).any(|w| w == [";".to_string(), "set".to_string()]));
+        assert!(args
+            .windows(2)
+            .any(|w| w == [";".to_string(), "set-option".to_string()]));
     }
 
     #[test]

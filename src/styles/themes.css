@@ -1046,6 +1046,16 @@ select option {
   line-height: 1;
 }
 
+.terminal-output-rate {
+  margin-right: auto;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .app-resource-display {
   height: 32px;
   min-width: 82px;
@@ -4550,9 +4560,9 @@ select option {
   color: var(--accent, #4493f8);
 }
 
-/* #49: hover hint advertising the open shortcut (e.g. "Ctrl+Click to open") for a
-   recognised file link, in both the LaTeX source editor and the markdown preview.
-   Anchored (position:fixed) just above the link's top-left; never blocks a click. */
+/* Hover hint advertising the source-editor open shortcut or the Markdown
+   preview's resolved link destination. Anchored (position:fixed) just above the
+   link's top-left; never blocks a click. */
 .link-open-hint {
   position: fixed;
   z-index: 60;
@@ -4566,6 +4576,9 @@ select option {
   font-size: 11px;
   line-height: 1.4;
   white-space: nowrap;
+  max-width: min(70vw, 600px);
+  overflow: hidden;
+  text-overflow: ellipsis;
   pointer-events: none;
   box-shadow: var(--shadow-2);
 }
@@ -13325,7 +13338,8 @@ select option {
   cursor: pointer;
 }
 
-.project-search-row:hover {
+.project-search-row:hover,
+.project-search-row.is-selected {
   background: var(--control-hover-bg);
   border-color: var(--accent);
 }

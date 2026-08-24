@@ -27,6 +27,7 @@ export default tseslint.config(
     // them they accounted for 253 of the 307 findings on the first run.
     ignores: [
       'dist/**',
+      'mobile-dist/**',
       'node_modules/**',
       'src-tauri/**',
       'target/**',

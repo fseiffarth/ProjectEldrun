@@ -1204,6 +1204,7 @@ mod tests {
         for (bin, needle) in [
             ("codex", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"),
             ("gemini", "npm install -g @google/gemini-cli"),
+            ("agy", "curl -fsSL https://antigravity.google/cli/install.sh | bash"),
             ("vibe", "curl -LsSf https://mistral.ai/vibe/install.sh | bash"),
             ("opencode", "curl -fsSL https://opencode.ai/install | bash"),
         ] {

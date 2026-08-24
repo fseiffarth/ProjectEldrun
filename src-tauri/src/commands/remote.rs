@@ -120,8 +120,8 @@ pub async fn remote_connect(
             .is_some_and(|t| crate::services::vm::is_vm_spec(&t.spec))
     {
         let boot_id = project_id.clone();
-        let name = crate::commands::vm::project_name(&project_id)
-            .unwrap_or_else(|| "project".to_string());
+        let name =
+            crate::commands::vm::project_name(&project_id).unwrap_or_else(|| "project".to_string());
         tauri::async_runtime::spawn_blocking(move || {
             crate::services::vm::ensure_booted(&boot_id, &name)
         })
@@ -402,8 +402,8 @@ pub async fn remote_upload_file(
     local_path: String,
     dest_rel: String,
 ) -> Result<String, String> {
-    let target = remote::remote_target_for(&project_id)
-        .ok_or_else(|| "not a remote project".to_string())?;
+    let target =
+        remote::remote_target_for(&project_id).ok_or_else(|| "not a remote project".to_string())?;
     let rel = dest_rel.trim().trim_start_matches('/');
     if rel.is_empty() {
         return Err("no destination given".to_string());
@@ -416,8 +416,12 @@ pub async fn remote_upload_file(
     let sftp = remote::pooled_sftp(pool.inner(), &project_id)
         .await
         .ok_or_else(|| "remote project is not connected".to_string())?;
-    crate::services::sftp::upload_file_streaming_on(&sftp, std::path::Path::new(&local_path), &dest)
-        .await?;
+    crate::services::sftp::upload_file_streaming_on(
+        &sftp,
+        std::path::Path::new(&local_path),
+        &dest,
+    )
+    .await?;
     Ok(dest)
 }
 
@@ -465,16 +469,19 @@ pub async fn remote_tmux_list(
         // replaced.
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
-            let detail = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+            let detail = err
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("")
+                .trim();
             return Err(if detail.is_empty() {
                 "could not list host sessions over ssh".to_string()
             } else {
                 format!("could not list host sessions over ssh: {detail}")
             });
         }
-        let sessions = crate::services::ssh_exec::parse_tmux_ls(
-            &String::from_utf8_lossy(&out.stdout),
-        );
+        let sessions =
+            crate::services::ssh_exec::parse_tmux_ls(&String::from_utf8_lossy(&out.stdout));
         Ok(crate::services::ssh_exec::filter_sessions_for_project(
             sessions,
             &filter_project_id,
@@ -501,11 +508,19 @@ pub async fn remote_tmux_kill(
         .ok_or_else(|| "not a remote project host".to_string())?;
     let _dial = user_dial_for_host(&project_id, &host_id);
     tauri::async_runtime::spawn_blocking(move || {
-        crate::services::ssh_exec::run_remote_script(
+        let output = crate::services::ssh_exec::run_remote_script(
             &target.spec,
             &crate::services::ssh_exec::tmux_kill_session_script(&session),
-        )
-        .map(|_| ())
+        )?;
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if detail.is_empty() {
+                format!("remote tmux could not kill session '{session}'")
+            } else {
+                format!("remote tmux could not kill session '{session}': {detail}")
+            });
+        }
+        Ok(())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -523,9 +538,7 @@ pub async fn remote_tmux_rename(
     new_name: String,
 ) -> Result<(), String> {
     if !crate::services::ssh_exec::valid_tmux_session_name(&new_name) {
-        return Err(
-            "a session name may only contain letters, digits, '-' and '_'".to_string(),
-        );
+        return Err("a session name may only contain letters, digits, '-' and '_'".to_string());
     }
     let host_id = host_id.unwrap_or_else(|| remote::PRIMARY_HOST.to_string());
     let target = remote::remote_target_for_host(&project_id, &host_id)
@@ -583,7 +596,13 @@ mod tests {
     #[test]
     fn a_borrowed_master_proves_nothing_about_key_auth() {
         assert_eq!(
-            record_key_auth(&Some("alice".into()), "host.example", None, None, Some(true)),
+            record_key_auth(
+                &Some("alice".into()),
+                "host.example",
+                None,
+                None,
+                Some(true)
+            ),
             None,
         );
     }

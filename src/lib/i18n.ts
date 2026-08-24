@@ -311,7 +311,7 @@ const en = {
   "help.aiTerminals.title": "AI & terminals",
   "help.aiTerminals.item1.term": "Agents",
   "help.aiTerminals.item1.desc":
-    "Open an agent (claude, codex, gemini, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) or a plain shell from the + menu on the tab bar. Missing commands fall back to a shell; closed agents respawn.",
+    "Open an agent (claude, codex, gemini, agy, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) or a plain shell from the + menu on the tab bar. Missing commands fall back to a shell; closed agents respawn.",
   "help.aiTerminals.item2.term": "Ollama models",
   "help.aiTerminals.item2.desc":
     "When Ollama is installed, the gear menu shows local models. Ctrl+K opens the local-model prompt dialog for the active context.",
@@ -351,6 +351,8 @@ const en = {
   "agents.help2": "menu. Many installers need",
   "agents.help3": "on your",
   "agents.help4": "— if it's missing, install Node.js first below.",
+  "agents.googleCliChoice":
+    "Google Antigravity is recommended for personal and free Google accounts. Use Google Gemini for Gemini Enterprise/Code Assist Standard or Enterprise, or Gemini/Enterprise Agent Platform API-key workflows.",
   "agents.checkingInstalled": "Checking installed agents…",
   "agents.installed": "installed",
   "agents.notInstalled": "not installed",
@@ -617,6 +619,9 @@ const en = {
   "vpnPrompt.retry": "Retry",
   "vpnPrompt.connect": "Connect",
   "projectSwitcher.howToStartMenu": "How to start",
+  "projectSwitcher.stopTitle": "Stop this project's terminals?",
+  "projectSwitcher.stopBody": "Closing {name} stops {terminals} terminal tab(s) and {sessions} persistent tmux session(s). Its saved tab layout is preserved. Continue?",
+  "projectSwitcher.stopError": "Could not close project",
   "projectSwitcher.scrollLeft": "Scroll projects left",
   "projectSwitcher.scrollRight": "Scroll projects right",
   "projectSwitcher.addOrImport": "Add or import project",
@@ -5212,7 +5217,7 @@ const de: Dict = {
   "help.aiTerminals.title": "KI & Terminals",
   "help.aiTerminals.item1.term": "Agenten",
   "help.aiTerminals.item1.desc":
-    "Einen Agenten (claude, codex, gemini, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) oder eine einfache Shell über das +-Menü der Tab-Leiste öffnen. Fehlende Befehle fallen auf eine Shell zurück; geschlossene Agenten starten neu.",
+    "Einen Agenten (claude, codex, gemini, agy, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) oder eine einfache Shell über das +-Menü der Tab-Leiste öffnen. Fehlende Befehle fallen auf eine Shell zurück; geschlossene Agenten starten neu.",
   "help.aiTerminals.item2.term": "Ollama-Modelle",
   "help.aiTerminals.item2.desc":
     "Wenn Ollama installiert ist, zeigt das Zahnrad-Menü lokale Modelle. Strg+K öffnet den Lokales-Modell-Prompt-Dialog für den aktiven Kontext.",
@@ -5248,6 +5253,8 @@ const de: Dict = {
   "agents.help2": "-Menü einer Tab-Leiste hinzufügen. Viele Installer brauchen",
   "agents.help3": "in deinem",
   "agents.help4": "— falls es fehlt, installiere zuerst Node.js weiter unten.",
+  "agents.googleCliChoice":
+    "Google Antigravity wird für persönliche und kostenlose Google-Konten empfohlen. Google Gemini ist für Gemini Enterprise/Code Assist Standard oder Enterprise sowie Gemini/Enterprise Agent Platform-Workflows mit API-Schlüssel gedacht.",
   "agents.checkingInstalled": "Installierte Agenten werden geprüft…",
   "agents.installed": "installiert",
   "agents.notInstalled": "nicht installiert",
@@ -5513,6 +5520,9 @@ const de: Dict = {
   "vpnPrompt.retry": "Erneut versuchen",
   "vpnPrompt.connect": "Verbinden",
   "projectSwitcher.howToStartMenu": "Erste Schritte",
+  "projectSwitcher.stopTitle": "Terminals dieses Projekts stoppen?",
+  "projectSwitcher.stopBody": "Beim Schließen von {name} werden {terminals} Terminal-Tab(s) und {sessions} dauerhafte tmux-Sitzung(en) beendet. Das gespeicherte Tab-Layout bleibt erhalten. Fortfahren?",
+  "projectSwitcher.stopError": "Projekt konnte nicht geschlossen werden",
   "projectSwitcher.scrollLeft": "Projekte nach links scrollen",
   "projectSwitcher.scrollRight": "Projekte nach rechts scrollen",
   "projectSwitcher.addOrImport": "Projekt hinzufügen oder importieren",
@@ -10045,7 +10055,7 @@ const es: Dict = {
   "help.aiTerminals.title": "IA y terminales",
   "help.aiTerminals.item1.term": "Agentes",
   "help.aiTerminals.item1.desc":
-    "Abre un agente (claude, codex, gemini, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) o una shell simple desde el menú + de la barra de pestañas. Los comandos que falten recurren a una shell; los agentes cerrados se reinician.",
+    "Abre un agente (claude, codex, gemini, agy, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) o una shell simple desde el menú + de la barra de pestañas. Los comandos que falten recurren a una shell; los agentes cerrados se reinician.",
   "help.aiTerminals.item2.term": "Modelos Ollama",
   "help.aiTerminals.item2.desc":
     "Cuando Ollama está instalado, el menú de engranaje muestra los modelos locales. Ctrl+K abre el diálogo de prompt de modelo local para el contexto activo.",
@@ -10081,6 +10091,8 @@ const es: Dict = {
   "agents.help2": "de una barra de pestañas. Muchos instaladores necesitan",
   "agents.help3": "en tu",
   "agents.help4": "— si falta, instala Node.js primero, más abajo.",
+  "agents.googleCliChoice":
+    "Google Antigravity se recomienda para cuentas personales y gratuitas de Google. Usa Google Gemini para Gemini Enterprise/Code Assist Standard o Enterprise, o flujos de trabajo de Gemini/Enterprise Agent Platform con clave API.",
   "agents.checkingInstalled": "Comprobando agentes instalados…",
   "agents.installed": "instalado",
   "agents.notInstalled": "no instalado",
@@ -10346,6 +10358,9 @@ const es: Dict = {
   "vpnPrompt.retry": "Reintentar",
   "vpnPrompt.connect": "Conectar",
   "projectSwitcher.howToStartMenu": "Cómo empezar",
+  "projectSwitcher.stopTitle": "¿Detener los terminales de este proyecto?",
+  "projectSwitcher.stopBody": "Al cerrar {name} se detienen {terminals} pestaña(s) de terminal y {sessions} sesión(es) persistente(s) de tmux. El diseño guardado se conserva. ¿Continuar?",
+  "projectSwitcher.stopError": "No se pudo cerrar el proyecto",
   "projectSwitcher.scrollLeft": "Desplazar proyectos a la izquierda",
   "projectSwitcher.scrollRight": "Desplazar proyectos a la derecha",
   "projectSwitcher.addOrImport": "Añadir o importar proyecto",
@@ -14877,7 +14892,7 @@ const fr: Dict = {
   "help.aiTerminals.title": "IA et terminaux",
   "help.aiTerminals.item1.term": "Agents",
   "help.aiTerminals.item1.desc":
-    "Ouvrez un agent (claude, codex, gemini, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) ou un shell simple depuis le menu + de la barre d'onglets. Les commandes manquantes retombent sur un shell ; les agents fermés redémarrent.",
+    "Ouvrez un agent (claude, codex, gemini, agy, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) ou un shell simple depuis le menu + de la barre d'onglets. Les commandes manquantes retombent sur un shell ; les agents fermés redémarrent.",
   "help.aiTerminals.item2.term": "Modèles Ollama",
   "help.aiTerminals.item2.desc":
     "Quand Ollama est installé, le menu d'engrenage affiche les modèles locaux. Ctrl+K ouvre la boîte de dialogue de prompt de modèle local pour le contexte actif.",
@@ -14913,6 +14928,8 @@ const fr: Dict = {
   "agents.help2": "d'une barre d'onglets. Beaucoup d'installateurs ont besoin de",
   "agents.help3": "dans votre",
   "agents.help4": "— s'il manque, installez d'abord Node.js ci-dessous.",
+  "agents.googleCliChoice":
+    "Google Antigravity est recommandé pour les comptes Google personnels et gratuits. Utilisez Google Gemini pour Gemini Enterprise/Code Assist Standard ou Enterprise, ou les flux Gemini/Enterprise Agent Platform avec clé API.",
   "agents.checkingInstalled": "Vérification des agents installés…",
   "agents.installed": "installé",
   "agents.notInstalled": "non installé",
@@ -15178,6 +15195,9 @@ const fr: Dict = {
   "vpnPrompt.retry": "Réessayer",
   "vpnPrompt.connect": "Connecter",
   "projectSwitcher.howToStartMenu": "Comment démarrer",
+  "projectSwitcher.stopTitle": "Arrêter les terminaux de ce projet ?",
+  "projectSwitcher.stopBody": "Fermer {name} arrête {terminals} onglet(s) de terminal et {sessions} session(s) tmux persistante(s). La disposition enregistrée est conservée. Continuer ?",
+  "projectSwitcher.stopError": "Impossible de fermer le projet",
   "projectSwitcher.scrollLeft": "Faire défiler les projets vers la gauche",
   "projectSwitcher.scrollRight": "Faire défiler les projets vers la droite",
   "projectSwitcher.addOrImport": "Ajouter ou importer un projet",
@@ -19709,7 +19729,7 @@ const it: Dict = {
   "help.aiTerminals.title": "IA e terminali",
   "help.aiTerminals.item1.term": "Agenti",
   "help.aiTerminals.item1.desc":
-    "Apri un agente (claude, codex, gemini, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) o una shell semplice dal menu + della barra delle schede. I comandi mancanti ricadono su una shell; gli agenti chiusi si riavviano.",
+    "Apri un agente (claude, codex, gemini, agy, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) o una shell semplice dal menu + della barra delle schede. I comandi mancanti ricadono su una shell; gli agenti chiusi si riavviano.",
   "help.aiTerminals.item2.term": "Modelli Ollama",
   "help.aiTerminals.item2.desc":
     "Quando Ollama è installato, il menu a ingranaggio mostra i modelli locali. Ctrl+K apre la finestra di prompt del modello locale per il contesto attivo.",
@@ -19745,6 +19765,8 @@ const it: Dict = {
   "agents.help2": "di una barra delle schede. Molti installer richiedono",
   "agents.help3": "nel tuo",
   "agents.help4": "— se manca, installa prima Node.js qui sotto.",
+  "agents.googleCliChoice":
+    "Google Antigravity è consigliato per gli account Google personali e gratuiti. Usa Google Gemini per Gemini Enterprise/Code Assist Standard o Enterprise, oppure per i flussi Gemini/Enterprise Agent Platform con chiave API.",
   "agents.checkingInstalled": "Verifica degli agenti installati…",
   "agents.installed": "installato",
   "agents.notInstalled": "non installato",
@@ -20010,6 +20032,9 @@ const it: Dict = {
   "vpnPrompt.retry": "Riprova",
   "vpnPrompt.connect": "Connetti",
   "projectSwitcher.howToStartMenu": "Come iniziare",
+  "projectSwitcher.stopTitle": "Arrestare i terminali di questo progetto?",
+  "projectSwitcher.stopBody": "La chiusura di {name} arresta {terminals} scheda/e terminale e {sessions} sessione/i tmux persistente/i. Il layout salvato viene mantenuto. Continuare?",
+  "projectSwitcher.stopError": "Impossibile chiudere il progetto",
   "projectSwitcher.scrollLeft": "Scorri i progetti a sinistra",
   "projectSwitcher.scrollRight": "Scorri i progetti a destra",
   "projectSwitcher.addOrImport": "Aggiungi o importa progetto",

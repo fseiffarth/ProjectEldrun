@@ -22,6 +22,7 @@ pub mod global_machines;
 pub mod hpc_ws;
 pub mod local_loss;
 pub mod mail;
+pub mod mobile_control;
 pub mod monitor;
 pub mod net_usage;
 pub mod network;

@@ -26,6 +26,7 @@ import { useRendererWatchdog } from "../../lib/rendererWatchdog";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
+import { MobileBridgeHost } from "../mobile/MobileBridgeHost";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { AlarmPopup } from "../calendar/AlarmPopup";
 import { RemoteConnectDialog } from "../projects/RemoteConnectDialog";
@@ -76,6 +77,7 @@ import { useTimerStore } from "../../stores/timer";
 import { flushUsage } from "../../stores/usage";
 import { useKeyboard } from "../../hooks/useKeyboard";
 import { useT, useI18nStore, translate } from "../../lib/i18n";
+import { noteTerminalOutputChars } from "../../dev/terminalOutputRate";
 
 // Dev-only perf panel (src/dev/). The ternary is statically resolved at build
 // time (`import.meta.env.DEV` → false), so in a shipped bundle the lazy() —
@@ -666,6 +668,13 @@ export function AppShell() {
       // The chunk itself rides along: the store classifies a quiet agent tab —
       // finished vs blocked on a prompt — off its tail.
       notePtyOutput(ev.payload.id, ev.payload.data);
+      // Development-only transport-rate readout in the right-panel footer.
+      // Count here because this is already the one app-wide listener: adding a
+      // second listener just for profiling would add dispatch work to the hot
+      // path being measured. Vite folds this branch away in production.
+      if (import.meta.env.DEV) {
+        noteTerminalOutputChars(ev.payload.id, ev.payload.data.length);
+      }
     })
       .then((fn) => { unlisten = fn; })
       .catch(() => {});
@@ -779,6 +788,7 @@ export function AppShell() {
 
   return (
     <div className="app-shell">
+      <MobileBridgeHost />
       <HeaderBar />
       {switchToast != null && (
         <div

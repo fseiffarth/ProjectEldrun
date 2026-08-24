@@ -752,7 +752,8 @@ export function LocalModelMenu() {
   };
 
   // Open the "Manage Agents" panel to install AI coding-agent CLIs (Claude,
-  // Codex, Gemini, Mistral, Aider, OpenCode, Cursor, Copilot, Grok, Qwen) that
+  // Codex, Gemini, Google Antigravity, Mistral, Aider, OpenCode, Cursor,
+  // Copilot, Grok, Qwen) that
   // Eldrun can then launch as agent tabs.
   const openAgents = () => {
     setOpen(false);

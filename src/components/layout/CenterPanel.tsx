@@ -28,6 +28,7 @@ import {
   effectiveTabLocation,
   findGroup,
   isRestorableTab,
+  isResumableAgentTab,
   isPtyTabKind,
   localTabCwd,
   remoteHostIdOf,
@@ -75,8 +76,16 @@ interface Rect {
 
 export function CenterPanel() {
   const t = useT();
+  // A live local agent that was already running when Mobile access was enabled
+  // must not be respawned merely to put tmux underneath it. Record eligibility
+  // the first time this CenterPanel sees a tab: new/restored tabs first seen
+  // while opted in are wrapped; tabs first seen before opt-in wait for their
+  // next ordinary reopen (which mints a fresh tab key).
+  const mobileAgentTmuxReady = useRef(new Map<string, boolean>());
   const tabsByScope = useTabsStore((s) => s.tabsByScope);
   const scope = useTabsStore((s) => s.scope);
+  const focusedGroupId = useTabsStore((s) => s.focusedGroupId);
+  const windowFocused = useWindowFocused();
   const layout = useTabsStore((s) => s.layout);
   const layoutByScope = useTabsStore((s) => s.layoutByScope);
   const setScope = useTabsStore((s) => s.setScope);
@@ -885,17 +894,23 @@ export function CenterPanel() {
     };
   }, []);
 
-  // ── Render the flat pane layer (all tabs, all scopes; never unmounted) ─────
+  // ── Render the flat pane layer (all loaded, non-inactive scopes) ───────────
   // Memoized so unrelated re-renders (drag flags, group-rect churn) don't rebuild
   // these whole-store maps every frame (Eff #7). The pane layer genuinely needs
   // EVERY scope's tabs (panes stay mounted across switches), so the subscription
   // stays broad — but the rebuild is now keyed to the inputs that change it.
+  const inactiveScopes = useMemo(
+    () => new Set(projects.filter((p) => p.status === "inactive").map((p) => p.id)),
+    [projects],
+  );
   const allTabs = useMemo(
     () =>
       Object.entries(tabsByScope).flatMap(([s, scopeTabs]) =>
-        scopeTabs.map((tab) => ({ tab, scopeKey: s })),
+        !inactiveScopes.has(s)
+          ? scopeTabs.map((tab) => ({ tab, scopeKey: s }))
+          : [],
       ),
-    [tabsByScope],
+    [tabsByScope, inactiveScopes],
   );
   // For each current-scope group: its active (visible) tab key, and the group id
   // holding each visible tab key. Rebuilt only when the current scope's layout
@@ -1118,9 +1133,23 @@ export function CenterPanel() {
           const localRunning =
             !paneProject?.remote ||
             effectiveTabLocation(tab, { vmProject: !!paneProject?.vm?.enabled }) === "local";
+          const mobileReadyKey = `${scopeKey}/${tab.key}`;
+          if (!mobileAgentTmuxReady.current.has(mobileReadyKey)) {
+            mobileAgentTmuxReady.current.set(
+              mobileReadyKey,
+              !!paneProject?.eldrun_mobile_access,
+            );
+          }
           const tmuxSession =
             shouldPersistTab(tab.kind, paneHostId, paneProject?.remote, tab.ephemeral) ||
-            shouldPersistLocalTab(tab.kind, scopeKey, localRunning, localPersistEnabled)
+            shouldPersistLocalTab(
+              tab.kind,
+              scopeKey,
+              localRunning,
+              localPersistEnabled,
+              mobileAgentTmuxReady.current.get(mobileReadyKey) === true,
+              isResumableAgentTab(tab),
+            )
               ? tab.tmuxSession
               : undefined;
           return (
@@ -1152,6 +1181,7 @@ export function CenterPanel() {
                 tab={tab}
                 scope={scopeKey}
                 visible={visible}
+                focused={visible && windowFocused && groupId === focusedGroupId}
                 groupId={groupId}
                 ownsTabs
                 onConnect={getConnect(scopeKey)}

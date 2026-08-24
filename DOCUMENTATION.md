@@ -266,6 +266,23 @@ Dark/Fancy Bright), workspace management toggle, global app role visibility and
 commands, global file-extension defaults, and Ollama model management when the
 `ollama` binary is installed.
 
+### Eldrun Mobile
+
+Eldrun Mobile provides tailnet-only access to explicitly opted-in local project
+sessions. The independently installed `eldrun-mobile-host` binds to loopback;
+an existing, non-Funnel Tailscale Serve HTTPS root handler must be verified as
+an exact proxy to that port before Eldrun saves or starts it. Each browser pairs
+with a short-lived code and a device-held P-256 key and can be revoked
+individually.
+
+Only persistent local shells and resumable configured agents are discoverable.
+The sidecar derives opaque browser ids from trusted Eldrun state and revalidates
+the project, tab, tmux session, device session, and canonical project directory
+throughout an attachment. Mobile creation goes through the running desktop and
+accepts only a typed shell or cataloged resumable-agent request; it does not
+accept paths, commands, argv, or tmux names. See
+`docs/eldrun_mobile_agent_plan.md` for the protocol and acceptance matrix.
+
 ### Ollama Model Management
 
 The Settings dialog shows an `Ollama...` panel when `ollama_is_installed`

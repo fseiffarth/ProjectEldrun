@@ -51,6 +51,7 @@ import { useHintsStore } from "../../stores/hints";
 import { canConnectVpnSilently } from "../../lib/vpnConnect";
 import { setVpnAutoConnect, vpnUsernameFor } from "../../lib/vpnAutoConnect";
 import type { StoredVpnConfig } from "../../types";
+import { MobileSettings } from "../mobile/MobileSettings";
 
 // The workspace-layout help text. On Linux a lone Super toggles the panels; on
 // Windows it's F9 (the lone Win key is OS-reserved — Start opens on release, see
@@ -768,6 +769,13 @@ export function SettingsDialog({
                   </>
                 }
               />
+            )}
+
+            {!IS_WINDOWS && (
+              <>
+                <div className="settings-section-title">Mobile</div>
+                <MobileSettings />
+              </>
             )}
 
             <div className="settings-section-title">{t("settings.remoteFeatures")}</div>

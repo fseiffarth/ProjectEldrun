@@ -93,8 +93,11 @@ export function agentPromptLeaf(tab: {
 const AGENT_LABELS: Record<string, string> = {
   claude: "Claude",
   codex: "Codex",
-  gemini: "Gemini",
+  gemini: "Google Gemini",
+  agy: "Google Antigravity",
   vibe: "Mistral",
+  kiro: "Kiro",
+  cline: "Cline",
   aider: "Aider",
   opencode: "OpenCode",
   "cursor-agent": "Cursor",
@@ -102,6 +105,18 @@ const AGENT_LABELS: Record<string, string> = {
   grok: "Grok",
   qwen: "Qwen",
   openclaw: "OpenClaw",
+  goose: "Goose",
+  openhands: "OpenHands",
+  pi: "Pi",
+  plandex: "Plandex",
+  sweagent: "SWE-agent",
+  mini: "mini-SWE-agent",
+  mentat: "Mentat",
+  gpte: "GPT Engineer",
+  crush: "Crush",
+  amp: "Amp",
+  kimi: "Kimi Code",
+  qoder: "Qoder",
 };
 
 /** Display name for a metric leaf (`claude` → "Claude", `local.qwen3:8b` → "qwen3:8b"). */

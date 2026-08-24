@@ -502,6 +502,7 @@ pub fn run() {
     // Recursive file-churn watcher on the active project + the counters it has
     // seen since the last flush (see `services::usage_stats`).
     let usage_watch = services::usage_stats::new_state();
+    let mobile_desktop = commands::mobile_control::MobileDesktopState::default();
 
     tauri::Builder::default()
         .manage(pty_registry)
@@ -520,7 +521,9 @@ pub fn run() {
         .manage(mail_state)
         .manage(caldav_state)
         .manage(usage_watch.clone())
-        .setup(|_app| {
+        .manage(mobile_desktop.clone())
+        .setup(move |_app| {
+            commands::mobile_control::start_desktop_bridge(_app.handle().clone(), mobile_desktop.clone());
             #[cfg(target_os = "linux")]
             install_webview_crash_reporter(_app);
             // Recolor WebKitGTK's native in-content scrollbars (page CSS can't —
@@ -648,6 +651,13 @@ pub fn run() {
             commands::settings::get_settings,
             commands::settings::save_settings,
             commands::settings::save_window_state,
+            commands::mobile_control::mobile_desktop_respond,
+            commands::mobile_control::mobile_opaque_id,
+            commands::mobile_control::mobile_admin,
+            commands::mobile_control::mobile_host_status,
+            commands::mobile_control::mobile_host_apply,
+            commands::mobile_control::mobile_verify_tailscale_serve,
+            commands::mobile_control::mobile_tailscale_serve_status,
             commands::default_apps::get_default_apps,
             commands::default_apps::save_default_apps,
             // Projects
@@ -671,6 +681,7 @@ pub fn run() {
             commands::vm::remote_download_size,
             commands::vm::remote_download_to,
             commands::projects::set_project_remote_control,
+            commands::projects::set_project_mobile_access,
             commands::projects::sandbox_preflight,
             commands::python::python_interpreters,
             commands::python::python_interpreter_for,
@@ -1051,7 +1062,9 @@ pub fn run() {
             commands::terminal::pty_write,
             commands::terminal::pty_resize,
             commands::terminal::pty_kill,
+            commands::terminal::pty_kill_scope,
             commands::terminal::pty_set_visible,
+            commands::terminal::pty_remove_view,
             commands::terminal::pty_watch,
             commands::terminal::pty_unwatch,
             commands::terminal::local_tmux_list,

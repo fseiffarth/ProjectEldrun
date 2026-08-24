@@ -29,6 +29,7 @@ import {
   TAB_ACCENT,
   agentMenuEntries,
   buildStaticTabSpec,
+  enabledInstalledAgentBins,
   isFileTabKind,
   itemLabel,
   type StaticMenuItem,
@@ -57,6 +58,7 @@ import { listLocalDrivers, type LocalDriverInfo } from "../../lib/localDrivers";
 import { useActivityStore } from "../../stores/activity";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
+import { AGENT_REGISTRY_CHANGED_EVENT } from "../../lib/agentRegistry";
 
 /** Default fly-out card size when no live pane thumbnail is available (group
  *  detach via the bar drag carries no preview). */
@@ -255,34 +257,42 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // it — `ollama launch` has its own opinion and may greet the tab with a
   // "Launch anyway?" prompt (see lib/localDrivers.ts).
   const [localDrivers, setLocalDrivers] = useState<LocalDriverInfo[]>([]);
-  useEffect(() => {
-    listLocalDrivers(localModel)
+  const refreshLocalDrivers = useCallback(() => {
+    void listLocalDrivers(localModel)
       .then(setLocalDrivers)
       .catch(() => {});
   }, [localModel]);
+  useEffect(() => {
+    refreshLocalDrivers();
+    window.addEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshLocalDrivers);
+    return () => window.removeEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshLocalDrivers);
+  }, [refreshLocalDrivers]);
   // Installed agent CLIs (by id == cmd). The add menu only offers agents whose
   // binary is actually present, so it never lists ones the user can't launch.
   // `null` until the probe resolves; render nothing until then to avoid a flash
-  // of the full list. Loaded once.
-  const [installedAgents, setInstalledAgents] = useState<Set<string> | null>(null);
-  useEffect(() => {
-    invoke<{ id: string; installed: boolean }[]>("list_agents")
-      .then((list) =>
-        setInstalledAgents(new Set(list.filter((a) => a.installed).map((a) => a.id))),
-      )
-      .catch(() => setInstalledAgents(new Set()));
+  // of the full list. Re-probed after Manage Agents changes the local registry.
+  const [agentStatuses, setAgentStatuses] = useState<
+    { id: string; bin: string; installed: boolean }[] | null
+  >(null);
+  const refreshInstalledAgents = useCallback(() => {
+    void invoke<{ id: string; bin: string; installed: boolean }[]>("list_agents")
+      .then(setAgentStatuses)
+      .catch(() => setAgentStatuses([]));
   }, []);
+  useEffect(() => {
+    refreshInstalledAgents();
+    window.addEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshInstalledAgents);
+    return () => window.removeEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshInstalledAgents);
+  }, [refreshInstalledAgents]);
   // Built-in agents the user turned off in "Manage Agents" (Settings) despite
   // being installed — hidden from this menu without uninstalling the CLI.
   const disabledAgents = useSettingsStore((s) => s.settings?.disabled_agents);
-  // installedAgents minus disabledAgents — the set every tab-choice consumer
+  // Installed commands minus Manage Agents' disabled registry ids — the set every tab-choice consumer
   // below (Agents group, Mistral/vibe local-model driver) should use.
   const enabledAgents = useMemo(() => {
-    if (!installedAgents) return null;
-    if (!disabledAgents?.length) return installedAgents;
-    const skip = new Set(disabledAgents);
-    return new Set([...installedAgents].filter((id) => !skip.has(id)));
-  }, [installedAgents, disabledAgents]);
+    if (!agentStatuses) return null;
+    return enabledInstalledAgentBins(agentStatuses, disabledAgents);
+  }, [agentStatuses, disabledAgents]);
   // User-defined custom agents (Settings.custom_agents) + the manage-dialog it
   // opens. Their commands aren't in the built-in registry, so they're probed
   // separately (`probe_binaries`); `null` until resolved. See agentMenuEntries.
@@ -1413,7 +1423,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                 }),
               },
               // Only offer agents whose binary is actually installed: Mistral/vibe
-              // (checked against `installedAgents`) and the drivers the backend
+              // (checked against `enabledAgents`) and the drivers the backend
               // already marks `available` (which now includes an installed check).
               {
                 label: localModel

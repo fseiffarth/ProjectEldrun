@@ -12,6 +12,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "eldrun"
 path = "src/main.rs"
 
+[[bin]]
+name = "eldrun-mobile-host"
+path = "src/bin/eldrun-mobile-host.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -187,6 +191,10 @@ rand = "0.8"
 # implementation of "what host is this" is how `https://example.com@evil.example/`
 # gets read as `example.com`. Already resolved in the tree via `tauri`.
 url = "2"
+axum = { version = "0.8", features = ["ws"] }
+base64ct = { version = "1", features = ["alloc"] }
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+subtle = "2"
 # RFC 1918 / ULA / CGNAT / link-local classification for the loopback-and-intranet
 # navigation gate. `IpAddr::is_global()` is still unstable, so this is the stable
 # replacement rather than a convenience. Already in the tree transitively.

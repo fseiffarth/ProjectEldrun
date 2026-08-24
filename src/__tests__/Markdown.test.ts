@@ -36,6 +36,13 @@ describe("renderMarkdown", () => {
     expect(bad).not.toContain("<a ");
   });
 
+  it("renders bare relative paths as native file links", () => {
+    const html = renderMarkdown("[setup](docs/setup.md) [local](file:///tmp/notes.md)");
+    expect(html).toContain('href="docs/setup.md" class="file-link"');
+    expect(html).toContain('href="file:///tmp/notes.md" class="file-link"');
+    expect(html).not.toContain('target="_blank"');
+  });
+
   it("escapes raw HTML so file contents cannot inject markup", () => {
     const html = renderMarkdown("<script>alert(1)</script>");
     expect(html).not.toContain("<script>");

@@ -12,6 +12,18 @@ pub struct GlobalAppEntry {
     pub extra: HashMap<String, Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EldrunMobileHostSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serve_origin: Option<String>,
+}
+
 /// `~/.local/share/eldrun/settings.json`.
 ///
 /// Ollama fields (ollama_host, ollama_model, ollama_autostart) are preserved
@@ -526,6 +538,9 @@ pub struct Settings {
     /// maximized, wherever the WM puts it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_state: Option<WindowState>,
+    /// Private, tailnet-published companion host. Absent means fully disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eldrun_mobile_host: Option<EldrunMobileHostSettings>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }

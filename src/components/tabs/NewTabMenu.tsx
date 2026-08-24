@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -17,6 +17,7 @@ import {
   TAB_ACCENT,
   agentMenuEntries,
   buildStaticTabSpec,
+  enabledInstalledAgentBins,
   isFileTabKind,
   itemLabel,
   type StaticMenuItem,
@@ -26,6 +27,7 @@ import { listLocalDrivers, type LocalDriverInfo } from "../../lib/localDrivers";
 import { useExperimental } from "../../lib/experimental";
 import { useT } from "../../lib/i18n";
 import { registerHostBoundTab } from "../../lib/hostBound";
+import { AGENT_REGISTRY_CHANGED_EVENT } from "../../lib/agentRegistry";
 
 interface Props {
   /** Scope (project id or "root") the new tab belongs to. Gates the project-only
@@ -80,25 +82,30 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   // Installed agent CLIs (id == cmd); only offer ones actually present. `null`
   // until the probe resolves, so the Agents list renders nothing (not a flash of
   // all agents) until we know.
-  const [installedAgents, setInstalledAgents] = useState<Set<string> | null>(null);
-  // installedAgents minus disabledAgents — the set every tab-choice consumer
+  const [agentStatuses, setAgentStatuses] = useState<
+    { id: string; bin: string; installed: boolean }[] | null
+  >(null);
+  // Installed commands minus Manage Agents' disabled registry ids — the set every tab-choice consumer
   // below (Agents group, Mistral/vibe local-model driver) should use.
   const enabledAgents = useMemo(() => {
-    if (!installedAgents) return null;
-    if (!disabledAgents?.length) return installedAgents;
-    const skip = new Set(disabledAgents);
-    return new Set([...installedAgents].filter((id) => !skip.has(id)));
-  }, [installedAgents, disabledAgents]);
+    if (!agentStatuses) return null;
+    return enabledInstalledAgentBins(agentStatuses, disabledAgents);
+  }, [agentStatuses, disabledAgents]);
   // Installed *custom*-agent commands, probed separately (they aren't in the
   // built-in registry). `null` until resolved — custom agents render enabled
   // until a probe proves one missing.
   const [installedCustom, setInstalledCustom] = useState<Set<string> | null>(null);
   const [localDrivers, setLocalDrivers] = useState<LocalDriverInfo[]>([]);
-  useEffect(() => {
-    invoke<{ id: string; installed: boolean }[]>("list_agents")
-      .then((list) => setInstalledAgents(new Set(list.filter((a) => a.installed).map((a) => a.id))))
-      .catch(() => setInstalledAgents(new Set()));
+  const refreshInstalledAgents = useCallback(() => {
+    void invoke<{ id: string; bin: string; installed: boolean }[]>("list_agents")
+      .then(setAgentStatuses)
+      .catch(() => setAgentStatuses([]));
   }, []);
+  useEffect(() => {
+    refreshInstalledAgents();
+    window.addEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshInstalledAgents);
+    return () => window.removeEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshInstalledAgents);
+  }, [refreshInstalledAgents]);
   // Re-probed whenever the active local model changes: `available` depends on
   // it, because these are all tool-calling agents and a completion-only model
   // (llama3 is one) can't drive one at all — Ollama refuses the first request
@@ -106,11 +113,16 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   // backend refuses again on launch for the stale-menu case. A model that
   // *passes* may still meet `ollama launch`'s own "Launch anyway?" prompt in
   // the tab — left to the user on purpose (see lib/localDrivers.ts).
-  useEffect(() => {
-    listLocalDrivers(localModel)
+  const refreshLocalDrivers = useCallback(() => {
+    void listLocalDrivers(localModel)
       .then(setLocalDrivers)
       .catch(() => {});
   }, [localModel]);
+  useEffect(() => {
+    refreshLocalDrivers();
+    window.addEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshLocalDrivers);
+    return () => window.removeEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshLocalDrivers);
+  }, [refreshLocalDrivers]);
   // Re-probe custom commands whenever the set changes (adding one in the dialog).
   useEffect(() => {
     const cmds = customAgents.map((a) => a.cmd);

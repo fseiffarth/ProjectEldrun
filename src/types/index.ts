@@ -112,6 +112,12 @@ export interface CustomAgent {
 
 export interface Settings {
   debug?: boolean;
+  eldrun_mobile_host?: {
+    enabled: boolean;
+    display_name?: string;
+    port?: number;
+    serve_origin?: string;
+  };
   git_profile_url?: string;
   git_token?: string;
   color_scheme?: string;
@@ -873,6 +879,8 @@ export interface ProjectEntry {
    *  set via the pill / blob-node right-click menu. Stored in the entry's
    *  flattened `extra` (mirrored into project.json). */
   categories?: string[];
+  /** Explicit trusted-state opt-in for phone/tablet terminal access. */
+  eldrun_mobile_access?: boolean;
   [key: string]: unknown;
 }
 
