@@ -410,7 +410,8 @@ unknown must not read as off.
 ### Eldrun Mobile
 
 Eldrun Mobile provides tailnet-only access to explicitly opted-in local project
-sessions. The independently installed `eldrun-mobile-host` binds to loopback;
+sessions. The independently installed sidecar — a copy of the Eldrun binary
+running `--mobile-host` — binds to loopback;
 an existing, non-Funnel Tailscale Serve HTTPS root handler must be verified as
 an exact proxy to that port before Eldrun saves or starts it. Each browser pairs
 with a short-lived code and a device-held P-256 key and can be revoked
@@ -1324,9 +1325,12 @@ Ollama integration test skips itself when no local server or model is available.
   been run live (no VM has been booted), CalDAV has never been pointed at a real
   server, and SLURM/HPC awaits real-cluster QA. Such items carry an `UntestedTag`
   pill in the UI.
-- Eldrun Mobile is Linux-only (the macOS LaunchAgent phase is the follow-up),
-  requires Tailscale on both ends, and its real-phone security and acceptance QA
-  is open.
+- Eldrun Mobile hosts on all three OSes — systemd user service on Linux,
+  launchd LaunchAgent on macOS, Run-key autostart plus a named-pipe control
+  plane on Windows, where terminal attach still requires tmux so only the
+  desktop-mediated surfaces (mail, calendar, to-dos, pairing) work. Tailscale
+  is required on both ends; the macOS/Windows host paths and the real-phone
+  security and acceptance QA are unverified.
 - Containerized projects are local-only and hidden or refused where Docker is
   unavailable; VM projects need QEMU/KVM.
 - The Agent Skills library is Claude-only, with no manifest, versioning, or

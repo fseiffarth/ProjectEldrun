@@ -5,6 +5,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { SettingsCard, SettingsList, ToggleRow } from "../layout/settingsUi";
 import { isTrashProject } from "../../lib/trashProject";
+import { IS_WINDOWS } from "../../lib/platform";
 
 interface RuntimeStatus {
   configured: boolean;
@@ -280,15 +281,17 @@ export function MobileSettings() {
     setError(null);
     try {
       // The backend materializes its embedded source so a packaged Eldrun has
-      // the same handoff script as a checkout.
-      await invoke("mobile_prepare_phone_install_script");
+      // the same handoff script as a checkout. It answers with the script's
+      // path because the state dir differs per OS (XDG on Linux, Application
+      // Support on macOS) and must not be re-derived here.
+      const scriptPath = await invoke<string>("mobile_prepare_phone_install_script");
       const tabs = useTabsStore.getState();
       tabs.addTabToScope(ROOT_SCOPE, {
         label: "Install Eldrun Mobile on phone",
         cmd: "/bin/bash",
         cwd: rootDir ?? "",
         kind: "shell",
-        initialInput: `bash "\${XDG_DATA_HOME:-$HOME/.local/share}/eldrun/mobile-control/install_phone.sh"`,
+        initialInput: `bash "${scriptPath.replace(/(["\\$`])/g, "\\$1")}"`,
       });
       useProjectsStore.setState({
         switchToast: "Phone installation handoff is running in the root terminal",
@@ -418,17 +421,21 @@ export function MobileSettings() {
       <p className="settings-help">
         This checks Eldrun’s publication shape, not your tailnet ACLs, account MFA, Tailnet Lock, or the phone’s screen lock. Configure those in Tailscale and on the phone.
       </p>
-      <div className="mobile-phone-install">
-        <div>
-          <strong>Install Eldrun Mobile on your phone</strong>
-          <p>
-            Verifies the private Tailscale Serve mapping, then shows the trusted URL and a scannable QR code in a root terminal. It does not enable Mobile or change your Tailscale configuration.
-          </p>
+      {/* The handoff is a bash+jq script; on Windows the trusted URL is
+          still visible in the status row above, so hide only the QR flow. */}
+      {!IS_WINDOWS && (
+        <div className="mobile-phone-install">
+          <div>
+            <strong>Install Eldrun Mobile on your phone</strong>
+            <p>
+              Verifies the private Tailscale Serve mapping, then shows the trusted URL and a scannable QR code in a root terminal. It does not enable Mobile or change your Tailscale configuration.
+            </p>
+          </div>
+          <button type="button" className="settings-btn sm primary mobile-phone-install-button" onClick={() => void installOnPhone()}>
+            Show install QR
+          </button>
         </div>
-        <button type="button" className="settings-btn sm primary mobile-phone-install-button" onClick={() => void installOnPhone()}>
-          Show install QR
-        </button>
-      </div>
+      )}
       <details className="mobile-settings-guide" open>
         <summary>Set up Tailscale Serve</summary>
         <div className="mobile-settings-guide-body">

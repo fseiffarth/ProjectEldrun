@@ -8,6 +8,9 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
 }
 
 pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T, mode: u32) -> Result<(), String> {
+    // On Windows the profile directory's ACL stands in for the mode bits.
+    #[cfg(not(unix))]
+    let _ = mode;
     let parent = path.parent().ok_or("state path has no parent")?;
     fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     let tmp = path.with_extension("tmp");

@@ -13,10 +13,6 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "eldrun"
 path = "src/main.rs"
 
-[[bin]]
-name = "eldrun-mobile-host"
-path = "src/bin/eldrun-mobile-host.rs"
-
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

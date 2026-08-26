@@ -9,7 +9,11 @@ elif [[ $# -ne 0 ]]; then
   exit 2
 fi
 
+# Match storage::state_dir: XDG on Linux, Application Support on macOS.
 state_dir="${XDG_DATA_HOME:-$HOME/.local/share}/eldrun"
+if [[ ! -r "$state_dir/settings.json" && -r "$HOME/Library/Application Support/eldrun/settings.json" ]]; then
+  state_dir="$HOME/Library/Application Support/eldrun"
+fi
 settings="$state_dir/settings.json"
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 command -v tailscale >/dev/null || { echo "Tailscale is not installed" >&2; exit 1; }

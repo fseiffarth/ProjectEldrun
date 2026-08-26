@@ -407,4 +407,28 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         left out deliberately rather than forgotten — it is the one part that
         reaches the network unasked.
 
+- [~] **31g — Eldrun Mobile sidecar on macOS & Windows** (2026-08-26; ✅
+  Code-complete, ⚠️ needs live QA on real macOS/Windows machines).
+  The separate `eldrun-mobile-host` cargo bin is gone — the sidecar is a copy
+  of the Eldrun binary run with `--mobile-host`, which is also what fixed the
+  `package-macos` CI job (Tauri never lipo-merges secondary binaries into a
+  `universal-apple-darwin` bundle, so the copy step failed on every macOS
+  build). macOS installs a launchd LaunchAgent
+  (`io.github.fseiffarth.eldrun.mobile-host`, `KeepAlive.SuccessfulExit=false`
+  ≙ `Restart=on-failure`); Windows registers an HKCU Run-key autostart and
+  speaks the admin/desktop control planes over tokio named pipes with a
+  same-user token handshake (`services/mobile_control/admin.rs::pipe`) because
+  `tokio::net::UnixStream` does not exist there. Windows terminal attach still
+  requires tmux, so only the desktop-mediated surfaces (pairing, mail,
+  calendar, to-dos) work there; the phone-install QR handoff (bash+jq) is
+  hidden on Windows and state-dir-aware on macOS.
+  - [ ] 🖐️ Manual test — macOS: enable Mobile in Settings, confirm the launch
+    agent starts, pair a phone, attach a tmux tab
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+  - [ ] 🖐️ Manual test — Windows: enable Mobile, confirm the host starts and
+    survives logoff/logon, pair a phone, open mail/calendar/to-dos
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
 ---
