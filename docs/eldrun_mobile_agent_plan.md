@@ -9,7 +9,7 @@ systemd installation, and read-only phone installation handoff. The macOS
 LaunchAgent/package phase remains the follow-up described in delivery step 8;
 native wrappers and expanded scopes remain out of scope under section 12.
 
-Last evaluated against the repository: **2026-08-24**.
+Last evaluated against the repository: **2026-08-25**.
 
 This plan defines a private phone/tablet companion for steering the
 **project-scoped agent and shell tabs** of one Eldrun desktop host. It is a
@@ -56,14 +56,33 @@ From a paired phone or tablet, the user can:
 1. open an **Active** home screen showing opted-in projects with live sessions
    or an active desktop status;
 2. use **Search** to find any other opted-in eligible project by display name;
-3. open a project and see its current eligible agent and shell tabs;
-4. while the desktop is available, create a blank shell tab or a supported,
+3. activate an inactive opted-in eligible project while the desktop is available;
+4. open a project and see its current eligible agent and shell tabs;
+5. while the desktop is available, create a blank shell tab or a supported,
    configured agent tab that also appears in Eldrun; and
-5. open one tab as a terminal, receive its live output, and send normal terminal
+6. open one tab as a terminal, receive its live output, and send normal terminal
    input.
 
 The mobile app has no file viewer, browser, editor, PDF/image viewer, settings,
-calendar, git, external-app, root, box, or project-management tabs. It does not
+git, external-app, root, box, or project-management tabs. Its global companion
+surfaces are the **To-do board**, read-only **Mail**, a desktop-mediated
+**Calendar**, and the display-only **Alerts** section below Home's project list.
+Calendar is a bounded month view mediated by the desktop: it uses the desktop's
+recurrence expansion and checked-calendar visibility, and lets a paired device
+create, edit, and delete ordinary events and calendars through opaque IDs. The
+desktop retains CalDAV credentials and metadata, alarms, and per-occurrence
+recurrence changes. Alerts mirrors the
+desktop's bounded, time-ordered urgent-mail/upcoming-event/due-task feed through
+the desktop bridge; it exposes no source ids, event detail, calendar, mute,
+complete, or link-opening controls. A mail or task row can only hand off to the
+existing Mail or To-do surface. While Eldrun is connected, the board has the
+same card and column operations as the desktop board: create, edit (including
+notes, date/time, progress, tags, project/calendar assignment, and checklists),
+complete, move, delete, and manage columns via the desktop bridge. Mail lists
+configured accounts, cached folders and
+paged cached headers, and opens a message as bounded plain text with attachment
+metadata. It has no sync, compose/reply, flag/read-state mutation, link-opening,
+attachment download, or remote-content controls. It does not
 mirror the desktop layout or stream the desktop screen.
 
 The first client is a responsive installable PWA served privately by the host.
@@ -78,6 +97,12 @@ A native iOS/Android wrapper may follow, but it must reuse this API and protocol
 - tailnet-only HTTPS publication through Tailscale Serve, with the host bound to
   loopback only;
 - project and eligible-tab discovery;
+- a to-do board mediated by the connected desktop, with the desktop board's
+  card and column editing operations;
+- read-only mail account/folder browsing and bounded message reading, mediated
+  by the connected desktop and using opaque phone-visible ids;
+- a bounded month calendar mediated by the connected desktop, with
+  desktop-expanded occurrences plus event and ordinary-calendar management;
 - creation of a permitted shell or resumable configured agent while Eldrun is
   running;
 - tmux terminal attach, input, resize, reconnect, and intentional detach;
@@ -87,11 +112,18 @@ A native iOS/Android wrapper may follow, but it must reuse this API and protocol
 ### Explicitly out of scope
 
 - browsing, editing, uploading, downloading, or opening files;
+- muting calendar events, configuring CalDAV credentials, or editing a single
+  occurrence of a recurring event;
 - viewer/embed/browser/external-app tab types;
 - arbitrary executable paths, argv, environment, cwd, shell strings, remote SSH
   commands, or initial agent prompts supplied by the phone;
 - killing, renaming, moving, closing, or changing the mode of an existing tab;
-- inferred “working”, “waiting”, “done”, or “needs attention” states;
+- sidecar-inferred “working”, “waiting”, “done”, or “needs attention” states.
+  When the Eldrun desktop is online, its existing activity classifier may expose
+  the derived **working**, **question**, and **done** state for an eligible agent
+  tab through the trusted desktop-control socket. The phone never receives
+  terminal output or prompt text, and no status is retained when the desktop is
+  unavailable;
 - root and box scopes, foreign tmux sessions, `local_agent` tabs, and project
   settings management;
 - remote/primary/worker-host projects, containers, VMs, and Windows hosting;
@@ -124,6 +156,14 @@ Home
          ├─ New agent     permitted while the desktop bridge is online
          └─ New shell     permitted while the desktop bridge is online
               └─ Terminal live output and normal keyboard input
+
+Global companion views
+├─ To-do                  compact board, mediated writes while desktop is live
+├─ Mail                   bounded read-only local mail snapshot
+└─ Calendar               month snapshot + desktop-mediated event/calendar edits
+
+Home also renders the desktop Alerts snapshot below the project section when
+the desktop Alerts feed is enabled. It is a compact read-only timeline.
 ```
 
 ### 4.1 Home and project screens
@@ -140,6 +180,12 @@ The project screen lists only eligible current agent and shell tabs. A row shows
 the desktop label, kind, configured agent label where applicable, availability,
 remote-viewer occupancy, and last tmux activity. A missing tmux session is
 reported as gone and cannot be attached.
+
+While a terminal is open, the client persists only its opaque project and tab
+ids. After authentication on the next launch it re-fetches that tab from the
+host before reopening it; labels, terminal output, and other catalog data are
+never restored from browser storage. Leaving the terminal clears the saved
+route.
 
 Creation controls show an explicit **Desktop unavailable** state rather than
 silently queuing work. Creating in an inactive project first activates it in
@@ -176,8 +222,62 @@ rolled back or duplicated.
 ### 4.3 Terminal
 
 The terminal uses xterm.js and exchanges bytes over an authenticated WebSocket.
+Its phone-first wrapper opens in **Focus** view: xterm continues to emulate the
+authoritative ANSI screen offscreen while Focus renders that same screen at the
+phone's width — the colour, emphasis and inverse video the program actually
+emitted, read off the buffer's cells, with the rows tmux wrapped rejoined so the
+text re-wraps at the phone's edge instead of at the desktop window's column
+count. A composer sends a reviewed agent message or shell command, and a
+**Terminal** toggle returns to the exact interactive TUI whenever cursor-level
+interaction is needed. The only thing removed is box-drawing decoration (a frame
+row, an input box's edges), which reflows into nonsense on a narrow screen; the
+text inside it is kept, and anything left out — earlier output past the bound, a
+clipped runaway line — is announced. The latest submitted text remains visible
+beside the composer, the session text is selectable and copyable in one tap, and
+the terminal key row scrolls in one compact line on narrow phones. None of this
+state crosses tabs or survives a reload.
+
+Focus **classifies nothing**. The first implementation did: a regex pass sorted
+each line into prompt/tool/success/warning/error/choice cards. It read a numbered
+list inside an ordinary answer as an approval dialog and offered buttons that
+typed those digits into the agent, split a tool call from its own result, painted
+prose about failure as a red verdict, and discarded the colour the program had
+already sent. A real select prompt is answered the way it is on a desktop — the
+key row's arrows and Enter, which need no inference to be right.
+
+For repeatable visual QA without a live Eldrun or tmux session, run the Mobile
+Vite target and open `/terminal-preview.html?kind=agent` or `?kind=shell`. The
+development-only fixture renders the production `Terminal` component, xterm,
+and styles against representative in-page WebSocket output; production builds
+still have only `mobile-web/index.html` as their entry point.
 It provides touch-friendly Ctrl, Esc, Tab, arrows, Enter, Backspace, and a guarded
 Interrupt key, plus a visible input proxy so mobile keyboards open reliably.
+Agent terminals expose **Dictate** independently of the configured CLI. On
+browsers with on-device Web Speech, the PWA checks for a dictation-quality model
+in the phone's language and offers the browser-managed language-pack install when
+needed; a second tap starts locally after a download. Older browsers and
+unsupported local languages fall back to the browser/OS speech service. The UI
+shows the live transcript, strips terminal control bytes, and inserts only
+finalized text into the current agent prompt. It deliberately does not press
+Enter: the user reviews or edits the text and submits it with the ordinary
+terminal control. Browsers without any Web Speech support keep ordinary terminal
+input and explain that the keyboard microphone is the fallback.
+
+This replaces the first implementation, which could not provide phone voice
+input: it guessed support from an exact allowlist of saved CLI command strings,
+sent undocumented agent-specific slash commands or repeated Space bytes, and
+expected the agent process to read the **desktop host microphone**. At the same
+time, the mobile host emitted `Permissions-Policy: microphone=()`, so the PWA
+could not capture the phone microphone at all. The corrected policy permits
+`microphone=(self)` and `on-device-speech-recognition=(self)` only; camera and
+every unrelated sensitive capability remain denied. Locally processed speech
+keeps audio and transcript on the phone. The compatibility path may use the
+phone/browser vendor's online service, depending on the OS and installed language
+support. Direct Android ML Kit or `SpeechRecognizer` integration remains a
+native-wrapper option, not a web API. Current Chrome on Android exposes Web Speech
+recognition but not Chromium's downloadable on-device language-pack APIs, so it
+uses that compatibility path; the local branch is feature-detected and becomes
+active only on a browser/platform that actually exposes it.
 
 Resize is debounced. Network loss or closing the browser detaches only the
 mobile tmux client and never calls `kill-session`. One mobile viewer may attach
@@ -393,14 +493,39 @@ Pairing/authentication are globally rate-limited and bounded independently of
 source IP because Serve may proxy through loopback. Code comparison is constant
 time. Private keys never leave the device.
 
+### 8.1.1 Local phone lock
+
+After pairing, Mobile requires a local 4–12 digit PIN before it will use the
+paired signing key to create an Eldrun session. It stores only a unique-salt
+PBKDF2 verifier in IndexedDB, never the PIN. Where the browser exposes a
+platform WebAuthn authenticator, setup additionally enrolls a credential bound
+to the exact Serve origin and every unlock requires `userVerification` (the
+phone's fingerprint, Face ID, or secure device-unlock prompt).
+
+The browser cannot give a portable "device locked" event, so Mobile locks when
+`visibilitychange` reports hidden: it clears the remembered terminal route,
+unmounts the terminal client, and best-effort logs out the server session. A
+normal reload deliberately does not lock: the current browser session is
+remembered only until the document is hidden and refreshes its signed Eldrun
+session without asking for the PIN again. Returning after the phone has hidden
+the PWA requires the local factors and then a new Eldrun signed challenge login.
+Devices without a platform authenticator retain the PIN lock and explain that
+the phone's own screen lock remains required.
+
+This is an app-local privacy/control layer against someone handling an unlocked
+phone. It is not a substitute for the operating-system lock, disk encryption,
+or Eldrun's server-side paired-device authentication; a fully compromised phone
+is still an endpoint compromise.
+
 ### 8.2 Browser boundary
 
 - PWA and API are same-origin; no CORS allowlist is emitted.
 - Pairing, auth, mutations, and WebSocket upgrades require the exact verified
   HTTPS `Origin`.
 - Strict CSP, HSTS, `nosniff`, deny framing, and a restrictive permissions policy
-  are emitted; no third-party scripts, fonts, analytics, or service-worker
-  imports are allowed.
+  are emitted; only the same-origin PWA may request microphone access for agent
+  dictation, while camera and unrelated capabilities stay denied. No third-party
+  scripts, fonts, analytics, or service-worker imports are allowed.
 - Auth never appears in a URL or WebSocket query parameter.
 - API/terminal responses are `Cache-Control: no-store`; the service worker caches
   versioned static assets and an offline shell only.
@@ -409,7 +534,100 @@ time. Private keys never leave the device.
 - Tailscale identity headers may be recorded as non-authoritative audit context,
   but never replace Eldrun device authentication.
 
-### 8.3 Minimal API
+### 8.3 Operational hardening and responsibilities
+
+The encrypted tailnet is a transport boundary, not an authorization decision.
+Eldrun and the operator each own a different part of the protection:
+
+| Boundary | Eldrun enforces | Operator must do |
+| --- | --- | --- |
+| Publication | The host listens only on `127.0.0.1`, requires an exact private Tailscale Serve HTTPS root proxy, rejects Funnel, verifies that shape before start and every 30 seconds, and stops if it changes. | Do not add a Funnel, LAN port-forward, reverse proxy, or a second public mapping for this port. Keep the verified `https://…ts.net` origin unchanged. |
+| Phone/browser | Pairing requires the one-time code and a device-held signing key; cookies are secure, HTTP-only, same-site, and expire after 12 hours or host restart. A revoked device loses its sessions and terminal sockets immediately. | Use a screen lock and device encryption. Keep the pairing code private and pair only while looking at the intended phone. Revoke a lost, replaced, or untrusted phone immediately. |
+| Eldrun scope | Mobile access is explicit per project. The host exposes opaque tab ids, and only current eligible local sessions can be attached. | Enable only the few projects that genuinely need mobile control. Treat every enabled terminal or agent as keyboard-equivalent authority; do not expose a session with unattended destructive approval or production secrets unnecessarily. |
+| Tailnet | Eldrun does not treat Tailscale identity as its sole authenticator. | Restrict which tailnet devices can reach the workstation, protect the Tailscale account, and remove devices that should no longer belong to the tailnet. |
+
+#### Eldrun actions already implemented
+
+- **Safe enablement:** the Settings panel refuses to start Mobile unless Serve is
+  HTTPS, private (not Funnel), and proxies only to the configured loopback
+  port. The host repeats this verification while running.
+- **Least project authority:** project mobile access is opt-in. Disabling it
+  makes its tabs ineligible; the terminal bridge continuously rechecks that a
+  tab and its project remain authorized.
+- **Device offboarding:** in **Settings → Mobile**, use **Revoke** next to one
+  phone to end its sessions and terminal connections. Use **Forget all
+  devices** after a suspected wider compromise; it also rotates opaque ids, so
+  every phone must pair again.
+- **Connection visibility:** use the Mobile status/Serve verification in the
+  same panel before pairing. It must show the exact expected HTTPS origin and
+  valid private mapping.
+- **Security health and emergency stop:** the Mobile Settings card summarizes
+  the publication checks Eldrun can make. **Lock down now** revokes every
+  paired device, terminates its terminal connections, disables the Mobile host,
+  and requires every phone to pair again.
+
+#### Operator setup checklist
+
+1. **Limit tailnet reachability.** In the Tailscale admin console, open
+   **Access controls** and create a narrow grant for the phone to the Eldrun
+   workstation's HTTPS port. Use stable host aliases or device tags, not an
+   IP address copied from a transient screen. The conceptual rule is:
+
+   ```json
+   {
+     "src": ["eldrun-phone"],
+     "dst": ["eldrun-workstation"],
+     "ip": ["tcp:443"]
+   }
+   ```
+
+   Replace those names with selectors already defined in the tailnet policy,
+   and use the port in the configured Serve origin if it is not `443`. Add this
+   rule to the existing policy; do not replace the policy wholesale. Grants are
+   additive, so also remove or narrow any existing broad allow-all rule that
+   would still allow other devices to reach the workstation. Validate the policy
+   in Tailscale's editor before saving.
+
+2. **Harden the Tailscale account.** Enable MFA/passkeys in the identity
+   provider that signs in to the tailnet. For a personal, security-sensitive
+   tailnet, enable Tailnet Lock using two devices that will remain available as
+   signing devices. Store every displayed disablement secret in a password
+   manager; losing all of them can make recovery impossible. Verify the result
+   on the workstation with `tailscale lock status`.
+
+3. **Verify publication after setup or an update.** From the workstation run:
+
+   ```bash
+   tailscale serve status --json
+   ```
+
+   The Eldrun route must be an HTTPS root handler proxying exactly to
+   `http://127.0.0.1:<eldrun-mobile-port>` and its `AllowFunnel` value must be
+   false. The supplied phone-install handoff performs this same check before it
+   prints the URL.
+
+4. **Pair deliberately.** In **Settings → Mobile**, first confirm host status,
+   then generate a pairing code. Open only the displayed `https://…ts.net` URL
+   on the intended, unlocked phone and finish pairing within five minutes. Never
+   send the code in chat, email, or a screenshot.
+
+5. **Respond to a lost or suspicious phone.** First use **Revoke** in Eldrun;
+   choose **Forget all devices** if uncertain which phone or browser profile was
+   affected. Then remove that phone from the Tailscale Machines page, lock or
+   wipe it through the platform's device-management service, and rotate the
+   tailnet/identity-provider credentials if account compromise is plausible.
+   Removing the Tailscale app alone is not sufficient to remove the device from
+   the tailnet.
+
+6. **Use cautious agent authority.** A phone can type into an allowed terminal
+   exactly as a local keyboard can. Keep agent approval modes conservative when
+   Mobile is enabled, review commands before approval, and turn project Mobile
+   access off when the remote-control need ends.
+
+Eldrun cannot set tailnet ACLs, MFA, Tailnet Lock, or a phone's device lock
+because those are controlled by the tailnet administrator and phone owner.
+
+### 8.4 Minimal API
 
 ```text
 GET    /healthz
@@ -419,8 +637,17 @@ POST   /api/v1/auth/session
 DELETE /api/v1/auth/session
 
 GET    /api/v1/status
+GET    /api/v1/todo
+POST   /api/v1/todo
+GET    /api/v1/alerts
+GET    /api/v1/calendar?month=YYYY-MM
+POST   /api/v1/calendar?month=YYYY-MM
+GET    /api/v1/mail
+GET    /api/v1/mail/folders/:folder_id?offset=...
+GET    /api/v1/mail/folders/:folder_id/messages/:message_id?offset=...
 GET    /api/v1/projects?view=active|search&q=...
 GET    /api/v1/projects/:project_id
+POST   /api/v1/projects/:project_id/activate
 POST   /api/v1/projects/:project_id/tabs
 GET    /api/v1/tabs/:tab_id
 GET    /api/v1/tabs/:tab_id/terminal   (WebSocket upgrade)
@@ -474,12 +701,12 @@ Package the host as a distinct binary. Enabling it copies the bundled binary to
 user systemd service; a service must never point into an AppImage mount. macOS
 uses a LaunchAgent only in its later delivery phase.
 
-Add `scripts/install_phone.sh` as a read-only installation handoff. It verifies
-that the sidecar is healthy and the configured Serve origin maps to its exact
-loopback port, then prints the URL and a QR code (plus a machine-readable URL
-mode). It does not enable Mobile access, alter Serve/Funnel configuration, create
-a pairing, or bypass the browser's normal **Install app / Add to Home Screen**
-flow.
+Add `scripts/install_phone.sh` as a read-only installation handoff. Independent
+of whether Mobile access is currently enabled, it verifies that the configured
+Serve origin maps to its exact loopback port, then prints the URL and a QR code
+(plus a machine-readable URL mode). It does not enable Mobile access, alter
+Serve/Funnel configuration, create a pairing, or bypass the browser's normal
+**Install app / Add to Home Screen** flow.
 
 Disabling the feature stops the sidecar and closes mobile clients without killing
 tmux work. Eldrun must not claim that a user-owned Serve mapping was removed
@@ -524,6 +751,7 @@ QA uses the user's existing instance under the single-instance rules.
 | New agent | Only a current installed/enabled resumable agent can start; optional mode exactly matches the desktop capability table; no prompt/argv/env comes from the phone. |
 | Launch failure | One visible desktop error tab remains; idempotent retry does not create another. |
 | Terminal coexistence | Desktop and phone receive output and send input without evicting each other; phone resize cannot shrink the desktop. |
+| Agent dictation | Every connected agent terminal offers Dictate when the phone browser supports speech recognition. On-device dictation is preferred and its language pack is installed when supported; browser/OS recognition is the compatibility fallback. The first capture requests microphone permission; finalized, control-byte-free text is inserted but never auto-submitted. Unsupported/denied/no-speech/network cases give an actionable fallback or retry message. |
 | Detach/reconnect | Browser/network loss removes only the mobile tmux client; reconnect attaches to the same surviving session. |
 | Project opt-out/revoke | Project or device access disappears immediately and its mobile sockets close; underlying tmux sessions continue. |
 | Desktop deactivation | Existing Eldrun behavior remains authoritative: project sessions are explicitly stopped and mobile reports them gone. |
