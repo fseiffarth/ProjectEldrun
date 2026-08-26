@@ -23,6 +23,7 @@ import { runInstallInTab, PROVIDER_CLI_INSTALL, providerAuthLoginCmd } from "../
 import { PythonInterpreterWindow } from "./PythonInterpreterWindow";
 import { useGitDirtyStore, type GitDirtyState } from "../../stores/gitDirty";
 import { providerName, gitTypeLabel } from "./projectTypeTags";
+import { GitTokenScopes, tokenPageUrl } from "../common/GitTokenScopes";
 import { ProjectHoverCard, projectDescription, useProjectHoverCard } from "./ProjectHoverCard";
 import { useFastMode } from "../../lib/fastMode";
 import { ActivityCalendar } from "./ActivityCalendar";
@@ -254,22 +255,6 @@ function guessProvider(project: ProjectEntry): GitProvider {
   }
   if (project.git_profile_url?.toLowerCase().includes("gitlab")) return "gitlab";
   return "github";
-}
-
-/** The provider's own "create a personal access token" page. Reads the host
- *  off a configured profile URL so a self-hosted GitLab/GitHub Enterprise
- *  instance gets its own token page rather than the public one. */
-function tokenPageUrl(provider: GitProvider, profileUrl: string): string {
-  let host = provider === "gitlab" ? "gitlab.com" : "github.com";
-  try {
-    const parsed = new URL(profileUrl);
-    if (parsed.host) host = parsed.host;
-  } catch {
-    // No usable profile URL yet — fall back to the public host.
-  }
-  return provider === "gitlab"
-    ? `https://${host}/-/user_settings/personal_access_tokens`
-    : `https://${host}/settings/tokens`;
 }
 
 function PublishWindow({
@@ -586,6 +571,7 @@ function GitHostingWindow({
             {t("pill.getTokenCta", { provider: providerName(tokenProvider) })}
           </button>
         </span>
+        <GitTokenScopes provider={tokenProvider} />
         <div className="project-dialog-path">{tokenStatus}</div>
         {info?.has_token && !newToken.trim() && (
           <label className="settings-switch-row">

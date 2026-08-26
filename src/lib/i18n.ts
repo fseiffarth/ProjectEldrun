@@ -261,6 +261,30 @@ const en = {
   "git.profileUrlPlaceholder": "https://github.com/me or https://gitlab.com/me",
   "git.accessToken": "Access token",
   "git.tokenPlaceholder": "ghp_... / glpat-...",
+  // Settings — Git hosting: what the access token is used for, and which
+  // permissions that needs. Scope names are literal provider labels and stay
+  // untranslated in every language so they match the checkboxes on the token page.
+  "gitScopes.summary": "Which permissions does the token need?",
+  "gitScopes.intro":
+    "Eldrun uses this token for four things: cloning and pushing over https, creating the repository when you publish, switching it between public and private, and forking. Grant the smallest set that covers what you actually do.",
+  "gitScopes.gh.title": "GitHub — classic token (ghp_…)",
+  "gitScopes.gh.repo":
+    "Required. Covers cloning and pushing private repositories, creating the repository when you publish, and public/private changes.",
+  "gitScopes.gh.workflow":
+    "Only if the project has files under .github/workflows/ — GitHub rejects a push that touches them from a token without it.",
+  "gitScopes.gh.readOrg": "Only to publish into an organization instead of your own account.",
+  "gitScopes.ghf.title": "GitHub — fine-grained token (github_pat_…)",
+  "gitScopes.ghf.contents": "Cloning and pushing.",
+  "gitScopes.ghf.metadata": "Granted automatically; every other permission depends on it.",
+  "gitScopes.ghf.administration": "Creating the repository on publish, changing its visibility, and forking.",
+  "gitScopes.ghf.workflows": "Only if you push files under .github/workflows/.",
+  "gitScopes.ghf.note":
+    "Give the token access to the repositories Eldrun should reach (or \"All repositories\", so repos you create later are covered). Forking someone else's repository needs a classic token: a fine-grained one cannot hold Administration on a repository you do not own.",
+  "gitScopes.gl.title": "GitLab (glpat-…)",
+  "gitScopes.gl.api": "Required for publishing, visibility changes, and forking — glab drives all three through the API.",
+  "gitScopes.gl.writeRepository": "Enough on its own only if you clone and push and never publish or fork from Eldrun.",
+  "gitScopes.never":
+    "Eldrun never deletes a hosted repository — unpublishing only removes the origin remote — so delete_repo and owner deletion rights are never needed, and the token is not used to read your profile, gists, or e-mail.",
 
   // Settings — VPN auto-connect panel.
   "vpn.autoConnectHelp":
@@ -5443,6 +5467,27 @@ const de: Dict = {
   "git.profileUrlPlaceholder": "https://github.com/me oder https://gitlab.com/me",
   "git.accessToken": "Zugriffstoken",
   "git.tokenPlaceholder": "ghp_... / glpat-...",
+  "gitScopes.summary": "Welche Berechtigungen braucht das Token?",
+  "gitScopes.intro":
+    "Eldrun nutzt dieses Token für vier Dinge: Klonen und Pushen über https, Anlegen des Repositorys beim Veröffentlichen, Umschalten zwischen öffentlich und privat sowie Forken. Vergib den kleinsten Satz, der das abdeckt, was du wirklich tust.",
+  "gitScopes.gh.title": "GitHub — klassisches Token (ghp_…)",
+  "gitScopes.gh.repo":
+    "Erforderlich. Deckt Klonen und Pushen privater Repositorys, das Anlegen des Repositorys beim Veröffentlichen und Wechsel zwischen öffentlich/privat ab.",
+  "gitScopes.gh.workflow":
+    "Nur wenn das Projekt Dateien unter .github/workflows/ hat — GitHub lehnt einen Push, der sie berührt, ohne diesen Scope ab.",
+  "gitScopes.gh.readOrg": "Nur um in eine Organisation statt in dein eigenes Konto zu veröffentlichen.",
+  "gitScopes.ghf.title": "GitHub — feingranulares Token (github_pat_…)",
+  "gitScopes.ghf.contents": "Klonen und Pushen.",
+  "gitScopes.ghf.metadata": "Wird automatisch vergeben; alle anderen Berechtigungen bauen darauf auf.",
+  "gitScopes.ghf.administration": "Repository beim Veröffentlichen anlegen, Sichtbarkeit ändern und forken.",
+  "gitScopes.ghf.workflows": "Nur wenn du Dateien unter .github/workflows/ pushst.",
+  "gitScopes.ghf.note":
+    "Gib dem Token Zugriff auf die Repositorys, die Eldrun erreichen soll (oder \"All repositories\", damit später angelegte Repos abgedeckt sind). Das Forken eines fremden Repositorys braucht ein klassisches Token: Ein feingranulares kann keine Administration-Rechte an einem Repository haben, das dir nicht gehört.",
+  "gitScopes.gl.title": "GitLab (glpat-…)",
+  "gitScopes.gl.api": "Erforderlich für Veröffentlichen, Sichtbarkeitsänderungen und Forken — glab erledigt alle drei über die API.",
+  "gitScopes.gl.writeRepository": "Allein nur ausreichend, wenn du nur klonst und pusht und aus Eldrun heraus nie veröffentlichst oder forkst.",
+  "gitScopes.never":
+    "Eldrun löscht nie ein gehostetes Repository — Veröffentlichung zurücknehmen entfernt nur das origin-Remote — daher sind delete_repo und Löschrechte nie nötig, und das Token wird nicht zum Lesen von Profil, Gists oder E-Mail verwendet.",
 
   "vpn.autoConnectHelp":
     "Bewaffnet einen gespeicherten OpenVPN-Tunnel, damit er beim Start von Eldrun automatisch aufgebaut wird. Er leitet den gesamten Datenverkehr dieses Computers um — nicht nur den von Eldrun —, solange er aktiv ist; daher kann nur eine Konfiguration gleichzeitig aktiviert sein, eine andere zu aktivieren deaktiviert die erste. Gespeicherte Konfigurationen werden über den Connect-Dialog eines Remote-Projekts oder das VPN-Menü in der Kopfzeile hinzugefügt.",
@@ -10553,6 +10598,27 @@ const es: Dict = {
   "git.profileUrlPlaceholder": "https://github.com/me o https://gitlab.com/me",
   "git.accessToken": "Token de acceso",
   "git.tokenPlaceholder": "ghp_... / glpat-...",
+  "gitScopes.summary": "¿Qué permisos necesita el token?",
+  "gitScopes.intro":
+    "Eldrun usa este token para cuatro cosas: clonar y hacer push por https, crear el repositorio al publicar, cambiarlo entre público y privado, y hacer forks. Concede el conjunto mínimo que cubra lo que realmente haces.",
+  "gitScopes.gh.title": "GitHub — token clásico (ghp_…)",
+  "gitScopes.gh.repo":
+    "Obligatorio. Cubre clonar y hacer push en repositorios privados, crear el repositorio al publicar y los cambios de público/privado.",
+  "gitScopes.gh.workflow":
+    "Solo si el proyecto tiene archivos en .github/workflows/: GitHub rechaza un push que los toque desde un token sin este scope.",
+  "gitScopes.gh.readOrg": "Solo para publicar en una organización en lugar de tu propia cuenta.",
+  "gitScopes.ghf.title": "GitHub — token de granularidad fina (github_pat_…)",
+  "gitScopes.ghf.contents": "Clonar y hacer push.",
+  "gitScopes.ghf.metadata": "Se concede automáticamente; todos los demás permisos dependen de él.",
+  "gitScopes.ghf.administration": "Crear el repositorio al publicar, cambiar su visibilidad y hacer forks.",
+  "gitScopes.ghf.workflows": "Solo si haces push de archivos en .github/workflows/.",
+  "gitScopes.ghf.note":
+    "Da al token acceso a los repositorios que Eldrun debe alcanzar (o \"All repositories\", para que también cubra los que crees después). Hacer un fork de un repositorio ajeno requiere un token clásico: uno de granularidad fina no puede tener Administration sobre un repositorio que no es tuyo.",
+  "gitScopes.gl.title": "GitLab (glpat-…)",
+  "gitScopes.gl.api": "Obligatorio para publicar, cambiar la visibilidad y hacer forks: glab hace las tres cosas por la API.",
+  "gitScopes.gl.writeRepository": "Suficiente por sí solo únicamente si clonas y haces push y nunca publicas ni haces forks desde Eldrun.",
+  "gitScopes.never":
+    "Eldrun nunca borra un repositorio alojado —despublicar solo elimina el remoto origin—, así que delete_repo y los derechos de borrado del propietario nunca hacen falta, y el token no se usa para leer tu perfil, gists ni correo.",
 
   "vpn.autoConnectHelp":
     "Activa un túnel OpenVPN guardado para que se conecte automáticamente al iniciar Eldrun. Redirige el tráfico de todo este ordenador — no solo el de Eldrun — mientras esté activo, así que solo puede haber una configuración activada a la vez; activar otra desactiva la primera. Las configuraciones guardadas se añaden desde el diálogo de conexión de un proyecto remoto o el menú VPN de la cabecera.",
@@ -15662,6 +15728,27 @@ const fr: Dict = {
   "git.profileUrlPlaceholder": "https://github.com/moi ou https://gitlab.com/moi",
   "git.accessToken": "Jeton d'accès",
   "git.tokenPlaceholder": "ghp_... / glpat-...",
+  "gitScopes.summary": "De quelles permissions le jeton a-t-il besoin ?",
+  "gitScopes.intro":
+    "Eldrun utilise ce jeton pour quatre choses : cloner et pousser en https, créer le dépôt lors de la publication, le basculer entre public et privé, et forker. Accordez le plus petit ensemble qui couvre ce que vous faites réellement.",
+  "gitScopes.gh.title": "GitHub — jeton classique (ghp_…)",
+  "gitScopes.gh.repo":
+    "Obligatoire. Couvre le clonage et le push de dépôts privés, la création du dépôt lors de la publication et les changements public/privé.",
+  "gitScopes.gh.workflow":
+    "Uniquement si le projet contient des fichiers sous .github/workflows/ — GitHub refuse un push qui y touche depuis un jeton sans ce scope.",
+  "gitScopes.gh.readOrg": "Uniquement pour publier dans une organisation plutôt que sur votre propre compte.",
+  "gitScopes.ghf.title": "GitHub — jeton à granularité fine (github_pat_…)",
+  "gitScopes.ghf.contents": "Cloner et pousser.",
+  "gitScopes.ghf.metadata": "Accordé automatiquement ; toutes les autres permissions en dépendent.",
+  "gitScopes.ghf.administration": "Créer le dépôt à la publication, changer sa visibilité et forker.",
+  "gitScopes.ghf.workflows": "Uniquement si vous poussez des fichiers sous .github/workflows/.",
+  "gitScopes.ghf.note":
+    "Donnez au jeton accès aux dépôts qu'Eldrun doit atteindre (ou \"All repositories\", pour couvrir aussi ceux créés plus tard). Forker le dépôt de quelqu'un d'autre exige un jeton classique : un jeton à granularité fine ne peut pas détenir Administration sur un dépôt qui ne vous appartient pas.",
+  "gitScopes.gl.title": "GitLab (glpat-…)",
+  "gitScopes.gl.api": "Obligatoire pour publier, changer la visibilité et forker — glab fait les trois via l'API.",
+  "gitScopes.gl.writeRepository": "Suffisant seul uniquement si vous clonez et poussez sans jamais publier ni forker depuis Eldrun.",
+  "gitScopes.never":
+    "Eldrun ne supprime jamais un dépôt hébergé — dépublier ne retire que le distant origin — donc delete_repo et les droits de suppression du propriétaire ne sont jamais nécessaires, et le jeton ne sert pas à lire votre profil, vos gists ou vos e-mails.",
 
   "vpn.autoConnectHelp":
     "Armez un tunnel OpenVPN enregistré pour qu'il se connecte automatiquement au démarrage d'Eldrun. Il redirige le trafic de tout cet ordinateur — pas seulement celui d'Eldrun — tant qu'il est actif ; une seule configuration peut donc être armée à la fois, en armer une autre désarme la première. Les configurations enregistrées s'ajoutent depuis la boîte de dialogue de connexion d'un projet distant ou le menu VPN de l'en-tête.",
@@ -20771,6 +20858,27 @@ const it: Dict = {
   "git.profileUrlPlaceholder": "https://github.com/me o https://gitlab.com/me",
   "git.accessToken": "Token di accesso",
   "git.tokenPlaceholder": "ghp_... / glpat-...",
+  "gitScopes.summary": "Quali permessi servono al token?",
+  "gitScopes.intro":
+    "Eldrun usa questo token per quattro cose: clonare e fare push via https, creare il repository quando pubblichi, passarlo tra pubblico e privato e forkare. Concedi l'insieme minimo che copre ciò che fai davvero.",
+  "gitScopes.gh.title": "GitHub — token classico (ghp_…)",
+  "gitScopes.gh.repo":
+    "Obbligatorio. Copre clonazione e push di repository privati, la creazione del repository alla pubblicazione e i cambi pubblico/privato.",
+  "gitScopes.gh.workflow":
+    "Solo se il progetto ha file in .github/workflows/: GitHub rifiuta un push che li tocca da un token privo di questo scope.",
+  "gitScopes.gh.readOrg": "Solo per pubblicare in un'organizzazione invece che nel tuo account.",
+  "gitScopes.ghf.title": "GitHub — token a grana fine (github_pat_…)",
+  "gitScopes.ghf.contents": "Clonare e fare push.",
+  "gitScopes.ghf.metadata": "Concesso automaticamente; tutti gli altri permessi dipendono da esso.",
+  "gitScopes.ghf.administration": "Creare il repository alla pubblicazione, cambiarne la visibilità e forkare.",
+  "gitScopes.ghf.workflows": "Solo se fai push di file in .github/workflows/.",
+  "gitScopes.ghf.note":
+    "Dai al token accesso ai repository che Eldrun deve raggiungere (o \"All repositories\", così copre anche quelli creati in seguito). Forkare il repository di qualcun altro richiede un token classico: uno a grana fine non può avere Administration su un repository che non è tuo.",
+  "gitScopes.gl.title": "GitLab (glpat-…)",
+  "gitScopes.gl.api": "Obbligatorio per pubblicare, cambiare visibilità e forkare: glab fa tutt'e tre tramite API.",
+  "gitScopes.gl.writeRepository": "Da solo basta soltanto se cloni e fai push senza mai pubblicare o forkare da Eldrun.",
+  "gitScopes.never":
+    "Eldrun non elimina mai un repository ospitato — annullare la pubblicazione rimuove solo il remoto origin — quindi delete_repo e i diritti di eliminazione del proprietario non servono mai, e il token non viene usato per leggere profilo, gist o e-mail.",
 
   "vpn.autoConnectHelp":
     "Attiva un tunnel OpenVPN salvato affinché si connetta automaticamente all'avvio di Eldrun. Instrada tutto il traffico di questo computer — non solo quello di Eldrun — finché è attivo, quindi può essere armata una sola configurazione alla volta; attivarne un'altra disattiva la prima. Le configurazioni salvate si aggiungono dalla finestra di connessione di un progetto remoto o dal menu VPN nell'intestazione.",

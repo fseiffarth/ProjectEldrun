@@ -14835,6 +14835,56 @@ select option {
   color: var(--accent);
 }
 
+/* Collapsed explanatory box inside a settings panel or dialog — the same
+   treatment as `.mobile-settings-guide`, under a name any panel can reach.
+   Used by the git-hosting token permission guide. */
+.settings-guide {
+  margin: 2px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 4%, var(--control-bg));
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.settings-guide > summary {
+  color: var(--text-primary);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.settings-guide-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 7px;
+}
+
+.settings-guide-body p {
+  margin: 0;
+}
+
+.settings-guide code {
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+}
+
+.git-scopes-group strong {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.git-scopes-group ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 0;
+  padding-left: 18px;
+  list-style: disc;
+}
+
 /* Keep the per-project Mobile access controls from making global settings grow
    with every project, while retaining quick access to a specific project. */
 .mobile-project-access-search {

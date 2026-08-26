@@ -17,6 +17,7 @@ import { DEFAULT_MAIL_CHECK_MIN } from "../../lib/mail";
 import type {
   ArchivedProject,
   CalendarViewKind,
+  GitProvider,
   KeyboardChord,
   ProjectEntry,
   Theme,
@@ -25,7 +26,9 @@ import type {
 import { THEMES } from "../../types";
 import type { LinkOpenTarget } from "../../types/browser";
 import { summarizeScaffoldRepair, type ProjectScaffoldRepair } from "../projects/scaffold";
+import { providerName } from "../projects/projectTypeTags";
 import { Toggle } from "../common/Toggle";
+import { GitTokenScopes, tokenPageUrl } from "../common/GitTokenScopes";
 import { OPEN_STATS_EVENT } from "../stats/StatsRecapHost";
 import {
   SHORTCUT_DEFS,
@@ -292,6 +295,13 @@ function GitHostingSettings({ onBack }: { onBack: () => void }) {
     void updateSettings({ git_token: gitToken.trim() });
   };
 
+  // Which provider the token hint and permission guide describe. Derived live
+  // from the profile URL being typed (the only provider signal a global,
+  // project-less setting has), defaulting to GitHub as everywhere else.
+  const provider: GitProvider = gitProfileUrl.toLowerCase().includes("gitlab")
+    ? "gitlab"
+    : "github";
+
   return (
     <>
       <div className="settings-title-row">
@@ -323,6 +333,19 @@ function GitHostingSettings({ onBack }: { onBack: () => void }) {
           }}
         />
       </label>
+      <span className="ssh-optional-hint">
+        {t("pill.getTokenHint")}{" "}
+        <button
+          type="button"
+          className="inline-link-btn"
+          onClick={() =>
+            void invoke("open_external_url", { url: tokenPageUrl(provider, gitProfileUrl) })
+          }
+        >
+          {t("pill.getTokenCta", { provider: providerName(provider) })}
+        </button>
+      </span>
+      <GitTokenScopes provider={provider} />
     </>
   );
 }
