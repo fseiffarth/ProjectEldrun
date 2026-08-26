@@ -156,6 +156,11 @@ scrub_args=(
   # showing the reader what their own token looks like (`GitLab (glpat-…)`).
   # A real token continues in base62, so it keeps its prefix and is reported.
   -e 's/\b(glpat-|ghp_|sk-)(…|\.\.\.|<)//g'
+  # ...or by a placeholder WORD AND NOTHING ELSE (`git_token: "ghp_test"`), which
+  # is the shape a fixture takes when the keyword itself is not one this scan
+  # knows (`git_token` is not `api_key`). The trailing `\b` is what keeps it
+  # narrow: a real `ghp_testAbC123…` continues into the word and still reports.
+  -e 's/\b(glpat-|ghp_|sk-)(test|dummy|fake|placeholder|redacted|changeme|sample)\b//gI'
 )
 
 # Last resort for a line that is genuinely fine but that no general rule can
