@@ -61,7 +61,8 @@ import { dragPlatform } from "../../lib/dragPlatform";
 import { shouldPersistTab, shouldPersistLocalTab } from "../../lib/tmuxSession";
 import { isTrashProject } from "../../lib/trashProject";
 import { IS_WINDOWS } from "../../lib/platform";
-import { useProjectsStore } from "../../stores/projects";
+import { restoreProjectScope, useProjectsStore } from "../../stores/projects";
+import { BOX_SCOPE_PREFIX, boxFolderOfScope, restoreBoxScope, useBoxesStore } from "../../stores/boxes";
 import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
@@ -120,6 +121,12 @@ export function CenterPanel() {
   const windowMoving = useWindowMoveStore((s) => s.moving);
 
   const { projects, activeId } = useProjectsStore();
+  // Bumped on every pill click, even one re-selecting the already-active
+  // project. It is what lets the restore effect below leave a box scope when
+  // the user clicks the project they were in before opening the box —
+  // `activeId` doesn't change then, so without this dep the effect never
+  // re-runs its `setScope` and the box scope is stuck.
+  const switchGeneration = useProjectsStore((s) => s.switchGeneration);
 
   // Whether a pointer-drag is active. We subscribe to a boolean (not the drag
   // object, which is replaced on every pointermove) so the panel doesn't
@@ -147,6 +154,11 @@ export function CenterPanel() {
   const activeProject = projects.find((p) => p.id === activeId);
   const localFile = activeProject?.local_file as string | undefined;
   const projectCwd = resolveProjectDirectory(activeProject);
+  // The active BOX scope's folder (empty string outside a box scope). New tabs
+  // opened while a box is active default here, not to the previously active
+  // project's directory — the box folder is the scope's own root.
+  const activeBoxFolder = useBoxesStore((s) => boxFolderOfScope(scope, s.boxes));
+  const newTabCwd = activeBoxFolder || projectCwd;
 
   // Mount-free remote: a remote project starts DISCONNECTED but its LOCAL tabs
   // (local agents / local_agent / local-toggled shells — all running in the
@@ -256,35 +268,39 @@ export function CenterPanel() {
       return;
     }
 
-    // A project with no local_file isn't ready to restore yet.
+    // Project context: restore the saved tab layout from disk (first visit this
+    // session). `restoreProjectScope` owns every guard — no local_file, a scope
+    // already initialized this session (in-memory state wins, so intentionally
+    // closed tabs are not resurrected), and a layout with nothing restorable in it
+    // (which must NOT create the scope key). It is the same call the startup pass
+    // makes for the active projects nobody switches to, so the current project and
+    // the background ones restore under one policy.
+    //
+    // A freshly-visited project with no restorable tabs stays empty (the empty
+    // Subwindow with a "+"); we no longer seed a default README.md tab.
+    //
+    // `localFile` is in the deps because a project whose entry hasn't loaded yet
+    // isn't restorable: the effect re-runs the moment the list arrives. The entry
+    // itself is read from the store rather than closed over, so an unrelated field
+    // changing on it (the git-provider sniff, a status flip) can't re-fire this.
     if (!localFile) return;
+    const project = useProjectsStore.getState().projects.find((p) => p.id === nextScope);
+    if (project) void restoreProjectScope(project);
+    // `switchGeneration` re-runs the `setScope` above on a pill click that
+    // re-selects the already-active project — the one gesture that must leave
+    // an open box scope (activeId is unchanged, so nothing else here moves).
+  }, [activeId, localFile, setScope, loadFromLayout, switchGeneration]);
 
-    // Scope was already initialized this session (tabs may be empty by user intent).
-    // Trust in-memory state rather than re-reading disk — avoids restoring
-    // intentionally-closed tabs, and eliminates a race where load_project reads
-    // stale project.json before switch_project_runtime has written the empty layout.
-    if (nextScope in useTabsStore.getState().tabsByScope) return;
-
-    // Project context: restore saved tab layout from disk (first visit this session).
-    const scopeForLoad = nextScope;
-    // The saved layout comes from `<state_dir>/sessions/<id>/`, not from the
-    // project's own `project.json` — that file lives in the project container's
-    // writable mount and in any cloned repository, and everything restored here
-    // becomes a `pty_spawn`. `load_project` no longer serves it at all.
-    invoke<Record<string, unknown>>("load_tab_session", { projectId: nextScope })
-      .then((proj) => {
-        const restorable = restorableOf((proj.tabLayout as LayoutEntry[] | undefined) ?? []);
-        // Guard: don't overwrite tabs that switch_project_runtime already loaded.
-        if (scopeForLoad in useTabsStore.getState().tabsByScope) return;
-        // A freshly-visited project with NO restorable tabs stays empty (shows the
-        // empty Subwindow with a "+"); we no longer seed a default README.md tab.
-        if (restorable.length === 0) return;
-        // `tabGroups` carries the saved split/group tree (absent → single group).
-        const groups = proj.tabGroups as SavedLayoutTree | undefined;
-        loadFromLayout(restorable, projectCwd, scopeForLoad, groups ?? undefined);
-      })
-      .catch(() => {});
-  }, [activeId, projectCwd, localFile, setScope, loadFromLayout]);
+  // Box-scope restore: the first entry of a `box:<id>` scope this session
+  // loads its saved tabs from `<state_dir>/sessions/box_<id>/` (lazy, like a
+  // project's); nothing restorable seeds one shell at the box folder. The
+  // seed lives in `restoreBoxScope`, not in `openBox`, so restore and seed
+  // cannot race. See stores/boxes.
+  useEffect(() => {
+    if (!scope.startsWith(BOX_SCOPE_PREFIX)) return;
+    if (scope in useTabsStore.getState().tabsByScope) return;
+    void restoreBoxScope(scope);
+  }, [scope]);
 
   // Re-hydrate vibe local_agent tabs that were saved without VIBE_HOME/
   // VIBE_ACTIVE_MODEL. Only vibe needs this: `ollama launch`/fallback driver tabs
@@ -309,17 +325,21 @@ export function CenterPanel() {
   }, [activeId, updateTabEnv]);
 
   useEffect(() => {
-    // Root persists under the `"root"` id with no export copy (it has no
-    // project.json, so `localFile` is empty and the backend skips it). A project
-    // without a `local_file` isn't ready to persist yet.
-    if (activeId && !localFile) return;
-    const scopeToPersist = activeId ?? "root";
-    const file = localFile ?? "";
+    // Persist the ACTIVE scope. Root persists under the `"root"` id with no
+    // export copy (it has no project.json, so `localFile` is empty and the
+    // backend skips it); a `box:<id>` scope persists under its own id the same
+    // way — `storage::project_key` maps it to `sessions/box_<id>/` and an empty
+    // localFile skips the project-tree export copy. A project without a
+    // `local_file` isn't ready to persist yet.
+    const isBoxScope = scope.startsWith(BOX_SCOPE_PREFIX);
+    if (!isBoxScope && activeId && !localFile) return;
+    const scopeToPersist = isBoxScope ? scope : (activeId ?? "root");
+    const file = isBoxScope ? "" : (localFile ?? "");
     const timer = window.setTimeout(() => {
       persistScope(scopeToPersist, file).catch(() => {});
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [activeId, localFile, tabs, layout, detachedGroups, persistScope]);
+  }, [scope, activeId, localFile, tabs, layout, detachedGroups, persistScope]);
 
   // #42: re-open popouts that were detached when this scope was last saved. The
   // groups were restored DOCKED (above) so their panes mount and spawn their
@@ -967,7 +987,7 @@ export function CenterPanel() {
       {renderLayout ? (
         <LayoutTree
           node={renderLayout}
-          projectCwd={projectCwd}
+          projectCwd={newTabCwd}
           resizeSplit={resizeSplit}
           mergeGroups={mergeGroups}
           panelRef={panelRef}
@@ -980,7 +1000,7 @@ export function CenterPanel() {
         // available to create the first tab. EMPTY_GROUP_ID isn't a real group
         // (the store has no layout) — the add menu's addTab() creates the root
         // group, which then replaces this placeholder with a real LayoutTree.
-        <Subwindow groupId={EMPTY_GROUP_ID} projectCwd={projectCwd}>
+        <Subwindow groupId={EMPTY_GROUP_ID} projectCwd={newTabCwd}>
           {/* Measured like a real group body so a file dragged from the right
               panel can drop anywhere over the (full-panel) empty placeholder and
               become the first tab — see commitFileDrop's empty-state branch. */}

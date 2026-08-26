@@ -79,18 +79,45 @@
     > `refresh_box_agent_docs`, registered `lib.rs:711`, called from
     > `src/stores/boxes.ts:165` — the managed CLAUDE/GEMINI/AGENTS link block is
     > regenerated on member change.
+    > **Phase 5 — boxes upgrade DONE (2026-08-26, 🤖 covered, untested live):**
+    > the "session-only" note above is superseded — `box:<id>` is a first-class
+    > persisted scope now (`sessions/box_<id>/terminals.json`, lazy restore +
+    > shell seed via `restoreBoxScope`; the spawn gate and `compute_allowed_roots`
+    > accept box folder ∪ member roots ∪ remote mirrors, fail-closed on unknown
+    > boxes; box tabs pinned `sandbox: false` — v1 trust statement). Membership
+    > went **N:M** (per-project `box_id` retired; `addToBox`/`removeFromBox`/
+    > `boxProjects`; NO silent one-member dissolve — the box editor's confirmed
+    > Dissolve is the only way out). Switcher moved to the **overlay model**
+    > (member pills always render, ▣ badge; boxes placed by their own
+    > `position`; empty boxes render dimmed). All four box/unbox gestures:
+    > pill-menu Boxes group, Ctrl-click multi-select → "Box these…",
+    > `BoxEditorDialog` (rename/members/dissolve/trust notice), Alt-drag kept
+    > additive. Box folder gains a **member symlink farm** (Unix,
+    > `.eldrun-box-links.json` ownership manifest, never clobbers user paths;
+    > Eldrun confinement doesn't follow the links). Box "+" menu offers
+    > per-member Files/Shell/Claude rows (member-cwd, resume-safe); PDF merge
+    > picker is multi-root in a box scope; disconnected remote members gate
+    > behind a connect prompt; local box shells get tmux persistence. See
+    > `docs/context/project_boxes.md`.
     > **Still deferred:** relation-graph *surfacing* (`set_box_relations` is
     > registered at `lib.rs:712` but has **no frontend caller**; `relations`
     > appears only in `src/types/index.ts:735`), dirty-source→dependent git
-    > markers, auto-detection.
+    > markers, auto-detection, remote-member mirror fallback in the box file
+    > view, box-level sandbox/VM.
     - [x] 🤖 Automated test — `commands/boxes.rs` cargo tests (reconcile drops
       unknown member_ids / recomputes box_id inverse / drop-on-delete, gap-spaced
       position, defaults round-trip, folder-collision suffixing); `paths.rs`
       `boxes_root`; vitest `BoxAssignment` (assign/unassign/move/delete sweep,
       create/rename, derive-on-load no-write), `BoxRendering` (grouped vs inline,
       orphan box_id inline, chip drop ≠ reorder, ungrouped drop), `BoxSearch`
-      (is-box row → openBox, members independently searchable). Covers Phase 1 +
-      Phase 2 groundwork; Phase 3/4 deferred.
+      (is-box row → openBox, members independently searchable). Phase 5 adds:
+      cargo `commands::boxes` (box scope ids, allowed-roots table incl. unknown
+      box fail-closed, link planner + Unix link-farm suite), `commands::fs`
+      (box-scope allowed roots), `services::sandbox` (box never sandboxed);
+      vitest `BoxScopePersistence`, rewritten `BoxAssignment`/`BoxRendering`
+      (N:M + overlay), `BoxUx` (gestures + editor), `BoxScopeMenus` ("+" menu
+      cwds, cross-root paste invoke shape, multi-root merge picker),
+      `RightPanelBox` remote gate, `TmuxSessions` box flip.
     - [ ] 🖐️ Manual test
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work

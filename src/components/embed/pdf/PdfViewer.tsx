@@ -115,6 +115,7 @@ import { UntestedTag } from "../../common/UntestedTag";
 import { subscribePageDragActive, type PageTransfer } from "../../../stores/pdfDrag";
 import { ContextFilePicker } from "../ContextFilePicker";
 import { useProjectsStore } from "../../../stores/projects";
+import { BOX_SCOPE_PREFIX, boxMembersOfScope, boxScopeId, useBoxesStore } from "../../../stores/boxes";
 import { resolveProjectDirectory } from "../../../types";
 import { basename, dirname, isPathWithin } from "../../../lib/paths";
 import {
@@ -2493,6 +2494,24 @@ function PdfCanvas({
     return best;
   }, [path]);
 
+  // BOX scope (#41 Phase 5): the merge picker offers EVERY root the scope can
+  // read — the box folder plus each member project's tree — with a root
+  // selector row, so a merge can pull pages from another member's PDF.
+  // Single-project scopes get no `roots` and are unchanged.
+  const pdfPickerRoots = useMemo(() => {
+    if (!scope || !scope.startsWith(BOX_SCOPE_PREFIX)) return null;
+    const { boxes } = useBoxesStore.getState();
+    const { projects } = useProjectsStore.getState();
+    const box = boxes.find((b) => boxScopeId(b.id) === scope);
+    if (!box) return null;
+    const roots: { label: string; dir: string }[] = [];
+    if (box.folder) roots.push({ label: box.name, dir: box.folder });
+    for (const m of boxMembersOfScope(scope, boxes, projects)) {
+      roots.push({ label: m.name, dir: m.dir });
+    }
+    return roots.length > 0 ? roots : null;
+  }, [scope]);
+
   /** Where an insert lands: after the last selected sheet, else at the end. */
   const insertAt = useCallback(() => {
     if (selection.size === 0) return pages.length;
@@ -4263,9 +4282,11 @@ function PdfCanvas({
         // would be refused anyway — better to only offer what can actually be read.
         <ContextFilePicker
           projectDir={pdfProjectDir}
+          roots={pdfPickerRoots ?? undefined}
           attached={[]}
-          onPick={(rel) => {
-            const abs = `${pdfProjectDir}/${rel}`;
+          onPick={(rel, dir) => {
+            const base = dir ?? pdfProjectDir;
+            const abs = `${base}/${rel}`;
             if (!/\.pdf$/i.test(abs)) {
               setEditError(t("pdfViewer.notAPdf", { name: basename(abs) }));
               return;

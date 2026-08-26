@@ -14,6 +14,16 @@ import type { TranslationKey } from "./i18n";
  * are described as centered cards (`anchor: null`). Copy matches the terse,
  * friendly onboarding voice.
  *
+ * Lessons are also interactive where there is something real to do: a step can
+ * carry a `StepTask` naming the action ("open the add menu") and the signal
+ * that proves it happened (the menu is on screen). While one is pending the
+ * overlay stops swallowing clicks, so the user operates the real control; doing
+ * it earns a `:)` and the lesson moves on by itself. The narrated steps in
+ * between are unchanged, and Next still works everywhere — a task on a control
+ * this machine doesn't have (an indicator that's switched off, a file type this
+ * project doesn't contain) must never be able to wedge a lesson. Tasks sit on
+ * the entry-point steps for that reason: those controls are always there.
+ *
  * Order is meaningful: lessons run easiest → hardest and are grouped into tiers
  * (`LESSON_CATEGORIES`). `LESSONS` stays sorted so each category's lessons are
  * contiguous and the picker can render a header per tier just by walking the
@@ -74,9 +84,14 @@ export const LESSONS: Lesson[] = [
       {
         id: "add-button",
         anchor: '[data-hint-anchor="add-project"]',
-        placement: "bottom",
+        placement: "left",
         titleKey: "lessons.addProject.addButtonTitle",
         bodyKey: "lessons.addProject.addButtonBody",
+        task: {
+          promptKey: "lessons.addProject.addButtonTask",
+          hintKey: "lessons.addProject.addButtonTaskHint",
+          appear: ".project-switcher-add-menu",
+        },
       },
       {
         id: "add-menu",
@@ -98,6 +113,11 @@ export const LESSONS: Lesson[] = [
         placement: "bottom",
         titleKey: "lessons.addProject.scaffoldCreateTitle",
         bodyKey: "lessons.addProject.scaffoldCreateBody",
+        task: {
+          promptKey: "lessons.addProject.scaffoldCreateTask",
+          hintKey: "lessons.addProject.scaffoldCreateTaskHint",
+          grow: ".project-pill",
+        },
       },
       {
         id: "publish-remote",
@@ -120,6 +140,11 @@ export const LESSONS: Lesson[] = [
         placement: "top",
         titleKey: "lessons.importProject.openAddMenuTitle",
         bodyKey: "lessons.importProject.openAddMenuBody",
+        task: {
+          promptKey: "lessons.importProject.openAddMenuTask",
+          hintKey: "lessons.importProject.openAddMenuTaskHint",
+          appear: ".project-switcher-add-menu",
+        },
       },
       {
         id: "pick-import",
@@ -167,9 +192,14 @@ export const LESSONS: Lesson[] = [
       {
         id: "find-plus",
         anchor: '[data-hint-anchor="tab-add"]',
-        placement: "bottom",
+        placement: "left",
         titleKey: "lessons.addTab.findPlusTitle",
         bodyKey: "lessons.addTab.findPlusBody",
+        task: {
+          promptKey: "lessons.addTab.findPlusTask",
+          hintKey: "lessons.addTab.findPlusTaskHint",
+          appear: ".tab-new-menu",
+        },
       },
       {
         id: "the-menu",
@@ -184,6 +214,11 @@ export const LESSONS: Lesson[] = [
         placement: "bottom",
         titleKey: "lessons.addTab.shellFilesTitle",
         bodyKey: "lessons.addTab.shellFilesBody",
+        task: {
+          promptKey: "lessons.addTab.shellFilesTask",
+          hintKey: "lessons.addTab.shellFilesTaskHint",
+          grow: ".tab-bar .tab",
+        },
       },
       {
         id: "rename-close",
@@ -206,7 +241,11 @@ export const LESSONS: Lesson[] = [
         placement: "left",
         titleKey: "lessons.nativeViewer.revealTreeTitle",
         bodyKey: "lessons.nativeViewer.revealTreeBody",
-        prepare: revealFilePanel,
+        task: {
+          promptKey: "lessons.nativeViewer.revealTreeTask",
+          hintKey: "lessons.nativeViewer.revealTreeTaskHint",
+          appear: ".right-panel.open",
+        },
       },
       {
         id: "pin-panel",
@@ -258,6 +297,11 @@ export const LESSONS: Lesson[] = [
         placement: "bottom",
         titleKey: "lessons.arrangeTabs.tabBarTitle",
         bodyKey: "lessons.arrangeTabs.tabBarBody",
+        task: {
+          promptKey: "lessons.arrangeTabs.tabBarTask",
+          hintKey: "lessons.arrangeTabs.tabBarTaskHint",
+          click: ".tab-bar .tab",
+        },
       },
       {
         id: "split",
@@ -309,6 +353,11 @@ export const LESSONS: Lesson[] = [
         placement: "bottom",
         titleKey: "lessons.yamlViewer.openYamlTitle",
         bodyKey: "lessons.yamlViewer.openYamlBody",
+        task: {
+          promptKey: "lessons.yamlViewer.openYamlTask",
+          hintKey: "lessons.yamlViewer.openYamlTaskHint",
+          appear: ".file-viewer-header",
+        },
       },
       {
         id: "three-views",
@@ -352,6 +401,11 @@ export const LESSONS: Lesson[] = [
         placement: "bottom",
         titleKey: "lessons.pdfViewer.openPdfTitle",
         bodyKey: "lessons.pdfViewer.openPdfBody",
+        task: {
+          promptKey: "lessons.pdfViewer.openPdfTask",
+          hintKey: "lessons.pdfViewer.openPdfTaskHint",
+          appear: ".file-viewer-header",
+        },
       },
       {
         id: "contents",
@@ -409,6 +463,11 @@ export const LESSONS: Lesson[] = [
         placement: "left",
         titleKey: "lessons.texWorkspace.openTexTitle",
         bodyKey: "lessons.texWorkspace.openTexBody",
+        task: {
+          promptKey: "lessons.texWorkspace.openTexTask",
+          hintKey: "lessons.texWorkspace.openTexTaskHint",
+          appear: ".file-viewer-header",
+        },
         prepare: revealFilePanel,
       },
       {
@@ -460,6 +519,11 @@ export const LESSONS: Lesson[] = [
         placement: "left",
         titleKey: "lessons.deckPresenter.newDeckTitle",
         bodyKey: "lessons.deckPresenter.newDeckBody",
+        task: {
+          promptKey: "lessons.deckPresenter.newDeckTask",
+          hintKey: "lessons.deckPresenter.newDeckTaskHint",
+          appear: ".file-viewer-header",
+        },
         prepare: revealFilePanel,
       },
       {
@@ -518,6 +582,11 @@ export const LESSONS: Lesson[] = [
         placement: "bottom",
         titleKey: "lessons.runPython.openPyTitle",
         bodyKey: "lessons.runPython.openPyBody",
+        task: {
+          promptKey: "lessons.runPython.openPyTask",
+          hintKey: "lessons.runPython.openPyTaskHint",
+          appear: ".file-viewer-header",
+        },
       },
       {
         id: "run-file",
@@ -561,7 +630,11 @@ export const LESSONS: Lesson[] = [
         placement: "left",
         titleKey: "lessons.fileSearch.revealTreeTitle",
         bodyKey: "lessons.fileSearch.revealTreeBody",
-        prepare: revealFilePanel,
+        task: {
+          promptKey: "lessons.fileSearch.revealTreeTask",
+          hintKey: "lessons.fileSearch.revealTreeTaskHint",
+          appear: ".right-panel.open",
+        },
       },
       {
         id: "name-vs-content",
@@ -595,9 +668,14 @@ export const LESSONS: Lesson[] = [
       {
         id: "open-tab",
         anchor: '[data-hint-anchor="tab-add"]',
-        placement: "bottom",
+        placement: "left",
         titleKey: "lessons.browserLesson.openTabTitle",
         bodyKey: "lessons.browserLesson.openTabBody",
+        task: {
+          promptKey: "lessons.browserLesson.openTabTask",
+          hintKey: "lessons.browserLesson.openTabTaskHint",
+          appear: ".tab-new-menu",
+        },
       },
       {
         id: "reader-mode",
@@ -645,9 +723,14 @@ export const LESSONS: Lesson[] = [
       {
         id: "open-tab",
         anchor: '[data-hint-anchor="tab-add"]',
-        placement: "bottom",
+        placement: "left",
         titleKey: "lessons.printingLesson.openTabTitle",
         bodyKey: "lessons.printingLesson.openTabBody",
+        task: {
+          promptKey: "lessons.printingLesson.openTabTask",
+          hintKey: "lessons.printingLesson.openTabTaskHint",
+          appear: ".tab-new-menu",
+        },
       },
       {
         id: "printers",
@@ -681,9 +764,14 @@ export const LESSONS: Lesson[] = [
       {
         id: "open-calendar",
         anchor: '[data-hint-anchor="tab-add"]',
-        placement: "bottom",
+        placement: "left",
         titleKey: "lessons.calendarLesson.openCalendarTitle",
         bodyKey: "lessons.calendarLesson.openCalendarBody",
+        task: {
+          promptKey: "lessons.calendarLesson.openCalendarTask",
+          hintKey: "lessons.calendarLesson.openCalendarTaskHint",
+          appear: ".tab-new-menu",
+        },
       },
       {
         id: "views",
@@ -731,9 +819,13 @@ export const LESSONS: Lesson[] = [
       {
         id: "open-board",
         anchor: ".todo-indicator-btn",
-        placement: "bottom",
+        placement: "left",
         titleKey: "lessons.todoBoardLesson.openBoardTitle",
         bodyKey: "lessons.todoBoardLesson.openBoardBody",
+        task: {
+          promptKey: "lessons.todoBoardLesson.openBoardTask",
+          hintKey: "lessons.todoBoardLesson.openBoardTaskHint",
+        },
       },
       {
         id: "same-store",
@@ -781,9 +873,13 @@ export const LESSONS: Lesson[] = [
       {
         id: "open-mail",
         anchor: ".mail-indicator-btn",
-        placement: "bottom",
+        placement: "left",
         titleKey: "lessons.mailLesson.openMailTitle",
         bodyKey: "lessons.mailLesson.openMailBody",
+        task: {
+          promptKey: "lessons.mailLesson.openMailTask",
+          hintKey: "lessons.mailLesson.openMailTaskHint",
+        },
       },
       {
         id: "add-account",
@@ -862,6 +958,11 @@ export const LESSONS: Lesson[] = [
         placement: "bottom",
         titleKey: "lessons.usageRecap.openAnytimeTitle",
         bodyKey: "lessons.usageRecap.openAnytimeBody",
+        task: {
+          promptKey: "lessons.usageRecap.openAnytimeTask",
+          hintKey: "lessons.usageRecap.openAnytimeTaskHint",
+          appear: ".settings-dialog",
+        },
       },
     ],
   },
@@ -876,9 +977,14 @@ export const LESSONS: Lesson[] = [
       {
         id: "open-add-menu",
         anchor: '[data-hint-anchor="tab-add"]',
-        placement: "bottom",
+        placement: "left",
         titleKey: "lessons.installAgent.openAddMenuTitle",
         bodyKey: "lessons.installAgent.openAddMenuBody",
+        task: {
+          promptKey: "lessons.installAgent.openAddMenuTask",
+          hintKey: "lessons.installAgent.openAddMenuTaskHint",
+          appear: ".tab-new-menu",
+        },
       },
       {
         id: "pick-from-list",
@@ -919,9 +1025,14 @@ export const LESSONS: Lesson[] = [
       {
         id: "brain-button",
         anchor: ".local-model-btn",
-        placement: "bottom",
+        placement: "left",
         titleKey: "lessons.localModel.brainButtonTitle",
         bodyKey: "lessons.localModel.brainButtonBody",
+        task: {
+          promptKey: "lessons.localModel.brainButtonTask",
+          hintKey: "lessons.localModel.brainButtonTaskHint",
+          appear: ".local-model-menu",
+        },
       },
       {
         id: "pick-default",
@@ -969,9 +1080,14 @@ export const LESSONS: Lesson[] = [
       {
         id: "open-brain",
         anchor: ".local-model-btn",
-        placement: "bottom",
+        placement: "left",
         titleKey: "lessons.addLocalModel.openBrainTitle",
         bodyKey: "lessons.addLocalModel.openBrainBody",
+        task: {
+          promptKey: "lessons.addLocalModel.openBrainTask",
+          hintKey: "lessons.addLocalModel.openBrainTaskHint",
+          appear: ".local-model-menu",
+        },
       },
       {
         id: "manage-models",
@@ -1014,9 +1130,14 @@ export const LESSONS: Lesson[] = [
       {
         id: "open-library",
         anchor: '[data-hint-anchor="tab-add"]',
-        placement: "bottom",
+        placement: "left",
         titleKey: "lessons.skillsLesson.openLibraryTitle",
         bodyKey: "lessons.skillsLesson.openLibraryBody",
+        task: {
+          promptKey: "lessons.skillsLesson.openLibraryTask",
+          hintKey: "lessons.skillsLesson.openLibraryTaskHint",
+          appear: ".tab-new-menu",
+        },
       },
       {
         id: "sources",
@@ -1071,9 +1192,14 @@ export const LESSONS: Lesson[] = [
       {
         id: "new-box",
         anchor: '[data-hint-anchor="add-project"]',
-        placement: "bottom",
+        placement: "left",
         titleKey: "lessons.projectBoxes.newBoxTitle",
         bodyKey: "lessons.projectBoxes.newBoxBody",
+        task: {
+          promptKey: "lessons.projectBoxes.newBoxTask",
+          hintKey: "lessons.projectBoxes.newBoxTaskHint",
+          appear: ".project-switcher-add-menu",
+        },
       },
       {
         id: "assign-members",
@@ -1117,6 +1243,11 @@ export const LESSONS: Lesson[] = [
         placement: "top",
         titleKey: "lessons.dockerSandbox.openPillMenuTitle",
         bodyKey: "lessons.dockerSandbox.openPillMenuBody",
+        task: {
+          promptKey: "lessons.dockerSandbox.openPillMenuTask",
+          hintKey: "lessons.dockerSandbox.openPillMenuTaskHint",
+          appear: ".context-menu",
+        },
       },
       {
         id: "flip-toggle",
@@ -1164,9 +1295,14 @@ export const LESSONS: Lesson[] = [
       {
         id: "at-creation",
         anchor: '[data-hint-anchor="add-project"]',
-        placement: "bottom",
+        placement: "left",
         titleKey: "lessons.vmProject.atCreationTitle",
         bodyKey: "lessons.vmProject.atCreationBody",
+        task: {
+          promptKey: "lessons.vmProject.atCreationTask",
+          hintKey: "lessons.vmProject.atCreationTaskHint",
+          appear: ".project-switcher-add-menu",
+        },
       },
       {
         id: "base-image",
@@ -1207,9 +1343,14 @@ export const LESSONS: Lesson[] = [
       {
         id: "open-add-menu",
         anchor: '[data-hint-anchor="add-project"]',
-        placement: "top",
+        placement: "left",
         titleKey: "lessons.addSshProject.openAddMenuTitle",
         bodyKey: "lessons.addSshProject.openAddMenuBody",
+        task: {
+          promptKey: "lessons.addSshProject.openAddMenuTask",
+          hintKey: "lessons.addSshProject.openAddMenuTaskHint",
+          appear: ".project-switcher-add-menu",
+        },
       },
       {
         id: "flip-ssh-toggle",
@@ -1257,9 +1398,14 @@ export const LESSONS: Lesson[] = [
       {
         id: "open-add-menu",
         anchor: '[data-hint-anchor="add-project"]',
-        placement: "top",
+        placement: "left",
         titleKey: "lessons.sshViaOpenvpn.openAddMenuTitle",
         bodyKey: "lessons.sshViaOpenvpn.openAddMenuBody",
+        task: {
+          promptKey: "lessons.sshViaOpenvpn.openAddMenuTask",
+          hintKey: "lessons.sshViaOpenvpn.openAddMenuTaskHint",
+          appear: ".project-switcher-add-menu",
+        },
       },
       {
         id: "flip-ssh-toggle",
@@ -1314,9 +1460,13 @@ export const LESSONS: Lesson[] = [
       {
         id: "machine-wide",
         anchor: ".vpn-indicator-btn",
-        placement: "bottom",
+        placement: "left",
         titleKey: "lessons.vpnTunnel.machineWideTitle",
         bodyKey: "lessons.vpnTunnel.machineWideBody",
+        task: {
+          promptKey: "lessons.vpnTunnel.machineWideTask",
+          hintKey: "lessons.vpnTunnel.machineWideTaskHint",
+        },
       },
       {
         id: "add-config",
@@ -1360,6 +1510,11 @@ export const LESSONS: Lesson[] = [
         placement: "top",
         titleKey: "lessons.extendToRemote.rightClickPillTitle",
         bodyKey: "lessons.extendToRemote.rightClickPillBody",
+        task: {
+          promptKey: "lessons.extendToRemote.rightClickPillTask",
+          hintKey: "lessons.extendToRemote.rightClickPillTaskHint",
+          appear: ".context-menu",
+        },
       },
       {
         id: "connect-host",
@@ -1403,6 +1558,11 @@ export const LESSONS: Lesson[] = [
         placement: "top",
         titleKey: "lessons.computeMachines.openHubTitle",
         bodyKey: "lessons.computeMachines.openHubBody",
+        task: {
+          promptKey: "lessons.computeMachines.openHubTask",
+          hintKey: "lessons.computeMachines.openHubTaskHint",
+          appear: ".context-menu",
+        },
       },
       {
         id: "shared-vs-synced",
@@ -1467,6 +1627,11 @@ export const LESSONS: Lesson[] = [
         placement: "bottom",
         titleKey: "lessons.persistentSessions.sessionsViewTitle",
         bodyKey: "lessons.persistentSessions.sessionsViewBody",
+        task: {
+          promptKey: "lessons.persistentSessions.sessionsViewTask",
+          hintKey: "lessons.persistentSessions.sessionsViewTaskHint",
+          appear: ".right-panel-orange-btn.active",
+        },
       },
       {
         id: "kill-rename",
@@ -1493,9 +1658,14 @@ export const LESSONS: Lesson[] = [
       {
         id: "open-add-menu",
         anchor: '[data-hint-anchor="add-project"]',
-        placement: "bottom",
+        placement: "left",
         titleKey: "lessons.hpcPipeline.openAddMenuTitle",
         bodyKey: "lessons.hpcPipeline.openAddMenuBody",
+        task: {
+          promptKey: "lessons.hpcPipeline.openAddMenuTask",
+          hintKey: "lessons.hpcPipeline.openAddMenuTaskHint",
+          appear: ".project-switcher-add-menu",
+        },
       },
       {
         id: "step-login",
@@ -1574,6 +1744,11 @@ export const LESSONS: Lesson[] = [
         placement: "bottom",
         titleKey: "lessons.mobileLesson.hostTitle",
         bodyKey: "lessons.mobileLesson.hostBody",
+        task: {
+          promptKey: "lessons.mobileLesson.hostTask",
+          hintKey: "lessons.mobileLesson.hostTaskHint",
+          appear: ".settings-dialog",
+        },
       },
       {
         id: "project-access",

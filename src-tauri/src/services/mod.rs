@@ -11,6 +11,9 @@ pub mod browser_engine;
 pub mod caldav;
 pub mod codex_bind;
 pub mod git_credentials;
+// The default branch (`main`) for repositories Eldrun creates, and the
+// unpublished-`master` rename that runs just before a publish.
+pub mod git_init;
 pub mod git_peer;
 pub mod hpc_mode;
 pub mod local_loss;

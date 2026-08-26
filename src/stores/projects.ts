@@ -19,6 +19,7 @@ import {
 import {
   cmdToKind,
   effectiveTabLocation,
+  FILES_TAB_CMD,
   isPtyTabKind,
   isRestorableTab,
   isResumableAgentTab,
@@ -26,6 +27,7 @@ import {
   ROOT_SCOPE,
   useTabsStore,
   type SavedLayoutTree,
+  type SavedTabEntry,
   type TabKind,
   type TabLocation,
   type TabEntry,
@@ -928,6 +930,113 @@ interface ProjectsStore {
   ) => Promise<GitHostingInfo>;
 }
 
+/**
+ * Restore ONE project's saved tabs into its own scope **without making it
+ * current**. The scope key is the project id, so the tabs land in
+ * `tabsByScope[id]` and `CenterPanel`'s flat pane layer mounts them hidden:
+ * PTYs spawn, tmux sessions reattach, resumable agent tabs come back with
+ * their `--resume` — exactly what happens the moment the user switches to that
+ * project, minus the switch.
+ *
+ * Guards, in order, and each of them load-bearing:
+ *  - a project with no `local_file` isn't ready to restore yet;
+ *  - a scope already in `tabsByScope` was initialized this session, so its
+ *    in-memory state wins — re-reading disk would resurrect tabs the user
+ *    deliberately closed;
+ *  - a layout with nothing restorable in it creates NO key, because an absent
+ *    key is exactly what tells `persistScope` "this scope was never hydrated"
+ *    (its `hydrated` guard), which is what keeps an unvisited project's saved
+ *    layout from being erased by a later empty save.
+ * The in-memory guard is re-checked after the read: the user can switch to the
+ * project — or Mobile can hydrate it — while the IPC is in flight.
+ *
+ * The layout comes from `<state_dir>/sessions/<id>/`, never from the project's
+ * own `project.json` (see AGENTS.md "Persistence"): everything restored here
+ * becomes a `pty_spawn`.
+ */
+export async function restoreProjectScope(project: ProjectEntry): Promise<void> {
+  const scope = project.id;
+  if (!project.local_file) return;
+  if (scope in useTabsStore.getState().tabsByScope) return;
+  // Two concurrent restores of the SAME scope would both clear the guard above
+  // (neither has written the key yet) and both call `loadFromLayout` — every tab
+  // twice, each with its own freshly minted key, i.e. two PTYs per tab. The
+  // switch-driven restore and this startup pass genuinely can overlap: clicking a
+  // pill during launch is exactly that. The claim closes the window the in-flight
+  // read leaves open; the synchronous restore in `listenProjectRuntimeSwitched`
+  // needs no claim, since it writes the key before it can yield.
+  if (restoringScopes.has(scope)) return;
+  restoringScopes.add(scope);
+  try {
+    await restoreProjectScopeInner(project, scope);
+  } finally {
+    restoringScopes.delete(scope);
+  }
+}
+
+/** In-flight `restoreProjectScope` calls, keyed by scope. */
+const restoringScopes = new Set<string>();
+
+async function restoreProjectScopeInner(project: ProjectEntry, scope: string): Promise<void> {
+  const saved = await invoke<Record<string, unknown>>("load_tab_session", {
+    projectId: scope,
+  }).catch(() => null);
+  if (!saved) return;
+  const restorable = ((saved.tabLayout as SavedTabEntry[] | undefined) ?? []).filter((tab) =>
+    isRestorableTab({
+      kind: tab.kind ?? cmdToKind(tab.cmd || (tab.type === "files" ? FILES_TAB_CMD : "")),
+      cmd: tab.cmd,
+      sessionId: tab.sessionId,
+      resumeArgs: tab.resumeArgs,
+      viewer: tab.viewer,
+    }),
+  );
+  if (restorable.length === 0) return;
+  if (scope in useTabsStore.getState().tabsByScope) return;
+  useTabsStore.getState().loadFromLayout(
+    restorable,
+    resolveProjectDirectory(project),
+    scope,
+    (saved.tabGroups as SavedLayoutTree | undefined) ?? undefined,
+  );
+}
+
+/** Project scopes this session has already tried to restore in the background.
+ *  Tried, not restored: a project whose saved layout held nothing restorable
+ *  creates no `tabsByScope` key (see `restoreProjectScope`), so without this it
+ *  would be re-read from disk on every projects-list change. */
+const backgroundRestored = new Set<string>();
+
+/**
+ * Restore every **active** project's tabs, current or not.
+ *
+ * "Active" is not a decoration: `deactivateProject` is the gesture that *stops*
+ * a project's terminals (it confirms, kills the PTYs and the tmux sessions, and
+ * only then writes `inactive`), so a project that survived a quit as "active"
+ * is one whose terminals the user never stopped. Restoring them lazily — on the
+ * first switch to each pill — meant a relaunch came back with only the current
+ * project running and every other pill's work suspended until it was clicked,
+ * which is what this pass fixes.
+ *
+ * Sequential on purpose: each entry is one `load_tab_session` IPC followed by a
+ * burst of `pty_spawn`s, and launch is already the busiest moment in the app.
+ * Fire-and-forget everywhere it is called — nothing waits on a background
+ * project's tabs.
+ *
+ * NOT included, deliberately: remote auto-connect (`autoConnectRemote` is
+ * current-project-scoped and abandons its lamp when the user switches away), so
+ * an active remote project restores its tabs with the remote panes held until
+ * its pool comes up, exactly as it does on a switch today.
+ */
+export async function restoreActiveProjectScopes(): Promise<void> {
+  for (const project of useProjectsStore.getState().projects) {
+    if (project.status !== "active") continue;
+    if (backgroundRestored.has(project.id)) continue;
+    backgroundRestored.add(project.id);
+    await restoreProjectScope(project).catch(() => {});
+  }
+}
+
 export const useProjectsStore = create<ProjectsStore>((set, get) => ({
   projects: [],
   activeId: null,
@@ -1017,6 +1126,17 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // is also the window in which the gate could once fail *open*.) Fire-and-forget
     // still: nothing about the project list waits on a connect.
     if (activeId) void whenSettingsLoaded().then(() => autoConnectRemote(activeId));
+    // Bring the OTHER active projects' tabs back too — the pills that are not the
+    // current one. Their terminals were never stopped (that is what "inactive"
+    // means and what `deactivateProject` does), so a relaunch must resume them
+    // rather than wait for a click on each pill. CenterPanel restores the CURRENT
+    // scope on its own; this pass covers every scope no switch will ever visit.
+    //
+    // Waits for settings for the same reason the auto-connect above does, plus one
+    // of its own: `loadFromLayout` asks `withdrawnTabKinds` which experimental tab
+    // kinds to drop, and an unloaded settings store answers "drop nothing" — firing
+    // before that read lands would restore tabs belonging to a switched-off flag.
+    void whenSettingsLoaded().then(() => restoreActiveProjectScopes());
   },
 
   setActive: async (id) => {
@@ -1250,6 +1370,16 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     if (changed) {
       await invoke<void>("save_projects", { projects: nextProjects });
     }
+    // Activating is the inverse of `deactivateProject`, which STOPS this project's
+    // terminals — so it starts them: restore the saved tabs into the project's own
+    // scope, hidden, without touching activeId. That is also what makes an
+    // activated-from-Mobile project report its agent tabs (`agentStatuses` reads
+    // `tabsByScope[id]`) before anyone opens it on the desktop.
+    const activated = get().projects.find((p) => p.id === id);
+    if (activated?.status === "active" && !backgroundRestored.has(id)) {
+      backgroundRestored.add(id);
+      void restoreProjectScope(activated).catch(() => {});
+    }
   },
 
   deactivateProject: async (id) => {
@@ -1339,6 +1469,9 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       // setActive must snapshot the old scope while its saved tabs still exist;
       // only then may we remove the scope's in-memory maps and native popouts.
       await tabsStore.unloadScope(id);
+      // The scope is unloaded, so a later re-activation must be free to restore it
+      // again — leaving the id marked would make that second activation a no-op.
+      backgroundRestored.delete(id);
       if (project.remote) dropRemotePool(id);
     } catch (error) {
       const { message } = await import("@tauri-apps/plugin-dialog");
@@ -1373,10 +1506,16 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     releaseVpn(id, entry.remote?.openvpn?.config);
     // Drop its tabs/PTYs/sessions (in memory; the folder move discards the file).
     useTabsStore.getState().closeAllTabs(id);
-    // Remove it from any box (clears box_id on it + dissolves a now-singleton box).
-    if (entry.box_id) {
+    backgroundRestored.delete(id);
+    // Remove it from every box holding it (membership is N:M — the boxes
+    // themselves survive; a box left with one or zero members still renders).
+    {
       const { useBoxesStore } = await import("./boxes");
-      await useBoxesStore.getState().assignToBox(id, null);
+      const boxesStore = useBoxesStore.getState();
+      const holding = boxesStore.boxes.filter((b) => b.member_ids.includes(id));
+      for (const b of holding) {
+        await boxesStore.removeFromBox(id, b.id);
+      }
     }
 
     // ── Move it into the archive + drop it from projects.json ────────────────

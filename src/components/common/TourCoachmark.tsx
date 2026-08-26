@@ -76,9 +76,15 @@ export function bubbleStyle(
 /**
  * The guided-tour overlay for a single step: a full-screen click-blocker, a
  * spotlight cutout around the target (its box-shadow dims everything else), and
- * a navigation bubble with Back / Next / Skip. Narrated, not interactive — the
- * blocker swallows clicks so the user advances with Next, never by operating the
- * real control (which would open dialogs over the coachmark). Portaled to
+ * a navigation bubble with Back / Next / Skip.
+ *
+ * Two modes. A *narrated* step is can't-get-lost: the blocker swallows every
+ * click, so the user advances with Next and never operates the real control
+ * (which would open dialogs over the coachmark). An *interactive* step (a
+ * lesson `StepTask`) is the opposite — the blocker stops at `pointer-events:
+ * none`, the app underneath is live, and the bubble carries the instruction, a
+ * Hint the user can unfold, and the `:)` reward that `TourHost` shows before it
+ * advances by itself. Both keep Next as an escape hatch. Portaled to
  * `document.body` to escape the right panel's transform/overflow stacking, the
  * same trick `HintBubble` uses. When `rect` is null (target absent / intro), it
  * renders as a centered card over a plain dim instead.
@@ -92,6 +98,14 @@ export function TourCoachmark({
   stepTotal,
   isFirst,
   isLast,
+  interactive = false,
+  prompt = null,
+  hint = null,
+  hintOpen = false,
+  hintNudge = false,
+  solved = false,
+  reward = "",
+  onToggleHint,
   onBack,
   onNext,
   onSkip,
@@ -104,6 +118,21 @@ export function TourCoachmark({
   stepTotal: number;
   isFirst: boolean;
   isLast: boolean;
+  /** Let pointer events reach the app: the step is waiting on the user to do
+   *  the thing, so the blocker must not eat the click it just asked for. */
+  interactive?: boolean;
+  /** The task instruction, or null on a narrated step. */
+  prompt?: string | null;
+  /** Extra help behind the Hint button (null when the task ships without one). */
+  hint?: string | null;
+  hintOpen?: boolean;
+  /** Draw attention to the Hint button — the step has sat unsolved a while. */
+  hintNudge?: boolean;
+  /** The user just did it: swap the task line for the reward. */
+  solved?: boolean;
+  /** Praise shown beside the `:)`. */
+  reward?: string;
+  onToggleHint?: () => void;
   onBack: () => void;
   onNext: () => void;
   onSkip: () => void;
@@ -122,21 +151,23 @@ export function TourCoachmark({
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [title, body, banner]);
+  }, [title, body, banner, prompt, hint, hintOpen, solved]);
   const bubble = rect ? bubbleStyle(rect, placement, bubbleH) : {};
 
   return createPortal(
-    <div className="tour-overlay">
+    <div className={`tour-overlay${interactive ? " tour-overlay--pass" : ""}`}>
       {/* Click-blocker: transparent, captures every pointer event so the tour is
-          can't-get-lost. The spotlight/bubble sit above it and stay live. */}
+          can't-get-lost. The spotlight/bubble sit above it and stay live. An
+          interactive step turns it into a pass-through pane instead — the user
+          has to reach the real control for the task to be solvable at all. */}
       <div
-        className="tour-blocker"
+        className={`tour-blocker${interactive ? " tour-blocker--pass" : ""}`}
         onMouseDown={(e) => e.preventDefault()}
         onContextMenu={(e) => e.preventDefault()}
       />
       {rect && (
         <div
-          className="tour-spotlight"
+          className={`tour-spotlight${solved ? " tour-spotlight--solved" : ""}`}
           style={{
             left: rect.left - SPOT_PAD,
             top: rect.top - SPOT_PAD,
@@ -155,10 +186,35 @@ export function TourCoachmark({
       >
         <div className="tour-bubble-title">{title}</div>
         <div className="tour-bubble-body">{body}</div>
+        {prompt && !solved && (
+          <div className="tour-task">
+            <span className="tour-task-label">{t("tour.yourTurn")}</span>
+            <span className="tour-task-text">{prompt}</span>
+          </div>
+        )}
+        {prompt && solved && (
+          <div className="tour-reward" role="status">
+            {/* A typed smiley, not an emoji: it matches the app's terminal voice
+                and renders identically on every platform's font stack. */}
+            <span className="tour-reward-face">:)</span>
+            <span className="tour-reward-text">{reward}</span>
+          </div>
+        )}
+        {hint && hintOpen && !solved && <div className="tour-hint">{hint}</div>}
         <div className="tour-bubble-footer">
           <span className="tour-bubble-count">
             {stepNumber} / {stepTotal}
           </span>
+          {hint && !solved && (
+            <button
+              type="button"
+              className={`tour-hint-btn${hintNudge && !hintOpen ? " nudge" : ""}`}
+              onClick={onToggleHint}
+              title={hintNudge && !hintOpen ? t("tour.hintNudge") : undefined}
+            >
+              {hintOpen ? t("tour.hideHint") : t("tour.hint")}
+            </button>
+          )}
           <button type="button" className="tour-bubble-skip" onClick={onSkip}>
             {t("tour.skip")}
           </button>

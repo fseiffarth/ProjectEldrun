@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
+import { SettingsCard, SettingsHeader, SettingsList, SettingsSection } from "./settingsUi";
 import { UntestedTag } from "../common/UntestedTag";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -134,7 +135,15 @@ function matchesSizeBuckets(sizes: string[], selected: Set<string>): boolean {
   });
 }
 
-export function GlobalAppsSettings({ onBack }: { onBack: () => void }) {
+/** Every sub-panel takes the same two: `onBack` returns to the main settings
+ *  panel, `onClose` dismisses the whole dialog. Optional because the panels are
+ *  also rendered standalone in tests. */
+export interface SubPanelProps {
+  onBack: () => void;
+  onClose?: () => void;
+}
+
+export function GlobalAppsSettings({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const [apps, setApps] = useState<Record<string, GlobalAppEntry>>(settings?.global_apps ?? {});
@@ -162,12 +171,9 @@ export function GlobalAppsSettings({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <div className="settings-title-row">
-        <h2>{t("globalApps.title")}</h2>
-        <button type="button" onClick={onBack}>{t("common.back")}</button>
-      </div>
+      <SettingsHeader title={t("globalApps.title")} onBack={onBack} onClose={onClose} />
       <p className="settings-help">{t("globalApps.help")}</p>
-      <div className="settings-list">
+      <SettingsList boxed>
         {GLOBAL_APP_ROLES.map((role) => {
           const entry = apps[role.key] ?? { exec: "", visible: true };
           const roleLabel = t(role.labelKey);
@@ -190,16 +196,23 @@ export function GlobalAppsSettings({ onBack }: { onBack: () => void }) {
                   if (e.key === "Enter") updateRole(role.key, { exec: e.currentTarget.value.trim() });
                 }}
               />
-              <button type="button" onClick={() => void chooseExecutable(role.key)}>...</button>
+              <button
+                type="button"
+                className="settings-btn sm icon"
+                title={t("globalApps.browseTitle", { role: roleLabel })}
+                onClick={() => void chooseExecutable(role.key)}
+              >
+                …
+              </button>
             </div>
           );
         })}
-      </div>
+      </SettingsList>
     </>
   );
 }
 
-export function FileTypeSettings({ onBack }: { onBack: () => void }) {
+export function FileTypeSettings({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   const [apps, setApps] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState({ ext: "", app: "" });
@@ -239,13 +252,10 @@ export function FileTypeSettings({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <div className="settings-title-row">
-        <h2>{t("filetypes.title")}</h2>
-        <button type="button" onClick={onBack}>{t("common.back")}</button>
-      </div>
+      <SettingsHeader title={t("filetypes.title")} onBack={onBack} onClose={onClose} />
       <p className="settings-help">{t("filetypes.help")}</p>
       {error && <div className="project-dialog-error">{error}</div>}
-      <div className="settings-list">
+      <SettingsList boxed>
         {Object.entries(apps).sort(([a], [b]) => a.localeCompare(b)).map(([ext, app]) => (
           <div className="filetype-settings-row" key={ext}>
             <input
@@ -264,9 +274,17 @@ export function FileTypeSettings({ onBack }: { onBack: () => void }) {
                 if (e.key === "Enter") saveApps({ ...apps, [ext]: e.currentTarget.value.trim() });
               }}
             />
-            <button type="button" onClick={() => void chooseExecutable(ext)}>...</button>
             <button
               type="button"
+              className="settings-btn sm icon"
+              title={t("filetypes.browseTitle")}
+              onClick={() => void chooseExecutable(ext)}
+            >
+              …
+            </button>
+            <button
+              type="button"
+              className="settings-btn sm icon danger"
               onClick={() => {
                 const { [ext]: _removed, ...rest } = apps;
                 saveApps(rest);
@@ -291,9 +309,11 @@ export function FileTypeSettings({ onBack }: { onBack: () => void }) {
               if (e.key === "Enter") addEntry();
             }}
           />
-          <button type="button" onClick={addEntry}>{t("common.add")}</button>
+          <button type="button" className="settings-btn sm primary" onClick={addEntry}>
+            {t("common.add")}
+          </button>
         </div>
-      </div>
+      </SettingsList>
     </>
   );
 }
@@ -311,7 +331,7 @@ export function FileTypeSettings({ onBack }: { onBack: () => void }) {
  * folder you browse to, while this is one explicit choice per host, edited
  * only here.
  */
-export function RemoteHostsSettings({ onBack }: { onBack: () => void }) {
+export function RemoteHostsSettings({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   const [defaults, setDefaults] = useState<Record<string, string> | null>(null);
   const [draftHost, setDraftHost] = useState("");
@@ -371,21 +391,22 @@ export function RemoteHostsSettings({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <div className="settings-title-row">
-        <h2>{t("nav.remoteHosts.title")}</h2>
-        <button type="button" onClick={onBack}>{t("common.back")}</button>
-      </div>
+      <SettingsHeader title={t("nav.remoteHosts.title")} onBack={onBack} onClose={onClose} />
       <p className="settings-help">{t("remoteHosts.help")}</p>
       {error && <div className="project-dialog-error">{error}</div>}
+      {/* One framed list holds the saved hosts, the empty state AND the add
+          row — the same shape the File Type Apps panel uses. Before, the add
+          row sat outside the frame and read as a stray strip below it. */}
       {defaults === null ? (
         <p className="settings-help">{t("common.loading")}</p>
-      ) : entries.length === 0 ? (
-        <div className="settings-empty">{t("remoteHosts.empty")}</div>
       ) : (
-        <div className="settings-list">
+        <SettingsList boxed>
+          {entries.length === 0 && (
+            <div className="settings-empty">{t("remoteHosts.empty")}</div>
+          )}
           {entries.map(([host, path]) => (
             <div className="remote-host-settings-row" key={host}>
-              <span className="settings-role-label" title={host}>{host}</span>
+              <span className="settings-list-label" title={host}>{host}</span>
               <input
                 value={path}
                 onChange={(e) => setDefaults((d) => (d ? { ...d, [host]: e.target.value } : d))}
@@ -394,35 +415,42 @@ export function RemoteHostsSettings({ onBack }: { onBack: () => void }) {
                   if (e.key === "Enter") savePath(host, e.currentTarget.value);
                 }}
               />
-              <button type="button" onClick={() => removeHost(host)} title={t("common.remove")}>
+              <button
+                type="button"
+                className="settings-btn sm icon danger"
+                onClick={() => removeHost(host)}
+                title={t("common.remove")}
+              >
                 ×
               </button>
             </div>
           ))}
-        </div>
+          <div className="remote-host-settings-row remote-host-settings-add">
+            <input
+              list="remote-host-suggestions"
+              value={draftHost}
+              placeholder={t("remoteHosts.hostPlaceholder")}
+              onChange={(e) => setDraftHost(e.target.value)}
+            />
+            <datalist id="remote-host-suggestions">
+              {hostSuggestions.map((h) => (
+                <option key={h} value={h} />
+              ))}
+            </datalist>
+            <input
+              value={draftPath}
+              placeholder={t("remoteHosts.pathPlaceholder")}
+              onChange={(e) => setDraftPath(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") addEntry();
+              }}
+            />
+            <button type="button" className="settings-btn sm primary" onClick={addEntry}>
+              {t("common.add")}
+            </button>
+          </div>
+        </SettingsList>
       )}
-      <div className="remote-host-settings-row remote-host-settings-add">
-        <input
-          list="remote-host-suggestions"
-          value={draftHost}
-          placeholder={t("remoteHosts.hostPlaceholder")}
-          onChange={(e) => setDraftHost(e.target.value)}
-        />
-        <datalist id="remote-host-suggestions">
-          {hostSuggestions.map((h) => (
-            <option key={h} value={h} />
-          ))}
-        </datalist>
-        <input
-          value={draftPath}
-          placeholder={t("remoteHosts.pathPlaceholder")}
-          onChange={(e) => setDraftPath(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") addEntry();
-          }}
-        />
-        <button type="button" onClick={addEntry}>{t("common.add")}</button>
-      </div>
     </>
   );
 }
@@ -537,7 +565,7 @@ function CodexHookNotice() {
 
   return (
     <div className="agent-codex-hook">
-      <div className="settings-section-title">
+      <div className="settings-subheader">
         {t("agents.codexHookLabel")}{" "}
         <span className="ollama-status-text">
           {off ? t("agents.codexHookDisabled") : t("agents.codexHookNotTrusted")}
@@ -615,7 +643,7 @@ function NodeRuntimeNotice() {
   const { command, shell, shellKind } = NODE_INSTALL[PLATFORM];
   return (
     <div className="ollama-vibe-section agent-list-entry">
-      <div className="settings-section-title">
+      <div className="settings-subheader">
         Node.js / npm{" "}
         <span className="ollama-status-text">{t("agents.nodeNotDetected")}</span>
       </div>
@@ -655,7 +683,7 @@ function NodeRuntimeNotice() {
  * registry lives in the backend (`commands::agents`); this just renders each
  * entry with an install button, a live install log, and a manual fallback.
  */
-export function AgentsPanel({ onBack }: { onBack: () => void }) {
+export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const remoteMachines = useGlobalMachinesStore((s) => s.machines);
@@ -831,10 +859,7 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <div className="settings-title-row">
-        <h2>{t("nav.agents.title")}</h2>
-        <button type="button" onClick={onBack}>{t("common.back")}</button>
-      </div>
+      <SettingsHeader title={t("nav.agents.title")} onBack={onBack} onClose={onClose} />
       <p className="settings-help">
         {t("agents.help1")} <strong>+</strong> {t("agents.help2")} <code>npm</code>{" "}
         {t("agents.help3")} <code>PATH</code> {t("agents.help4")}
@@ -844,13 +869,13 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
       {agents === null ? (
         <p className="settings-help">{t("agents.checkingInstalled")}</p>
       ) : (
-        <div className="settings-list">
+        <SettingsList>
           {[...agents]
             .sort((a, b) => Number(b.installed) - Number(a.installed))
             .map((a) => (
-            <div key={a.id} className="ollama-vibe-section agent-list-entry">
+            <SettingsCard key={a.id} className="agent-list-entry">
               <div className="agent-list-entry-head">
-                <div className="settings-section-title">
+                <div className="settings-subheader">
                   {a.label}{" "}
                   {a.installed ? (
                     <span className="ollama-status-text">
@@ -1098,9 +1123,9 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
               )}
               {a.id === "codex" && <CodexHookNotice />}
               {a.id === "claude" && <ClaudeRemoteControlNotice />}
-            </div>
+            </SettingsCard>
           ))}
-        </div>
+        </SettingsList>
       )}
     </>
   );
@@ -1132,7 +1157,7 @@ interface OllamaInstallStrategy {
   download_url: string;
 }
 
-export function OllamaPanel({ onBack }: { onBack: () => void }) {
+export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const [installed, setInstalled] = useState<boolean | null>(null);
@@ -1722,8 +1747,8 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
   // the install-Ollama and main panels; collapses to a one-line "ready" note
   // once Vibe is detected, and expands to an installer when it is missing.
   const vibeSection = (
-    <div className="ollama-vibe-section">
-      <div className="settings-section-title">{t("ollama.vibeTitle")}</div>
+    <SettingsCard className="ollama-vibe-section">
+      <div className="settings-subheader">{t("ollama.vibeTitle")}</div>
       {vibeInstalled === null ? (
         <p className="settings-help">{t("ollama.vibeChecking")}</p>
       ) : vibeInstalled ? (
@@ -1793,7 +1818,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
           </div>
         </>
       )}
-    </div>
+    </SettingsCard>
   );
 
   // ── Not installed: show the (semi-)automated installer + manual steps ──────
@@ -1805,17 +1830,14 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
     const isWindows = strategy?.os === "windows";
     return (
       <>
-        <div className="settings-title-row">
-          <h2>{t("ollama.installTitle")}</h2>
-          <button type="button" onClick={onBack}>{t("common.back")}</button>
-        </div>
+        <SettingsHeader title={t("ollama.installTitle")} onBack={onBack} onClose={onClose} />
 
         <p className="settings-help">{t("ollama.notInstalledHelp")}</p>
 
-        <div className="settings-section-title">{t("ollama.automaticInstall")}</div>
-        <p className="settings-help">
-          {isWindows ? t("ollama.autoInstallHelpWindows") : t("ollama.autoInstallHelpOther")}
-        </p>
+        <SettingsSection
+          title={t("ollama.automaticInstall")}
+          help={isWindows ? t("ollama.autoInstallHelpWindows") : t("ollama.autoInstallHelpOther")}
+        />
         <div className="ollama-install-cmd-row">
           <button
             type="button"
@@ -1892,10 +1914,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <div className="settings-title-row">
-        <h2>{t("ollama.modelsTitle")}</h2>
-        <button type="button" onClick={onBack}>{t("common.back")}</button>
-      </div>
+      <SettingsHeader title={t("ollama.modelsTitle")} onBack={onBack} onClose={onClose} />
 
       <div className="ollama-status-bar">
         <span className={`ollama-status-dot ${serverRunning ? "running" : "stopped"}`} />

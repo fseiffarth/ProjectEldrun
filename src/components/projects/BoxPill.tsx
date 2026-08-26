@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { ProjectBox, ProjectEntry } from "../../types";
 import { useTabsStore } from "../../stores/tabs";
 import { boxScopeId } from "../../stores/boxes";
+import { useBoxEditorStore } from "../../stores/boxEditor";
 import { useT } from "../../lib/i18n";
 
 interface ContextMenuPos {
@@ -131,7 +132,7 @@ export function BoxPill({
       <div
         ref={pillRef}
         data-box-id={box.id}
-        className={`project-pill is-box${active ? " active" : ""}${forcedDragOver ? " drag-over" : ""}`}
+        className={`project-pill is-box${active ? " active" : ""}${members.length === 0 ? " is-empty" : ""}${forcedDragOver ? " drag-over" : ""}`}
         onMouseEnter={openMenu}
         onMouseLeave={scheduleClose}
         onContextMenu={handleContextMenu}
@@ -236,6 +237,14 @@ export function BoxPill({
               }}
             >
               {t("common.rename")}
+            </button>
+            <button
+              onClick={() => {
+                setContextMenu(null);
+                useBoxEditorStore.getState().openEditor(box.id);
+              }}
+            >
+              {t("boxPill.editBoxEllipsis")}
             </button>
             <button
               className="danger"

@@ -12,7 +12,9 @@ import { StarIcon } from "./StarIcon";
 import { useHpcPipelineStore } from "../../stores/hpcPipeline";
 import { useBigFoldersStore } from "../../stores/bigFolders";
 import { useProjectsStore } from "../../stores/projects";
-import { useBoxesStore } from "../../stores/boxes";
+import { useBoxMembership, useBoxesStore } from "../../stores/boxes";
+import { useBoxEditorStore } from "../../stores/boxEditor";
+import { usePillSelectionStore } from "../../stores/pillSelection";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { PillStatusBars } from "../projects/PillStatusBars";
 import { useGitDirtyStore } from "../../stores/gitDirty";
@@ -35,12 +37,24 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const t = useT();
   const { projects, setActive, addProject, deactivateProject, reorderProjects } = useProjectsStore();
   const boxes = useBoxesStore((s) => s.boxes);
-  const createBox = useBoxesStore((s) => s.createBox);
   const renameBox = useBoxesStore((s) => s.renameBox);
   const deleteBox = useBoxesStore((s) => s.deleteBox);
-  const assignToBox = useBoxesStore((s) => s.assignToBox);
+  const addToBox = useBoxesStore((s) => s.addToBox);
+  const removeFromBox = useBoxesStore((s) => s.removeFromBox);
+  const boxProjects = useBoxesStore((s) => s.boxProjects);
   const openBox = useBoxesStore((s) => s.openBox);
+  const membership = useBoxMembership();
   const openHpcWizard = useHpcPipelineStore((s) => s.openWizard);
+  // Multi-select (3b): Escape clears the Ctrl/Cmd-click pill selection.
+  const anySelected = usePillSelectionStore((s) => s.selected.length > 0);
+  useEffect(() => {
+    if (!anySelected) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") usePillSelectionStore.getState().clear();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [anySelected]);
   // The currently-displayed scope is the single source of truth for which pill
   // is highlighted (BoxPill keys off it too). Opening a box moves the scope but
   // not `activeId`, so highlighting on `activeId` would leave the previously
@@ -177,44 +191,28 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gitDotSignature, quiesce, fastMode]);
 
-  // Bucket the active pills into boxes (by `box_id`) + an ungrouped remainder,
-  // interleaved by switcher position. A pill whose `box_id` points at a missing
-  // box (e.g. after a delete the sweep didn't reach) falls back to ungrouped (S1).
-  const boxesById = useMemo(() => {
-    const map = new Map<string, ProjectBox>();
-    for (const b of boxes) map.set(b.id, b);
-    return map;
-  }, [boxes]);
-
   type SwitcherItem =
     | { kind: "box"; box: ProjectBox; members: ProjectEntry[]; position: number }
     | { kind: "project"; project: ProjectEntry; position: number };
 
+  // Overlay model (N:M membership): every active project renders its own pill —
+  // a member is never folded away into its box — and every box renders its own
+  // BoxPill, placed by the box's `position` among the project pills. A box in
+  // any state survives and renders: empty ones show dimmed (the editor's
+  // explicit Dissolve is the only way a box disappears).
   const switcherItems = useMemo<SwitcherItem[]>(() => {
-    const membersByBox = new Map<string, ProjectEntry[]>();
-    const ungrouped: ProjectEntry[] = [];
-    for (const p of activeProjects) {
-      const boxId = typeof p.box_id === "string" ? p.box_id : undefined;
-      if (boxId && boxesById.has(boxId)) {
-        const list = membersByBox.get(boxId) ?? [];
-        list.push(p);
-        membersByBox.set(boxId, list);
-      } else {
-        ungrouped.push(p);
-      }
-    }
     const items: SwitcherItem[] = [];
-    // Place each box at the position of its first (lowest-position) member so it
-    // interleaves sensibly with ungrouped pills; empty boxes are not rendered in
-    // the pill strip (they remain reachable via search).
-    for (const box of boxes) {
-      const members = membersByBox.get(box.id) ?? [];
-      if (members.length === 0) continue;
-      items.push({ kind: "box", box, members, position: members[0].position });
+    for (const p of activeProjects) {
+      items.push({ kind: "project", project: p, position: p.position });
     }
-    for (const p of ungrouped) items.push({ kind: "project", project: p, position: p.position });
+    for (const box of boxes) {
+      const members = box.member_ids
+        .map((id) => activeProjects.find((p) => p.id === id))
+        .filter((p): p is ProjectEntry => !!p);
+      items.push({ kind: "box", box, members, position: box.position });
+    }
     return items.sort((a, b) => a.position - b.position);
-  }, [activeProjects, boxes, boxesById]);
+  }, [activeProjects, boxes]);
 
   // Pointer-driven pill reorder (stores/pillDrag): every OTHER visible project
   // pill "parts" to open the dragged one's landing slot — a `shiftPx` per id,
@@ -308,14 +306,12 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     // box ⇄ ungrouped regroup that keeps the same active-pill count) (S3).
   }, [bucketSignature]);
 
-  // Shift-drop one pill onto another: spin up a fresh box holding both projects
-  // (phone-style "drag onto" grouping). Assign the drop target first, then the
-  // dragged pill, so both land in the new box; the user renames it via the chip.
+  // Alt-drop one pill onto another: spin up a fresh box holding both projects
+  // (phone-style "drag onto" grouping). Additive — neither project leaves any
+  // box it was already in; the user renames the new box via its chip.
   const groupProjects = async (fromId: string, toId: string) => {
     if (fromId === toId) return;
-    const box = await createBox(t("projectSwitcher.newBox"));
-    await assignToBox(toId, box.id);
-    await assignToBox(fromId, box.id);
+    await boxProjects([toId, fromId], { name: t("projectSwitcher.newBox") });
   };
 
   // Empty pill-strip space doubles as a window-drag handle: pressing the bare
@@ -512,7 +508,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
                   members={item.members}
                   onOpen={() => void openBox(item.box.id)}
                   onSelectMember={(projectId) => void setActive(projectId)}
-                  onRemoveMember={(projectId) => void assignToBox(projectId, null)}
+                  onRemoveMember={(projectId) => void removeFromBox(projectId, item.box.id)}
                   onRename={(name) => void renameBox(item.box.id, name)}
                   onDelete={() => void deleteBox(item.box.id)}
                   forcedDragOver={pillDrag?.overBoxId === item.box.id}
@@ -522,11 +518,18 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
                   key={item.project.id}
                   project={item.project}
                   active={scope === item.project.id}
-                  onClick={() => setActive(item.project.id)}
+                  onClick={() => {
+                    // A plain activation click clears the multi-selection (3b).
+                    usePillSelectionStore.getState().clear();
+                    void setActive(item.project.id);
+                  }}
                   onClose={() => deactivateProject(item.project.id)}
                   onReorder={(fromId, toId) => void reorderProjects(fromId, toId)}
                   onGroup={(fromId, toId) => void groupProjects(fromId, toId)}
-                  onAssignToBox={(boxId) => void assignToBox(item.project.id, boxId)}
+                  onAssignToBox={(boxId) => void addToBox(item.project.id, boxId)}
+                  boxNames={(membership.get(item.project.id) ?? [])
+                    .map((boxId) => boxes.find((b) => b.id === boxId)?.name)
+                    .filter((n): n is string => !!n)}
                   isDragged={pillDrag?.id === item.project.id}
                   dragDx={pillDrag?.id === item.project.id ? pillDrag.dx : undefined}
                   shiftPx={pillShifts.get(item.project.id)}
@@ -596,7 +599,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
                 className="untested"
                 onClick={() => {
                   setShowAddMenu(false);
-                  void createBox(t("projectSwitcher.newBox"));
+                  useBoxEditorStore.getState().openCreate();
                 }}
               >
                 {t("projectSwitcher.newBox")} <UntestedTag />

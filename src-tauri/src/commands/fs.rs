@@ -1740,6 +1740,30 @@ fn compute_allowed_roots(
     // opened from the root tree sat on "Loading" forever. Only the no-project
     // scope gains it: a project-scoped viewer stays project-isolated.
     let mut roots: Vec<PathBuf> = Vec::new();
+    // A BOX scope (`box:<id>`) has no single anchor project: its roots are the
+    // box folder plus every member's tree (and mirror override) — the
+    // co-accessible set the box exists to create. An unknown box stays empty
+    // (fail closed), and the root work dir is never folded in: a box viewer is
+    // not the root scope.
+    if let Some(box_id) = scope_id.and_then(crate::commands::boxes::box_id_of_scope) {
+        let Some(b) = boxes.iter().find(|b| b.id == box_id) else {
+            return Vec::new();
+        };
+        if let Some(folder) = &b.folder {
+            roots.push(PathBuf::from(folder));
+        }
+        let in_box = || {
+            projects
+                .iter()
+                .filter(|e| b.member_ids.iter().any(|m| m == &e.id))
+        };
+        roots.extend(in_box().filter_map(project_dir));
+        roots.extend(in_box().filter_map(mirror_override_dir));
+        roots
+            .iter_mut()
+            .for_each(|r| *r = r.canonicalize().unwrap_or_else(|_| r.clone()));
+        return roots;
+    }
     if scope_id.is_none() {
         roots.push(root_work.to_path_buf());
     }
@@ -2826,6 +2850,62 @@ mod tests {
             compute_allowed_roots(&projects, &Vec::new(), Some("nope"), Path::new(ROOT_WORK))
                 .is_empty()
         );
+    }
+
+    fn mk_box(id: &str, members: &[&str], folder: Option<&str>) -> crate::schema::boxes::ProjectBox {
+        crate::schema::boxes::ProjectBox {
+            id: id.to_string(),
+            name: id.to_string(),
+            member_ids: members.iter().map(|s| s.to_string()).collect(),
+            folder: folder.map(|s| s.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn allowed_roots_box_scope_covers_folder_and_member_roots() {
+        let mut y = entry("y", "inactive", "/home/u/code/projecty");
+        y.extra.insert(
+            "mirror".to_string(),
+            Value::String("/home/u/eldrun/projects-ssh/y".to_string()),
+        );
+        let projects = vec![entry("x", "current", "/home/u/code/projectx"), y];
+        let boxes = vec![mk_box("b1", &["x", "y"], Some("/home/u/eldrun/boxes/b1"))];
+        let roots = compute_allowed_roots(&projects, &boxes, Some("box:b1"), Path::new(ROOT_WORK));
+        assert!(roots.iter().any(|r| r.ends_with("boxes/b1")));
+        assert!(roots.iter().any(|r| r.ends_with("projectx")));
+        assert!(roots.iter().any(|r| r.ends_with("projecty")));
+        assert!(roots.iter().any(|r| r.ends_with("projects-ssh/y")));
+        // A box viewer is not the root scope.
+        assert!(!roots.iter().any(|r| r == Path::new(ROOT_WORK)));
+    }
+
+    #[test]
+    fn allowed_roots_box_scope_excludes_non_members() {
+        let projects = vec![
+            entry("x", "current", "/home/u/code/projectx"),
+            entry("y", "inactive", "/home/u/code/projecty"),
+        ];
+        let boxes = vec![mk_box("b1", &["y"], None)];
+        let roots = compute_allowed_roots(&projects, &boxes, Some("box:b1"), Path::new(ROOT_WORK));
+        assert!(roots.iter().any(|r| r.ends_with("projecty")));
+        assert!(
+            !roots.iter().any(|r| r.ends_with("projectx")),
+            "the current project is not reachable through a box it is not in"
+        );
+    }
+
+    #[test]
+    fn allowed_roots_unknown_box_scope_fails_closed() {
+        let projects = vec![entry("x", "current", "/home/u/code/projectx")];
+        let boxes = vec![mk_box("b1", &["x"], None)];
+        assert!(compute_allowed_roots(
+            &projects,
+            &boxes,
+            Some("box:ghost"),
+            Path::new(ROOT_WORK)
+        )
+        .is_empty());
     }
 
     #[test]

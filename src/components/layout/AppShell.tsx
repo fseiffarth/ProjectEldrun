@@ -36,6 +36,7 @@ import { RemoteMachinesDialogHost } from "../projects/RemoteMachinesWindow";
 import { GlobalMachineMonitorDialogHost } from "../monitoring/GlobalMachineMonitorDialog";
 import { HpcPipelineWizardHost } from "../projects/HpcPipelineWizard";
 import { BigFolderDialogHost } from "../projects/BigFolderExcludeDialog";
+import { BoxEditorHost } from "../projects/BoxEditorDialog";
 import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 import { MailOverlayHost } from "../mail/MailOverlay";
 import { CalendarOverlayHost } from "../calendar/CalendarOverlay";
@@ -401,8 +402,8 @@ export function AppShell() {
     };
   }, []);
 
-  // Load boxes once projects are in memory so deriving each project's box_id
-  // (from the authoritative member_ids) runs over the loaded project list.
+  // Load boxes once projects are in memory so the stale-`box_id` strip (see
+  // boxes store `load`) runs over the loaded project list.
   useEffect(() => {
     if (projectsLoaded) void loadBoxes();
   }, [projectsLoaded, loadBoxes]);
@@ -946,6 +947,8 @@ export function AppShell() {
           above does: the project that asked may not be the active one by the time
           its census (local walk + one host `du`) comes back. */}
       <BigFolderDialogHost />
+      {/* Box editor (#41): rename / member list / explicit dissolve. */}
+      <BoxEditorHost />
       {/* Same reason as the alarm below: lockstep/sync can delete a file from the local
           mirror during a background pass, and the user must hear about it wherever they
           are — including when the file panel it happened in is closed (#28q). */}

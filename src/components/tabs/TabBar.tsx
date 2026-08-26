@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   BLOB_TAB_CMD,
   BROWSER_TAB_CMD,
+  PROJECT_FILES_TAB_CMD,
   PRINTING_TAB_CMD,
   DISKUSAGE_TAB_CMD,
   NETWORK_TAB_CMD,
@@ -23,6 +24,7 @@ import { useDetachAnimStore, flyVector } from "../../stores/detachAnim";
 import { commitDrop } from "./commitDrop";
 import { TabDropPlaceholder } from "./TabDropPlaceholder";
 import {
+  AGENT_ITEMS,
   EMPTY_CUSTOM_AGENTS,
   DEFAULT_COMPACT_AGENT_IDS,
   SHELL_ITEMS,
@@ -52,6 +54,7 @@ import { useClampToViewport } from "../../hooks/useClampToViewport";
 import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
+import { boxMembersOfScope, useBoxesStore } from "../../stores/boxes";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { closeTabWithConfirm } from "../../lib/closeRemoteTab";
@@ -219,6 +222,15 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   const attentionByTab = useActivityStore((s) => s.attentionByTab);
   const clearAttention = useActivityStore((s) => s.clearAttention);
   // Active project's name, used to name an agent's own session on launch.
+  // Box scope (#41 Phase 5): per-member rows in the "+" menu. Empty outside a
+  // box scope, so every other scope pays nothing here.
+  const boxMenuBoxes = useBoxesStore((st) => st.boxes);
+  const boxMenuProjects = useProjectsStore((st) => st.projects);
+  const boxMembers = useMemo(
+    () => boxMembersOfScope(scope, boxMenuBoxes, boxMenuProjects),
+    [scope, boxMenuBoxes, boxMenuProjects],
+  );
+
   const projectName = useProjectsStore(
     (s) => s.projects.find((p) => p.id === s.activeId)?.name ?? "",
   );
@@ -535,6 +547,49 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     // Unset (the agent's own default) resolves to Plan on first click; after that
     // it is a straight two-way flip.
     setAgentMode(key, current === "plan" ? "auto" : "plan");
+  }
+
+  /** Box "+" menu: a Files (Project) tab rooted at ONE member (the viewer
+   *  resolves the member's identity from the cwd — see ProjectFilesTab). */
+  function handleAddBoxMemberFiles(m: { id: string; name: string; dir: string }) {
+    focusGroup(groupId);
+    addTab({
+      label: t("newTabMenu.boxMemberFiles", { name: m.name }),
+      cmd: PROJECT_FILES_TAB_CMD,
+      args: [],
+      env: {},
+      cwd: m.dir,
+      kind: "projectfiles",
+    });
+    setMenuPos(null);
+  }
+
+  /** Box "+" menu: a shell rooted in ONE member's tree (legal after the spawn
+   *  gate's box branch; cwd = the member root, so tools/paths resolve there). */
+  function handleAddBoxMemberShell(m: { id: string; name: string; dir: string }) {
+    focusGroup(groupId);
+    addTab({
+      label: t("newTabMenu.boxMemberShell", { name: m.name }),
+      cmd: "",
+      args: [],
+      env: {},
+      cwd: m.dir,
+      kind: "shell",
+    });
+    setMenuPos(null);
+  }
+
+  /** Box "+" menu: an agent tab rooted in ONE member's tree — resume-safe,
+   *  since Claude keys its per-cwd history by that root. */
+  function handleAddBoxMemberAgent(m: { id: string; name: string; dir: string }) {
+    focusGroup(groupId);
+    const claude = AGENT_ITEMS.find((i) => i.cmd === "claude");
+    if (!claude) return;
+    addTab({
+      ...buildStaticTabSpec(claude, m.dir, m.name, t),
+      label: t("newTabMenu.boxMemberAgent", { name: m.name }),
+    });
+    setMenuPos(null);
   }
 
   function handleAddNetwork() {
@@ -1451,6 +1506,40 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   compactAgentBins,
                 ),
               },
+              // Box scope: one row-trio per member — files view, shell, and a
+              // (resume-safe, member-cwd) Claude tab. Empty members list (or a
+              // non-box scope) contributes no group at all.
+              ...(boxMembers.length > 0
+                ? [{
+                    label: t("newTabMenu.groupBoxMembers"),
+                    entries: boxMembers.flatMap((m) => [
+                      {
+                        key: `boxfiles:${m.id}`,
+                        label: t("newTabMenu.boxMemberFiles", { name: m.name }),
+                        dot: "▤",
+                        color: TAB_ACCENT.projectfiles,
+                        untested: true,
+                        onPick: () => handleAddBoxMemberFiles(m),
+                      },
+                      {
+                        key: `boxshell:${m.id}`,
+                        label: t("newTabMenu.boxMemberShell", { name: m.name }),
+                        color: TAB_ACCENT.shell,
+                        untested: true,
+                        onPick: () => handleAddBoxMemberShell(m),
+                      },
+                      ...(enabledAgents?.has("claude")
+                        ? [{
+                            key: `boxagent:${m.id}`,
+                            label: t("newTabMenu.boxMemberAgent", { name: m.name }),
+                            color: TAB_ACCENT.agent,
+                            untested: true,
+                            onPick: () => handleAddBoxMemberAgent(m),
+                          }]
+                        : []),
+                    ]),
+                  }]
+                : []),
               // Only offer agents whose binary is actually installed: Mistral/vibe
               // (checked against `enabledAgents`) and the drivers the backend
               // already marks `available` (which now includes an installed check).

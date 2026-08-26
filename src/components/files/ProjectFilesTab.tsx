@@ -3,6 +3,7 @@ import { ProjectFilesView } from "./ProjectFilesView";
 import { useIndependentFileSource } from "./ProjectFilesPane";
 import { useProjectsStore } from "../../stores/projects";
 import { PROJECT_FILES_TAB_CMD, useTabsStore } from "../../stores/tabs";
+import { BOX_SCOPE_PREFIX } from "../../stores/boxes";
 import { resolveProjectDirectory, type ProjectEntry } from "../../types";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
@@ -96,8 +97,17 @@ export function ProjectFilesTab({
   const t = useT();
   const projects = useProjectsStore((s) => s.projects);
   // Prefer the store (authoritative in the main window); fall back to the streamed
-  // project a detached popout injects, which is inert to the projects store.
-  const project = projects.find((p) => p.id === scope) ?? injectedProject ?? null;
+  // project a detached popout injects, which is inert to the projects store. In a
+  // BOX scope (`box:<id>`) a "Files — ⟨member⟩" tab carries the member's root as
+  // its cwd, so the member is resolved by that root — the tab then gets the
+  // member's full identity (git bar, remote switch) inside the box scope.
+  const project =
+    projects.find((p) => p.id === scope) ??
+    (scope.startsWith(BOX_SCOPE_PREFIX)
+      ? projects.find((p) => resolveProjectDirectory(p) === cwd) ?? null
+      : null) ??
+    injectedProject ??
+    null;
   const projectDir = project ? resolveProjectDirectory(project) : cwd;
 
   // The browsed folder is meaningless without the root it is relative to, so it

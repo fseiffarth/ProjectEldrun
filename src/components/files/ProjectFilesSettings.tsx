@@ -3,6 +3,14 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
 import { Dropdown } from "../common/Dropdown";
+import {
+  SettingRow,
+  SettingsCard,
+  SettingsHeader,
+  SettingsList,
+  SettingsSection,
+  ToggleRow,
+} from "../layout/settingsUi";
 import { useSettingsStore } from "../../stores/settings";
 import { VIEWER_PREF_TYPES } from "../../lib/viewers/fileUtils";
 import { PythonInterpreterWindow } from "../projects/PythonInterpreterWindow";
@@ -240,10 +248,7 @@ export function ProjectFilesSettingsDialog({
     <>
     <div className="modal-backdrop how-to-start-backdrop" onMouseDown={onClose}>
       <div className="settings-dialog project-settings-dialog" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="settings-title-row">
-          <h2>{t("projectSettings.title")}</h2>
-          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
-        </div>
+        <SettingsHeader title={t("projectSettings.title")} onClose={onClose} />
 
         {/* `.settings-dialog` is a split-scroll FRAME: it clips (overflow:hidden,
             padding 0, gap 0) and the `.dialog-scroll` child does the scrolling.
@@ -253,8 +258,10 @@ export function ProjectFilesSettingsDialog({
             dialog is the Alerts group, "Unmute all" and the debug row. Same
             structure as EventDialog/CustomAgentDialog. */}
         <div className="dialog-scroll">
-        <div className="settings-section-title">{t("projectSettings.fileHiding")}</div>
-        <p className="settings-help">{t("projectSettings.fileHidingHelp")}</p>
+        <SettingsSection
+          title={t("projectSettings.fileHiding")}
+          help={t("projectSettings.fileHidingHelp")}
+        />
         {availableEndings.length === 0 ? (
           <div className="settings-empty">{t("projectSettings.noEndingsFound")}</div>
         ) : (
@@ -283,41 +290,57 @@ export function ProjectFilesSettingsDialog({
 
         {hasPython && project && (
           <>
-            <div className="settings-section-title">{t("projectSettings.python")}</div>
-            <p className="settings-help">{t("projectSettings.pythonHelp")}</p>
-            <button
-              className="tab-add-btn"
-              style={{ fontSize: 11, padding: "2px 8px" }}
-              onClick={() => setShowPython(true)}
-            >
-              {project.python_interpreter ? "✓ " : ""}
-              {t("projectSettings.pythonInterpreter")}
-            </button>
+            <SettingsSection
+              title={t("projectSettings.python")}
+              help={t("projectSettings.pythonHelp")}
+            />
+            <div className="settings-link-row">
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={() => setShowPython(true)}
+              >
+                {project.python_interpreter ? "✓ " : ""}
+                {t("projectSettings.pythonInterpreter")}
+              </button>
+            </div>
           </>
         )}
 
         {/* #48 per-file-type native-viewer settings (global, not per-project).
             Toggles opt-in local autocomplete (#45) per type, plus the global
             autosave (#47). */}
-        <div className="settings-section-title">{t("projectSettings.nativeViewers")}</div>
-        <p className="settings-help">{t("projectSettings.nativeViewersHelp")}</p>
-        <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
-          <Toggle
-            size="sm"
+        <SettingsSection
+          title={t("projectSettings.nativeViewers")}
+          help={t("projectSettings.nativeViewersHelp")}
+        />
+        <SettingsCard>
+          <ToggleRow
+            label={t("projectSettings.autosaveEdits")}
             checked={settings?.autosave !== false}
             onChange={(e) => void updateSettings({ autosave: e.target.checked })}
           />
-          <span>{t("projectSettings.autosaveEdits")}</span>
-        </label>
-        <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
-          <Toggle
-            size="sm"
+          <ToggleRow
+            label={t("projectSettings.highlightRecentEdits")}
             checked={settings?.change_tint !== false}
             onChange={(e) => void updateSettings({ change_tint: e.target.checked })}
           />
-          <span>{t("projectSettings.highlightRecentEdits")}</span>
-        </label>
-        <div className="viewer-prefs-list">
+        </SettingsCard>
+
+        {/* A real table, header row and all. Every row is the SAME four-column
+            grid whether or not the type supports completion — a type without it
+            leaves those cells empty rather than shortening its row, which is
+            what makes the toggles line up in columns you can read down. Before,
+            each row was a bare flex line whose extension list stretched, so no
+            two rows' controls started at the same x. */}
+        <SettingsList boxed className="viewer-prefs-list">
+          <div className="viewer-pref-row viewer-pref-head">
+            <span>{t("projectSettings.viewerType")}</span>
+            <span>{t("agents.enabled")}</span>
+            <span>{t("localModel.role.autocomplete")}</span>
+            <span>{t("projectSettings.completionLength")}</span>
+            <span>{t("localModel.role.grammar")}</span>
+          </div>
           {VIEWER_PREF_TYPES.map((vt) => {
             const pref: ViewerPref = settings?.viewer_prefs?.[vt.id] ?? {};
             const enabled = pref.enabled !== false;
@@ -330,27 +353,25 @@ export function ProjectFilesSettingsDialog({
               });
             return (
               <div className="viewer-pref-row" key={vt.id}>
-                <span className="viewer-pref-name">{vt.label}</span>
-                <span className="viewer-pref-exts">{vt.extensions.join(" ")}</span>
-                <label className="viewer-pref-toggle">
-                  <Toggle
-                    size="sm"
-                    checked={enabled}
-                    onChange={(e) => patch({ enabled: e.target.checked })}
-                  />
-                  <span>{t("agents.enabled")}</span>
-                </label>
-                {vt.autocomplete && (
+                <span className="viewer-pref-label">
+                  <span className="viewer-pref-name">{vt.label}</span>
+                  <span className="viewer-pref-exts">{vt.extensions.join(" ")}</span>
+                </span>
+                <Toggle
+                  size="sm"
+                  checked={enabled}
+                  onChange={(e) => patch({ enabled: e.target.checked })}
+                  aria-label={`${vt.label} — ${t("agents.enabled")}`}
+                />
+                {vt.autocomplete ? (
                   <>
-                    <label className="viewer-pref-toggle">
-                      <Toggle
-                        size="sm"
-                        checked={pref.autocomplete === true}
-                        disabled={!enabled}
-                        onChange={(e) => patch({ autocomplete: e.target.checked })}
-                      />
-                      <span>{t("localModel.role.autocomplete")}</span>
-                    </label>
+                    <Toggle
+                      size="sm"
+                      checked={pref.autocomplete === true}
+                      disabled={!enabled}
+                      onChange={(e) => patch({ autocomplete: e.target.checked })}
+                      aria-label={`${vt.label} — ${t("localModel.role.autocomplete")}`}
+                    />
                     {/* #45 default completion-length mode; toggled live
                         in-editor with Shift+Tab while a suggestion shows. */}
                     <Dropdown
@@ -369,21 +390,27 @@ export function ProjectFilesSettingsDialog({
                     />
                     {/* Local-model grammar/spelling check — underlines typos
                         (red), grammar (blue), style (green) in the editor. */}
-                    <label className="viewer-pref-toggle">
-                      <Toggle
-                        size="sm"
-                        checked={pref.grammar_check === true}
-                        disabled={!enabled}
-                        onChange={(e) => patch({ grammar_check: e.target.checked })}
-                      />
-                      <span>{t("localModel.role.grammar")}</span>
-                    </label>
+                    <Toggle
+                      size="sm"
+                      checked={pref.grammar_check === true}
+                      disabled={!enabled}
+                      onChange={(e) => patch({ grammar_check: e.target.checked })}
+                      aria-label={`${vt.label} — ${t("localModel.role.grammar")}`}
+                    />
+                  </>
+                ) : (
+                  /* Three empty cells, so this row's Enabled toggle still sits
+                     in the same column as every other row's. */
+                  <>
+                    <span className="viewer-pref-na">–</span>
+                    <span className="viewer-pref-na">–</span>
+                    <span className="viewer-pref-na">–</span>
                   </>
                 )}
               </div>
             );
           })}
-        </div>
+        </SettingsList>
 
         {/* The right panel's opt-in Alerts group (global, not per-project).
             Off by default on purpose — the file viewer is a work surface, and an
@@ -391,104 +418,103 @@ export function ProjectFilesSettingsDialog({
             stays open all day. The per-source rows are greyed while the master
             switch is off: they only ever take a source *away*, so they mean
             nothing until there is a group to take it out of. */}
-        <div className="settings-section-title">{t("filesAlerts.enable")}</div>
-        <p className="settings-help">{t("filesAlerts.enableHint")}</p>
-        <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
-          <Toggle
-            size="sm"
+        <SettingsSection
+          title={t("filesAlerts.enable")}
+          help={t("filesAlerts.enableHint")}
+        />
+        {/* One card: the master switch, what it looks ahead, and which sources
+            it draws from are one setting with three parts — the per-source rows
+            only ever take a source *away*, so they mean nothing without the
+            switch above them and are disabled with it. */}
+        <SettingsCard>
+          <ToggleRow
+            label={t("agents.enabled")}
             checked={alertsOn}
             onChange={(e) => void updateSettings({ files_alerts: e.target.checked })}
           />
-          <span>{t("agents.enabled")}</span>
-        </label>
-        <div className="settings-row">
-          <label htmlFor="files-alerts-days">{t("filesAlerts.days")}</label>
-          <input
-            id="files-alerts-days"
-            type="number"
-            min={ALERT_DAYS_MIN}
-            max={ALERT_DAYS_MAX}
-            step={1}
-            disabled={!alertsOn}
-            placeholder={String(DEFAULT_LOOKAHEAD_DAYS)}
-            value={settings?.files_alerts_days ?? ""}
-            onChange={(e) => {
-              const v = parseInt(e.target.value, 10);
-              // Out of range clears the key rather than storing a value the hook
-              // would silently clamp — an unset field showing the default is
-              // honest about what the group will actually do.
-              void updateSettings({
-                files_alerts_days:
-                  Number.isFinite(v) && v >= ALERT_DAYS_MIN && v <= ALERT_DAYS_MAX
-                    ? v
-                    : undefined,
-              });
-            }}
-          />
-        </div>
-        <div className="viewer-prefs-list">
-          <div className="viewer-pref-row">
-            <label className="viewer-pref-toggle">
-              <Toggle
-                size="sm"
-                checked={alertSources.mail !== false}
-                disabled={!alertsOn}
-                onChange={(e) => patchAlertSources({ mail: e.target.checked })}
-              />
-              <span>{t("filesAlerts.sourceMail")}</span>
+          <div className="settings-card-row">
+            <label className="settings-card-label" htmlFor="files-alerts-days">
+              {t("filesAlerts.days")}
             </label>
-            <label className="viewer-pref-toggle">
-              <Toggle
-                size="sm"
-                checked={alertSources.events !== false}
-                disabled={!alertsOn}
-                onChange={(e) => patchAlertSources({ events: e.target.checked })}
-              />
-              <span>{t("filesAlerts.sourceEvents")}</span>
-            </label>
-            <label className="viewer-pref-toggle">
-              <Toggle
-                size="sm"
-                checked={alertSources.tasks !== false}
-                disabled={!alertsOn}
-                onChange={(e) => patchAlertSources({ tasks: e.target.checked })}
-              />
-              <span>{t("filesAlerts.sourceTasks")}</span>
-            </label>
+            <input
+              id="files-alerts-days"
+              type="number"
+              min={ALERT_DAYS_MIN}
+              max={ALERT_DAYS_MAX}
+              step={1}
+              disabled={!alertsOn}
+              placeholder={String(DEFAULT_LOOKAHEAD_DAYS)}
+              value={settings?.files_alerts_days ?? ""}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10);
+                // Out of range clears the key rather than storing a value the
+                // hook would silently clamp — an unset field showing the
+                // default is honest about what the group will actually do.
+                void updateSettings({
+                  files_alerts_days:
+                    Number.isFinite(v) && v >= ALERT_DAYS_MIN && v <= ALERT_DAYS_MAX
+                      ? v
+                      : undefined,
+                });
+              }}
+            />
           </div>
-        </div>
+          <ToggleRow
+            label={t("filesAlerts.sourceMail")}
+            checked={alertSources.mail !== false}
+            disabled={!alertsOn}
+            onChange={(e) => patchAlertSources({ mail: e.target.checked })}
+          />
+          <ToggleRow
+            label={t("filesAlerts.sourceEvents")}
+            checked={alertSources.events !== false}
+            disabled={!alertsOn}
+            onChange={(e) => patchAlertSources({ events: e.target.checked })}
+          />
+          <ToggleRow
+            label={t("filesAlerts.sourceTasks")}
+            checked={alertSources.tasks !== false}
+            disabled={!alertsOn}
+            onChange={(e) => patchAlertSources({ tasks: e.target.checked })}
+          />
+        </SettingsCard>
         {/* The muted rows' escape hatch. The group's own 🔕 chip only counts
             mutes whose row is still live, which is the right number *there* —
             but it means a mute whose mail was unmarked or whose meeting has
             passed has no control of its own left. This one names the raw stored
             count, so the key can always be cleared from somewhere. */}
         {mutedCount > 0 && (
-          <div className="settings-row">
-            <label>{t("filesAlerts.mutedStored", { count: mutedCount })}</label>
-            <button
-              className="tab-add-btn"
-              onClick={() => void updateSettings({ files_alerts_muted: [] })}
-              title={t("filesAlerts.unmuteAllTitle")}
-            >
-              {t("filesAlerts.unmuteAll")}
-            </button>
-          </div>
+          <SettingRow
+            label={t("filesAlerts.mutedStored", { count: mutedCount })}
+            control={
+              <button
+                type="button"
+                className="settings-btn sm"
+                onClick={() => void updateSettings({ files_alerts_muted: [] })}
+                title={t("filesAlerts.unmuteAllTitle")}
+              >
+                {t("filesAlerts.unmuteAll")}
+              </button>
+            }
+          />
         )}
 
         {settings?.debug && (
           <>
-            <div className="settings-section-title">{t("projectSettings.debug")}</div>
-            <button
-              className="tab-add-btn"
-              style={{ fontSize: 11, padding: "2px 8px", width: "100%", color: "var(--danger, #f85149)" }}
-              onClick={() => {
-                invoke("clear_project_session", { localFile }).then(() => {
-                  window.location.reload();
-                }).catch(console.error);
-              }}
-            >
-              {t("projectSettings.clearSessionStorage")}
-            </button>
+            <SettingsSection title={t("projectSettings.debug")} />
+            <div className="settings-link-row">
+              <button
+                type="button"
+                className="settings-btn danger"
+                onClick={() => {
+                  invoke("clear_project_session", { localFile }).then(() => {
+                    window.location.reload();
+                  }).catch(console.error);
+                }}
+              >
+                {t("projectSettings.clearSessionStorage")}
+              </button>
+            </div>
           </>
         )}
         </div>

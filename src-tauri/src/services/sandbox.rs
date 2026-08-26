@@ -603,6 +603,21 @@ pub fn enforce_spawn_authority(opts: &mut PtyOptions) {
     let Some(project_id) = opts.project_id.clone() else {
         return;
     };
+    // Box scopes (`box:<id>`) run local + uncontained by design (v1 trust
+    // statement): a box has no container or VM of its own, and one member's
+    // sandbox spec must not silently govern a tab that can also reach the
+    // other members' trees — a half-applied boundary would read as a whole
+    // one. The box editor surfaces the trust notice instead.
+    if crate::commands::boxes::box_id_of_scope(&project_id).is_some() {
+        if opts.sandbox {
+            eprintln!(
+                "sandbox: box-scoped tab '{}' resolved to sandbox: false (boxes run uncontained)",
+                opts.id
+            );
+        }
+        opts.sandbox = false;
+        return;
+    }
     let is_remote = crate::services::remote::remote_target_for(&project_id).is_some();
     let spec = sandbox_spec_for(&project_id);
     let toggle_on = spec.as_ref().is_some_and(|s| s.enabled);
@@ -2377,6 +2392,31 @@ mod tests {
         wrap_pty_options_docker(&mut opts).unwrap();
         assert_eq!(opts.cmd, "claude");
         assert_eq!(opts.args, args(&["--session-id", "x"]));
+    }
+
+    #[test]
+    fn box_scope_never_resolves_sandboxed() {
+        // A `box:<id>` tab is local + uncontained by design; the branch returns
+        // before any state-dir read, so this is safe to exercise in a test.
+        let mut opts = PtyOptions {
+            id: "t".to_string(),
+            cmd: "claude".to_string(),
+            args: vec![],
+            env: Default::default(),
+            cwd: "/home/u/eldrun/boxes/b".to_string(),
+            cols: 80,
+            rows: 24,
+            local_only: false,
+            sandbox: true,
+            project_id: Some("box:abc".to_string()),
+            remote_host_id: None,
+            tmux_session: None,
+            tmux_attach: None,
+            host_bound_uid: None,
+        };
+        enforce_spawn_authority(&mut opts);
+        assert!(!opts.sandbox, "box tabs must never spawn containerized");
+        assert!(!opts.local_only, "local_only is left as requested");
     }
 
     // ── Authority resolution (S-2 / S-6) ──────────────────────────────────

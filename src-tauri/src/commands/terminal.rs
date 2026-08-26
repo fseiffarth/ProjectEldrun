@@ -270,25 +270,42 @@ pub async fn pty_spawn(
     // its `cwd` names a path on the far host, which this process has no way to
     // check (the ssh-wrapped command below does the `cd` on that side).
     if let Some(pid) = opts.project_id.clone() {
-        let is_remote = crate::services::remote::remote_target_for(&pid).is_some();
-        if !is_remote || opts.local_only {
-            let allowed: std::path::PathBuf = if is_remote {
-                // local_only tab of a remote project: cwd was just resolved
-                // above to exactly this, so this only ever rejects a caller
-                // that skipped that resolution and supplied its own cwd.
-                crate::services::remote_sync::mirror_dir(&pid)
-            } else {
-                crate::services::sandbox::project_dir_for(&pid)
-                    .map(std::path::PathBuf::from)
-                    .ok_or_else(|| format!("terminal: project '{pid}' has no known directory"))?
-            };
-            if !cwd_within(&opts.cwd, &allowed) {
+        // Box scope (`box:<id>`): the tab may live in the box folder, any member
+        // project's root, or a remote member's local mirror — the co-accessible
+        // set the box exists to create. An unknown box fails closed, same
+        // posture as an unknown project below.
+        if let Some(box_id) = crate::commands::boxes::box_id_of_scope(&pid) {
+            let roots = crate::commands::boxes::box_allowed_roots(box_id)
+                .ok_or_else(|| format!("terminal: unknown box scope '{pid}'"))?;
+            if !roots.iter().any(|root| cwd_within(&opts.cwd, root)) {
                 return Err(format!(
-                    "terminal: refusing to spawn tab '{}' at '{}' — outside project '{pid}''s directory ({})",
-                    opts.id,
-                    opts.cwd,
-                    allowed.display()
+                    "terminal: refusing to spawn tab '{}' at '{}' — outside box scope '{pid}' (allowed: box folder + member roots)",
+                    opts.id, opts.cwd
                 ));
+            }
+        } else {
+            let is_remote = crate::services::remote::remote_target_for(&pid).is_some();
+            if !is_remote || opts.local_only {
+                let allowed: std::path::PathBuf = if is_remote {
+                    // local_only tab of a remote project: cwd was just resolved
+                    // above to exactly this, so this only ever rejects a caller
+                    // that skipped that resolution and supplied its own cwd.
+                    crate::services::remote_sync::mirror_dir(&pid)
+                } else {
+                    crate::services::sandbox::project_dir_for(&pid)
+                        .map(std::path::PathBuf::from)
+                        .ok_or_else(|| {
+                            format!("terminal: project '{pid}' has no known directory")
+                        })?
+                };
+                if !cwd_within(&opts.cwd, &allowed) {
+                    return Err(format!(
+                        "terminal: refusing to spawn tab '{}' at '{}' — outside project '{pid}''s directory ({})",
+                        opts.id,
+                        opts.cwd,
+                        allowed.display()
+                    ));
+                }
             }
         }
     }

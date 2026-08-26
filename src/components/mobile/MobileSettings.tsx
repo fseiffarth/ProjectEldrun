@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
-import { Toggle } from "../common/Toggle";
+import { SettingsCard, SettingsList, ToggleRow } from "../layout/settingsUi";
 import { isTrashProject } from "../../lib/trashProject";
 
 interface RuntimeStatus {
@@ -392,15 +392,13 @@ export function MobileSettings() {
         : { tone: "good", title: "Private publication verified", detail: "Host is loopback-only and the configured Tailscale Serve route is private HTTPS." };
 
   return (
-    <div className="settings-toggle-card">
-      <label className="settings-toggle-card-row">
-        <span>Eldrun Mobile</span>
-        <Toggle
-          checked={stored?.enabled ?? false}
-          disabled={busy}
-          onChange={(event) => void apply(event.target.checked)}
-        />
-      </label>
+    <SettingsCard>
+      <ToggleRow
+        label="Eldrun Mobile"
+        checked={stored?.enabled ?? false}
+        disabled={busy}
+        onChange={(event) => void apply(event.target.checked)}
+      />
       <p className="settings-help">
         Private project terminal access through Tailscale Serve. The host listens on loopback only and every browser must be paired.
       </p>
@@ -411,7 +409,7 @@ export function MobileSettings() {
         </div>
         <button
           type="button"
-          className="danger"
+          className="settings-btn sm danger"
           disabled={busy || !status?.running}
           title={status?.running ? "Revoke every paired device and stop the host" : "The host is already stopped"}
           onClick={() => void lockDownNow()}
@@ -427,7 +425,7 @@ export function MobileSettings() {
             Verifies the private Tailscale Serve mapping, then shows the trusted URL and a scannable QR code in a root terminal. It does not enable Mobile or change your Tailscale configuration.
           </p>
         </div>
-        <button type="button" className="mobile-phone-install-button" onClick={() => void installOnPhone()}>
+        <button type="button" className="settings-btn sm primary mobile-phone-install-button" onClick={() => void installOnPhone()}>
           Show install QR
         </button>
       </div>
@@ -460,19 +458,25 @@ export function MobileSettings() {
             The address is reachable only by devices allowed in your tailnet, and Mobile still requires its own device pairing. Do not use Tailscale Funnel: it makes the service public and Eldrun will refuse to start.
           </p>
           <div className="mobile-settings-guide-actions">
-            <button type="button" onClick={setUpInTerminal}>Set up in terminal</button>
+            <button type="button" className="settings-btn sm" onClick={setUpInTerminal}>Set up in terminal</button>
             <span>Opens a root terminal and runs the command above after confirmation.</span>
           </div>
           <a href="https://tailscale.com/docs/features/tailscale-serve" target="_blank" rel="noreferrer">Tailscale Serve documentation</a>
         </div>
       </details>
-      <div className="settings-row">
-        <label>Computer name</label>
-        <input value={displayName} maxLength={64} onChange={(event) => setDisplayName(event.target.value)} />
-      </div>
-      <div className="settings-row">
-        <label>Loopback port</label>
+      <div className="settings-card-row">
+        <label className="settings-card-label" htmlFor="mobile-display-name">Computer name</label>
         <input
+          id="mobile-display-name"
+          value={displayName}
+          maxLength={64}
+          onChange={(event) => setDisplayName(event.target.value)}
+        />
+      </div>
+      <div className="settings-card-row">
+        <label className="settings-card-label" htmlFor="mobile-loopback-port">Loopback port</label>
+        <input
+          id="mobile-loopback-port"
           value={port}
           inputMode="numeric"
           onChange={(event) => {
@@ -481,9 +485,10 @@ export function MobileSettings() {
           }}
         />
       </div>
-      <div className="settings-row">
-        <label>Verified Serve origin</label>
+      <div className="settings-card-row">
+        <label className="settings-card-label" htmlFor="mobile-serve-origin">Verified Serve origin</label>
         <input
+          id="mobile-serve-origin"
           value={origin}
           placeholder="https://workstation.example.ts.net"
           onChange={(event) => {
@@ -493,17 +498,15 @@ export function MobileSettings() {
         />
       </div>
       <div className="settings-link-row">
-        <button type="button" disabled={busy || detectingServe} onClick={() => void detectServeSettings()}>
+        <button type="button" className="settings-btn sm" disabled={busy || detectingServe} onClick={() => void detectServeSettings()}>
           {detectingServe ? "Detecting…" : "Detect Tailscale Serve settings"}
         </button>
-      </div>
-      <div className="settings-link-row">
-        <button type="button" disabled={busy || pairingBusy} onClick={() => void createPairing()}>
+        <button type="button" className="settings-btn sm" disabled={busy || pairingBusy} onClick={() => void createPairing()}>
           {pairingBusy ? "Creating code…" : "New pairing code"}
         </button>
-        {stored?.enabled && !status?.running && <button type="button" disabled={busy} onClick={() => void apply(true)}>Start mobile host</button>}
-        {status?.update_available && <button type="button" disabled={busy} onClick={() => void apply(true)}>Update mobile host</button>}
-        <button type="button" disabled={busy || refreshing} onClick={() => void refresh()}>
+        {stored?.enabled && !status?.running && <button type="button" className="settings-btn sm" disabled={busy} onClick={() => void apply(true)}>Start mobile host</button>}
+        {status?.update_available && <button type="button" className="settings-btn sm" disabled={busy} onClick={() => void apply(true)}>Update mobile host</button>}
+        <button type="button" className="settings-btn sm" disabled={busy || refreshing} onClick={() => void refresh()}>
           {refreshing ? "Refreshing…" : "Refresh status"}
         </button>
       </div>
@@ -522,7 +525,7 @@ export function MobileSettings() {
       {refreshError && <div className="project-dialog-error">{refreshError}</div>}
       {error && <div className="project-dialog-error">{error}</div>}
 
-      <div className="settings-section-title">Project access</div>
+      <div className="settings-subheader">Project access</div>
       <p className="settings-help">
         Access is off per project. Enabling it does not restart a live agent; that agent becomes attachable after its next normal reopen.
       </p>
@@ -535,35 +538,39 @@ export function MobileSettings() {
       />}
       <div className="mobile-project-access-list">
         {matchingEligible.map((project) => (
-          <label key={project.id} className="settings-toggle-card-row">
-            <span>{project.name}</span>
-            <Toggle
-              checked={project.eldrun_mobile_access ?? false}
-              disabled={isTrashProject(project)}
-              onChange={(event) => {
-                setError(null);
-                void setProjectMobileAccess(project.id, event.target.checked).catch((reason) => setError(String(reason)));
-              }}
-            />
-          </label>
+          <ToggleRow
+            key={project.id}
+            label={project.name}
+            checked={project.eldrun_mobile_access ?? false}
+            disabled={isTrashProject(project)}
+            onChange={(event) => {
+              setError(null);
+              void setProjectMobileAccess(project.id, event.target.checked).catch((reason) => setError(String(reason)));
+            }}
+          />
         ))}
         {eligible.length === 0 && <p className="settings-help">No local, non-container projects are available.</p>}
         {eligible.length > 0 && matchingEligible.length === 0 && <p className="settings-help">No projects match “{projectSearch.trim()}”.</p>}
       </div>
 
-      {devices.length > 0 && <div className="settings-section-title">Paired devices</div>}
-      {devices.map((device) => (
-        <div key={device.id} className="settings-link-row">
-          <span>{device.name}</span>
-          <button
-            type="button"
-            onClick={() => void invoke<AdminResponse>("mobile_admin", { request: { type: "revoke", device_id: device.id } }).then(refresh)}
-          >Revoke</button>
-        </div>
-      ))}
+      {devices.length > 0 && <div className="settings-subheader">Paired devices</div>}
+      {devices.length > 0 && (
+        <SettingsList boxed>
+          {devices.map((device) => (
+            <div key={device.id} className="settings-row">
+              <span className="settings-list-label">{device.name}</span>
+              <button
+                type="button"
+                className="settings-btn sm danger"
+                onClick={() => void invoke<AdminResponse>("mobile_admin", { request: { type: "revoke", device_id: device.id } }).then(refresh)}
+              >Revoke</button>
+            </div>
+          ))}
+        </SettingsList>
+      )}
       {devices.length > 0 && <button
         type="button"
-        className="danger"
+        className="settings-btn sm danger"
         onClick={() => {
           if (!window.confirm("Forget every paired Mobile device and rotate all opaque IDs?")) return;
           void invoke<AdminResponse>("mobile_admin", { request: { type: "forget_all" } })
@@ -575,6 +582,6 @@ export function MobileSettings() {
             .catch((reason) => setError(String(reason)));
         }}
       >Forget all devices</button>}
-    </div>
+    </SettingsCard>
   );
 }

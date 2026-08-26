@@ -361,9 +361,16 @@ pub fn publish_project(
     let stdout = match publish_site(&project, &project_id, publish_from.as_deref())? {
         // Local project's tree, or a remote project's lockstep mirror: run the CLI
         // here, with this machine's provider login / effective token.
-        PublishSite::Local(dir) => {
-            local_publish(provider, &dir, &repo_name, visibility, token.as_deref())?
-        }
+        PublishSite::Local(dir) => local_publish(
+            provider,
+            &dir,
+            &repo_name,
+            visibility,
+            token.as_deref(),
+            // A remote project's `Local` site is its lockstep mirror, whose
+            // branch names have to keep matching the host's.
+            project.remote.is_none(),
+        )?,
         // Explicit opt-in: run the CLI on the work-remote host, relying on that
         // host's own provider auth (the local token is never forwarded over ssh).
         PublishSite::Host => {
@@ -704,13 +711,23 @@ fn rename_origin_aside(site: PublishSite, project: &Project) -> Result<(), Strin
 
 /// Run the provider's create (and, for GitLab, an explicit push) for a *local*
 /// project, returning the combined CLI stdout.
+///
+/// `rename_master` asks for the [`git_init::ensure_default_branch`] pass first:
+/// both CLIs make the branch they receive the new repository's default, so a
+/// project still on git's old built-in `master` would name the hosted default
+/// branch `master`. Only a plain local project opts in — see that module for why
+/// a lockstep mirror must keep the branch name the host knows it by.
 fn local_publish(
     provider: Provider,
     dir: &PathBuf,
     repo_name: &str,
     visibility: &str,
     token: Option<&str>,
+    rename_master: bool,
 ) -> Result<String, String> {
+    if rename_master {
+        crate::services::git_init::ensure_default_branch(dir);
+    }
     match provider {
         // `gh repo create` creates, wires origin, and pushes in one command.
         Provider::GitHub => {

@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useT } from "../../lib/i18n";
 import { formatSize } from "../../lib/mail";
 import { UntestedTag } from "../common/UntestedTag";
+import { SettingRow, SettingsHeader } from "./settingsUi";
 import type {
   InstallOutcome,
   StagedUpdate,
@@ -27,7 +28,13 @@ import type {
  * Restarting is *always* the user's: no branch here relaunches Eldrun, because
  * a window holds live terminals and open tabs.
  */
-export function UpdatesPanel({ onBack }: { onBack: () => void }) {
+export function UpdatesPanel({
+  onBack,
+  onClose,
+}: {
+  onBack: () => void;
+  onClose?: () => void;
+}) {
   const t = useT();
   const [check, setCheck] = useState<UpdateCheck | null>(null);
   const [checking, setChecking] = useState(false);
@@ -142,20 +149,17 @@ export function UpdatesPanel({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <div className="settings-title-row">
-        <h2>
-          {t("nav.updates.title")} <UntestedTag />
-        </h2>
-        <button type="button" onClick={onBack}>
-          {t("common.back")}
-        </button>
-      </div>
+      <SettingsHeader
+        title={<>{t("nav.updates.title")} <UntestedTag /></>}
+        onBack={onBack}
+        onClose={onClose}
+      />
       <p className="settings-help">{t("updates.help")}</p>
 
-      <div className="settings-row">
-        <label>{t("updates.installedVersion")}</label>
-        <span className="app-update-version">{check?.current ?? "…"}</span>
-      </div>
+      <SettingRow
+        label={t("updates.installedVersion")}
+        control={<span className="app-update-version">{check?.current ?? "…"}</span>}
+      />
 
       {checking && <p className="settings-help">{t("updates.checking")}</p>}
 
@@ -221,14 +225,19 @@ export function UpdatesPanel({ onBack }: { onBack: () => void }) {
 
       <p className="settings-help">{installHelp}</p>
 
-      <div className="app-update-actions">
-        <button type="button" onClick={() => void runCheck()} disabled={checking || busy != null}>
+      <div className="settings-link-row app-update-actions">
+        <button
+          type="button"
+          className="settings-btn"
+          onClick={() => void runCheck()}
+          disabled={checking || busy != null}
+        >
           {checking ? t("updates.checking") : t("updates.checkNow")}
         </button>
         {check?.updateAvailable && check.asset && !staged && (
           <button
             type="button"
-            className="btn-primary"
+            className="settings-btn primary"
             onClick={() => void download()}
             disabled={busy != null}
           >
@@ -241,7 +250,7 @@ export function UpdatesPanel({ onBack }: { onBack: () => void }) {
           // answer to give, not a second decision made in the renderer.
           <button
             type="button"
-            className="btn-primary"
+            className="settings-btn primary"
             onClick={() => void install()}
             disabled={busy != null}
           >
@@ -253,7 +262,7 @@ export function UpdatesPanel({ onBack }: { onBack: () => void }) {
           </button>
         )}
         {releasePage && (
-          <button type="button" onClick={openReleasePage}>
+          <button type="button" className="settings-btn" onClick={openReleasePage}>
             {t("updates.openReleasePage")}
           </button>
         )}

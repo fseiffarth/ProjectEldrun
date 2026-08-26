@@ -41,6 +41,9 @@ import { RemoteConnMenu } from "../header/RemoteConnMenu";
 import { VmSettingsDialog } from "./VmSettingsDialog";
 import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/categoryColor";
 import { usePillDragStore } from "../../stores/pillDrag";
+import { usePillSelectionStore } from "../../stores/pillSelection";
+import { useBoxEditorStore } from "../../stores/boxEditor";
+import { useBoxesStore } from "../../stores/boxes";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { isTrashProject } from "../../lib/trashProject";
@@ -67,6 +70,9 @@ interface Props {
   shiftPx?: number;
   /** An Alt-drag is hovering THIS pill as a group (new-box) target. */
   groupHintActive?: boolean;
+  /** Names of the boxes this project is in (N:M overlay model): renders the
+   *  small box badge on the pill, tooltip naming them. Empty/absent = no badge. */
+  boxNames?: string[];
 }
 
 /** File endings that mark a project as holding Python — the "Python interpreter…"
@@ -1238,6 +1244,7 @@ export function ProjectPill({
   onReorder,
   onGroup,
   onAssignToBox,
+  boxNames,
   isDragged,
   dragDx,
   shiftPx,
@@ -1251,6 +1258,12 @@ export function ProjectPill({
   // mounted and simply never opens, since it arms nothing until `open`.
   const fastMode = useFastMode();
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
+  // Multi-select (3b): Ctrl/Cmd-click toggles membership in the shared pill
+  // selection; the ring (`is-selected`) and the "Box these (N)…" menu entry
+  // both read it. A plain activation click clears it (see the switcher).
+  const selectedPills = usePillSelectionStore((s) => s.selected);
+  const isSelected = selectedPills.includes(project.id);
+  const boxesForMenu = useBoxesStore((s) => s.boxes);
   // With `connections_headless` off Eldrun handles no passwords at all, so neither
   // key auth nor a saved password can ever be the answer — auto-connect there means
   // the login opens in the root terminal instead (see `autoConnectInteractive` in
@@ -1603,6 +1616,14 @@ export function ProjectPill({
     if (e.button !== 0) return;
     const pressed = e.target as HTMLElement;
     if (pressed.closest(".pill-close-btn, .header-conn-lamps")) return;
+    // Ctrl/Cmd-click toggles the multi-selection (3b): no drag, no activation —
+    // the whole gesture is the selection toggle. The suppressed native click
+    // never reaches pill-main's onClick, so nothing else fires.
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      usePillSelectionStore.getState().toggle(project.id);
+      return;
+    }
     e.preventDefault();
     const startX = e.clientX;
     const pointerId = e.pointerId;
@@ -1831,6 +1852,69 @@ export function ProjectPill({
                 title={t("pill.extendToRemoteMenuTitle")}
               >
                 {t("pill.extendToRemoteEllipsis")}
+              </button>
+            )}
+          </div>
+
+          {/* Boxes (3a): checkbox row per box (toggle add/remove, additive N:M),
+              "Box these (N)…" when a multi-selection includes this pill, "New
+              box with ⟨project⟩…" into the editor, and — past ~6 boxes — an
+              "Edit boxes…" overflow into the same editor. */}
+          <div className="context-menu-group">
+            <div className="context-menu-group-label">{t("pill.boxesGroup")}</div>
+            {selectedPills.length >= 2 && isSelected && (
+              <button
+                className="untested"
+                onClick={() => {
+                  setContextMenu(null);
+                  useBoxEditorStore.getState().openCreate(selectedPills);
+                }}
+              >
+                {t("pill.boxTheseEllipsis", { count: selectedPills.length })}
+                <UntestedTag />
+              </button>
+            )}
+            {boxesForMenu.slice(0, 6).map((b) => {
+              const member = b.member_ids.includes(project.id);
+              return (
+                <button
+                  key={b.id}
+                  className="context-menu-check"
+                  onClick={() => {
+                    setContextMenu(null);
+                    const store = useBoxesStore.getState();
+                    if (member) void store.removeFromBox(project.id, b.id);
+                    else void store.addToBox(project.id, b.id);
+                  }}
+                  title={t(member ? "pill.leaveBoxTitle" : "pill.joinBoxTitle", { name: b.name })}
+                >
+                  <span className="context-menu-checkmark" aria-hidden>
+                    {member ? "☑" : "☐"}
+                  </span>
+                  {b.name}
+                </button>
+              );
+            })}
+            <button
+              className="untested"
+              onClick={() => {
+                setContextMenu(null);
+                useBoxEditorStore.getState().openCreate([project.id]);
+              }}
+            >
+              {t("pill.newBoxWithEllipsis", { name: project.name })}
+              <UntestedTag />
+            </button>
+            {boxesForMenu.length > 6 && (
+              <button
+                className="untested"
+                onClick={() => {
+                  setContextMenu(null);
+                  useBoxEditorStore.getState().openEditor(null);
+                }}
+              >
+                {t("pill.editBoxesEllipsis")}
+                <UntestedTag />
               </button>
             )}
           </div>
@@ -2347,7 +2431,7 @@ export function ProjectPill({
       <div
         ref={pillRef}
         data-pill-id={project.id}
-        className={`project-pill${trashProject ? " trash-project-pill" : ""}${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}${groupHintActive ? " drag-group" : ""}${isDragged ? " dragging" : ""}${!isDragged && shiftPx ? " reorder-parting" : ""}${catColor ? " has-category" : ""}`}
+        className={`project-pill${trashProject ? " trash-project-pill" : ""}${active ? " active" : ""}${isSelected ? " is-selected" : ""}${timerPaused ? " timer-paused" : ""}${groupHintActive ? " drag-group" : ""}${isDragged ? " dragging" : ""}${!isDragged && shiftPx ? " reorder-parting" : ""}${catColor ? " has-category" : ""}`}
         style={{
           ...(catColor ? { "--cat-color": catColor } : {}),
           ...(isDragged
@@ -2388,6 +2472,14 @@ export function ProjectPill({
                 {timerPaused && <span className="pill-folder-pause">⏸</span>}
               </span>
               <span className="project-pill-label">{project.name}</span>
+              {boxNames && boxNames.length > 0 && (
+                <span
+                  className="project-pill-boxdot"
+                  title={t("pill.inBoxes", { list: boxNames.join(", ") })}
+                >
+                  ▣
+                </span>
+              )}
             </>
           )}
         </button>

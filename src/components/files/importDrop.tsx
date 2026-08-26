@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Toggle } from "../common/Toggle";
+import { SettingsCard, SettingsHeader, ToggleRow } from "../layout/settingsUi";
 import { basename, fromFileUri } from "../../lib/paths";
 import { useT } from "../../lib/i18n";
 
@@ -203,39 +203,42 @@ export function useImportDrop({ projectDir, enabled, destRel, onImported }: Opti
           onMouseDown={() => conflict.resolve({ choice: "skip", all: conflictAll })}
         >
           <div className="settings-dialog" style={{ maxWidth: 380 }} onMouseDown={(e) => e.stopPropagation()}>
-            <div className="settings-title-row">
-              <h2>{t("importDrop.title")}</h2>
-            </div>
+            <SettingsHeader title={t("importDrop.title")} />
             <p className="settings-help" style={{ wordBreak: "break-all" }}>
               <code>{conflict.name}</code> {t("importDrop.bodyPost")}
             </p>
             {conflict.remaining > 0 && (
-              <label className="viewer-pref-toggle" style={{ marginBottom: 8 }}>
-                <Toggle
-                  size="sm"
-                  checked={conflictAll}
-                  onChange={(e) => setConflictAll(e.target.checked)}
-                />
-                <span>
-                  {t(
+              <SettingsCard>
+                <ToggleRow
+                  label={t(
                     conflict.remaining > 1
                       ? "importDrop.applyToRemainingMany"
                       : "importDrop.applyToRemainingOne",
                     { count: conflict.remaining },
                   )}
-                </span>
-              </label>
+                  checked={conflictAll}
+                  onChange={(e) => setConflictAll(e.target.checked)}
+                />
+              </SettingsCard>
             )}
-            <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-              <button className="tab-add-btn" onClick={() => conflict.resolve({ choice: "skip", all: conflictAll })}>
+            <div className="settings-link-row settings-link-row-end">
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={() => conflict.resolve({ choice: "skip", all: conflictAll })}
+              >
                 {t("importDrop.skip")}
               </button>
-              <button className="tab-add-btn" onClick={() => conflict.resolve({ choice: "rename", all: conflictAll })}>
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={() => conflict.resolve({ choice: "rename", all: conflictAll })}
+              >
                 {t("importDrop.keepBoth")}
               </button>
               <button
-                className="tab-add-btn"
-                style={{ color: "var(--danger, #f85149)" }}
+                type="button"
+                className="settings-btn danger"
                 onClick={() => conflict.resolve({ choice: "replace", all: conflictAll })}
               >
                 {t("importDrop.replace")}

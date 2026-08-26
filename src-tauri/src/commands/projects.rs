@@ -1990,17 +1990,8 @@ pub fn set_project_git_disabled(project_id: String, disabled: bool) -> Result<St
         "none".to_string()
     } else {
         if !git_dir.exists() {
-            let output = crate::paths::command_no_window("git")
-                .args(["init"])
-                .current_dir(&directory)
-                .output()
-                .map_err(|e| format!("failed to run git init: {e}"))?;
-            if !output.status.success() {
-                return Err(format!(
-                    "git init failed: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ));
-            }
+            crate::services::git_init::init_repo(&directory)
+                .map_err(|e| format!("git init failed: {e}"))?;
         }
         let gitignore = directory.join(".gitignore");
         if !gitignore.exists() {
@@ -2396,10 +2387,7 @@ pub fn scaffold_project(dir: &Path, with_git: bool) -> std::io::Result<()> {
         fs::write(cs, CLAUDE_SETTINGS)?;
     }
     if with_git && !dir.join(".git").exists() {
-        let _ = crate::paths::command_no_window("git")
-            .args(["init"])
-            .current_dir(dir)
-            .output();
+        let _ = crate::services::git_init::init_repo(dir);
         // Give the fresh repo an initial commit so the scaffold (`.claude`, docs,
         // `.gitignore`) is TRACKED, not merely present. This is what makes a later
         // remote `extend` seed the host: git lockstep pairs by transferring
@@ -2581,10 +2569,7 @@ fn repair_project_scaffold_at(dir: &Path, with_git: bool) -> std::io::Result<Sca
             .push(".claude/settings.json".to_string());
     }
     if with_git && !dir.join(".git").exists() {
-        let _ = crate::paths::command_no_window("git")
-            .args(["init"])
-            .current_dir(dir)
-            .output();
+        let _ = crate::services::git_init::init_repo(dir);
         // `.exists()`, not `is_dir()` (#23 I6): `.git` is a directory for a main repo
         // and a *file* in a linked worktree, so `is_dir` reported a worktree-rooted
         // project as having no repo at all.

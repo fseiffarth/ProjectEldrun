@@ -35,6 +35,44 @@ export type TourCtx = HintCtx;
  *  tour points at (root logo top-left, gear top-right, file-tree right edge). */
 export type TourPlacement = "top" | "bottom" | "left" | "right";
 
+/**
+ * The doing half of an interactive step: what the user has to actually perform
+ * before the walkthrough moves on, and where to look when they're stuck.
+ *
+ * A narrated step tells; a task step waits. `TourHost` lets pointer events
+ * through to the real app while one is pending (the blocker stops swallowing
+ * clicks), watches for the completion signal below, rewards it with a `:)` and
+ * then advances on its own. Nothing is mandatory — Next always still works, so
+ * a task on a control that isn't on this machine (an indicator the user hasn't
+ * switched on) can never wedge a lesson.
+ *
+ * The signals are deliberately DOM-shaped rather than store-shaped: what a
+ * lesson teaches is "this click opens that menu", and the menu's presence is
+ * exactly the thing the user is being taught to recognize. Keeping them as
+ * selectors also keeps this catalog free of store imports.
+ */
+export interface StepTask {
+  /** The instruction, one imperative line ("Click + to open the add menu"). */
+  promptKey: TranslationKey;
+  /** The way out when stuck: revealed by the bubble's Hint button, and by
+   *  itself once the step has sat unsolved for a while. */
+  hintKey?: TranslationKey;
+  /** Done when the user clicks this selector (or anything inside it). Defaults
+   *  to the step's own anchor when the task names no other signal, which is
+   *  what "click the thing I'm pointing at" steps want. */
+  click?: string;
+  /** Done when an element matching this selector is on screen — the menu or
+   *  dialog the click was supposed to open. Preferred over `click` wherever the
+   *  action has a visible result: it credits the user for the *outcome*, so
+   *  reaching it another way (keyboard, a menu they already had open) counts. */
+  appear?: string;
+  /** Done when this selector matches *more* elements than it did when the step
+   *  opened — a pill, tab, or card that wasn't there before. */
+  grow?: string;
+  /** Done when this window event fires. */
+  event?: string;
+}
+
 export interface TourStep {
   /** Stable id; also the key used to mark the matching contextual hint seen so
    *  the tour doesn't end into a hint storm (see `COVERED_HINTS`). */
@@ -61,6 +99,9 @@ export interface TourStep {
   /** Eligible only while this holds for the current context (defaults to
    *  always). Ineligible steps are skipped by the Back/Next navigation. */
   when?: (ctx: TourCtx) => boolean;
+  /** Turns the step interactive: the user has to do the thing before the
+   *  lesson moves on (see `StepTask`). Absent on narrated steps. */
+  task?: StepTask;
   /** Optional side-effect run by `TourHost` when this step becomes active, e.g.
    *  to reveal a panel so the step's anchor exists to spotlight. Kept off the
    *  pure selectors — only the host calls it. */
@@ -262,6 +303,38 @@ export const ADVANCED_TOUR_STEPS: TourStep[] = [
 /** Contextual-hint ids the tour teaches, marked seen on finish so they don't
  *  immediately re-fire once the overlay closes. */
 export const COVERED_HINTS = ["create-project", "add-tab", "toggle-panels", "file-tree"] as const;
+
+/** The selector whose click completes `step`'s task, or null when the task
+ *  watches for something else. A task that names no signal of its own means
+ *  "click the control this step is pointing at", so it falls back to the
+ *  step's anchor — and a step with neither has nothing to click. */
+export function taskClickSelector(step: TourStep): string | null {
+  const task = step.task;
+  if (!task) return null;
+  if (task.click) return task.click;
+  if (task.appear || task.grow || task.event) return null;
+  return step.anchor;
+}
+
+/** Whether a step waits on the user instead of on Next. */
+export function isInteractive(step: TourStep): boolean {
+  return step.task != null;
+}
+
+/** Praise shown when a task is solved, varied by position so a lesson doesn't
+ *  repeat one word — deterministic (no randomness) so tests and replays of the
+ *  same lesson read identically. */
+export const REWARD_KEYS: TranslationKey[] = [
+  "tour.rewardNice",
+  "tour.rewardExactly",
+  "tour.rewardThatsIt",
+  "tour.rewardGotIt",
+];
+
+/** The praise key for the step at `index` in its lesson. */
+export function rewardKey(index: number): TranslationKey {
+  return REWARD_KEYS[Math.abs(index) % REWARD_KEYS.length];
+}
 
 /** Whether a step applies to the given context (defaults to always-on). */
 export function isStepEligible(step: TourStep, ctx: TourCtx): boolean {

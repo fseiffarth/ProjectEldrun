@@ -198,6 +198,10 @@ export interface BoxRoot {
   dir: string;
   localFile?: string;
   variant: "box" | "member";
+  /** The member project is a remote (SSH) one — its tree lives on the host, so
+   *  the section must gate on the SSH lamp before mounting `FileTree` (a
+   *  synchronous SFTP probe at a dead session freezes the window). */
+  remote?: boolean;
 }
 
 /** A box scope has no single root: the file view shows the box folder plus every
@@ -223,7 +227,15 @@ export function useBoxRoots(scope: string): { activeBox: ProjectBox | null; boxR
       if (!p) continue;
       const dir = resolveProjectDirectory(p);
       if (!dir) continue;
-      roots.push({ rootId: p.id, label: p.name, icon: "📁", dir, localFile: p.local_file, variant: "member" });
+      roots.push({
+        rootId: p.id,
+        label: p.name,
+        icon: "📁",
+        dir,
+        localFile: p.local_file,
+        variant: "member",
+        remote: !!p.remote,
+      });
     }
     return roots;
   }, [activeBox, projects, scope]);
@@ -240,6 +252,7 @@ function BoxRootSection({
   dir,
   localFile,
   variant,
+  remote = false,
   sortKey,
   descending,
   active = true,
@@ -248,6 +261,9 @@ function BoxRootSection({
   const [collapsed, setCollapsed] = useState(false);
   const rel = useProjectsStore((s) => s.rightPanelFolderByProject[rootId] ?? "");
   const setRightPanelFolder = useProjectsStore((s) => s.setRightPanelFolder);
+  // A disconnected remote member must not mount `FileTree` (its synchronous
+  // SFTP list_dir would freeze the window) — same gate as the single-root view.
+  const { remoteSshState, remoteBlocked } = useRemoteBlocked(remote ? rootId : null, remote);
   return (
     <div className={`file-root file-root--${variant}${collapsed ? " is-collapsed" : ""}`}>
       <button
@@ -267,7 +283,25 @@ function BoxRootSection({
           {t(variant === "box" ? "fileRoot.kindBox" : "fileRoot.kindProject")}
         </span>
       </button>
-      {!collapsed && (
+      {!collapsed && remoteBlocked && (
+        <div className="file-tree-empty" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+          <div>
+            {remoteSshState === "connecting"
+              ? t("projectFilesPane.connecting")
+              : t("projectFilesPane.disconnected")}
+          </div>
+          {remoteSshState !== "connecting" && (
+            <button
+              type="button"
+              className="dialog-connect-btn"
+              onClick={() => useRemoteMachinesStore.getState().open(rootId)}
+            >
+              {t("common.connect")}
+            </button>
+          )}
+        </div>
+      )}
+      {!collapsed && !remoteBlocked && (
         <div className="file-root-body">
           <FileTree
             // Same invariant as the single-root tree: (project, root dir) is the

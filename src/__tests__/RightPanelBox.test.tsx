@@ -18,15 +18,17 @@ import { RightPanel } from "../components/layout/RightPanel";
 import { useProjectsStore } from "../stores/projects";
 import { useBoxesStore } from "../stores/boxes";
 import { useTabsStore } from "../stores/tabs";
+import { useRemoteStatusStore } from "../stores/remoteStatus";
 
-function proj(id: string, boxId?: string): ProjectEntry {
+function proj(id: string, _boxId?: string): ProjectEntry {
+  // Membership is member_ids-only now; the second arg is kept so call sites read
+  // as "member of that box" without carrying a stale box_id field.
   return {
     id,
     name: id,
     status: "active",
     position: 10,
     local_file: `/p/${id}/project.json`,
-    ...(boxId ? { box_id: boxId } : {}),
   };
 }
 
@@ -38,6 +40,7 @@ beforeEach(() => {
   useProjectsStore.setState({ projects: [], activeId: null, loaded: true });
   useBoxesStore.setState({ boxes: [], loaded: true });
   useTabsStore.setState({ scope: "root" });
+  useRemoteStatusStore.setState({ byProject: {}, byHost: {} });
 });
 
 describe("RightPanel multi-root box view", () => {
@@ -60,6 +63,67 @@ describe("RightPanel multi-root box view", () => {
     );
     // Box folder root + the two member roots.
     expect(headers).toEqual(["boxA", "p1", "p2"]);
+  });
+
+  it("gates a disconnected remote member behind a connect prompt", async () => {
+    // p2 is a remote (SSH) member whose pool is down: its section must show
+    // the connect prompt instead of mounting FileTree (whose synchronous SFTP
+    // probes would freeze a real window). p1 stays a local member with a tree.
+    useBoxesStore.setState({ boxes: [box("boxA", ["p1", "p2"])] });
+    const remoteMember = {
+      ...proj("p2", "boxA"),
+      remote: { host: "h", user: "u", remote_path: "/srv/p2" },
+    } as ProjectEntry;
+    useProjectsStore.setState({
+      projects: [proj("p1", "boxA"), remoteMember],
+      activeId: null,
+      loaded: true,
+    });
+    useRemoteStatusStore.setState({ byProject: { p2: { ssh: "off", vpn: "off" } } });
+    useTabsStore.setState({ scope: "box:boxA" });
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<RightPanel open={true} />));
+    });
+
+    const sections = [...container.querySelectorAll(".file-root")];
+    expect(sections).toHaveLength(3);
+    // The remote member's section carries the prompt, not a tree body.
+    const p2Section = sections.find((el) =>
+      el.querySelector(".file-root-name")?.textContent?.includes("p2"),
+    )!;
+    expect(p2Section.querySelector(".file-root-body")).toBeNull();
+    expect(p2Section.textContent).toContain("Disconnected");
+    expect(p2Section.querySelector(".dialog-connect-btn")).not.toBeNull();
+    // The local member keeps its ordinary tree body.
+    const p1Section = sections.find((el) =>
+      el.querySelector(".file-root-name")?.textContent?.includes("p1"),
+    )!;
+    expect(p1Section.querySelector(".file-root-body")).not.toBeNull();
+    expect(p1Section.querySelector(".dialog-connect-btn")).toBeNull();
+  });
+
+  it("mounts a connected remote member's tree", async () => {
+    useBoxesStore.setState({ boxes: [box("boxA", ["p2"])] });
+    const remoteMember = {
+      ...proj("p2", "boxA"),
+      remote: { host: "h", user: "u", remote_path: "/srv/p2" },
+    } as ProjectEntry;
+    useProjectsStore.setState({ projects: [remoteMember], activeId: null, loaded: true });
+    useRemoteStatusStore.setState({ byProject: { p2: { ssh: "connected", vpn: "off" } } });
+    useTabsStore.setState({ scope: "box:boxA" });
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<RightPanel open={true} />));
+    });
+
+    const p2Section = [...container.querySelectorAll(".file-root")].find((el) =>
+      el.querySelector(".file-root-name")?.textContent?.includes("p2"),
+    )!;
+    expect(p2Section.querySelector(".file-root-body")).not.toBeNull();
+    expect(p2Section.querySelector(".dialog-connect-btn")).toBeNull();
   });
 
   it("falls back to the single project tree when no box scope is active", async () => {

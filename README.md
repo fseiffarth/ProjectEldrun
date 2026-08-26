@@ -302,16 +302,21 @@ without an sshfs/FUSE mount anywhere.
   Dock it back with the ⤓ button (re-docks into the main layout; session-only, so
   it re-docks on restart too). Closing the popped-out window instead closes its
   tabs for good — they are not docked back and do not restore on next launch.
-- **Project boxes (meta-project grouping)**: group related projects into a *box*
-  that appears as its own pill in the project switcher. Drop a project pill onto a
-  box to add it; click the box to open a box-scoped shell rooted in a per-box
-  folder under `~/.local/share/eldrun/boxes/<name>/`; hover to list members and
-  click one to jump to it. Opening a box writes/refreshes managed
-  `CLAUDE.md`/`GEMINI.md`/`AGENTS.md` link blocks in the box folder pointing at
-  each member's root and matching agent doc (edits outside the managed markers are
-  preserved). Box membership lives in a sibling `boxes.json`, so `projects.json`
-  is untouched. Box scopes are session-only for now — a box's tabs are not
-  restored across project switch or restart.
+- **Project boxes (meta-project grouping)**: temporarily join two or more
+  projects into a *box* — its own pill in the switcher — for side-by-side file
+  work, cross-project copy-paste, PDF merges across members, and box-rooted
+  agent tabs. Membership is non-exclusive (a project can sit in several boxes);
+  member pills keep rendering individually with a small ▣ badge. Add via the
+  pill menu's Boxes group, Ctrl-click multi-select → "Box these…", the box
+  editor, or by dropping a pill on a box; a box only ever disappears through
+  the editor's explicit, confirmed Dissolve. Opening a box lands in a per-box
+  folder under `~/eldrun/boxes/<name>/`, which carries managed
+  `CLAUDE.md`/`GEMINI.md`/`AGENTS.md` link blocks plus one symlink per member
+  (Unix), so agent CLIs can traverse into every member's tree; hover the pill
+  to list members and click one to jump to it. Box membership lives in a
+  sibling `boxes.json`, so `projects.json` is untouched. Box tab scopes
+  persist and restore like a project's; box tabs run locally and uncontained
+  in v1.
 - **Root control terminal**: opens in `~/eldrun/root/` with workspace-level
   context files.
 - **Project terminals**: each active project gets a PTY tab scoped to its

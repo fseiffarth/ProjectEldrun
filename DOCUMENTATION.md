@@ -684,35 +684,63 @@ The root terminal also gets context files in `~/eldrun/root/`:
 
 ### Project Boxes (meta-project grouping)
 
-A *box* groups related projects and appears as its own pill in the switcher
-(`BoxPill.tsx`, `stores/boxes.ts`, `commands/boxes.rs`). Backend commands:
+A *box* temporarily joins two or more projects for side-by-side work — the box
+folder plus every member root in one file view, cross-project copy-paste, PDF
+merges across members, and box-rooted agent tabs (`BoxPill.tsx`,
+`BoxEditorDialog.tsx`, `stores/boxes.ts`, `commands/boxes.rs`;
+`docs/context/project_boxes.md` holds the design rationale). Backend commands:
 `get_boxes`, `save_boxes`, `create_box`, `rename_box`, `delete_box`,
 `set_box_members`, `ensure_box_folder`, `refresh_box_agent_docs`,
 `set_box_relations`.
 
-- **Data model.** Boxes live in their own `~/.local/share/eldrun/boxes.json`
+- **Data model (N:M).** Boxes live in their own `~/.local/share/eldrun/boxes.json`
   (`Vec<ProjectBox>` = `{id, name, member_ids, position, folder?, relations}`)
   so `projects.json` stays byte-compatible. The box's ordered `member_ids` is
-  authoritative; a per-project `box_id` back-reference is a denormalized inverse
-  the frontend derives from `member_ids` on load (in memory only — never written
-  back on load). `get_boxes` reconciles away member ids that no longer reference
-  a known project.
-- **Membership.** Dropping a project pill on a box calls `assignToBox`, which
-  rewrites the affected boxes' `member_ids` and persists both files. A box left
-  with a single member dissolves (its lone member is ungrouped), so dragging a
-  project out of a two-member box tears the box down.
-- **Box folder + agent docs.** Opening a box (`openBox` → `ensure_box_folder`)
-  lazily creates a folder under `~/.local/share/eldrun/boxes/<name>/` (unique
-  name resolved against other boxes and existing dirs) and writes/refreshes
-  managed `CLAUDE.md`/`GEMINI.md`/`AGENTS.md` link blocks pointing at each
-  member's root and same-named agent doc. Only the text between the
-  `<!-- eldrun:box-links:start -->` / `…:end -->` markers is regenerated, so
-  user edits outside the block survive. `refresh_box_agent_docs` re-runs this for
-  an already-opened box after membership changes.
-- **Box scope (session-only).** Opening a box activates a `box:<id>` tab scope
-  rooted in the box folder (disjoint from project ids and `"root"`) and opens a
-  shell tab. Box scopes are **not** persisted or restored — they are dropped on
-  project switch / restart (full box activation is a follow-on).
+  the ONLY membership record, and membership is non-exclusive — a project may
+  sit in several boxes at once. The old per-project `box_id` back-reference is
+  retired; a stale persisted key is stripped in-memory on load and dropped from
+  disk by the next ordinary `save_projects`. `get_boxes` reconciles away member
+  ids that no longer reference a known project.
+- **Switcher (overlay model).** Member pills always render individually (with a
+  small ▣ badge naming their boxes); each box is its own `BoxPill` placed by
+  the box's `position`. Empty and one-member boxes survive and render (dimmed
+  when empty) — the ONLY way a box disappears is the box editor's explicit,
+  confirmed **Dissolve** (the folder and agent docs stay on disk).
+- **Box/unbox gestures.** Four ways in/out: the pill context menu's *Boxes*
+  group (checkbox row per box, additive toggle), Ctrl/Cmd-click multi-select →
+  "Box these (N)…", the box editor dialog (rename, full member list, dissolve;
+  opened from a BoxPill's menu, the pill menu, multi-select, or the switcher
+  "+"), and drag-and-drop (plain or Alt drop on a BoxPill = additive add;
+  Alt-drop one pill on another = new box of the two). The box pill's hover
+  dropdown lists members (click to switch, ✕ removes from that box only).
+- **Box folder, agent docs + member symlinks.** Opening a box (`openBox` →
+  `ensure_box_folder`) lazily creates a folder under `~/eldrun/boxes/<name>/`
+  (unique name resolved against other boxes and existing dirs) and
+  writes/refreshes managed `CLAUDE.md`/`GEMINI.md`/`AGENTS.md` link blocks
+  pointing at each member's root and same-named agent doc; only the text
+  between the `<!-- eldrun:box-links:start -->` / `…:end -->` markers is
+  regenerated, so user edits outside the block survive. Beside the docs, one
+  **symlink per member** (Unix; skipped on Windows) makes each member root
+  reachable as `./<member>/`, so agent CLIs launched in the box folder can
+  traverse into every member. Ownership is recorded in
+  `.eldrun-box-links.json`: regeneration only ever removes links Eldrun itself
+  created, never a user file shadowing a member's name (the member re-links
+  under a `-1` suffix instead). Eldrun's own file confinement deliberately does
+  NOT follow the links — the multi-root Files view is Eldrun's file surface.
+  `refresh_box_agent_docs` re-runs both after membership changes.
+- **Box scope (persisted).** Opening a box activates a `box:<id>` tab scope
+  (disjoint from project ids and `"root"`). The scope is first-class now: its
+  tabs persist under `<state_dir>/sessions/box_<id>/terminals.json` and restore
+  lazily on the next open (nothing restorable seeds one shell at the box
+  folder). New tabs default to the box folder; the box "+" menu also offers
+  per-member rows ("Files — ⟨m⟩" / "Shell — ⟨m⟩" / "Claude — ⟨m⟩") whose tabs
+  land at the member root — resume-safe, since Claude keys history by cwd. The
+  spawn gate (`pty_spawn`) and file confinement (`compute_allowed_roots`)
+  accept the box folder ∪ member roots ∪ remote members' mirrors, and fail
+  closed on an unknown box. Local shells in a box scope get tmux persistence
+  like root/project shells. **Trust (v1):** box tabs run local + uncontained —
+  a member's container/VM boundary does not extend to the shared scope; the box
+  editor shows a notice when a member is containerized/VM.
 
 ### Trust Tiers
 
@@ -889,7 +917,7 @@ All global data is under `~/.local/share/eldrun/`.
 | `crash.log` | Appended on Rust panics. |
 | `sessions/<project id>/terminals.json` | **Tab layout and `open_apps`**, keyed by project id — outside the project tree. |
 | `mail/` | Sealed mail store: SQLite index, blobs, `accounts.json.enc`, `filters.json.enc`. |
-| `browser/`, `vm/`, `remote-projects/`, `skills_cache/`, `boxes/<name>/` | Per-subsystem state. |
+| `browser/`, `vm/`, `remote-projects/`, `skills_cache/` | Per-subsystem state. Box *folders* live under `~/eldrun/boxes/<name>/` (outside the state dir); a box scope's tab layout persists under `sessions/box_<id>/`. |
 | `vibe_local/` | Per-model Vibe homes for local Ollama agent tabs. |
 
 `active_session.json` no longer exists; orphan-session recovery is handled

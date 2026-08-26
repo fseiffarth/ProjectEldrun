@@ -967,7 +967,8 @@ pub fn remote_git_init(spec: &RemoteSpec) -> Result<(), String> {
     let mut args = ssh_base_args(&spec.user, &spec.host, spec.port)?;
     let path = shell_quote(&spec.remote_path);
     args.push(format!(
-        "cd {path} && git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init"
+        "cd {path} && git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {init}",
+        init = crate::services::git_init::INIT_SHELL
     ));
     let out = crate::paths::command_no_window("ssh")
         .args(&args)

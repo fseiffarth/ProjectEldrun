@@ -10,6 +10,9 @@ import {
   type TabEntry,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
+import { boxMembersOfScope, useBoxesStore } from "../../stores/boxes";
+import { useProjectsStore } from "../../stores/projects";
+import { PROJECT_FILES_TAB_CMD } from "../../stores/tabs";
 import {
   EMPTY_CUSTOM_AGENTS,
   DEFAULT_COMPACT_AGENT_IDS,
@@ -72,6 +75,15 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
 
   const localModel = useSettingsStore(
     (s) => s.settings?.ollama_roles?.tabs ?? s.settings?.ollama_model,
+  );
+  // Box scope (#41 Phase 5): per-member rows. In a popout the projects/boxes
+  // stores may be empty (this window is inert to them) — the list is then just
+  // empty and no group renders.
+  const nmBoxes = useBoxesStore((s) => s.boxes);
+  const nmProjects = useProjectsStore((s) => s.projects);
+  const boxMembers = useMemo(
+    () => boxMembersOfScope(scope, nmBoxes, nmProjects),
+    [scope, nmBoxes, nmProjects],
   );
   const customAgents = useSettingsStore(
     (s) => s.settings?.custom_agents ?? EMPTY_CUSTOM_AGENTS,
@@ -282,6 +294,48 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               compactAgentBins,
             ),
           },
+          ...(boxMembers.length > 0
+            ? [{
+                label: t("newTabMenu.groupBoxMembers"),
+                entries: boxMembers.flatMap((m) => [
+                  {
+                    key: `boxfiles:${m.id}`,
+                    label: t("newTabMenu.boxMemberFiles", { name: m.name }),
+                    dot: "▤",
+                    color: TAB_ACCENT.projectfiles,
+                    untested: true,
+                    onPick: () => {
+                      onPick({
+                        label: t("newTabMenu.boxMemberFiles", { name: m.name }),
+                        cmd: PROJECT_FILES_TAB_CMD,
+                        args: [],
+                        env: {},
+                        cwd: m.dir,
+                        kind: "projectfiles",
+                      });
+                      onClose();
+                    },
+                  },
+                  {
+                    key: `boxshell:${m.id}`,
+                    label: t("newTabMenu.boxMemberShell", { name: m.name }),
+                    color: TAB_ACCENT.shell,
+                    untested: true,
+                    onPick: () => {
+                      onPick({
+                        label: t("newTabMenu.boxMemberShell", { name: m.name }),
+                        cmd: "",
+                        args: [],
+                        env: {},
+                        cwd: m.dir,
+                        kind: "shell",
+                      });
+                      onClose();
+                    },
+                  },
+                ]),
+              }]
+            : []),
           {
             label: localModel
               ? t("newTabMenu.groupLocalModelWithName", { model: localModel })

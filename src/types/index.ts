@@ -878,8 +878,6 @@ export interface ProjectEntry {
    *  (`docs/hpc_workspace_plan.md`). Mirrored from project.json's `hpc`. Absent
    *  for every project that isn't in a workspace. */
   hpc?: HpcInfo;
-  /** Denormalized inverse of `ProjectBox.member_ids` (the box this pill is in). */
-  box_id?: string;
   /** Per-project git-hosting profile URL that overrides the global one. Mirrored
    *  from project.json into the pill list; the matching token lives in the OS
    *  keyring, never here. See `GitHostingInfo`. */

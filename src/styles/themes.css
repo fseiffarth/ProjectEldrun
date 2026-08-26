@@ -5257,35 +5257,105 @@ select option {
 }
 
 /* #48 per-type native-viewer settings section. */
-.viewer-prefs-list {
+/* ── Native-viewer preferences: a real table (Project Settings, #48) ──────
+   Every row is the SAME grid, header included, and a type that has no local
+   completion leaves those three cells empty rather than ending its row early.
+   That is the whole point: it is what lets the eye read a column of switches
+   down the list. Before, each row was a bare flex line whose extension list
+   was `flex: 1`, so it stretched to whatever was left over and no two rows'
+   toggles began at the same x — with the labels repeated once per row, which
+   is what the header row replaces. */
+.viewer-prefs-list.boxed > .viewer-pref-row {
+  display: grid;
+  /* Sized to the HEADER captions, not to the switches: a 34px column fits a
+     toggle and nothing else, and the captions above then ran into each other.
+     The controls centre inside whatever their caption needs. */
+  grid-template-columns: minmax(0, 1fr) 60px 98px 84px 68px;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+}
+
+/* Column captions, said once. */
+.viewer-pref-head {
+  color: var(--text-muted);
+  font-size: 9.5px;
+  line-height: 1.25;
+  text-transform: uppercase;
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+/* A caption may wrap onto two lines inside its column rather than spill into
+   its neighbour. */
+.viewer-pref-head > * {
+  overflow-wrap: anywhere;
+}
+
+/* Each control column is centred under its caption; the first column is the
+   label and stays left. */
+.viewer-prefs-list.boxed > .viewer-pref-row > *:not(.viewer-pref-label) {
+  justify-self: center;
+  text-align: center;
+}
+
+.viewer-pref-label {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 1px;
+  min-width: 0;
 }
-.viewer-pref-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 11px;
+
+.viewer-pref-name {
+  color: var(--text-primary);
+  font-weight: 600;
 }
-.viewer-pref-name { min-width: 96px; color: var(--text-primary); }
-.viewer-pref-exts { color: var(--text-muted); font-size: 10px; flex: 1; }
-.viewer-pref-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+
+/* Ellipsised, NOT wrapped: a wrapping extension list is what used to make one
+   row four lines tall and drag its neighbours out of alignment. */
+.viewer-pref-exts {
   color: var(--text-muted);
+  font-size: 10px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
+
+/* The cell a type without local completion leaves empty. */
+.viewer-pref-na {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
 /* #45 per-type default completion-length mode (Sentence/Block/Scope). */
 .viewer-pref-mode {
-  font-size: 10px;
-  padding: 1px 4px;
-  color: var(--text-primary);
-  background: var(--bg-secondary, var(--bg-primary));
-  border: 1px solid var(--border, #444);
-  border-radius: var(--radius-sm);
+  justify-self: stretch;
 }
-.viewer-pref-mode:disabled { opacity: 0.5; }
+.viewer-pref-mode .dropdown-trigger {
+  width: 100%;
+  justify-content: space-between;
+  min-height: 24px;
+  padding: 1px 6px;
+  font-size: 10.5px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* Narrow dialog: the four control columns no longer fit beside the label, so
+   the row becomes label-over-controls instead of overflowing. */
+@media (max-width: 480px) {
+  .viewer-prefs-list.boxed > .viewer-pref-row {
+    grid-template-columns: 60px 98px 84px 68px;
+    justify-content: end;
+    gap: 6px 8px;
+  }
+  .viewer-pref-label {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+  .viewer-pref-head {
+    display: none;
+  }
+}
 
 /* pdf.js viewer: a zoom toolbar above a scrolling stack of page canvases. The
    host and scroll surround use theme variables, so the viewer is dark in dark
@@ -9443,6 +9513,79 @@ select option {
 
 .project-pill.is-box .project-box-member-count {
   margin-left: 4px;
+}
+
+/* An EMPTY box still renders (the overlay model never folds a box away —
+   dissolving is the editor's explicit action), just dimmed. */
+.project-pill.is-box.is-empty {
+  opacity: 0.55;
+}
+
+/* The small box badge on a MEMBER pill (overlay model: member pills always
+   render individually; the badge + its tooltip are what say "also in a box"). */
+.project-pill-boxdot {
+  margin-left: 4px;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--accent);
+  opacity: 0.85;
+}
+
+/* Multi-select ring (Ctrl/Cmd-click, 3b): the selection the "Box these…" menu
+   entry commits. Distinct from `.active` (the current scope's highlight). */
+.project-pill.is-selected {
+  outline: 1.5px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Checkbox-style rows in the pill menu's Boxes group (no flyout machinery —
+   the ☑/☐ glyph is the whole checkbox). */
+.context-menu-check .context-menu-checkmark {
+  display: inline-block;
+  width: 16px;
+  color: var(--accent);
+}
+
+/* Box editor dialog (canonical dialog chrome; see BoxEditorDialog). */
+.box-editor {
+  width: min(440px, 92vw);
+}
+
+.box-editor .box-editor-members {
+  max-height: 40vh;
+  overflow-y: auto;
+  border: 1px solid var(--border-color, color-mix(in srgb, var(--text-primary) 18%, transparent));
+  border-radius: 6px;
+  padding: 4px 6px;
+  margin: 6px 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.box-editor .box-editor-member-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.box-editor .box-editor-empty {
+  opacity: 0.7;
+  padding: 6px 4px;
+}
+
+.box-editor .box-editor-trust-note {
+  font-size: 12px;
+  opacity: 0.85;
+  border-left: 2px solid var(--accent);
+  padding: 4px 8px;
+  margin-bottom: 10px;
+}
+
+.box-editor .box-editor-dissolve {
+  margin-right: auto;
 }
 
 /* Member rows inside the box pill's hover dropdown: click to switch, × to
@@ -13952,28 +14095,120 @@ select option {
   padding: 16px 24px 10px;
 }
 
-/* Ordinary labelled row buttons. `:not(.dialog-close-btn)` because the ✕ that
-   sits in most `.settings-title-row`s is the app close button now (see the
-   Close / window controls section), and a descendant selector would otherwise
-   outrank that rule and box it back up. */
+/* ── The settings button ──────────────────────────────────────────────────
+   ONE button for every settings surface, in one size with three variants —
+   default (outline), `.primary` (filled accent, at most one per view) and
+   `.danger`. `.sm` is the compact size the dense action rows use (an Ollama
+   model row carries five buttons), not a fourth variant.
+
+   The bare-element selectors below are the legacy spelling: a plain <button>
+   inside those specific rows gets the look without a class, which is why the
+   panels could be written without one. New markup should say `settings-btn`
+   (plus `.sm`/`.primary`/`.danger`) — a button anywhere else, e.g. inside a
+   `.settings-card`, matches nothing and renders as a raw native button.
+
+   `:not(.dialog-close-btn)` because the ✕ that sits in most
+   `.settings-title-row`s is the app close button now (see the Close / window
+   controls section), and a descendant selector would otherwise outrank that
+   rule and box it back up. */
+.settings-btn,
 .settings-title-row button:not(.dialog-close-btn),
 .settings-link-row button:not(.dialog-close-btn),
 .global-app-settings-row button:not(.dialog-close-btn),
-.filetype-settings-row button:not(.dialog-close-btn) {
+.filetype-settings-row button:not(.dialog-close-btn),
+.remote-host-settings-row button:not(.dialog-close-btn),
+.ollama-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-sm);
   background: var(--control-bg);
   color: var(--text-primary);
+  font-size: 12.5px;
+  line-height: 1.2;
+  white-space: nowrap;
   cursor: pointer;
   padding: 7px 10px;
+  transition: background var(--transition), border-color var(--transition);
 }
 
-.settings-title-row button:not(.dialog-close-btn):hover,
-.settings-link-row button:not(.dialog-close-btn):hover,
-.global-app-settings-row button:not(.dialog-close-btn):hover,
-.filetype-settings-row button:not(.dialog-close-btn):hover {
+.settings-btn:hover:not(:disabled),
+.settings-title-row button:not(.dialog-close-btn):hover:not(:disabled),
+.settings-link-row button:not(.dialog-close-btn):hover:not(:disabled),
+.global-app-settings-row button:not(.dialog-close-btn):hover:not(:disabled),
+.filetype-settings-row button:not(.dialog-close-btn):hover:not(:disabled),
+.remote-host-settings-row button:not(.dialog-close-btn):hover:not(:disabled),
+.ollama-action-btn:hover:not(:disabled) {
   background: var(--control-hover-bg);
   border-color: var(--accent);
+}
+
+.settings-btn:disabled,
+.settings-title-row button:not(.dialog-close-btn):disabled,
+.settings-link-row button:not(.dialog-close-btn):disabled,
+.global-app-settings-row button:not(.dialog-close-btn):disabled,
+.filetype-settings-row button:not(.dialog-close-btn):disabled,
+.remote-host-settings-row button:not(.dialog-close-btn):disabled,
+.ollama-action-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Compact size for dense action rows. */
+.settings-btn.sm,
+button.settings-btn.sm,
+.ollama-action-btn {
+  font-size: 11px;
+  padding: 3px 8px;
+  line-height: 1.4;
+}
+
+/* A square-ish button whose whole label is one glyph (…, ×). Without this they
+   shrink-wrap to the glyph and a column of them is visibly ragged. */
+.settings-btn.icon,
+button.settings-btn.icon {
+  min-width: 32px;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+/* The one call to action in a view (Install …, Add). Filled accent so it stands
+   apart from the outline buttons beside it. */
+.settings-btn.primary,
+button.settings-btn.primary,
+.ollama-action-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-main);
+  font-weight: 600;
+}
+
+.settings-btn.primary:hover:not(:disabled),
+button.settings-btn.primary:hover:not(:disabled),
+.ollama-action-btn.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+/* Destructive: coloured label, and the border only follows on hover so a row of
+   buttons doesn't read as a row of warnings at rest. */
+.settings-btn.danger,
+button.settings-btn.danger,
+.settings-link-row button.danger,
+.settings-card button.danger,
+.ollama-action-btn.danger {
+  color: var(--danger);
+}
+
+.settings-btn.danger:hover:not(:disabled),
+button.settings-btn.danger:hover:not(:disabled),
+.settings-link-row button.danger:hover:not(:disabled),
+.settings-card button.danger:hover:not(:disabled),
+.ollama-action-btn.danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--control-bg));
 }
 
 /* GlobalMachineMonitorDialog: the full htop-like System Monitor pane opened
@@ -14478,31 +14713,142 @@ select option {
   font-weight: 600;
 }
 
+/* ══ Settings design system ═══════════════════════════════════════════════
+   ONE visual language for every settings surface: the Settings dialog, its
+   sub-panels, and the settings-shaped sections other dialogs reuse.
+
+   It used to be four languages at once. Bordered toggle cards alternated with
+   bare label+control rows, so half the controls sat 12px inside a card edge
+   and half sat flush with the dialog padding; every `Dropdown` was as wide as
+   its own longest option, so no two controls shared a right edge; `.settings-
+   row input` matched no rule at all, which rendered the browser-home, search-
+   template, min-subwindow and Eldrun Mobile fields as raw *native* inputs — a
+   white box in a dark theme; and help paragraphs floated between rows,
+   belonging to nothing.
+
+   A settings panel now renders these building blocks and nothing else:
+
+     .settings-section-title   a section header
+     .settings-subheader       a grouping *inside* a section
+     .settings-card            the one container (bordered, padded surface)
+     .settings-card-row        one label + control line inside a card
+     .settings-row             the same line outside one (inside lists, etc.)
+     .settings-list[.boxed]    a repeated-row list
+     .settings-btn             the one button
+
+   Keeping to them is what holds the left edge, the control column and the type
+   scale identical down the whole scroll — so add a variant here rather than a
+   one-off rule beside the component that needed it. */
+
+/* ── Rows ──────────────────────────────────────────────────────────────── */
 .settings-row,
-.settings-switch-row {
-  min-height: 34px;
+.settings-switch-row,
+.settings-card-row,
+.settings-toggle-card-row {
+  min-height: 32px;
   display: flex;
   align-items: center;
   gap: 12px;
 }
 
-.settings-row label,
-.settings-switch-row span:first-child {
-  flex: 1;
-  color: var(--text-primary);
+/* Only a row that *is* a <label> (a toggle row wrapping its checkbox) reacts to
+   a click on its text; a row holding a Dropdown must not pretend to. */
+label.settings-card-row,
+label.settings-toggle-card-row {
+  cursor: pointer;
 }
 
-.settings-row select,
+.settings-row > label,
+.settings-row > span:first-child,
+.settings-row > .settings-card-label,
+.settings-switch-row > span:first-child,
+.settings-card-row > label,
+.settings-card-row > span:first-child,
+.settings-card-row > .settings-card-label,
+.settings-toggle-card-row > span:first-child {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Rows stacked in one card read as a grouped list rather than as three
+   switches sharing a gap — the Resource-monitor / Remote-features cards. */
+.settings-card-row + .settings-card-row,
+.settings-toggle-card-row + .settings-toggle-card-row {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+}
+
+/* ── The control column ────────────────────────────────────────────────── */
+/* Every control in a settings row is the same width and the same height,
+   whatever it is: this is the rule that stops a Theme dropdown sized to "Fancy
+   Dark" and a "Week starts on" dropdown sized to "Sunday" ending at two
+   different right edges. `0 1` (not `0 0`) so a narrow dialog shrinks the
+   controls instead of overflowing the label. */
+.settings-row > input,
+.settings-row > select,
+.settings-row > .dropdown,
+.settings-row > .password-input,
+.settings-card-row > input,
+.settings-card-row > select,
+.settings-card-row > .dropdown,
+.settings-card-row > .password-input {
+  flex: 0 1 200px;
+  width: 200px;
+}
+
+.settings-row > .dropdown > .dropdown-trigger,
+.settings-card-row > .dropdown > .dropdown-trigger {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  justify-content: space-between;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Field chrome — one border/radius/height/padding for every text field and
+   select on a settings surface, whether it sits in a row, in a `.settings-
+   field` label column, or in one of the grid list rows. */
+.settings-row > input,
+.settings-row > select,
+.settings-card-row > input,
+.settings-card-row > select,
 .settings-field input,
+.settings-field select,
 .global-app-settings-row input[type="text"],
 .global-app-settings-row input:not([type]),
-.filetype-settings-row input {
-  height: 34px;
+.filetype-settings-row input,
+.remote-host-settings-row input {
+  height: 32px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-sm);
   background: var(--control-bg);
   color: var(--text-primary);
+  font-size: 12.5px;
   padding: 0 9px;
+}
+
+/* WebKitGTK paints a number field's spinner as an un-themable grey OS widget
+   butted against the right edge of the themed field — the same reason the app
+   replaced native <select> popups with its own `Dropdown`. Drop it: `min` and
+   `step` still constrain what is typed. */
+.settings-row > input[type="number"]::-webkit-inner-spin-button,
+.settings-row > input[type="number"]::-webkit-outer-spin-button,
+.settings-card-row > input[type="number"]::-webkit-inner-spin-button,
+.settings-card-row > input[type="number"]::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+/* Native <select> keeps room for the caret the base `select` rule paints. */
+.settings-row > select,
+.settings-card-row > select {
+  padding: 0 28px 0 9px;
+  min-width: 0;
 }
 
 /* Group L / #62 — keyboard-shortcut rebinding rows. */
@@ -14515,10 +14861,17 @@ select option {
   min-width: 150px;
   height: 30px;
   border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
   background: var(--control-bg);
   color: var(--text-primary);
   font-family: var(--font-mono, monospace);
+  font-size: 12px;
   cursor: pointer;
+}
+
+.shortcut-capture-btn:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
 }
 
 .shortcut-capture-btn.capturing {
@@ -14526,36 +14879,26 @@ select option {
   color: var(--accent, #4f8cff);
 }
 
-.shortcut-row .settings-back-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.settings-row select,
 .project-dialog select {
   min-width: 160px;
-  appearance: none;
-  background-color: var(--control-bg);
-  background-image:
-    linear-gradient(45deg, transparent 50%, var(--text-primary) 50%),
-    linear-gradient(135deg, var(--text-primary) 50%, transparent 50%);
-  background-position:
-    calc(100% - 15px) 14px,
-    calc(100% - 10px) 14px;
-  background-size: 5px 5px, 5px 5px;
-  background-repeat: no-repeat;
-  cursor: pointer;
-  padding-right: 32px;
 }
 
-.settings-row select:hover,
-.settings-row select:focus,
+.settings-row > input:hover,
+.settings-row > input:focus,
+.settings-row > select:hover,
+.settings-row > select:focus,
+.settings-card-row > input:hover,
+.settings-card-row > input:focus,
+.settings-card-row > select:hover,
+.settings-card-row > select:focus,
 .settings-field input:hover,
 .settings-field input:focus,
 .global-app-settings-row input:hover,
 .global-app-settings-row input:focus,
 .filetype-settings-row input:hover,
 .filetype-settings-row input:focus,
+.remote-host-settings-row input:hover,
+.remote-host-settings-row input:focus,
 .project-dialog input:hover,
 .project-dialog input:focus,
 .project-dialog textarea:hover,
@@ -14579,6 +14922,8 @@ select option {
   color: var(--text-primary);
 }
 
+/* A stacked field: its caption above, the control below, full width. Used where
+   a value is too long to sit in the 200px control column (tokens, URLs). */
 .settings-field {
   display: flex;
   flex-direction: column;
@@ -14587,22 +14932,78 @@ select option {
   font-size: 12px;
 }
 
-.settings-section-title {
-  margin-top: 2px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-subtle);
-  /* Section / per-agent headers: a distinct accent (one step below the panel
-     header) so a grouping like an agent name reads as a heading, not as the
-     primary-coloured body text, button labels and commands around it. */
-  color: var(--accent-secondary);
-  font-weight: 650;
-  letter-spacing: 0.01em;
+/* ── Cards ─────────────────────────────────────────────────────────────── */
+/* The one container. `.settings-toggle-card` is the older name for it and
+   `.agent-list-entry` was a second, near-identical card that used
+   --bg-elevated / --border-subtle instead; all three are one surface now. */
+.settings-card,
+.settings-toggle-card,
+.agent-list-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
 }
 
+.settings-card > .settings-help,
+.settings-toggle-card > .settings-help {
+  margin: 0;
+}
+
+/* ── Headers ───────────────────────────────────────────────────────────── */
+/* Section header. Small caps + tracking rather than just a coloured line of
+   body text, so a section reads as a header at a glance and clearly outranks
+   the card titles (13px/600, --text-primary) beneath it. */
+.settings-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--accent-secondary);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-section-title > .untested-tag,
+.settings-subheader > .untested-tag {
+  margin-left: 0;
+}
+
+/* One step down: a grouping *inside* a section (a per-agent name, a per-host
+   block). No rule of its own, no small caps — it is a title, not a divider. */
+.settings-subheader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+/* Air above it when it follows content, none when it opens a card. */
+* + .settings-subheader {
+  margin-top: 6px;
+}
+
+/* A row of buttons under a section (Add folder, Take the tour, …). */
 .settings-link-row {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
-  padding-top: 4px;
+  padding-top: 2px;
+}
+
+/* A dialog's decision row: the choices sit at the trailing edge. */
+.settings-link-row-end {
+  justify-content: flex-end;
 }
 
 /* Sub-panel navigation menu at the foot of the main settings panel. Mirrors the
@@ -14645,37 +15046,8 @@ select option {
   line-height: 1.4;
 }
 
-/* A toggle with an explanatory paragraph: same card language as
-   .settings-nav-item/.lesson-item (border, radius, bg-panel) instead of a bare
-   switch-row bleeding into an unrelated-looking paragraph below it. */
-.settings-toggle-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border-color);
-  background: var(--bg-panel);
-}
-
-.settings-toggle-card-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  cursor: pointer;
-}
-
-.settings-toggle-card-row span:first-child {
-  flex: 1;
-  color: var(--text-primary);
-  font-weight: 600;
-  font-size: 13px;
-}
-
-.settings-toggle-card > .settings-help {
-  margin: 0;
-}
-
+/* Explanatory copy. Inside a card it explains that card's control; loose in the
+   scroll it introduces the section it follows. */
 .settings-help {
   color: var(--text-secondary);
   font-size: 12px;
@@ -14720,19 +15092,9 @@ select option {
   line-height: 1.4;
 }
 
+/* Chrome comes from `.settings-btn.primary`; only the layout role is local. */
 .mobile-phone-install-button {
   flex: 0 0 auto;
-  padding: 6px 10px;
-  border: 1px solid color-mix(in srgb, var(--accent) 76%, var(--control-border));
-  border-radius: var(--radius-sm);
-  background: var(--accent);
-  color: var(--accent-contrast, #fff);
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.mobile-phone-install-button:hover {
-  filter: brightness(1.08);
 }
 
 /* A compact, actionable summary of the checks Eldrun itself can make. It does
@@ -14890,6 +15252,19 @@ select option {
 .mobile-project-access-search {
   width: 100%;
   box-sizing: border-box;
+  height: 32px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  padding: 0 9px;
+}
+
+.mobile-project-access-search:hover,
+.mobile-project-access-search:focus {
+  border-color: var(--accent);
+  outline: none;
 }
 
 .mobile-project-access-list {
@@ -14901,14 +15276,17 @@ select option {
   padding-right: 4px;
 }
 
-/* Archived-projects (Settings) list */
+/* Archived-projects (Settings) list — `.settings-list.boxed`'s shape, spelled
+   out because this one is a <ul> that also scrolls. */
 .archived-projects-list {
   list-style: none;
-  margin: 8px 0;
+  margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
   max-height: 320px;
   overflow-y: auto;
 }
@@ -14919,8 +15297,10 @@ select option {
   justify-content: space-between;
   gap: 12px;
   padding: 8px 10px;
-  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
-  border-radius: var(--radius);
+}
+
+.archived-project-row + .archived-project-row {
+  border-top: 1px solid var(--border-subtle);
 }
 
 .archived-project-info {
@@ -14962,6 +15342,19 @@ select option {
 
 .archived-project-confirm input {
   min-width: 160px;
+  height: 30px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  padding: 0 9px;
+}
+
+.archived-project-confirm input:hover,
+.archived-project-confirm input:focus {
+  border-color: var(--accent);
+  outline: none;
 }
 
 .archived-project-confirm-group {
@@ -15115,10 +15508,50 @@ select option {
   word-break: break-word;
 }
 
+/* ── Lists ────────────────────────────────────────────────────────────────
+   Two shapes, one class. Bare, a list is a stack of cards (the VPN configs,
+   the agents) and the cards draw their own edges. `.boxed` is for a list of
+   *repeated rows* — download folders, shortcuts, file types, global apps,
+   remote hosts — which read as one framed table with hairline separators
+   rather than as N loose rows floating on the dialog background. */
 .settings-list {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.settings-list.boxed {
+  gap: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  /* Clips the first/last row's corners against the frame's radius. Rows never
+     scroll inside the frame, so no scrollbar ever meets the rounded edge. */
+  overflow: hidden;
+}
+
+.settings-list.boxed > * {
+  padding: 8px 10px;
+}
+
+.settings-list.boxed > * + * {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.settings-list.boxed > .settings-empty {
+  padding: 14px 10px;
+  text-align: center;
+}
+
+/* A row's own label column, ellipsised — a long path or an agent name must not
+   push the row's buttons off the right edge. */
+.settings-list-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
 }
 
 .global-app-settings-row,
@@ -15149,10 +15582,11 @@ select option {
   grid-template-columns: minmax(90px, 180px) minmax(120px, 1fr) auto;
 }
 
+/* The add row is the framed list's last row now; `.settings-list.boxed` draws
+   its separator, so it only needs the wider first column a bare host name
+   doesn't. */
 .remote-host-settings-add {
-  border-top: 1px solid var(--border-subtle);
-  padding-top: 8px;
-  margin-top: 2px;
+  grid-template-columns: minmax(90px, 180px) minmax(120px, 1fr) auto;
 }
 
 .settings-role-icon {
@@ -17339,19 +17773,10 @@ select option {
 /* Vibe runtime section + its inline status dot (used inside flowing text). */
 .ollama-vibe-section { margin-top: 14px; }
 
-/* Each agent rendered as a separated, card-like list entry in Manage Agents. */
-.agent-list-entry {
-  margin-top: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius);
-  background: var(--bg-elevated, rgba(255, 255, 255, 0.03));
-}
-.agent-list-entry .settings-section-title {
-  margin-top: 0;
-  padding-top: 0;
-  border-top: none;
-}
+/* Each agent is one `.settings-card` (see the settings design system) — it
+   used to be a second, near-identical card with its own --bg-elevated surface
+   and --border-subtle edge, which is exactly the drift the shared card class
+   exists to prevent. Only its own head/toggle/result bits live here. */
 .agent-list-entry-head {
   display: flex;
   align-items: center;
@@ -17402,11 +17827,6 @@ select option {
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px solid var(--border-subtle);
-}
-.agent-codex-hook .settings-section-title {
-  margin-top: 0;
-  padding-top: 0;
-  border-top: none;
 }
 .ollama-vibe-section .ollama-status-dot {
   display: inline-block;
@@ -18399,43 +18819,9 @@ select option {
   word-break: break-word;
 }
 
-.ollama-action-btn {
-  font-size: 11px;
-  padding: 3px 8px;
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-sm);
-  background: var(--control-bg);
-  color: var(--text-primary);
-  cursor: pointer;
-  white-space: nowrap;
-  line-height: 1.4;
-}
-.ollama-action-btn:hover:not(:disabled) {
-  background: var(--control-hover-bg);
-  border-color: var(--accent);
-}
-.ollama-action-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-.ollama-action-btn.danger { color: var(--danger); }
-.ollama-action-btn.danger:hover:not(:disabled) {
-  border-color: var(--danger);
-}
-
-/* Primary call-to-action (Install …). Filled accent so the main action stands
-   apart from the secondary outline buttons (Copy / Re-check / Refresh) sharing
-   this class. */
-.ollama-action-btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--bg-main);
-  font-weight: 600;
-}
-.ollama-action-btn.primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-}
+/* `.ollama-action-btn` is the settings button in its compact size — look,
+   hover, disabled and the .primary/.danger variants all come from the settings
+   button system (see "The settings button"), not from a block of its own. */
 
 .ollama-model-row {
   display: flex;
@@ -20091,9 +20477,137 @@ select option {
   background: var(--accent-hover, var(--accent));
 }
 
+/* Interactive step: the click the task just asked for has to reach the real
+   control underneath, so BOTH layers stand aside — the blocker and the
+   full-screen overlay box it sits in. Turning off only the blocker changes
+   nothing: `.tour-overlay` is itself `inset: 0` and would keep swallowing
+   every click. The bubble sets `pointer-events: auto` back on for itself, so
+   Back/Next/Hint stay live inside a pass-through overlay. The dim and the
+   spotlight ring are unaffected — only the swallowing stops. */
+.tour-overlay--pass,
+.tour-blocker--pass {
+  pointer-events: none;
+}
+
+/* Solved: the ring goes green under the `:)`. Both layers stay unblurred (a
+   blurred box-shadow is software-rendered here), so this is a colour swap, not
+   a new effect. */
+.tour-spotlight--solved {
+  box-shadow:
+    0 0 0 9999px rgba(0, 0, 0, 0.58),
+    0 0 0 2px var(--success),
+    0 0 0 6px color-mix(in srgb, var(--success) 34%, transparent);
+}
+
+/* The task line: what the user has to do, set apart from the narration above
+   it by the accent rule rather than by another box. */
+.tour-task {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 10px;
+  padding-left: 9px;
+  border-left: 2px solid var(--accent);
+}
+
+.tour-task-label {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tour-task-text {
+  color: var(--text-primary);
+  line-height: 1.45;
+}
+
+/* The reward that replaces the task line the moment it's done. */
+.tour-reward {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 10px;
+  padding-left: 9px;
+  border-left: 2px solid var(--success);
+  animation: tour-reward-in 0.24s ease-out;
+}
+
+.tour-reward-face {
+  color: var(--success);
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1;
+  /* Left as typed, sideways — it's the smiley people write in a terminal, and
+     rotating it upright turns a two-glyph joke into a shape nobody reads. */
+  letter-spacing: -1px;
+}
+
+.tour-reward-text {
+  color: var(--success);
+  font-weight: 600;
+}
+
+@keyframes tour-reward-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+/* The unfolded hint. */
+.tour-hint {
+  margin-top: 9px;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle, var(--bg-panel));
+  border: 1px dashed var(--border-color);
+  color: var(--text-secondary);
+  line-height: 1.45;
+  animation: tour-reward-in 0.2s ease-out;
+}
+
+.tour-hint-btn {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+
+.tour-hint-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+/* Unsolved for a while: the button asks. Opacity only — the border colour is
+   what pulses, nothing blurred moves. */
+.tour-hint-btn.nudge {
+  color: var(--accent);
+  border-color: var(--accent);
+  animation: tour-hint-nudge 1.6s ease-in-out infinite;
+}
+
+@keyframes tour-hint-nudge {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .tour-spotlight,
-  .tour-bubble {
+  .tour-bubble,
+  .tour-reward,
+  .tour-hint,
+  .tour-hint-btn.nudge {
     animation: none;
   }
 }
