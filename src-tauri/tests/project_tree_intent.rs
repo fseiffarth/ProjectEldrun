@@ -193,7 +193,10 @@ fn the_session_dir_is_in_the_state_dir_and_is_one_component_deep() {
             "session dir for {id:?} escaped the state dir: {dir:?}"
         );
         assert_eq!(
-            dir.strip_prefix(state.join("sessions")).unwrap().components().count(),
+            dir.strip_prefix(state.join("sessions"))
+                .unwrap()
+                .components()
+                .count(),
             1,
             "session dir for {id:?} must be exactly one component under sessions/: {dir:?}"
         );

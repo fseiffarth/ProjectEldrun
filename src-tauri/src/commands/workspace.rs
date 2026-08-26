@@ -60,18 +60,12 @@ pub fn workspace_switch(
 }
 
 #[tauri::command]
-pub fn show_window(
-    state: State<'_, WorkspaceStateArc>,
-    window_id: u64,
-) -> Result<(), String> {
+pub fn show_window(state: State<'_, WorkspaceStateArc>, window_id: u64) -> Result<(), String> {
     state.lock().unwrap().backend.show_window(window_id)
 }
 
 #[tauri::command]
-pub fn hide_window(
-    state: State<'_, WorkspaceStateArc>,
-    window_id: u64,
-) -> Result<(), String> {
+pub fn hide_window(state: State<'_, WorkspaceStateArc>, window_id: u64) -> Result<(), String> {
     state.lock().unwrap().backend.hide_window(window_id)
 }
 
@@ -93,10 +87,8 @@ pub fn switch_project_windows(
 ) -> Result<(), String> {
     let (previous_window_ids, current_window_ids) = {
         let windows = windows.lock().unwrap();
-        let previous = opened_windows_for_project(
-            windows.windows.values(),
-            previous_project_id.as_deref(),
-        );
+        let previous =
+            opened_windows_for_project(windows.windows.values(), previous_project_id.as_deref());
         let current = opened_windows_for_project(windows.windows.values(), project_id.as_deref());
         (
             previous
@@ -228,7 +220,11 @@ mod tests {
     fn mk(dir: &std::path::Path, iface: &str, up: bool, wireless: bool) {
         let iface_dir = dir.join(iface);
         fs::create_dir_all(&iface_dir).unwrap();
-        fs::write(iface_dir.join("operstate"), if up { "up\n" } else { "down\n" }).unwrap();
+        fs::write(
+            iface_dir.join("operstate"),
+            if up { "up\n" } else { "down\n" },
+        )
+        .unwrap();
         if wireless {
             fs::create_dir_all(iface_dir.join("wireless")).unwrap();
         }

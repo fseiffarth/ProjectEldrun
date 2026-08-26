@@ -41,11 +41,33 @@ fn fixture() -> Vec<u8> {
 /// fixtures). Text is not evidence; markup is.
 const FORBIDDEN_MARKUP: &[&str] = &[
     // active elements
-    "<script", "</script", "<style", "<iframe", "<object", "<embed", "<form", "<input", "<button",
-    "<base", "<meta", "<link", "<svg", "<math", "<template", "<noscript", "<textarea", "<xmp",
-    "<audio", "<video", "<source", "<body", "<html", "<head",
+    "<script",
+    "</script",
+    "<style",
+    "<iframe",
+    "<object",
+    "<embed",
+    "<form",
+    "<input",
+    "<button",
+    "<base",
+    "<meta",
+    "<link",
+    "<svg",
+    "<math",
+    "<template",
+    "<noscript",
+    "<textarea",
+    "<xmp",
+    "<audio",
+    "<video",
+    "<source",
+    "<body",
+    "<html",
+    "<head",
     // comments and bogus comments re-parse differently in the renderer
-    "<!--", "<![",
+    "<!--",
+    "<![",
 ];
 
 /// Substrings that must not appear **inside a start tag** — i.e. in attribute
@@ -55,15 +77,40 @@ const FORBIDDEN_MARKUP: &[&str] = &[
 /// case rather than the exotic one.
 const FORBIDDEN_IN_TAGS: &[&str] = &[
     // handlers and script schemes
-    "onerror", "onload", "onclick", "onfocus", "onmouseover", "javascript:", "vbscript:",
+    "onerror",
+    "onload",
+    "onclick",
+    "onfocus",
+    "onmouseover",
+    "javascript:",
+    "vbscript:",
     "data:text/html",
     // anything that navigates or fetches
-    "href=", "src=", "srcset", "formaction", "action=", "background=", "poster=", "ping=",
-    "download=", "target=", "xlink", "@import", "url(", "expression(",
+    "href=",
+    "src=",
+    "srcset",
+    "formaction",
+    "action=",
+    "background=",
+    "poster=",
+    "ping=",
+    "download=",
+    "target=",
+    "xlink",
+    "@import",
+    "url(",
+    "expression(",
     // fake-chrome CSS
-    "position:", "z-index", "opacity", "filter:", "transform:", "pointer-events", "webkit",
+    "position:",
+    "z-index",
+    "opacity",
+    "filter:",
+    "transform:",
+    "pointer-events",
+    "webkit",
     // no attribute may name a host the payloads point at
-    "evil.example", "tracker.example",
+    "evil.example",
+    "tracker.example",
 ];
 
 /// The start tags of a serialized fragment, lowercased, without their contents.
@@ -86,7 +133,10 @@ fn the_hostile_message_renders_inert() {
 
     // ── The body reached the HTML path at all (a test that silently fell back
     //    to plain text would assert nothing about the sanitizer). ───────────
-    let html = parsed.html.as_deref().expect("the text/html part must be used");
+    let html = parsed
+        .html
+        .as_deref()
+        .expect("the text/html part must be used");
     assert!(
         html.contains("<script>alert('script-element')</script>"),
         "the fixture must reach the sanitizer still hostile"
@@ -105,12 +155,16 @@ fn the_hostile_message_renders_inert() {
 
     for tag in start_tags(&out.html) {
         for bad in FORBIDDEN_IN_TAGS {
-            assert!(!tag.contains(bad), "`{bad}` survived in a start tag: `{tag}`");
+            assert!(
+                !tag.contains(bad),
+                "`{bad}` survived in a start tag: `{tag}`"
+            );
         }
         // And no event handler at all, by shape rather than by name — the `on*`
         // list grows with every spec revision.
         assert!(
-            !tag.split_whitespace().any(|w| w.starts_with("on") && w.contains('=')),
+            !tag.split_whitespace()
+                .any(|w| w.starts_with("on") && w.contains('=')),
             "an event handler survived in `{tag}`"
         );
     }
@@ -130,7 +184,9 @@ fn the_hostile_message_renders_inert() {
     //    affordance to offer for them. ──────────────────────────────────────
     for scheme in ["javascript:", "vbscript:", "data:", "file:"] {
         assert!(
-            !out.links.iter().any(|l| l.href.to_ascii_lowercase().starts_with(scheme)),
+            !out.links
+                .iter()
+                .any(|l| l.href.to_ascii_lowercase().starts_with(scheme)),
             "a `{scheme}` link reached the link table: {:?}",
             out.links
         );
@@ -142,7 +198,10 @@ fn the_hostile_message_renders_inert() {
         .iter()
         .find(|l| l.href == "https://evil.example/login")
         .expect("the phishing anchor must be in the table");
-    assert!(phish.mismatch, "text says bank.example, href says evil.example");
+    assert!(
+        phish.mismatch,
+        "text says bank.example, href says evil.example"
+    );
     assert_eq!(phish.display_host, "evil.example");
 
     let userinfo = out
@@ -150,7 +209,10 @@ fn the_hostile_message_renders_inert() {
         .iter()
         .find(|l| l.href.contains("bank.example@evil.example"))
         .expect("the userinfo anchor must be in the table");
-    assert!(userinfo.mismatch, "userinfo must always count as a mismatch");
+    assert!(
+        userinfo.mismatch,
+        "userinfo must always count as a mismatch"
+    );
     assert_eq!(
         userinfo.display_host, "evil.example",
         "the host is the part after the last @, and the panel must say so"
@@ -176,13 +238,20 @@ fn the_hostile_message_renders_inert() {
     );
 
     // Non-web schemes carry a warning, so the UI offers no Open button.
-    let ftp = out.links.iter().find(|l| l.href.starts_with("ftp://")).unwrap();
+    let ftp = out
+        .links
+        .iter()
+        .find(|l| l.href.starts_with("ftp://"))
+        .unwrap();
     assert_eq!(ftp.scheme_warning.as_deref(), Some("ftp"));
 
     // No link row carries a bidi control that could reorder what it says.
     for link in &out.links {
         assert!(
-            !link.display_host.chars().any(|c| ('\u{202A}'..='\u{202E}').contains(&c)),
+            !link
+                .display_host
+                .chars()
+                .any(|c| ('\u{202A}'..='\u{202E}').contains(&c)),
             "a bidi control survived into a link row: {link:?}"
         );
     }
@@ -198,7 +267,10 @@ fn the_hostile_message_renders_inert() {
     //    markup on a second parse, which is the mXSS property. ─────────────
     let once = sanitize_message_html(&out.html).unwrap();
     let twice = sanitize_message_html(&once.html).unwrap();
-    assert_eq!(once.html, twice.html, "the body does not reach a fixed point");
+    assert_eq!(
+        once.html, twice.html,
+        "the body does not reach a fixed point"
+    );
 }
 
 /// **A known behaviour, characterized rather than asserted as desirable.**
@@ -272,7 +344,9 @@ fn the_hostile_attachments_cannot_attack_the_filesystem() {
         assert!(!name.contains('\\'), "a separator survived in {name:?}");
         assert!(!name.contains(".."), "a traversal survived in {name:?}");
         assert!(
-            !name.chars().any(|c| c.is_control() || ('\u{202A}'..='\u{202E}').contains(&c)),
+            !name
+                .chars()
+                .any(|c| c.is_control() || ('\u{202A}'..='\u{202E}').contains(&c)),
             "a control/bidi char survived in {name:?}"
         );
     }
@@ -295,8 +369,14 @@ fn the_hostile_attachments_cannot_attack_the_filesystem() {
         "a PE payload labelled image/png must be flagged"
     );
 
-    assert!(names.contains(&".bashrc") || names.contains(&"_.bashrc"), "{names:?}");
-    assert!(names.iter().any(|n| n.eq_ignore_ascii_case("_con.txt")), "{names:?}");
+    assert!(
+        names.contains(&".bashrc") || names.contains(&"_.bashrc"),
+        "{names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n.eq_ignore_ascii_case("_con.txt")),
+        "{names:?}"
+    );
 }
 
 /// The message forges its own `Authentication-Results`, claiming SPF, DKIM and
@@ -356,7 +436,9 @@ fn the_spoofed_sender_is_disclosed_rather_than_resolved() {
     // Two `From:` headers is the classic spoofing setup — it must be reported,
     // not silently resolved to whichever one the parser preferred.
     assert!(
-        h.malformed_headers.iter().any(|m| m.to_ascii_lowercase().contains("from")),
+        h.malformed_headers
+            .iter()
+            .any(|m| m.to_ascii_lowercase().contains("from")),
         "a duplicate From must be surfaced: {:?}",
         h.malformed_headers
     );
@@ -382,7 +464,10 @@ fn the_frontend_fixture_is_this_pipelines_output() {
     }
 
     let on_disk = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!("{}: {e} — regenerate with UPDATE_HOSTILE_FIXTURE=1", path.display())
+        panic!(
+            "{}: {e} — regenerate with UPDATE_HOSTILE_FIXTURE=1",
+            path.display()
+        )
     });
     assert_eq!(
         on_disk, out.html,

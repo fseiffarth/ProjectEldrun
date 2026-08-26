@@ -12,8 +12,9 @@ import { useT } from "../../lib/i18n";
 const ANCHOR_WAIT_MS = 600;
 
 /**
- * Drives the guided "Take a tour" walkthrough: listens for the
- * `eldrun:start-tour` event, measures the active step's anchor (re-measuring as
+ * Drives the guided walkthroughs — the main tour, the advanced (remote) tour,
+ * and the lessons: listens for the `eldrun:start-tour` /
+ * `eldrun:start-advanced-tour` events, measures the active step's anchor (re-measuring as
  * the layout shifts), pulses the highlighted element, owns the keyboard
  * navigation, and renders the `TourCoachmark` overlay. Mounted once in
  * `AppShell` beside `HintHost` (never in detached windows). Selection/ordering
@@ -26,6 +27,7 @@ export function TourHost() {
   const index = useTourStore((s) => s.index);
   const steps = useTourStore((s) => s.steps);
   const start = useTourStore((s) => s.start);
+  const startAdvanced = useTourStore((s) => s.startAdvanced);
   const next = useTourStore((s) => s.next);
   const prev = useTourStore((s) => s.prev);
   const skip = useTourStore((s) => s.skip);
@@ -38,12 +40,18 @@ export function TourHost() {
 
   const step = active ? steps[index] : null;
 
-  // Entry point: the gear menu / Settings / HowToStart all dispatch this.
+  // Entry points: the gear menu / Settings / HowToStart dispatch the first, the
+  // gear menu and Settings the second (the first-run modal stays local-only).
   useEffect(() => {
     const onStart = () => start();
+    const onStartAdvanced = () => startAdvanced();
     window.addEventListener("eldrun:start-tour", onStart);
-    return () => window.removeEventListener("eldrun:start-tour", onStart);
-  }, [start]);
+    window.addEventListener("eldrun:start-advanced-tour", onStartAdvanced);
+    return () => {
+      window.removeEventListener("eldrun:start-tour", onStart);
+      window.removeEventListener("eldrun:start-advanced-tour", onStartAdvanced);
+    };
+  }, [start, startAdvanced]);
 
   // Run a step's optional prepare side-effect (e.g. reveal the file panel so
   // the step has an anchor to spotlight) when it becomes active.

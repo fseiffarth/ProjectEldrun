@@ -13,10 +13,12 @@ import {
 import { useSettingsStore } from "../../stores/settings";
 import {
   EMPTY_CUSTOM_AGENTS,
+  DEFAULT_COMPACT_AGENT_IDS,
   SHELL_ITEMS,
   TAB_ACCENT,
   agentMenuEntries,
   buildStaticTabSpec,
+  compactAgentMenuEntries,
   enabledInstalledAgentBins,
   isFileTabKind,
   itemLabel,
@@ -78,6 +80,9 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   // Built-in agents the user turned off in "Manage Agents" (Settings) despite
   // being installed — hidden from this menu without uninstalling the CLI.
   const disabledAgents = useSettingsStore((s) => s.settings?.disabled_agents);
+  const compactAgentIds = useSettingsStore(
+    (s) => s.settings?.compact_tab_agents ?? DEFAULT_COMPACT_AGENT_IDS,
+  );
 
   // Installed agent CLIs (id == cmd); only offer ones actually present. `null`
   // until the probe resolves, so the Agents list renders nothing (not a flash of
@@ -91,6 +96,15 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
     if (!agentStatuses) return null;
     return enabledInstalledAgentBins(agentStatuses, disabledAgents);
   }, [agentStatuses, disabledAgents]);
+  const compactAgentBins = useMemo(() => {
+    if (!agentStatuses) return new Set<string>();
+    const compactIds = new Set(compactAgentIds);
+    return new Set(
+      agentStatuses
+        .filter((agent) => compactIds.has(agent.id) || compactIds.has(agent.bin))
+        .map((agent) => agent.bin),
+    );
+  }, [agentStatuses, compactAgentIds]);
   // Installed *custom*-agent commands, probed separately (they aren't in the
   // built-in registry). `null` until resolved — custom agents render enabled
   // until a probe proves one missing.
@@ -242,6 +256,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
         groups={[
           {
             label: t("newTabMenu.groupAgents"),
+            moreLabel: t("newTabMenu.moreAgents"),
             entries: agentMenuEntries({
               installedBuiltins: enabledAgents,
               installedCmds: installedCustom,
@@ -253,6 +268,20 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               },
               t,
             }),
+            compactEntries: compactAgentMenuEntries(
+              agentMenuEntries({
+                installedBuiltins: enabledAgents,
+                installedCmds: installedCustom,
+                customAgents,
+                pick: pickStatic,
+                onAddCustom: () => {
+                  onClose();
+                  onManageAgents();
+                },
+                t,
+              }),
+              compactAgentBins,
+            ),
           },
           {
             label: localModel

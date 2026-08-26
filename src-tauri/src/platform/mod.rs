@@ -201,6 +201,9 @@ mod tests {
     fn workspace_info_label_is_not_empty() {
         let b = detect_backend();
         let info = b.info();
-        assert!(!info.label.is_empty(), "WorkspaceInfo.label must not be empty");
+        assert!(
+            !info.label.is_empty(),
+            "WorkspaceInfo.label must not be empty"
+        );
     }
 }

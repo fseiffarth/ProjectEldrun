@@ -38,6 +38,7 @@ import { useWindowFocused } from "../../hooks/useWindowFocused";
 import { TabHoverCard } from "../tabs/TabHoverCard";
 import { WindowControls } from "../header/WindowControls";
 import { DragGhost, SplitPreviewOverlay } from "./CenterPanel";
+import { TRASH_PROJECT_ID } from "../../lib/trashProject";
 import { TabDropPlaceholder } from "../tabs/TabDropPlaceholder";
 import { NewTabMenu } from "../tabs/NewTabMenu";
 import { CustomAgentDialog } from "../tabs/CustomAgentDialog";
@@ -1358,7 +1359,7 @@ export function DetachedCenterPanel({
           {/* #42: the popout's own "+" — the detached window had no way to add
               tabs. Streams an "add" edit to the main window (which owns tab
               creation + the PTY) via onAddTab. */}
-          <div className="tab-new-wrap">
+          {scope !== TRASH_PROJECT_ID && <div className="tab-new-wrap">
             <button
               className="tab-new-btn"
               title={t("detachedTabs.newTab")}
@@ -1377,7 +1378,7 @@ export function DetachedCenterPanel({
             >
               +
             </button>
-          </div>
+          </div>}
           </DetachedTabStrip>
           {/* Per-subwindow right file viewer, same ◫ toggle as the main window's
               TabBar. Applied optimistically + streamed to the main window. When

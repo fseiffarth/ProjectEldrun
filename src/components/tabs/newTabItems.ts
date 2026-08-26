@@ -162,6 +162,21 @@ export function buildStaticTabSpec(
  *  effect that depends on it). */
 export const EMPTY_CUSTOM_AGENTS: CustomAgent[] = [];
 
+/** The useful first-launch shortlist. Once the user touches a 🧠 "+ tab" chip,
+ *  their persisted list (including an intentional empty one) takes over. */
+export const DEFAULT_COMPACT_AGENT_IDS = ["claude", "codex", "gemini"];
+
+/** Keep only the selected built-in agents in the menu's idle compact view, but
+ * always retain the management row. Searching still receives the full list. */
+export function compactAgentMenuEntries(
+  entries: AddMenuEntry[],
+  compactBins: ReadonlySet<string>,
+): AddMenuEntry[] {
+  return entries.filter(
+    (entry) => compactBins.has(entry.key) || entry.key === "__add_custom_agent__",
+  );
+}
+
 /** The installed built-in commands from the backend's agent registry. Agent
  * ids are not necessarily executable names (Google Antigravity is
  * `antigravity` / `agy`), while menu items launch by executable name. */
@@ -219,6 +234,8 @@ export function agentMenuEntries(opts: {
   installedBuiltins: Set<string> | null;
   installedCmds: Set<string> | null;
   customAgents: CustomAgent[];
+  /** Strict built-in-only surfaces (Trash) must not offer arbitrary commands. */
+  allowCustom?: boolean;
   pick: (item: StaticMenuItem) => void;
   onAddCustom: () => void;
   t: (key: TranslationKey) => string;
@@ -231,7 +248,7 @@ export function agentMenuEntries(opts: {
     color: TAB_ACCENT[item.kind],
     onPick: () => opts.pick(item),
   }));
-  const custom = opts.customAgents.map((ca) => {
+  const custom = (opts.allowCustom !== false ? opts.customAgents : []).map((ca) => {
     const missing = opts.installedCmds != null && !opts.installedCmds.has(ca.cmd);
     return {
       key: `custom:${ca.id}`,
@@ -244,12 +261,14 @@ export function agentMenuEntries(opts: {
   return [
     ...builtins,
     ...custom,
-    {
-      key: "__add_custom_agent__",
-      label: opts.t("newTabMenu.addAgent"),
-      dot: "＋",
-      color: "var(--text-muted)",
-      onPick: opts.onAddCustom,
-    },
+    ...(opts.allowCustom !== false
+      ? [{
+          key: "__add_custom_agent__",
+          label: opts.t("newTabMenu.addAgent"),
+          dot: "＋",
+          color: "var(--text-muted)",
+          onPick: opts.onAddCustom,
+        }]
+      : []),
   ];
 }

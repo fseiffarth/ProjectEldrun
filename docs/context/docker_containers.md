@@ -1,6 +1,6 @@
 # Docker project containers
 
-Referenced from `CLAUDE.md`.
+Referenced from `AGENTS.md`.
 
 **A project can run in a container** (#38, `services::sandbox`,
 `docs/docker_projects_plan.md`): with the pill's "Run this project in a

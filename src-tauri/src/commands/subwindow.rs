@@ -16,8 +16,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{
-    AppHandle, Manager, PhysicalPosition, PhysicalSize, Position, Size, State,
-    WebviewWindowBuilder, WebviewUrl,
+    AppHandle, Manager, PhysicalPosition, PhysicalSize, Position, Size, State, WebviewUrl,
+    WebviewWindowBuilder,
 };
 
 use crate::commands::apps::{
@@ -55,7 +55,9 @@ pub fn detached_decorations(os: crate::paths::OsKind) -> bool {
 /// restart batch respawning several popouts) can't pick the same one.
 pub fn reserve_detached_seq(reg: &mut WindowRegistry, label: &str) -> u32 {
     let used: std::collections::HashSet<u32> = reg.detached_seqs.values().copied().collect();
-    let n = (1u32..).find(|n| !used.contains(n)).expect("a free u32 always exists");
+    let n = (1u32..)
+        .find(|n| !used.contains(n))
+        .expect("a free u32 always exists");
     reg.detached_seqs.insert(label.to_string(), n);
     n
 }
@@ -86,7 +88,9 @@ pub fn release_detached_entry(reg: &mut WindowRegistry, label: &str) -> Option<u
 /// display, while harmless on the scale-1.0 Linux dev box (#42).
 pub fn detached_position(x: Option<f64>, y: Option<f64>) -> Option<Position> {
     match (x, y) {
-        (Some(x), Some(y)) => Some(Position::Physical(PhysicalPosition::new(x as i32, y as i32))),
+        (Some(x), Some(y)) => Some(Position::Physical(PhysicalPosition::new(
+            x as i32, y as i32,
+        ))),
         _ => None,
     }
 }
@@ -409,7 +413,10 @@ mod tests {
     #[test]
     fn query_carries_the_detached_param() {
         assert_eq!(detached_query("p1", "g-3"), "index.html?detached=p1:g-3");
-        assert_eq!(detached_query("root", "g-1"), "index.html?detached=root:g-1");
+        assert_eq!(
+            detached_query("root", "g-1"),
+            "index.html?detached=root:g-1"
+        );
     }
 
     #[test]
@@ -479,7 +486,8 @@ mod tests {
         let mut reg = WindowRegistry::default();
         let label = "detached-p1-g-1";
         reserve_detached_seq(&mut reg, label);
-        reg.windows.insert(label.to_string(), tracked(label, Some(42)));
+        reg.windows
+            .insert(label.to_string(), tracked(label, Some(42)));
         assert_eq!(release_detached_entry(&mut reg, label), Some(42));
         assert!(reg.detached_seqs.is_empty());
         assert!(reg.windows.is_empty());

@@ -141,7 +141,13 @@ pub fn resolve_detached_geometry(
     let h = saved.h.min(best.h);
     let x = saved.x.clamp(best.x, best.x + best.w as i32 - w as i32);
     let y = saved.y.clamp(best.y, best.y + best.h as i32 - h as i32);
-    Some(WindowState { x, y, w, h, maximized: false })
+    Some(WindowState {
+        x,
+        y,
+        w,
+        h,
+        maximized: false,
+    })
 }
 
 /// Width/height of the intersection between a saved window rect and a monitor, in
@@ -170,17 +176,38 @@ mod tests {
     /// side, DP-6 at the origin and DP-7 to its right.
     fn two_monitors() -> Vec<MonitorRect> {
         vec![
-            MonitorRect { x: 0, y: 0, w: 1920, h: 1080 },
-            MonitorRect { x: 1920, y: 0, w: 1920, h: 1080 },
+            MonitorRect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
+            MonitorRect {
+                x: 1920,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
         ]
     }
 
     fn only_primary() -> Vec<MonitorRect> {
-        vec![MonitorRect { x: 0, y: 0, w: 1920, h: 1080 }]
+        vec![MonitorRect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        }]
     }
 
     fn ws(x: i32, y: i32, w: u32, h: u32) -> WindowState {
-        WindowState { x, y, w, h, maximized: false }
+        WindowState {
+            x,
+            y,
+            w,
+            h,
+            maximized: false,
+        }
     }
 
     #[test]
@@ -191,7 +218,10 @@ mod tests {
     #[test]
     fn no_monitors_reported_keeps_the_configured_default() {
         // Rather than trust a rect we cannot validate against anything.
-        assert_eq!(resolve_startup_geometry(Some(ws(0, 0, 1400, 900)), &[]), None);
+        assert_eq!(
+            resolve_startup_geometry(Some(ws(0, 0, 1400, 900)), &[]),
+            None
+        );
     }
 
     #[test]
@@ -244,17 +274,32 @@ mod tests {
     fn a_maximized_window_still_resolves_its_rect() {
         // The rect is what decides WHICH monitor it re-maximizes on, so it must
         // survive even though the window will immediately be maximized over it.
-        let saved = WindowState { x: 2200, y: 100, w: 1400, h: 900, maximized: true };
+        let saved = WindowState {
+            x: 2200,
+            y: 100,
+            w: 1400,
+            h: 900,
+            maximized: true,
+        };
         let got = resolve_startup_geometry(Some(saved), &two_monitors()).unwrap();
         assert!(got.maximized);
-        assert_eq!(got.x, 2200, "still on DP-7, so it maximizes there and not on DP-6");
+        assert_eq!(
+            got.x, 2200,
+            "still on DP-7, so it maximizes there and not on DP-6"
+        );
     }
 
     #[test]
     fn a_degenerate_saved_rect_is_ignored() {
         // A hand-edited or truncated settings.json must not produce a 0-px window.
-        assert_eq!(resolve_startup_geometry(Some(ws(0, 0, 0, 900)), &only_primary()), None);
-        assert_eq!(resolve_startup_geometry(Some(ws(0, 0, 1400, 0)), &only_primary()), None);
+        assert_eq!(
+            resolve_startup_geometry(Some(ws(0, 0, 0, 900)), &only_primary()),
+            None
+        );
+        assert_eq!(
+            resolve_startup_geometry(Some(ws(0, 0, 1400, 0)), &only_primary()),
+            None
+        );
     }
 
     #[test]
@@ -334,7 +379,13 @@ mod tests {
 
     #[test]
     fn detached_degenerate_rect_is_ignored() {
-        assert_eq!(resolve_detached_geometry(ws(0, 0, 0, 640), &only_primary()), None);
-        assert_eq!(resolve_detached_geometry(ws(0, 0, 900, 0), &only_primary()), None);
+        assert_eq!(
+            resolve_detached_geometry(ws(0, 0, 0, 640), &only_primary()),
+            None
+        );
+        assert_eq!(
+            resolve_detached_geometry(ws(0, 0, 900, 0), &only_primary()),
+            None
+        );
     }
 }

@@ -7,24 +7,24 @@ use eldrun_lib::commands::projects::{
     archive_project, create_project, delete_archived_project, get_projects, import_project,
     list_archived_projects, load_project, restore_archived_project, set_project_auto_connect,
     set_project_description, set_project_remote_control, set_project_sandbox,
-    set_project_sandbox_spec, CreateProjectRequest, ImportProjectRequest,
+    set_project_sandbox_spec, CreateProjectRequest, ImportProjectRequest, CLAUDE_SETTINGS,
+    GITIGNORE_DEFAULT, SCAFFOLD_FILES,
 };
 use eldrun_lib::schema::project::{
     RemoteSpec, SandboxScope, SandboxSourceDecision, SandboxSpec, SandboxToggleOutcome,
 };
 use tempfile::{Builder, TempDir};
 
-const SCAFFOLDS: &[(&str, &str)] = &[
-    ("AGENTS.md", "# Agents\n"),
-    ("CLAUDE.md", "# Claude Context\n"),
-    ("GEMINI.md", "# Gemini Context\n"),
-    ("TODO.md", "# TODO\n"),
-    ("ROADMAP.md", "# Roadmap\n"),
-    ("STATUS.md", "# Status\n"),
-    ("README.md", "# Project\n"),
-    (".gitignore", "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\nproject.json\n"),
-    (".claude/settings.json", r#"{"permissions":{"allow":[],"deny":[]}}"#),
-];
+/// The backend's own scaffold table plus the two pieces `scaffold_project`
+/// writes separately. Derived from the constants rather than copied, so a
+/// change to a scaffold template can't leave these assertions asserting text
+/// nothing writes any more.
+fn scaffolds() -> Vec<(&'static str, &'static str)> {
+    let mut v: Vec<(&str, &str)> = SCAFFOLD_FILES.to_vec();
+    v.push((".gitignore", GITIGNORE_DEFAULT));
+    v.push((".claude/settings.json", CLAUDE_SETTINGS));
+    v
+}
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -135,16 +135,16 @@ fn seed_project(dir: &Path, tag: &str) {
 }
 
 fn assert_scaffold_state(dir: &Path, tag: &str) {
-    for (name, default_content) in SCAFFOLDS {
+    for (name, default_content) in scaffolds() {
         let path = dir.join(name);
         assert!(path.exists(), "missing scaffold: {name}");
         let actual = fs::read_to_string(&path).expect("read scaffold");
-        let expected = match *name {
+        let expected = match name {
             "AGENTS.md" => format!("{tag}:agents\n"),
             "TODO.md" => format!("{tag}:todo\n"),
             ".gitignore" => format!("{tag}:gitignore\n"),
             ".claude/settings.json" => format!(r#"{{"marker":"{tag}"}}"#),
-            _ => (*default_content).to_string(),
+            _ => default_content.to_string(),
         };
         assert_eq!(actual, expected, "unexpected contents for {name}");
     }
@@ -327,10 +327,10 @@ fn create_remote_project_scaffolds_the_local_mirror() {
             .and_then(|v| v.as_str())
             .expect("remote entry carries a mirror path");
         let mirror_dir = Path::new(mirror);
-        for (name, default_content) in SCAFFOLDS {
+        for (name, default_content) in scaffolds() {
             // `.gitignore` is a git-axis artifact: a `git_type: "none"` project
             // never gets one written, so it must be absent from the mirror.
-            if *name == ".gitignore" {
+            if name == ".gitignore" {
                 assert!(
                     !mirror_dir.join(name).exists(),
                     "git_type none must not scaffold a .gitignore"
@@ -340,7 +340,7 @@ fn create_remote_project_scaffolds_the_local_mirror() {
             let path = mirror_dir.join(name);
             assert!(path.exists(), "missing mirror scaffold: {name}");
             let actual = fs::read_to_string(&path).expect("read mirror scaffold");
-            assert_eq!(&actual, default_content, "unexpected contents for {name}");
+            assert_eq!(actual, default_content, "unexpected contents for {name}");
         }
 
         // git_type "none" means no repo was initialized in the mirror.
@@ -384,9 +384,15 @@ fn import_project_copy_creates_missing_scaffolds_without_overwriting_existing_on
             entry.extra.get("description").and_then(|v| v.as_str()),
             Some("Copy description")
         );
-        assert_eq!(entry.local_file, target.join("project.json").to_string_lossy());
+        assert_eq!(
+            entry.local_file,
+            target.join("project.json").to_string_lossy()
+        );
         assert!(source.path().exists(), "copy must keep the original source");
-        assert!(source.path().join("notes.txt").exists(), "copy must keep source files");
+        assert!(
+            source.path().join("notes.txt").exists(),
+            "copy must keep source files"
+        );
 
         assert_scaffold_state(&target, "copy");
         assert!(target.join("notes.txt").exists());
@@ -422,8 +428,14 @@ fn import_project_move_creates_missing_scaffolds_without_overwriting_existing_on
 
         assert_eq!(entry.name, "move-project");
         assert_eq!(entry.status, "inactive");
-        assert_eq!(entry.local_file, target.join("project.json").to_string_lossy());
-        assert!(!source.path().exists(), "move must remove the original source");
+        assert_eq!(
+            entry.local_file,
+            target.join("project.json").to_string_lossy()
+        );
+        assert!(
+            !source.path().exists(),
+            "move must remove the original source"
+        );
 
         assert_scaffold_state(&target, "move");
         assert!(target.join("notes.txt").exists());
@@ -459,8 +471,14 @@ fn import_project_keep_creates_missing_scaffolds_in_place_without_overwriting_ex
             entry.extra.get("description").and_then(|v| v.as_str()),
             Some("Keep description")
         );
-        assert_eq!(entry.local_file, source.path().join("project.json").to_string_lossy());
-        assert!(source.path().exists(), "keep must keep the source directory");
+        assert_eq!(
+            entry.local_file,
+            source.path().join("project.json").to_string_lossy()
+        );
+        assert!(
+            source.path().exists(),
+            "keep must keep the source directory"
+        );
 
         assert_scaffold_state(source.path(), "keep");
         assert!(source.path().join("notes.txt").exists());
@@ -495,13 +513,22 @@ fn import_project_skip_scaffold_does_not_add_missing_scaffold_files() {
         // Only project.json is written; no scaffold files or git init.
         assert!(source.path().join("project.json").exists());
         assert!(source.path().join("notes.txt").exists());
-        for name in &["AGENTS.md", "CLAUDE.md", "TODO.md", "README.md", ".gitignore"] {
+        for name in &[
+            "AGENTS.md",
+            "CLAUDE.md",
+            "TODO.md",
+            "README.md",
+            ".gitignore",
+        ] {
             assert!(
                 !source.path().join(name).exists(),
                 "skip_scaffold must not create {name}"
             );
         }
-        assert!(!source.path().join(".git").exists(), "skip_scaffold must not git init");
+        assert!(
+            !source.path().join(".git").exists(),
+            "skip_scaffold must not git init"
+        );
         assert_project_registered(&source.path().join("project.json"), "skip-project");
         // New projects default to the local push target.
         assert_eq!(
@@ -536,7 +563,10 @@ fn set_project_description_writes_both_projects_json_and_project_json() {
 
         // projects.json (the pill list) reflects it.
         let listed = get_projects().expect("get projects");
-        let found = listed.iter().find(|p| p.id == entry.id).expect("entry present");
+        let found = listed
+            .iter()
+            .find(|p| p.id == entry.id)
+            .expect("entry present");
         assert_eq!(
             found.extra.get("description").and_then(|v| v.as_str()),
             Some("updated desc")
@@ -550,7 +580,10 @@ fn set_project_description_writes_both_projects_json_and_project_json() {
         let cleared = set_project_description(entry.id.clone(), None).expect("clear description");
         assert!(cleared.is_none());
         let listed = get_projects().expect("get projects");
-        let found = listed.iter().find(|p| p.id == entry.id).expect("entry present");
+        let found = listed
+            .iter()
+            .find(|p| p.id == entry.id)
+            .expect("entry present");
         assert!(!found.extra.contains_key("description"));
         let project = load_project(entry.local_file.clone()).expect("load project");
         assert!(project.description.is_none());
@@ -670,7 +703,10 @@ fn set_project_sandbox_preserves_spec_and_confirms_dockerfile() {
             }),
         )
         .expect("stale decision");
-        assert!(matches!(stale, SandboxToggleOutcome::NeedsConfirmation { .. }));
+        assert!(matches!(
+            stale,
+            SandboxToggleOutcome::NeedsConfirmation { .. }
+        ));
 
         // The matching decision applies it.
         let spec = match set_project_sandbox(
@@ -714,7 +750,11 @@ fn set_project_sandbox_preserves_spec_and_confirms_dockerfile() {
             SandboxToggleOutcome::NeedsConfirmation { .. } => panic!("disable never asks"),
         };
         assert!(!off.enabled);
-        assert_eq!(off.memory.as_deref(), Some("4g"), "disable must not wipe the spec");
+        assert_eq!(
+            off.memory.as_deref(),
+            Some("4g"),
+            "disable must not wipe the spec"
+        );
 
         let on = match set_project_sandbox(id.clone(), true, None).expect("re-enable") {
             SandboxToggleOutcome::Applied { spec } => spec,
@@ -740,7 +780,11 @@ fn set_project_sandbox_preserves_spec_and_confirms_dockerfile() {
             .find(|p| p.id == id)
             .expect("entry");
         let mirrored: SandboxSpec = serde_json::from_value(
-            entry.extra.get("sandbox").cloned().expect("sandbox mirrored"),
+            entry
+                .extra
+                .get("sandbox")
+                .cloned()
+                .expect("sandbox mirrored"),
         )
         .expect("parse mirrored spec");
         assert!(mirrored.enabled && mirrored.readonly_rootfs);
@@ -802,12 +846,18 @@ fn set_project_sandbox_decline_sticks_until_dockerfile_changes() {
         // Now the Dockerfile's content changes — even though the container is
         // already enabled, the next enable cycle must ask again.
         set_project_sandbox(id.clone(), false, None).expect("disable again");
-        fs::write(target.path().join("Dockerfile"), "FROM debian:stable\nRUN echo hi\n")
-            .expect("rewrite dockerfile");
+        fs::write(
+            target.path().join("Dockerfile"),
+            "FROM debian:stable\nRUN echo hi\n",
+        )
+        .expect("rewrite dockerfile");
         let reasked = set_project_sandbox(id.clone(), true, None).expect("re-enable after change");
         match reasked {
             SandboxToggleOutcome::NeedsConfirmation { source: new_source } => {
-                assert_ne!(new_source.hash, source.hash, "content changed, hash must move");
+                assert_ne!(
+                    new_source.hash, source.hash,
+                    "content changed, hash must move"
+                );
             }
             SandboxToggleOutcome::Applied { .. } => {
                 panic!("a changed Dockerfile must re-ask, not reuse the old decision")
@@ -835,7 +885,10 @@ fn set_project_remote_control_writes_both_stores_and_clears() {
             .find(|p| p.id == id)
             .expect("entry");
         assert_eq!(
-            mirrored.extra.get("remote_control").and_then(|v| v.as_bool()),
+            mirrored
+                .extra
+                .get("remote_control")
+                .and_then(|v| v.as_bool()),
             Some(false),
             "the projects.json mirror is what the spawn path reads"
         );

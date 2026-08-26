@@ -313,13 +313,11 @@ fn drm_sample() -> Vec<GpuSample> {
         // Temperature/power/fan live under the card's hwmon instance, whose index
         // isn't stable (`hwmon/hwmonN`), so take the first one the card exposes.
         let hwmon = fs::read_dir(dev.join("hwmon")).ok().and_then(|it| {
-            it.flatten()
-                .map(|e| e.path())
-                .find(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with("hwmon"))
-                })
+            it.flatten().map(|e| e.path()).find(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("hwmon"))
+            })
         });
         let hread = |file: &str| {
             hwmon
@@ -487,9 +485,7 @@ driver_version,pcie.link.gen.current,pcie.link.width.current",
         .output();
 
     match output {
-        Ok(out) if out.status.success() => {
-            parse_nvidia_smi(&String::from_utf8_lossy(&out.stdout))
-        }
+        Ok(out) if out.status.success() => parse_nvidia_smi(&String::from_utf8_lossy(&out.stdout)),
         _ => {
             if let Ok(mut missing_until) = NVIDIA_MISSING_UNTIL.lock() {
                 *missing_until = Some(Instant::now() + NVIDIA_RETRY);
@@ -836,9 +832,8 @@ mod tests {
 
     #[test]
     fn nvidia_multi_gpu_and_unavailable_fields() {
-        let gpus = parse_nvidia_smi(
-            "NVIDIA A100, 0, 40960, [N/A]\nNVIDIA A100, 8192, 40960, 100\n\n",
-        );
+        let gpus =
+            parse_nvidia_smi("NVIDIA A100, 0, 40960, [N/A]\nNVIDIA A100, 8192, 40960, 100\n\n");
         assert_eq!(gpus.len(), 2, "blank lines are not GPUs");
         assert_eq!(gpus[0].busy_percent, None, "[N/A] utilization is unknown");
         assert_eq!(gpus[1].busy_percent, Some(100.0));
@@ -846,8 +841,10 @@ mod tests {
 
     #[test]
     fn nvidia_garbage_is_ignored() {
-        assert!(parse_nvidia_smi("Failed to initialize NVML: Driver/library version mismatch\n")
-            .is_empty());
+        assert!(
+            parse_nvidia_smi("Failed to initialize NVML: Driver/library version mismatch\n")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -891,10 +888,10 @@ mod tests {
                 ("driver", "amdgpu"),
                 ("vram_used", "1024"),
                 ("vram_total", "2048"),
-                ("temp", "58000\n"),        // 58.000 °C
-                ("power", "34560000\n"),    // 34.56 W
+                ("temp", "58000\n"),     // 58.000 °C
+                ("power", "34560000\n"), // 34.56 W
                 ("power_cap", "65000000\n"),
-                ("pwm", "128"),             // ~50% of 255
+                ("pwm", "128"), // ~50% of 255
                 ("sclk", "0: 200Mhz\n1: 1000Mhz\n2: 2900Mhz *\n"),
                 ("mclk", "0: 96Mhz *\n1: 1200Mhz\n"),
                 ("link_speed", "16.0 GT/s PCIe"),
@@ -906,7 +903,11 @@ mod tests {
         assert_eq!(sample.temp_c, Some(58.0));
         assert_eq!(sample.power_w, Some(34.56));
         assert_eq!(sample.power_cap_w, Some(65.0));
-        assert_eq!(sample.sclk_mhz, Some(2900), "the DPM state flagged * is active");
+        assert_eq!(
+            sample.sclk_mhz,
+            Some(2900),
+            "the DPM state flagged * is active"
+        );
         assert_eq!(sample.mclk_mhz, Some(96));
         assert_eq!(sample.pcie_gen, Some(4), "16 GT/s is PCIe 4.0");
         assert_eq!(sample.pcie_width, Some(16));
@@ -921,7 +922,11 @@ mod tests {
         // never a fabricated 0 that would read as "0 °C / idle fan".
         let sample = parse_drm_card(
             0,
-            &files(&[("driver", "amdgpu"), ("vram_used", "1"), ("vram_total", "2")]),
+            &files(&[
+                ("driver", "amdgpu"),
+                ("vram_used", "1"),
+                ("vram_total", "2"),
+            ]),
         )
         .unwrap();
         assert_eq!(sample.temp_c, None);

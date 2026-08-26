@@ -291,10 +291,47 @@ pub enum Classification {
 /// Extensions that name a program on some platform. Same list the mail client
 /// uses for its executable-attachment warning.
 const EXECUTABLE_EXTENSIONS: &[&str] = &[
-    "exe", "com", "scr", "pif", "bat", "cmd", "msi", "msp", "cpl", "hta", "js", "jse", "vbs",
-    "vbe", "wsf", "wsh", "ps1", "psm1", "sh", "bash", "zsh", "jar", "apk", "app", "dmg", "pkg",
-    "lnk", "url", "scf", "reg", "inf", "desktop", "appref-ms", "library-ms", "gadget", "chm",
-    "msc", "ade", "adp", "mde", "mdb",
+    "exe",
+    "com",
+    "scr",
+    "pif",
+    "bat",
+    "cmd",
+    "msi",
+    "msp",
+    "cpl",
+    "hta",
+    "js",
+    "jse",
+    "vbs",
+    "vbe",
+    "wsf",
+    "wsh",
+    "ps1",
+    "psm1",
+    "sh",
+    "bash",
+    "zsh",
+    "jar",
+    "apk",
+    "app",
+    "dmg",
+    "pkg",
+    "lnk",
+    "url",
+    "scf",
+    "reg",
+    "inf",
+    "desktop",
+    "appref-ms",
+    "library-ms",
+    "gadget",
+    "chm",
+    "msc",
+    "ade",
+    "adp",
+    "mde",
+    "mdb",
 ];
 
 /// Does the head of the file look like a program, regardless of its name?
@@ -586,7 +623,12 @@ pub struct FetchedPage {
 /// a typed error naming the type, so the frontend can offer *Open live page*
 /// rather than showing a blank pane.
 fn readable_content_type(ct: &str) -> Option<bool> {
-    let base = ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let base = ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     match base.as_str() {
         "" | "text/html" | "application/xhtml+xml" | "application/xml" | "text/xml" => Some(true),
         "text/plain" | "text/markdown" => Some(false),
@@ -603,7 +645,8 @@ fn decode_body(bytes: &[u8], content_type: &str) -> String {
         .skip(1)
         .filter_map(|p| {
             let p = p.trim();
-            p.strip_prefix("charset=").or_else(|| p.strip_prefix("charset ="))
+            p.strip_prefix("charset=")
+                .or_else(|| p.strip_prefix("charset ="))
         })
         .map(|v| v.trim_matches('"').trim().to_string())
         .next()
@@ -848,7 +891,11 @@ pub async fn fetch_reader(raw: &str) -> Result<FetchedPage, String> {
 pub async fn fetch_ics(raw: &str) -> Result<String, String> {
     let (body, content_type, _final_url, _over_cap) = fetch_raw(raw).await?;
     let text = decode_body(&body, &content_type);
-    if !text.trim_start_matches('\u{feff}').trim_start().starts_with("BEGIN:VCALENDAR") {
+    if !text
+        .trim_start_matches('\u{feff}')
+        .trim_start()
+        .starts_with("BEGIN:VCALENDAR")
+    {
         return Err("not-icalendar".to_string());
     }
     Ok(text)
@@ -909,10 +956,7 @@ fn reader_client(pin: Option<&(String, Vec<SocketAddr>)>) -> Result<reqwest::Cli
 ///
 /// Returns `None` when the URL's host is already an IP literal — there is no
 /// name for DNS to change its mind about, and `reader_hop_allowed` has judged it.
-async fn resolve_hop(
-    url: &Url,
-    hop: usize,
-) -> Result<Option<(String, Vec<SocketAddr>)>, String> {
+async fn resolve_hop(url: &Url, hop: usize) -> Result<Option<(String, Vec<SocketAddr>)>, String> {
     let Some(url::Host::Domain(name)) = url.host() else {
         return Ok(None);
     };
@@ -945,7 +989,10 @@ async fn resolve_hop(
 /// and must be judged as one — a resolver may hand back either.
 fn unmap(ip: IpAddr) -> IpAddr {
     match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(v6)),
         v4 => v4,
     }
 }
@@ -1077,7 +1124,10 @@ mod tests {
 
     #[test]
     fn download_names_come_from_the_url_and_never_invent_an_extension() {
-        assert_eq!(download_name_for(&u("https://example.com/a/report.pdf")), "report.pdf");
+        assert_eq!(
+            download_name_for(&u("https://example.com/a/report.pdf")),
+            "report.pdf"
+        );
         // No extension in, no extension out. A guessed `.exe` is not harmless.
         let n = download_name_for(&u("https://example.com/a/blob"));
         assert_eq!(n, "blob");
@@ -1162,7 +1212,10 @@ mod tests {
             classify(b"harmless bytes", "invoice.pdf.exe"),
             Classification::IsAProgram
         );
-        assert_eq!(classify(b"harmless", "setup.msi"), Classification::IsAProgram);
+        assert_eq!(
+            classify(b"harmless", "setup.msi"),
+            Classification::IsAProgram
+        );
         assert_eq!(classify(b"harmless", "run.sh"), Classification::IsAProgram);
     }
 
@@ -1359,13 +1412,20 @@ mod tests {
         assert_eq!(extract_title("<html><body>x"), "");
         assert_eq!(extract_title(""), "");
         assert!(extract_title("<title>unterminated").len() <= MAX_TITLE_CHARS);
-        assert!(extract_title(&format!("<title>{}</title>", "x".repeat(9999))).chars().count()
-            <= MAX_TITLE_CHARS);
+        assert!(
+            extract_title(&format!("<title>{}</title>", "x".repeat(9999)))
+                .chars()
+                .count()
+                <= MAX_TITLE_CHARS
+        );
     }
 
     #[test]
     fn only_document_content_types_are_readable() {
-        assert_eq!(readable_content_type("text/html; charset=utf-8"), Some(true));
+        assert_eq!(
+            readable_content_type("text/html; charset=utf-8"),
+            Some(true)
+        );
         assert_eq!(readable_content_type("TEXT/HTML"), Some(true));
         assert_eq!(readable_content_type("text/plain"), Some(false));
         assert_eq!(readable_content_type("application/pdf"), None);
@@ -1440,7 +1500,10 @@ mod tests {
             IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10)),
             IpAddr::V6("2001:db8::1".parse::<Ipv6Addr>().unwrap()),
         ] {
-            assert!(address_is_global(ip), "{ip} is public and must stay reachable");
+            assert!(
+                address_is_global(ip),
+                "{ip} is public and must stay reachable"
+            );
         }
     }
 
@@ -1459,7 +1522,10 @@ mod tests {
     #[test]
     fn the_security_readout_shows_both_host_forms_and_never_the_userinfo() {
         let s = security_for(&u("https://xn--80ak6aa92e.example/x"), TlsState::Secure);
-        assert_eq!(s.punycode_warning.as_deref(), Some("xn--80ak6aa92e.example"));
+        assert_eq!(
+            s.punycode_warning.as_deref(),
+            Some("xn--80ak6aa92e.example")
+        );
         assert_eq!(s.scheme, "https");
         let s = security_for(&u("https://example.com@evil.example/"), TlsState::Secure);
         assert_eq!(s.host_display, "evil.example");

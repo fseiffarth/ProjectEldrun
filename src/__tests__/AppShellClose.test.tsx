@@ -125,6 +125,7 @@ describe("AppShell close handler", () => {
 
     expect(preventDefault).toHaveBeenCalledOnce();
     expect(shared.flush).toHaveBeenCalledOnce();
+    expect(invoke).toHaveBeenCalledWith("local_tmux_kill_eldrun_sessions");
     expect(shared.destroy).toHaveBeenCalledOnce();
   });
 

@@ -192,7 +192,10 @@ pub fn ensure_proxy(project_id: &str, allow: Vec<String>) -> Result<u16, String>
 
     let accept_shared = Arc::clone(&shared);
     std::thread::Builder::new()
-        .name(format!("vm-proxy-{}", &project_id[..project_id.len().min(8)]))
+        .name(format!(
+            "vm-proxy-{}",
+            &project_id[..project_id.len().min(8)]
+        ))
         .spawn(move || accept_loop(listener, accept_shared))
         .map_err(|e| format!("VM egress proxy: spawn failed: {e}"))?;
 
@@ -244,7 +247,14 @@ pub fn blocked_report(project_id: &str) -> BlockedReport {
     match map.get(project_id) {
         Some(handle) => BlockedReport {
             total: handle.shared.blocked_total.load(Ordering::SeqCst),
-            recent: handle.shared.blocked.lock().unwrap().iter().cloned().collect(),
+            recent: handle
+                .shared
+                .blocked
+                .lock()
+                .unwrap()
+                .iter()
+                .cloned()
+                .collect(),
         },
         None => BlockedReport::default(),
     }
@@ -315,8 +325,19 @@ fn handle_conn(mut stream: TcpStream, shared: Arc<ProxyShared>) {
     let Some((host, port)) = parse_connect_line(&line) else {
         // Plain-HTTP proxying is refused by design (see module doc): log the
         // method+target so the tripwire still names what was attempted.
-        let target = line.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
-        record_blocked(&shared, if target.is_empty() { "(malformed request)".into() } else { target });
+        let target = line
+            .split_whitespace()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(" ");
+        record_blocked(
+            &shared,
+            if target.is_empty() {
+                "(malformed request)".into()
+            } else {
+                target
+            },
+        );
         deny(stream, "405 Method Not Allowed");
         return;
     };
@@ -330,9 +351,8 @@ fn handle_conn(mut stream: TcpStream, shared: Arc<ProxyShared>) {
             let mut temp = shared.temp_allow.lock().unwrap();
             let now = Instant::now();
             temp.retain(|(_, deadline)| *deadline > now);
-            temp.iter().any(|(h, _)| {
-                host_allowed(&host, std::slice::from_ref(h))
-            })
+            temp.iter()
+                .any(|(h, _)| host_allowed(&host, std::slice::from_ref(h)))
         }
     };
     if !allowed {
@@ -488,7 +508,8 @@ mod tests {
         // (dial failed) rather than 403 (denied) — which is the distinction
         // under test.
         let mut conn = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        conn.write_all(b"CONNECT clone.example:443 HTTP/1.1\r\n\r\n").unwrap();
+        conn.write_all(b"CONNECT clone.example:443 HTTP/1.1\r\n\r\n")
+            .unwrap();
         let mut response = String::new();
         conn.read_to_string(&mut response).unwrap();
         assert!(response.starts_with("HTTP/1.1 502"), "{response}");

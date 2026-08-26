@@ -8,9 +8,7 @@
 
 use tauri::{AppHandle, State};
 
-use crate::services::git_peer::{
-    self, BackupRef, GitPeerRegistry, GitPeerState, ReconcileOpts,
-};
+use crate::services::git_peer::{self, BackupRef, GitPeerRegistry, GitPeerState, ReconcileOpts};
 use crate::services::remote::{remote_target_for, RemotePoolState};
 use crate::services::remote_sync::SyncManifestState;
 use crate::services::sync_auto::AutoSyncState;
@@ -82,7 +80,10 @@ pub async fn git_peer_sync_now(
         // A manual Retry means "actually look": bypass the D5 ref-signature early-out,
         // which would otherwise answer from cache after the user cleared a blocker that
         // moved no ref (deleting an untracked collision, say).
-        ReconcileOpts { forced: true, ..Default::default() },
+        ReconcileOpts {
+            forced: true,
+            ..Default::default()
+        },
     )
     .await;
     git_peer::emit_status(&app, &project_id, &state);
@@ -109,7 +110,11 @@ pub async fn git_peer_pair_confirm(
         auto.inner(),
         &project_id,
         &rt.spec,
-        ReconcileOpts { forced: true, allow_pair_overwrite: true, ..Default::default() },
+        ReconcileOpts {
+            forced: true,
+            allow_pair_overwrite: true,
+            ..Default::default()
+        },
     )
     .await;
     git_peer::emit_status(&app, &project_id, &state);

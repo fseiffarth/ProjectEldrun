@@ -78,13 +78,11 @@ async fn handshake_error(
     err: String,
 ) -> (String, String) {
     let stderr = match drain {
-        Some(handle) => {
-            tokio::time::timeout(std::time::Duration::from_secs(3), handle)
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .unwrap_or_default()
-        }
+        Some(handle) => tokio::time::timeout(std::time::Duration::from_secs(3), handle)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default(),
         None => String::new(),
     };
     if stderr.is_empty() {
@@ -99,10 +97,7 @@ async fn handshake_error(
 /// is told "Permission denied" for a host that actually asked them for a
 /// verification code — see `ssh_common::Askpass`. Must run before the guard drops.
 #[cfg(any(unix, windows))]
-fn refusal_override(
-    askpass: &Option<crate::services::ssh_common::Askpass>,
-    err: String,
-) -> String {
+fn refusal_override(askpass: &Option<crate::services::ssh_common::Askpass>, err: String) -> String {
     match askpass.as_ref().and_then(|a| a.refused_prompt()) {
         Some(prompt) => crate::services::ssh_common::unexpected_prompt_error(&prompt),
         None => err,
@@ -199,14 +194,12 @@ async fn open_any(
             // the one failure OpenSSH cannot explain itself: `BatchMode=yes` means
             // it never asked for the passphrase, so all the user sees is
             // "Permission denied (publickey)". Say what actually happened.
-            Err((err, _)) => Err(match crate::services::ssh_common::locked_key_hint_async(
-                user, host, port,
-            )
-            .await
-            {
-                Some(hint) => format!("{err}\n\n{hint}"),
-                None => err,
-            }),
+            Err((err, _)) => Err(
+                match crate::services::ssh_common::locked_key_hint_async(user, host, port).await {
+                    Some(hint) => format!("{err}\n\n{hint}"),
+                    None => err,
+                },
+            ),
             Ok(session) => Ok(session),
         };
     };
@@ -224,9 +217,7 @@ async fn open_any(
             (SecretKind::Password, false) => ssh_password_base_args(user, host, port)?,
             (SecretKind::Password, true) => ssh_password_master_base_args(user, host, port)?,
             (SecretKind::KeyPassphrase, false) => ssh_passphrase_base_args(user, host, port)?,
-            (SecretKind::KeyPassphrase, true) => {
-                ssh_passphrase_master_base_args(user, host, port)?
-            }
+            (SecretKind::KeyPassphrase, true) => ssh_passphrase_master_base_args(user, host, port)?,
         };
         let args = sftp_subsystem_args(base)?;
         let (cmd, askpass) = secret_cmd(kind, pw, &args)?;
@@ -1090,20 +1081,14 @@ mod tests {
             e("banana.txt", false),
             e("Cherry", true),
         ];
-        let names: Vec<_> = finalize_entries(raw)
-            .into_iter()
-            .map(|e| e.name)
-            .collect();
+        let names: Vec<_> = finalize_entries(raw).into_iter().map(|e| e.name).collect();
         assert_eq!(names, vec!["Apple", "Cherry", "banana.txt", "zebra.txt"]);
     }
 
     #[test]
     fn finalize_filters_dot_and_dotdot_and_blanks() {
         let raw = vec![e(".", true), e("..", true), e("", false), e("real", true)];
-        let names: Vec<_> = finalize_entries(raw)
-            .into_iter()
-            .map(|e| e.name)
-            .collect();
+        let names: Vec<_> = finalize_entries(raw).into_iter().map(|e| e.name).collect();
         assert_eq!(names, vec!["real"]);
     }
 

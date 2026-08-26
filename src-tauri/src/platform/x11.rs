@@ -24,12 +24,7 @@ use super::{WorkspaceBackend, WorkspaceInfo};
 const ACTIVE_DESKTOP: u32 = 0;
 const PARKED_DESKTOP: u32 = 1;
 
-const PROTECTED_CLASSES: &[&str] = &[
-    "eldrun",
-    "plasmashell",
-    "kwin",
-    "cinnamon",
-];
+const PROTECTED_CLASSES: &[&str] = &["eldrun", "plasmashell", "kwin", "cinnamon"];
 
 // ── Backend ────────────────────────────────────────────────────────────────
 
@@ -130,11 +125,13 @@ impl WorkspaceBackend for X11Backend {
 
     fn info(&self) -> WorkspaceInfo {
         let current =
-            get_cardinal(&self.conn, self.screen_num, self.atoms.net_current_desktop)
-                .unwrap_or(0);
-        let count =
-            get_cardinal(&self.conn, self.screen_num, self.atoms.net_number_of_desktops)
-                .unwrap_or(2);
+            get_cardinal(&self.conn, self.screen_num, self.atoms.net_current_desktop).unwrap_or(0);
+        let count = get_cardinal(
+            &self.conn,
+            self.screen_num,
+            self.atoms.net_number_of_desktops,
+        )
+        .unwrap_or(2);
         WorkspaceInfo {
             label: format!("ws {}", current + 1),
             current_desktop: Some(current as usize),
@@ -143,8 +140,8 @@ impl WorkspaceBackend for X11Backend {
     }
 
     fn show_window(&self, window_id: u64) -> Result<(), String> {
-        let wid =
-            window_from_u64(window_id).ok_or_else(|| format!("invalid x11 window id {window_id}"))?;
+        let wid = window_from_u64(window_id)
+            .ok_or_else(|| format!("invalid x11 window id {window_id}"))?;
         // The parkable override is consulted BEFORE the protected-class skip so a
         // detached Eldrun subwindow (WM_CLASS `eldrun`, normally skipped) is still
         // moved/raised. The main window is never in the override (structural
@@ -168,8 +165,8 @@ impl WorkspaceBackend for X11Backend {
     }
 
     fn hide_window(&self, window_id: u64) -> Result<(), String> {
-        let wid =
-            window_from_u64(window_id).ok_or_else(|| format!("invalid x11 window id {window_id}"))?;
+        let wid = window_from_u64(window_id)
+            .ok_or_else(|| format!("invalid x11 window id {window_id}"))?;
         // See show_window: the override lets a detached `eldrun` subwindow park.
         // The main window can never be in the override (structural guard).
         if !self.is_parkable(window_id) && is_protected(&self.conn, wid) {
@@ -188,7 +185,11 @@ impl WorkspaceBackend for X11Backend {
     }
 
     fn unset_parkable(&self, window_id: u64) {
-        self.parkable.lock().unwrap().override_ids.remove(&window_id);
+        self.parkable
+            .lock()
+            .unwrap()
+            .override_ids
+            .remove(&window_id);
     }
 
     fn set_main_window_id(&self, window_id: u64) {
@@ -196,8 +197,8 @@ impl WorkspaceBackend for X11Backend {
     }
 
     fn position_window(&self, window_id: u64, x: i32, y: i32) -> Result<(), String> {
-        let wid =
-            window_from_u64(window_id).ok_or_else(|| format!("invalid x11 window id {window_id}"))?;
+        let wid = window_from_u64(window_id)
+            .ok_or_else(|| format!("invalid x11 window id {window_id}"))?;
         // Geometry only — root-window pixels map to whichever monitor contains
         // (x, y), so no monitor enumeration is needed. Do NOT touch
         // _NET_WM_DESKTOP here: this is placement, not workspace parking.
@@ -535,8 +536,7 @@ fn get_window_title(conn: &Connection, wid: Window, atoms: &Atoms) -> Option<Str
 }
 
 fn is_protected(conn: &Connection, wid: Window) -> bool {
-    let class = get_wm_class(conn, wid)
-        .unwrap_or_default();
+    let class = get_wm_class(conn, wid).unwrap_or_default();
     is_protected_class(&class)
 }
 
@@ -552,7 +552,6 @@ pub(crate) fn is_protected_class(wm_class_raw: &str) -> bool {
         .split(['\0', '.', '-', '_', ' '])
         .any(|segment| PROTECTED_CLASSES.contains(&segment))
 }
-
 
 /// Pure title-match predicate for the detached-window resolver (#42 Phase 0).
 ///
@@ -655,10 +654,9 @@ pub fn frontmost_window_under_pointer() -> Option<u64> {
         }
         // Root-space geometry: TranslateCoordinates handles WM reparenting, so the
         // origin is correct even though the window sits inside a frame.
-        let geo = match conn
-            .wait_for_reply(conn.send_request(&x::GetGeometry {
-                drawable: x::Drawable::Window(wid),
-            })) {
+        let geo = match conn.wait_for_reply(conn.send_request(&x::GetGeometry {
+            drawable: x::Drawable::Window(wid),
+        })) {
             Ok(g) => g,
             Err(_) => continue,
         };
@@ -689,8 +687,14 @@ fn is_cinnamon_desktop() -> bool {
 
 fn configure_cinnamon_workspaces() -> Result<CinnamonWorkspaceState, String> {
     let state = CinnamonWorkspaceState {
-        original_num_workspaces: gsettings_get("org.cinnamon.desktop.wm.preferences", "num-workspaces"),
-        original_workspace_names: gsettings_get("org.cinnamon.desktop.wm.preferences", "workspace-names"),
+        original_num_workspaces: gsettings_get(
+            "org.cinnamon.desktop.wm.preferences",
+            "num-workspaces",
+        ),
+        original_workspace_names: gsettings_get(
+            "org.cinnamon.desktop.wm.preferences",
+            "workspace-names",
+        ),
         original_dynamic_workspaces: gsettings_get("org.cinnamon.muffin", "dynamic-workspaces"),
     };
 
@@ -700,11 +704,7 @@ fn configure_cinnamon_workspaces() -> Result<CinnamonWorkspaceState, String> {
         .and_then(|value| value.trim().parse::<u32>().ok())
         .unwrap_or(1);
     if current_num < 2 {
-        gsettings_set(
-            "org.cinnamon.desktop.wm.preferences",
-            "num-workspaces",
-            "2",
-        )?;
+        gsettings_set("org.cinnamon.desktop.wm.preferences", "num-workspaces", "2")?;
     }
 
     let names = state
@@ -729,10 +729,20 @@ fn configure_cinnamon_workspaces() -> Result<CinnamonWorkspaceState, String> {
 impl CinnamonWorkspaceState {
     fn restore(&self) {
         if let Some(value) = &self.original_workspace_names {
-            gsettings_set("org.cinnamon.desktop.wm.preferences", "workspace-names", value).ok();
+            gsettings_set(
+                "org.cinnamon.desktop.wm.preferences",
+                "workspace-names",
+                value,
+            )
+            .ok();
         }
         if let Some(value) = &self.original_num_workspaces {
-            gsettings_set("org.cinnamon.desktop.wm.preferences", "num-workspaces", value).ok();
+            gsettings_set(
+                "org.cinnamon.desktop.wm.preferences",
+                "num-workspaces",
+                value,
+            )
+            .ok();
         }
         if let Some(value) = &self.original_dynamic_workspaces {
             gsettings_set("org.cinnamon.muffin", "dynamic-workspaces", value).ok();
@@ -825,8 +835,8 @@ mod tests {
         // "<instance>\0<class>\0".
         assert!(is_protected_class("eldrun\0Eldrun\0"));
         assert!(is_protected_class("Eldrun\0Eldrun\0"));
-        assert!(is_protected_class("eldrun"));   // instance name only
-        assert!(is_protected_class("ELDRUN"));   // all-caps (case-insensitive)
+        assert!(is_protected_class("eldrun")); // instance name only
+        assert!(is_protected_class("ELDRUN")); // all-caps (case-insensitive)
     }
 
     #[test]
@@ -845,8 +855,8 @@ mod tests {
         assert!(!is_protected_class("konsole\0konsole\0"));
         assert!(!is_protected_class("firefox\0Firefox\0"));
         assert!(!is_protected_class("code\0Code\0"));
-        assert!(!is_protected_class(""));          // empty → not protected
-        assert!(!is_protected_class("\0\0"));      // blank WM_CLASS → not protected
+        assert!(!is_protected_class("")); // empty → not protected
+        assert!(!is_protected_class("\0\0")); // blank WM_CLASS → not protected
     }
 
     #[test]
@@ -892,9 +902,8 @@ mod tests {
         // In debug builds add_parkable debug_asserts; call it in a way that
         // checks the *return*/effect without tripping the assert path. We test
         // the effect via release semantics: the id must not be inserted.
-        let added = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            state.add_parkable(7)
-        }));
+        let added =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| state.add_parkable(7)));
         // Either it returned false (release) or panicked via debug_assert (debug);
         // either way the id must NOT be in the override set afterwards.
         let _ = added; // result intentionally ignored
@@ -925,7 +934,10 @@ mod tests {
 
     #[test]
     fn title_matches_rejects_mismatch_and_empty() {
-        assert!(!title_matches(Some("Eldrun — p1 — g-3"), "Eldrun — p2 — g-3"));
+        assert!(!title_matches(
+            Some("Eldrun — p1 — g-3"),
+            "Eldrun — p2 — g-3"
+        ));
         assert!(!title_matches(None, "Eldrun — p1 — g-3"));
         // An empty target must never match (a window with no title shouldn't be
         // resolved by accident).
@@ -977,12 +989,19 @@ mod tests {
     fn cinnamon_names_value_always_sets_first_two_slots() {
         let result = cinnamon_workspace_names_value(&[]);
         assert!(result.contains("'Eldrun'"), "first slot must be Eldrun");
-        assert!(result.contains("'Eldrun-Hidden'"), "second slot must be Eldrun-Hidden");
+        assert!(
+            result.contains("'Eldrun-Hidden'"),
+            "second slot must be Eldrun-Hidden"
+        );
     }
 
     #[test]
     fn cinnamon_names_value_preserves_extra_workspaces() {
-        let original = vec!["Old".to_string(), "Also-Old".to_string(), "Extra".to_string()];
+        let original = vec![
+            "Old".to_string(),
+            "Also-Old".to_string(),
+            "Extra".to_string(),
+        ];
         let result = cinnamon_workspace_names_value(&original);
         assert!(result.contains("'Extra'"), "extra workspaces must be kept");
         assert!(result.starts_with("['Eldrun', 'Eldrun-Hidden',"));

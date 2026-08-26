@@ -22,7 +22,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::schema::net_usage;
 use crate::services::big_folders;
 use crate::services::local_loss;
-use crate::services::remote::{remote_target_for, pooled_sftp, RemotePoolState, RemoteTarget};
+use crate::services::remote::{pooled_sftp, remote_target_for, RemotePoolState, RemoteTarget};
 use crate::services::remote_sync::{
     self, ensure_loaded, join_remote, local_meta, local_size_mtime, mirror_local_path, Manifest,
     PushDecision, SyncManifestState, SyncState,
@@ -158,8 +158,7 @@ async fn resolve(
     project_id: &str,
     pool: &RemotePoolState,
 ) -> Result<(RemoteTarget, Arc<Sftp>), String> {
-    let target = remote_target_for(project_id)
-        .ok_or_else(|| "not a remote project".to_string())?;
+    let target = remote_target_for(project_id).ok_or_else(|| "not a remote project".to_string())?;
     let sftp = pooled_sftp(pool, project_id)
         .await
         .ok_or_else(|| "remote project not connected — reconnect first".to_string())?;
@@ -179,7 +178,15 @@ pub async fn sync_pull(
     manifest: State<'_, SyncManifestState>,
 ) -> Result<usize, String> {
     let (target, sftp) = resolve(&project_id, pool.inner()).await?;
-    pull_subtree(&app, &project_id, &target, &sftp, &rel_path, manifest.inner()).await
+    pull_subtree(
+        &app,
+        &project_id,
+        &target,
+        &sftp,
+        &rel_path,
+        manifest.inner(),
+    )
+    .await
 }
 
 /// Pull the entire project tree into the mirror (the one-click "sync whole
@@ -218,7 +225,11 @@ pub async fn sync_now(
     // #28q: "clears amber → green" means the host wins every file that moved on both
     // sides. Name the local edits that costs before overwriting them.
     let doomed = unsynced_local_edits(&project_id, manifest.inner(), &selected).await;
-    warn_overwritten(&project_id, "Sync now (re-pulled every selected file)", doomed);
+    warn_overwritten(
+        &project_id,
+        "Sync now (re-pulled every selected file)",
+        doomed,
+    );
 
     let total = selected.len();
     emit(&app, &project_id, "start", "", 0, total);
@@ -227,7 +238,10 @@ pub async fn sync_now(
         let host_abs = join_remote(&target.spec.remote_path, &rel);
         let (size, mtime) = remote_sync::stat_or_zero(&sftp, &host_abs).await;
         let local = mirror_local_path(&project_id, &rel);
-        if remote_sync::pull_file(&sftp, &host_abs, size, &local).await.is_ok() {
+        if remote_sync::pull_file(&sftp, &host_abs, size, &local)
+            .await
+            .is_ok()
+        {
             let local_meta = std::fs::metadata(&local).ok();
             let (ls, lm) = local_size_mtime(local_meta);
             let mut guard = manifest.lock().await;
@@ -411,8 +425,8 @@ pub async fn sync_big_folders(
     pool: State<'_, RemotePoolState>,
     manifest: State<'_, SyncManifestState>,
 ) -> Result<BigFolderScan, String> {
-    let target = remote_target_for(&project_id)
-        .ok_or_else(|| "not a remote project".to_string())?;
+    let target =
+        remote_target_for(&project_id).ok_or_else(|| "not a remote project".to_string())?;
 
     // The refusal comes BEFORE any work, so the retry the dialog offers repeats
     // nothing: a refused call did not walk the mirror either.
@@ -441,7 +455,11 @@ pub async fn sync_big_folders(
     // layer down — one confirmation covers the whole act (`disk_usage_scan`'s
     // rule, applied here for the same reason).
     let _dial = (confirmed == Some(true)).then(|| {
-        crate::services::ssh_common::user_dial(&target.spec.user, &target.spec.host, target.spec.port)
+        crate::services::ssh_common::user_dial(
+            &target.spec.user,
+            &target.spec.host,
+            target.spec.port,
+        )
     });
 
     // Host walk, only when asked for AND with a live pool behind it. The pool
@@ -453,9 +471,11 @@ pub async fn sync_big_folders(
     let host = if connected {
         let spec = target.spec.clone();
         let root = spec.remote_path.clone();
-        match tokio::task::spawn_blocking(move || crate::services::ssh_exec::remote_du_raw(&spec, &root))
-            .await
-            .map_err(|e| e.to_string())?
+        match tokio::task::spawn_blocking(move || {
+            crate::services::ssh_exec::remote_du_raw(&spec, &root)
+        })
+        .await
+        .map_err(|e| e.to_string())?
         {
             Ok(out) => big_folders::scan_host(&target.spec.remote_path, &out),
             Err(e) => {
@@ -504,11 +524,13 @@ pub async fn sync_big_folders(
             })
             .collect()
     };
-    folders.sort_by(|a, b| {
-        (b.host_bytes.max(b.local_bytes)).cmp(&a.host_bytes.max(a.local_bytes))
-    });
+    folders.sort_by_key(|f| std::cmp::Reverse(f.host_bytes.max(f.local_bytes)));
 
-    Ok(BigFolderScan { folders, host_scanned: connected, host_error })
+    Ok(BigFolderScan {
+        folders,
+        host_scanned: connected,
+        host_error,
+    })
 }
 
 /// Record (or lift) an explicit byte-sync **exclusion** for one or more folders —
@@ -565,8 +587,10 @@ pub async fn sync_status(
         let mut guard = manifest.lock().await;
         ensure_loaded(&mut guard, &project_id).clone()
     };
-    let entries: Vec<(String, crate::services::remote_sync::SyncEntry)> =
-        snapshot.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let entries: Vec<(String, crate::services::remote_sync::SyncEntry)> = snapshot
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     // Re-stat selected files when the pool is live; if cold, fall back to the
     // stored base (green for selected) rather than erroring out the whole panel.
     let sftp = pooled_sftp(pool.inner(), &project_id).await;
@@ -574,7 +598,8 @@ pub async fn sync_status(
     // Partition without any network first: only selected FILES against a live
     // pool need a host re-stat. Everything else (unselected → none, directories →
     // green, cold pool → last-known-good green) resolves immediately.
-    let mut to_stat: Vec<(String, crate::services::remote_sync::SyncEntry, bool, bool)> = Vec::new();
+    let mut to_stat: Vec<(String, crate::services::remote_sync::SyncEntry, bool, bool)> =
+        Vec::new();
     for (rel, entry) in entries {
         // Effective auto-sync and exclusion both resolve against the whole manifest
         // (ancestor folder markers), so compute them before `rel` is moved into the
@@ -665,8 +690,12 @@ pub async fn sync_status(
                 // therefore kept for state/divergence computation — it preserves
                 // today's one-side-deleted amber EXACTLY; the tri-state is used
                 // ONLY for both-gone detection (the prune below).
-                let (size, mtime) =
-                    host_stat.as_ref().ok().copied().flatten().unwrap_or((0, None));
+                let (size, mtime) = host_stat
+                    .as_ref()
+                    .ok()
+                    .copied()
+                    .flatten()
+                    .unwrap_or((0, None));
                 let host_for_compute = Some((size, mtime));
                 let mirror_path = mirror_local_path(&project_id, &rel);
                 // Same tri-state for the local mirror: only io NotFound is
@@ -706,7 +735,12 @@ pub async fn sync_status(
                 if state == SyncState::Amber {
                     if let Some(local_vals) = local {
                         if let Some(rb) = verify_amber_identical(
-                            &sftp, &host_abs, &mirror_path, &rel, (size, mtime), local_vals,
+                            &sftp,
+                            &host_abs,
+                            &mirror_path,
+                            &rel,
+                            (size, mtime),
+                            local_vals,
                         )
                         .await
                         {
@@ -763,7 +797,12 @@ pub async fn sync_status(
             let m = ensure_loaded(&mut guard, &project_id);
             for rb in &rebases {
                 remote_sync::record_pull(
-                    m, &rb.rel, rb.host_size, rb.host_mtime, rb.local_size, rb.local_mtime,
+                    m,
+                    &rb.rel,
+                    rb.host_size,
+                    rb.host_mtime,
+                    rb.local_size,
+                    rb.local_mtime,
                 );
             }
             for (rel, snapshot) in &prunes {
@@ -877,23 +916,47 @@ pub async fn sync_file_meta(
     let (target, sftp) = resolve(&project_id, pool.inner()).await?;
     let host_abs = join_remote(&target.spec.remote_path, &rel_path);
     let host = match sftp::metadata_on(&sftp, &host_abs).await {
-        Ok((size, mtime)) => SideMeta { exists: true, size, mtime },
-        Err(_) => SideMeta { exists: false, size: 0, mtime: None },
+        Ok((size, mtime)) => SideMeta {
+            exists: true,
+            size,
+            mtime,
+        },
+        Err(_) => SideMeta {
+            exists: false,
+            size: 0,
+            mtime: None,
+        },
     };
     let local_path = mirror_local_path(&project_id, &rel_path);
     let local = match std::fs::metadata(&local_path) {
         Ok(m) => {
             let (size, mtime) = local_size_mtime(Some(m));
-            SideMeta { exists: true, size, mtime }
+            SideMeta {
+                exists: true,
+                size,
+                mtime,
+            }
         }
-        Err(_) => SideMeta { exists: false, size: 0, mtime: None },
+        Err(_) => SideMeta {
+            exists: false,
+            size: 0,
+            mtime: None,
+        },
     };
     let (base_size, base_mtime) = {
         let mut guard = manifest.lock().await;
         let m = ensure_loaded(&mut guard, &project_id);
-        m.get(&rel_path).map(|e| (e.host_size, e.host_mtime)).unwrap_or((0, None))
+        m.get(&rel_path)
+            .map(|e| (e.host_size, e.host_mtime))
+            .unwrap_or((0, None))
     };
-    Ok(SyncFileMeta { rel_path, local, host, base_size, base_mtime })
+    Ok(SyncFileMeta {
+        rel_path,
+        local,
+        host,
+        base_size,
+        base_mtime,
+    })
 }
 
 /// Byte-for-byte check for one diverged (amber) file, run when the three-way
@@ -1026,7 +1089,8 @@ pub async fn sync_apply_delete(
             Ok(None) => {}
             Ok(Some(_)) => {
                 return Err(
-                    "the host still holds this file — this action only accepts a host deletion".to_string(),
+                    "the host still holds this file — this action only accepts a host deletion"
+                        .to_string(),
                 )
             }
             Err(e) => return Err(format!("could not confirm the host copy is gone: {e}")),
@@ -1137,11 +1201,27 @@ pub async fn sync_transfer_preview(
     let (target, sftp) = resolve(&project_id, pool.inner()).await?;
     match direction.as_str() {
         "pull" => {
-            preview_pull(&project_id, &target, &sftp, &rel_path, rel_paths, manifest.inner()).await
+            preview_pull(
+                &project_id,
+                &target,
+                &sftp,
+                &rel_path,
+                rel_paths,
+                manifest.inner(),
+            )
+            .await
         }
         "push" => {
-            preview_push(&project_id, &target, &sftp, &rel_path, rel_paths, force, manifest.inner())
-                .await
+            preview_push(
+                &project_id,
+                &target,
+                &sftp,
+                &rel_path,
+                rel_paths,
+                force,
+                manifest.inner(),
+            )
+            .await
         }
         other => Err(format!("unknown sync direction '{other}'")),
     }
@@ -1164,7 +1244,11 @@ async fn preview_pull(
             for p in paths {
                 let host_abs = join_remote(&target.spec.remote_path, &p);
                 let (size, mtime) = remote_sync::stat_or_zero(sftp, &host_abs).await;
-                out.push(remote_sync::HostFile { rel: p, size, mtime });
+                out.push(remote_sync::HostFile {
+                    rel: p,
+                    size,
+                    mtime,
+                });
             }
             out
         }
@@ -1174,7 +1258,11 @@ async fn preview_pull(
                 // Not a directory — a single file, exactly as `pull_subtree` falls back.
                 let host_abs = join_remote(&target.spec.remote_path, rel);
                 let (size, mtime) = sftp::metadata_on(sftp, &host_abs).await?;
-                vec![remote_sync::HostFile { rel: rel.to_string(), size, mtime }]
+                vec![remote_sync::HostFile {
+                    rel: rel.to_string(),
+                    size,
+                    mtime,
+                }]
             }
         },
     };
@@ -1453,7 +1541,14 @@ pub async fn sync_push(
         }
     }
     emit(&app, &project_id, "done", &rel_path, done, total);
-    Ok(SyncPushResult { pushed, conflicts, failed_total, failed, first_error, skipped_excluded })
+    Ok(SyncPushResult {
+        pushed,
+        conflicts,
+        failed_total,
+        failed,
+        first_error,
+        skipped_excluded,
+    })
 }
 
 /// Unified diff of the local mirror copy (old / "local") against the current host
@@ -1471,7 +1566,9 @@ pub async fn sync_diff(
     let host_abs = join_remote(&target.spec.remote_path, &rel_path);
     // Host bytes now (empty if the host no longer has the file → shown as a full
     // deletion by the diff).
-    let host_bytes = sftp::read_file_on(&sftp, &host_abs).await.unwrap_or_default();
+    let host_bytes = sftp::read_file_on(&sftp, &host_abs)
+        .await
+        .unwrap_or_default();
     let mirror_path = mirror_local_path(&project_id, &rel_path);
     // Compute the diff LOCALLY (never over SSH — the mirror is on disk and the
     // host bytes are already in memory). Off the async thread: git spawns a
@@ -1557,19 +1654,23 @@ async fn pull_subtree(
     manifest: &SyncManifestState,
 ) -> Result<usize, String> {
     // Determine whether `rel` is a directory (walkable) or a single file.
-    let (files, is_dir) = match remote_sync::walk_host_files(sftp, &target.spec.remote_path, rel).await
-    {
-        Ok(f) => (f, true),
-        Err(_) => {
-            // Not a directory — treat `rel` as a single file (stat it).
-            let host_abs = join_remote(&target.spec.remote_path, rel);
-            let (size, mtime) = crate::services::sftp::metadata_on(sftp, &host_abs).await?;
-            (
-                vec![remote_sync::HostFile { rel: rel.to_string(), size, mtime }],
-                false,
-            )
-        }
-    };
+    let (files, is_dir) =
+        match remote_sync::walk_host_files(sftp, &target.spec.remote_path, rel).await {
+            Ok(f) => (f, true),
+            Err(_) => {
+                // Not a directory — treat `rel` as a single file (stat it).
+                let host_abs = join_remote(&target.spec.remote_path, rel);
+                let (size, mtime) = crate::services::sftp::metadata_on(sftp, &host_abs).await?;
+                (
+                    vec![remote_sync::HostFile {
+                        rel: rel.to_string(),
+                        size,
+                        mtime,
+                    }],
+                    false,
+                )
+            }
+        };
     // Drop everything the user excluded from byte-sync (the giant-folder prompt,
     // `services::big_folders`). A whole-project pull is exactly the click that
     // answer exists to make safe; an explicit pull *of* the excluded folder still
@@ -1614,7 +1715,9 @@ async fn pull_subtree(
         let local_base = if rsynced {
             std::fs::metadata(&local).ok().map(|m| local_meta(&m))
         } else {
-            remote_sync::pull_file(sftp, &host_abs, file.size, &local).await.ok()
+            remote_sync::pull_file(sftp, &host_abs, file.size, &local)
+                .await
+                .ok()
         };
         match local_base {
             Some((ls, lm)) => {
@@ -1654,7 +1757,8 @@ async fn try_rsync_pull(target: &RemoteTarget, rel: &str) -> bool {
         if !remote_sync::rsync_available_host(&spec) {
             return false;
         }
-        remote_sync::rsync_pull_dir(&spec.user, &spec.host, spec.port, &host_src, &local_dest).is_ok()
+        remote_sync::rsync_pull_dir(&spec.user, &spec.host, spec.port, &host_src, &local_dest)
+            .is_ok()
     })
     .await
     .unwrap_or(false)
@@ -1769,7 +1873,10 @@ index 3367afd..3e75765 100644
         let out = rewrite_diff_labels(raw, "src/main.rs");
         // Header lines carry friendly labels; the parser strips git's a/ b/
         // prefixes, leaving `local/…` / `host/…`. Body/hunk lines are untouched.
-        assert!(out.contains("diff --git a/local/src/main.rs b/host/src/main.rs"), "got: {out}");
+        assert!(
+            out.contains("diff --git a/local/src/main.rs b/host/src/main.rs"),
+            "got: {out}"
+        );
         assert!(out.contains("--- a/local/src/main.rs"), "got: {out}");
         assert!(out.contains("+++ b/host/src/main.rs"), "got: {out}");
         assert!(out.contains("-old"), "got: {out}");
@@ -1782,6 +1889,9 @@ index 3367afd..3e75765 100644
     fn rewrite_diff_labels_handles_binary() {
         let raw = "diff --git a/tmp/x b/tmp/y\nBinary files a/tmp/x and b/tmp/y differ\n";
         let out = rewrite_diff_labels(raw, "data/img.png");
-        assert!(out.contains("Binary files a/local/data/img.png and b/host/data/img.png differ"), "got: {out}");
+        assert!(
+            out.contains("Binary files a/local/data/img.png and b/host/data/img.png differ"),
+            "got: {out}"
+        );
     }
 }

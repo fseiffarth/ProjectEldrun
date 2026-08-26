@@ -8,9 +8,7 @@
 
 use std::collections::HashMap;
 
-use eldrun_lib::commands::apps::{
-    is_embeddable_exec, resolve_default_handler, EMBEDDABLE_EXECS,
-};
+use eldrun_lib::commands::apps::{is_embeddable_exec, resolve_default_handler, EMBEDDABLE_EXECS};
 use eldrun_lib::platform::null::NullBackend;
 use eldrun_lib::platform::WorkspaceBackend;
 
@@ -27,12 +25,8 @@ fn apps(pairs: &[(&str, &str)]) -> HashMap<String, String> {
 fn explicit_handler_wins_over_everything() {
     let project = apps(&[(".md", "kate")]);
     let global = apps(&[(".md", "gedit")]);
-    let resolved = resolve_default_handler(
-        "/tmp/notes.md",
-        Some("mousepad"),
-        Some(&project),
-        &global,
-    );
+    let resolved =
+        resolve_default_handler("/tmp/notes.md", Some("mousepad"), Some(&project), &global);
     assert_eq!(resolved.as_deref(), Some("mousepad"));
 }
 
@@ -47,8 +41,7 @@ fn blank_handler_is_ignored_and_falls_through() {
 fn project_default_takes_precedence_over_global() {
     let project = apps(&[(".md", "okular")]);
     let global = apps(&[(".md", "evince")]);
-    let resolved =
-        resolve_default_handler("/tmp/notes.md", None, Some(&project), &global);
+    let resolved = resolve_default_handler("/tmp/notes.md", None, Some(&project), &global);
     assert_eq!(resolved.as_deref(), Some("okular"));
 }
 
@@ -56,8 +49,7 @@ fn project_default_takes_precedence_over_global() {
 fn global_default_used_when_no_project_entry() {
     let project = apps(&[(".pdf", "okular")]);
     let global = apps(&[(".md", "mousepad")]);
-    let resolved =
-        resolve_default_handler("/tmp/notes.md", None, Some(&project), &global);
+    let resolved = resolve_default_handler("/tmp/notes.md", None, Some(&project), &global);
     assert_eq!(resolved.as_deref(), Some("mousepad"));
 }
 
@@ -73,8 +65,7 @@ fn empty_app_value_is_skipped() {
     // An empty mapping value must not resolve to "" — fall through to global.
     let project = apps(&[(".md", "")]);
     let global = apps(&[(".md", "feh")]);
-    let resolved =
-        resolve_default_handler("/tmp/x.md", None, Some(&project), &global);
+    let resolved = resolve_default_handler("/tmp/x.md", None, Some(&project), &global);
     assert_eq!(resolved.as_deref(), Some("feh"));
 }
 
@@ -88,7 +79,10 @@ fn allowlist_contains_expected_apps_and_excludes_fork_and_exit() {
         // EMBEDDABLE_EXECS doc comment).
         "gedit", "code",
     ] {
-        assert!(EMBEDDABLE_EXECS.contains(&app), "{app} should be embeddable");
+        assert!(
+            EMBEDDABLE_EXECS.contains(&app),
+            "{app} should be embeddable"
+        );
     }
     // Single-instance D-Bus / fork-and-exit editors that remain excluded.
     for app in ["kate", "gnome-text-editor", "firefox"] {

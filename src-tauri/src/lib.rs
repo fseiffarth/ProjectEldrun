@@ -20,10 +20,10 @@ pub mod storage;
 pub mod sysstat;
 pub mod terminal;
 
-use std::sync::{Arc, Mutex};
 use commands::apps::{WindowRegistry, WindowRegistryState};
 use commands::terminal::RegistryState;
 use commands::workspace::{WorkspaceState, WorkspaceStateArc};
+use std::sync::{Arc, Mutex};
 use terminal::PtyRegistry;
 
 /// Raw fd kept open so the async-signal-safe crash handler can write to it.
@@ -54,11 +54,15 @@ fn install_crash_logger() {
 
     #[cfg(unix)]
     // SAFETY: called once at startup before any threads that touch signals.
-    unsafe { install_signal_handlers(&path) };
+    unsafe {
+        install_signal_handlers(&path)
+    };
 
     #[cfg(windows)]
     // SAFETY: called once at startup before any thread can crash.
-    unsafe { install_seh_filter(&path) };
+    unsafe {
+        install_seh_filter(&path)
+    };
 }
 
 /// Append one entry to crash.log in the state dir.
@@ -99,10 +103,7 @@ unsafe fn install_signal_handlers(path: &std::path::Path) {
         .append(true)
         .open(path)
     {
-        CRASH_LOG_FD.store(
-            file.into_raw_fd(),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        CRASH_LOG_FD.store(file.into_raw_fd(), std::sync::atomic::Ordering::Relaxed);
     }
     for &sig in &[libc::SIGSEGV, libc::SIGABRT, libc::SIGBUS, libc::SIGFPE] {
         let mut sa: libc::sigaction = std::mem::zeroed();
@@ -125,9 +126,9 @@ extern "C" fn signal_crash_handler(
         let name: &[u8] = match sig {
             libc::SIGSEGV => b"SIGSEGV",
             libc::SIGABRT => b"SIGABRT",
-            libc::SIGBUS  => b"SIGBUS",
-            libc::SIGFPE  => b"SIGFPE",
-            _             => b"SIGNAL",
+            libc::SIGBUS => b"SIGBUS",
+            libc::SIGFPE => b"SIGFPE",
+            _ => b"SIGNAL",
         };
         sig_write(fd, b"=== CRASH: ");
         sig_write(fd, name);
@@ -523,7 +524,10 @@ pub fn run() {
         .manage(usage_watch.clone())
         .manage(mobile_desktop.clone())
         .setup(move |_app| {
-            commands::mobile_control::start_desktop_bridge(_app.handle().clone(), mobile_desktop.clone());
+            commands::mobile_control::start_desktop_bridge(
+                _app.handle().clone(),
+                mobile_desktop.clone(),
+            );
             #[cfg(target_os = "linux")]
             install_webview_crash_reporter(_app);
             // Recolor WebKitGTK's native in-content scrollbars (page CSS can't —
@@ -554,10 +558,7 @@ pub fn run() {
             {
                 use tauri::Manager;
                 let workspace = _app.state::<WorkspaceStateArc>().inner().clone();
-                if let Some(hwnd) = _app
-                    .get_webview_window("main")
-                    .and_then(|w| w.hwnd().ok())
-                {
+                if let Some(hwnd) = _app.get_webview_window("main").and_then(|w| w.hwnd().ok()) {
                     let id = hwnd.0 as usize as u64;
                     workspace.lock().unwrap().backend.set_main_window_id(id);
                     // Add the WS_MAXIMIZEBOX/WS_THICKFRAME styles a borderless wry
@@ -590,7 +591,13 @@ pub fn run() {
             // versions) up to the current shape and refresh their scaffold, then
             // persist. Off-thread so file I/O never blocks startup; additive and
             // idempotent, so a race with the frontend's first load is benign.
-            std::thread::spawn(commands::projects::migrate_legacy_projects);
+            std::thread::spawn(|| {
+                commands::projects::migrate_legacy_projects();
+                let mut projects = commands::projects::get_projects().unwrap_or_default();
+                if let Err(e) = commands::projects::ensure_trash_project(&mut projects) {
+                    eprintln!("Trash project setup: {e}");
+                }
+            });
             // One-shot: adopt every existing project's tab layout / `open_apps`
             // out of its project tree and into `<state_dir>/sessions/<id>/`.
             // Synchronous on purpose — it must complete before the frontend's
@@ -653,6 +660,7 @@ pub fn run() {
             commands::settings::save_window_state,
             commands::mobile_control::mobile_desktop_respond,
             commands::mobile_control::mobile_opaque_id,
+            commands::mobile_control::mobile_prepare_phone_install_script,
             commands::mobile_control::mobile_admin,
             commands::mobile_control::mobile_host_status,
             commands::mobile_control::mobile_host_apply,
@@ -1069,6 +1077,7 @@ pub fn run() {
             commands::terminal::pty_unwatch,
             commands::terminal::local_tmux_list,
             commands::terminal::local_tmux_kill,
+            commands::terminal::local_tmux_kill_eldrun_sessions,
             commands::terminal::local_tmux_rename,
             commands::terminal::project_cpu_percent,
             // External apps / window tracking
@@ -1363,6 +1372,9 @@ mod tests {
     fn format_crash_line_max_values_fit_a_64_byte_buffer() {
         let (s, len) = crash_line(u32::MAX, usize::MAX, 64);
         assert!(len < 64, "worst case must fit the filter's stack buffer");
-        assert_eq!(s, "=== CRASH: code=0xFFFFFFFF addr=0xFFFFFFFFFFFFFFFF ===\n");
+        assert_eq!(
+            s,
+            "=== CRASH: code=0xFFFFFFFF addr=0xFFFFFFFFFFFFFFFF ===\n"
+        );
     }
 }

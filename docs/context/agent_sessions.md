@@ -1,6 +1,6 @@
 # Agent session persistence
 
-Referenced from `CLAUDE.md`.
+Referenced from `AGENTS.md`.
 
 Project-local state lives in each project's `project.json`. This includes the
 per-project tab layout (`tab_layout`/`tab_groups`). Shell/files tabs are always

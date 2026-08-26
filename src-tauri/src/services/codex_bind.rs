@@ -454,7 +454,11 @@ mod tests {
         std::fs::create_dir_all(&day).unwrap();
         for id in [A, B] {
             // Deliberately unparseable content: ids must come from the names.
-            std::fs::write(day.join(format!("rollout-2026-07-11T11-26-43-{id}.jsonl")), b"").unwrap();
+            std::fs::write(
+                day.join(format!("rollout-2026-07-11T11-26-43-{id}.jsonl")),
+                b"",
+            )
+            .unwrap();
         }
         std::fs::write(day.join("stray.txt"), b"x").unwrap();
 
@@ -518,7 +522,10 @@ mod tests {
         let cwd = PathBuf::from("/home/u/proj");
         let candidates = vec![meta(A, "/home/u/proj", 10)];
         let known: HashSet<String> = [A.to_string()].into_iter().collect();
-        assert_eq!(pick_binding(&candidates, &cwd, &known, &HashSet::new()), None);
+        assert_eq!(
+            pick_binding(&candidates, &cwd, &known, &HashSet::new()),
+            None
+        );
     }
 
     #[test]
@@ -528,6 +535,9 @@ mod tests {
         let cwd = PathBuf::from("/home/u/proj");
         let candidates = vec![meta(A, "/home/u/proj", 10)];
         let claimed: HashSet<String> = [A.to_string()].into_iter().collect();
-        assert_eq!(pick_binding(&candidates, &cwd, &HashSet::new(), &claimed), None);
+        assert_eq!(
+            pick_binding(&candidates, &cwd, &HashSet::new(), &claimed),
+            None
+        );
     }
 }

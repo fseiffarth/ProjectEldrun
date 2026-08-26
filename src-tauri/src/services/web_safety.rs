@@ -628,7 +628,10 @@ fn is_app_origin(url: &Url, host: &Host<&str>) -> bool {
 /// address has to unmap first, or the v6 spelling is a second answer.
 fn unmap(ip: IpAddr) -> IpAddr {
     match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(v6)),
         v4 => v4,
     }
 }
@@ -730,7 +733,11 @@ pub fn is_loopback_url(url: &Url) -> bool {
         Some(Host::Domain(d)) => d.trim_end_matches('.').eq_ignore_ascii_case("localhost"),
         Some(Host::Ipv4(v4)) => v4.is_loopback(),
         Some(Host::Ipv6(v6)) => {
-            v6.is_loopback() || v6.to_ipv4_mapped().map(|v| v.is_loopback()).unwrap_or(false)
+            v6.is_loopback()
+                || v6
+                    .to_ipv4_mapped()
+                    .map(|v| v.is_loopback())
+                    .unwrap_or(false)
         }
         None => false,
     }
@@ -972,7 +979,10 @@ mod tests {
             ("http://0x7f000001/", ConfirmReason::Loopback),
             ("http://017700000001/", ConfirmReason::Loopback),
             ("http://[::ffff:127.0.0.1]/", ConfirmReason::Loopback),
-            ("http://169.254.169.254/latest/meta-data/", ConfirmReason::LinkLocal),
+            (
+                "http://169.254.169.254/latest/meta-data/",
+                ConfirmReason::LinkLocal,
+            ),
             ("http://[fe80::1]/", ConfirmReason::LinkLocal),
             ("http://10.1.2.3/", ConfirmReason::PrivateNetwork),
             ("http://172.16.0.1/", ConfirmReason::PrivateNetwork),
@@ -1054,15 +1064,22 @@ mod tests {
                 .collect();
         for _ in 0..10_000 {
             let mut s = String::new();
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let len = (seed >> 33) as usize % 48;
             for _ in 0..len {
-                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 s.push(alphabet[(seed >> 33) as usize % alphabet.len()]);
             }
             let (parsed, decision) = navigation_decision_str(&s, &NavContext::default());
             if parsed.is_none() {
-                assert!(matches!(decision, NavDecision::Block(BlockReason::Unparsable)));
+                assert!(matches!(
+                    decision,
+                    NavDecision::Block(BlockReason::Unparsable)
+                ));
             }
         }
     }
@@ -1086,7 +1103,10 @@ mod tests {
         // `xn--80ak6aa92e` is the Cyrillic homograph of `apple`.
         let d = describe_url(&u("https://xn--80ak6aa92e.example/x"));
         assert_eq!(d.punycode.as_deref(), Some("xn--80ak6aa92e.example"));
-        assert_ne!(d.host, "xn--80ak6aa92e.example", "the Unicode form is shown");
+        assert_ne!(
+            d.host, "xn--80ak6aa92e.example",
+            "the Unicode form is shown"
+        );
         assert!(d.display.contains(&d.host));
     }
 
@@ -1164,7 +1184,10 @@ mod tests {
                 | ConfirmReason::InternalName => {}
             }
             let t = c.token();
-            assert!(REASON_TOKENS.contains(&t), "confirm token `{t}` is unlisted");
+            assert!(
+                REASON_TOKENS.contains(&t),
+                "confirm token `{t}` is unlisted"
+            );
             // A reader fetch's later hops turn each of these into its own token.
             let hop = format!("redirect-to-{t}");
             assert!(

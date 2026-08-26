@@ -1,6 +1,6 @@
 # Usage stats
 
-Referenced from `CLAUDE.md`.
+Referenced from `AGENTS.md`.
 
 **Usage stats are local-only** (`usage_stats.json`, `schema::usage_stats`): a
 rolling hour+day counter store behind the daily recap (which agents/models you

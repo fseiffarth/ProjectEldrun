@@ -4,11 +4,11 @@
 //! covering degenerate inputs, default values, and Python-rollback invariants
 //! that can be constructed inline without fixture files.
 
-use eldrun_lib::schema::{
-    ActiveSession, DefaultApps, Project, ProjectEntry, Settings, TerminalSession,
-    TimeLogEntry, WindowSession,
-};
 use eldrun_lib::schema::project::TabEntry;
+use eldrun_lib::schema::{
+    ActiveSession, DefaultApps, Project, ProjectEntry, Settings, TerminalSession, TimeLogEntry,
+    WindowSession,
+};
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -61,18 +61,22 @@ fn settings_keyboard_shortcuts_absent_defaults_none() {
 #[test]
 fn settings_keyboard_shortcuts_roundtrip() {
     // A custom chord override survives parse → serialize → parse.
-    let s: Settings = parse(r#"{
+    let s: Settings = parse(
+        r#"{
         "keyboard_shortcuts": {
             "closeTab": { "key": "q", "ctrl": true },
             "cycleTabs": { "key": "Tab", "shift": true }
         }
-    }"#);
+    }"#,
+    );
     let map = s.keyboard_shortcuts.as_ref().expect("map present");
     assert_eq!(map["closeTab"].key, "q");
     assert!(map["closeTab"].ctrl);
     assert!(!map["closeTab"].shift);
     let back = roundtrip(&s);
-    let back_map = back.keyboard_shortcuts.expect("map present after roundtrip");
+    let back_map = back
+        .keyboard_shortcuts
+        .expect("map present after roundtrip");
     assert_eq!(back_map["cycleTabs"].key, "Tab");
     assert!(back_map["cycleTabs"].shift);
     assert!(!back_map["cycleTabs"].ctrl);
@@ -81,17 +85,22 @@ fn settings_keyboard_shortcuts_roundtrip() {
 #[test]
 fn settings_unknown_fields_preserved_in_extra() {
     let s: Settings = parse(r#"{"color_scheme":"dark","future_field":42}"#);
-    assert!(s.extra.contains_key("future_field"), "unknown field must be preserved");
+    assert!(
+        s.extra.contains_key("future_field"),
+        "unknown field must be preserved"
+    );
     assert_eq!(s.extra["future_field"].as_i64(), Some(42));
 }
 
 #[test]
 fn settings_roundtrip_preserves_all_known_fields() {
-    let s: Settings = parse(r#"{
+    let s: Settings = parse(
+        r#"{
         "color_scheme": "light",
         "ollama_host": "http://localhost:11434",
         "ollama_model": "mistral"
-    }"#);
+    }"#,
+    );
     let back = roundtrip(&s);
     assert_eq!(back.color_scheme.as_deref(), Some("light"));
     assert_eq!(back.ollama_host.as_deref(), Some("http://localhost:11434"));
@@ -102,13 +111,15 @@ fn settings_roundtrip_preserves_all_known_fields() {
 
 #[test]
 fn project_entry_parses_required_fields() {
-    let e: ProjectEntry = parse(r#"{
+    let e: ProjectEntry = parse(
+        r#"{
         "id": "abc",
         "name": "My Project",
         "status": "inactive",
         "position": 10,
         "local_file": "/home/user/p/project.json"
-    }"#);
+    }"#,
+    );
     assert_eq!(e.id, "abc");
     assert_eq!(e.name, "My Project");
     assert_eq!(e.status, "inactive");
@@ -128,11 +139,13 @@ fn project_entry_status_values() {
 
 #[test]
 fn project_entry_extra_fields_survive_roundtrip() {
-    let e: ProjectEntry = parse(r#"{
+    let e: ProjectEntry = parse(
+        r#"{
         "id":"x","name":"X","status":"active","position":1,"local_file":"/x",
         "directory": "/home/user/x",
         "future_key": "future_value"
-    }"#);
+    }"#,
+    );
     let back = roundtrip(&e);
     assert_eq!(back.extra["directory"].as_str(), Some("/home/user/x"));
     assert_eq!(back.extra["future_key"].as_str(), Some("future_value"));
@@ -158,12 +171,14 @@ fn project_empty_json_uses_defaults() {
 
 #[test]
 fn project_tab_layout_round_trips() {
-    let p: Project = parse(r#"{
+    let p: Project = parse(
+        r#"{
         "id":"p","name":"P","directory":"/p",
         "tab_layout": [
             {"key":"t1","label":"T1","cmd":"bash","cwd":"/tmp"}
         ]
-    }"#);
+    }"#,
+    );
     let tabs = p.tab_layout.as_ref().unwrap();
     assert_eq!(tabs.len(), 1);
     assert_eq!(tabs[0].key, "t1");
@@ -174,10 +189,12 @@ fn project_tab_layout_round_trips() {
 
 #[test]
 fn project_open_apps_embedded_flag_preserved() {
-    let p: Project = parse(r#"{
+    let p: Project = parse(
+        r#"{
         "id":"p","name":"P","directory":"/p",
         "open_apps": [{"exec":"code","mode":"embedded"},{"exec":"firefox"}]
-    }"#);
+    }"#,
+    );
     let apps = p.open_apps.as_ref().unwrap();
     assert_eq!(apps[0].mode.as_deref(), Some("embedded"));
     assert!(apps[1].mode.is_none());
@@ -195,12 +212,14 @@ fn project_unknown_fields_preserved() {
 
 #[test]
 fn time_log_entry_parses_all_fields() {
-    let e: TimeLogEntry = parse(r#"{
+    let e: TimeLogEntry = parse(
+        r#"{
         "project_id": "proj-1",
         "date": "2026-06-03",
         "start_iso": "2026-06-03T10:00:00+00:00",
         "duration_s": 300.5
-    }"#);
+    }"#,
+    );
     assert_eq!(e.project_id, "proj-1");
     assert_eq!(e.date, "2026-06-03");
     assert_eq!(e.duration_s, 300.5);
@@ -208,18 +227,22 @@ fn time_log_entry_parses_all_fields() {
 
 #[test]
 fn time_log_entry_duration_zero_is_valid() {
-    let e: TimeLogEntry = parse(r#"{
+    let e: TimeLogEntry = parse(
+        r#"{
         "project_id":"p","date":"2026-01-01","start_iso":"2026-01-01T00:00:00Z","duration_s":0.0
-    }"#);
+    }"#,
+    );
     assert_eq!(e.duration_s, 0.0);
 }
 
 #[test]
 fn time_log_entry_unknown_fields_preserved() {
-    let e: TimeLogEntry = parse(r#"{
+    let e: TimeLogEntry = parse(
+        r#"{
         "project_id":"p","date":"2026-01-01","start_iso":"2026-01-01T00:00:00Z",
         "duration_s":1.0,"end_iso":"2026-01-01T00:00:01Z"
-    }"#);
+    }"#,
+    );
     assert_eq!(e.extra["end_iso"].as_str(), Some("2026-01-01T00:00:01Z"));
 }
 
@@ -227,19 +250,23 @@ fn time_log_entry_unknown_fields_preserved() {
 
 #[test]
 fn active_session_parses_required_fields() {
-    let s: ActiveSession = parse(r#"{
+    let s: ActiveSession = parse(
+        r#"{
         "project_id": "my-proj",
         "start_real": "2026-06-03T08:00:00+00:00"
-    }"#);
+    }"#,
+    );
     assert_eq!(s.project_id, "my-proj");
     assert!(!s.start_real.is_empty());
 }
 
 #[test]
 fn active_session_unknown_fields_preserved() {
-    let s: ActiveSession = parse(r#"{
+    let s: ActiveSession = parse(
+        r#"{
         "project_id":"p","start_real":"2026-01-01T00:00:00Z","hostname":"mybox"
-    }"#);
+    }"#,
+    );
     assert_eq!(s.extra["hostname"].as_str(), Some("mybox"));
     let back = roundtrip(&s);
     assert_eq!(back.extra["hostname"].as_str(), Some("mybox"));
@@ -256,13 +283,15 @@ fn terminal_session_default_active_tab_is_zero() {
 
 #[test]
 fn terminal_session_with_tabs_roundtrip() {
-    let s: TerminalSession = parse(r#"{
+    let s: TerminalSession = parse(
+        r#"{
         "tabLayout": [
             {"key":"s1","label":"Shell","cmd":"bash","cwd":"/home"},
             {"key":"a1","label":"Agent","cmd":"claude","cwd":"/home/proj"}
         ],
         "activeTabIndex": 1
-    }"#);
+    }"#,
+    );
     assert_eq!(s.tab_layout.len(), 2);
     assert_eq!(s.active_tab_index, 1);
     let back = roundtrip(&s);

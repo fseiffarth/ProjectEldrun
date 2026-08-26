@@ -14,8 +14,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use eldrun_lib::schema::{
-    ActiveSession, DefaultApps, FileTabSession, LayoutSession, Project, ProjectEntry,
-    ProjectState, Settings, TerminalSession, TimeLogEntry, WindowSession,
+    ActiveSession, DefaultApps, FileTabSession, LayoutSession, Project, ProjectEntry, ProjectState,
+    Settings, TerminalSession, TimeLogEntry, WindowSession,
 };
 use serde_json::Value;
 
@@ -114,7 +114,10 @@ fn settings_ollama_fields_preserved() {
     let out = serde_json::to_string_pretty(&s).expect("serialize");
     let back: Value = serde_json::from_str(&out).expect("reparse");
     // Python needs the global_apps map to be an object, not null.
-    assert!(back["global_apps"].is_object(), "global_apps must be an object");
+    assert!(
+        back["global_apps"].is_object(),
+        "global_apps must be an object"
+    );
 }
 
 #[test]
@@ -137,7 +140,10 @@ fn settings_files_alerts_roundtrip() {
     // `false` that silently switches a source off on the next read.
     assert_eq!(sources.events, None);
     let out = serde_json::to_string(&s).expect("serialize");
-    assert!(!out.contains("\"events\""), "absent source must not be materialized");
+    assert!(
+        !out.contains("\"events\""),
+        "absent source must not be materialized"
+    );
 }
 
 #[test]
@@ -316,7 +322,9 @@ fn eldrun_window_session_roundtrip() {
     let session: WindowSession = roundtrip(&raw);
 
     assert_eq!(session.project_window_ids.len(), 2);
-    assert!(session.project_window_ids.contains(&"win-abc123".to_string()));
+    assert!(session
+        .project_window_ids
+        .contains(&"win-abc123".to_string()));
     assert_unknown_preserved(&session.extra);
 }
 
@@ -383,8 +391,8 @@ fn eldrun_state_roundtrip() {
 
 #[test]
 fn write_json_overwrites_and_no_backup() {
-    use eldrun_lib::storage::{read_json, write_json};
     use eldrun_lib::schema::ProjectEntry;
+    use eldrun_lib::storage::{read_json, write_json};
 
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("test.json");
@@ -408,7 +416,11 @@ fn write_json_overwrites_and_no_backup() {
         .filter_map(|e| e.ok())
         .filter(|e| e.file_name() != std::ffi::OsStr::new("test.json"))
         .collect();
-    assert!(extras.is_empty(), "no extra files expected, got: {:?}", extras);
+    assert!(
+        extras.is_empty(),
+        "no extra files expected, got: {:?}",
+        extras
+    );
 
     // The live file must contain the modified name.
     let updated: Vec<ProjectEntry> = read_json(&path).expect("read updated");

@@ -76,7 +76,8 @@ fn synth_ext(lang: &str) -> &str {
 fn is_prettier_lang(lang: &str) -> bool {
     matches!(
         lang,
-        "css" | "scss"
+        "css"
+            | "scss"
             | "less"
             | "html"
             | "json"

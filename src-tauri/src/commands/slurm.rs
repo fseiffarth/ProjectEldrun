@@ -337,8 +337,7 @@ pub async fn slurm_job_out(
         if job_id.is_empty() || !job_id.bytes().all(|b| b.is_ascii_digit()) {
             return Err(format!("invalid job id '{job_id}'"));
         }
-        let stdout =
-            run_slurm_script(&project_dir, host, &format!("scontrol show job {job_id}"))?;
+        let stdout = run_slurm_script(&project_dir, host, &format!("scontrol show job {job_id}"))?;
         let paths = parse_scontrol_paths(&stdout);
         if !paths.out_file.is_empty() {
             return Ok(paths.out_file);
@@ -405,7 +404,10 @@ mod tests {
 
     #[test]
     fn scontrol_paths_empty_when_absent() {
-        assert_eq!(parse_scontrol_paths("JobId=1 JobName=x"), ScontrolPaths::default());
+        assert_eq!(
+            parse_scontrol_paths("JobId=1 JobName=x"),
+            ScontrolPaths::default()
+        );
     }
 
     #[test]
@@ -437,7 +439,10 @@ mod tests {
 
     #[test]
     fn split_script_rel_variants() {
-        assert_eq!(split_script_rel("train.slurm"), ("".into(), "train.slurm".into()));
+        assert_eq!(
+            split_script_rel("train.slurm"),
+            ("".into(), "train.slurm".into())
+        );
         assert_eq!(
             split_script_rel("jobs/train.slurm"),
             ("jobs".into(), "train.slurm".into())
@@ -456,7 +461,10 @@ mod tests {
             split_script_rel("/home/alice/proj/train.slurm"),
             ("/home/alice/proj".into(), "train.slurm".into())
         );
-        assert_eq!(split_script_rel("/train.slurm"), ("/".into(), "train.slurm".into()));
+        assert_eq!(
+            split_script_rel("/train.slurm"),
+            ("/".into(), "train.slurm".into())
+        );
     }
 
     #[test]

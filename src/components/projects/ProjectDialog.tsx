@@ -52,6 +52,12 @@ const GIT_INSTALL_CMD = IS_WINDOWS
  *  on the host so there is something to push to. */
 export type ImportSource = "folder" | "git" | "fork";
 
+/** The agent docs scaffolded as pointers to AGENTS.md rather than as
+ *  instructions of their own. Named in the scaffold preview because the fill
+ *  dropdown otherwise invites writing guidance into a file that should carry
+ *  none — AGENTS.md is where it belongs. */
+const AGENT_POINTER_DOCS = new Set(["CLAUDE.md", "GEMINI.md"]);
+
 /** The already-registered project a new one would collide with, as the backend's
  *  `check_project_site` reports it. `kind` is a machine token so the wording can
  *  live in `i18n.ts` ×5 — the same split `lib/browser.ts` makes for the
@@ -776,7 +782,8 @@ export function ProjectDialog({
 
   const scaffoldStatusText = (item: ScaffoldPreviewItem) => {
     if (item.path === ".git") return item.exists ? "Already there" : "Missing";
-    return item.exists ? "Already there, will be kept" : "Missing, will be added";
+    const base = item.exists ? "Already there, will be kept" : "Missing, will be added";
+    return AGENT_POINTER_DOCS.has(item.path) ? `${base} · points at AGENTS.md` : base;
   };
 
   // The shared project name + description fields. They live in the always-visible

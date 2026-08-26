@@ -45,6 +45,7 @@ import type { SavedPasswordState } from "../components/projects/useSavedCredenti
 import { IS_WINDOWS } from "../lib/platform";
 import { shouldPersistLocalTab, shouldPersistTab } from "../lib/tmuxSession";
 import { translate, useI18nStore } from "../lib/i18n";
+import { TRASH_PROJECT_ID } from "../lib/trashProject";
 
 function connectionsHeadless(): boolean {
   return useSettingsStore.getState().settings?.connections_headless ?? true;
@@ -1252,6 +1253,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
   },
 
   deactivateProject: async (id) => {
+    if (id === TRASH_PROJECT_ID) return;
     if (deactivatingProjects.has(id)) return;
     deactivatingProjects.add(id);
     try {

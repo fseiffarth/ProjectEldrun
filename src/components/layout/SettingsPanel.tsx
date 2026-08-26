@@ -99,6 +99,13 @@ interface HelpSection {
   items: HelpItem[];
 }
 
+/**
+ * The Feature Guide's contents, in reading order: the window itself, then
+ * projects, then what runs in a tab, then the surfaces that are their own
+ * applications, then everything that leaves this machine, then the rest.
+ * Terms and descriptions are i18n keys (`help.<section>.item<N>.term|desc`) —
+ * add a row here and its two keys in every language block.
+ */
 const HELP_SECTIONS: HelpSection[] = [
   {
     titleKey: "help.workspaceLayout.title",
@@ -117,6 +124,7 @@ const HELP_SECTIONS: HelpSection[] = [
       { termKey: "help.projects.item2.term", descKey: "help.projects.item2.desc" },
       { termKey: "help.projects.item3.term", descKey: "help.projects.item3.desc" },
       { termKey: "help.projects.item4.term", descKey: "help.projects.item4.desc" },
+      { termKey: "help.projects.item5.term", descKey: "help.projects.item5.desc" },
     ],
   },
   {
@@ -124,6 +132,37 @@ const HELP_SECTIONS: HelpSection[] = [
     items: [
       { termKey: "help.aiTerminals.item1.term", descKey: "help.aiTerminals.item1.desc" },
       { termKey: "help.aiTerminals.item2.term", descKey: "help.aiTerminals.item2.desc" },
+      { termKey: "help.aiTerminals.item3.term", descKey: "help.aiTerminals.item3.desc" },
+      { termKey: "help.aiTerminals.item4.term", descKey: "help.aiTerminals.item4.desc" },
+    ],
+  },
+  {
+    titleKey: "help.filesViewers.title",
+    items: [
+      { termKey: "help.filesViewers.item1.term", descKey: "help.filesViewers.item1.desc" },
+      { termKey: "help.filesViewers.item2.term", descKey: "help.filesViewers.item2.desc" },
+      { termKey: "help.filesViewers.item3.term", descKey: "help.filesViewers.item3.desc" },
+      { termKey: "help.filesViewers.item4.term", descKey: "help.filesViewers.item4.desc" },
+      { termKey: "help.filesViewers.item5.term", descKey: "help.filesViewers.item5.desc" },
+    ],
+  },
+  {
+    titleKey: "help.mailCalendar.title",
+    items: [
+      { termKey: "help.mailCalendar.item1.term", descKey: "help.mailCalendar.item1.desc" },
+      { termKey: "help.mailCalendar.item2.term", descKey: "help.mailCalendar.item2.desc" },
+      { termKey: "help.mailCalendar.item3.term", descKey: "help.mailCalendar.item3.desc" },
+      { termKey: "help.mailCalendar.item4.term", descKey: "help.mailCalendar.item4.desc" },
+    ],
+  },
+  {
+    titleKey: "help.remoteMachines.title",
+    items: [
+      { termKey: "help.remoteMachines.item1.term", descKey: "help.remoteMachines.item1.desc" },
+      { termKey: "help.remoteMachines.item2.term", descKey: "help.remoteMachines.item2.desc" },
+      { termKey: "help.remoteMachines.item3.term", descKey: "help.remoteMachines.item3.desc" },
+      { termKey: "help.remoteMachines.item4.term", descKey: "help.remoteMachines.item4.desc" },
+      { termKey: "help.remoteMachines.item5.term", descKey: "help.remoteMachines.item5.desc" },
     ],
   },
   {
@@ -132,6 +171,7 @@ const HELP_SECTIONS: HelpSection[] = [
       { termKey: "help.settingsExtras.item1.term", descKey: "help.settingsExtras.item1.desc" },
       { termKey: "help.settingsExtras.item2.term", descKey: "help.settingsExtras.item2.desc" },
       { termKey: "help.settingsExtras.item3.term", descKey: "help.settingsExtras.item3.desc" },
+      { termKey: "help.settingsExtras.item4.term", descKey: "help.settingsExtras.item4.desc" },
     ],
   },
 ];
@@ -599,7 +639,9 @@ function ScaffoldRepairPanel({ onBack }: { onBack: () => void }) {
   return (
     <>
       <div className="settings-title-row">
-        <h2>{t("nav.scaffoldRepair.title")}</h2>
+        {/* The repair now *rewrites* untouched legacy agent stubs, not just
+            fills gaps — new behavior, never run in a live window. */}
+        <h2>{t("nav.scaffoldRepair.title")} <UntestedTag /></h2>
         <button type="button" onClick={onBack}>{t("common.back")}</button>
       </div>
       <p className="settings-help">{t("scaffoldRepair.help")}</p>
@@ -775,6 +817,12 @@ export function SettingsDialog({
               <>
                 <div className="settings-section-title">Mobile</div>
                 <MobileSettings />
+                <ToggleCard
+                  label="Show Mobile connection in header"
+                  checked={settings?.mobile_indicator ?? true}
+                  onChange={(e) => void updateSettings({ mobile_indicator: e.target.checked })}
+                  help="Shows the Eldrun Mobile host status and quick reconnect controls beside the battery indicator."
+                />
               </>
             )}
 
@@ -1166,6 +1214,15 @@ export function SettingsDialog({
                 }}
               >
                 {t("settings.takeTour")}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  window.dispatchEvent(new Event("eldrun:start-advanced-tour"));
+                }}
+              >
+                {t("settings.takeAdvancedTour")} <UntestedTag />
               </button>
               <button
                 type="button"

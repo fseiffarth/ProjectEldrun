@@ -1,6 +1,6 @@
 # Remote projects (SSH/SFTP-native, mount-free)
 
-Referenced from `CLAUDE.md`.
+Referenced from `AGENTS.md`.
 
 Remote (SSH) projects are **mount-free** (no sshfs/FUSE): they are SSH/SFTP-
 native. Agent/terminal tabs run on the host over `ssh -tt`, file browsing and

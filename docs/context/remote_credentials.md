@@ -1,6 +1,6 @@
 # Remote credentials & host security
 
-Referenced from `CLAUDE.md`.
+Referenced from `AGENTS.md`.
 
 - **A locked keychain is not an empty one, and Eldrun must never confuse the two.**
   On Linux the Secret Service collection holding every saved SSH/VPN credential can be

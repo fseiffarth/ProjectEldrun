@@ -85,7 +85,9 @@ fn a_decrypted_body_still_goes_through_the_sanitizer() {
     // what a public key is for, and it is precisely why decryption cannot be
     // allowed to mean trust.
     let (_da, attacker) = keyring(2);
-    attacker.generate("Attacker", "attacker@evil.example", "acct-a").unwrap();
+    attacker
+        .generate("Attacker", "attacker@evil.example", "acct-a")
+        .unwrap();
     attacker.import(victim_pub.as_bytes()).unwrap();
 
     let sealed = attacker
@@ -105,7 +107,10 @@ fn a_decrypted_body_still_goes_through_the_sanitizer() {
     // The ciphertext really is opaque — the payload is not sitting in the
     // message in the clear waiting for a renderer that never decrypts.
     let wire = String::from_utf8_lossy(&sealed);
-    assert!(!wire.contains("<script"), "the payload is inside the envelope");
+    assert!(
+        !wire.contains("<script"),
+        "the payload is inside the envelope"
+    );
 
     let payload = mail_pgp::encrypted_part_bytes(&sealed, &outer).unwrap();
     let plain = victim.decrypt_message(&payload).unwrap();
@@ -114,7 +119,10 @@ fn a_decrypted_body_still_goes_through_the_sanitizer() {
     // does it. Every structural cap applies to the plaintext.
     let parsed = parse_message(&plain).expect("the decrypted message must parse under the caps");
     let html = parsed.html.expect("the hostile part is text/html");
-    assert!(html.contains("<script"), "the raw decrypted body is still hostile");
+    assert!(
+        html.contains("<script"),
+        "the raw decrypted body is still hostile"
+    );
 
     let clean = sanitize_message_html(&html).unwrap();
     for banned in FORBIDDEN {
@@ -123,7 +131,10 @@ fn a_decrypted_body_still_goes_through_the_sanitizer() {
             "{banned} survived sanitization of a DECRYPTED body"
         );
     }
-    assert!(clean.remote_refs > 0, "the exfiltrating image must be counted as blocked");
+    assert!(
+        clean.remote_refs > 0,
+        "the exfiltrating image must be counted as blocked"
+    );
     // No `href` reaches the renderer at all: links are markers resolved against
     // `MailBody.links`, which is what makes the confirm-before-open gate work.
     assert!(!clean.html.contains("https://evil.example"));
@@ -136,7 +147,9 @@ fn a_decrypted_body_still_goes_through_the_sanitizer() {
 #[test]
 fn a_signature_over_a_different_body_is_refused() {
     let (_ds, sender) = keyring(3);
-    sender.generate("Colleague", "colleague@example.com", "acct-c").unwrap();
+    sender
+        .generate("Colleague", "colleague@example.com", "acct-c")
+        .unwrap();
     let fp = sender.list().unwrap()[0].fingerprint.clone();
     let colleague_pub = sender.export_public(&fp).unwrap();
 
@@ -171,7 +184,9 @@ fn a_signature_over_a_different_body_is_refused() {
 #[test]
 fn editing_the_signed_part_breaks_the_signature_in_a_real_message() {
     let (_ds, sender) = keyring(5);
-    sender.generate("Colleague", "colleague@example.com", "acct-c").unwrap();
+    sender
+        .generate("Colleague", "colleague@example.com", "acct-c")
+        .unwrap();
     let fp = sender.list().unwrap()[0].fingerprint.clone();
     let pubkey = sender.export_public(&fp).unwrap();
 
@@ -183,7 +198,15 @@ fn editing_the_signed_part_breaks_the_signature_in_a_real_message() {
         \r\n\
         Please pay account 11111.\r\n";
     let sealed = sender
-        .seal_outgoing("acct-c", &[], original, SealOpts { sign: true, encrypt: false })
+        .seal_outgoing(
+            "acct-c",
+            &[],
+            original,
+            SealOpts {
+                sign: true,
+                encrypt: false,
+            },
+        )
         .unwrap();
 
     let (_dv, victim) = keyring(6);
@@ -233,7 +256,10 @@ fn malformed_crypto_never_panics_and_never_passes() {
             "malformed input must never decrypt to something"
         );
         assert!(
-            !matches!(ring.verify_detached(b"anything", bytes), VerifyOutcome::Good { .. }),
+            !matches!(
+                ring.verify_detached(b"anything", bytes),
+                VerifyOutcome::Good { .. }
+            ),
             "malformed input must never verify"
         );
     }
@@ -287,7 +313,9 @@ fn a_message_cannot_claim_protection_it_does_not_have() {
 #[test]
 fn an_oversized_decrypted_body_is_refused_by_the_same_cap_as_a_plain_one() {
     let (_dv, victim) = keyring(8);
-    let key = victim.generate("Victim", "victim@example.com", "acct-v").unwrap();
+    let key = victim
+        .generate("Victim", "victim@example.com", "acct-v")
+        .unwrap();
     let pubkey = victim.export_public(&key.fingerprint).unwrap();
     let (_da, attacker) = keyring(9);
     attacker.generate("A", "a@evil.example", "acct-a").unwrap();
@@ -305,7 +333,10 @@ fn an_oversized_decrypted_body_is_refused_by_the_same_cap_as_a_plain_one() {
             "acct-a",
             &["victim@example.com".into()],
             &huge,
-            SealOpts { sign: false, encrypt: true },
+            SealOpts {
+                sign: false,
+                encrypt: true,
+            },
         )
         .unwrap();
     let outer = parse(&sealed);

@@ -32,6 +32,7 @@ import {
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useSkillsOverlayStore } from "../../stores/skills";
+import { DEFAULT_COMPACT_AGENT_IDS } from "../tabs/newTabItems";
 
 const MENU_ID = "local-model";
 
@@ -117,6 +118,7 @@ interface MachineLoad {
 interface AgentInfo {
   id: string;
   label: string;
+  bin: string;
   installed: boolean;
 }
 
@@ -780,6 +782,15 @@ export function LocalModelMenu() {
   const setDefaultAgent = (id: string) => {
     void updateSettings({ default_agent_cmd: id });
   };
+  // The tag is a compact-menu preference, not an enable/disable switch: the
+  // complete installed CLI list remains searchable from every + tab menu.
+  const compactAgentIds = settings?.compact_tab_agents ?? DEFAULT_COMPACT_AGENT_IDS;
+  const toggleCompactAgent = (id: string) => {
+    const next = compactAgentIds.includes(id)
+      ? compactAgentIds.filter((agentId) => agentId !== id)
+      : [...compactAgentIds, id];
+    void updateSettings({ compact_tab_agents: next });
+  };
 
   const scheduleClose = () => {
     if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
@@ -1036,6 +1047,7 @@ export function LocalModelMenu() {
           <div className="menu-scroll-region">
           {agents.map((a) => {
             const isDefault = a.id === defaultAgentCmd;
+            const isCompact = compactAgentIds.includes(a.id) || compactAgentIds.includes(a.bin);
             return (
               <div key={a.id} className="local-model-agent-row" title={t("localModel.agentInstalled", { label: a.label })}>
                 {/* Green lamp mirrors a loaded model: this agent CLI is installed. */}
@@ -1054,6 +1066,18 @@ export function LocalModelMenu() {
                     onClick={() => setDefaultAgent(a.id)}
                   >
                     {t("localModel.setDefaultAgent")}
+                  </button>
+                  <button
+                    type="button"
+                    className={`local-model-role-chip${isCompact ? " on" : ""}`}
+                    title={t(
+                      isCompact ? "localModel.isCompactAgentTitle" : "localModel.setCompactAgentTitle",
+                      { label: a.label },
+                    )}
+                    aria-pressed={isCompact}
+                    onClick={() => toggleCompactAgent(a.id)}
+                  >
+                    {t("localModel.compactAgent")}
                   </button>
                 </div>
               </div>

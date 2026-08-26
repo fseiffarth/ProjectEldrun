@@ -1,6 +1,6 @@
 # Multi-host remote (compute hosts)
 
-Referenced from `CLAUDE.md`.
+Referenced from `AGENTS.md`.
 
 - **A remote project can reach N machines, not one** (`docs/multi_host_remote_plan.md`,
   `services::worker_sync`). The project's `remote` is the **primary** — it still owns

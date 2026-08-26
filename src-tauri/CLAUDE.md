@@ -1,6 +1,6 @@
 # ProjectEldrun — Backend File Map (`src-tauri/src/`)
 
-See the root `CLAUDE.md` for project-wide context (running, persistence, dev
+See the root `AGENTS.md` for project-wide context (running, persistence, dev
 workflow); see `src/CLAUDE.md` for the frontend file map.
 
 **Top level**

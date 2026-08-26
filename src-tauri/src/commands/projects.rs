@@ -10,7 +10,7 @@ use tauri::State;
 use crate::paths;
 use crate::schema::project::{
     ComputeHost, DetectedSpecKind, DetectedSpecSource, OpenVpnSpec, Project, RemoteSpec,
-    SandboxSourceDecision, SandboxSpec, SandboxToggleOutcome,
+    SandboxScope, SandboxSourceDecision, SandboxSpec, SandboxToggleOutcome,
 };
 use crate::schema::projects::{ProjectEntry, ProjectsList};
 use crate::services::remote_sync::SyncManifestState;
@@ -70,7 +70,11 @@ async fn clear_host_bound_state(project_id: &str, manifest: &SyncManifestState) 
 /// registry too costs one list scan and closes that.
 fn remote_mirror_in(parent: &Path, name: &str, id: &str, list: &ProjectsList) -> PathBuf {
     let safe = sanitize_name(name);
-    let leaf = if safe.is_empty() { id.to_string() } else { safe };
+    let leaf = if safe.is_empty() {
+        id.to_string()
+    } else {
+        safe
+    };
     let candidate = parent.join(&leaf);
     let taken = candidate.exists()
         || find_project_conflict(
@@ -241,7 +245,11 @@ fn remote_path_key(path: &str) -> String {
 }
 
 fn remote_site_key(spec: &RemoteSpec) -> String {
-    format!("{}|{}", ssh_target_key(spec), remote_path_key(&spec.remote_path))
+    format!(
+        "{}|{}",
+        ssh_target_key(spec),
+        remote_path_key(&spec.remote_path)
+    )
 }
 
 fn entry_remote_spec(entry: &ProjectEntry) -> Option<RemoteSpec> {
@@ -298,7 +306,9 @@ fn find_project_conflict(
             let key = remote_site_key(spec);
             entries
                 .filter(|entry| {
-                    entry_remote_spec(entry).map(|s| remote_site_key(&s)).as_deref()
+                    entry_remote_spec(entry)
+                        .map(|s| remote_site_key(&s))
+                        .as_deref()
                         == Some(key.as_str())
                 })
                 .map(|entry| ProjectConflict {
@@ -336,6 +346,97 @@ fn read_projects_list() -> ProjectsList {
     } else {
         vec![]
     }
+}
+
+/// The built-in Trash workspace is deliberately a project rather than a second
+/// root scope: it gives disposable agents a trusted, always-on containment
+/// record. Its state-dir entry is authoritative; its in-folder `project.json`
+/// is display/export data only and is writable by the contained process.
+fn trash_sandbox_spec() -> SandboxSpec {
+    SandboxSpec {
+        enabled: true,
+        // Contain every PTY as defence in depth. The UI and spawn gate offer
+        // only recognised agent CLIs, but an all-tabs container means a stale
+        // shell tab can never become a host escape.
+        scope: SandboxScope::All,
+        ..Default::default()
+    }
+}
+
+fn trash_project_entry(position: i64) -> ProjectEntry {
+    let dir = paths::trash_work_dir().to_string_lossy().to_string();
+    let file = paths::trash_work_dir()
+        .join("project.json")
+        .to_string_lossy()
+        .to_string();
+    let mut extra = HashMap::new();
+    extra.insert("directory".into(), Value::String(dir));
+    extra.insert("git_type".into(), Value::String("none".into()));
+    extra.insert(
+        "sandbox".into(),
+        serde_json::to_value(trash_sandbox_spec()).expect("trash sandbox is serializable"),
+    );
+    // The mobile sidecar reads this state-dir record directly. Keeping it on
+    // means the project stays discoverable even when the desktop is closed.
+    extra.insert("eldrun_mobile_access".into(), Value::Bool(true));
+    extra.insert("eldrun_trash".into(), Value::Bool(true));
+    ProjectEntry {
+        id: paths::TRASH_PROJECT_ID.to_string(),
+        name: "Trash".to_string(),
+        status: "active".to_string(),
+        position,
+        local_file: file,
+        extra,
+    }
+}
+
+/// Create (or repair) the permanent Trash project. This is intentionally
+/// idempotent and is called before every project-list save as well as during
+/// startup, so ordinary project operations cannot deactivate, archive, or
+/// weaken it by accident.
+pub fn ensure_trash_project(list: &mut ProjectsList) -> Result<bool, String> {
+    let dir = paths::trash_work_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create Trash directory: {e}"))?;
+    let position = list
+        .iter()
+        .map(|p| p.position)
+        .min()
+        .unwrap_or(0)
+        .saturating_sub(1);
+    let canonical = trash_project_entry(position);
+    let changed = match list.iter_mut().find(|p| p.id == paths::TRASH_PROJECT_ID) {
+        Some(entry) => {
+            let current = entry.status == "current";
+            let wanted_status = if current { "current" } else { "active" };
+            let differs = entry.name != canonical.name
+                || entry.status != wanted_status
+                || entry.local_file != canonical.local_file
+                || entry.extra != canonical.extra;
+            entry.name = canonical.name;
+            entry.status = wanted_status.to_string();
+            entry.local_file = canonical.local_file;
+            entry.extra = canonical.extra;
+            differs
+        }
+        None => {
+            list.push(canonical);
+            true
+        }
+    };
+
+    let project_file = dir.join("project.json");
+    if !project_file.exists() {
+        let project = Project {
+            id: paths::TRASH_PROJECT_ID.to_string(),
+            name: "Trash".to_string(),
+            directory: dir.to_string_lossy().to_string(),
+            git_type: Some("none".to_string()),
+            sandbox: Some(trash_sandbox_spec()),
+            ..Default::default()
+        };
+        storage::write_json(&project_file, &project).map_err(|e| e.to_string())?;
+    }
+    Ok(changed)
 }
 
 #[derive(Debug, Deserialize)]
@@ -376,16 +477,20 @@ pub fn check_project_site(req: CheckProjectSiteRequest) -> Result<Option<Project
 #[tauri::command]
 pub fn get_projects() -> Result<ProjectsList, String> {
     let path = storage::state_dir().join("projects.json");
-    if !path.exists() {
-        return Ok(vec![]);
-    }
-    let mut list: ProjectsList = storage::read_json(&path).map_err(|e| e.to_string())?;
+    let mut list: ProjectsList = if path.exists() {
+        storage::read_json(&path).map_err(|e| e.to_string())?
+    } else {
+        vec![]
+    };
     // Bring legacy entries up to the current shape in-memory so the frontend and
     // every command see canonical, fully-populated entries regardless of which
     // Eldrun version first wrote them. Persisted on the next natural save (no
     // surprise write from a read command).
     for entry in list.iter_mut() {
         normalize_entry(entry);
+    }
+    if ensure_trash_project(&mut list)? {
+        storage::write_json(&path, &list).map_err(|e| e.to_string())?;
     }
     Ok(list)
 }
@@ -454,6 +559,8 @@ pub(crate) fn normalize_git_type(value: &str) -> String {
 #[tauri::command]
 pub fn save_projects(projects: ProjectsList) -> Result<(), String> {
     let path = storage::state_dir().join("projects.json");
+    let mut projects = projects;
+    ensure_trash_project(&mut projects)?;
     storage::write_json(&path, &projects).map_err(|e| e.to_string())
 }
 
@@ -557,7 +664,10 @@ fn free_target(orig: &Path) -> PathBuf {
         return orig.to_path_buf();
     }
     let parent = orig.parent().unwrap_or_else(|| Path::new("."));
-    let stem = orig.file_name().and_then(|n| n.to_str()).unwrap_or("restored");
+    let stem = orig
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("restored");
     for n in 1..1000 {
         let cand = parent.join(format!("{stem}-restored-{n}"));
         if !cand.exists() {
@@ -600,6 +710,11 @@ fn purge_project_time(project_id: &str) {
 #[tauri::command]
 pub fn archive_project(project_id: String, archived_at: String) -> Result<(), String> {
     validate_project_id(&project_id)?;
+    if paths::is_trash_project_id(&project_id) {
+        return Err(
+            "The built-in Trash project is always available and cannot be archived.".into(),
+        );
+    }
 
     let list_path = storage::state_dir().join("projects.json");
     let mut list: ProjectsList = if list_path.exists() {
@@ -696,10 +811,7 @@ pub fn restore_archived_project(project_id: String) -> Result<ProjectEntry, Stri
         // original path is free again.
         let state_dst = remote_project_state_dir(&project_id);
         move_tree(&dest.join("state"), &state_dst)?;
-        entry.local_file = state_dst
-            .join("project.json")
-            .to_string_lossy()
-            .to_string();
+        entry.local_file = state_dst.join("project.json").to_string_lossy().to_string();
         entry.extra.insert(
             "directory".to_string(),
             Value::String(state_dst.to_string_lossy().to_string()),
@@ -829,8 +941,16 @@ pub fn archived_mirror_unsynced(project_id: String) -> Result<UnsyncedReport, St
     ) {
         if let Some(sha) = remote_head_sha(&state) {
             // Only include a sha the mirror actually has, else rev-list errors out.
-            if !git_in(&mirror, &["rev-parse", "--verify", "--quiet", &format!("{sha}^{{commit}}")])
-                .is_empty()
+            if !git_in(
+                &mirror,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("{sha}^{{commit}}"),
+                ],
+            )
+            .is_empty()
             {
                 negatives.push(sha);
                 have_baseline = true;
@@ -950,6 +1070,9 @@ pub fn set_project_description(
 /// changes. A blank name is rejected. Returns the cleaned (trimmed) name.
 #[tauri::command]
 pub fn set_project_name(project_id: String, name: String) -> Result<String, String> {
+    if paths::is_trash_project_id(&project_id) {
+        return Err("The built-in Trash project's name is fixed.".into());
+    }
     let cleaned = name.trim().to_string();
     if cleaned.is_empty() {
         return Err("project name cannot be empty".to_string());
@@ -998,7 +1121,9 @@ fn source_needs_decision(spec: &SandboxSpec, detected: &DetectedSpecSource) -> b
     let nothing_configured = spec.dockerfile.is_none() && spec.image.is_none();
     let matches_current_assignment = match detected.kind {
         DetectedSpecKind::Dockerfile => spec.dockerfile.as_deref() == Some(detected.value.as_str()),
-        DetectedSpecKind::DevcontainerImage => spec.image.as_deref() == Some(detected.value.as_str()),
+        DetectedSpecKind::DevcontainerImage => {
+            spec.image.as_deref() == Some(detected.value.as_str())
+        }
     };
     nothing_configured || matches_current_assignment
 }
@@ -1026,6 +1151,14 @@ pub fn set_project_sandbox(
     enabled: bool,
     source_decision: Option<SandboxSourceDecision>,
 ) -> Result<SandboxToggleOutcome, String> {
+    if paths::is_trash_project_id(&project_id) {
+        if enabled {
+            return Ok(SandboxToggleOutcome::Applied {
+                spec: trash_sandbox_spec(),
+            });
+        }
+        return Err("The built-in Trash project's sandbox is always on.".into());
+    }
     let list_path = storage::state_dir().join("projects.json");
     let mut list: ProjectsList = if list_path.exists() {
         storage::read_json(&list_path).map_err(|e| e.to_string())?
@@ -1113,7 +1246,9 @@ pub fn set_project_sandbox(
                             }
                         }
                         _ => {
-                            return Ok(SandboxToggleOutcome::NeedsConfirmation { source: detected });
+                            return Ok(SandboxToggleOutcome::NeedsConfirmation {
+                                source: detected,
+                            });
                         }
                     }
                 }
@@ -1134,6 +1269,9 @@ pub fn set_project_sandbox_spec(
     project_id: String,
     mut spec: SandboxSpec,
 ) -> Result<SandboxSpec, String> {
+    if paths::is_trash_project_id(&project_id) {
+        return Err("The built-in Trash project's sandbox is fixed and always on.".into());
+    }
     let clean = |v: &mut Option<String>| {
         if v.as_deref().map(str::trim).is_none_or(str::is_empty) {
             *v = None;
@@ -1352,24 +1490,43 @@ pub fn set_project_persist_sessions(project_id: String, enabled: bool) -> Result
 /// state-dir `projects.json`, never only in project-writable `project.json`.
 #[tauri::command]
 pub fn set_project_mobile_access(project_id: String, enabled: bool) -> Result<bool, String> {
+    if paths::is_trash_project_id(&project_id) {
+        if enabled {
+            return Ok(true);
+        }
+        return Err("The built-in Trash project is always available to Eldrun Mobile.".into());
+    }
     let mut projects = get_projects()?;
-    let project = projects.iter_mut().find(|p| p.id == project_id).ok_or("project not found")?;
+    let project = projects
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or("project not found")?;
     if enabled {
         if project.extra.get("remote").is_some_and(|v| !v.is_null()) {
             return Err("Mobile access is available only for local projects".into());
         }
-        let runtime_enabled = |key: &str| project.extra.get(key).and_then(|v| v.get("enabled")).and_then(Value::as_bool).unwrap_or(false);
+        let runtime_enabled = |key: &str| {
+            project
+                .extra
+                .get(key)
+                .and_then(|v| v.get("enabled"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        };
         if runtime_enabled("sandbox") || runtime_enabled("vm") {
             return Err("Mobile access is unavailable for container and VM projects".into());
         }
-        let settings: crate::schema::Settings = storage::read_json(&storage::state_dir().join("settings.json")).unwrap_or_default();
+        let settings: crate::schema::Settings =
+            storage::read_json(&storage::state_dir().join("settings.json")).unwrap_or_default();
         if !settings.persist_local_sessions() {
             return Err("Enable persistent local terminal sessions before Mobile access".into());
         }
         if !crate::services::tmux_local::tmux_available() {
             return Err("Mobile access requires tmux on this machine".into());
         }
-        project.extra.insert("eldrun_mobile_access".into(), Value::Bool(true));
+        project
+            .extra
+            .insert("eldrun_mobile_access".into(), Value::Bool(true));
     } else {
         project.extra.remove("eldrun_mobile_access");
     }
@@ -1493,8 +1650,8 @@ fn move_saved_password(
 /// auto-connect-eligible, since such a host has nothing in the keychain to check.
 /// A no-op when the value is unchanged, so an ordinary connect costs no write.
 pub fn record_remote_key_auth(project_id: &str, key_auth: bool) -> Result<(), String> {
-    let current = crate::services::remote::remote_target_for(project_id)
-        .and_then(|t| t.spec.key_auth);
+    let current =
+        crate::services::remote::remote_target_for(project_id).and_then(|t| t.spec.key_auth);
     if current == Some(key_auth) {
         return Ok(());
     }
@@ -1679,7 +1836,11 @@ pub fn patch_compute_host(
         if let Some(h) = hosts.iter_mut().find(|h| h.id == host_id) {
             if let Some(v) = &user {
                 let t = v.trim();
-                let next = if t.is_empty() { None } else { Some(t.to_string()) };
+                let next = if t.is_empty() {
+                    None
+                } else {
+                    Some(t.to_string())
+                };
                 if h.spec.user != next {
                     h.spec.user = next;
                     h.spec.key_auth = None;
@@ -1699,7 +1860,11 @@ pub fn patch_compute_host(
             }
             if let Some(v) = &label {
                 let t = v.trim();
-                h.spec.label = if t.is_empty() { None } else { Some(t.to_string()) };
+                h.spec.label = if t.is_empty() {
+                    None
+                } else {
+                    Some(t.to_string())
+                };
             }
         }
     })
@@ -1816,13 +1981,11 @@ pub fn set_project_git_disabled(project_id: String, disabled: bool) -> Result<St
         // Destroy version-control history. `.git` is the single source of truth
         // for it, so removing the directory is the whole operation.
         if git_dir.exists() {
-            fs::remove_dir_all(&git_dir)
-                .map_err(|e| format!("failed to remove .git: {e}"))?;
+            fs::remove_dir_all(&git_dir).map_err(|e| format!("failed to remove .git: {e}"))?;
         }
         let gitignore = directory.join(".gitignore");
         if gitignore.exists() {
-            fs::remove_file(&gitignore)
-                .map_err(|e| format!("failed to remove .gitignore: {e}"))?;
+            fs::remove_file(&gitignore).map_err(|e| format!("failed to remove .gitignore: {e}"))?;
         }
         "none".to_string()
     } else {
@@ -2088,7 +2251,11 @@ pub fn move_remote_mirror(
 
     // Compute the new leaf under the chosen parent, mirroring `default_remote_mirror`.
     let safe = sanitize_name(&name);
-    let leaf = if safe.is_empty() { project_id.clone() } else { safe };
+    let leaf = if safe.is_empty() {
+        project_id.clone()
+    } else {
+        safe
+    };
     let candidate = parent.join(&leaf);
     let new_root = if candidate.exists() {
         parent.join(format!("{leaf}-{}", &project_id[..project_id.len().min(8)]))
@@ -2115,10 +2282,76 @@ pub fn move_remote_mirror(
 
 // ── Scaffold new project ───────────────────────────────────────────────────
 
-const SCAFFOLD_FILES: &[(&str, &str)] = &[
-    ("AGENTS.md", "# Agents\n"),
-    ("CLAUDE.md", "# Claude Context\n"),
-    ("GEMINI.md", "# Gemini Context\n"),
+/// The one file that carries real instructions. Every agent-specific doc is a
+/// pointer to it (see `CLAUDE_SCAFFOLD`/`GEMINI_SCAFFOLD`), so guidance is
+/// written once and every agent reads the same text instead of three stubs
+/// drifting apart. It links out to the sibling agent files and the rest of the
+/// scaffold, which is what makes it a usable entry point on a fresh project.
+const AGENTS_SCAFFOLD: &str = r#"# Agents
+
+Canonical instructions for every AI coding agent working in this project.
+The agent-specific files are pointers to this one — write guidance **here**
+so every agent reads the same thing.
+
+## Project
+
+_What this project is and what it is for._
+
+## Running
+
+_Build, run and test commands._
+
+## Conventions
+
+_Layout, style, and anything an agent must not do._
+
+## Agent files
+
+- [AGENTS.md](./AGENTS.md) — this file: the single source of truth
+- [CLAUDE.md](./CLAUDE.md) — Claude Code; imports this file
+- [GEMINI.md](./GEMINI.md) — Gemini CLI; imports this file
+
+## Project docs
+
+- [README.md](./README.md) — overview
+- [DOCUMENTATION.md](./DOCUMENTATION.md) — reference documentation
+- [ROADMAP.md](./ROADMAP.md) — planned direction
+- [TODO.md](./TODO.md) — open work items
+- [STATUS.md](./STATUS.md) — current state
+"#;
+
+/// Claude Code pointer. `@AGENTS.md` on its own line is Claude Code's import
+/// syntax, so the canonical text is actually *loaded*, not merely referenced —
+/// a plain "see AGENTS.md" line would leave the agent to decide whether to open
+/// it.
+const CLAUDE_SCAFFOLD: &str = r#"# Claude Context
+
+This project's instructions live in [AGENTS.md](./AGENTS.md); the import below
+pulls them in. Write project guidance there, not here — keep this file for
+Claude-specific overrides only.
+
+@AGENTS.md
+
+Other agent files: [AGENTS.md](./AGENTS.md) · [GEMINI.md](./GEMINI.md)
+"#;
+
+/// Gemini CLI pointer — same shape as `CLAUDE_SCAFFOLD`; the Gemini CLI honors
+/// the same `@file` import syntax in its context file.
+const GEMINI_SCAFFOLD: &str = r#"# Gemini Context
+
+This project's instructions live in [AGENTS.md](./AGENTS.md); the import below
+pulls them in. Write project guidance there, not here — keep this file for
+Gemini-specific overrides only.
+
+@AGENTS.md
+
+Other agent files: [AGENTS.md](./AGENTS.md) · [CLAUDE.md](./CLAUDE.md)
+"#;
+
+pub const SCAFFOLD_FILES: &[(&str, &str)] = &[
+    ("AGENTS.md", AGENTS_SCAFFOLD),
+    ("CLAUDE.md", CLAUDE_SCAFFOLD),
+    ("GEMINI.md", GEMINI_SCAFFOLD),
     ("TODO.md", "# TODO\n"),
     ("ROADMAP.md", "# Roadmap\n"),
     ("STATUS.md", "# Status\n"),
@@ -2126,9 +2359,9 @@ const SCAFFOLD_FILES: &[(&str, &str)] = &[
     ("DOCUMENTATION.md", "# Documentation\n"),
 ];
 
-const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\nproject.json\n";
+pub const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\nproject.json\n";
 
-const CLAUDE_SETTINGS: &str = r#"{"permissions":{"allow":[],"deny":[]}}"#;
+pub const CLAUDE_SETTINGS: &str = r#"{"permissions":{"allow":[],"deny":[]}}"#;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2233,7 +2466,10 @@ fn git_head_unborn(dir: &Path) -> bool {
 /// `.gitignore` was first written). Returns the patterns that were added.
 fn ensure_gitignore_defaults(dir: &Path) -> std::io::Result<Vec<String>> {
     let path = dir.join(".gitignore");
-    let defaults: Vec<&str> = GITIGNORE_DEFAULT.lines().filter(|l| !l.is_empty()).collect();
+    let defaults: Vec<&str> = GITIGNORE_DEFAULT
+        .lines()
+        .filter(|l| !l.is_empty())
+        .collect();
     if !path.exists() {
         fs::write(&path, GITIGNORE_DEFAULT)?;
         return Ok(defaults.into_iter().map(str::to_string).collect());
@@ -2266,14 +2502,43 @@ fn ensure_gitignore_defaults(dir: &Path) -> std::io::Result<Vec<String>> {
 #[serde(rename_all = "camelCase")]
 pub struct ScaffoldRepairReport {
     pub created_files: Vec<String>,
+    /// Agent docs that were still an untouched legacy stub and got rewritten to
+    /// the current canonical template. Reported separately from `created_files`
+    /// because this is the one thing a repair *overwrites*, and the user should
+    /// see which file it was.
+    pub updated_files: Vec<String>,
     pub gitignore_lines_added: Vec<String>,
     pub git_initialized: bool,
 }
 
 impl ScaffoldRepairReport {
     fn is_empty(&self) -> bool {
-        self.created_files.is_empty() && self.gitignore_lines_added.is_empty() && !self.git_initialized
+        self.created_files.is_empty()
+            && self.updated_files.is_empty()
+            && self.gitignore_lines_added.is_empty()
+            && !self.git_initialized
     }
+}
+
+/// The stubs the agent docs used to be scaffolded with, before `AGENTS.md`
+/// became the canonical file and `CLAUDE.md`/`GEMINI.md` became pointers to it.
+/// A repair upgrades an agent doc whose content is still byte-identical to its
+/// legacy stub (or empty): that text is provably untouched, so replacing it
+/// loses nothing. Anything a user or an agent actually wrote fails the match and
+/// is left alone — the never-overwrite rule still holds for every other file.
+const LEGACY_AGENT_STUBS: &[(&str, &str)] = &[
+    ("AGENTS.md", "# Agents\n"),
+    ("CLAUDE.md", "# Claude Context\n"),
+    ("GEMINI.md", "# Gemini Context\n"),
+];
+
+/// True when `content` is the untouched legacy stub for the agent doc `name`
+/// (or empty). Pure, so the upgrade rule is unit-testable without touching disk.
+fn is_legacy_agent_stub(name: &str, content: &str) -> bool {
+    let Some((_, stub)) = LEGACY_AGENT_STUBS.iter().find(|(n, _)| *n == name) else {
+        return false;
+    };
+    content.trim().is_empty() || content.trim() == stub.trim()
 }
 
 /// Like `scaffold_project`, but for an **already-scaffolded** project whose
@@ -2293,6 +2558,15 @@ fn repair_project_scaffold_at(dir: &Path, with_git: bool) -> std::io::Result<Sca
         if !p.exists() {
             fs::write(&p, content)?;
             report.created_files.push((*name).to_string());
+            continue;
+        }
+        // Only an agent doc still holding its untouched legacy stub is rewritten.
+        let Ok(existing) = fs::read_to_string(&p) else {
+            continue;
+        };
+        if existing != *content && is_legacy_agent_stub(name, &existing) {
+            fs::write(&p, content)?;
+            report.updated_files.push((*name).to_string());
         }
     }
     if with_git {
@@ -2302,7 +2576,9 @@ fn repair_project_scaffold_at(dir: &Path, with_git: bool) -> std::io::Result<Sca
     let cs = dot_claude.join("settings.json");
     if !cs.exists() {
         fs::write(&cs, CLAUDE_SETTINGS)?;
-        report.created_files.push(".claude/settings.json".to_string());
+        report
+            .created_files
+            .push(".claude/settings.json".to_string());
     }
     if with_git && !dir.join(".git").exists() {
         let _ = crate::paths::command_no_window("git")
@@ -2533,8 +2809,16 @@ pub fn project_scaffold_missing(project_id: String) -> Result<bool, String> {
     if !target.is_dir() {
         return Ok(false);
     }
-    let missing = SCAFFOLD_FILES.iter().any(|(name, _)| !target.join(name).exists())
-        || (with_git && !target.join(".gitignore").exists())
+    let missing = SCAFFOLD_FILES.iter().any(|(name, _)| {
+        let p = target.join(name);
+        // An agent doc still holding its untouched legacy stub counts as missing:
+        // a repair *would* change it, so the tag must not claim the scaffold is
+        // complete (see `is_legacy_agent_stub`).
+        match fs::read_to_string(&p) {
+            Ok(existing) => is_legacy_agent_stub(name, &existing),
+            Err(_) => !p.exists(),
+        }
+    }) || (with_git && !target.join(".gitignore").exists())
         || !target.join(".claude/settings.json").exists();
     Ok(missing)
 }
@@ -2736,7 +3020,13 @@ pub fn create_project(mut req: CreateProjectRequest) -> Result<ProjectEntry, Str
         vec![]
     };
     let position = next_position(&list);
-    let mut extra = project_extra(directory, git_type, description, req.remote.as_ref(), mirror.as_deref());
+    let mut extra = project_extra(
+        directory,
+        git_type,
+        description,
+        req.remote.as_ref(),
+        mirror.as_deref(),
+    );
     // Mirror the VM spec into the pill-list entry (like `remote`/`sandbox`) —
     // the always-local copy `services::vm` trusts.
     if let Some(vm_spec) = req.vm.as_ref().filter(|v| v.enabled) {
@@ -2849,7 +3139,9 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
 
     if let Some(remote) = req.remote.clone() {
         if req.mode != "keep" {
-            return Err("Remote imports must use 'keep' mode (copy/move are not supported)".to_string());
+            return Err(
+                "Remote imports must use 'keep' mode (copy/move are not supported)".to_string(),
+            );
         }
         // Mount-free: the user browsed to an existing remote directory, so there
         // is nothing to create on the host. The project's `directory` is a LOCAL
@@ -3058,7 +3350,13 @@ fn finish_import(
 
     let position = next_position(&list);
     let description = project.description.clone();
-    let extra = project_extra(directory, git_type, description, remote.as_ref(), mirror.as_deref());
+    let extra = project_extra(
+        directory,
+        git_type,
+        description,
+        remote.as_ref(),
+        mirror.as_deref(),
+    );
     let entry = ProjectEntry {
         id,
         name: req.name,
@@ -3093,6 +3391,9 @@ pub async fn extend_project_to_remote(
     req: ExtendProjectRemoteRequest,
     manifest: State<'_, SyncManifestState>,
 ) -> Result<ProjectEntry, String> {
+    if paths::is_trash_project_id(&req.project_id) {
+        return Err("The built-in Trash project is permanently local and isolated.".into());
+    }
     let list_path = storage::state_dir().join("projects.json");
     let mut list: ProjectsList = if list_path.exists() {
         storage::read_json(&list_path).map_err(|e| e.to_string())?
@@ -3527,7 +3828,10 @@ mod tests {
         copy_dir_all(&src, &dst).unwrap();
 
         assert!(dst.join("a.txt").exists());
-        assert!(!dst.join(".git").exists(), "the repo's own .git must not travel");
+        assert!(
+            !dst.join(".git").exists(),
+            "the repo's own .git must not travel"
+        );
         assert!(
             !dst.join("wt").exists(),
             "a directory holding a .git of either kind is not this tree's content"
@@ -3560,15 +3864,16 @@ mod tests {
             status: "inactive".to_string(),
             position: 10,
             local_file: format!("/p/{id}/project.json"),
-            extra: extra
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect(),
+            extra: extra.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
         }
     }
 
     fn local_entry(id: &str, name: &str, dir: &str) -> ProjectEntry {
-        entry(id, name, vec![("directory", Value::String(dir.to_string()))])
+        entry(
+            id,
+            name,
+            vec![("directory", Value::String(dir.to_string()))],
+        )
     }
 
     fn spec(user: Option<&str>, host: &str, port: Option<u16>, path: &str) -> RemoteSpec {
@@ -3603,12 +3908,18 @@ mod tests {
 
     #[test]
     fn lexical_normalize_drops_cur_dir_and_trailing_separator() {
-        assert_eq!(lexical_normalize(Path::new("/a/./foo/")), PathBuf::from("/a/foo"));
+        assert_eq!(
+            lexical_normalize(Path::new("/a/./foo/")),
+            PathBuf::from("/a/foo")
+        );
     }
 
     #[test]
     fn lexical_normalize_pops_parent_dir() {
-        assert_eq!(lexical_normalize(Path::new("/a/b/../foo")), PathBuf::from("/a/foo"));
+        assert_eq!(
+            lexical_normalize(Path::new("/a/b/../foo")),
+            PathBuf::from("/a/foo")
+        );
     }
 
     #[test]
@@ -3625,7 +3936,10 @@ mod tests {
     #[test]
     fn local_dir_key_ignores_trailing_separator() {
         // The case the old string compare missed: one folder, two spellings.
-        assert_eq!(local_dir_key("/no/such/dir/foo/"), local_dir_key("/no/such/dir/foo"));
+        assert_eq!(
+            local_dir_key("/no/such/dir/foo/"),
+            local_dir_key("/no/such/dir/foo")
+        );
     }
 
     #[test]
@@ -3648,7 +3962,10 @@ mod tests {
         // Only the host knows what `~` resolves to; guessing would merge or split
         // two folders on no evidence.
         assert_eq!(remote_path_key("~/work"), "~/work");
-        assert_ne!(remote_path_key("~/work"), remote_path_key("/home/alice/work"));
+        assert_ne!(
+            remote_path_key("~/work"),
+            remote_path_key("/home/alice/work")
+        );
     }
 
     #[test]
@@ -4044,7 +4361,10 @@ mod tests {
             .current_dir(tmp.path())
             .output()
             .unwrap();
-        assert!(head.status.success(), "scaffold must create an initial commit");
+        assert!(
+            head.status.success(),
+            "scaffold must create an initial commit"
+        );
 
         // The .claude settings and docs are TRACKED, not just present on disk — that
         // is what lets `extend` seed them onto the remote via the lockstep bundle.
@@ -4056,7 +4376,10 @@ mod tests {
                 .unwrap();
             assert!(tracked.status.success(), "{path} must be tracked by git");
         }
-        assert!(!git_head_unborn(tmp.path()), "HEAD must be born after scaffold");
+        assert!(
+            !git_head_unborn(tmp.path()),
+            "HEAD must be born after scaffold"
+        );
     }
 
     #[test]
@@ -4119,7 +4442,9 @@ mod tests {
         let report = repair_project_scaffold_at(tmp.path(), false).unwrap();
 
         assert!(report.created_files.contains(&"AGENTS.md".to_string()));
-        assert!(report.created_files.contains(&".claude/settings.json".to_string()));
+        assert!(report
+            .created_files
+            .contains(&".claude/settings.json".to_string()));
         assert!(!report.created_files.contains(&"TODO.md".to_string()));
         assert!(tmp.path().join("DOCUMENTATION.md").exists());
         assert!(tmp.path().join(".claude/settings.json").exists());
@@ -4134,7 +4459,9 @@ mod tests {
         // git-backed projects.
         let report = repair_project_scaffold_at(tmp.path(), true).unwrap();
 
-        assert!(report.gitignore_lines_added.contains(&"project.json".to_string()));
+        assert!(report
+            .gitignore_lines_added
+            .contains(&"project.json".to_string()));
         let content = std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
         assert!(content.contains("# my custom rule"));
         assert!(content.contains("foo/"));
@@ -4164,6 +4491,90 @@ mod tests {
 
         let report = repair_project_scaffold_at(tmp.path(), false).unwrap();
 
+        assert!(report.is_empty());
+    }
+
+    #[test]
+    fn agent_docs_point_at_agents_md_and_link_each_other() {
+        let tmp = tempfile::tempdir().unwrap();
+        scaffold_project(tmp.path(), false).unwrap();
+
+        let agents = std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap();
+        // AGENTS.md carries the instructions and links every sibling agent doc
+        // plus the rest of the scaffold.
+        for link in &[
+            "(./CLAUDE.md)",
+            "(./GEMINI.md)",
+            "(./README.md)",
+            "(./DOCUMENTATION.md)",
+            "(./ROADMAP.md)",
+            "(./TODO.md)",
+            "(./STATUS.md)",
+        ] {
+            assert!(agents.contains(link), "AGENTS.md missing link {link}");
+        }
+
+        // The agent-specific docs carry no instructions of their own: each
+        // imports AGENTS.md and links the other agent files.
+        for (name, sibling) in &[("CLAUDE.md", "(./GEMINI.md)"), ("GEMINI.md", "(./CLAUDE.md)")] {
+            let doc = std::fs::read_to_string(tmp.path().join(name)).unwrap();
+            assert!(
+                doc.lines().any(|l| l.trim() == "@AGENTS.md"),
+                "{name} must import AGENTS.md"
+            );
+            assert!(doc.contains("(./AGENTS.md)"), "{name} must link AGENTS.md");
+            assert!(doc.contains(sibling), "{name} must link {sibling}");
+        }
+    }
+
+    #[test]
+    fn legacy_stub_detection_only_matches_untouched_agent_docs() {
+        assert!(is_legacy_agent_stub("CLAUDE.md", "# Claude Context\n"));
+        assert!(is_legacy_agent_stub("AGENTS.md", "# Agents\n"));
+        assert!(is_legacy_agent_stub("GEMINI.md", "   \n"));
+        // Real content, a non-agent doc, and the current template all fail.
+        assert!(!is_legacy_agent_stub(
+            "CLAUDE.md",
+            "# Claude Context\n\nRun `make test`.\n"
+        ));
+        assert!(!is_legacy_agent_stub("TODO.md", "# TODO\n"));
+        assert!(!is_legacy_agent_stub("AGENTS.md", AGENTS_SCAFFOLD));
+    }
+
+    #[test]
+    fn repair_upgrades_untouched_legacy_agent_stubs() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A project scaffolded before AGENTS.md became canonical: three stubs,
+        // one of which the user has since written real content into.
+        std::fs::write(tmp.path().join("AGENTS.md"), "# Agents\n").unwrap();
+        std::fs::write(tmp.path().join("CLAUDE.md"), "# Claude Context\n").unwrap();
+        std::fs::write(tmp.path().join("GEMINI.md"), "# Gemini Context\n\nMine.\n").unwrap();
+
+        let report = repair_project_scaffold_at(tmp.path(), false).unwrap();
+
+        assert!(report.updated_files.contains(&"AGENTS.md".to_string()));
+        assert!(report.updated_files.contains(&"CLAUDE.md".to_string()));
+        assert!(
+            !report.updated_files.contains(&"GEMINI.md".to_string()),
+            "a doc the user wrote must never be overwritten"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("GEMINI.md")).unwrap(),
+            "# Gemini Context\n\nMine.\n"
+        );
+        assert!(std::fs::read_to_string(tmp.path().join("CLAUDE.md"))
+            .unwrap()
+            .contains("@AGENTS.md"));
+    }
+
+    #[test]
+    fn repair_leaves_current_agent_docs_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        scaffold_project(tmp.path(), false).unwrap();
+
+        let report = repair_project_scaffold_at(tmp.path(), false).unwrap();
+
+        assert!(report.updated_files.is_empty());
         assert!(report.is_empty());
     }
 
@@ -4210,7 +4621,10 @@ mod tests {
                 network: Some("host".to_string()),
                 ..Default::default()
             }),
-            default_apps: Some(HashMap::from([(".md".to_string(), "/tmp/pwn.sh".to_string())])),
+            default_apps: Some(HashMap::from([(
+                ".md".to_string(),
+                "/tmp/pwn.sh".to_string(),
+            )])),
             python_interpreter: Some("./pwn".to_string()),
             ..Default::default()
         };

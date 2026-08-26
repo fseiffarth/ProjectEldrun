@@ -41,7 +41,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, EnumWindows, GetAncestor, GetCursorPos, GetForegroundWindow, GetParent,
     GetWindow, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
     SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, WindowFromPoint, GA_ROOT,
-    GW_OWNER, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    GWL_STYLE, GW_OWNER, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     SW_HIDE, SW_SHOW, WS_MAXIMIZEBOX, WS_THICKFRAME,
 };
 
@@ -190,8 +190,16 @@ impl WorkspaceBackend for WindowsBackend {
         // SAFETY: hwnd was validated by `is_window` above; SetWindowPos with
         // SWP_NOSIZE ignores the zero width/height arguments.
         unsafe {
-            SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
-                .map_err(|e| format!("SetWindowPos: {e}"))
+            SetWindowPos(
+                hwnd,
+                None,
+                x,
+                y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+            .map_err(|e| format!("SetWindowPos: {e}"))
         }
     }
 
@@ -499,8 +507,12 @@ fn process_exe_basename(pid: u32) -> Option<String> {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = [0u16; 260];
         let mut len = buf.len() as u32;
-        let result =
-            QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len);
+        let result = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        );
         let _ = CloseHandle(handle);
         result.ok()?;
         let full = String::from_utf16_lossy(&buf[..len as usize]);

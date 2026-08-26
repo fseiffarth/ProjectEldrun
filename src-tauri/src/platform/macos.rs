@@ -218,11 +218,16 @@ fn window_list() -> Vec<WindowInfo> {
     // CFReleased before returning; dictionary values are borrowed and read
     // only while the array is alive.
     unsafe {
-        let key_number = CFStringCreateWithCString(std::ptr::null(), c"kCGWindowNumber".as_ptr(), UTF8);
-        let key_pid = CFStringCreateWithCString(std::ptr::null(), c"kCGWindowOwnerPID".as_ptr(), UTF8);
-        let key_owner = CFStringCreateWithCString(std::ptr::null(), c"kCGWindowOwnerName".as_ptr(), UTF8);
-        let key_layer = CFStringCreateWithCString(std::ptr::null(), c"kCGWindowLayer".as_ptr(), UTF8);
-        let key_bounds = CFStringCreateWithCString(std::ptr::null(), c"kCGWindowBounds".as_ptr(), UTF8);
+        let key_number =
+            CFStringCreateWithCString(std::ptr::null(), c"kCGWindowNumber".as_ptr(), UTF8);
+        let key_pid =
+            CFStringCreateWithCString(std::ptr::null(), c"kCGWindowOwnerPID".as_ptr(), UTF8);
+        let key_owner =
+            CFStringCreateWithCString(std::ptr::null(), c"kCGWindowOwnerName".as_ptr(), UTF8);
+        let key_layer =
+            CFStringCreateWithCString(std::ptr::null(), c"kCGWindowLayer".as_ptr(), UTF8);
+        let key_bounds =
+            CFStringCreateWithCString(std::ptr::null(), c"kCGWindowBounds".as_ptr(), UTF8);
 
         let array = CGWindowListCopyWindowInfo(ON_SCREEN_ONLY, NULL_WINDOW_ID);
         if !array.is_null() {

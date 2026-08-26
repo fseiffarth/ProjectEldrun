@@ -255,10 +255,25 @@ pub async fn sync_worker(
 
     let mut last_err: Option<String> = None;
     for exclude in attempts {
-        match push_once(pool, project_id, host_id, &spec, &mirror, exclude.as_deref()).await {
+        match push_once(
+            pool,
+            project_id,
+            host_id,
+            &spec,
+            &mirror,
+            exclude.as_deref(),
+        )
+        .await
+        {
             Ok(true) => {
                 // Empty bundle — worker already at HEAD. Record and finish.
-                write_record(project_id, host_id, &WorkerRecord { last_head: Some(head.clone()) });
+                write_record(
+                    project_id,
+                    host_id,
+                    &WorkerRecord {
+                        last_head: Some(head.clone()),
+                    },
+                );
                 return WorkerSyncReport {
                     project_id: project_id.to_string(),
                     host_id: host_id.to_string(),
@@ -269,7 +284,13 @@ pub async fn sync_worker(
                 };
             }
             Ok(false) => {
-                write_record(project_id, host_id, &WorkerRecord { last_head: Some(head.clone()) });
+                write_record(
+                    project_id,
+                    host_id,
+                    &WorkerRecord {
+                        last_head: Some(head.clone()),
+                    },
+                );
                 return WorkerSyncReport {
                     project_id: project_id.to_string(),
                     host_id: host_id.to_string(),
@@ -317,7 +338,11 @@ async fn push_once(
         .map_err(|e| e.to_string())?
         .map_err(|e| format!("could not create worker dir: {e}"))?;
 
-    let remote_bundle = format!("{}/{}", spec.remote_path.trim_end_matches('/'), WORKER_BUNDLE);
+    let remote_bundle = format!(
+        "{}/{}",
+        spec.remote_path.trim_end_matches('/'),
+        WORKER_BUNDLE
+    );
     let sftp = remote::pooled_sftp_host(pool, project_id, host_id)
         .await
         .ok_or_else(|| "worker not connected".to_string())?;
@@ -456,7 +481,10 @@ pub fn parse_outputs_listing(stdout: &str) -> Vec<WorkerOutput> {
                 return None;
             }
             let bytes: u64 = size.trim().parse().ok()?;
-            Some(WorkerOutput { rel: rel.to_string(), bytes })
+            Some(WorkerOutput {
+                rel: rel.to_string(),
+                bytes,
+            })
         })
         .collect()
 }
@@ -467,9 +495,19 @@ pub fn parse_outputs_listing(stdout: &str) -> Vec<WorkerOutput> {
 fn outputs_dest(project_id: &str, label: &str) -> PathBuf {
     let safe: String = label
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
-    let safe = if safe.trim_matches('-').is_empty() { "worker".to_string() } else { safe };
+    let safe = if safe.trim_matches('-').is_empty() {
+        "worker".to_string()
+    } else {
+        safe
+    };
     storage::state_dir()
         .join("remote-projects")
         .join(project_id)
@@ -478,7 +516,9 @@ fn outputs_dest(project_id: &str, label: &str) -> PathBuf {
 }
 
 /// List a worker's untracked output files (blocking ssh).
-async fn list_outputs(spec: &crate::schema::project::RemoteSpec) -> Result<Vec<WorkerOutput>, String> {
+async fn list_outputs(
+    spec: &crate::schema::project::RemoteSpec,
+) -> Result<Vec<WorkerOutput>, String> {
     let spec = spec.clone();
     let out = tauri::async_runtime::spawn_blocking(move || {
         ssh_exec::run_remote_script(&spec, outputs_list_script())
@@ -577,7 +617,10 @@ mod tests {
         let s = worker_apply_script();
         // The single load-bearing invariant (plan §8): the worker sync must NEVER
         // `git clean` — that is what lets untracked experiment outputs survive.
-        assert!(!s.contains("clean"), "worker script must never git clean: {s}");
+        assert!(
+            !s.contains("clean"),
+            "worker script must never git clean: {s}"
+        );
         // It moves the TRACKED tree via reset --hard to the fetched HEAD.
         assert!(s.contains("reset -q --hard FETCH_HEAD"));
         assert!(s.contains("git fetch"));
@@ -598,7 +641,14 @@ mod tests {
                       2048\tnested/dir/weights.pt\r";
         let out = parse_outputs_listing(stdout);
         let rels: Vec<&str> = out.iter().map(|o| o.rel.as_str()).collect();
-        assert_eq!(rels, ["checkpoints/model.bin", "logs/run.log", "nested/dir/weights.pt"]);
+        assert_eq!(
+            rels,
+            [
+                "checkpoints/model.bin",
+                "logs/run.log",
+                "nested/dir/weights.pt"
+            ]
+        );
         assert_eq!(out[0].bytes, 1024);
         assert_eq!(out[2].bytes, 2048); // trailing \r stripped from the path
     }
@@ -612,7 +662,9 @@ mod tests {
         assert!(!s.contains(".."));
         assert!(s.ends_with("gpu-2----etc"));
         // An all-junk label falls back to "worker" rather than an empty segment.
-        assert!(outputs_dest("p", "///").to_string_lossy().ends_with("worker"));
+        assert!(outputs_dest("p", "///")
+            .to_string_lossy()
+            .ends_with("worker"));
     }
 
     #[test]
@@ -662,9 +714,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("eldrun-ws-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
-        let git = |args: &[&str]| {
-            Peer::Local(tmp.clone()).run(args).unwrap()
-        };
+        let git = |args: &[&str]| Peer::Local(tmp.clone()).run(args).unwrap();
         assert!(git(&["init", "-q"]).status.success());
         let _ = git(&["config", "user.email", "t@e"]);
         let _ = git(&["config", "user.name", "t"]);
@@ -682,7 +732,10 @@ mod tests {
         assert!(bundle.exists());
         // A re-bundle excluding HEAD itself is empty ("nothing new to send").
         let empty2 = build_bundle(&tmp, &tmp.join("out2.bundle"), Some(&head)).expect("ok");
-        assert!(empty2, "excluding HEAD yields an empty (already-synced) bundle");
+        assert!(
+            empty2,
+            "excluding HEAD yields an empty (already-synced) bundle"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

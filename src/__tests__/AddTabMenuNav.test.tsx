@@ -26,6 +26,11 @@ function groups(): AddMenuGroup[] {
         { key: "gemini", label: "Gemini", color: "#fff", disabled: true, onPick: vi.fn() },
         { key: "codex", label: "Codex", color: "#fff", onPick: picks.codex },
       ],
+      compactEntries: [
+        { key: "claude", label: "Claude", color: "#fff", onPick: picks.claude },
+        { key: "codex", label: "Codex", color: "#fff", onPick: picks.codex },
+      ],
+      moreLabel: "More agents & CLIs…",
     },
     {
       label: "Shell",
@@ -81,6 +86,20 @@ describe("AddTabMenuList keyboard navigation", () => {
     expect(active()).toContain("Codex");
     await userEvent.keyboard("{Enter}");
     expect(picks.codex).toHaveBeenCalledOnce();
+  });
+
+  it("keeps only quick picks idle, while search exposes every agent", async () => {
+    render(<AddTabMenuList groups={groups()} />);
+    expect(screen.queryByRole("button", { name: /Gemini/ })).toBeNull();
+    await userEvent.type(search(), "gem");
+    expect(screen.getByRole("button", { name: /Gemini/ })).toBeTruthy();
+  });
+
+  it("opens the remaining agents in a neighbouring More menu", async () => {
+    render(<AddTabMenuList groups={groups()} />);
+    await userEvent.click(screen.getByRole("button", { name: /More agents/ }));
+    expect(document.querySelector(".tab-new-menu-more")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Gemini/ })).toBeTruthy();
   });
 
   it("editing the query resets the cursor", async () => {

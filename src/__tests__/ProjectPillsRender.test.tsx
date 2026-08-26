@@ -99,4 +99,24 @@ describe("project switcher pill rendering", () => {
 
     expect(container!.querySelectorAll(".project-pill").length).toBe(2);
   });
+
+  it("renders the built-in Trash project as an icon-only pill", async () => {
+    useProjectsStore.setState({
+      projects: [proj("eldrun-trash", 0, { name: "Trash" })],
+      activeId: "eldrun-trash",
+      loaded: true,
+    });
+
+    let container: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<ProjectSwitcher open />));
+    });
+
+    const pill = container!.querySelector(".trash-project-pill") as HTMLElement;
+    expect(pill).toBeTruthy();
+    expect(pill.querySelector(".trash-project-icon")).toBeTruthy();
+    expect(pill.querySelector(".project-pill-label")).toBeNull();
+    expect(pill.querySelector(".pill-close-btn")).toBeNull();
+    expect(pill.querySelector("button[aria-label='Trash']")).toBeTruthy();
+  });
 });

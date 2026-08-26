@@ -8,7 +8,8 @@ import { useT } from "../../lib/i18n";
  * install an agent, use a local model, …). Picking one closes the dialog and
  * starts that lesson through the shared tour engine
  * (`useTourStore.startLesson`). Re-openable any time from the gear menu /
- * Settings; reuses the `.modal-backdrop` + `.settings-dialog` skeleton (and,
+ * Settings; reuses the `.modal-backdrop` + `.settings-dialog` split-scroll
+ * frame — the list lives in a `.dialog-scroll` child so it scrolls (and,
  * like `HowToStart`, brings its own Esc handler).
  */
 export function LessonsMenu({ onClose }: { onClose: () => void }) {
@@ -36,6 +37,13 @@ export function LessonsMenu({ onClose }: { onClose: () => void }) {
           <h2>{t("lessons.title")}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
+        {/* `.settings-dialog` is a split-scroll FRAME: it clips (overflow:hidden,
+            padding 0, gap 0) and the `.dialog-scroll` child does the scrolling.
+            Without this wrapper the 30+ lessons render flush to the dialog's
+            edges and everything past the frame's max-height is cut off with no
+            way to reach it — the harder categories were unreachable. Same
+            structure as ProjectFilesSettings/EventDialog. */}
+        <div className="dialog-scroll">
         <p className="settings-help">{t("lessons.intro")}</p>
 
         <div className="lessons-list">
@@ -62,6 +70,7 @@ export function LessonsMenu({ onClose }: { onClose: () => void }) {
               </Fragment>
             );
           })}
+        </div>
         </div>
       </div>
     </div>

@@ -180,7 +180,11 @@ mod tests {
                 r.bin
             );
             assert!(p.contains("exit 127"), "{} does not abort", r.bin);
-            assert!(p.contains(r.install), "{} does not run its installer", r.bin);
+            assert!(
+                p.contains(r.install),
+                "{} does not run its installer",
+                r.bin
+            );
         }
     }
 

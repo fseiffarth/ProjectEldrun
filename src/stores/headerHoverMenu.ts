@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 /**
  * Which header hover-menu (Clock, GlobalAppMenu, LocalModelMenu, Mail/Calendar/Todo
- * indicators, VpnIndicator) is open right now — ONE id, shared across all of
+ * indicators, MobileIndicator, VpnIndicator, MachinesIndicator) is open right now — ONE id, shared across all of
  * them. Each menu opens instantly on mouseenter but closes only after a 250ms
  * grace timer (so the pointer can travel from the button down into the
  * dropdown); with independent `useState`s that grace period is what let two

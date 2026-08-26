@@ -371,9 +371,9 @@ New and imported projects receive these files when missing:
 
 | File | Purpose |
 |------|---------|
-| `AGENTS.md` | Agent instructions, scope, and permission boundary. |
-| `CLAUDE.md` | Claude Code context: paths, conventions, project notes. |
-| `GEMINI.md` | Gemini CLI context: paths, conventions, project notes. |
+| `AGENTS.md` | Canonical agent instructions — the single source of truth; links every sibling agent doc. |
+| `CLAUDE.md` | Claude Code pointer: `@AGENTS.md` import plus Claude-specific overrides. |
+| `GEMINI.md` | Gemini CLI pointer: `@AGENTS.md` import plus Gemini-specific overrides. |
 | `.claude/settings.json` | Claude permission allow/deny rules scoped to the project. |
 | `.gitignore` | Common ignores for Python, Node, macOS, logs, and build output. |
 | `TODO.md` | Concrete task backlog with grouped IDs. |

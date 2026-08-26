@@ -41,6 +41,8 @@ import { categoryColor, primaryCategoryColor, projectCategories } from "../../li
 import { usePillDragStore } from "../../stores/pillDrag";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { isTrashProject } from "../../lib/trashProject";
+import { TrashProjectIcon } from "./TrashProjectIcon";
 
 interface Props {
   project: ProjectEntry;
@@ -1290,6 +1292,7 @@ export function ProjectPill({
   const [movePickerInitial, setMovePickerInitial] = useState<string | null>(null);
   const pillRef = useRef<HTMLDivElement>(null);
   const dir = resolveProjectDirectory(project);
+  const trashProject = isTrashProject(project);
   const categories = projectCategories(project);
   const catColor = primaryCategoryColor(categories);
 
@@ -2316,7 +2319,7 @@ export function ProjectPill({
       <div
         ref={pillRef}
         data-pill-id={project.id}
-        className={`project-pill${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}${groupHintActive ? " drag-group" : ""}${isDragged ? " dragging" : ""}${!isDragged && shiftPx ? " reorder-parting" : ""}${catColor ? " has-category" : ""}`}
+        className={`project-pill${trashProject ? " trash-project-pill" : ""}${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}${groupHintActive ? " drag-group" : ""}${isDragged ? " dragging" : ""}${!isDragged && shiftPx ? " reorder-parting" : ""}${catColor ? " has-category" : ""}`}
         style={{
           ...(catColor ? { "--cat-color": catColor } : {}),
           ...(isDragged
@@ -2330,24 +2333,35 @@ export function ProjectPill({
         onContextMenu={handleContextMenu}
         onPointerDown={startPillDrag}
       >
-        <button className="pill-main" onClick={onClick}>
-          <span
-            className={`pill-folder-icon git-${gitDirty ?? "clean"}`}
-            title={t(GIT_ICON_TITLE_KEY[gitDirty ?? "clean"])}
-            aria-hidden
-          >
-            {/* The folder + its git color are shown ALWAYS — the git dirty state
-                must never be hidden by an unrelated concern. A paused time-tracking
-                timer is signalled non-destructively: a small ⏸ overlay badge (plus
-                the pill's own `.timer-paused` dimming), never by swapping the icon
-                out, which used to erase every pill's git colour the moment you
-                paused the timer. */}
-            <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-              <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
-            </svg>
-            {timerPaused && <span className="pill-folder-pause">⏸</span>}
-          </span>
-          <span className="project-pill-label">{project.name}</span>
+        <button
+          className="pill-main"
+          onClick={onClick}
+          title={trashProject ? project.name : undefined}
+          aria-label={trashProject ? project.name : undefined}
+        >
+          {trashProject ? (
+            <TrashProjectIcon className="trash-project-icon" />
+          ) : (
+            <>
+              <span
+                className={`pill-folder-icon git-${gitDirty ?? "clean"}`}
+                title={t(GIT_ICON_TITLE_KEY[gitDirty ?? "clean"])}
+                aria-hidden
+              >
+                {/* The folder + its git color are shown ALWAYS — the git dirty state
+                    must never be hidden by an unrelated concern. A paused time-tracking
+                    timer is signalled non-destructively: a small ⏸ overlay badge (plus
+                    the pill's own `.timer-paused` dimming), never by swapping the icon
+                    out, which used to erase every pill's git colour the moment you
+                    paused the timer. */}
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+                  <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
+                </svg>
+                {timerPaused && <span className="pill-folder-pause">⏸</span>}
+              </span>
+              <span className="project-pill-label">{project.name}</span>
+            </>
+          )}
         </button>
         {categories.length > 0 && (
           <span className="pill-category-dots" title={t("pill.categoriesLabel", { list: categories.join(", ") })}>
@@ -2376,13 +2390,15 @@ export function ProjectPill({
           </button>
         )}
         {project.remote && <RemoteConnMenu project={project} compact />}
-        <button
-          className="pill-close-btn"
-          title={t("pill.closeProject")}
-          onClick={(e) => { e.stopPropagation(); onClose(); }}
-        >
-          ×
-        </button>
+        {!trashProject && (
+          <button
+            className="pill-close-btn"
+            title={t("pill.closeProject")}
+            onClick={(e) => { e.stopPropagation(); onClose(); }}
+          >
+            ×
+          </button>
+        )}
         <PillStatusBars scope={project.id} />
       </div>
     </>

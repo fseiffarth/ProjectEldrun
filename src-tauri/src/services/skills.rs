@@ -78,9 +78,19 @@ fn slug_from(url: &str, label: &str) -> String {
         .find(|s| !s.is_empty())
         .unwrap_or("source")
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
-    if slug.is_empty() { "source".to_string() } else { slug }
+    if slug.is_empty() {
+        "source".to_string()
+    } else {
+        slug
+    }
 }
 
 /// Add a source, validating the URL through the same whitelist `git_clone` uses
@@ -189,7 +199,9 @@ fn parse_skill_md(content: &str, folder_name: &str) -> (String, String, String) 
 /// plugin marketplace (`anthropics/skills`) — the marketplace manifest is never
 /// parsed, since the skill folders exist as plain files on disk either way.
 fn walk_for_skills(root: &Path, dir: &Path, source_id: &str, out: &mut Vec<SkillCatalogEntry>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -237,7 +249,9 @@ pub fn list_catalog(source_id: &str) -> Vec<SkillCatalogEntry> {
 /// Every other file under `dir`, relative to `root`, for the preview panel's
 /// bundled-file list. Skips `SKILL.md` itself (already shown as `body`).
 fn list_bundled_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -328,11 +342,7 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
 /// Overwrites an existing install of the same name (e.g. after a source
 /// refresh) — no commit-pin, no drift detection; the frontend confirms the
 /// overwrite before calling this.
-pub fn install_skill(
-    target: &SkillTarget,
-    source_id: &str,
-    rel_path: &str,
-) -> Result<(), String> {
+pub fn install_skill(target: &SkillTarget, source_id: &str, rel_path: &str) -> Result<(), String> {
     let src = cache_dir(source_id).join(rel_path);
     if !src.join("SKILL.md").is_file() {
         return Err(format!("'{rel_path}' is not a skill folder (no SKILL.md)"));
@@ -364,14 +374,18 @@ pub fn uninstall_skill(target: &SkillTarget, name: &str) -> Result<(), String> {
 /// installed through this UI. Deliberately the only source of truth for "is
 /// this skill here"; there is no separate tracked install state.
 pub fn list_installed(target: &SkillTarget) -> Vec<InstalledSkill> {
-    let Ok(dir) = target_skills_dir(target) else { return Vec::new() };
+    let Ok(dir) = target_skills_dir(target) else {
+        return Vec::new();
+    };
     list_installed_at(&dir)
 }
 
 /// The read half of [`list_installed`], against an already-resolved directory —
 /// the seam a unit test can drive without a home directory to redirect.
 fn list_installed_at(dir: &Path) -> Vec<InstalledSkill> {
-    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
@@ -382,7 +396,9 @@ fn list_installed_at(dir: &Path) -> Vec<InstalledSkill> {
         if !skill_md.is_file() {
             continue;
         }
-        let Ok(content) = fs::read_to_string(&skill_md) else { continue };
+        let Ok(content) = fs::read_to_string(&skill_md) else {
+            continue;
+        };
         let folder_name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -418,8 +434,14 @@ mod tests {
 
     #[test]
     fn slug_from_derives_from_url_path() {
-        assert_eq!(slug_from("https://github.com/anthropics/skills", ""), "skills");
-        assert_eq!(slug_from("https://github.com/anthropics/skills.git", ""), "skills");
+        assert_eq!(
+            slug_from("https://github.com/anthropics/skills", ""),
+            "skills"
+        );
+        assert_eq!(
+            slug_from("https://github.com/anthropics/skills.git", ""),
+            "skills"
+        );
         assert_eq!(slug_from("git@host:owner/Some_Repo.git", ""), "some-repo");
         assert_eq!(slug_from("", "My Label"), "my-label");
     }
@@ -438,7 +460,9 @@ mod tests {
 
         let project = tempfile::tempdir().expect("tempdir");
         let project_dir = project.path().to_string_lossy().to_string();
-        let target = SkillTarget::Project { dir: project_dir.clone() };
+        let target = SkillTarget::Project {
+            dir: project_dir.clone(),
+        };
 
         // install_skill/get_skill_detail resolve against the source's cache dir
         // (state_dir()/skills_cache/<id>), which a unit test can't redirect
@@ -461,8 +485,14 @@ mod tests {
 
     #[test]
     fn target_skills_dir_resolves_both_scopes() {
-        let project = target_skills_dir(&SkillTarget::Project { dir: "/tmp/proj".into() }).unwrap();
-        assert_eq!(project, Path::new("/tmp/proj").join(".claude").join("skills"));
+        let project = target_skills_dir(&SkillTarget::Project {
+            dir: "/tmp/proj".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            project,
+            Path::new("/tmp/proj").join(".claude").join("skills")
+        );
 
         // Personal resolves against this process's own home — the point being
         // that no argument reached it, so no caller can aim it elsewhere.
@@ -486,11 +516,19 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let a = root.path().join("category").join("skill-a");
         fs::create_dir_all(&a).unwrap();
-        fs::write(a.join("SKILL.md"), "---\nname: skill-a\ndescription: A\n---\n").unwrap();
+        fs::write(
+            a.join("SKILL.md"),
+            "---\nname: skill-a\ndescription: A\n---\n",
+        )
+        .unwrap();
 
         let b = root.path().join("skill-b");
         fs::create_dir_all(&b).unwrap();
-        fs::write(b.join("SKILL.md"), "---\nname: skill-b\ndescription: B\n---\n").unwrap();
+        fs::write(
+            b.join("SKILL.md"),
+            "---\nname: skill-b\ndescription: B\n---\n",
+        )
+        .unwrap();
 
         let mut out = Vec::new();
         walk_for_skills(root.path(), root.path(), "src", &mut out);

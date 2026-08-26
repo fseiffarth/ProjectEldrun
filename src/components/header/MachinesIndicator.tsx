@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { ConnLamp } from "../common/ConnLamp";
@@ -18,8 +18,11 @@ import { openConnectionInRoot } from "../../lib/remoteConnect";
 import { isHpcHost, mayAutoTouch, setHpcPatch, targetOfSpec } from "../../lib/hpcHost";
 import { hpcGuardRefusal } from "../../lib/hpcGuard";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import type { ConnState } from "../../stores/remoteStatus";
 import type { GlobalMachine, MachineImportEntry, ProjectEntry } from "../../types";
+
+const MENU_ID = "machines";
 
 /**
  * **What a row actually knows**, from the two maps that used to be one.
@@ -142,14 +145,10 @@ export function targetLabel(m: { user?: string; host: string; port?: number }): 
  * Detaching a machine from a project never touches this list — see
  * `stores/globalMachines.ts` / `commands::global_machines`.
  *
- * **It opens on a click, and it is not a hover menu.** Opening it sweeps the
- * fleet, and `ssh_probe` is a full authenticated SSH login per host, not a ping —
- * on hover, a pointer crossing the header on its way elsewhere logged Eldrun into
- * every machine in the list, a login node included. The sweep is now behind a
- * deliberate open, an in-flight guard and a per-machine minimum interval, and it
- * never touches a machine tagged HPC at all (`lib/hpcHost`'s `mayAutoTouch`) —
- * such a row carries its own Check (◎) and login buttons instead, the only things
- * that ever reach it.
+ * It shares the header's hover-menu interaction with Mobile and VPN. Opening it
+ * refreshes the fleet snapshot; an in-flight guard and per-machine minimum
+ * interval prevent repeated probes, and a machine tagged HPC remains excluded
+ * (`lib/hpcHost`'s `mayAutoTouch`) — its row alone offers Check (◎) and login.
  *
  * **A row reads two maps, not one** (see `RowState`): `status` is a session THIS
  * app opened, `reachable` is the last probe's answer. Green means the first;
@@ -218,13 +217,12 @@ export function MachinesIndicator() {
     else requestExtend(p.id, machine);
   };
 
-  // Opened by CLICK, never by hover. Opening this menu sweeps the fleet, and
-  // `ssh_probe` is a full authenticated SSH login on each host rather than a
-  // ping — on hover, a pointer crossing the header on its way somewhere else
-  // logged Eldrun into every machine in the list. A menu that dials has to be
-  // asked for.
-  const [open, setOpen] = useState(false);
+  // The shared menu store makes the status controls mutually exclusive.
+  const open = useHeaderHoverMenuStore((s) => s.openId === MENU_ID);
+  const openMenu = useHeaderHoverMenuStore((s) => s.open);
+  const closeMenu = useHeaderHoverMenuStore((s) => s.close);
   const anchorRef = useRef<HTMLDivElement | null>(null);
+  const closeTimer = useRef<number | undefined>(undefined);
   // While an import/export panel is up — or a native file dialog is open, which
   // takes the focus and the pointer away from the menu — it must NOT close under
   // the user mid-flow. A ref (read synchronously by the dismiss handlers) rather
@@ -285,6 +283,18 @@ export function MachinesIndicator() {
   const dragRects = useRef<{ id: string; top: number; height: number }[]>([]);
   const dragStartY = useRef(0);
   const reorderDragRef = useRef(false);
+
+  const reveal = useCallback(() => {
+    window.clearTimeout(closeTimer.current);
+    openMenu(MENU_ID);
+  }, [openMenu]);
+  const scheduleClose = useCallback(() => {
+    window.clearTimeout(closeTimer.current);
+    if (keepOpenRef.current || reorderDragRef.current) return;
+    closeTimer.current = window.setTimeout(() => closeMenu(MENU_ID), 250);
+  }, [closeMenu]);
+
+  useEffect(() => () => window.clearTimeout(closeTimer.current), []);
 
   /** Where the dragged row would land, from the pointer's Y: the number of OTHER
    *  rows whose midpoint the cursor has passed — i.e. an index into the list
@@ -639,25 +649,20 @@ export function MachinesIndicator() {
     prevRects.current = next;
   }, [orderKey]);
 
-  // Dismissal, now that hover neither opens nor closes this menu: a click
-  // outside it, or Escape. The old 250ms mouse-leave close was the twin of the
-  // hover open; with a deliberate open it would pull half-typed forms out from
-  // under the pointer on its way to them. `keepOpenRef` still wins (a native
-  // file dialog's clicks land outside every element of ours), and a reorder drag
-  // that carried the pointer off the menu must not unmount the rows mid-gesture
-  // — read from the ref, not `reorderDrag`, so the guard is live in the same
-  // tick the gesture starts.
+  // Escape and an outside click close a keyboard-opened menu immediately.
+  // `keepOpenRef` still wins for native dialogs, and a reorder drag cannot
+  // unmount rows underneath its pointer capture.
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (e: PointerEvent) => {
       if (keepOpenRef.current || reorderDragRef.current) return;
       const el = anchorRef.current;
       if (el && e.target instanceof Node && el.contains(e.target)) return;
-      setOpen(false);
+      closeMenu(MENU_ID);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || keepOpenRef.current) return;
-      setOpen(false);
+      closeMenu(MENU_ID);
     };
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("keydown", onKey);
@@ -665,7 +670,7 @@ export function MachinesIndicator() {
       document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [open, closeMenu]);
 
   // Group the machines by COLOUR so each lamp is drawn once, with a count —
   // exactly like a project pill's `RemoteConnMenu` aggregates its hosts. No
@@ -1242,7 +1247,12 @@ export function MachinesIndicator() {
   };
 
   return (
-    <div ref={anchorRef} className="global-apps-menu header-status-menu-anchor no-drag">
+    <div
+      ref={anchorRef}
+      className="global-apps-menu header-status-menu-anchor no-drag"
+      onMouseEnter={reveal}
+      onMouseLeave={scheduleClose}
+    >
       <button
         type="button"
         className="global-apps-menu-btn machines-indicator-btn"
@@ -1250,9 +1260,10 @@ export function MachinesIndicator() {
         aria-haspopup="menu"
         aria-expanded={open}
         title={t("machines.triggerTitle")}
-        // Click, not hover, and not focus either: both used to open the menu,
-        // and opening it sweeps every machine with a real SSH login.
-        onClick={() => setOpen((v) => !v)}
+        // Click/focus keeps the hover-opened menu revealed. Toggling here would
+        // immediately close the same menu that mouseenter just opened.
+        onClick={reveal}
+        onFocus={reveal}
       >
         <span className="header-conn-lamps">
           {lampGroups.map((g) => (
@@ -1272,7 +1283,18 @@ export function MachinesIndicator() {
               scrollbar starts beneath the header (unified `.menu-scroll-region`
               shape). Keeping it OUT of the scroller also spares the accent rail /
               rounded top from the native scrollbar running over them. */}
-          <div className="tab-new-menu-group-label">{t("machines.groupLabel")}</div>
+          <div className="tab-new-menu-group-label vpn-indicator-title">
+            <span>{t("machines.groupLabel")}</span>
+            <button
+              type="button"
+              className="vpn-indicator-close"
+              aria-label={t("common.close")}
+              title={t("common.close")}
+              onClick={() => closeMenu(MENU_ID)}
+            >
+              ×
+            </button>
+          </div>
           <div className="menu-scroll-region">
           {ioMode === "export" ? (
             <div className="vpn-indicator-row menu-form machines-io-panel">
@@ -1522,7 +1544,7 @@ export function MachinesIndicator() {
                 aria-label={t("machines.usageAria")}
                 title={t("machines.usageTitle")}
                 onClick={() => {
-                  setOpen(false);
+                  closeMenu(MENU_ID);
                   openUsage();
                 }}
               >
@@ -1894,7 +1916,7 @@ export function MachinesIndicator() {
                         )}
                         onClick={() => {
                           setAttachId(null);
-                          setOpen(false);
+                          closeMenu(MENU_ID);
                           attachToProject(p, m);
                         }}
                       >

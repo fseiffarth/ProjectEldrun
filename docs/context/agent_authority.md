@@ -1,6 +1,6 @@
 # Agent authority axes
 
-Referenced from `CLAUDE.md`.
+Referenced from `AGENTS.md`.
 
 **Agent authority has three axes**, and they compose: the project container
 `sandbox` (OS containment), the tab's `location` (where the process runs), and — behind the

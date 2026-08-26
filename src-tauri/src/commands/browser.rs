@@ -121,8 +121,7 @@ pub async fn browser_capabilities() -> Result<BrowserCapabilities, String> {
                     .to_string(),
             ),
             (false, _) => {
-                Some("Live pages are not available on Windows yet. Reader mode works."
-                    .to_string())
+                Some("Live pages are not available on Windows yet. Reader mode works.".to_string())
             }
         },
     })
@@ -162,7 +161,10 @@ fn check(raw: &str) -> UrlVerdict {
             // Never echo the raw string back as a URL — it did not parse as
             // one, so presenting it in a URL-shaped slot would be a lie the
             // user reads as verified.
-            display_url: web_safety::strip_format_controls(raw).chars().take(300).collect(),
+            display_url: web_safety::strip_format_controls(raw)
+                .chars()
+                .take(300)
+                .collect(),
             punycode_warning: None,
             scheme: String::new(),
             is_loopback: false,
@@ -878,7 +880,10 @@ mod tests {
             }
             from = end.max(start + 1);
         }
-        assert!(seen >= 2, "expected every emit site to be scanned, saw {seen}");
+        assert!(
+            seen >= 2,
+            "expected every emit site to be scanned, saw {seen}"
+        );
     }
 
     #[test]
@@ -1142,7 +1147,10 @@ mod tests {
         let v = check("https://example.com@evil.example/");
         assert!(!v.display_url.contains("example.com@"), "{}", v.display_url);
         let v = check("https://xn--80ak6aa92e.example/");
-        assert_eq!(v.punycode_warning.as_deref(), Some("xn--80ak6aa92e.example"));
+        assert_eq!(
+            v.punycode_warning.as_deref(),
+            Some("xn--80ak6aa92e.example")
+        );
     }
 
     /// A string that did not parse must not be echoed back into a URL-shaped
@@ -1213,12 +1221,10 @@ mod tests {
 
         // And the browser itself still follows the ordinary rule, so the two
         // switches are visibly different things.
-        assert!(
-            Settings {
-                debug: Some(true),
-                ..Default::default()
-            }
-            .web_browser()
-        );
+        assert!(Settings {
+            debug: Some(true),
+            ..Default::default()
+        }
+        .web_browser());
     }
 }

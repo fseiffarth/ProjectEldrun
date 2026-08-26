@@ -58,5 +58,5 @@ pub mod vm_proxy;
 // re-exports what it used to own.
 pub mod web_safety;
 pub mod window_service;
-pub mod worker_sync;
 pub mod window_state;
+pub mod worker_sync;

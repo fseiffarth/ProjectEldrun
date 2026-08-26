@@ -21,10 +21,10 @@ use std::path::{Path, PathBuf};
 /// these legitimately appear in Eldrun's own source; the read-only downloads
 /// feature (`list_recent_downloads` / `download_sources`) uses none of them.
 const FORBIDDEN_MARKERS: &[&str] = &[
-    "browser.download.",   // Firefox download-dir prefs (dir/folderList/useDownloadDir)
-    "prefs.js",            // Firefox profile prefs file
-    "default_directory",   // Chromium `download.default_directory` pref key
-    ".parentlock",         // Firefox profile lock the old editor checked
+    "browser.download.", // Firefox download-dir prefs (dir/folderList/useDownloadDir)
+    "prefs.js",          // Firefox profile prefs file
+    "default_directory", // Chromium `download.default_directory` pref key
+    ".parentlock",       // Firefox profile lock the old editor checked
 ];
 
 /// Recursively collect every `.rs` file under `dir`.

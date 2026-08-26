@@ -253,6 +253,12 @@ pub struct Settings {
     /// back to `"claude"` when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_agent_cmd: Option<String>,
+    /// Built-in agent registry ids shown before a search in the compact Agents
+    /// group of the + tab menu. Chosen through the 🧠 menu's "+ tab" chips.
+    /// Unset is interpreted by the frontend as Claude/Codex/Gemini; an empty
+    /// list intentionally leaves every agent behind the menu's search field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_tab_agents: Option<Vec<String>>,
     /// When true (the default), running a `.sh` from the right panel spawns it
     /// as a detached background process instead of opening a terminal tab.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -541,6 +547,10 @@ pub struct Settings {
     /// Private, tailnet-published companion host. Absent means fully disabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eldrun_mobile_host: Option<EldrunMobileHostSettings>,
+    /// Whether the Eldrun Mobile host-status control is visible in the desktop
+    /// header. Unset means visible whenever the Mobile host is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mobile_indicator: Option<bool>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }

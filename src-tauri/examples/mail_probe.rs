@@ -113,7 +113,10 @@ async fn main() {
             println!("  no account file at all — nothing was ever configured here");
         }
     } else if enc.exists() {
-        println!("  {} exists but cannot be opened without the key.", enc.display());
+        println!(
+            "  {} exists but cannot be opened without the key.",
+            enc.display()
+        );
         println!("  The app reads this file the same way and therefore shows NO accounts.");
     } else if plain.exists() {
         match std::fs::read(&plain) {
@@ -130,10 +133,7 @@ async fn main() {
     println!("\nstore:");
     match MailStore::open_with_keys(&dir, keys.map(std::sync::Arc::new)) {
         Ok(store) => match store.priority_counts() {
-            Ok(c) => println!(
-                "  opened. important={} urgent={}",
-                c.important, c.urgent
-            ),
+            Ok(c) => println!("  opened. important={} urgent={}", c.important, c.urgent),
             Err(e) => println!("  opened, but counts failed: {e}"),
         },
         Err(e) => println!("  could not open: {e}"),

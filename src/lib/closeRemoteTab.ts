@@ -4,11 +4,13 @@
  *
  * A shell/script tab can run inside a **tmux** session — remote (on the SSH host)
  * or local (on this machine) — so the run survives an SSH drop / laptop sleep /
- * Eldrun quit / crash. Closing a tab is therefore **non-destructive**: it detaches
+ * Eldrun crash. Closing a tab is therefore **non-destructive**: it detaches
  * (unmounts the pane, killing only the ssh/PTY client) and leaves the session alive
  * under its tmux daemon, reattachable from the Sessions view. The *only* way to
  * terminate a session is its × (kill) in the Sessions view (`remote_tmux_kill` /
- * `local_tmux_kill`); no tab close, quit, disconnect, or crash ends a run.
+ * `local_tmux_kill`). A clean Eldrun quit additionally reaps Eldrun-owned LOCAL
+ * sessions; remote sessions always stay running across quit, disconnect, and crash
+ * unless the user explicitly ends them.
  *
  * `persistentSessionOf` / `localPersistentSessionOf` classify the tab (used by the
  * Sessions view to mark which rows an open tab owns). They live outside the stores
@@ -84,10 +86,9 @@ export function localPersistentSessionOf(scope: string, tab: TabEntry): string |
  * Closing a tab **detaches** — it never terminates the underlying tmux session.
  * `removeTab` unmounts the pane (killing only the ssh/PTY *client*), so a persistent
  * session — remote (on an SSH host) or local (on this machine) — keeps running under
- * its tmux daemon and stays discoverable + reattachable in the Sessions view. The one
- * way to actually terminate a session is its × (kill) in the Sessions view; a tab
- * close, a quit, and a crash leave it alive; disconnecting the machine ends its
- * host sessions. (This function stays a
+ * its tmux daemon and stays discoverable + reattachable in the Sessions view. A tab
+ * close and a crash leave it alive; a clean quit reaps only Eldrun-owned LOCAL
+ * sessions, while remote sessions remain until their × is clicked. (This function stays a
  * seam — rather than inlining `removeTab` at the call sites — so a future confirm/hook
  * has one home, and so `persistentSessionOf` keeps a co-located reader.)
  */

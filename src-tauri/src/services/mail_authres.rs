@@ -227,7 +227,10 @@ fn authserv_id_of(seg: &str) -> Option<String> {
     if tok.contains('=') {
         return None;
     }
-    Some(tok.trim_matches(|c: char| c == ';' || c.is_whitespace()).to_string())
+    Some(
+        tok.trim_matches(|c: char| c == ';' || c.is_whitespace())
+            .to_string(),
+    )
 }
 
 /// One `method[/version] = result [ptype.property=pvalue ...]` clause.
@@ -250,7 +253,11 @@ fn parse_clause(seg: &str, from_domain: &str) -> Option<MailAuthMethod> {
         .unwrap_or(name)
         .trim()
         .to_ascii_lowercase();
-    if method.is_empty() || !method.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+    if method.is_empty()
+        || !method
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
         return None;
     }
 
@@ -433,7 +440,10 @@ mod tests {
         );
         apply_trust(&mut r, None);
         assert_eq!(r.state, MailAuthState::Unconfigured);
-        assert!(r.methods.is_empty(), "verdicts must not survive an unchecked header");
+        assert!(
+            r.methods.is_empty(),
+            "verdicts must not survive an unchecked header"
+        );
     }
 
     #[test]
@@ -454,7 +464,10 @@ mod tests {
         );
         apply_trust(&mut r, Some("mx.example.net"));
         assert_eq!(r.state, MailAuthState::Foreign);
-        assert!(r.methods.is_empty(), "a foreign header must show no verdict");
+        assert!(
+            r.methods.is_empty(),
+            "a foreign header must show no verdict"
+        );
         assert_eq!(r.authserv_id.as_deref(), Some("evil.example"));
     }
 
@@ -464,8 +477,7 @@ mod tests {
             "mx.example.net; dmarc=fail header.from=bank.example".to_string(),
             "evil.example; dmarc=pass header.from=bank.example".to_string(),
         ];
-        let mut r =
-            parse_authentication_results(&values, "security@bank.example").unwrap();
+        let mut r = parse_authentication_results(&values, "security@bank.example").unwrap();
         apply_trust(&mut r, Some("mx.example.net"));
         assert_eq!(r.state, MailAuthState::Verified);
         assert_eq!(r.header_count, 2, "the count is disclosed");
@@ -583,7 +595,10 @@ mod tests {
             "x@a.example",
             "mx.example.net",
         );
-        assert_eq!(method(&r, "dkim").unwrap().identifier.as_deref(), Some("a.example"));
+        assert_eq!(
+            method(&r, "dkim").unwrap().identifier.as_deref(),
+            Some("a.example")
+        );
     }
 
     #[test]
@@ -665,7 +680,10 @@ mod tests {
             assert!(r.methods.len() <= MAX_METHODS);
             // Random bytes must essentially never produce a trusted verdict.
             if r.state == MailAuthState::Verified {
-                assert_eq!(r.authserv_id.as_deref().map(str::trim), Some("mx.example.net"));
+                assert_eq!(
+                    r.authserv_id.as_deref().map(str::trim),
+                    Some("mx.example.net")
+                );
             }
         }
     }

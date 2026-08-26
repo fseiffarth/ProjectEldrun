@@ -78,10 +78,26 @@ pub struct DuNode {
 
 impl DuNode {
     fn dir(name: String, path: String) -> Self {
-        Self { name, path, size: 0, is_dir: true, children: Vec::new(), hidden_children: 0, hidden_bytes: 0 }
+        Self {
+            name,
+            path,
+            size: 0,
+            is_dir: true,
+            children: Vec::new(),
+            hidden_children: 0,
+            hidden_bytes: 0,
+        }
     }
     fn file(name: String, path: String, size: u64) -> Self {
-        Self { name, path, size, is_dir: false, children: Vec::new(), hidden_children: 0, hidden_bytes: 0 }
+        Self {
+            name,
+            path,
+            size,
+            is_dir: false,
+            children: Vec::new(),
+            hidden_children: 0,
+            hidden_bytes: 0,
+        }
     }
 }
 
@@ -411,8 +427,10 @@ fn build_remote(
         return node;
     }
 
-    let mut built: Vec<DuNode> =
-        children.iter().map(|&c| build_remote(c, depth + 1, sizes, kids, tally, truncated)).collect();
+    let mut built: Vec<DuNode> = children
+        .iter()
+        .map(|&c| build_remote(c, depth + 1, sizes, kids, tally, truncated))
+        .collect();
     built.sort_by_key(|b| std::cmp::Reverse(b.size));
     if built.len() > MAX_CHILDREN {
         let rest = built.split_off(MAX_CHILDREN);
@@ -443,7 +461,11 @@ pub fn capacity_of(path: &Path) -> Option<(u64, u64)> {
     }
     // `f_frsize` is the fragment size the block counts are expressed in; it is 0 on
     // some filesystems, where `f_bsize` is the right unit.
-    let unit = if stat.f_frsize > 0 { stat.f_frsize as u64 } else { stat.f_bsize as u64 };
+    let unit = if stat.f_frsize > 0 {
+        stat.f_frsize as u64
+    } else {
+        stat.f_bsize as u64
+    };
     let total = (stat.f_blocks as u64).saturating_mul(unit);
     let free = (stat.f_bavail as u64).saturating_mul(unit);
     Some((total, free))
@@ -458,7 +480,11 @@ pub fn capacity_of(path: &Path) -> Option<(u64, u64)> {
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
     let mut avail: u64 = 0;
     let mut total: u64 = 0;
     // SAFETY: `wide` is a valid NUL-terminated UTF-16 string for the duration of
@@ -495,7 +521,12 @@ pub fn devices() -> Vec<DuDevice> {
 
 fn device(label: &str, path: &Path) -> DuDevice {
     let (total_bytes, free_bytes) = capacity_of(path).unzip();
-    DuDevice { label: label.to_string(), path: display_path(path), total_bytes, free_bytes }
+    DuDevice {
+        label: label.to_string(),
+        path: display_path(path),
+        total_bytes,
+        free_bytes,
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -531,7 +562,10 @@ mod tests {
     }
 
     fn child<'a>(node: &'a DuNode, name: &str) -> &'a DuNode {
-        node.children.iter().find(|c| c.name == name).expect("child")
+        node.children
+            .iter()
+            .find(|c| c.name == name)
+            .expect("child")
     }
 
     #[test]
@@ -552,7 +586,11 @@ mod tests {
         assert!(!scan.cancelled);
 
         let names: Vec<&str> = scan.root.children.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, vec!["big", "small"], "children sort descending by size");
+        assert_eq!(
+            names,
+            vec!["big", "small"],
+            "children sort descending by size"
+        );
         assert_eq!(child(&scan.root, "big").size, 6_000);
         // ...and grandchildren sort too.
         let big = child(&scan.root, "big");
@@ -567,7 +605,10 @@ mod tests {
         write(&root.join("node_modules/dep.js"), 2_048);
 
         let scan = scan(root);
-        assert_eq!(scan.root.size, 2_048, "node_modules is the answer, not noise");
+        assert_eq!(
+            scan.root.size, 2_048,
+            "node_modules is the answer, not noise"
+        );
         assert_eq!(child(&scan.root, "node_modules").size, 2_048);
     }
 
@@ -597,7 +638,10 @@ mod tests {
         fs::hard_link(root.join("original.bin"), root.join("link.bin")).unwrap();
 
         let scan = scan(root);
-        assert_eq!(scan.root.size, 4_096, "the second link is the same bytes on disk");
+        assert_eq!(
+            scan.root.size, 4_096,
+            "the second link is the same bytes on disk"
+        );
         assert_eq!(scan.files, 1);
     }
 
@@ -639,7 +683,10 @@ mod tests {
 
         let scan = scan(root);
         assert!(scan.truncated);
-        assert_eq!(scan.root.size, 777, "the deep file still counts toward the root");
+        assert_eq!(
+            scan.root.size, 777,
+            "the deep file still counts toward the root"
+        );
 
         // Walk down the emitted spine: it must stop handing out children at the cap.
         let mut node = &scan.root;
@@ -649,7 +696,10 @@ mod tests {
             depth += 1;
         }
         assert_eq!(depth, MAX_EMIT_DEPTH);
-        assert_eq!(node.hidden_children, 1, "the level below the cap is folded away");
+        assert_eq!(
+            node.hidden_children, 1,
+            "the level below the cap is folded away"
+        );
         assert_eq!(node.size, 777);
     }
 
@@ -691,7 +741,10 @@ mod tests {
         let mut cb = |t: &Tally, _: &Path| seen.push(t.dirs);
         let scan = scan_local(&root.to_string_lossy(), &cancel, &mut cb).unwrap();
         assert_eq!(scan.dirs, 2);
-        assert!(seen.windows(2).all(|w| w[0] <= w[1]), "dir count only grows");
+        assert!(
+            seen.windows(2).all(|w| w[0] <= w[1]),
+            "dir count only grows"
+        );
     }
 
     // ── Remote `du` parsing ───────────────────────────────────────────────────
@@ -707,7 +760,11 @@ mod tests {
 ";
         let scan = parse_du_output("/srv/app", out).unwrap();
         assert_eq!(scan.root.name, "app");
-        assert_eq!(scan.root.size, 28 * 1024, "the root total is du's, not a re-sum");
+        assert_eq!(
+            scan.root.size,
+            28 * 1024,
+            "the root total is du's, not a re-sum"
+        );
         assert_eq!(scan.dirs, 2); // /srv/app and /srv/app/src
         assert_eq!(scan.files, 2);
 

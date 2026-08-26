@@ -263,7 +263,7 @@ share files and context:
 - Runtime validation: Claude **must not** launch Eldrun (user, 2026-07-29), and
   must not stop an instance it did not start. The user runs the app; Claude
   either asks them to click through and report back, or reuses an already-open
-  window (`src/` edits hot-reload into it). See `CLAUDE.md` § Running.
+  window (`src/` edits hot-reload into it). See `AGENTS.md` § Running.
 
 ---
 

@@ -32,6 +32,125 @@ html, body, #root {
   letter-spacing: 0.02em;
 }
 
+/* ── Launch splash ────────────────────────────────────────────────────── */
+/* The app shell mounts at once, but its initial settings/project reads are
+   asynchronous. Keep a light, branded curtain over that otherwise empty
+   interval so launching Eldrun always has visible feedback. */
+.startup-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  overflow: hidden;
+  color: var(--text-primary, #edf3ff);
+  background:
+    radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--accent, #6c8dff) 22%, transparent), transparent 32rem),
+    var(--bg-main, #101624);
+  transition: opacity 320ms ease, visibility 320ms step-end;
+}
+
+.startup-splash.leaving {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.startup-splash-mark {
+  position: relative;
+  display: grid;
+  width: 104px;
+  height: 104px;
+  place-items: center;
+  animation: startup-splash-arrive 600ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.startup-splash-mark svg {
+  position: relative;
+  z-index: 1;
+  width: 72px;
+  height: 72px;
+  color: var(--logo-color, var(--text-primary, #edf3ff));
+  filter: drop-shadow(0 0 16px color-mix(in srgb, var(--accent, #6c8dff) 55%, transparent));
+}
+
+.startup-splash-orbit {
+  position: absolute;
+  inset: 3px;
+  border: 1px solid color-mix(in srgb, var(--accent, #6c8dff) 52%, transparent);
+  border-radius: 50%;
+  animation: startup-splash-orbit 2.5s linear infinite;
+}
+
+.startup-splash-orbit-two {
+  inset: 14px;
+  border-color: color-mix(in srgb, #c79a45 60%, transparent);
+  animation-direction: reverse;
+  animation-duration: 1.8s;
+}
+
+.startup-splash-name {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: 0.3em;
+  padding-left: 0.3em;
+  animation: startup-splash-arrive 600ms 80ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.startup-splash-message {
+  min-height: 18px;
+  color: var(--text-muted, #9fb0d0);
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  animation: startup-splash-arrive 600ms 140ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.startup-splash-progress {
+  width: 148px;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border-color, #33415e) 80%, transparent);
+}
+
+.startup-splash-progress span {
+  display: block;
+  width: 48%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--accent, #6c8dff), #c79a45, transparent);
+  animation: startup-splash-progress 1.25s ease-in-out infinite;
+}
+
+@keyframes startup-splash-arrive {
+  from { opacity: 0; transform: translateY(10px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes startup-splash-orbit {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes startup-splash-progress {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(215%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .startup-splash,
+  .startup-splash-mark,
+  .startup-splash-name,
+  .startup-splash-message,
+  .startup-splash-orbit,
+  .startup-splash-progress span {
+    animation: none;
+    transition-duration: 0ms;
+  }
+}
+
 /* #42: detached ("pop out") window root. It renders straight into #root, which
    is not a flex container, so `.center-panel`'s `flex: 1` has nothing to grow
    into and the panel collapses around its absolutely-positioned subwindow,
@@ -147,53 +266,132 @@ html, body, #root {
 }
 
 /* ── Global scrollbar baseline ───────────────────────────────────────────
-   ONE consistent thin, themed (bluish) scrollbar on every surface, across
-   WebKitGTK versions. The standard `scrollbar-color`/`scrollbar-width` is the
-   source of truth — it is the one mechanism every WebKitGTK build honors — and
-   the ::-webkit-scrollbar pseudo-elements below only mirror it as a fallback for
-   engines that implement them (inert in most WebKitGTK builds). Both use SOLID
-   themed colors so the bar never falls back to the native light GTK scrollbar
-   (white trough + grey slider), which happens when the track is `transparent`.
-   More specific rules below still win on the surfaces they target. */
+   Every native scrollbar is turned off here, statically, for the whole app;
+   `lib/customScrollbar.ts` paints a square themed thumb over each scroll
+   container instead. That module's header says why the app draws its own bars
+   at all. What matters HERE is why the hiding half cannot live in JS.
+
+   WebKitGTK 2.52 builds a scrollable area's bar once and never rebuilds it when
+   `scrollbar-width` changes afterwards (measured, not assumed). Set statically
+   the property works — 0px gutter. Set from JS on an element that already has a
+   bar it does nothing at all: the 21px native bar stays while `getComputedStyle`
+   reports `none`. So a takeover that hid the bar as it adopted a container could
+   never work; it painted our thumb beside a native bar that had never left,
+   which is exactly the two-scrollbars bug. Elements must be BORN bar-less, and
+   only a rule matching before their first layout does that.
+
+   Two consequences to know before editing anything below:
+     - `scrollbar-width: thin` is parsed but NOT honored on this engine — auto
+       and thin both measure 21px. Asking for a thin native bar gets a fat one.
+     - Any per-surface `scrollbar-width` or `::-webkit-scrollbar` SIZE rule below
+       re-creates a real native bar on that surface and brings the second
+       scrollbar back with it. Don't add one. To suppress the app's own thumb on
+       a strip, set `--eldrun-scrollbar: none` (see below) instead.
+
+   The ::-webkit-scrollbar half is inert on WebKitGTK whenever `scrollbar-width`
+   is non-auto; it is kept so engines that do implement the pseudo-elements
+   (Chromium/WebView2, older Safari) hide their bars too. */
 * {
-  scrollbar-width: thin;
-  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: none;
 }
 
 *::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* How the stylesheet tells `lib/customScrollbar.ts` "this strip scrolls and
+   shows nothing at all" — the tab strip, the project pill row, the address
+   display. It replaces the old signal, `scrollbar-width: none`, which stopped
+   distinguishing anything the moment the rule above made that the value
+   everywhere. Registered rather than used raw so it does NOT inherit: an
+   opted-out strip must not silently mute the thumb of a scroll container that
+   happens to sit inside it. */
+@property --eldrun-scrollbar {
+  syntax: "*";
+  inherits: false;
+  initial-value: auto;
+}
+
+/* xterm hardcodes `overflow-y: scroll` on its viewport, which on an engine that
+   reserves space for a bar pins one there even with no scrollback — the thumb
+   fills the whole track and reads as a solid bar down the right edge. Forcing
+   `auto` keeps the element scroll-capable only when there is something to
+   scroll, which is also what decides whether our own thumb appears. No
+   `scrollbar-width` here on purpose: naming one would re-create the native bar
+   this element is the worst place to have (see the baseline above). */
+.xterm-viewport {
+  overflow-y: auto !important;
+}
+
+/* ── Custom (square) scrollbars ─────────────────────────────────────────
+   The thumbs `lib/customScrollbar.ts` paints. Read that module's header for
+   why the app draws its own bars at all; the short of it is that WebKitGTK
+   honors only `scrollbar-width`/`scrollbar-color`, and neither can square a
+   corner. Everything here is positioning and colour — the module owns when a
+   thumb exists, how long it is and where it sits.
+
+   The layer spans the window and never eats a click; individual thumbs turn
+   `pointer-events` back on only while they are actually shown, so a hidden
+   thumb can't swallow a press meant for the content under it. */
+.eldrun-scrollbar-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  pointer-events: none;
+}
+
+.eldrun-scrollbar-thumb {
+  position: fixed;
+  top: 0;
+  left: 0;
+  box-sizing: border-box;
+  /* Same inset trick the native bar used: a transparent border plus
+     padding-box clipping paints a 4px bar inside an 8px hit target, so the
+     thumb stays easy to grab without reading as a heavy slab. */
+  border: 2px solid transparent;
+  background-color: var(--scrollbar-thumb);
+  background-clip: padding-box;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.eldrun-scrollbar-vertical {
   width: 8px;
+}
+
+.eldrun-scrollbar-horizontal {
   height: 8px;
 }
 
-*::-webkit-scrollbar-track {
-  background: var(--scrollbar-track);
-}
-
-*::-webkit-scrollbar-thumb {
-  background-color: var(--scrollbar-thumb);
-  border: 2px solid var(--scrollbar-track);
-  background-clip: padding-box;
-  border-radius: var(--radius);
-}
-
-*::-webkit-scrollbar-thumb:hover {
+.eldrun-scrollbar-thumb:hover,
+.eldrun-scrollbar-thumb.dragging {
   background-color: var(--scrollbar-thumb-hover);
 }
 
-*::-webkit-scrollbar-corner {
-  background: var(--scrollbar-track);
+/* A drag that starts on the thumb must not select the text it passes over. */
+body.eldrun-scrollbar-dragging {
+  user-select: none;
 }
 
-/* xterm's viewport has a pure-black background and hardcodes `overflow-y: scroll`,
-   which paints an always-present scrollbar — with no scrollback the thumb fills
-   the whole track and reads as a solid accent bar down the right edge. Force
-   `auto` so the bar only appears when there's actually something to scroll. The
-   thumb inherits the same standard scrollbar-color as everything else so its bar
-   matches (a themed bluish thumb on a themed track). */
-.xterm-viewport {
-  overflow-y: auto !important;
-  scrollbar-width: thin;
-  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+/* Set by the module on every container it has taken over. Belt and braces: the
+   baseline above already hides every native bar, so this changes nothing in the
+   normal case. It earns its place as the one rule that cannot be beaten — a
+   later rule of equal specificity wins over an earlier one, and that is how a
+   per-surface `::-webkit-scrollbar { width: 8px }` thousands of lines down used
+   to resurrect a bar under our thumb. `!important` closes that door for good,
+   on the containers we are actually painting.
+
+   It is not a substitute for the static baseline: by the time this attribute is
+   set the element already exists, and on WebKitGTK a scrollbar that exists is
+   never rebuilt. It hides nothing that was not already hidden. */
+[data-eldrun-scrollbar] {
+  scrollbar-width: none !important;
+}
+
+[data-eldrun-scrollbar]::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
 }
 
 /* ── Activity calendar color levels (shared across themes) ──────────── */
@@ -296,11 +494,17 @@ html, body, #root {
      of these tokens, so the app-wide feel flips from here: --radius-sm for
      small controls (inputs, buttons, chips), --radius for panels/cards/menus,
      --radius-lg for dialogs and large surfaces, --radius-full for circles and
-     pill shapes. Defined once on :root (not per theme); a theme that wants the
-     old sharp-corner house style can override these to 0 in its own block. */
-  --radius-sm: 5px;
-  --radius: 8px;
-  --radius-lg: 12px;
+     pill shapes. Defined once on :root (not per theme); a theme that wants
+     rounded controls back can override these in its own block.
+     The house style is SQUARE for anything a pointer acts on: buttons, inputs
+     and chips (--radius-sm), the popover/menu surfaces and cards that read
+     --radius, and the dialog/overlay shells on --radius-lg are all
+     flat-cornered, so a menu, the overlay behind it and the buttons inside
+     both share one edge. Only shapes where the round IS the affordance
+     (--radius-full pills, 50% circles) still curve. */
+  --radius-sm: 0px;
+  --radius: 0px;
+  --radius-lg: 0px;
   --radius-full: 999px;
   /* Elevation scale. Depth is expressed by surface tone (--bg-main < --bg-panel
      < --bg-elevated) plus these soft layered shadows — not by loud borders.
@@ -365,7 +569,6 @@ html, body, #root {
   --glass-panel: rgba(20, 30, 52, 0.6);
   --glass-elevated: rgba(22, 32, 56, 0.94);
   --glass-header: linear-gradient(90deg, rgba(16, 22, 36, 0.55) 0%, rgba(22, 33, 58, 0.55) 48%, rgba(36, 23, 53, 0.55) 100%);
-  --glass-border: rgba(255, 255, 255, 0.14);
 }
 
 /* ── Theme: dark (plain dark) ────────────────────────────────────────── */
@@ -546,7 +749,6 @@ html, body, #root {
   --glass-panel: rgba(242, 239, 250, 0.58);
   --glass-elevated: rgba(248, 246, 253, 0.95);
   --glass-header: rgba(242, 239, 250, 0.5);
-  --glass-border: rgba(255, 255, 255, 0.75);
 }
 
 /* ── Glass chrome (fancy_dark / light_lavender) ───────────────────────────
@@ -591,7 +793,7 @@ html, body, #root {
 [data-theme="fancy_dark"] .app-header,
 [data-theme="light_lavender"] .app-header {
   background: var(--glass-header);
-  box-shadow: inset 0 -1px 0 var(--glass-border), 0 8px 24px -16px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 8px 24px -16px rgba(0, 0, 0, 0.4);
 }
 
 /* The right-side file panel is fully opaque even in the glass themes: it floats
@@ -607,7 +809,6 @@ html, body, #root {
 [data-theme="fancy_dark"] .tab-bar,
 [data-theme="light_lavender"] .tab-bar {
   background-color: var(--glass-panel);
-  box-shadow: inset 0 1px 0 var(--glass-border);
 }
 
 [data-theme="fancy_dark"] .subwindow-files,
@@ -626,14 +827,16 @@ html, body, #root {
 [data-theme="fancy_dark"] .stats-dialog,
 [data-theme="light_lavender"] .stats-dialog {
   background: var(--glass-elevated);
-  border-color: var(--glass-border);
-  /* Keep the accent top rail even though border-color above just reset every
-     edge to --glass-border — the rail is what ties a glass dialog back to the
-     header's tint. */
-  border-top-color: var(--accent);
-  box-shadow: var(--shadow-3), inset 0 1px 0 var(--glass-border);
+  /* Glass fill only — no lit frame. The near-white hairline these surfaces used
+     to wear read as a stray outline rather than a lit edge, so the glass themes
+     now keep the shared --border-color edge and the accent top rail from the
+     base rule, and depth comes from the elevation shadow alone. */
+  box-shadow: var(--shadow-3);
 }
 
+/* Menus take the glass fill; like the dialogs above they carry no frame of
+   their own — only the elevation shadow and the accent rail from the shared
+   surface rule. */
 [data-theme="fancy_dark"] .context-menu,
 [data-theme="light_lavender"] .context-menu,
 [data-theme="fancy_dark"] .tab-new-menu,
@@ -641,9 +844,8 @@ html, body, #root {
 [data-theme="fancy_dark"] .project-switcher-add-menu,
 [data-theme="light_lavender"] .project-switcher-add-menu {
   background: var(--glass-elevated);
-  border-color: var(--glass-border);
   border-top-color: var(--accent);
-  box-shadow: var(--shadow-3), inset 0 1px 0 var(--glass-border);
+  box-shadow: var(--shadow-3);
 }
 
 /* Blur the whole app behind an open dialog too, so a modal reads as one
@@ -845,7 +1047,13 @@ select option {
   padding-left: 78px;
 }
 
-/* ── Window controls (rectangular, colored glyphs) ──────────────────── */
+/* ── Close / window controls (rectangular, colored glyphs) ──────────────
+   ONE close button for the whole app. The window's own close control and every
+   in-app dismiss — the header hover menus' ✕, every dialog's ✕ — are literally
+   the same rules rather than three lookalikes that drift: same 30×22 box, same
+   drawn glyph, same red-tinted hover. Markup still writes a "×" character
+   inside these buttons, which `font-size: 0` below hides in favour of the two
+   drawn bars, so no component had to change to join. */
 .wm-controls {
   display: flex;
   align-items: center;
@@ -853,12 +1061,15 @@ select option {
   flex-shrink: 0;
 }
 
-.wm-btn {
+.wm-btn,
+.vpn-indicator-close,
+.vpn-prompt-close,
+.dialog-close-btn {
   position: relative;
   width: 30px;
   height: 22px;
   padding: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: 1px solid transparent;
   background: transparent;
   cursor: pointer;
@@ -866,12 +1077,22 @@ select option {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Hides the literal "×" the in-app buttons carry as a text child; the glyph
+     is drawn by the ::before/::after bars below, which have fixed pixel sizes
+     and so are untouched by it. */
+  font-size: 0;
   transition: background-color var(--transition), border-color var(--transition),
     transform var(--transition);
 }
 
-.wm-btn:active { transform: scale(0.92); }
-.wm-btn:focus-visible {
+.wm-btn:active,
+.vpn-indicator-close:active,
+.vpn-prompt-close:active,
+.dialog-close-btn:active { transform: scale(0.92); }
+.wm-btn:focus-visible,
+.vpn-indicator-close:focus-visible,
+.vpn-prompt-close:focus-visible,
+.dialog-close-btn:focus-visible {
   outline: 2px solid var(--accent, #58a6ff);
   outline-offset: 2px;
 }
@@ -884,7 +1105,10 @@ select option {
   background: color-mix(in srgb, var(--wm-maximize) 20%, transparent);
   border-color: color-mix(in srgb, var(--wm-maximize) 45%, transparent);
 }
-.wm-close:hover {
+.wm-close:hover,
+.vpn-indicator-close:hover,
+.vpn-prompt-close:hover,
+.dialog-close-btn:hover {
   background: color-mix(in srgb, var(--wm-close) 26%, transparent);
   border-color: color-mix(in srgb, var(--wm-close) 55%, transparent);
 }
@@ -909,7 +1133,13 @@ select option {
 
 /* Close glyph: an × from two crossed bars. */
 .wm-close::before,
-.wm-close::after {
+.wm-close::after,
+.vpn-indicator-close::before,
+.vpn-indicator-close::after,
+.vpn-prompt-close::before,
+.vpn-prompt-close::after,
+.dialog-close-btn::before,
+.dialog-close-btn::after {
   content: "";
   position: absolute;
   width: 12px;
@@ -917,8 +1147,14 @@ select option {
   border-radius: 1px;
   background: var(--wm-close);
 }
-.wm-close::before { transform: rotate(45deg); }
-.wm-close::after { transform: rotate(-45deg); }
+.wm-close::before,
+.vpn-indicator-close::before,
+.vpn-prompt-close::before,
+.dialog-close-btn::before { transform: rotate(45deg); }
+.wm-close::after,
+.vpn-indicator-close::after,
+.vpn-prompt-close::after,
+.dialog-close-btn::after { transform: rotate(-45deg); }
 
 /* ── App logo ────────────────────────────────────────────────────────── */
 /* The star inside the root-terminal pill (the pill itself is .root-pill, down
@@ -1287,7 +1523,7 @@ select option {
   background: var(--bg-elevated, var(--bg-panel));
   color: var(--text-primary);
   cursor: pointer;
-  border-radius: 7px;
+  border-radius: var(--radius);
 }
 
 .presentation-fab {
@@ -1308,7 +1544,7 @@ select option {
   gap: 4px;
   padding: 5px;
   border: 1px solid var(--border-color);
-  border-radius: 9px;
+  border-radius: var(--radius);
   background: var(--bg-elevated, var(--bg-panel));
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
 }
@@ -1379,7 +1615,7 @@ select option {
   width: 190px;
   padding: 10px;
   border: 1px solid var(--border-color);
-  border-radius: 9px;
+  border-radius: var(--radius);
   background: var(--bg-elevated, var(--bg-panel));
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
 }
@@ -1411,7 +1647,7 @@ select option {
 
 .presentation-preview {
   width: 100%;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   min-height: 4px;
 }
 
@@ -2787,7 +3023,7 @@ select option {
 
 .yaml-card {
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-md, 8px);
+  border-radius: var(--radius);
   background: var(--bg-panel);
   overflow: hidden;
 }
@@ -3026,7 +3262,7 @@ select option {
   background: transparent;
   border: 0;
   padding: 2px 6px;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   color: var(--text-muted);
   font: inherit;
   cursor: pointer;
@@ -3207,7 +3443,7 @@ select option {
 .bib-card {
   border: 1px solid var(--border-color);
   border-left: 2px solid color-mix(in srgb, var(--accent, #4493f8) 55%, transparent);
-  border-radius: var(--radius-md, 8px);
+  border-radius: var(--radius);
   background: var(--bg-panel);
   overflow: hidden;
 }
@@ -4271,7 +4507,7 @@ select option {
   gap: 3px;
   padding: 0 7px;
   border: 1px solid;
-  border-radius: 9px;
+  border-radius: var(--radius);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.02em;
@@ -5054,7 +5290,7 @@ select option {
 /* pdf.js viewer: a zoom toolbar above a scrolling stack of page canvases. The
    host and scroll surround use theme variables, so the viewer is dark in dark
    themes; the page canvases stay white sheets (rendered as authored). The scroll
-   area's scrollbar is themed by the global *::-webkit-scrollbar rules. */
+   area shows the app's own thumb, like every other scroll surface. */
 .file-viewer-pdf-host {
   display: flex;
   flex-direction: column;
@@ -6079,7 +6315,7 @@ select option {
   background: color-mix(in srgb, var(--danger, #f85149) 10%, var(--bg-panel, #fff));
   border: 1px solid color-mix(in srgb, var(--danger, #f85149) 45%, transparent);
   border-left: 3px solid var(--danger, #f85149);
-  border-radius: var(--radius-md, 8px);
+  border-radius: var(--radius);
 }
 
 /* Card header: warning glyph + "Compilation failed", with the error count as a
@@ -7366,14 +7602,6 @@ select option {
   }
 }
 
-.right-panel-scroll,
-.file-browser-main,
-.file-browser-sidebar,
-.project-search-popover,
-.settings-dialog {
-  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
-  scrollbar-width: thin;
-}
 
 /* Custom-agent manage dialog (new-tab menu → Agents → "＋ Add agent…") */
 .custom-agent-dialog {
@@ -7393,7 +7621,7 @@ select option {
   align-items: center;
   gap: 8px;
   padding: 4px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--bg-elevated, rgba(127, 127, 127, 0.08));
 }
 .custom-agent-row-label {
@@ -7416,7 +7644,7 @@ select option {
   letter-spacing: 0.04em;
   color: var(--accent);
   border: 1px solid var(--accent);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 0 5px;
   opacity: 0.85;
 }
@@ -7429,7 +7657,7 @@ select option {
   font-size: 0.78em;
   line-height: 1;
   padding: 3px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 .custom-agent-install:hover {
   background: var(--accent);
@@ -7450,7 +7678,7 @@ select option {
   font-size: 1.05em;
   line-height: 1;
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 .custom-agent-remove:hover:not(:disabled) {
   color: var(--danger, #e5534b);
@@ -7477,7 +7705,7 @@ select option {
 }
 .custom-agent-field input {
   padding: 6px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   border: 1px solid var(--border, rgba(127, 127, 127, 0.3));
   background: var(--bg-main);
   color: var(--text-primary);
@@ -7796,49 +8024,6 @@ select option {
   font-weight: 600;
 }
 
-.right-panel-scroll::-webkit-scrollbar,
-.file-browser-main::-webkit-scrollbar,
-.file-browser-sidebar::-webkit-scrollbar,
-.project-search-popover::-webkit-scrollbar,
-.settings-dialog::-webkit-scrollbar {
-  width: 7px;
-  height: 7px;
-}
-
-.right-panel-scroll::-webkit-scrollbar-track,
-.file-browser-main::-webkit-scrollbar-track,
-.file-browser-sidebar::-webkit-scrollbar-track,
-.project-search-popover::-webkit-scrollbar-track,
-.settings-dialog::-webkit-scrollbar-track {
-  background: var(--scrollbar-track);
-}
-
-.right-panel-scroll::-webkit-scrollbar-thumb,
-.file-browser-main::-webkit-scrollbar-thumb,
-.file-browser-sidebar::-webkit-scrollbar-thumb,
-.project-search-popover::-webkit-scrollbar-thumb,
-.settings-dialog::-webkit-scrollbar-thumb {
-  background-color: var(--scrollbar-thumb);
-  border: 1px solid var(--scrollbar-track);
-  border-radius: 0;
-}
-
-.right-panel-scroll::-webkit-scrollbar-thumb:hover,
-.file-browser-main::-webkit-scrollbar-thumb:hover,
-.file-browser-sidebar::-webkit-scrollbar-thumb:hover,
-.project-search-popover::-webkit-scrollbar-thumb:hover,
-.settings-dialog::-webkit-scrollbar-thumb:hover {
-  background-color: var(--scrollbar-thumb-hover);
-}
-
-.right-panel-scroll::-webkit-scrollbar-corner,
-.file-browser-main::-webkit-scrollbar-corner,
-.file-browser-sidebar::-webkit-scrollbar-corner,
-.project-search-popover::-webkit-scrollbar-corner,
-.settings-dialog::-webkit-scrollbar-corner {
-  background: var(--scrollbar-track);
-}
-
 .right-panel-header {
   display: flex;
   align-items: center;
@@ -7860,6 +8045,65 @@ select option {
    the rightmost actions never get pushed off the panel's right edge. */
 .right-panel-header > button {
   flex-shrink: 0;
+}
+
+/* Per-project Eldrun Mobile opt-in. Shown only while the local Mobile host is
+   live, so this control never suggests a project is reachable from a stopped
+   companion service. Kept visually apart from the `.pill-popup-tag` chips on
+   the same row: those are static labels (pill, uppercase, tinted by kind),
+   this is a switch, so it takes the square icon-button shape the header's
+   other actions use. Off draws a slash through the phone; on lights it green,
+   the same language as the header's Mobile host indicator. */
+.right-panel-mobile-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: var(--radius-sm, 4px);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-tertiary, var(--text-secondary));
+  opacity: 0.7;
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+}
+
+.right-panel-mobile-btn:hover:not(:disabled) {
+  opacity: 1;
+  color: var(--accent, #89b4fa);
+  border-color: var(--border-subtle);
+  background: var(--bg-hover, rgba(127, 127, 127, 0.15));
+}
+
+.right-panel-mobile-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.right-panel-mobile-btn.on {
+  opacity: 1;
+  color: var(--success, #3fb950);
+  border-color: color-mix(in srgb, var(--success, #3fb950) 45%, transparent);
+  background: color-mix(in srgb, var(--success, #3fb950) 16%, transparent);
+}
+
+.right-panel-mobile-btn-icon {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
+.right-panel-mobile-access-error {
+  flex-basis: 100%;
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
 }
 
 /* Second header row: view switch (Files/Git/Search/Apps) + import/open/settings,
@@ -8801,8 +9045,6 @@ select option {
   overflow: visible;
 }
 
-.project-switcher::-webkit-scrollbar { height: 0; }
-
 /* ── Project pill ────────────────────────────────────────────────────── */
 .project-pill {
   /* Anchors the bottom status-bar strip (.pill-status-bars). */
@@ -9655,9 +9897,10 @@ select option {
   flex: 1 1 auto;
   min-width: 0;
   overflow-x: auto;
-  scrollbar-width: none;
+  /* Scrolls, shows nothing — not even one of the app's own thumbs; overflow is
+     conveyed by the chevrons that flank the strip. */
+  --eldrun-scrollbar: none;
 }
-.tab-strip::-webkit-scrollbar { height: 0; }
 
 /* Chevron buttons that flank the strip when it overflows. */
 .tab-scroll-btn {
@@ -10328,8 +10571,12 @@ select option {
 .project-switcher-add-menu {
   position: relative;
   background: var(--bg-elevated);
-  border: 1px solid var(--border-color);
-  /* Accent top rail, matching the header bar and the dialog chrome above. */
+  /* No boxed outline: a 1px frame around a tinted popover reads as a stray
+     hairline ring drawn around the accent wash below, not as an edge. The
+     elevation shadow is what separates the menu from what it floats over; the
+     accent top rail — matching the header bar and the dialog chrome above — is
+     the only edge that carries meaning. */
+  border: 0;
   border-top: 2px solid var(--accent);
   border-radius: var(--radius);
   box-shadow: var(--shadow-3);
@@ -10363,6 +10610,14 @@ select option {
   display: flex;
   flex-direction: column;
   gap: 1px;
+}
+
+/* The compact Agents & CLIs menu keeps its quick picks put. “More…” opens this
+   neighbouring list instead, positioned in JS to the side with room. */
+.tab-new-menu-more {
+  z-index: 101;
+  min-width: 180px;
+  max-height: calc(100vh - 16px);
 }
 
 /* ── Unified scrolling-menu shape ───────────────────────────────────────────
@@ -10883,7 +11138,7 @@ select option {
   color: var(--text-primary);
   background: var(--bg-main);
   border: 1px solid var(--accent);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   outline: none;
 }
 
@@ -11523,7 +11778,7 @@ select option {
   font-size: 10px;
   line-height: 1;
   padding: 2px 5px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   border: 1px solid var(--border-color);
   color: var(--text-secondary, var(--text-primary));
 }
@@ -11669,7 +11924,7 @@ select option {
   margin-left: 5px;
   padding: 0;
   border: 1px solid color-mix(in srgb, var(--success, #3fb950) 72%, transparent);
-  border-radius: 2px;
+  border-radius: var(--radius-sm);
   background:
     linear-gradient(135deg, transparent 3px, color-mix(in srgb, var(--success, #3fb950) 10%, transparent) 0)
     top left;
@@ -11725,7 +11980,7 @@ select option {
   font-size: 10px;
   line-height: 1;
   padding: 2px 5px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   border: 1px solid var(--border-color);
   background: transparent;
   color: var(--text-muted, var(--text-secondary));
@@ -12958,6 +13213,21 @@ select option {
   display: flex;
   align-items: center;
   flex-shrink: 0;
+  /* Span the full 40px header row whatever the surrounding cluster does with
+     its children (.header-center stretches them, .header-left/.header-right
+     center them). The button inside stays vertically centered either way — what
+     this buys is that `top: 100%` on the menu below means "the bottom edge of
+     the top bar" for EVERY header menu, not "the bottom edge of a 32px button
+     floating somewhere in it". */
+  align-self: stretch;
+}
+
+/* Header hover menus hang directly off the bar: no gap between the top bar and
+   the menu, so the two read as one surface unfolding rather than a card
+   floating under the header. (The tab-strip "+" menu keeps its 4px offset —
+   it opens inside a subwindow, not off the app's top edge.) */
+.global-apps-menu .tab-new-menu {
+  top: 100%;
 }
 
 /* Flush with the header at rest (same background as .app-header, no boxed
@@ -13133,7 +13403,7 @@ select option {
   /* Overflow is conveyed solely by the left/right chevron buttons (toggled from
      JS via the overflow-* classes); a vertical mouse wheel also scrolls this
      horizontally in the webview, so no edge fade or visible scrollbar is used. */
-  scrollbar-width: none; /* Firefox/standard — hide the bar */
+  --eldrun-scrollbar: none; /* no native bar, and no app-painted thumb either */
   -ms-overflow-style: none;
 }
 
@@ -13181,12 +13451,6 @@ select option {
   display: flex;
 }
 
-/* Hidden scrollbar — overflow is conveyed by the on-bar chevrons above and
-   wheel scrolling, keeping the pills at full height inside the 40px row. */
-.project-pills-scroll::-webkit-scrollbar {
-  height: 0;
-}
-
 .project-pill {
   height: 40px;
   max-width: 180px;
@@ -13194,6 +13458,37 @@ select option {
 
 .project-pill .pill-main {
   gap: 6px;
+}
+
+/* Trash is Eldrun's fixed disposable-agent workspace, not a user-named
+   project. Give it the same compact, icon-only reading as the fixed root
+   terminal pill while preserving its hover title, accessible name and status
+   strip. */
+.project-pill.trash-project-pill {
+  width: 42px;
+  max-width: 42px;
+}
+
+.trash-project-pill .pill-main {
+  justify-content: center;
+  padding: 0;
+}
+
+.trash-project-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.trash-project-pill:hover .trash-project-icon,
+.trash-project-pill.active .trash-project-icon {
+  color: var(--text-primary);
+}
+
+.trash-project-pill .pill-status-bars {
+  left: 3px;
+  right: 3px;
 }
 
 .project-pill-label {
@@ -13384,8 +13679,8 @@ select option {
   flex-shrink: 0;
   /* `.project-switcher` centers its children (like `.header-right` does for
      VPN/Machines), so this wrap would otherwise shrink to its 40px button and
-     place `top: calc(100% + 4px)` above the header-right menus' shared line.
-     Stretch to the full header row and re-center the button inside it, mirroring
+     place its menu above the header menus' shared line. Stretch to the full
+     header row and re-center the button inside it, mirroring
      `.header-status-menu-anchor`. */
   display: flex;
   align-items: center;
@@ -13395,7 +13690,8 @@ select option {
 .project-switcher-add-menu {
   position: absolute;
   left: 0;
-  top: calc(100% + 4px);
+  /* Flush with the bar's bottom edge, like the header hover menus. */
+  top: 100%;
   min-width: 150px;
   display: flex;
   flex-direction: column;
@@ -13456,9 +13752,13 @@ select option {
   flex-direction: column;
   gap: 12px;
   background: var(--bg-elevated);
-  border: 1px solid var(--border-color);
-  /* Accent top rail, matching the header's new tint — every dialog reads as
-     belonging to the same themed chrome, with no per-dialog exceptions. */
+  /* No boxed outline, same as the popover menus: a 1px frame drawn around the
+     accent wash reads as a pale stripe running outside the dialog rather than
+     as its edge, and it is the elevation shadow that actually separates a modal
+     from the app behind it. The accent top rail — matching the header's tint, so
+     every dialog reads as the same themed chrome, with no per-dialog exceptions
+     — is the only edge left that carries meaning. */
+  border: 0;
   border-top: 3px solid var(--accent);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-3);
@@ -13485,47 +13785,13 @@ select option {
   border-radius: inherit;
 }
 
-/* The scrollbar track on every accent-washed menu/dialog surface. The generic
-   --scrollbar-track (a flat --bg-panel) sits as a visibly different, un-tinted
-   patch against these tinted backgrounds — but a solid color-mix (32% accent
-   over --bg-elevated) can't match either: the real surface is a background PLUS
-   the ::before accent-wash overlay, and in the glass themes it is a translucent
-   --glass-elevated over a backdrop blur that no solid colour equals. So the
-   track is `transparent` — the gutter shows the true washed surface behind it,
-   an exact match in every theme. The thumb stays the global --scrollbar-thumb,
-   and its inset border goes transparent too (else it rings the thumb in the old
-   mismatched tint). */
-.context-menu,
-.tab-new-menu,
-.menu-scroll-region,
-.project-switcher-add-menu,
-.project-dialog,
-.settings-dialog .dialog-scroll,
-.dialog-framed .dialog-scroll,
-.stats-dialog {
-  scrollbar-color: var(--scrollbar-thumb) transparent;
-}
-.context-menu::-webkit-scrollbar-track,
-.tab-new-menu::-webkit-scrollbar-track,
-.menu-scroll-region::-webkit-scrollbar-track,
-.project-switcher-add-menu::-webkit-scrollbar-track,
-.project-dialog::-webkit-scrollbar-track,
-.settings-dialog .dialog-scroll::-webkit-scrollbar-track,
-.dialog-framed .dialog-scroll::-webkit-scrollbar-track,
-.stats-dialog::-webkit-scrollbar-track {
-  background: transparent;
-}
-.context-menu::-webkit-scrollbar-thumb,
-.tab-new-menu::-webkit-scrollbar-thumb,
-.menu-scroll-region::-webkit-scrollbar-thumb,
-.project-switcher-add-menu::-webkit-scrollbar-thumb,
-.project-dialog::-webkit-scrollbar-thumb,
-.settings-dialog .dialog-scroll::-webkit-scrollbar-thumb,
-.dialog-framed .dialog-scroll::-webkit-scrollbar-thumb,
-.stats-dialog::-webkit-scrollbar-thumb {
-  background-color: var(--scrollbar-thumb);
-  border-color: transparent;
-}
+/* These accent-washed menu/dialog surfaces used to need their own scrollbar
+   track: the generic one (a flat --bg-panel) read as an un-tinted patch against
+   the tint, and no solid colour could match a background PLUS a ::before wash —
+   let alone the glass themes' translucent surface over a backdrop blur. The
+   answer was a `transparent` track, so the gutter showed the true surface
+   through it. The app's own thumbs made the whole question moot: there is no
+   track any more, only a thumb floating over the surface itself. */
 
 .project-dialog {
   width: min(680px, calc(100vw - 32px));
@@ -13664,11 +13930,14 @@ select option {
   padding: 16px 24px 10px;
 }
 
-.dialog-close-btn,
-.settings-title-row button,
-.settings-link-row button,
-.global-app-settings-row button,
-.filetype-settings-row button {
+/* Ordinary labelled row buttons. `:not(.dialog-close-btn)` because the ✕ that
+   sits in most `.settings-title-row`s is the app close button now (see the
+   Close / window controls section), and a descendant selector would otherwise
+   outrank that rule and box it back up. */
+.settings-title-row button:not(.dialog-close-btn),
+.settings-link-row button:not(.dialog-close-btn),
+.global-app-settings-row button:not(.dialog-close-btn),
+.filetype-settings-row button:not(.dialog-close-btn) {
   border: 1px solid var(--control-border);
   border-radius: var(--radius-sm);
   background: var(--control-bg);
@@ -13677,11 +13946,10 @@ select option {
   padding: 7px 10px;
 }
 
-.dialog-close-btn:hover,
-.settings-title-row button:hover,
-.settings-link-row button:hover,
-.global-app-settings-row button:hover,
-.filetype-settings-row button:hover {
+.settings-title-row button:not(.dialog-close-btn):hover,
+.settings-link-row button:not(.dialog-close-btn):hover,
+.global-app-settings-row button:not(.dialog-close-btn):hover,
+.filetype-settings-row button:not(.dialog-close-btn):hover {
   background: var(--control-hover-bg);
   border-color: var(--accent);
 }
@@ -14392,6 +14660,175 @@ select option {
   line-height: 1.35;
 }
 
+/* Eldrun Mobile: keep the Tailscale setup close to the fields it configures,
+   without making the normal settings card visually read as a warning. */
+.mobile-settings-guide {
+  margin: 4px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 4%, var(--control-bg));
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.mobile-phone-install {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 6px 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border-subtle));
+  border-radius: var(--radius-sm);
+  background: linear-gradient(110deg, color-mix(in srgb, var(--accent) 11%, var(--control-bg)), var(--control-bg));
+}
+
+.mobile-phone-install strong {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.mobile-phone-install p {
+  max-width: 530px;
+  margin: 3px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.mobile-phone-install-button {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 76%, var(--control-border));
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mobile-phone-install-button:hover {
+  filter: brightness(1.08);
+}
+
+/* A compact, actionable summary of the checks Eldrun itself can make. It does
+   not pretend to verify tailnet account policy or the physical phone. */
+.mobile-security-health {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--control-border);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-panel) 85%, transparent);
+}
+
+.mobile-security-health.good { border-left-color: var(--success, #59b777); }
+.mobile-security-health.danger { border-left-color: var(--danger, #df7280); }
+.mobile-security-health.off { border-left-color: var(--text-muted); }
+
+.mobile-security-health strong { color: var(--text-primary); font-size: 12px; }
+.mobile-security-health p { margin: 2px 0 0; color: var(--text-secondary); font-size: 11px; }
+.mobile-security-health button { flex: 0 0 auto; }
+
+@media (max-width: 560px) {
+  .mobile-phone-install {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .mobile-security-health {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+.mobile-settings-guide summary {
+  color: var(--text-primary);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mobile-settings-guide-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-top: 7px;
+}
+
+.mobile-settings-guide-body p {
+  margin: 0;
+}
+
+.mobile-settings-guide-body ol {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.mobile-settings-guide code {
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+}
+
+.mobile-settings-guide-command {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin: 5px 0;
+  padding: 4px 6px;
+  overflow-wrap: anywhere;
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+
+.mobile-settings-guide-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.mobile-settings-guide-actions button {
+  padding: 3px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.mobile-settings-guide-actions button:hover {
+  border-color: var(--accent);
+}
+
+.mobile-settings-guide a {
+  width: fit-content;
+  color: var(--accent);
+}
+
+/* Keep the per-project Mobile access controls from making global settings grow
+   with every project, while retaining quick access to a specific project. */
+.mobile-project-access-search {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.mobile-project-access-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
 /* Archived-projects (Settings) list */
 .archived-projects-list {
   list-style: none;
@@ -14695,7 +15132,7 @@ select option {
    decision, and the dialog's other rows are independent knobs. */
 .project-dialog .container-scope-fieldset {
   border: 1px solid var(--border-subtle, var(--border));
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 8px 12px 10px;
   margin: 0 0 4px;
   display: flex;
@@ -14875,30 +15312,6 @@ select option {
 /* The project (or `.ovpn`) name inside the prose line — see `.vpn-prompt-text`. */
 .vpn-prompt-name {
   overflow-wrap: anywhere;
-}
-
-.vpn-prompt-close {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-primary);
-  font-size: 17px;
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0.7;
-  transition: background var(--transition), opacity var(--transition);
-}
-
-.vpn-prompt-close:hover {
-  opacity: 1;
-  background: color-mix(in srgb, currentColor 18%, transparent);
 }
 
 .vpn-prompt-actions {
@@ -15506,7 +15919,7 @@ select option {
   align-items: center;
   padding: 0 5px;
   border: 1px solid var(--accent);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -15540,7 +15953,7 @@ select option {
 .hpc-guard-badge {
   padding: 0 5px;
   border: 1px solid var(--accent);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -15566,7 +15979,7 @@ select option {
 .remote-usage-careful {
   padding: 6px 8px;
   border-left: 3px solid var(--accent);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--bg-subtle, rgba(127, 127, 127, 0.08));
   font-size: 11px;
   line-height: 1.5;
@@ -16790,7 +17203,7 @@ select option {
   color: var(--text-secondary);
   font-size: 11px;
   cursor: pointer;
-  border-radius: 2px;
+  border-radius: var(--radius-sm);
   transition: background var(--transition), border-color var(--transition), color var(--transition);
 }
 
@@ -17484,7 +17897,7 @@ select option {
   /* Coloured left gutter — the app's existing "this is a notice" idiom
      (`.ollama-install-cmd`), and what carries the phase at a glance. */
   border-left: 3px solid var(--accent);
-  border-radius: var(--radius-md, 6px);
+  border-radius: var(--radius);
   background: var(--control-bg);
 }
 .local-model-autostart-note.saver {
@@ -17751,7 +18164,7 @@ select option {
   margin: 4px 10px 6px;
   padding: 8px 10px;
   border: 1px solid var(--warning, #d08a2c);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: color-mix(in srgb, var(--warning, #d08a2c) 10%, transparent);
   display: flex;
   flex-direction: column;
@@ -17768,7 +18181,7 @@ select option {
 .local-model-igpu-fix {
   align-self: flex-start;
   border: 1px solid var(--warning, #d08a2c);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 3px 8px;
   font-size: 12px;
 }
@@ -18317,7 +18730,7 @@ select option {
 .vpn-prompt-reason {
   margin: 4px 0 2px;
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   font-size: 11px;
   line-height: 1.45;
   color: var(--text-secondary);
@@ -18330,7 +18743,7 @@ select option {
   gap: 6px;
   margin: 8px 0 2px;
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   font-size: 12px;
   line-height: 1.4;
   color: var(--success);
@@ -18360,14 +18773,15 @@ select option {
    Rides the shared .global-apps-menu / .tab-new-menu chrome so it reads as one
    of the header menus rather than a bespoke widget. */
 .vpn-indicator-btn,
-.machines-indicator-btn {
+.machines-indicator-btn,
+.mobile-indicator-btn {
   /* Unlike the other .global-apps-menu-btn siblings, this one reads as a
      quiet status readout (lamp + label), not a button — so its inherited
      button box (background/border) is stripped back to plain text/icon.
      Height stays the shared 32px (matching the brain/local-model button
-     and every other .global-apps-menu-btn) so the header row's icons align
-     and each menu's dropdown (`top: calc(100% + 4px)`) opens at the same
-     screen height. */
+     and every other .global-apps-menu-btn) so the header row's icons align.
+     The dropdowns line up regardless — they hang off the header's bottom edge
+     (`.global-apps-menu .tab-new-menu`), not off each button. */
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -18379,18 +18793,19 @@ select option {
   background: transparent;
 }
 
-/* The Local Models anchor lives in `.header-center`, whose children stretch to
-   the full header height. VPN and Machines live in the vertically centered right
-   cluster, so their anchors otherwise shrink to the 32px buttons and place the
-   shared `top: calc(100% + 4px)` menu 6px too high. Stretch only these two
-   anchors so all three hover menus begin on the same horizontal line. */
+/* Kept as an explicit marker on the right-cluster anchors (VPN, Machines,
+   Mobile), whose parent centers its children. `.global-apps-menu` now stretches
+   every header anchor for the same reason — all the hover menus have to begin
+   on one horizontal line, the bar's bottom edge — so this only restates it. */
 .header-status-menu-anchor {
   align-self: stretch;
 }
 .vpn-indicator-btn:hover,
 .vpn-indicator-btn[aria-expanded="true"],
 .machines-indicator-btn:hover,
-.machines-indicator-btn[aria-expanded="true"] {
+.machines-indicator-btn[aria-expanded="true"],
+.mobile-indicator-btn:hover,
+.mobile-indicator-btn[aria-expanded="true"] {
   /* Same accent-tinted highlight as .tab-new-btn:hover (the + button), so the
      header's three "quiet until touched" controls (+, VPN, Machines) all light
      up the same way instead of these two staying flat while the + brightens. */
@@ -18411,6 +18826,73 @@ select option {
   letter-spacing: 0.04em;
   transition: color var(--transition);
 }
+.mobile-indicator-btn {
+  justify-content: center;
+  width: 25px;
+  padding-inline: 3px;
+}
+.mobile-indicator-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--text-secondary);
+}
+.mobile-indicator-icon.connected { color: var(--success); }
+.mobile-indicator-icon.connecting { color: var(--warning); }
+.mobile-indicator-icon.error { color: var(--danger); }
+.mobile-indicator-icon-dot {
+  stroke: var(--bg);
+  stroke-width: 1px;
+}
+.mobile-indicator-menu {
+  width: 268px;
+  color: var(--text-primary);
+}
+.mobile-indicator-body {
+  padding: 10px;
+}
+.mobile-indicator-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.mobile-indicator-status > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.mobile-indicator-status span,
+.mobile-indicator-origin {
+  color: var(--text-secondary);
+}
+.mobile-indicator-origin,
+.mobile-indicator-error,
+.mobile-indicator-notice {
+  margin-top: 8px;
+  font-family: var(--mono-font, monospace);
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.mobile-indicator-error { color: var(--danger, var(--text-primary)); }
+.mobile-indicator-notice { color: var(--success, var(--text-primary)); }
+.mobile-indicator-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.mobile-indicator-actions .vpn-indicator-connect { margin-top: 0; }
+.mobile-indicator-actions .mobile-indicator-lockdown {
+  color: var(--danger, #df7280);
+  border-color: color-mix(in srgb, var(--danger, #df7280) 60%, var(--control-border));
+}
+.mobile-indicator-actions .mobile-indicator-lockdown:hover {
+  background: color-mix(in srgb, var(--danger, #df7280) 14%, transparent);
+}
 /* Title row carries the pinned "OpenVPN" label plus a top-right × (unified with the
    other menus). The label keeps its accent styling; the row just lays the two out. */
 .vpn-indicator-title {
@@ -18419,32 +18901,10 @@ select option {
   justify-content: space-between;
   gap: 8px;
 }
-.vpn-indicator-close {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: inherit;
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0.75;
-  transition: background var(--transition), opacity var(--transition);
-}
-.vpn-indicator-close:hover {
-  opacity: 1;
-  background: color-mix(in srgb, currentColor 18%, transparent);
-}
 .vpn-indicator-menu {
   width: 268px;
   color: var(--text-primary);
-  /* Anchored under the header bar (top: calc(100% + 4px)) — with enough
+  /* Anchored flush under the header bar (top: 100%) — with enough
      rows (many global machines, or many stored .ovpn configs) the menu would
      otherwise grow past the bottom of the window. It is capped here, but the
      menu ELEMENT does not scroll: its `.menu-scroll-region` child does, so the
@@ -18611,7 +19071,7 @@ select option {
   gap: 6px;
   margin: 4px 8px 6px;
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   font-size: 11px;
   line-height: 1.45;
   color: var(--text-primary);
@@ -18915,19 +19375,8 @@ select option {
   max-height: 160px;
   overflow-y: auto;
   padding: 4px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--bg-inset, var(--border, rgba(128, 128, 128, 0.15)));
-  scrollbar-color: var(--scrollbar-thumb)
-    var(--bg-inset, var(--border, rgba(128, 128, 128, 0.15)));
-}
-.machines-io-preview::-webkit-scrollbar-track,
-.machines-io-results::-webkit-scrollbar-track {
-  background: var(--bg-inset, var(--border, rgba(128, 128, 128, 0.15)));
-}
-.machines-io-preview::-webkit-scrollbar-thumb,
-.machines-io-results::-webkit-scrollbar-thumb {
-  background-color: var(--scrollbar-thumb);
-  border-color: var(--bg-inset, var(--border, rgba(128, 128, 128, 0.15)));
 }
 .machines-io-result-row {
   display: flex;
@@ -23425,7 +23874,7 @@ select option {
 .mail-menu-badge {
   flex: 0 0 auto;
   padding: 0 5px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--accent);
   color: var(--bg-panel);
   font-size: 10px;
@@ -23817,25 +24266,12 @@ select option {
   overflow-y: hidden;
   /* A fixed-width column set commonly exceeds the overlay's width (5 seeded
      columns + the add-column tile run past ~1600px), so a right-hand column
-     like Archived routinely sits off screen. WebKitGTK's default scrollbar is
-     an invisible overlay that only appears on hover, which left that overflow
-     with no visible affordance at all — the board looked like it had 4
-     columns and a scrollbar nobody could see. Styling it (as `.project-dialog`
-     already does for its own scroller) forces a classic, always-rendered
-     scrollbar instead. */
-  scrollbar-width: thin;
-  scrollbar-color: var(--scrollbar-thumb) transparent;
-}
-.todo-board::-webkit-scrollbar {
-  height: 10px;
-}
-.todo-board::-webkit-scrollbar-track {
-  background: transparent;
-}
-.todo-board::-webkit-scrollbar-thumb {
-  background-color: var(--scrollbar-thumb);
-  border-radius: 6px;
-  border: transparent;
+     like Archived routinely sits off screen and the board has to SHOW that.
+     This once forced a classic native bar, because WebKitGTK's own is an
+     invisible overlay that appears only on hover. The app's thumbs replaced
+     both: `lib/customScrollbar.ts` paints this scroller's horizontal thumb
+     whenever it overflows and keeps it visible, so the affordance is back
+     without a native bar to double up with. */
 }
 /* While a card is in flight the cards stop answering `elementFromPoint`, so the
    hit-test reaches the `.todo-column` underneath — the same trick
@@ -23852,7 +24288,7 @@ select option {
   min-height: 0;
   background: var(--bg-panel);
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: var(--radius);
 }
 .todo-column-add {
   flex: 0 0 180px;
@@ -23878,7 +24314,7 @@ select option {
   padding: 7px 9px;
   border-top: 3px solid var(--border-subtle);
   border-bottom: 1px solid var(--border-subtle);
-  border-radius: 8px 8px 0 0;
+  border-radius: var(--radius) var(--radius) 0 0;
   flex: 0 0 auto;
 }
 .todo-column-name,
@@ -23924,7 +24360,7 @@ select option {
   padding: 0 4px;
   font-size: 12px;
   color: var(--text-muted);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
 }
 .todo-column-btn:hover {
   color: var(--text-primary);
@@ -23965,7 +24401,7 @@ select option {
   box-sizing: border-box;
   cursor: pointer;
   padding: 5px 7px;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   font-size: 12px;
   color: var(--text-muted);
 }
@@ -23982,7 +24418,7 @@ select option {
   flex-direction: column;
   gap: 5px;
   padding: 7px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--bg-elevated, var(--bg-panel));
   border: 1px solid var(--border-subtle);
   cursor: grab;
@@ -23996,7 +24432,7 @@ select option {
   content: "";
   position: absolute;
   inset: 0;
-  border-radius: 6px;
+  border-radius: var(--radius);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
   opacity: 0;
   transition: opacity 0.12s ease;
@@ -24328,7 +24764,7 @@ handle — it swallows the pointer before the card ever sees it. */
   flex: 0 0 auto;
   box-sizing: border-box;
   border: 1px dashed var(--accent);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
@@ -24353,7 +24789,7 @@ handle — it swallows the pointer before the card ever sees it. */
   flex-direction: column;
   gap: 3px;
   padding: 7px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--bg-elevated, var(--bg-panel));
   border: 1px solid var(--accent);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
@@ -24413,7 +24849,7 @@ handle — it swallows the pointer before the card ever sees it. */
   overflow-y: auto;
   background: var(--bg-panel);
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 8px 10px 10px;
 }
 .todo-rail-title {
@@ -24610,7 +25046,7 @@ handle — it swallows the pointer before the card ever sees it. */
 }
 .todo-mail-link-body {
   border: 1px solid var(--border-subtle);
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 7px 9px;
 }
 .todo-mail-link-subject {
@@ -24987,7 +25423,7 @@ handle — it swallows the pointer before the card ever sees it. */
 .mail-rail-badge {
   flex: 0 0 auto;
   padding: 0 5px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--accent);
   color: var(--bg-panel);
   font-size: 10px;
@@ -26225,7 +26661,7 @@ handle — it swallows the pointer before the card ever sees it. */
   gap: 4px;
   padding: 2px 4px 2px 7px;
   border: 1px solid var(--border-subtle);
-  border-radius: 10px;
+  border-radius: var(--radius);
   background: var(--bg-panel);
   font-size: 12px;
   /* A term is the user's own text and is printed verbatim; it must wrap rather
@@ -26386,7 +26822,7 @@ handle — it swallows the pointer before the card ever sees it. */
   gap: 6px;
   padding: 3px 7px;
   border: 1px solid var(--border-subtle);
-  border-radius: 12px;
+  border-radius: var(--radius);
   background: var(--bg-input);
   font-size: 11px;
 }
@@ -26516,10 +26952,8 @@ handle — it swallows the pointer before the card ever sees it. */
   cursor: text;
   overflow-x: auto;
   white-space: nowrap;
-  scrollbar-width: none;
-}
-.browser-address-display::-webkit-scrollbar {
-  height: 0;
+  /* A one-line address strip: it pans, it never shows a bar or a thumb. */
+  --eldrun-scrollbar: none;
 }
 
 .browser-address-input {
@@ -26560,7 +26994,7 @@ handle — it swallows the pointer before the card ever sees it. */
   flex: 0 0 auto;
   font-size: 11px;
   padding: 1px 6px;
-  border-radius: 10px;
+  border-radius: var(--radius);
   border: 1px solid var(--border-subtle);
 }
 .browser-address-flag {
@@ -26588,7 +27022,7 @@ handle — it swallows the pointer before the card ever sees it. */
   font-size: 11px;
   cursor: pointer;
   padding: 1px 4px;
-  border-radius: 10px;
+  border-radius: var(--radius);
 }
 .browser-security-chip.tone-secure {
   color: var(--success, #3fb950);
@@ -26604,7 +27038,7 @@ handle — it swallows the pointer before the card ever sees it. */
 }
 .browser-vpn-chip {
   border: 1px solid currentColor;
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 0 5px;
   font-size: 10px;
   color: var(--warning, #e3b341);

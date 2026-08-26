@@ -59,6 +59,7 @@ import {
 } from "../../lib/coords";
 import { dragPlatform } from "../../lib/dragPlatform";
 import { shouldPersistTab, shouldPersistLocalTab } from "../../lib/tmuxSession";
+import { isTrashProject } from "../../lib/trashProject";
 import { IS_WINDOWS } from "../../lib/platform";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteMachinesStore } from "../../stores/remoteMachines";
@@ -1146,7 +1147,7 @@ export function CenterPanel() {
               tab.kind,
               scopeKey,
               localRunning,
-              localPersistEnabled,
+              localPersistEnabled || isTrashProject(paneProject),
               mobileAgentTmuxReady.current.get(mobileReadyKey) === true,
               isResumableAgentTab(tab),
             )

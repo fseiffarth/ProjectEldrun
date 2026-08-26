@@ -86,6 +86,7 @@ const ACTIVITY_TAIL_CAP: usize = 8192;
 /// Per-PTY routing state. Fresh output buffers until a concrete TerminalView
 /// reports itself visible; this avoids a spawn race without inventing a global
 /// last-writer-wins view.
+#[derive(Default)]
 struct OutputRoute {
     /// Stable TerminalView instances currently reporting themselves visible.
     /// A PTY can be rendered in both the main and a detached webview, so a
@@ -105,21 +106,6 @@ struct OutputRoute {
     /// Spawn generation, so a respawn under the same id survives the previous
     /// spawn's task-end cleanup.
     seq: u64,
-}
-
-impl Default for OutputRoute {
-    fn default() -> Self {
-        Self {
-            visible_viewers: HashMap::new(),
-            watchers: 0,
-            pending: String::new(),
-            digest: String::new(),
-            decoder: Utf8StreamDecoder::default(),
-            last_activity: None,
-            digest_armed: false,
-            seq: 0,
-        }
-    }
 }
 
 impl OutputRoute {
@@ -317,20 +303,24 @@ fn route_open(id: &str) -> u64 {
 }
 
 /// Task-end cleanup, guarded by generation so an old spawn's exit can never
-/// remove the route a respawn under the same id just opened.
-fn route_close(id: &str, seq: u64) {
+/// remove the route a respawn under the same id just opened. Returns whether
+/// this was the current spawn, which makes the lifecycle notification obey the
+/// same guard as the route cleanup.
+fn route_close(id: &str, seq: u64) -> bool {
     let mut map = routes().lock().unwrap();
-    if map.get(id).is_some_and(|r| r.seq == seq) {
-        let remove = map
-            .get(id)
-            .is_some_and(|r| r.visible_viewers.is_empty() && r.watchers == 0);
-        if remove {
-            map.remove(id);
-        } else if let Some(route) = map.get_mut(id) {
-            route.seq = 0;
-            route.decoder = Utf8StreamDecoder::default();
-        }
+    if !map.get(id).is_some_and(|r| r.seq == seq) {
+        return false;
     }
+    let remove = map
+        .get(id)
+        .is_some_and(|r| r.visible_viewers.is_empty() && r.watchers == 0);
+    if remove {
+        map.remove(id);
+    } else if let Some(route) = map.get_mut(id) {
+        route.seq = 0;
+        route.decoder = Utf8StreamDecoder::default();
+    }
+    true
 }
 
 /// Emit a rising edge's replay while STILL holding the routes lock: every live
@@ -952,7 +942,10 @@ pub fn spawn_pty(
             }
             Routed::ArmDigest(_) | Routed::Quiet => {}
         }
-        route_close(&id, route_seq);
+        // A tab can be respawned before the prior reader task observes EOF
+        // (Strict Mode/HMR and mode switches all reuse its PTY id). That old
+        // task must not announce its own exit into the replacement terminal.
+        let current_spawn_ended = route_close(&id, route_seq);
         // The child exited on its own; its subtree is gone, so the next CPU
         // sample must rebuild rather than count dead pids.
         invalidate_proc_tree_cache();
@@ -960,7 +953,9 @@ pub fn spawn_pty(
         if let Some(seq) = bind_seq {
             crate::services::codex_bind::untrack(&id, seq);
         }
-        let _ = app.emit("terminal-exit", TerminalExit { id, code: None });
+        if current_spawn_ended {
+            let _ = app.emit("terminal-exit", TerminalExit { id, code: None });
+        }
     });
 
     Ok(())
@@ -1417,7 +1412,7 @@ mod route_tests {
         let old = route_open(id);
         set_visible(id, false);
         let new = route_open(id);
-        route_close(id, old); // the old spawn's task ends late
+        assert!(!route_close(id, old), "the old spawn is no longer current");
         assert!(
             routes().lock().unwrap().contains_key(id),
             "the respawn's route must survive"
@@ -1425,7 +1420,10 @@ mod route_tests {
         // And the respawn kept the pane's hidden state.
         assert!(!routes().lock().unwrap().get(id).unwrap().subscribed());
         route_remove_view(id, "test-view", 2);
-        route_close(id, new);
+        assert!(
+            route_close(id, new),
+            "the current spawn closes its own route"
+        );
         assert!(!routes().lock().unwrap().contains_key(id));
     }
 }

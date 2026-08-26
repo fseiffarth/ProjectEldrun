@@ -35,18 +35,18 @@
 //! argv item.
 
 use std::collections::HashMap;
+use std::io::Write;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::io::{BufRead, BufReader};
-use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-use std::process::{Child, Stdio};
 #[cfg(target_os = "linux")]
 use std::process::Command;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use std::process::{Child, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -240,7 +240,10 @@ fn declined_configs() -> &'static Mutex<std::collections::HashSet<String>> {
 
 #[cfg(target_os = "linux")]
 fn mark_declined(config: &str) {
-    declined_configs().lock().unwrap().insert(config.to_string());
+    declined_configs()
+        .lock()
+        .unwrap()
+        .insert(config.to_string());
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -653,11 +656,7 @@ pub fn config_requires_userpass(config: &str) -> bool {
     };
     text.lines().any(|line| {
         // Strip trailing `# ...` / `; ...` comments, then tokenize on whitespace.
-        let body = line
-            .split(['#', ';'])
-            .next()
-            .unwrap_or("")
-            .trim();
+        let body = line.split(['#', ';']).next().unwrap_or("").trim();
         let mut tok = body.split_whitespace();
         tok.next() == Some("auth-user-pass") && tok.next().is_none()
     })
@@ -829,9 +828,7 @@ pub fn explain_openvpn_error(log: &str) -> Option<String> {
     // Wrong account username/password. AUTH_FAILED is the server explicitly
     // rejecting the `auth-user-pass` credentials.
     if s.contains("auth_failed") || s.contains("authenticate/decrypt packet error") {
-        return Some(
-            "VPN authentication failed — check the username and password.".to_string(),
-        );
+        return Some("VPN authentication failed — check the username and password.".to_string());
     }
 
     // Elevation: the polkit / macOS admin prompt was dismissed or unavailable. No
@@ -841,8 +838,7 @@ pub fn explain_openvpn_error(log: &str) -> Option<String> {
         || s.contains("not authorized")
     {
         return Some(
-            "Elevation was declined — OpenVPN needs root to create the tunnel device."
-                .to_string(),
+            "Elevation was declined — OpenVPN needs root to create the tunnel device.".to_string(),
         );
     }
 
@@ -868,8 +864,9 @@ pub fn explain_openvpn_error(log: &str) -> Option<String> {
         );
     }
     if s.contains("connection refused") {
-        return Some("The VPN server refused the connection — check the config's port/protocol."
-            .to_string());
+        return Some(
+            "The VPN server refused the connection — check the config's port/protocol.".to_string(),
+        );
     }
 
     None
@@ -1419,7 +1416,10 @@ pub fn connect_streaming(
     // The credentials have been read once OpenVPN is up (or has failed); remove
     // whichever files we wrote, on every exit path.
     let remove_credfiles = || {
-        for f in [userpass_file.as_deref(), askpass_file.as_deref()].into_iter().flatten() {
+        for f in [userpass_file.as_deref(), askpass_file.as_deref()]
+            .into_iter()
+            .flatten()
+        {
             let _ = std::fs::remove_file(f);
         }
     };
@@ -1951,7 +1951,11 @@ fn svc_registry() -> &'static Mutex<HashMap<String, SvcVpn>> {
 fn svc_open_pipe() -> Option<std::fs::File> {
     const ERROR_PIPE_BUSY: i32 = 231;
     for _ in 0..5 {
-        match std::fs::OpenOptions::new().read(true).write(true).open(SVC_PIPE) {
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(SVC_PIPE)
+        {
             Ok(pipe) => return Some(pipe),
             Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
                 std::thread::sleep(Duration::from_millis(200));
@@ -2215,7 +2219,10 @@ pub fn connect_streaming(
         &pidfile,
     )?;
     let remove_credfiles = || {
-        for f in [userpass_file.as_deref(), askpass_file.as_deref()].into_iter().flatten() {
+        for f in [userpass_file.as_deref(), askpass_file.as_deref()]
+            .into_iter()
+            .flatten()
+        {
             let _ = std::fs::remove_file(f);
         }
     };
@@ -2393,7 +2400,10 @@ pub fn wait_for_ready_logfile(
         // Raw bytes + lossy per-line decode: a log with a stray non-UTF-8 byte
         // must not stall the whole tail.
         let bytes = std::fs::read(logfile).unwrap_or_default();
-        while let Some(nl) = bytes[seen.min(bytes.len())..].iter().position(|&b| b == b'\n') {
+        while let Some(nl) = bytes[seen.min(bytes.len())..]
+            .iter()
+            .position(|&b| b == b'\n')
+        {
             let line = String::from_utf8_lossy(&bytes[seen..seen + nl]);
             let line = line.trim_end_matches('\r');
             on_line(line);
@@ -2494,7 +2504,10 @@ pub fn connect_streaming(
     let (userpass_file, askpass_file) =
         write_credfiles(config, &stem, username, password, key_passphrase)?;
     let remove_credfiles = || {
-        for f in [userpass_file.as_deref(), askpass_file.as_deref()].into_iter().flatten() {
+        for f in [userpass_file.as_deref(), askpass_file.as_deref()]
+            .into_iter()
+            .flatten()
+        {
             let _ = std::fs::remove_file(f);
         }
     };
@@ -2526,10 +2539,7 @@ pub fn connect_streaming(
         .map(|a| shell_quote(&a))
         .collect::<Vec<_>>()
         .join(" ");
-    let script = macos_admin_shell_command(
-        &shell_cmd,
-        "Eldrun needs to start the OpenVPN tunnel.",
-    );
+    let script = macos_admin_shell_command(&shell_cmd, "Eldrun needs to start the OpenVPN tunnel.");
 
     // Blocks until the admin dialog is answered AND openvpn daemonizes (its
     // parent exits) — or fails. "User canceled." on stderr = dialog declined.
@@ -2879,8 +2889,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let own = dir.join("own.ovpn");
-        std::fs::write(&own, "client\nmanagement 127.0.0.1 7505\nremote vpn.example 1194\n")
-            .unwrap();
+        std::fs::write(
+            &own,
+            "client\nmanagement 127.0.0.1 7505\nremote vpn.example 1194\n",
+        )
+        .unwrap();
         assert!(config_declares_management(own.to_str().unwrap()));
         assert!(arm_management(own.to_str().unwrap()).is_none());
 
@@ -2935,10 +2948,16 @@ mod tests {
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(mode, 0o600, "management password must not be group/world readable");
+        assert_eq!(
+            mode, 0o600,
+            "management password must not be group/world readable"
+        );
 
         clear_management(cfg);
-        assert!(management_endpoint(cfg).is_none(), "cleared endpoint is forgotten");
+        assert!(
+            management_endpoint(cfg).is_none(),
+            "cleared endpoint is forgotten"
+        );
     }
 
     /// The teardown handshake, against a stand-in for OpenVPN. Two things are pinned:
@@ -3056,9 +3075,7 @@ mod tests {
 
     #[test]
     fn svc_parse_response_reads_pid_and_refusals() {
-        let enc = |s: &str| -> Vec<u8> {
-            s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
-        };
+        let enc = |s: &str| -> Vec<u8> { s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect() };
         // Success: code 0, pid on line 2 (both `0x%08x`), description on line 3.
         let ok = svc_parse_response(&enc("0x00000000\n0x00001a2b\nProcess ID")).unwrap();
         assert_eq!(ok.code, 0);
@@ -3072,7 +3089,10 @@ mod tests {
         assert_eq!(err.code, 0x2000_0001);
         assert_eq!(svc_response_pid(&err), None);
         let msg = explain_service_refusal(&err);
-        assert!(msg.contains("config is not in the allowed location"), "{msg}");
+        assert!(
+            msg.contains("config is not in the allowed location"),
+            "{msg}"
+        );
         assert!(msg.contains("OpenVPN Administrators"), "{msg}");
         assert!(msg.contains("net localgroup"), "{msg}");
         // Garbage is None, not a fabricated verdict.
@@ -3213,7 +3233,11 @@ mod tests {
         // Bare `auth-user-pass` → needs a username.
         let bare = dir.join("bare.ovpn");
         let mut f = std::fs::File::create(&bare).unwrap();
-        writeln!(f, "client\nremote vpn.example.com 1194\nauth-user-pass\nauth-nocache").unwrap();
+        writeln!(
+            f,
+            "client\nremote vpn.example.com 1194\nauth-user-pass\nauth-nocache"
+        )
+        .unwrap();
         assert!(config_requires_userpass(bare.to_str().unwrap()));
 
         // `auth-user-pass creds.txt` supplies its own file → does not.
@@ -3231,7 +3255,11 @@ mod tests {
         // Cert-only config → does not.
         let cert = dir.join("cert.ovpn");
         let mut f = std::fs::File::create(&cert).unwrap();
-        writeln!(f, "client\nremote vpn.example.com 1194\ncert a.crt\nkey a.key").unwrap();
+        writeln!(
+            f,
+            "client\nremote vpn.example.com 1194\ncert a.crt\nkey a.key"
+        )
+        .unwrap();
         assert!(!config_requires_userpass(cert.to_str().unwrap()));
 
         // Missing file → false (best-effort fallback).
@@ -3265,7 +3293,9 @@ mod tests {
         // OpenSSL words a bad decrypt several ways; all mean the same field.
         for line in ["OpenSSL: error:0700006C:bad decrypt", "Decryption error"] {
             assert!(
-                explain_openvpn_error(line).unwrap().contains("private-key passphrase"),
+                explain_openvpn_error(line)
+                    .unwrap()
+                    .contains("private-key passphrase"),
                 "{line}"
             );
         }
@@ -3291,7 +3321,10 @@ mod tests {
     fn explain_openvpn_error_passes_unknown_output_through() {
         // Unrecognized output must fall back to the raw tail — replacing a specific
         // error with a vague guess is worse than showing the real thing.
-        assert_eq!(explain_openvpn_error("Initialization Sequence In Progress"), None);
+        assert_eq!(
+            explain_openvpn_error("Initialization Sequence In Progress"),
+            None
+        );
         assert_eq!(explain_openvpn_error(""), None);
     }
 
@@ -3334,7 +3367,10 @@ mod tests {
         assert!(!config_requires_key_passphrase(plain.to_str().unwrap()));
 
         // Out-of-line key, resolved relative to the config's own directory.
-        write("enc.key", "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nb64==\n");
+        write(
+            "enc.key",
+            "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nb64==\n",
+        );
         let extenc = write("extenc.ovpn", "client\ncert a.crt\nkey enc.key\n");
         assert!(config_requires_key_passphrase(extenc.to_str().unwrap()));
 
@@ -3344,7 +3380,9 @@ mod tests {
 
         // A key file we can't read → false (best-effort, like the userpass twin).
         let missingkey = write("missingkey.ovpn", "client\nkey nope.key\n");
-        assert!(!config_requires_key_passphrase(missingkey.to_str().unwrap()));
+        assert!(!config_requires_key_passphrase(
+            missingkey.to_str().unwrap()
+        ));
 
         // `pkcs12` bundles are treated as passphrase-protected (DER — can't sniff).
         let p12 = write("p12.ovpn", "client\npkcs12 bundle.p12\n");
@@ -3356,14 +3394,18 @@ mod tests {
             "client\naskpass /etc/openvpn/pass.txt\n<key>\n\
              -----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n</key>\n",
         );
-        assert!(!config_requires_key_passphrase(ownaskpass.to_str().unwrap()));
+        assert!(!config_requires_key_passphrase(
+            ownaskpass.to_str().unwrap()
+        ));
         // …but a *bare* `askpass` means "prompt on the console" — we must answer it.
         let bareaskpass = write(
             "bareaskpass.ovpn",
             "client\naskpass\n<key>\n-----BEGIN RSA PRIVATE KEY-----\n\
              Proc-Type: 4,ENCRYPTED\n</key>\n",
         );
-        assert!(config_requires_key_passphrase(bareaskpass.to_str().unwrap()));
+        assert!(config_requires_key_passphrase(
+            bareaskpass.to_str().unwrap()
+        ));
 
         // Commented-out key directive / cert-only config → does not.
         let certonly = write("certonly.ovpn", "client\n# key enc.key\nauth-user-pass\n");
@@ -3408,7 +3450,10 @@ mod tests {
     fn safe_stem_handles_multibyte_paths_without_panicking() {
         // A long path of multibyte chars must not panic on the length-bounding
         // slice (the bug was byte-index slicing into the middle of a char).
-        let path = format!("/home/{}/файл-конфигурации-очень-длинное-имя.ovpn", "ü".repeat(60));
+        let path = format!(
+            "/home/{}/файл-конфигурации-очень-длинное-имя.ovpn",
+            "ü".repeat(60)
+        );
         let stem = safe_stem(&path);
         // Still filesystem-safe (non-ascii-alnum collapses to '_') and bounded.
         assert!(stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
@@ -3419,7 +3464,10 @@ mod tests {
     #[test]
     fn display_name_recovers_original_from_stored() {
         // `{stem}__{original}` → original; stem may contain `__`.
-        assert_eq!(display_name("_home_u_work_ovpn_abcd1234__work.ovpn"), "work.ovpn");
+        assert_eq!(
+            display_name("_home_u_work_ovpn_abcd1234__work.ovpn"),
+            "work.ovpn"
+        );
         assert_eq!(display_name("a__b__client.conf"), "client.conf");
         // No separator → whole name (defensive; shouldn't happen for stored copies).
         assert_eq!(display_name("loose.ovpn"), "loose.ovpn");
@@ -3468,7 +3516,11 @@ mod tests {
         // that is definitively dead (pid 0 would NOT: `kill(0, 0)` signals the
         // caller's own process group and so reads as alive).
         let mut child = std::process::Command::new(if cfg!(windows) { "cmd" } else { "true" })
-            .args(if cfg!(windows) { vec!["/C", "exit"] } else { vec![] })
+            .args(if cfg!(windows) {
+                vec!["/C", "exit"]
+            } else {
+                vec![]
+            })
             .spawn()
             .expect("spawn a trivial child");
         let dead = child.id() as i32;
@@ -3553,7 +3605,10 @@ mod tests {
             |l| seen.lock().unwrap().push(l.to_string()),
         );
         assert_eq!(result.unwrap_err(), "OpenVPN connection timed out");
-        assert!(seen.lock().unwrap().is_empty(), "partial line must be held back");
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "partial line must be held back"
+        );
         // A missing logfile behaves like an empty one (daemon hasn't created it
         // yet) rather than erroring out of the wait.
         let result = wait_for_ready_logfile(

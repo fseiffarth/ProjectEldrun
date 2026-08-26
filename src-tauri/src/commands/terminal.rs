@@ -215,6 +215,18 @@ pub async fn pty_spawn(
     // every step below sees the enforced values.
     crate::services::sandbox::enforce_spawn_authority(&mut opts);
 
+    // Trash is an agent-only workspace. The project record cannot be weakened
+    // from its writable folder, and this spawn gate also refuses stale UI tabs
+    // or renderer-crafted shell commands before anything reaches the host.
+    if opts
+        .project_id
+        .as_deref()
+        .is_some_and(crate::paths::is_trash_project_id)
+        && !crate::services::sandbox::is_agent_cmd(&opts.cmd)
+    {
+        return Err("The Trash project accepts recognised agent CLIs only.".to_string());
+    }
+
     // VM-tier hard refusals (`docs/vm_projects_plan.md`): for a VM project the
     // remote→local fallback that exists elsewhere is not a perf surprise but
     // the untrusted agent stepping outside the boundary — so a local spawn is
@@ -423,7 +435,14 @@ pub async fn pty_spawn(
     // now `cmd == "ssh"` (its tmux is inside the remote command) and a container tab
     // is `cmd == "docker"`, so both are skipped. No-op on Windows / without tmux.
     #[cfg(unix)]
-    if opts.tmux_session.is_some() && opts.cmd != "ssh" && opts.cmd != "docker" {
+    if opts.tmux_session.is_some()
+        && opts.cmd != "ssh"
+        && (opts.cmd != "docker"
+            || opts
+                .project_id
+                .as_deref()
+                .is_some_and(crate::paths::is_trash_project_id))
+    {
         crate::services::tmux_local::wrap_pty_options_local(&mut opts);
     }
 
@@ -490,6 +509,82 @@ pub async fn local_tmux_kill(session: String) -> Result<(), String> {
             });
         }
         Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// End every tmux session Eldrun created on the local machine during a clean
+/// application quit. This deliberately lists the daemon rather than only the
+/// tabs currently hydrated in the frontend: a session recovered from an earlier
+/// crash may belong to an inactive project and therefore have no mounted tab in
+/// this run yet. The `eldrun-` prefix is reserved for sessions Eldrun mints, so
+/// user-managed sessions are never affected.
+///
+/// This command is called only by the frontend's normal close path. A renderer
+/// or process crash never reaches it, leaving the sessions alive for restore.
+#[tauri::command]
+pub async fn local_tmux_kill_eldrun_sessions() -> Result<(), String> {
+    if !crate::services::tmux_local::tmux_available() {
+        return Ok(());
+    }
+    tauri::async_runtime::spawn_blocking(|| {
+        let listed = crate::paths::command_no_window("tmux")
+            .args(crate::services::tmux_local::local_tmux_ls_args())
+            .output()
+            .map_err(|e| format!("could not list tmux sessions: {e}"))?;
+        // `tmux ls` returns non-zero when no server is running, which is already
+        // the desired end state for the quit path.
+        if !listed.status.success() {
+            return Ok(());
+        }
+        let sessions =
+            crate::services::ssh_exec::parse_tmux_ls(&String::from_utf8_lossy(&listed.stdout));
+        let mut failures = Vec::new();
+        for session in sessions {
+            // Trash sessions are deliberately mobile-persistent. Their host
+            // tmux owns the attach point while the strictly isolated container
+            // remains the process/filesystem boundary, so a clean Eldrun quit
+            // must not turn a phone detach into an agent kill.
+            if session
+                .name
+                .starts_with(&format!("eldrun-{}--", crate::paths::TRASH_PROJECT_ID))
+            {
+                continue;
+            }
+            if !crate::services::tmux_local::is_eldrun_local_tmux_session(&session.name) {
+                continue;
+            }
+            let output = crate::paths::command_no_window("tmux")
+                .args(crate::services::tmux_local::local_tmux_kill_args(
+                    &session.name,
+                ))
+                .output()
+                .map_err(|e| format!("could not run tmux: {e}"))?;
+            if !output.status.success() {
+                let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                // A session can exit between `ls` and `kill-session`; that is
+                // indistinguishable from a successful cleanup.
+                if !detail.contains("can't find session")
+                    && !detail.contains("no server running")
+                    && !detail.contains("failed to connect to server")
+                {
+                    failures.push(if detail.is_empty() {
+                        session.name
+                    } else {
+                        format!("{}: {detail}", session.name)
+                    });
+                }
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "could not stop every Eldrun local tmux session: {}",
+                failures.join("; ")
+            ))
+        }
     })
     .await
     .map_err(|e| e.to_string())?

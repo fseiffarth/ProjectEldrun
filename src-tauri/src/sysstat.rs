@@ -282,7 +282,9 @@ fn compute_descendant_pids(roots: &[u32]) -> Vec<u32> {
 /// Sum of busy CPU ticks across `pids` (Linux utime+stime jiffies; Windows
 /// kernel+user 100-ns units). Dead pids are skipped.
 pub fn sum_jiffies(pids: &[u32]) -> u64 {
-    pids.iter().filter_map(|&pid| platform::proc_ticks(pid)).sum()
+    pids.iter()
+        .filter_map(|&pid| platform::proc_ticks(pid))
+        .sum()
 }
 
 /// Sum resident memory across `pids`, in KiB. Dead pids are skipped.
@@ -437,9 +439,7 @@ fn parse_passwd(content: &str) -> HashMap<u32, String> {
 pub const OTHER_USERS: &str = "other users";
 
 fn username_for(uid: u32, map: &HashMap<u32, String>) -> String {
-    map.get(&uid)
-        .cloned()
-        .unwrap_or_else(|| format!("#{uid}"))
+    map.get(&uid).cloned().unwrap_or_else(|| format!("#{uid}"))
 }
 
 /// The `tty`/`detail` a synthesized self-session carries — the row that says "you
@@ -505,7 +505,10 @@ fn parse_who(content: &str, me: &str) -> Vec<LoginSession> {
 /// mainboard SuperIO chip, an NVMe drive) is deliberately excluded — a wrong
 /// sensor reported as "CPU" is worse than reporting none.
 fn is_cpu_hwmon(name: &str) -> bool {
-    matches!(name.trim(), "coretemp" | "k10temp" | "zenpower" | "cpu_thermal")
+    matches!(
+        name.trim(),
+        "coretemp" | "k10temp" | "zenpower" | "cpu_thermal"
+    )
 }
 
 /// hwmon `name` values that identify an on-DIMM **memory** temperature sensor:
@@ -1232,10 +1235,9 @@ fn parse_host_processor_ticks(ticks: &[u32], ns_per_tick: u64) -> Vec<CpuTimes> 
     ticks
         .chunks_exact(4)
         .map(|c| {
-            let busy = (c[CPU_STATE_USER] as u64
-                + c[CPU_STATE_SYSTEM] as u64
-                + c[CPU_STATE_NICE] as u64)
-                * ns_per_tick;
+            let busy =
+                (c[CPU_STATE_USER] as u64 + c[CPU_STATE_SYSTEM] as u64 + c[CPU_STATE_NICE] as u64)
+                    * ns_per_tick;
             CpuTimes {
                 busy,
                 total: busy + c[CPU_STATE_IDLE] as u64 * ns_per_tick,
@@ -1553,8 +1555,7 @@ mod platform {
     /// Open a process for query, run `f` with the handle, and always close it.
     fn with_process<T>(pid: u32, f: impl FnOnce(HANDLE) -> Option<T>) -> Option<T> {
         // SAFETY: the handle is closed before returning regardless of `f`'s result.
-        let handle =
-            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
         let out = f(handle);
         unsafe {
             let _ = CloseHandle(handle);
@@ -1800,8 +1801,8 @@ mod platform {
             processes,
             gpus: Vec::new(), // filled by `system_snapshot()`, not by this backend
             gpu_procs: Vec::new(),
-            cpu_temp_c: None, // no cheap CPU thermal read on this backend
-            mem_temp_c: None, // nor a memory thermal read
+            cpu_temp_c: None,     // no cheap CPU thermal read on this backend
+            mem_temp_c: None,     // nor a memory thermal read
             sessions: Vec::new(), // remote-only (the pane's "Logged in" panel)
             careful: false,       // a local sample: this machine is the user's own
         }
@@ -1836,7 +1837,11 @@ mod platform {
                 &mut info as *mut _ as *mut libc::c_void,
                 size,
             );
-            if ret == size { Some(info) } else { None }
+            if ret == size {
+                Some(info)
+            } else {
+                None
+            }
         }
     }
 
@@ -1856,7 +1861,11 @@ mod platform {
                 &mut info as *mut _ as *mut libc::c_void,
                 size,
             );
-            if ret == size { Some(info) } else { None }
+            if ret == size {
+                Some(info)
+            } else {
+                None
+            }
         }
     }
 
@@ -2036,12 +2045,16 @@ mod platform {
         // SAFETY: sysconf takes no pointers.
         let page_kib = {
             let ps = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-            if ps > 0 { ps as u64 / 1024 } else { 4 }
+            if ps > 0 {
+                ps as u64 / 1024
+            } else {
+                4
+            }
         };
         let mem_available_kib = {
             let mut head = VmStatistics64Head::default();
-            let mut count = (std::mem::size_of::<VmStatistics64Head>()
-                / std::mem::size_of::<i32>()) as u32;
+            let mut count =
+                (std::mem::size_of::<VmStatistics64Head>() / std::mem::size_of::<i32>()) as u32;
             // SAFETY: `head` is a valid prefix buffer and `count` is its exact
             // size in integer_t units; the kernel copies out at most `count`.
             let rc = unsafe {
@@ -2088,7 +2101,11 @@ mod platform {
     pub fn machine_load() -> super::MachineLoad {
         // SAFETY: sysconf takes no pointers.
         let clk = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-        let ns_per_tick = if clk > 0 { 1_000_000_000 / clk as u64 } else { 10_000_000 };
+        let ns_per_tick = if clk > 0 {
+            1_000_000_000 / clk as u64
+        } else {
+            10_000_000
+        };
         let per_core = per_core_times(ns_per_tick);
         let (mem_total_kib, mem_available_kib, swap_total_kib, swap_free_kib) = memory_kib();
 
@@ -2123,7 +2140,11 @@ mod platform {
 
         // SAFETY: sysconf takes no pointers.
         let clk = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-        let ns_per_tick = if clk > 0 { 1_000_000_000 / clk as u64 } else { 10_000_000 };
+        let ns_per_tick = if clk > 0 {
+            1_000_000_000 / clk as u64
+        } else {
+            10_000_000
+        };
 
         let per_core = per_core_times(ns_per_tick);
         let cpu = super::CpuTimes {
@@ -2186,8 +2207,8 @@ mod platform {
             processes,
             gpus: Vec::new(), // filled by `system_snapshot()`, not by this backend
             gpu_procs: Vec::new(),
-            cpu_temp_c: None, // no cheap CPU thermal read on this backend
-            mem_temp_c: None, // nor a memory thermal read
+            cpu_temp_c: None,     // no cheap CPU thermal read on this backend
+            mem_temp_c: None,     // nor a memory thermal read
             sessions: Vec::new(), // remote-only (the pane's "Logged in" panel)
             careful: false,       // a local sample: this machine is the user's own
         }
@@ -2355,7 +2376,10 @@ M\t44000
         let _guard = lock_cache_for_test();
         let me = std::process::id();
         let pids = descendant_pids(&[me]);
-        assert!(pids.contains(&me), "descendant set must contain the root pid itself");
+        assert!(
+            pids.contains(&me),
+            "descendant set must contain the root pid itself"
+        );
     }
 
     #[test]
@@ -2425,7 +2449,10 @@ M\t44000
             acc = acc.wrapping_add(i);
         }
         assert!(acc > 0);
-        assert!(sum_jiffies(&[me]) > 0, "the running test process should report ticks");
+        assert!(
+            sum_jiffies(&[me]) > 0,
+            "the running test process should report ticks"
+        );
         // A pid that cannot exist contributes nothing rather than panicking.
         assert_eq!(sum_jiffies(&[u32::MAX]), 0);
     }
@@ -2434,7 +2461,10 @@ M\t44000
     #[test]
     fn sum_rss_counts_a_live_process_and_skips_dead_ones() {
         let me = std::process::id();
-        assert!(sum_rss_kib(&[me]) > 0, "the running test process should report RSS");
+        assert!(
+            sum_rss_kib(&[me]) > 0,
+            "the running test process should report RSS"
+        );
         assert_eq!(sum_rss_kib(&[u32::MAX]), 0);
     }
 
@@ -2479,7 +2509,10 @@ SwapFree:        2000000 kB
 
     #[test]
     fn parse_loadavg_reads_three_floats() {
-        assert_eq!(parse_loadavg("0.52 0.58 0.59 1/1234 56789"), [0.52, 0.58, 0.59]);
+        assert_eq!(
+            parse_loadavg("0.52 0.58 0.59 1/1234 56789"),
+            [0.52, 0.58, 0.59]
+        );
         // Short/garbage input degrades to zeros.
         assert_eq!(parse_loadavg(""), [0.0, 0.0, 0.0]);
     }
@@ -2876,7 +2909,10 @@ carol:x:2000:2000:Carol:/home/carol:/bin/bash\n";
 
         let snap = parse_remote_snapshot(raw);
         assert_eq!(snap.processes.len(), 1);
-        assert_eq!(snap.processes[0].user, "carol", "resolved via the @PASSWD2@ supplement");
+        assert_eq!(
+            snap.processes[0].user, "carol",
+            "resolved via the @PASSWD2@ supplement"
+        );
         assert_eq!(snap.sessions[0].user, "carol");
         assert_eq!(
             snap.processes[0].user, snap.sessions[0].user,

@@ -61,8 +61,8 @@ pub fn save_window_state(state: WindowState) -> Result<(), String> {
 /// platform. Only roles whose executable actually resolves are returned, so the
 /// seeded buttons always launch something. Returns `None` when nothing is
 /// detected (e.g. unsupported platform), leaving the toolbar empty as before.
-fn default_global_apps()
--> Option<std::collections::HashMap<String, crate::schema::settings::GlobalAppEntry>> {
+fn default_global_apps(
+) -> Option<std::collections::HashMap<String, crate::schema::settings::GlobalAppEntry>> {
     #[cfg(target_os = "windows")]
     {
         detect_windows_global_apps()
@@ -87,8 +87,8 @@ fn default_global_apps()
 /// macOS (Safari) — the toolbar can still come back empty on a minimal
 /// install; a role can always be set by hand in the Global Apps settings panel.
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn detect_linux_global_apps()
--> Option<std::collections::HashMap<String, crate::schema::settings::GlobalAppEntry>> {
+fn detect_linux_global_apps(
+) -> Option<std::collections::HashMap<String, crate::schema::settings::GlobalAppEntry>> {
     use crate::schema::settings::GlobalAppEntry;
     use std::collections::HashMap;
 
@@ -96,11 +96,23 @@ fn detect_linux_global_apps()
     let candidates: [(&str, &[&str]); 6] = [
         (
             "browser",
-            &["firefox", "google-chrome", "chromium-browser", "chromium", "brave-browser"],
+            &[
+                "firefox",
+                "google-chrome",
+                "chromium-browser",
+                "chromium",
+                "brave-browser",
+            ],
         ),
         ("password_manager", &["keepassxc", "bitwarden", "keepassx"]),
-        ("media_player", &["vlc", "mpv", "totem", "celluloid", "rhythmbox"]),
-        ("notes", &["gnome-text-editor", "kate", "gedit", "xed", "mousepad"]),
+        (
+            "media_player",
+            &["vlc", "mpv", "totem", "celluloid", "rhythmbox"],
+        ),
+        (
+            "notes",
+            &["gnome-text-editor", "kate", "gedit", "xed", "mousepad"],
+        ),
         (
             "screenshot",
             &[
@@ -173,8 +185,8 @@ fn env_join(var: &str, tail: &str) -> String {
 /// its own of each (the Monitor tab for the last), so seeding an external app
 /// for them only offered a second, worse copy.
 #[cfg(target_os = "windows")]
-fn detect_windows_global_apps()
--> Option<std::collections::HashMap<String, crate::schema::settings::GlobalAppEntry>> {
+fn detect_windows_global_apps(
+) -> Option<std::collections::HashMap<String, crate::schema::settings::GlobalAppEntry>> {
     use crate::schema::settings::GlobalAppEntry;
     use std::collections::HashMap;
 
@@ -190,7 +202,10 @@ fn detect_windows_global_apps()
                 ),
                 env_join("ProgramFiles", "Mozilla Firefox\\firefox.exe"),
                 env_join("ProgramFiles(x86)", "Mozilla Firefox\\firefox.exe"),
-                env_join("ProgramFiles(x86)", "Microsoft\\Edge\\Application\\msedge.exe"),
+                env_join(
+                    "ProgramFiles(x86)",
+                    "Microsoft\\Edge\\Application\\msedge.exe",
+                ),
                 env_join("ProgramFiles", "Microsoft\\Edge\\Application\\msedge.exe"),
             ],
         ),
@@ -247,8 +262,8 @@ fn detect_windows_global_apps()
 /// its own of each (the Monitor tab for the last), so seeding Mail/Finder/
 /// Activity Monitor here only offered a second, worse copy.
 #[cfg(target_os = "macos")]
-fn detect_macos_global_apps()
--> Option<std::collections::HashMap<String, crate::schema::settings::GlobalAppEntry>> {
+fn detect_macos_global_apps(
+) -> Option<std::collections::HashMap<String, crate::schema::settings::GlobalAppEntry>> {
     use crate::schema::settings::GlobalAppEntry;
     use std::collections::HashMap;
 

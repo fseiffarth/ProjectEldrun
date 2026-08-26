@@ -66,7 +66,9 @@ impl Provider {
         match s.trim().to_ascii_lowercase().as_str() {
             "" | "github" => Ok(Provider::GitHub),
             "gitlab" => Ok(Provider::GitLab),
-            other => Err(format!("provider must be 'github' or 'gitlab', got '{other}'")),
+            other => Err(format!(
+                "provider must be 'github' or 'gitlab', got '{other}'"
+            )),
         }
     }
 
@@ -375,7 +377,9 @@ pub fn publish_project(
                 remote_publish_script(provider, &remote.remote_path, &repo_name, visibility);
             // `command_no_window` avoids a console-window flash on Windows.
             run_remote_provider_command(
-                crate::paths::command_no_window("ssh").args(&base).arg(script),
+                crate::paths::command_no_window("ssh")
+                    .args(&base)
+                    .arg(script),
                 provider,
             )?
         }
@@ -451,7 +455,11 @@ pub fn unpublish_project(project_id: String) -> Result<(), String> {
             let path = shell_quote(&remote.remote_path);
             // A missing origin is fine — the goal state is simply "no origin".
             let script = format!("cd {path} && git remote remove origin 2>/dev/null || true");
-            run_command(crate::paths::command_no_window("ssh").args(&base).arg(script))?;
+            run_command(
+                crate::paths::command_no_window("ssh")
+                    .args(&base)
+                    .arg(script),
+            )?;
         }
     }
 
@@ -522,7 +530,9 @@ pub fn set_project_visibility(project_id: String, visibility: String) -> Result<
             validate_arg("remote_path", &remote.remote_path)?;
             let script = remote_visibility_script(provider, &remote.remote_path, visibility);
             run_remote_provider_command(
-                crate::paths::command_no_window("ssh").args(&base).arg(script),
+                crate::paths::command_no_window("ssh")
+                    .args(&base)
+                    .arg(script),
                 provider,
             )?
         }
@@ -610,7 +620,8 @@ fn local_set_visibility(
     token: Option<&str>,
 ) -> Result<String, String> {
     let mut cmd = crate::paths::command_no_window(provider.cli());
-    cmd.current_dir(dir).args(provider.visibility_edit_args(visibility));
+    cmd.current_dir(dir)
+        .args(provider.visibility_edit_args(visibility));
     if let Some(tok) = token {
         cmd.env(provider.token_env(), tok);
     }
@@ -655,7 +666,11 @@ fn rename_origin_aside(site: PublishSite, project: &Project) -> Result<(), Strin
                 "cd {path} && git remote remove origin-old 2>/dev/null; \
                  git remote rename origin origin-old 2>/dev/null || true"
             );
-            run_command(crate::paths::command_no_window("ssh").args(&base).arg(script))?;
+            run_command(
+                crate::paths::command_no_window("ssh")
+                    .args(&base)
+                    .arg(script),
+            )?;
         }
     }
     Ok(())
@@ -970,18 +985,19 @@ mod tests {
     #[test]
     fn remote_visibility_script_quotes_path_and_uses_cli() {
         let s = remote_visibility_script(Provider::GitLab, "/srv/proj", "public");
-        assert_eq!(
-            s,
-            "cd '/srv/proj' && glab repo edit --visibility public"
-        );
+        assert_eq!(s, "cd '/srv/proj' && glab repo edit --visibility public");
     }
 
     #[test]
     fn friendly_error_flags_missing_cli_across_shells() {
-        assert!(friendly_publish_error(Provider::GitHub, "bash: gh: command not found")
-            .contains("is not installed"));
-        assert!(friendly_publish_error(Provider::GitLab, "sh: 1: glab: not found")
-            .contains("is not installed"));
+        assert!(
+            friendly_publish_error(Provider::GitHub, "bash: gh: command not found")
+                .contains("is not installed")
+        );
+        assert!(
+            friendly_publish_error(Provider::GitLab, "sh: 1: glab: not found")
+                .contains("is not installed")
+        );
         assert!(friendly_publish_error(
             Provider::GitHub,
             "'gh' is not recognized as an internal or external command"

@@ -42,7 +42,10 @@ const SHOT_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 /// directory the shot lands in; the project's filesystem watch surfaces the new
 /// PNG in the file tree.
 #[tauri::command]
-pub fn capture_project_screenshot(project_dir: String, exec: Option<String>) -> Result<String, String> {
+pub fn capture_project_screenshot(
+    project_dir: String,
+    exec: Option<String>,
+) -> Result<String, String> {
     let dir = ensure_screenshots_dir(&project_dir)?;
     platform::capture(&dir, exec.as_deref())?;
     Ok(dir.to_string_lossy().to_string())
@@ -237,7 +240,8 @@ mod platform {
             // Wayland: slurp selects the region, grim captures it — needs a shell
             "grim" => {
                 let mut sh = Command::new("sh");
-                sh.arg("-c").arg(format!("grim -g \"$(slurp)\" {}", shell_quote(&f)));
+                sh.arg("-c")
+                    .arg(format!("grim -g \"$(slurp)\" {}", shell_quote(&f)));
                 return Some((sh, Some(file)));
             }
             _ => return None,

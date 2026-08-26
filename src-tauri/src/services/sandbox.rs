@@ -432,7 +432,9 @@ fn host_bound_dir(project_id: &str) -> std::path::PathBuf {
 fn valid_marker_uid(uid: &str) -> bool {
     !uid.is_empty()
         && uid.len() <= 64
-        && uid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && uid
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Record that a tab was genuinely created as a host-bound local-model tab.
@@ -481,8 +483,9 @@ pub fn prune_host_bound_markers(project_id: &str, keep: &std::collections::HashS
 /// image. Kept as an explicit allowlist rather than "trust whatever says it is
 /// local": several of these names (`claude`, `codex`, …) are also ordinary agent
 /// CLIs, which is exactly why a registered marker is required too.
-pub const HOST_BOUND_LOCAL_AGENT_CMDS: &[&str] =
-    &["vibe", "ollama", "claude", "codex", "opencode", "droid", "openclaw"];
+pub const HOST_BOUND_LOCAL_AGENT_CMDS: &[&str] = &[
+    "vibe", "ollama", "claude", "codex", "opencode", "droid", "openclaw",
+];
 
 /// Whether this spawn is one of the host-bound local-model driver tabs (see
 /// [`HOST_BOUND_LOCAL_AGENT_CMDS`]): the command is a known driver **and** the tab
@@ -523,6 +526,14 @@ pub fn is_agent_cmd(cmd: &str) -> bool {
     let base = cmd.rsplit(['/', '\\']).next().unwrap_or(cmd);
     let base = base.strip_suffix(".exe").unwrap_or(base);
     crate::commands::agents::agent_bins().contains(&base)
+}
+
+/// The permanent Trash workspace is the strict isolation profile: its
+/// container receives its project directory and no host-backed agent state.
+/// API-key environment variables may still be forwarded at exec time, but a
+/// contained process cannot inspect or alter any host file outside Trash.
+pub fn is_strict_trash_project(project_id: &str) -> bool {
+    paths::is_trash_project_id(project_id)
 }
 
 /// Re-derive a spawn's authority flags from the trustworthy project record.
@@ -687,7 +698,16 @@ pub fn wrap_pty_options_docker(opts: &mut PtyOptions) -> Result<(), String> {
     // Auth env is read at exec (not create) so rotated tokens are picked up
     // per tab spawn.
     let auth_env = host_auth_env();
-    let pidfile = register_exec_tab(&opts.id, &name);
+    // Trash agent tabs can live in a host tmux session for Eldrun Mobile. Their
+    // PTY is only tmux's client, so registering it for normal tab-close cleanup
+    // would kill the contained agent as soon as the desktop detaches. The
+    // persistent container is itself the lifetime boundary instead.
+    let persistent_trash = is_strict_trash_project(&project_id) && opts.tmux_session.is_some();
+    let pidfile = if persistent_trash {
+        format!("/tmp/eldrun-persist-{}.pid", sanitize_key(&opts.id))
+    } else {
+        register_exec_tab(&opts.id, &name)
+    };
 
     opts.args = docker_exec_args(&name, &opts.cwd, &env, &auth_env, &pidfile, &cmd, &cmd_args);
     opts.cmd = "docker".to_string();
@@ -720,7 +740,11 @@ fn created_set() -> &'static Mutex<HashSet<String>> {
 /// exists-but-stopped or fingerprint-mismatch → `rm -f` + create; missing →
 /// create. Called from the activation warm-up and from every containerized
 /// spawn (the fallback for tabs opened before activation completes).
-pub fn up(project_id: &str, spec: Option<&SandboxSpec>, project_dir: &str) -> Result<String, String> {
+pub fn up(
+    project_id: &str,
+    spec: Option<&SandboxSpec>,
+    project_dir: &str,
+) -> Result<String, String> {
     let _guard = lifecycle_lock().lock().unwrap();
     preflight_docker()?;
     preflight_daemon()?;
@@ -729,6 +753,16 @@ pub fn up(project_id: &str, spec: Option<&SandboxSpec>, project_dir: &str) -> Re
     let home = paths::home_dir_string();
     let (uid, gid) = host_uid_gid();
     let state_dir = storage::state_dir();
+    let strict_trash = is_strict_trash_project(project_id);
+    // A strict Trash container deliberately does not mount the host home. Give
+    // its agents a writable container-only home instead of a dangling host path
+    // so browser/device-flow logins and CLI caches remain usable without
+    // exposing host-backed credentials or session files.
+    let container_home = if strict_trash {
+        "/tmp/eldrun-home".to_string()
+    } else {
+        home.clone()
+    };
     let live_sessions = state_dir.join("live_sessions");
     // This project's own slice of the live-session records — the only one the
     // container gets to see (see `rw_mounts`).
@@ -737,22 +771,38 @@ pub fn up(project_id: &str, spec: Option<&SandboxSpec>, project_dir: &str) -> Re
     // Ensure the hook's write target and the staging dir exist so their bind
     // mounts map real host paths rather than docker-auto-created (root-owned)
     // ones. Best effort.
-    let _ = std::fs::create_dir_all(&live_sessions_own);
+    if !strict_trash {
+        let _ = std::fs::create_dir_all(&live_sessions_own);
+    }
     let stage = stage_dir(project_id);
-    let _ = std::fs::create_dir_all(&stage);
+    if !strict_trash {
+        let _ = std::fs::create_dir_all(&stage);
+    }
 
     // Refresh the staged config copies from the host originals at every up.
     // `fs::copy` overwrites in place (same inode), so a running container's
     // bind mounts see the refreshed content too.
-    let mut rw_mounts = rw_mounts(
-        &home,
-        &live_sessions_own.to_string_lossy(),
-        &live_sessions.to_string_lossy(),
-    );
-    rw_mounts.extend(
-        staged_config_mounts(&home, &stage).into_iter().map(|(src, dst)| format!("{src}:{dst}")),
-    );
-    let ro_mounts = ro_mounts(&hooks_dir);
+    let mut rw_mounts = if strict_trash {
+        Vec::new()
+    } else {
+        rw_mounts(
+            &home,
+            &live_sessions_own.to_string_lossy(),
+            &live_sessions.to_string_lossy(),
+        )
+    };
+    if !strict_trash {
+        rw_mounts.extend(
+            staged_config_mounts(&home, &stage)
+                .into_iter()
+                .map(|(src, dst)| format!("{src}:{dst}")),
+        );
+    }
+    let ro_mounts = if strict_trash {
+        Vec::new()
+    } else {
+        ro_mounts(&hooks_dir)
+    };
     let harden = harden_opts(spec);
     let image = image_for(project_id, spec);
 
@@ -763,12 +813,25 @@ pub fn up(project_id: &str, spec: Option<&SandboxSpec>, project_dir: &str) -> Re
     // kill every live tab of this one. Mounts are fixed at create anyway, so a
     // session simply runs with the set it started with.
     let base = docker_create_args(
-        &name, project_id, &image, &home, uid, gid, project_dir, &rw_mounts, &ro_mounts, &harden,
+        &name,
+        project_id,
+        &image,
+        &container_home,
+        uid,
+        gid,
+        project_dir,
+        &rw_mounts,
+        &ro_mounts,
+        &harden,
         None,
     );
     let fingerprint = spec_fingerprint(&base);
 
-    let (tx_rw, tx_ro) = claude_transcript_mounts(&home, project_dir, &claude_projects_stage(project_id));
+    let (tx_rw, tx_ro) = if strict_trash {
+        (Vec::new(), Vec::new())
+    } else {
+        claude_transcript_mounts(&home, project_dir, &claude_projects_stage(project_id))
+    };
     let rw_mounts: Vec<String> = rw_mounts.into_iter().chain(tx_rw).collect();
     let ro_mounts: Vec<String> = ro_mounts.into_iter().chain(tx_ro).collect();
 
@@ -789,7 +852,7 @@ pub fn up(project_id: &str, spec: Option<&SandboxSpec>, project_dir: &str) -> Re
         &name,
         project_id,
         &image,
-        &home,
+        &container_home,
         uid,
         gid,
         project_dir,
@@ -840,6 +903,9 @@ pub fn up_for_project(project_id: &str) -> Result<Option<String>, String> {
 /// best-effort. Only spawns docker when this run actually created the container
 /// or the toggle is currently on — a never-containerized project costs nothing.
 pub fn down_for_project(project_id: &str) {
+    if is_strict_trash_project(project_id) {
+        return;
+    }
     let name = container_name_for(project_id);
     let created = created_set().lock().unwrap().contains(&name);
     if !created && !sandbox_spec_for(project_id).is_some_and(|s| s.enabled) {
@@ -864,7 +930,7 @@ pub fn down_all() {
     if created_set().lock().unwrap().is_empty() {
         return;
     }
-    remove_all_owned();
+    remove_all_owned_except_trash();
     harvest_all_transcripts();
     created_set().lock().unwrap().clear();
     exec_tabs().lock().unwrap().clear();
@@ -886,23 +952,35 @@ pub fn sweep_orphans() {
     if !cfg!(unix) || preflight_docker().is_err() {
         return;
     }
-    remove_all_owned();
+    remove_all_owned_except_trash();
 }
 
 /// `docker rm -f` every container carrying our owner label. Best-effort.
-fn remove_all_owned() {
+/// Preserve the strict Trash container across Eldrun restarts: host tmux owns
+/// mobile-reachable agents there, while Docker remains the filesystem boundary.
+fn remove_all_owned_except_trash() {
     let _guard = lifecycle_lock().lock().unwrap();
     let Ok(out) = docker(&[
         "ps",
         "-aq",
         "--filter",
         &format!("label={OWNER_LABEL}"),
+        "--filter",
+        &format!("label=eldrun.project={}", paths::TRASH_PROJECT_ID),
     ]) else {
+        return;
+    };
+    let preserve: HashSet<&str> = std::str::from_utf8(&out.stdout)
+        .unwrap_or("")
+        .split_whitespace()
+        .collect();
+    let Ok(out) = docker(&["ps", "-aq", "--filter", &format!("label={OWNER_LABEL}")]) else {
         return;
     };
     let ids: Vec<&str> = std::str::from_utf8(&out.stdout)
         .unwrap_or("")
         .split_whitespace()
+        .filter(|id| !preserve.contains(*id))
         .collect();
     if ids.is_empty() {
         return;
@@ -950,7 +1028,10 @@ fn resolve_spec_dockerfile(project_dir: &Path, df: &str) -> Result<PathBuf, Stri
             "Project container: Dockerfile '{df}' must be a path inside the project, not absolute."
         ));
     }
-    if rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    if rel
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
         return Err(format!(
             "Project container: Dockerfile '{df}' must not contain '..'."
         ));
@@ -1040,7 +1121,10 @@ fn ensure_image(spec: Option<&SandboxSpec>, project_dir: &str, image: &str) -> R
 
 /// `docker` binary present and runnable?
 fn preflight_docker() -> Result<(), String> {
-    match crate::paths::command_no_window("docker").arg("--version").output() {
+    match crate::paths::command_no_window("docker")
+        .arg("--version")
+        .output()
+    {
         Ok(o) if o.status.success() => Ok(()),
         _ => Err(
             "Project container: 'docker' not found. Install Docker, or turn the container \
@@ -1430,7 +1514,10 @@ fn narrowed_agent_mounts(dir: &str, unmounted: &[&str]) -> Vec<String> {
         .collect();
     // Deterministic order so the spec fingerprint doesn't flap with readdir order.
     names.sort();
-    names.iter().map(|n| format!("{dir}/{n}:{dir}/{n}")).collect()
+    names
+        .iter()
+        .map(|n| format!("{dir}/{n}:{dir}/{n}"))
+        .collect()
 }
 
 /// Read-write mounts: the agent auth/state paths the resume machinery depends on.
@@ -1449,8 +1536,14 @@ fn narrowed_agent_mounts(dir: &str, unmounted: &[&str]) -> Vec<String> {
 /// agent resumes.
 fn rw_mounts(home: &str, live_sessions_src: &str, live_sessions_dst: &str) -> Vec<String> {
     let mut m = Vec::new();
-    m.extend(narrowed_agent_mounts(&format!("{home}/.claude"), CLAUDE_UNMOUNTED));
-    m.extend(narrowed_agent_mounts(&format!("{home}/.codex"), CODEX_UNMOUNTED));
+    m.extend(narrowed_agent_mounts(
+        &format!("{home}/.claude"),
+        CLAUDE_UNMOUNTED,
+    ));
+    m.extend(narrowed_agent_mounts(
+        &format!("{home}/.codex"),
+        CODEX_UNMOUNTED,
+    ));
     // The in-container SessionStart hook writes a tab's live id here.
     m.push(format!("{live_sessions_src}:{live_sessions_dst}"));
     // Gemini credentials only — narrowed from the whole `~/.config` so unrelated
@@ -1540,9 +1633,18 @@ fn cwd_is_within(cwd: &str, project_dir: &str) -> bool {
 fn transcript_name_matches(name: &str, project_dir: &str) -> bool {
     let encoded: String = project_dir
         .chars()
-        .map(|c| if c == '/' || c == '\\' || c == '.' { '-' } else { c })
+        .map(|c| {
+            if c == '/' || c == '\\' || c == '.' {
+                '-'
+            } else {
+                c
+            }
+        })
         .collect();
-    name == encoded || name.strip_prefix(&encoded).is_some_and(|rest| rest.starts_with('-'))
+    name == encoded
+        || name
+            .strip_prefix(&encoded)
+            .is_some_and(|rest| rest.starts_with('-'))
 }
 
 /// The `~/.claude/projects` mounts as `(rw, ro)` `src:dst` pairs — **an explicit
@@ -1562,7 +1664,11 @@ fn transcript_name_matches(name: &str, project_dir: &str) -> bool {
 ///
 /// The whole dir used to be one rw mount, which made every project's history
 /// rewritable from inside any container.
-fn claude_transcript_mounts(home: &str, project_dir: &str, stage: &Path) -> (Vec<String>, Vec<String>) {
+fn claude_transcript_mounts(
+    home: &str,
+    project_dir: &str,
+    stage: &Path,
+) -> (Vec<String>, Vec<String>) {
     let dest_root = format!("{home}/.claude/{CLAUDE_PROJECTS_ENTRY}");
     // Created by us so the mount maps a real user-owned dir rather than a
     // docker-auto-created root-owned one (the container runs as --user uid:gid).
@@ -1618,7 +1724,9 @@ fn harvest_claude_transcripts(stage: &Path, real_root: &Path) {
         if !src.is_dir() {
             continue;
         }
-        let empty = std::fs::read_dir(&src).map(|mut d| d.next().is_none()).unwrap_or(true);
+        let empty = std::fs::read_dir(&src)
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(true);
         if empty {
             let _ = std::fs::remove_dir(&src);
             continue;
@@ -1651,7 +1759,9 @@ fn harvest_claude_transcripts(stage: &Path, real_root: &Path) {
 
 /// [`harvest_claude_transcripts`] for one project's stage.
 fn harvest_project_transcripts(project_id: &str) {
-    let real = paths::home_dir().join(".claude").join(CLAUDE_PROJECTS_ENTRY);
+    let real = paths::home_dir()
+        .join(".claude")
+        .join(CLAUDE_PROJECTS_ENTRY);
     harvest_claude_transcripts(&claude_projects_stage(project_id), &real);
 }
 
@@ -1659,7 +1769,9 @@ fn harvest_project_transcripts(project_id: &str) {
 /// startup sweep (where it is a previous *crashed* run's harvest, and so must
 /// run before the stage root is cleared).
 fn harvest_all_transcripts() {
-    let real = paths::home_dir().join(".claude").join(CLAUDE_PROJECTS_ENTRY);
+    let real = paths::home_dir()
+        .join(".claude")
+        .join(CLAUDE_PROJECTS_ENTRY);
     let Ok(entries) = std::fs::read_dir(storage::state_dir().join("sandbox-stage")) else {
         return;
     };
@@ -1712,12 +1824,20 @@ fn stage_dir(project_id: &str) -> PathBuf {
 fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, String)> {
     let home = Path::new(home);
     let mut mounts = Vec::new();
-    for rel in [".claude/settings.json", ".claude/settings.local.json", ".codex/config.toml"] {
+    for rel in [
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        ".codex/config.toml",
+    ] {
         // Native separators: the container path is the host original's own path.
-        let src_path = rel.split('/').fold(home.to_path_buf(), |p, seg| p.join(seg));
+        let src_path = rel
+            .split('/')
+            .fold(home.to_path_buf(), |p, seg| p.join(seg));
         // Flatten the host path to a unique leaf so the three files never collide.
         let src = src_path.to_string_lossy().into_owned();
-        let leaf = src.trim_start_matches(['/', '\\']).replace(['/', '\\', ':'], "_");
+        let leaf = src
+            .trim_start_matches(['/', '\\'])
+            .replace(['/', '\\', ':'], "_");
         let dst = stage.join(&leaf);
         let staged = if src_path.is_file() {
             std::fs::copy(&src_path, &dst).is_ok()
@@ -1748,7 +1868,9 @@ fn default_agent_config(rel: &str) -> &'static [u8] {
 /// defaults (always-on `--pids-limit`; other caps opt-in).
 fn harden_opts(spec: Option<&SandboxSpec>) -> HardenOpts {
     HardenOpts {
-        pids_limit: spec.and_then(|s| s.pids_limit).unwrap_or(DEFAULT_PIDS_LIMIT),
+        pids_limit: spec
+            .and_then(|s| s.pids_limit)
+            .unwrap_or(DEFAULT_PIDS_LIMIT),
         memory: spec.and_then(|s| s.memory.clone()),
         cpus: spec.and_then(|s| s.cpus.clone()),
         // A rejected network falls back to docker's default bridge rather than
@@ -1756,13 +1878,15 @@ fn harden_opts(spec: Option<&SandboxSpec>) -> HardenOpts {
         // being refused is one that would *remove* isolation), and the loud
         // rejection lives at the point the spec is written
         // (`commands::projects::set_project_sandbox_spec`).
-        network: spec.and_then(|s| s.network.clone()).filter(|n| match validate_network(n) {
-            Ok(()) => true,
-            Err(e) => {
-                eprintln!("sandbox: ignoring spec network '{n}': {e}");
-                false
-            }
-        }),
+        network: spec
+            .and_then(|s| s.network.clone())
+            .filter(|n| match validate_network(n) {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!("sandbox: ignoring spec network '{n}': {e}");
+                    false
+                }
+            }),
         readonly_rootfs: spec.map(|s| s.readonly_rootfs).unwrap_or(false),
     }
 }
@@ -1886,7 +2010,11 @@ mod tests {
         let mut other = create(None);
         let img = pos(&other, "img:latest").unwrap();
         other[img] = "img:v2".to_string();
-        assert_ne!(a, spec_fingerprint(&other), "image change must change the hash");
+        assert_ne!(
+            a,
+            spec_fingerprint(&other),
+            "image change must change the hash"
+        );
 
         // Boundary sensitivity: ["ab","c"] vs ["a","bc"].
         assert_ne!(
@@ -1944,14 +2072,22 @@ mod tests {
         assert!(has_flag_value(&out, "--name", "eldrun-p1"));
         assert!(has_flag_value(&out, "--label", OWNER_LABEL));
         assert!(has_flag_value(&out, "--label", "eldrun.project=p1"));
-        assert!(has_flag_value(&out, "--label", "eldrun.spec=deadbeef00000000"));
+        assert!(has_flag_value(
+            &out,
+            "--label",
+            "eldrun.spec=deadbeef00000000"
+        ));
         assert!(has_flag_value(&out, "--user", "1000:1000"));
         assert!(has_flag_value(&out, "-e", "HOME=/home/alice"));
         assert!(has_flag_value(&out, "-w", "/home/alice/eldrun/projects/p1"));
         // Hardening always on.
         assert!(has_flag_value(&out, "--security-opt", "no-new-privileges"));
         assert!(has_flag_value(&out, "--cap-drop", "ALL"));
-        assert!(has_flag_value(&out, "--pids-limit", &DEFAULT_PIDS_LIMIT.to_string()));
+        assert!(has_flag_value(
+            &out,
+            "--pids-limit",
+            &DEFAULT_PIDS_LIMIT.to_string()
+        ));
         // Project dir always mounted rw at its identical path.
         assert!(has_flag_value(
             &out,
@@ -1959,8 +2095,16 @@ mod tests {
             "/home/alice/eldrun/projects/p1:/home/alice/eldrun/projects/p1"
         ));
         // rw auth mounts.
-        assert!(has_flag_value(&out, "-v", "/home/alice/.claude:/home/alice/.claude"));
-        assert!(has_flag_value(&out, "-v", "/state/live_sessions:/state/live_sessions"));
+        assert!(has_flag_value(
+            &out,
+            "-v",
+            "/home/alice/.claude:/home/alice/.claude"
+        ));
+        assert!(has_flag_value(
+            &out,
+            "-v",
+            "/state/live_sessions:/state/live_sessions"
+        ));
         // The hook script dir is read-only (:ro suffix)...
         assert!(has_flag_value(&out, "-v", "/state/hooks:/state/hooks:ro"));
         // ...but settings.json is a writable per-PROJECT copy shadowing the
@@ -1988,8 +2132,16 @@ mod tests {
         let bare = create(None);
         let labeled = create(Some("feedface00000000"));
         assert!(!bare.iter().any(|s| s.starts_with("eldrun.spec=")));
-        assert_eq!(labeled.len(), bare.len() + 2, "fingerprint adds exactly --label + value");
-        assert!(has_flag_value(&labeled, "--label", "eldrun.spec=feedface00000000"));
+        assert_eq!(
+            labeled.len(),
+            bare.len() + 2,
+            "fingerprint adds exactly --label + value"
+        );
+        assert!(has_flag_value(
+            &labeled,
+            "--label",
+            "eldrun.spec=feedface00000000"
+        ));
     }
 
     #[test]
@@ -2008,7 +2160,17 @@ mod tests {
             readonly_rootfs: true,
         };
         let out = docker_create_args(
-            "eldrun-p1", "p1", "img", "/h", 1, 1, "/p", &[], &[], &harden, None,
+            "eldrun-p1",
+            "p1",
+            "img",
+            "/h",
+            1,
+            1,
+            "/p",
+            &[],
+            &[],
+            &harden,
+            None,
         );
         assert!(has_flag_value(&out, "--pids-limit", "256"));
         assert!(has_flag_value(&out, "--memory", "4g"));
@@ -2038,18 +2200,28 @@ mod tests {
         assert!(out.contains(&"-i".to_string()));
         assert!(out.contains(&"-t".to_string()));
         // Per-tab cwd (subdir tabs stay correct under identical-path mounting).
-        assert!(has_flag_value(&out, "-w", "/home/alice/eldrun/projects/p1/sub"));
+        assert!(has_flag_value(
+            &out,
+            "-w",
+            "/home/alice/eldrun/projects/p1/sub"
+        ));
         assert!(has_flag_value(&out, "-e", "TERM=xterm-256color"));
         assert!(has_flag_value(&out, "-e", "ELDRUN_TAB_UID=tab-1"));
         // Auth env rides at exec (rotated tokens per spawn), before the name.
         assert!(has_flag_value(&out, "-e", "ANTHROPIC_API_KEY=sk-test"));
-        let key = out.iter().position(|s| s == "ANTHROPIC_API_KEY=sk-test").unwrap();
+        let key = out
+            .iter()
+            .position(|s| s == "ANTHROPIC_API_KEY=sk-test")
+            .unwrap();
         let name = pos(&out, "eldrun-p1").unwrap();
         assert!(key < name, "env must precede the container name");
         // Kill-wrapper shape: name, sh -c '<pidfile script>' sh <cmd> <args…>.
         assert_eq!(out[name + 1], "sh");
         assert_eq!(out[name + 2], "-c");
-        assert_eq!(out[name + 3], "echo $$ > /tmp/eldrun-tab-t1-0.pid; exec \"$@\"");
+        assert_eq!(
+            out[name + 3],
+            "echo $$ > /tmp/eldrun-tab-t1-0.pid; exec \"$@\""
+        );
         assert_eq!(out[name + 4], "sh");
         // Original command + resume args preserved in order after the wrapper.
         assert_eq!(&out[name + 5..], &["claude", "--resume", "uuid-1"]);
@@ -2103,7 +2275,10 @@ mod tests {
         // The absent ones are staged as parseable/empty defaults, and the host
         // originals are still absent (nothing wrote through).
         for (staged_src, original) in &mounts[1..] {
-            assert!(Path::new(staged_src).is_file(), "{staged_src} must be staged");
+            assert!(
+                Path::new(staged_src).is_file(),
+                "{staged_src} must be staged"
+            );
             assert!(
                 !Path::new(original).exists(),
                 "staging must never create the host original {original}"
@@ -2207,7 +2382,10 @@ mod tests {
     // ── Authority resolution (S-2 / S-6) ──────────────────────────────────
 
     fn want(sandbox: bool, local_only: bool) -> SpawnAuthority {
-        SpawnAuthority { sandbox, local_only }
+        SpawnAuthority {
+            sandbox,
+            local_only,
+        }
     }
 
     /// `resolve_spawn_authority` under the default (contain everything) scope —
@@ -2265,8 +2443,14 @@ mod tests {
     fn a_host_bound_marker_is_a_single_path_component() {
         // The uid names a file, and it arrives from the renderer.
         for bad in ["", "../../etc/passwd", "a/b", "a\\b", "..", "x y", "é"] {
-            assert!(!host_bound_marker_exists("p1", bad), "{bad:?} must not resolve");
-            assert!(register_host_bound_tab("p1", bad).is_err(), "{bad:?} must be refused");
+            assert!(
+                !host_bound_marker_exists("p1", bad),
+                "{bad:?} must not resolve"
+            );
+            assert!(
+                register_host_bound_tab("p1", bad).is_err(),
+                "{bad:?} must be refused"
+            );
         }
         assert!(register_host_bound_tab("p1", &"x".repeat(65)).is_err());
     }
@@ -2422,7 +2606,10 @@ mod tests {
         // An agent missing from the classifier runs OUTSIDE the container under
         // agents-only scope, which is exactly the silent failure worth a test.
         for bin in crate::commands::agents::agent_bins() {
-            assert!(is_agent_cmd(bin), "{bin} is in the registry but not classified");
+            assert!(
+                is_agent_cmd(bin),
+                "{bin} is in the registry but not classified"
+            );
         }
         // The registry is non-empty (a `Vec::new()` refactor would make every
         // assertion above vacuous and every agent escape the container).
@@ -2491,14 +2678,21 @@ mod tests {
         // Stable across calls, so the spec fingerprint doesn't flap.
         assert_eq!(narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED), mounts);
         // A dir that isn't there mounts nothing (never auto-created).
-        assert!(narrowed_agent_mounts(&base.join("nope").to_string_lossy(), CLAUDE_UNMOUNTED).is_empty());
+        assert!(
+            narrowed_agent_mounts(&base.join("nope").to_string_lossy(), CLAUDE_UNMOUNTED)
+                .is_empty()
+        );
 
         std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]
     fn live_sessions_is_mounted_per_project_at_the_canonical_path() {
-        let mounts = rw_mounts("/home/alice", "/state/live_sessions/p1", "/state/live_sessions");
+        let mounts = rw_mounts(
+            "/home/alice",
+            "/state/live_sessions/p1",
+            "/state/live_sessions",
+        );
         // The ONE deliberately non-identical mount: the hook script's baked-in path
         // is served by this project's own slice.
         assert!(mounts.contains(&"/state/live_sessions/p1:/state/live_sessions".to_string()));
@@ -2566,9 +2760,15 @@ mod tests {
 
         assert!(has(&rw, "ours"));
         assert!(has(&rw, "ours-subdir"));
-        assert!(has(&ro, "sibling"), "a sibling project must not be writable");
+        assert!(
+            has(&ro, "sibling"),
+            "a sibling project must not be writable"
+        );
         assert!(has(&ro, "elsewhere"));
-        assert!(has(&ro, "empty-unknown"), "unknown must default to read-only");
+        assert!(
+            has(&ro, "empty-unknown"),
+            "unknown must default to read-only"
+        );
         // Nothing is writable that isn't ours, and nothing is silently dropped:
         // the read allowance is listed entry by entry.
         for name in ["sibling", "elsewhere", "empty-unknown"] {
@@ -2576,7 +2776,10 @@ mod tests {
         }
         assert_eq!(rw.len() + ro.len(), 1 + 5);
         // Deterministic, so the mount list doesn't flap with readdir order.
-        assert_eq!(claude_transcript_mounts(&home_str, &project, &stage), (rw, ro));
+        assert_eq!(
+            claude_transcript_mounts(&home_str, &project, &stage),
+            (rw, ro)
+        );
 
         std::fs::remove_dir_all(&base).ok();
     }
@@ -2589,10 +2792,16 @@ mod tests {
         assert!(transcript_name_matches("-home-u-proj-src", "/home/u/proj"));
         // A sibling whose name merely *starts* with ours — the `GNNGED` vs
         // `GNNGEDAnalysis` case.
-        assert!(!transcript_name_matches("-home-u-projAnalysis", "/home/u/proj"));
+        assert!(!transcript_name_matches(
+            "-home-u-projAnalysis",
+            "/home/u/proj"
+        ));
         assert!(!transcript_name_matches("-home-u-other", "/home/u/proj"));
         // A dotted segment encodes like a separator does.
-        assert!(transcript_name_matches("-home-u-proj--hidden", "/home/u/proj"));
+        assert!(transcript_name_matches(
+            "-home-u-proj--hidden",
+            "/home/u/proj"
+        ));
     }
 
     #[test]
@@ -2647,7 +2856,11 @@ mod tests {
         let proj = base.join("proj");
         std::fs::create_dir_all(proj.join("docker")).unwrap();
         std::fs::write(proj.join("Dockerfile"), b"FROM debian:stable").unwrap();
-        std::fs::write(proj.join("docker").join("Dockerfile"), b"FROM debian:stable").unwrap();
+        std::fs::write(
+            proj.join("docker").join("Dockerfile"),
+            b"FROM debian:stable",
+        )
+        .unwrap();
         std::fs::write(base.join("evil.Dockerfile"), b"FROM debian\nRUN pwn").unwrap();
 
         assert!(resolve_spec_dockerfile(&proj, "Dockerfile").is_ok());

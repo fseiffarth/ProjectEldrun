@@ -122,7 +122,10 @@ fn to_bp(v: f64, unit: f64, offset: f64) -> f64 {
 /// answering nothing at all from that page on — which looked exactly like "the
 /// feature is dead here" rather than like a parse bug.
 fn parse_preamble(text: &str) -> Preamble {
-    let mut p = Preamble { unit: 1.0, ..Default::default() };
+    let mut p = Preamble {
+        unit: 1.0,
+        ..Default::default()
+    };
     let mut in_header = true;
     for raw in text.lines() {
         let l = raw.trim_end();
@@ -131,7 +134,9 @@ fn parse_preamble(text: &str) -> Preamble {
         }
         if let Some(rest) = l.strip_prefix("Input:") {
             let mut it = rest.splitn(2, ':');
-            let Some(tag) = it.next().and_then(|t| t.trim().parse::<u32>().ok()) else { continue };
+            let Some(tag) = it.next().and_then(|t| t.trim().parse::<u32>().ok()) else {
+                continue;
+            };
             let path = it.next().unwrap_or("").trim();
             if !path.is_empty() {
                 p.inputs.insert(tag, path.to_string());
@@ -177,9 +182,18 @@ fn parse_record(body: &str, p: &Preamble, elastic: bool) -> Option<Rec> {
     let (mut w, mut h, mut d) = (0.0, 0.0, 0.0);
     if let Some(geom) = fields.next() {
         let mut g = geom.split(',');
-        w = g.next().and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(0.0);
-        h = g.next().and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(0.0);
-        d = g.next().and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(0.0);
+        w = g
+            .next()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .unwrap_or(0.0);
+        h = g
+            .next()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .unwrap_or(0.0);
+        d = g
+            .next()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .unwrap_or(0.0);
     }
 
     let scale = |v: f64| v * p.unit / SP_PER_PT * PT_PER_BP;
@@ -256,12 +270,21 @@ fn walk_hboxes(text: &str, p: &Preamble, only_page: Option<u32>) -> Vec<(u32, HB
                 }
             }
             ']' | ')' => {
-                let Some((rec, is_h, leaves)) = stack.pop() else { continue };
+                let Some((rec, is_h, leaves)) = stack.pop() else {
+                    continue;
+                };
                 if let Some(parent) = stack.last_mut() {
                     parent.2.push(rec);
                 }
                 if is_h && rec.line > 0 {
-                    out.push((page, HBox { rec, depth: stack.len(), leaves }));
+                    out.push((
+                        page,
+                        HBox {
+                            rec,
+                            depth: stack.len(),
+                            leaves,
+                        },
+                    ));
                 }
             }
             // Leaves: glyph run, kern, glue, math, rule, and the void boxes.
@@ -371,7 +394,11 @@ fn resolve_in_hbox(bx: &HBox, cx: f64) -> (u32, u32) {
         .copied()
         .filter(|r| r.tag != bx.rec.tag || r.line != bx.rec.line)
         .collect();
-    let pool = if informative.is_empty() { &usable } else { &informative };
+    let pool = if informative.is_empty() {
+        &usable
+    } else {
+        &informative
+    };
 
     // Nearest by horizontal distance; ties keep the earlier (left) record,
     // matching reading order.
@@ -389,8 +416,15 @@ fn resolve_in_hbox(bx: &HBox, cx: f64) -> (u32, u32) {
 /// an already-open editor tab was opened under.
 fn absolutise(input: &str, base: &Path) -> String {
     let p = Path::new(input);
-    let abs: PathBuf = if p.is_absolute() { p.to_path_buf() } else { base.join(p) };
-    std::fs::canonicalize(&abs).unwrap_or(abs).to_string_lossy().into_owned()
+    let abs: PathBuf = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base.join(p)
+    };
+    std::fs::canonicalize(&abs)
+        .unwrap_or(abs)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Decompressed SyncTeX text, cached against the file's path and mtime so a
@@ -436,7 +470,9 @@ fn load_map(pdf: &Path) -> Option<std::sync::Arc<Map>> {
         use std::io::Read;
         let bytes = std::fs::read(&path).ok()?;
         let mut out = String::new();
-        flate2::read::GzDecoder::new(&bytes[..]).read_to_string(&mut out).ok()?;
+        flate2::read::GzDecoder::new(&bytes[..])
+            .read_to_string(&mut out)
+            .ok()?;
         out
     } else {
         std::fs::read_to_string(&path).ok()?
@@ -507,7 +543,9 @@ fn input_tag(pre: &Preamble, input: &str, dir: &Path) -> Option<u32> {
 /// Empty when there is no map, the file is not in it, or the line produced nothing
 /// — the caller then falls back to the CLI.
 pub fn view(pdf: &Path, input: &str, line: u32) -> Vec<(u32, f64, f64, f64, f64)> {
-    let Some(map) = load_map(pdf) else { return Vec::new() };
+    let Some(map) = load_map(pdf) else {
+        return Vec::new();
+    };
     let dir = pdf.parent().unwrap_or_else(|| Path::new("."));
     view_in(&map.text, &map.pre, dir, input, line)
 }
@@ -521,7 +559,9 @@ fn view_in(
     input: &str,
     line: u32,
 ) -> Vec<(u32, f64, f64, f64, f64)> {
-    let Some(tag) = input_tag(pre, input, dir) else { return Vec::new() };
+    let Some(tag) = input_tag(pre, input, dir) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     for (page, bx) in walk_hboxes(text, pre, None) {
         let hit = (bx.rec.tag == tag && bx.rec.line == line)
@@ -529,7 +569,13 @@ fn view_in(
         if hit {
             // The box spans `y - h` (top) to `y + d` (bottom); the CLI rect is the
             // top edge plus the full height.
-            out.push((page, bx.rec.x, bx.rec.y - bx.rec.h, bx.rec.w, bx.rec.h + bx.rec.d));
+            out.push((
+                page,
+                bx.rec.x,
+                bx.rec.y - bx.rec.h,
+                bx.rec.w,
+                bx.rec.h + bx.rec.d,
+            ));
         }
     }
     out
@@ -594,7 +640,10 @@ Postamble:
     fn preamble_reads_the_input_table_and_transform() {
         let p = parse_preamble(DOC);
         assert_eq!(p.inputs.get(&1).map(String::as_str), Some("/proj/main.tex"));
-        assert_eq!(p.inputs.get(&5).map(String::as_str), Some("/proj/chapters/intro.tex"));
+        assert_eq!(
+            p.inputs.get(&5).map(String::as_str),
+            Some("/proj/chapters/intro.tex")
+        );
         assert_eq!(p.unit, 1.0);
         assert_eq!((p.x_offset, p.y_offset), (0.0, 0.0));
     }
@@ -713,7 +762,11 @@ x1,3:11218261,8865054
         let boxes = page_hboxes(DOC, 1, &p);
         let bx = &boxes[0];
         let trimmed = trim_line_fill(bx, &bx.leaves.iter().collect::<Vec<_>>());
-        assert_eq!(trimmed.len(), 4, "the k/g fill is dropped, the four glyph records stay");
+        assert_eq!(
+            trimmed.len(),
+            4,
+            "the k/g fill is dropped, the four glyph records stay"
+        );
         assert!(trimmed.iter().all(|r| r.tag == 1));
         assert_eq!(resolve_at(400.0, bp(8865054.0)), (1, 3));
     }
@@ -725,7 +778,10 @@ x1,3:11218261,8865054
         let p = parse_preamble(DOC);
         let boxes = page_hboxes(DOC, 1, &p);
         let trimmed = trim_line_fill(&boxes[0], &boxes[0].leaves.iter().collect::<Vec<_>>());
-        assert!(trimmed.iter().any(|r| r.elastic), "the interword glue is still there");
+        assert!(
+            trimmed.iter().any(|r| r.elastic),
+            "the interword glue is still there"
+        );
     }
 
     #[test]
@@ -734,7 +790,10 @@ x1,3:11218261,8865054
         let second = bp(13224414.0);
         let gap = (first + second) / 2.0;
         assert_eq!(resolve_at(bp(11436714.0), first + (gap - first) * 0.4).0, 1);
-        assert_eq!(resolve_at(bp(11436714.0), second - (second - gap) * 0.4).0, 5);
+        assert_eq!(
+            resolve_at(bp(11436714.0), second - (second - gap) * 0.4).0,
+            5
+        );
     }
 
     #[test]
@@ -764,7 +823,16 @@ g1,9:11436714,8865054
     #[test]
     fn an_empty_box_falls_back_to_its_own_tag() {
         let bx = HBox {
-            rec: Rec { tag: 3, line: 12, x: 0.0, y: 0.0, w: 100.0, h: 10.0, d: 0.0, elastic: false },
+            rec: Rec {
+                tag: 3,
+                line: 12,
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 10.0,
+                d: 0.0,
+                elastic: false,
+            },
             depth: 1,
             leaves: Vec::new(),
         };
@@ -794,7 +862,10 @@ x1,20:15048556,8865054
         let boxes = page_hboxes(NESTED, 1, &p);
         assert_eq!(boxes.len(), 2);
         let bx = pick_hbox(&boxes, bp(9000000.0), bp(8865054.0)).expect("an hbox");
-        assert_eq!(bx.rec.line, 21, "the inner box wins where it covers the click");
+        assert_eq!(
+            bx.rec.line, 21,
+            "the inner box wins where it covers the click"
+        );
     }
 
     #[test]

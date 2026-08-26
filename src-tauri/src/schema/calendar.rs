@@ -1118,7 +1118,10 @@ mod tests {
             extra: HashMap::new(),
         };
         data.normalize();
-        assert!(data.task_columns.is_empty(), "a read must not create a board");
+        assert!(
+            data.task_columns.is_empty(),
+            "a read must not create a board"
+        );
         assert!(data.tasks[0].column.is_empty());
         assert_eq!(data.tasks[0].rank, None);
     }
@@ -1510,7 +1513,9 @@ mod tests {
                 r#"{{"version":{v},"calendars":[],"events":[],"tasks":[
                     {{"id":"t","calendar_id":"default","title":"x"}}]}}"#
             );
-            serde_json::from_str::<CalendarFile>(&raw).unwrap().into_data()
+            serde_json::from_str::<CalendarFile>(&raw)
+                .unwrap()
+                .into_data()
         };
         let old = mk(1);
         let future = mk(99);

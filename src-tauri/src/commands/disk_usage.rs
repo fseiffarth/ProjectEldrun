@@ -84,7 +84,10 @@ pub async fn disk_usage_scan(
     // for them is not (`services::hpc_mode::HPC_GUARD`).
     if let Some(target) = remote.as_ref() {
         if confirmed != Some(true) && crate::services::hpc_mode::is_hpc_spec(&target.spec) {
-            return Err(crate::services::hpc_mode::guard_error("du-scan", &target.spec));
+            return Err(crate::services::hpc_mode::guard_error(
+                "du-scan",
+                &target.spec,
+            ));
         }
     }
 
@@ -95,9 +98,7 @@ pub async fn disk_usage_scan(
     let _dial = remote
         .as_ref()
         .filter(|_| confirmed == Some(true))
-        .map(|t| {
-            crate::services::ssh_common::user_dial(&t.spec.user, &t.spec.host, t.spec.port)
-        });
+        .map(|t| crate::services::ssh_common::user_dial(&t.spec.user, &t.spec.host, t.spec.port));
 
     let cancel = Arc::new(AtomicBool::new(false));
     if let Ok(mut map) = state.lock() {
@@ -107,11 +108,9 @@ pub async fn disk_usage_scan(
     let result = if let Some(target) = remote {
         let spec = target.spec.clone();
         let root = root.clone();
-        tokio::task::spawn_blocking(move || {
-            crate::services::ssh_exec::remote_du_tree(&spec, &root)
-        })
-        .await
-        .map_err(|e| e.to_string())?
+        tokio::task::spawn_blocking(move || crate::services::ssh_exec::remote_du_tree(&spec, &root))
+            .await
+            .map_err(|e| e.to_string())?
     } else {
         let app2 = app.clone();
         let id = scan_id.clone();
@@ -132,7 +131,12 @@ pub async fn disk_usage_scan(
     }
     let done = result
         .as_ref()
-        .map(|s| Tally { files: s.files, dirs: s.dirs, bytes: s.root.size, errors: s.errors })
+        .map(|s| Tally {
+            files: s.files,
+            dirs: s.dirs,
+            bytes: s.root.size,
+            errors: s.errors,
+        })
         .unwrap_or_default();
     emit(&app, &scan_id, "done", &root, &done);
 

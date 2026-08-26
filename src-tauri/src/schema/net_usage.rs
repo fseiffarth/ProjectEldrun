@@ -359,7 +359,10 @@ mod tests {
         s.add("p1", "2026-07-03T14", 50, 10);
         s.add("p2", "2026-07-03T09", 7, 3);
         s.add("p1", "2026-07-02T23", 9, 1);
-        assert_eq!(s.usage_on("p1", "2026-07-03"), ByteCounts { rx: 150, tx: 50 });
+        assert_eq!(
+            s.usage_on("p1", "2026-07-03"),
+            ByteCounts { rx: 150, tx: 50 }
+        );
         assert_eq!(s.usage_on("p2", "2026-07-03"), ByteCounts { rx: 7, tx: 3 });
         assert_eq!(s.usage_on("p1", "2026-07-02"), ByteCounts { rx: 9, tx: 1 });
         assert_eq!(s.usage_on("missing", "2026-07-03"), ByteCounts::default());
@@ -380,9 +383,15 @@ mod tests {
             s.usage_in_hour("p1", "2026-07-03T14"),
             ByteCounts { rx: 50, tx: 10 }
         );
-        assert_eq!(s.usage_in_hour("p1", "2026-07-03T10"), ByteCounts::default());
+        assert_eq!(
+            s.usage_in_hour("p1", "2026-07-03T10"),
+            ByteCounts::default()
+        );
         // The day is the sum of its hours, from the same stamps.
-        assert_eq!(s.usage_on("p1", "2026-07-03"), ByteCounts { rx: 155, tx: 52 });
+        assert_eq!(
+            s.usage_on("p1", "2026-07-03"),
+            ByteCounts { rx: 155, tx: 52 }
+        );
     }
 
     #[test]
@@ -416,7 +425,10 @@ mod tests {
         s.add("p1", "2026-07-03T10", 10, 10);
         assert_eq!(
             s.usage_on("p1", "2026-07-03"),
-            ByteCounts { rx: u64::MAX, tx: u64::MAX }
+            ByteCounts {
+                rx: u64::MAX,
+                tx: u64::MAX
+            }
         );
     }
 
@@ -445,12 +457,18 @@ mod tests {
         s.add("p1", "2026-07-03T10", 9, 3);
 
         let p1 = s.hourly_for("p1");
-        assert_eq!(p1.get("2026-07-03T09"), Some(&ByteCounts { rx: 100, tx: 20 }));
+        assert_eq!(
+            p1.get("2026-07-03T09"),
+            Some(&ByteCounts { rx: 100, tx: 20 })
+        );
         assert_eq!(p1.get("2026-07-03T10"), Some(&ByteCounts { rx: 9, tx: 3 }));
         assert_eq!(p1.get("2026-07-03T11"), None);
 
         let all = s.hourly_for("");
-        assert_eq!(all.get("2026-07-03T09"), Some(&ByteCounts { rx: 105, tx: 21 }));
+        assert_eq!(
+            all.get("2026-07-03T09"),
+            Some(&ByteCounts { rx: 105, tx: 21 })
+        );
     }
 
     #[test]
@@ -482,12 +500,24 @@ mod tests {
             s.usage_in_hour("p1", "2026-06-20T23"),
             ByteCounts { rx: 10, tx: 1 }
         );
-        assert_eq!(s.usage_in_hour("p1", "2026-06-07T00"), ByteCounts { rx: 10, tx: 1 });
-        assert_eq!(s.usage_in_hour("p1", "2026-06-06T23"), ByteCounts::default());
-        assert_eq!(s.usage_in_hour("p1", "2026-06-01T00"), ByteCounts::default());
+        assert_eq!(
+            s.usage_in_hour("p1", "2026-06-07T00"),
+            ByteCounts { rx: 10, tx: 1 }
+        );
+        assert_eq!(
+            s.usage_in_hour("p1", "2026-06-06T23"),
+            ByteCounts::default()
+        );
+        assert_eq!(
+            s.usage_in_hour("p1", "2026-06-01T00"),
+            ByteCounts::default()
+        );
         // Pruning hours never touches the day totals they fed.
         assert_eq!(s.days.len(), 20);
-        assert_eq!(s.usage_on("p1", "2026-06-01"), ByteCounts { rx: 240, tx: 24 });
+        assert_eq!(
+            s.usage_on("p1", "2026-06-01"),
+            ByteCounts { rx: 240, tx: 24 }
+        );
     }
 
     #[test]
@@ -504,7 +534,10 @@ mod tests {
         s.add("p1", "2026-07-03T09", 42, 7);
         let json = serde_json::to_string(&s).unwrap();
         let back: NetUsageSummary = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.usage_on("p1", "2026-07-03"), ByteCounts { rx: 42, tx: 7 });
+        assert_eq!(
+            back.usage_on("p1", "2026-07-03"),
+            ByteCounts { rx: 42, tx: 7 }
+        );
         assert_eq!(
             back.usage_in_hour("p1", "2026-07-03T09"),
             ByteCounts { rx: 42, tx: 7 }
@@ -529,12 +562,21 @@ mod tests {
             "days": { "2026-07-03": { "p1": { "rx": 500, "tx": 100 } } }
         }"#;
         let mut back: NetUsageSummary = serde_json::from_str(json).unwrap();
-        assert_eq!(back.usage_on("p1", "2026-07-03"), ByteCounts { rx: 500, tx: 100 });
+        assert_eq!(
+            back.usage_on("p1", "2026-07-03"),
+            ByteCounts { rx: 500, tx: 100 }
+        );
         assert!(back.hours.is_empty());
         // Hourly resolution starts accruing from here; the old day total stands.
         back.add("p1", "2026-07-03T09", 1, 1);
-        assert_eq!(back.usage_on("p1", "2026-07-03"), ByteCounts { rx: 501, tx: 101 });
-        assert_eq!(back.usage_in_hour("p1", "2026-07-03T09"), ByteCounts { rx: 1, tx: 1 });
+        assert_eq!(
+            back.usage_on("p1", "2026-07-03"),
+            ByteCounts { rx: 501, tx: 101 }
+        );
+        assert_eq!(
+            back.usage_in_hour("p1", "2026-07-03T09"),
+            ByteCounts { rx: 1, tx: 1 }
+        );
     }
 
     #[test]
@@ -545,11 +587,23 @@ mod tests {
         s.add_files("p1", "2026-07-03T09", 0, 1); // 1 file uploaded
         s.add_files("p1", "2026-07-02T23", 5, 2);
 
-        assert_eq!(s.files_on("p1", "2026-07-03"), FileCounts { down: 3, up: 1 });
-        assert_eq!(s.files_in_hour("p1", "2026-07-03T09"), FileCounts { down: 3, up: 1 });
-        assert_eq!(s.files_on("p1", "2026-07-02"), FileCounts { down: 5, up: 2 });
+        assert_eq!(
+            s.files_on("p1", "2026-07-03"),
+            FileCounts { down: 3, up: 1 }
+        );
+        assert_eq!(
+            s.files_in_hour("p1", "2026-07-03T09"),
+            FileCounts { down: 3, up: 1 }
+        );
+        assert_eq!(
+            s.files_on("p1", "2026-07-02"),
+            FileCounts { down: 5, up: 2 }
+        );
         // Byte totals are untouched by file-count recording.
-        assert_eq!(s.usage_on("p1", "2026-07-03"), ByteCounts { rx: 100, tx: 40 });
+        assert_eq!(
+            s.usage_on("p1", "2026-07-03"),
+            ByteCounts { rx: 100, tx: 40 }
+        );
     }
 
     #[test]
@@ -569,10 +623,16 @@ mod tests {
         s.add_files("p1", "2026-07-03T10", 0, 4);
 
         let p1_days = s.activity_files_for("p1");
-        assert_eq!(p1_days.get("2026-07-03"), Some(&FileCounts { down: 2, up: 4 }));
+        assert_eq!(
+            p1_days.get("2026-07-03"),
+            Some(&FileCounts { down: 2, up: 4 })
+        );
 
         let all_hours = s.hourly_files_for("");
-        assert_eq!(all_hours.get("2026-07-03T09"), Some(&FileCounts { down: 3, up: 1 }));
+        assert_eq!(
+            all_hours.get("2026-07-03T09"),
+            Some(&FileCounts { down: 3, up: 1 })
+        );
     }
 
     #[test]
@@ -587,7 +647,10 @@ mod tests {
         s.prune_hours();
         assert_eq!(s.file_hours.len(), HOUR_RETENTION);
         assert_eq!(s.file_days.len(), 20); // day totals survive hour pruning
-        assert_eq!(s.files_on("p1", "2026-06-01"), FileCounts { down: 24, up: 0 });
+        assert_eq!(
+            s.files_on("p1", "2026-06-01"),
+            FileCounts { down: 24, up: 0 }
+        );
     }
 
     #[test]
@@ -596,7 +659,10 @@ mod tests {
         s.add_files("p1", "2026-07-03T09", 6, 2);
         let json = serde_json::to_string(&s).unwrap();
         let back: NetUsageSummary = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.files_on("p1", "2026-07-03"), FileCounts { down: 6, up: 2 });
+        assert_eq!(
+            back.files_on("p1", "2026-07-03"),
+            FileCounts { down: 6, up: 2 }
+        );
         assert_eq!(
             back.files_in_hour("p1", "2026-07-03T09"),
             FileCounts { down: 6, up: 2 }

@@ -154,7 +154,9 @@ fn merge_box_doc(agent_file: &str, existing: &str, block: &str) -> String {
             let end = end + BOX_LINKS_END.len();
             // Drop a trailing newline right after the old end marker so we don't
             // accumulate blank lines on each regeneration.
-            let tail = existing[end..].strip_prefix('\n').unwrap_or(&existing[end..]);
+            let tail = existing[end..]
+                .strip_prefix('\n')
+                .unwrap_or(&existing[end..]);
             return format!("{}{}\n{}", &existing[..start], block.trim_end(), tail);
         }
     }
@@ -501,8 +503,14 @@ mod tests {
     #[test]
     fn box_links_block_lists_members_with_matching_md() {
         let members = vec![
-            ("Alpha".to_string(), PathBuf::from("/home/u/eldrun/projects/alpha")),
-            ("Beta".to_string(), PathBuf::from("/home/u/eldrun/projects/beta")),
+            (
+                "Alpha".to_string(),
+                PathBuf::from("/home/u/eldrun/projects/alpha"),
+            ),
+            (
+                "Beta".to_string(),
+                PathBuf::from("/home/u/eldrun/projects/beta"),
+            ),
         ];
         let block = box_links_block("CLAUDE.md", "My Box", &members);
         assert!(block.starts_with(BOX_LINKS_START));

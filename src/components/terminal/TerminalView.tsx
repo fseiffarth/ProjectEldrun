@@ -718,6 +718,24 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // session. We only subscribe to the broadcast output/input by id.
       if (attachOnly) return;
 
+      // Register this view with the visible-only output router *before* starting
+      // the child. The ordinary visibility effect below also keeps that state in
+      // sync after mount, but effects run after this one and its IPC call is not
+      // ordered against a very short-lived process. Without this handshake, a
+      // CLI that prints an error and exits immediately (OpenClaw rejecting an
+      // unsupported Node version is one example) can finish while no view is
+      // registered: `route_close` drops its buffered output and the tab is left
+      // as an empty pane. Waiting for the router acknowledgement makes the
+      // spawn/output lifetime start with a concrete recipient.
+      const updateSeq = ++viewerUpdateSeq.current;
+      try {
+        await invoke("pty_set_visible", { id, viewerId, visible, updateSeq });
+      } catch {
+        // Output routing is an optimization. Preserve the normal spawn path if
+        // an older backend does not expose the registration command.
+      }
+      if (cancelled) return;
+
       // A (re)spawn is a new program: wipe what the activity store recorded
       // about the previous occupant of this id, so a reopened project's resume
       // replay can't ride an old input stamp into a "working"/"done" glow.
@@ -772,7 +790,18 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       }
     };
 
-    setupAndSpawn();
+    // React Strict Mode deliberately runs an effect setup → cleanup → setup cycle
+    // on an initial development mount. Starting a PTY synchronously in the first
+    // setup made the second one replace it under the same id; replacement reaps
+    // the first child with SIGTERM. Most CLIs exit quietly, but Antigravity logs
+    // that signal as a scary raw gRPC error in the terminal it is about to
+    // resume. Defer the actual spawn by one microtask: Strict Mode's synthetic
+    // cleanup marks this lifecycle cancelled before the task runs, leaving only
+    // the real setup to create the PTY. A genuine quick unmount gets the same
+    // safe outcome (no process was ever started).
+    queueMicrotask(() => {
+      if (!cancelled) void setupAndSpawn();
+    });
 
     // Resize observer — handles container-level resizes (e.g. panel open/close)
     // and the hidden→visible transition (display:none→flex changes the box from

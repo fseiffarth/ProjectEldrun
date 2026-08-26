@@ -409,13 +409,9 @@ fn remote_install_script(spec: &AgentSpec) -> String {
 /// the global machine monitor. The command itself is registry-owned and runs in
 /// the remote account's login shell, where npm/nvm and user install paths live.
 #[tauri::command]
-pub async fn install_agent_remote(
-    agent_id: String,
-    machine_id: String,
-) -> Result<String, String> {
+pub async fn install_agent_remote(agent_id: String, machine_id: String) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
-        let spec = find_spec(&agent_id)
-            .ok_or_else(|| format!("unknown agent: {agent_id}"))?;
+        let spec = find_spec(&agent_id).ok_or_else(|| format!("unknown agent: {agent_id}"))?;
         let machine = crate::commands::global_machines::find_by_id(&machine_id)
             .ok_or_else(|| "remote machine is no longer configured".to_string())?;
 
@@ -583,7 +579,9 @@ pub async fn codex_hook_status() -> crate::services::agent_session::CodexHookSta
 /// installer targets the user's own home directory, where running it as root
 /// would create root-owned files there instead of fixing anything.
 fn sudo_variant(cmd: &str) -> String {
-    if !cfg!(windows) && (cmd.starts_with("npm install -g ") || cmd.starts_with("npm uninstall -g ")) {
+    if !cfg!(windows)
+        && (cmd.starts_with("npm install -g ") || cmd.starts_with("npm uninstall -g "))
+    {
         format!("sudo {cmd}")
     } else {
         String::new()
@@ -725,10 +723,7 @@ pub async fn install_agent(app: tauri::AppHandle, id: String) -> Result<String, 
             .wait()
             .map_err(|e| format!("installer did not finish: {e}"))?;
         let output = lines.join("\n");
-        if !status.success()
-            && !retried_npm_reify
-            && should_retry_npm_install(spec, &output)
-        {
+        if !status.success() && !retried_npm_reify && should_retry_npm_install(spec, &output) {
             retried_npm_reify = true;
             emit(
                 "npm hit a stale reify staging directory; retrying the install once with a fresh staging path…",
@@ -918,7 +913,8 @@ pub async fn uninstall_agent(id: String) -> Result<String, String> {
         });
     }
 
-    let path = resolve_spec_path(spec).ok_or_else(|| format!("{} is not installed.", spec.label))?;
+    let path =
+        resolve_spec_path(spec).ok_or_else(|| format!("{} is not installed.", spec.label))?;
     std::fs::remove_file(&path).map_err(|e| {
         let shown = path.display();
         if e.kind() == std::io::ErrorKind::PermissionDenied {
@@ -981,16 +977,26 @@ mod tests {
             Some("irm https://antigravity.google/cli/install.ps1 | iex")
         );
         assert!(antigravity.extra_paths.contains(&".local/bin/agy"));
-        assert!(antigravity.extra_paths.contains(&"AppData/Local/agy/bin/agy"));
+        assert!(antigravity
+            .extra_paths
+            .contains(&"AppData/Local/agy/bin/agy"));
     }
 
     #[test]
     fn expanded_agent_registry_keeps_official_commands_and_binaries() {
         let expected = [
-            ("kiro", "kiro", "curl -fsSL https://cli.kiro.dev/install | bash"),
+            (
+                "kiro",
+                "kiro",
+                "curl -fsSL https://cli.kiro.dev/install | bash",
+            ),
             ("cline", "cline", "npm install -g cline"),
             ("goose", "goose", "https://github.com/aaif-goose/goose/"),
-            ("openhands", "openhands", "https://install.openhands.dev/install.sh"),
+            (
+                "openhands",
+                "openhands",
+                "https://install.openhands.dev/install.sh",
+            ),
             ("pi", "pi", "npm install -g @mariozechner/pi-coding-agent"),
             ("plandex", "plandex", "https://plandex.ai/install.sh"),
             ("swe-agent", "sweagent", "pip install swe-agent"),
@@ -1051,13 +1057,19 @@ mod tests {
     #[test]
     fn is_permission_error_matches_npm_and_windows_lock_failures() {
         // Real npm output, old and new formats, both cases.
-        assert!(is_permission_error("npm ERR! code EACCES\nnpm ERR! syscall rename"));
+        assert!(is_permission_error(
+            "npm ERR! code EACCES\nnpm ERR! syscall rename"
+        ));
         assert!(is_permission_error("npm error code EACCES"));
         assert!(is_permission_error("Access is denied. (os error 5) EPERM"));
-        assert!(is_permission_error("resource busy or locked, rename 'x' EBUSY"));
+        assert!(is_permission_error(
+            "resource busy or locked, rename 'x' EBUSY"
+        ));
         assert!(is_permission_error("Permission denied (os error 13)"));
         assert!(!is_permission_error("npm ERR! 404 Not Found"));
-        assert!(!is_permission_error("command exited unsuccessfully (exit status: 1)"));
+        assert!(!is_permission_error(
+            "command exited unsuccessfully (exit status: 1)"
+        ));
     }
 
     #[test]
@@ -1079,16 +1091,27 @@ mod tests {
     fn sudo_variant_only_covers_plain_npm_commands() {
         assert_eq!(
             sudo_variant("npm install -g @vibe-kit/grok-cli"),
-            if cfg!(windows) { String::new() } else { "sudo npm install -g @vibe-kit/grok-cli".to_string() }
+            if cfg!(windows) {
+                String::new()
+            } else {
+                "sudo npm install -g @vibe-kit/grok-cli".to_string()
+            }
         );
         assert_eq!(
             sudo_variant("npm uninstall -g @vibe-kit/grok-cli"),
-            if cfg!(windows) { String::new() } else { "sudo npm uninstall -g @vibe-kit/grok-cli".to_string() }
+            if cfg!(windows) {
+                String::new()
+            } else {
+                "sudo npm uninstall -g @vibe-kit/grok-cli".to_string()
+            }
         );
         // A curl/irm/pip installer targets the user's own home directory —
         // running it as root would create root-owned files there instead of
         // fixing anything, so it must never get a sudo variant.
-        assert_eq!(sudo_variant("curl -fsSL https://claude.ai/install.sh | bash"), "");
+        assert_eq!(
+            sudo_variant("curl -fsSL https://claude.ai/install.sh | bash"),
+            ""
+        );
         assert_eq!(
             sudo_variant("curl -LsSf https://aider.chat/install.sh | sh"),
             ""
@@ -1105,7 +1128,10 @@ mod tests {
         let uninstall = cmd
             .and_then(npm_package_from_cmd)
             .map(|pkg| format!("npm uninstall -g {pkg}"));
-        assert_eq!(uninstall.as_deref(), Some("npm uninstall -g @google/gemini-cli"));
+        assert_eq!(
+            uninstall.as_deref(),
+            Some("npm uninstall -g @google/gemini-cli")
+        );
 
         // Claude's curl/irm script installer has no npm package, so no
         // uninstall command should be synthesized for it.
@@ -1120,7 +1146,10 @@ mod tests {
         // through `npm_package_from_cmd`, since `uninstall_agent` relies on it
         // to target `npm uninstall -g` rather than deleting a shim.
         for spec in AGENTS {
-            for cmd in [Some(spec.install_cmd), spec.install_cmd_windows].into_iter().flatten() {
+            for cmd in [Some(spec.install_cmd), spec.install_cmd_windows]
+                .into_iter()
+                .flatten()
+            {
                 if cmd.trim_start().starts_with("npm install -g") {
                     assert!(
                         npm_package_from_cmd(cmd).is_some(),

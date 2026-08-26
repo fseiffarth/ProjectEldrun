@@ -143,7 +143,8 @@ pub fn ssh_remember_address(address: String) -> Result<(), String> {
         return Err("empty SSH address".to_string());
     }
     crate::services::ssh_common::validate_arg("SSH address", trimmed)?;
-    let existing: Vec<String> = crate::storage::read_json(&ssh_addresses_path()).unwrap_or_default();
+    let existing: Vec<String> =
+        crate::storage::read_json(&ssh_addresses_path()).unwrap_or_default();
     let merged = merge_recent_address(existing, trimmed);
     crate::storage::write_json(&ssh_addresses_path(), &merged).map_err(|e| e.to_string())
 }
@@ -413,8 +414,8 @@ fn run_one_secret_attempt(
         let mut cmd = crate::paths::command_no_window("ssh");
         cmd.args(base);
         cmd.args(remote);
-        let askpass = crate::services::ssh_common::make_askpass_for(kind, secret, base)
-            .map_err(build_err)?;
+        let askpass =
+            crate::services::ssh_common::make_askpass_for(kind, secret, base).map_err(build_err)?;
         for (k, v) in askpass.env_vars() {
             cmd.env(k, v);
         }
@@ -537,9 +538,7 @@ pub async fn ssh_connect(
         let typed = password.as_deref().is_some_and(|p| !p.is_empty());
         let _dial = typed
             .then(|| crate::services::ssh_common::user_dial(&user, &host, port))
-            .or_else(|| {
-                crate::services::ssh_common::declared_dial(background, &user, &host, port)
-            });
+            .or_else(|| crate::services::ssh_common::declared_dial(background, &user, &host, port));
         let account = creds::ssh_account(&user, &host, port);
         // A typed password wins; otherwise fall back to a saved one so an
         // activation-time reconnect authenticates without a prompt.
@@ -899,13 +898,17 @@ mod tests {
         fn assert_future<F: std::future::Future>(_f: F) {}
         assert_future(remote_has_saved_password(None, "host".into(), None));
         assert_future(remote_forget_password(None, "host".into(), None));
-        assert_future(crate::commands::openvpn::vpn_has_saved_password(String::new()));
+        assert_future(crate::commands::openvpn::vpn_has_saved_password(
+            String::new(),
+        ));
         assert_future(crate::commands::openvpn::vpn_can_connect_silently(
             String::new(),
             None,
         ));
         assert_future(crate::commands::openvpn::vpn_forget_password(String::new()));
-        assert_future(crate::commands::openvpn::openvpn_remove_config(String::new()));
+        assert_future(crate::commands::openvpn::openvpn_remove_config(
+            String::new(),
+        ));
     }
 
     // NOTE: the old `ls`-text browse path (`parse_ls_output`) and its
@@ -1008,7 +1011,9 @@ mod tests {
         let args = ssh_password_base_args(&Some("me".to_string()), "host.example", None).unwrap();
         assert_eq!(args.last().unwrap(), "me@host.example");
         assert!(args.iter().any(|a| a == "BatchMode=no"));
-        assert!(args.iter().any(|a| a == "PreferredAuthentications=password"));
+        assert!(args
+            .iter()
+            .any(|a| a == "PreferredAuthentications=password"));
         assert!(args.iter().any(|a| a == "PubkeyAuthentication=no"));
         // Must never enable BatchMode=yes (that would block the password prompt).
         assert!(!args.iter().any(|a| a == "BatchMode=yes"));
@@ -1050,7 +1055,9 @@ mod tests {
         assert_eq!(out.len(), SSH_ADDRESS_CAP);
         assert_eq!(out[0], "newest");
         // The oldest entry ("h19") is dropped to make room.
-        assert!(!out.iter().any(|a| a == &format!("h{}", SSH_ADDRESS_CAP - 1)));
+        assert!(!out
+            .iter()
+            .any(|a| a == &format!("h{}", SSH_ADDRESS_CAP - 1)));
     }
 
     // ── merge_recent_path (recently-used remote paths, per host) ───────────
@@ -1081,6 +1088,8 @@ mod tests {
         let out = merge_recent_path(existing, "/newest");
         assert_eq!(out.len(), REMOTE_PATH_CAP);
         assert_eq!(out[0], "/newest");
-        assert!(!out.iter().any(|a| a == &format!("/p{}", REMOTE_PATH_CAP - 1)));
+        assert!(!out
+            .iter()
+            .any(|a| a == &format!("/p{}", REMOTE_PATH_CAP - 1)));
     }
 }

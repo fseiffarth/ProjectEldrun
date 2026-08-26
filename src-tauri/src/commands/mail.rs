@@ -57,21 +57,23 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::projects::uuid_v4;
 use crate::schema::mail::{
-    MailAccount, MailAccountSaved, MailAccounts, MailAddress, MailAiClassifyMatch, MailAiPrefs,
-    MailAiClassifyReport, MailBody, MailDraft, MailEncryptionState,
-    MailCryptoInfo, MailExtractedEvent, MailExtractedTask, MailFilterReport, MailFilterRule, MailFilterSample, MailFilters, MailFlag, MailFolder, MailFolderKind, MailHeader, MailHeaderPage, MailKeyringState, MailLink, MailPasswordState, MailPreviewBlob,
-    MailPriority, MailPriorityCounts, MailPrioritySource, MailProbe, MailSendResult, MailSort, MailSyncEvent,
+    MailAccount, MailAccountSaved, MailAccounts, MailAddress, MailAiClassifyMatch,
+    MailAiClassifyReport, MailAiPrefs, MailBody, MailCryptoInfo, MailDraft, MailEncryptionState,
+    MailExtractedEvent, MailExtractedTask, MailFilterReport, MailFilterRule, MailFilterSample,
+    MailFilters, MailFlag, MailFolder, MailFolderKind, MailHeader, MailHeaderPage,
+    MailKeyringState, MailLink, MailPasswordState, MailPreviewBlob, MailPriority,
+    MailPriorityCounts, MailPrioritySource, MailProbe, MailSendResult, MailSort, MailSyncEvent,
     MailSyncSummary, StagedAttachment, ACCOUNTS_VERSION, FILTERS_VERSION,
-};
-use crate::services::mail_crypt::{self, MailKeys};
-use crate::services::mail_crypto::{self, CryptoKind, DecryptError};
-use crate::services::mail_pgp::{self, PgpKeyInfo, PgpKeyring, SealOpts};
-use crate::services::mail_engine::{
-    self, InProcessEngine, MailEngine, OutboundAttachment, Password,
 };
 use crate::services::mail_ai;
 use crate::services::mail_authres;
+use crate::services::mail_crypt::{self, MailKeys};
+use crate::services::mail_crypto::{self, CryptoKind, DecryptError};
+use crate::services::mail_engine::{
+    self, InProcessEngine, MailEngine, OutboundAttachment, Password,
+};
 use crate::services::mail_filters;
+use crate::services::mail_pgp::{self, PgpKeyInfo, PgpKeyring, SealOpts};
 use crate::services::mail_sanitize::{self, SANITIZER_VERSION};
 use crate::services::mail_store::MailStore;
 use crate::services::remote_credentials::{self, KeyringState, MailProto};
@@ -426,12 +428,18 @@ fn apply_crypto(
         return (raw, None);
     };
     if !kind.is_supported() {
-        return (raw, Some(mail_crypto::info_for(kind, None, false, from_address)));
+        return (
+            raw,
+            Some(mail_crypto::info_for(kind, None, false, from_address)),
+        );
     }
     let Ok(ring) = keyring_of(rt) else {
         // No keyring at all. The message is still reported as encrypted/signed —
         // silence here would render an armored blob as if it were the mail.
-        return (raw, Some(mail_crypto::info_for(kind, None, false, from_address)));
+        return (
+            raw,
+            Some(mail_crypto::info_for(kind, None, false, from_address)),
+        );
     };
 
     match kind {
@@ -446,7 +454,10 @@ fn apply_crypto(
                     .map(|t| t.as_bytes().to_vec()),
             };
             let Some(payload) = payload else {
-                return (raw, Some(mail_crypto::info_for(kind, None, false, from_address)));
+                return (
+                    raw,
+                    Some(mail_crypto::info_for(kind, None, false, from_address)),
+                );
             };
             match ring.decrypt_message(&payload) {
                 Ok(plain) => {
@@ -455,9 +466,8 @@ fn apply_crypto(
                     // re-examined rather than reported as merely "decrypted".
                     let inner = plain.to_vec();
                     let (inner_raw, inner_info) = apply_crypto(rt, inner, from_address);
-                    let mut info = inner_info.unwrap_or_else(|| {
-                        mail_crypto::info_for(kind, None, true, from_address)
-                    });
+                    let mut info = inner_info
+                        .unwrap_or_else(|| mail_crypto::info_for(kind, None, true, from_address));
                     info.encrypted = true;
                     info.decrypted = true;
                     (inner_raw, Some(info))
@@ -492,7 +502,10 @@ fn apply_crypto(
             info.notes.push("inline-signature-not-checked".into());
             (raw, Some(info))
         }
-        _ => (raw, Some(mail_crypto::info_for(kind, None, false, from_address))),
+        _ => (
+            raw,
+            Some(mail_crypto::info_for(kind, None, false, from_address)),
+        ),
     }
 }
 
@@ -812,7 +825,9 @@ fn serve_auth_state(headers: &mut [MailHeader]) {
 /// tested without a state directory.
 fn apply_auth_trust(headers: &mut [MailHeader], accounts: &[MailAccount]) {
     for h in headers.iter_mut() {
-        let Some(auth) = h.auth.as_mut() else { continue };
+        let Some(auth) = h.auth.as_mut() else {
+            continue;
+        };
         let trusted = accounts
             .iter()
             .find(|a| a.id == h.account_id)
@@ -850,7 +865,11 @@ fn smtp_key(account: &MailAccount) -> String {
 /// whole locked-keyring lesson: a locked collection reads identically to an
 /// empty one, and the reads used to *hang*. Mail inherits that rather than
 /// reinventing it.
-fn resolve_password(state: &MailState, account: &MailAccount, proto: MailProto) -> Option<Password> {
+fn resolve_password(
+    state: &MailState,
+    account: &MailAccount,
+    proto: MailProto,
+) -> Option<Password> {
     if let Ok(rt) = state.lock() {
         if let Some(pw) = rt.passwords.get(&account.id) {
             if !pw.is_empty() {
@@ -1359,9 +1378,11 @@ pub async fn mail_pgp_bind(
     state: State<'_, MailState>,
 ) -> Result<(), String> {
     let rt = state.inner().clone();
-    tokio::task::spawn_blocking(move || keyring_of(&rt)?.bind_account(&fingerprint, &account_id, bind))
-        .await
-        .map_err(|e| e.to_string())?
+    tokio::task::spawn_blocking(move || {
+        keyring_of(&rt)?.bind_account(&fingerprint, &account_id, bind)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1771,108 +1792,107 @@ async fn sync_inner(
             rules.clone()
         };
         // Only the inbox feeds the model classifier, and only when it is on.
-        let collect_for_model = autoclassify
-            && classify_budget > 0
-            && folder2.kind == MailFolderKind::Inbox;
+        let collect_for_model =
+            autoclassify && classify_budget > 0 && folder2.kind == MailFolderKind::Inbox;
         #[allow(clippy::type_complexity)]
         let (added, filed, candidates): (u32, u32, Vec<ClassifyCandidate>) =
             tokio::task::spawn_blocking(move || {
-            let mut added = 0u32;
-            let mut filed = 0u32;
-            let mut candidates: Vec<ClassifyCandidate> = Vec::new();
-            // The arrival watermark, captured BEFORE any upsert in this folder:
-            // the highest UID we had already stored. A message counts as a new
-            // *arrival* (and so may be auto-filed / classified) only when its UID
-            // rises above it — being merely new to the local index is what the
-            // whole initial backlog is too. `None` is the folder's first sync, so
-            // nothing here is an arrival and nothing is filed: the existing pile
-            // is what the explicit "apply to existing" is for.
-            let prev_max_uid = store3.folder_max_uid(&folder2.id)?;
-            let is_arrival = |uid: u32| matches!(prev_max_uid, Some(m) if uid > m);
-            for h in headers {
-                let row = crate::schema::mail::MailHeader {
-                    id: message_id_for(&folder2.id, h.uid),
-                    account_id: folder2.account_id.clone(),
-                    folder_id: folder2.id.clone(),
-                    uid: h.uid,
-                    rfc_message_id: h.headers.message_id.clone(),
-                    subject: h.headers.subject,
-                    from: h.headers.from,
-                    to: h.headers.to,
-                    cc: h.headers.cc,
-                    date: h.headers.date,
-                    seen: h.seen,
-                    flagged: h.flagged,
-                    answered: h.answered,
-                    has_attachments: h.headers.has_attachments,
-                    size: h.headers.size,
-                    preview: h.headers.preview,
-                    malformed_headers: if h.headers.malformed_headers.is_empty() {
-                        None
-                    } else {
-                        Some(h.headers.malformed_headers)
-                    },
-                    // Stored as parsed, i.e. `Unconfigured`. `serve_auth_state`
-                    // applies the account's trusted `authserv-id` on the way
-                    // out, so the setting governs already-synced mail too.
-                    auth: h.headers.auth,
-                    // Always `None` here, and it never reaches the column:
-                    // `upsert_header` writes `priority` in neither half of its
-                    // statement precisely so this loop — which runs over every
-                    // message in the folder on every check — cannot wipe a mark
-                    // the user made. The mark is the user's, not the server's.
-                    priority: None,
-                    // Provenance is never written by a sync — it is set only
-                    // when something *marks* the message (a rule below, the user,
-                    // or the model), so a re-sync cannot overwrite it.
-                    priority_source: None,
-                    priority_reason: None,
-                };
-                let inserted = store3.upsert_header(&row)?;
-                if inserted {
-                    added += 1;
-                }
-                // **New arrivals only**, two conditions that must BOTH hold. The
-                // row must be new to the index (`inserted`) — a re-sync revisits
-                // every message, and re-filing one the user unmarked by hand
-                // resurrects a filing they corrected (`mark_for` refuses an
-                // already-*marked* one, but a deliberately *cleared* one looks
-                // identical to one that never matched). And it must be a genuine
-                // arrival (`is_arrival`) — the initial backlog of a folder is all
-                // new-to-index at once, so filing on insertion alone marks a whole
-                // mail history the instant a rule predates the folder's first
-                // pull, the "apply to existing" the user never clicked.
-                if inserted && is_arrival(row.uid) {
-                    if let Some((mark, hit)) = mail_filters::mark_for(&rules2, &row) {
-                        // Provenance `filter`, so the model classifier below can
-                        // never be mistaken for a keyword rule (#205). The reason
-                        // is the rule's own name, which is what the UI shows.
-                        if store3.set_priority_ex(
-                            &row.id,
-                            Some(mark),
-                            crate::schema::mail::MailPrioritySource::Filter,
-                            &hit.rule_name,
-                        )? {
-                            filed += 1;
+                let mut added = 0u32;
+                let mut filed = 0u32;
+                let mut candidates: Vec<ClassifyCandidate> = Vec::new();
+                // The arrival watermark, captured BEFORE any upsert in this folder:
+                // the highest UID we had already stored. A message counts as a new
+                // *arrival* (and so may be auto-filed / classified) only when its UID
+                // rises above it — being merely new to the local index is what the
+                // whole initial backlog is too. `None` is the folder's first sync, so
+                // nothing here is an arrival and nothing is filed: the existing pile
+                // is what the explicit "apply to existing" is for.
+                let prev_max_uid = store3.folder_max_uid(&folder2.id)?;
+                let is_arrival = |uid: u32| matches!(prev_max_uid, Some(m) if uid > m);
+                for h in headers {
+                    let row = crate::schema::mail::MailHeader {
+                        id: message_id_for(&folder2.id, h.uid),
+                        account_id: folder2.account_id.clone(),
+                        folder_id: folder2.id.clone(),
+                        uid: h.uid,
+                        rfc_message_id: h.headers.message_id.clone(),
+                        subject: h.headers.subject,
+                        from: h.headers.from,
+                        to: h.headers.to,
+                        cc: h.headers.cc,
+                        date: h.headers.date,
+                        seen: h.seen,
+                        flagged: h.flagged,
+                        answered: h.answered,
+                        has_attachments: h.headers.has_attachments,
+                        size: h.headers.size,
+                        preview: h.headers.preview,
+                        malformed_headers: if h.headers.malformed_headers.is_empty() {
+                            None
+                        } else {
+                            Some(h.headers.malformed_headers)
+                        },
+                        // Stored as parsed, i.e. `Unconfigured`. `serve_auth_state`
+                        // applies the account's trusted `authserv-id` on the way
+                        // out, so the setting governs already-synced mail too.
+                        auth: h.headers.auth,
+                        // Always `None` here, and it never reaches the column:
+                        // `upsert_header` writes `priority` in neither half of its
+                        // statement precisely so this loop — which runs over every
+                        // message in the folder on every check — cannot wipe a mark
+                        // the user made. The mark is the user's, not the server's.
+                        priority: None,
+                        // Provenance is never written by a sync — it is set only
+                        // when something *marks* the message (a rule below, the user,
+                        // or the model), so a re-sync cannot overwrite it.
+                        priority_source: None,
+                        priority_reason: None,
+                    };
+                    let inserted = store3.upsert_header(&row)?;
+                    if inserted {
+                        added += 1;
+                    }
+                    // **New arrivals only**, two conditions that must BOTH hold. The
+                    // row must be new to the index (`inserted`) — a re-sync revisits
+                    // every message, and re-filing one the user unmarked by hand
+                    // resurrects a filing they corrected (`mark_for` refuses an
+                    // already-*marked* one, but a deliberately *cleared* one looks
+                    // identical to one that never matched). And it must be a genuine
+                    // arrival (`is_arrival`) — the initial backlog of a folder is all
+                    // new-to-index at once, so filing on insertion alone marks a whole
+                    // mail history the instant a rule predates the folder's first
+                    // pull, the "apply to existing" the user never clicked.
+                    if inserted && is_arrival(row.uid) {
+                        if let Some((mark, hit)) = mail_filters::mark_for(&rules2, &row) {
+                            // Provenance `filter`, so the model classifier below can
+                            // never be mistaken for a keyword rule (#205). The reason
+                            // is the rule's own name, which is what the UI shows.
+                            if store3.set_priority_ex(
+                                &row.id,
+                                Some(mark),
+                                crate::schema::mail::MailPrioritySource::Filter,
+                                &hit.rule_name,
+                            )? {
+                                filed += 1;
+                            }
+                        } else if collect_for_model {
+                            // Still unmarked after the keyword pass: a candidate for
+                            // the model. Subject + sender + preview ONLY — never a
+                            // body download.
+                            candidates.push(ClassifyCandidate {
+                                id: row.id.clone(),
+                                subject: row.subject.clone(),
+                                from: from_display(&row.from),
+                                preview: row.preview.clone(),
+                            });
                         }
-                    } else if collect_for_model {
-                        // Still unmarked after the keyword pass: a candidate for
-                        // the model. Subject + sender + preview ONLY — never a
-                        // body download.
-                        candidates.push(ClassifyCandidate {
-                            id: row.id.clone(),
-                            subject: row.subject.clone(),
-                            from: from_display(&row.from),
-                            preview: row.preview.clone(),
-                        });
                     }
                 }
-            }
-            store3.refresh_counts(&folder2.id)?;
-            Ok::<_, String>((added, filed, candidates))
-        })
-        .await
-        .map_err(|e| e.to_string())??;
+                store3.refresh_counts(&folder2.id)?;
+                Ok::<_, String>((added, filed, candidates))
+            })
+            .await
+            .map_err(|e| e.to_string())??;
 
         // #205 classify hook: run the local model over the still-unmarked new
         // inbox messages this folder produced, bounded and best-effort. A model
@@ -2050,8 +2070,8 @@ pub async fn mail_body(
 
         let (html, links, remote_refs, truncated) = match &parsed.html {
             Some(raw_html) => {
-                let clean = mail_sanitize::sanitize_message_html(raw_html)
-                    .map_err(|e| e.to_string())?;
+                let clean =
+                    mail_sanitize::sanitize_message_html(raw_html).map_err(|e| e.to_string())?;
                 (
                     Some(clean.html),
                     clean.links,
@@ -2225,7 +2245,14 @@ pub async fn mail_mark_folder_read(
     InProcessEngine
         // Via the enum, never the literal: one spelling of `\Seen` in the
         // codebase, and it is the one the per-message path already uses.
-        .set_flags_bulk(&account, &pw, &folder.path, &uids, MailFlag::Seen.imap_flag(), true)
+        .set_flags_bulk(
+            &account,
+            &pw,
+            &folder.path,
+            &uids,
+            MailFlag::Seen.imap_flag(),
+            true,
+        )
         .await
         .map_err(String::from)?;
     Ok(changed)
@@ -2747,7 +2774,11 @@ pub async fn mail_extract_task(
         &today,
     );
     let out = tokio::task::spawn_blocking(move || {
-        mail_ai::chat(mail_ai::TASK_SYSTEM, &user, mail_ai::ChatOptions::bounded(200))
+        mail_ai::chat(
+            mail_ai::TASK_SYSTEM,
+            &user,
+            mail_ai::ChatOptions::bounded(200),
+        )
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -3075,13 +3106,7 @@ pub async fn mail_attach_pick(
             let mime = mime_guess::from_path(&safe.value)
                 .first_or_octet_stream()
                 .to_string();
-            out.push(store.stage_attachment(
-                &draft_id,
-                &uuid_v4(),
-                &safe.value,
-                &mime,
-                &bytes,
-            )?);
+            out.push(store.stage_attachment(&draft_id, &uuid_v4(), &safe.value, &mime, &bytes)?);
         }
         Ok(out)
     })
@@ -3336,8 +3361,7 @@ mod tests {
         // Path-shaped *types*, checked alongside the names: `save_to: PathBuf`
         // is exactly the parameter this rule exists to reject, and no name-based
         // list would ever have caught it.
-        const RESERVED_TYPES: &[&str] =
-            &["path", "pathbuf", "osstr", "osstring", "direntry"];
+        const RESERVED_TYPES: &[&str] = &["path", "pathbuf", "osstr", "osstring", "direntry"];
 
         let src = include_str!("mail.rs");
         // Located line-by-line, matching the whole line, for the same reason
@@ -3362,7 +3386,9 @@ mod tests {
 
         let mut checked = 0usize;
         for start in starts {
-            let Some(open) = src[start..].find('(') else { break };
+            let Some(open) = src[start..].find('(') else {
+                break;
+            };
             let sig_start = start + open + 1;
             // The signature ends at the matching close paren.
             let mut depth = 1usize;
@@ -3423,8 +3449,7 @@ mod tests {
                      surface must name no location the frontend controls"
                 );
                 assert!(
-                    !SUFFIXES.iter().any(|s| pname.ends_with(s))
-                        && !pname.starts_with("path_"),
+                    !SUFFIXES.iter().any(|s| pname.ends_with(s)) && !pname.starts_with("path_"),
                     "`{pname}` in `{name}` is a path-shaped parameter — the mail command \
                      surface must name no location the frontend controls"
                 );
@@ -3594,7 +3619,10 @@ mod tests {
             "the refusal has to say the write did not happen: {refusal}"
         );
         // Every other combination is an ordinary write.
-        assert!(sealed_write_refusal(true, true).is_none(), "we hold the key");
+        assert!(
+            sealed_write_refusal(true, true).is_none(),
+            "we hold the key"
+        );
         assert!(
             sealed_write_refusal(false, false).is_none(),
             "an unencrypted store writes plaintext by design"

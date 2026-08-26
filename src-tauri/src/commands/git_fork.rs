@@ -237,7 +237,11 @@ fn create_fork(provider: Provider, repo: &RepoRef) -> Result<Fork, String> {
         }
         Provider::GitLab => {
             let id = encode_project_id(&repo.path);
-            match provider_api(provider, repo, &["-X", "POST", &format!("projects/{id}/fork")]) {
+            match provider_api(
+                provider,
+                repo,
+                &["-X", "POST", &format!("projects/{id}/fork")],
+            ) {
                 Ok(json) => Ok(gitlab_fork(&json)),
                 // GitLab refuses a second fork into the same namespace ("has
                 // already been taken"). That is the *success* state for an
@@ -475,7 +479,9 @@ mod tests {
             "fatal: 'x' does not appear to be a git repository"
         ));
         // An auth failure must fail on the first attempt, not after 5 waits.
-        assert!(!fork_not_ready("fatal: Authentication failed for 'https://…'"));
+        assert!(!fork_not_ready(
+            "fatal: Authentication failed for 'https://…'"
+        ));
         assert!(!fork_not_ready(
             "Destination '/tmp/x' already exists and is not empty"
         ));

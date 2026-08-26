@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
 
@@ -23,6 +23,8 @@ export interface AddMenuEntry {
    *  `untested` it is a flag rather than markup, for that field's reason — the
    *  search box filters on `label` as a string, so a label cannot be a node. */
   caution?: string;
+  /** A fly-out list opened by this row rather than an immediate tab choice. */
+  moreEntries?: AddMenuEntry[];
   onPick: () => void;
 }
 
@@ -30,6 +32,13 @@ export interface AddMenuEntry {
 export interface AddMenuGroup {
   label: string;
   entries: AddMenuEntry[];
+  /** Entries shown while the search box is empty. A query always searches the
+   *  full `entries` list, which lets a dense section keep only its quick picks
+   *  in the compact menu without making the rest unreachable. */
+  compactEntries?: AddMenuEntry[];
+  /** Label for an idle-only disclosure row that opens the unlisted entries in a
+   *  neighbouring fly-out, leaving this compact menu unchanged. */
+  moreLabel?: string;
   /** Non-pickable explainer rendered when the group has no entries (only while
    *  the search box is empty — a hint is not a search result). */
   hint?: string;
@@ -55,7 +64,22 @@ export interface AddMenuGroup {
 export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
   const t = useT();
   const [query, setQuery] = useState("");
+  const [moreMenu, setMoreMenu] = useState<{
+    label: string;
+    entries: AddMenuEntry[];
+    anchor: DOMRect;
+  } | null>(null);
+  const [morePos, setMorePos] = useState<{ left: number; top: number } | null>(null);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
+  const moreTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
   const q = query.trim().toLowerCase();
+
+  const openMoreMenu = (label: string, entries: AddMenuEntry[], trigger?: HTMLButtonElement | null) => {
+    const anchor = trigger ?? moreTriggerRefs.current.get(label);
+    if (!anchor) return;
+    setMorePos(null);
+    setMoreMenu({ label, entries, anchor: anchor.getBoundingClientRect() });
+  };
 
   const visible = q
     ? groups
@@ -67,7 +91,51 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
             : g.entries.filter((e) => e.label.toLowerCase().includes(q)),
         }))
         .filter((g) => g.entries.length > 0)
-    : groups;
+    : groups.map((g) => {
+        const compact = g.compactEntries ?? g.entries;
+        const compactKeys = new Set(compact.map((entry) => entry.key));
+        // The management row remains in the parent menu. The fly-out is only
+        // the agents that compact mode deliberately did not list.
+        const moreEntries = g.entries.filter(
+          (entry) => !compactKeys.has(entry.key) && entry.key !== "__add_custom_agent__",
+        );
+        const hasMore = !!g.moreLabel && moreEntries.length > 0;
+        return {
+          ...g,
+          entries: hasMore
+            ? [
+                ...compact,
+                {
+                  key: "__more__",
+                  label: g.moreLabel!,
+                  dot: "…",
+                  color: "var(--text-muted)",
+                  moreEntries,
+                  onPick: () => openMoreMenu(g.label, moreEntries),
+                },
+              ]
+            : compact,
+        };
+      });
+
+  // A typed search is a new route to all entries; a stale adjacent menu would
+  // only obscure its results, so it closes as soon as the query changes.
+  useEffect(() => setMoreMenu(null), [q]);
+
+  // Place the fly-out against its More row, flipping to the left when the
+  // compact parent sits against the right edge of the viewport.
+  useLayoutEffect(() => {
+    if (!moreMenu || !moreMenuRef.current) return;
+    const rect = moreMenuRef.current.getBoundingClientRect();
+    const margin = 8;
+    let left = moreMenu.anchor.right + 4;
+    if (left + rect.width > window.innerWidth - margin) {
+      left = Math.max(margin, moreMenu.anchor.left - 4 - rect.width);
+    }
+    const top = Math.max(margin, Math.min(moreMenu.anchor.top, window.innerHeight - margin - rect.height));
+    setMorePos({ left, top });
+    moreMenuRef.current.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+  }, [moreMenu]);
 
   // The pickable rows in render order — what ↑/↓ walk. Disabled entries are
   // skipped rather than stepped over, so the cursor never lands somewhere
@@ -95,7 +163,7 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
   const active = (q || moved) && idx >= 0 ? pickable[idx] : undefined;
 
   // Keep the highlighted row on screen while arrowing through a long list.
-  const activeRef = useRef<HTMLButtonElement>(null);
+  const activeRef = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
     if (active) activeRef.current?.scrollIntoView({ block: "nearest" });
   }, [active]);
@@ -157,12 +225,19 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
           {g.entries.map((e) => (
             <button
               key={e.key}
-              ref={e === active ? activeRef : undefined}
+              ref={(node) => {
+                if (e === active) activeRef.current = node;
+                if (e.moreEntries && node) moreTriggerRefs.current.set(g.label, node);
+              }}
               className={`tab-new-menu-item${e === active ? " enter-target" : ""}${
                 e.untested ? " untested" : ""
               }`}
               disabled={e.disabled}
-              onClick={e.onPick}
+              onClick={(event) =>
+                e.moreEntries
+                  ? openMoreMenu(g.label, e.moreEntries, event.currentTarget)
+                  : e.onPick()
+              }
               // The pointer owns the same cursor the keys do. Guarded on an
               // actual change so a mouse resting on a row doesn't re-render
               // the menu on every move event.
@@ -191,6 +266,40 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
           )}
         </Fragment>
       ))}
+      {moreMenu && (
+        <div
+          ref={moreMenuRef}
+          className="tab-new-menu tab-new-menu-more"
+          style={{
+            position: "fixed",
+            left: morePos?.left ?? -10000,
+            top: morePos?.top ?? -10000,
+          }}
+        >
+          <div className="tab-new-menu-group-label">{moreMenu.label}</div>
+          <div className="menu-scroll-region">
+            {moreMenu.entries.map((e) => (
+              <button
+                key={e.key}
+                className={`tab-new-menu-item${e.untested ? " untested" : ""}`}
+                disabled={e.disabled}
+                onClick={e.onPick}
+              >
+                <span className="tab-new-menu-dot" style={{ color: e.color }}>
+                  {e.dot ?? "●"}
+                </span>
+                {e.label}
+                {e.caution && (
+                  <span className="tab-new-menu-caution" title={e.caution} aria-label={e.caution}>
+                    ⚠
+                  </span>
+                )}
+                {e.untested && <UntestedTag />}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </>
   );
 }

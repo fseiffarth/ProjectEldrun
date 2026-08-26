@@ -194,13 +194,34 @@ struct DenylistedConfigKey {
 ///   closing it without that cost needs value-level judgment (an allowlist of
 ///   known-safe helper names) this pass doesn't attempt.
 const CONFIG_DENYLIST: &[DenylistedConfigKey] = &[
-    DenylistedConfigKey { prefix: "filter.", suffix: ".clean" },
-    DenylistedConfigKey { prefix: "filter.", suffix: ".smudge" },
-    DenylistedConfigKey { prefix: "filter.", suffix: ".process" },
-    DenylistedConfigKey { prefix: "diff.", suffix: ".textconv" },
-    DenylistedConfigKey { prefix: "diff.", suffix: ".command" },
-    DenylistedConfigKey { prefix: "include.", suffix: "path" },
-    DenylistedConfigKey { prefix: "includeif.", suffix: ".path" },
+    DenylistedConfigKey {
+        prefix: "filter.",
+        suffix: ".clean",
+    },
+    DenylistedConfigKey {
+        prefix: "filter.",
+        suffix: ".smudge",
+    },
+    DenylistedConfigKey {
+        prefix: "filter.",
+        suffix: ".process",
+    },
+    DenylistedConfigKey {
+        prefix: "diff.",
+        suffix: ".textconv",
+    },
+    DenylistedConfigKey {
+        prefix: "diff.",
+        suffix: ".command",
+    },
+    DenylistedConfigKey {
+        prefix: "include.",
+        suffix: "path",
+    },
+    DenylistedConfigKey {
+        prefix: "includeif.",
+        suffix: ".path",
+    },
 ];
 
 /// Pure match against [`CONFIG_DENYLIST`], case-insensitive (git lowercases
@@ -209,7 +230,9 @@ const CONFIG_DENYLIST: &[DenylistedConfigKey] = &[
 /// checks).
 fn is_denylisted_config_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
-    CONFIG_DENYLIST.iter().any(|d| key.starts_with(d.prefix) && key.ends_with(d.suffix))
+    CONFIG_DENYLIST
+        .iter()
+        .any(|d| key.starts_with(d.prefix) && key.ends_with(d.suffix))
 }
 
 /// Strip every [`CONFIG_DENYLIST`]-matching key from `project_dir`'s
@@ -238,7 +261,14 @@ fn sanitize_repo_git_config(project_dir: &Path) {
         return;
     }
     let Ok(listed) = crate::paths::command_no_window("git")
-        .args(["config", "--file", config_path_str, "--name-only", "--list", "--no-includes"])
+        .args([
+            "config",
+            "--file",
+            config_path_str,
+            "--name-only",
+            "--list",
+            "--no-includes",
+        ])
         .output()
     else {
         return;
@@ -298,7 +328,9 @@ fn run_git(
             let args = hardened_git_args(args);
             crate::services::ssh_exec::run_git_remote(&t.spec, &args)
         }
-        None => hardened_git_command_in(project_dir, args).output().map_err(|e| e.to_string()),
+        None => hardened_git_command_in(project_dir, args)
+            .output()
+            .map_err(|e| e.to_string()),
     }
 }
 
@@ -322,9 +354,7 @@ fn run_git(
 /// Rejected: empty, a leading `-`, whitespace, and ASCII control characters —
 /// none of which a legal refname can contain, so nothing legitimate is lost.
 pub(crate) fn valid_rev(s: &str) -> bool {
-    !s.is_empty()
-        && !s.starts_with('-')
-        && !s.chars().any(|c| c.is_whitespace() || c.is_control())
+    !s.is_empty() && !s.starts_with('-') && !s.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 /// [`valid_rev`] as a command error, so a call site is one `?` away from safe.
@@ -403,7 +433,13 @@ pub async fn git_status(project_dir: String) -> Result<GitStatus, String> {
 fn git_status_blocking(project_dir: String) -> Result<GitStatus, String> {
     let target = remote_target_for_dir(&project_dir);
     if local_non_repo(target.as_ref(), &project_dir) {
-        return Ok(GitStatus { staged: 0, unstaged: 0, untracked: 0, has_remote: false, is_repo: false });
+        return Ok(GitStatus {
+            staged: 0,
+            unstaged: 0,
+            untracked: 0,
+            has_remote: false,
+            is_repo: false,
+        });
     }
 
     let out = run_git(target.as_ref(), &project_dir, &["status", "--porcelain"])?;
@@ -413,14 +449,20 @@ fn git_status_blocking(project_dir: String) -> Result<GitStatus, String> {
     let mut unstaged = 0usize;
     let mut untracked = 0usize;
     for line in text.lines() {
-        if line.len() < 2 { continue; }
+        if line.len() < 2 {
+            continue;
+        }
         let x = line.chars().next().unwrap_or(' ');
         let y = line.chars().nth(1).unwrap_or(' ');
         if x == '?' && y == '?' {
             untracked += 1;
         } else {
-            if x != ' ' { staged += 1; }
-            if y != ' ' { unstaged += 1; }
+            if x != ' ' {
+                staged += 1;
+            }
+            if y != ' ' {
+                unstaged += 1;
+            }
         }
     }
 
@@ -428,7 +470,13 @@ fn git_status_blocking(project_dir: String) -> Result<GitStatus, String> {
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false);
 
-    Ok(GitStatus { staged, unstaged, untracked, has_remote, is_repo: true })
+    Ok(GitStatus {
+        staged,
+        unstaged,
+        untracked,
+        has_remote,
+        is_repo: true,
+    })
 }
 
 /// Resolve the git top-level enclosing `project_dir`/`rel_path` (the folder the
@@ -442,7 +490,10 @@ fn git_status_blocking(project_dir: String) -> Result<GitStatus, String> {
 /// `remote_target_for_dir`, so remote projects short-circuit to `None` and keep
 /// their existing project-scoped behavior.
 #[tauri::command]
-pub async fn git_repo_root(project_dir: String, rel_path: String) -> Result<Option<String>, String> {
+pub async fn git_repo_root(
+    project_dir: String,
+    rel_path: String,
+) -> Result<Option<String>, String> {
     run_off_thread(move || git_repo_root_blocking(project_dir, rel_path)).await
 }
 
@@ -493,14 +544,23 @@ pub async fn git_generate_commit_message(project_dir: String) -> Result<String, 
 
 fn git_generate_commit_message_blocking(project_dir: String) -> Result<String, String> {
     let target = remote_target_for_dir(&project_dir);
-    let files_out = run_git(target.as_ref(), &project_dir, &["diff", "--staged", "--name-only"])?;
+    let files_out = run_git(
+        target.as_ref(),
+        &project_dir,
+        &["diff", "--staged", "--name-only"],
+    )?;
     let staged_text = String::from_utf8_lossy(&files_out.stdout).to_string();
     let staged: Vec<&str> = staged_text.lines().collect();
 
     // Also check untracked / unstaged if nothing staged
     let files: Vec<String> = if staged.is_empty() {
         let all = run_git(target.as_ref(), &project_dir, &["diff", "--name-only"])
-            .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::to_owned).collect())
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .map(str::to_owned)
+                    .collect()
+            })
             .unwrap_or_default();
         all
     } else {
@@ -518,11 +578,21 @@ fn git_generate_commit_message_blocking(project_dir: String) -> Result<String, S
 
 fn infer_commit_type(files: &[String]) -> &'static str {
     let has = |pat: &str| files.iter().any(|f| f.contains(pat));
-    if has(".github/") || has("ci-cd") || has("Dockerfile") { return "ci"; }
-    if files.iter().all(|f| f.ends_with(".md")) { return "docs"; }
-    if has("Cargo.toml") || has("package.json") || has("package-lock") { return "chore"; }
-    if has("test") || has("spec") || has("__tests__") { return "test"; }
-    if has("src/") || has("src-tauri/src/") { return "feat"; }
+    if has(".github/") || has("ci-cd") || has("Dockerfile") {
+        return "ci";
+    }
+    if files.iter().all(|f| f.ends_with(".md")) {
+        return "docs";
+    }
+    if has("Cargo.toml") || has("package.json") || has("package-lock") {
+        return "chore";
+    }
+    if has("test") || has("spec") || has("__tests__") {
+        return "test";
+    }
+    if has("src/") || has("src-tauri/src/") {
+        return "feat";
+    }
     "chore"
 }
 
@@ -545,7 +615,12 @@ fn format_commit_message(kind: &str, files: &[String]) -> String {
         0 => "update files".to_string(),
         1 => format!("update {}", unique[0]),
         2 => format!("update {} and {}", unique[0], unique[1]),
-        _ => format!("update {}, {} and {} more", unique[0], unique[1], unique.len() - 2),
+        _ => format!(
+            "update {}, {} and {} more",
+            unique[0],
+            unique[1],
+            unique.len() - 2
+        ),
     };
     format!("{kind}: {subject}")
 }
@@ -605,9 +680,13 @@ fn git_file_statuses_blocking(
     // subfolder from being recognized, since a deep file line like
     // `sub/leaf.js` never equals its containing folder's own name.
     let wholly_ignored = !rel_path.is_empty()
-        && run_git(target.as_ref(), &project_dir, &["check-ignore", "-q", "--", &rel_path])
-            .map(|out| out.status.success())
-            .unwrap_or(false);
+        && run_git(
+            target.as_ref(),
+            &project_dir,
+            &["check-ignore", "-q", "--", &rel_path],
+        )
+        .map(|out| out.status.success())
+        .unwrap_or(false);
 
     // Scope the status to the browsed folder. Without a pathspec git walks the
     // WHOLE repo — and with `--ignored` that means stat-ing every ignored path in
@@ -619,26 +698,49 @@ fn git_file_statuses_blocking(
     // exactly this reason; the common branch just never did. An empty
     // `rel_path` IS the repo root, so there is nothing to scope it to.
     let status_args: Vec<&str> = if wholly_ignored {
-        vec!["status", "--porcelain", "--ignored", "--untracked-files=all", "--", &rel_path]
+        vec![
+            "status",
+            "--porcelain",
+            "--ignored",
+            "--untracked-files=all",
+            "--",
+            &rel_path,
+        ]
     } else if rel_path.is_empty() {
-        vec!["status", "--porcelain", "--ignored", "--untracked-files=normal"]
+        vec![
+            "status",
+            "--porcelain",
+            "--ignored",
+            "--untracked-files=normal",
+        ]
     } else {
-        vec!["status", "--porcelain", "--ignored", "--untracked-files=normal", "--", &rel_path]
+        vec![
+            "status",
+            "--porcelain",
+            "--ignored",
+            "--untracked-files=normal",
+            "--",
+            &rel_path,
+        ]
     };
     let out = run_git(target.as_ref(), &project_dir, &status_args)?;
     let porcelain = String::from_utf8_lossy(&out.stdout).into_owned();
 
     // prefix used to filter entries under rel_path
-    let prefix = if rel_path.is_empty() { String::new() } else { format!("{rel_path}/") };
+    let prefix = if rel_path.is_empty() {
+        String::new()
+    } else {
+        format!("{rel_path}/")
+    };
 
     fn priority(s: &str) -> u8 {
         match s {
-            "modified"  => 5,
+            "modified" => 5,
             "untracked" => 4,
-            "staged"    => 3,
-            "unpushed"  => 2,
-            "ignored"   => 1,
-            _           => 0,
+            "staged" => 3,
+            "unpushed" => 2,
+            "ignored" => 1,
+            _ => 0,
         }
     }
 
@@ -647,7 +749,11 @@ fn git_file_statuses_blocking(
     // top-level entry directly under `rel_path`.
     let mut record = |raw_path: &str, status: &str| {
         let file_path = if raw_path.contains(" -> ") {
-            raw_path.split(" -> ").last().unwrap_or(raw_path).trim_matches('"')
+            raw_path
+                .split(" -> ")
+                .last()
+                .unwrap_or(raw_path)
+                .trim_matches('"')
         } else {
             raw_path.trim_matches('"')
         };
@@ -661,7 +767,9 @@ fn git_file_statuses_blocking(
         };
 
         let top = rel.split('/').next().unwrap_or(rel);
-        if top.is_empty() { return; }
+        if top.is_empty() {
+            return;
+        }
 
         // "ignored" must not bubble up from a descendant: git reports a wholly
         // ignored path as `foo` (file) or `foo/` (whole dir), but an ignored
@@ -685,7 +793,9 @@ fn git_file_statuses_blocking(
     };
 
     for line in porcelain.lines() {
-        if line.len() < 4 { continue; }
+        if line.len() < 4 {
+            continue;
+        }
         let bytes = line.as_bytes();
         let (x, y) = (bytes[0], bytes[1]);
         let raw_path = &line[3..];
@@ -706,8 +816,11 @@ fn git_file_statuses_blocking(
     }
 
     // Files in commits that exist locally but are not on the upstream branch.
-    if let Ok(out) = run_git(target.as_ref(), &project_dir, &["log", "@{u}..", "--name-only", "--pretty=format:"])
-    {
+    if let Ok(out) = run_git(
+        target.as_ref(),
+        &project_dir,
+        &["log", "@{u}..", "--name-only", "--pretty=format:"],
+    ) {
         if out.status.success() {
             let committed = String::from_utf8_lossy(&out.stdout).into_owned();
             for line in committed.lines() {
@@ -785,8 +898,7 @@ pub async fn git_change_stats(
     };
 
     let mut changes: Vec<FileChange> = Vec::new();
-    if let Ok(out) = run_git(target.as_ref(), &project_dir, numstat_args)
-    {
+    if let Ok(out) = run_git(target.as_ref(), &project_dir, numstat_args) {
         if out.status.success() {
             let text = String::from_utf8_lossy(&out.stdout);
             for line in text.lines() {
@@ -810,8 +922,11 @@ pub async fn git_change_stats(
     // Untracked files never appear in `git diff`; list them separately and count
     // their lines as additions (the Add list shows them alongside modified files).
     if scope == "unstaged" {
-        if let Ok(out) = run_git(target.as_ref(), &project_dir, &["ls-files", "--others", "--exclude-standard", "-z"])
-        {
+        if let Ok(out) = run_git(
+            target.as_ref(),
+            &project_dir,
+            &["ls-files", "--others", "--exclude-standard", "-z"],
+        ) {
             if out.status.success() {
                 for chunk in out.stdout.split(|&b| b == 0) {
                     if chunk.is_empty() {
@@ -830,7 +945,12 @@ pub async fn git_change_stats(
                         None => count_added_lines(&dir.join(&rel)),
                         Some(t) => count_added_lines_remote(&pool, t, &rel).await,
                     };
-                    changes.push(FileChange { path: rel, added, deleted: 0, binary });
+                    changes.push(FileChange {
+                        path: rel,
+                        added,
+                        deleted: 0,
+                        binary,
+                    });
                 }
             }
         }
@@ -905,12 +1025,20 @@ fn git_unpushed_commits_blocking(project_dir: String) -> Result<Vec<String>, Str
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
-    let out = run_git(target.as_ref(), &project_dir, &["log", "@{u}..", "--oneline"])?;
+    let out = run_git(
+        target.as_ref(),
+        &project_dir,
+        &["log", "@{u}..", "--oneline"],
+    )?;
     if !out.status.success() {
         return Ok(vec![]);
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    Ok(text.lines().filter(|l| !l.is_empty()).map(|l| l.to_string()).collect())
+    Ok(text
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect())
 }
 
 /// Ephemeral inline credential helper that answers an https challenge with the
@@ -934,7 +1062,13 @@ fn push_local(dir: &std::path::Path, token: Option<&str>) -> Result<std::process
     let mut cmd = crate::paths::command_no_window("git");
     cmd.current_dir(dir);
     if let Some(tok) = token {
-        cmd.args(["-c", "credential.helper=", "-c", TOKEN_CREDENTIAL_HELPER, "push"]);
+        cmd.args([
+            "-c",
+            "credential.helper=",
+            "-c",
+            TOKEN_CREDENTIAL_HELPER,
+            "push",
+        ]);
         cmd.env("ELDRUN_GIT_TOKEN", tok);
         cmd.env("GIT_TERMINAL_PROMPT", "0");
     } else {
@@ -1071,7 +1205,9 @@ pub(crate) fn git_clone_blocking(url: String, dest: String) -> Result<String, St
             .map(|mut entries| entries.next().is_none())
             .unwrap_or(false);
         if !empty {
-            return Err(format!("Destination '{dest}' already exists and is not empty"));
+            return Err(format!(
+                "Destination '{dest}' already exists and is not empty"
+            ));
         }
     }
     if let Some(parent) = dest_path.parent() {
@@ -1100,7 +1236,11 @@ pub(crate) fn git_clone_blocking(url: String, dest: String) -> Result<String, St
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        let raw = if stderr.trim().is_empty() { stdout } else { stderr };
+        let raw = if stderr.trim().is_empty() {
+            stdout
+        } else {
+            stderr
+        };
         // A failed clone can still leave a partial directory behind; drop it so a
         // retry isn't blocked by its own debris.
         if dest_path.exists() {
@@ -1148,13 +1288,20 @@ fn git_log_blocking(project_dir: String, limit: Option<u32>) -> Result<Vec<GitCo
     }
     let max = limit.unwrap_or(100);
     let max_count = format!("--max-count={max}");
-    let out = run_git(target.as_ref(), &project_dir, &["log", &max_count, GIT_LOG_FMT])?;
+    let out = run_git(
+        target.as_ref(),
+        &project_dir,
+        &["log", &max_count, GIT_LOG_FMT],
+    )?;
     if !out.status.success() {
         // Empty repository (no commits) — not an error for our purposes.
         return Ok(vec![]);
     }
     let head = git_head_hash(target.as_ref(), &project_dir);
-    Ok(parse_git_log(&String::from_utf8_lossy(&out.stdout), head.as_deref()))
+    Ok(parse_git_log(
+        &String::from_utf8_lossy(&out.stdout),
+        head.as_deref(),
+    ))
 }
 
 /// The `--pretty` format shared by `git_log` and `git_file_log`: fields separated
@@ -1172,10 +1319,7 @@ fn parse_git_log(text: &str, head: Option<&str>) -> Vec<GitCommit> {
         }
         let hash = parts[0].to_string();
         let is_head = head == Some(hash.as_str());
-        let parents = parts[6]
-            .split_whitespace()
-            .map(|p| p.to_string())
-            .collect();
+        let parents = parts[6].split_whitespace().map(|p| p.to_string()).collect();
         commits.push(GitCommit {
             hash,
             short: parts[1].to_string(),
@@ -1224,7 +1368,10 @@ fn git_file_log_blocking(
         return Ok(vec![]);
     }
     let head = git_head_hash(target.as_ref(), &project_dir);
-    Ok(parse_git_log(&String::from_utf8_lossy(&out.stdout), head.as_deref()))
+    Ok(parse_git_log(
+        &String::from_utf8_lossy(&out.stdout),
+        head.as_deref(),
+    ))
 }
 
 /// Returns a file's contents at a specific revision (`git show <rev>:<rel_path>`).
@@ -1342,7 +1489,11 @@ pub async fn git_commit_message(project_dir: String, hash: String) -> Result<Str
 fn git_commit_message_blocking(project_dir: String, hash: String) -> Result<String, String> {
     check_rev(&hash)?;
     let target = remote_target_for_dir(&project_dir);
-    let out = run_git(target.as_ref(), &project_dir, &["log", "-1", "--pretty=format:%B", &hash])?;
+    let out = run_git(
+        target.as_ref(),
+        &project_dir,
+        &["log", "-1", "--pretty=format:%B", &hash],
+    )?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -1361,7 +1512,11 @@ fn git_reword_head_blocking(project_dir: String, message: String) -> Result<(), 
         return Err("Commit message cannot be empty".to_string());
     }
     let target = remote_target_for_dir(&project_dir);
-    let out = run_git(target.as_ref(), &project_dir, &["commit", "--amend", "-m", &message])?;
+    let out = run_git(
+        target.as_ref(),
+        &project_dir,
+        &["commit", "--amend", "-m", &message],
+    )?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -1395,7 +1550,11 @@ fn git_diff_file_blocking(project_dir: String, rel_path: String) -> Result<Strin
     // Tracked diff is empty (e.g. untracked file). Show the whole file as added.
     // `--no-index` exits non-zero when differences exist, which is the normal
     // case here, so treat any non-empty stdout as success.
-    let fallback = run_git(target.as_ref(), &project_dir, &["diff", "--no-index", "--", "/dev/null", &rel_path])?;
+    let fallback = run_git(
+        target.as_ref(),
+        &project_dir,
+        &["diff", "--no-index", "--", "/dev/null", &rel_path],
+    )?;
     let fb_stdout = String::from_utf8_lossy(&fallback.stdout).to_string();
     if !fb_stdout.is_empty() {
         return Ok(fb_stdout);
@@ -1475,7 +1634,9 @@ fn parse_blame_porcelain(text: &str) -> Vec<GitBlameLine> {
         } else if line.starts_with('\t') {
             // Content line — finalizes the current record.
             if let Some(hash) = cur_hash.take() {
-                cache.entry(hash.clone()).or_insert_with(|| building.clone());
+                cache
+                    .entry(hash.clone())
+                    .or_insert_with(|| building.clone());
                 let short = hash.chars().take(8).collect();
                 lines.push(GitBlameLine {
                     line_no: cur_line_no,
@@ -1838,10 +1999,7 @@ pub(crate) fn resolve_worktree_path(ctx: &WorktreeCtx, input: &str) -> Result<St
 /// canonicalize against without another round trip.
 fn same_dir(ctx: &WorktreeCtx, a: &str, b: &str) -> bool {
     if ctx.target.is_none() {
-        if let (Ok(a), Ok(b)) = (
-            std::fs::canonicalize(a),
-            std::fs::canonicalize(b),
-        ) {
+        if let (Ok(a), Ok(b)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
             return a == b;
         }
     }
@@ -1920,7 +2078,15 @@ pub async fn git_worktree_add(
     host_id: Option<String>,
 ) -> Result<String, String> {
     run_off_thread(move || {
-        git_worktree_add_blocking(project_dir, path, branch, new_branch, start_point, site, host_id)
+        git_worktree_add_blocking(
+            project_dir,
+            path,
+            branch,
+            new_branch,
+            start_point,
+            site,
+            host_id,
+        )
     })
     .await
 }
@@ -2283,7 +2449,15 @@ mod tests {
         let args = hardened_git_args(&["status", "--porcelain"]);
         // `-c k=v` pairs must precede the subcommand, or git parses them as its
         // arguments instead of its own options.
-        assert_eq!(&args[..4], &["-c", "core.fsmonitor=false", "-c", "protocol.ext.allow=never"]);
+        assert_eq!(
+            &args[..4],
+            &[
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "protocol.ext.allow=never"
+            ]
+        );
         assert_eq!(&args[4..], &["status", "--porcelain"]);
         // A subcommand that takes no diff-driver flags gets none.
         assert!(!args.iter().any(|a| a == "--no-ext-diff"));
@@ -2293,7 +2467,10 @@ mod tests {
     fn hardened_git_args_adds_diff_driver_flags_after_the_subcommand_only() {
         for sub in DIFF_DRIVER_CMDS {
             let args = hardened_git_args(&[sub, "--", "a file.txt"]);
-            let at = args.iter().position(|a| a == sub).expect("subcommand present");
+            let at = args
+                .iter()
+                .position(|a| a == sub)
+                .expect("subcommand present");
             assert_eq!(args[at + 1], "--no-ext-diff");
             assert_eq!(args[at + 2], "--no-textconv");
             // Everything the caller passed keeps its order behind them — the
@@ -2302,7 +2479,10 @@ mod tests {
         }
         // Owned args (the `Vec<String>` call sites) go through the same builder.
         let owned = vec!["log".to_string(), "--numstat".to_string()];
-        assert_eq!(hardened_git_args(&owned)[4..], ["log", "--no-ext-diff", "--no-textconv", "--numstat"]);
+        assert_eq!(
+            hardened_git_args(&owned)[4..],
+            ["log", "--no-ext-diff", "--no-textconv", "--numstat"]
+        );
         // No subcommand at all is just the pinned config (no panic, no stray flag).
         let empty: [&str; 0] = [];
         assert_eq!(hardened_git_args(&empty).len(), HARDENED_CONFIG.len() * 2);
@@ -2317,7 +2497,9 @@ mod tests {
     #[test]
     fn a_repos_own_config_cannot_run_a_program_on_the_host() {
         if !git_available() {
-            eprintln!("git not on PATH — skipping a_repos_own_config_cannot_run_a_program_on_the_host");
+            eprintln!(
+                "git not on PATH — skipping a_repos_own_config_cannot_run_a_program_on_the_host"
+            );
             return;
         }
         use std::os::unix::fs::PermissionsExt;
@@ -2326,7 +2508,11 @@ mod tests {
         let dir = tmp.path();
         init_repo(dir);
         let run = |args: &[&str]| {
-            crate::paths::command_no_window("git").args(args).current_dir(dir).output().expect("git")
+            crate::paths::command_no_window("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git")
         };
         fs::write(dir.join("f.txt"), "a\n").expect("write");
         run(&["add", "f.txt"]);
@@ -2336,7 +2522,11 @@ mod tests {
         // The payload a hostile `.git/config` would name, and the mark it leaves.
         let marker = dir.join("executed");
         let payload = dir.join("payload.sh");
-        fs::write(&payload, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).expect("write");
+        fs::write(
+            &payload,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .expect("write");
         fs::set_permissions(&payload, fs::Permissions::from_mode(0o755)).expect("chmod");
         let p = payload.to_str().expect("utf-8 path");
         run(&["config", "core.fsmonitor", p]);
@@ -2345,19 +2535,29 @@ mod tests {
         let project_dir = dir.to_str().expect("utf-8 path");
         // `core.fsmonitor` on a plain status — the polled read the file tree makes.
         run(&["status", "--porcelain"]);
-        assert!(marker.exists(), "setup is stale: git no longer runs core.fsmonitor on status");
+        assert!(
+            marker.exists(),
+            "setup is stale: git no longer runs core.fsmonitor on status"
+        );
         fs::remove_file(&marker).expect("clear marker");
         run_git(None, project_dir, &["status", "--porcelain"]).expect("hardened status");
         assert!(!marker.exists(), "core.fsmonitor executed through run_git");
 
         // `diff.external` on a diff — the viewer's and the file-status poll's path.
         run(&["diff"]);
-        assert!(marker.exists(), "setup is stale: git no longer runs diff.external");
+        assert!(
+            marker.exists(),
+            "setup is stale: git no longer runs diff.external"
+        );
         fs::remove_file(&marker).expect("clear marker");
         let out = run_git(None, project_dir, &["diff"]).expect("hardened diff");
         assert!(!marker.exists(), "diff.external executed through run_git");
         // …and the hardening must leave a working diff behind, not a dead one.
-        assert!(out.status.success(), "hardened diff failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "hardened diff failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert!(String::from_utf8_lossy(&out.stdout).contains("+b"));
     }
 
@@ -2409,12 +2609,20 @@ mod tests {
         let dir = tmp.path();
         init_repo(dir);
         let run = |args: &[&str]| {
-            crate::paths::command_no_window("git").args(args).current_dir(dir).output().expect("git")
+            crate::paths::command_no_window("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git")
         };
 
         let marker = dir.join("executed");
         let payload = dir.join("payload.sh");
-        fs::write(&payload, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).expect("write");
+        fs::write(
+            &payload,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .expect("write");
         fs::set_permissions(&payload, fs::Permissions::from_mode(0o755)).expect("chmod");
         let p = payload.to_str().expect("utf-8 path");
 
@@ -2423,13 +2631,19 @@ mod tests {
         fs::write(dir.join("secret.txt"), "a\n").expect("write");
 
         run(&["add", "secret.txt"]);
-        assert!(marker.exists(), "setup is stale: git no longer runs a repo-local filter.clean");
+        assert!(
+            marker.exists(),
+            "setup is stale: git no longer runs a repo-local filter.clean"
+        );
         run(&["rm", "--cached", "-f", "secret.txt"]);
         fs::remove_file(&marker).expect("clear marker");
 
         let project_dir = dir.to_str().expect("utf-8 path");
         run_git(None, project_dir, &["add", "secret.txt"]).expect("hardened add");
-        assert!(!marker.exists(), "filter.evil.clean executed through run_git");
+        assert!(
+            !marker.exists(),
+            "filter.evil.clean executed through run_git"
+        );
     }
 
     /// The bypass a filter/diff-only denylist would otherwise have: an
@@ -2452,12 +2666,20 @@ mod tests {
         let dir = tmp.path();
         init_repo(dir);
         let run = |args: &[&str]| {
-            crate::paths::command_no_window("git").args(args).current_dir(dir).output().expect("git")
+            crate::paths::command_no_window("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git")
         };
 
         let marker = dir.join("executed");
         let payload = dir.join("payload.sh");
-        fs::write(&payload, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).expect("write");
+        fs::write(
+            &payload,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .expect("write");
         fs::set_permissions(&payload, fs::Permissions::from_mode(0o755)).expect("chmod");
         let p = payload.to_str().expect("utf-8 path");
 
@@ -2473,7 +2695,10 @@ mod tests {
 
         // Setup check: the include genuinely reaches the filter today.
         run(&["add", "secret.txt"]);
-        assert!(marker.exists(), "setup is stale: the include-laundered filter never ran");
+        assert!(
+            marker.exists(),
+            "setup is stale: the include-laundered filter never ran"
+        );
         // `rm --cached -f` re-runs the clean filter too (to compare working-tree
         // content against the index) — clear the marker *after* this, not before,
         // or the next check would pass on a marker this line left behind.
@@ -2482,14 +2707,25 @@ mod tests {
 
         let project_dir = dir.to_str().expect("utf-8 path");
         run_git(None, project_dir, &["add", "secret.txt"]).expect("hardened add");
-        assert!(!marker.exists(), "include-laundered filter.evil.clean executed through run_git");
+        assert!(
+            !marker.exists(),
+            "include-laundered filter.evil.clean executed through run_git"
+        );
 
         // The strip must not be so blunt it takes the whole file with it.
         let email = crate::paths::command_no_window("git")
-            .args(["config", "--file", &dir.join(".git/config").to_string_lossy(), "user.email"])
+            .args([
+                "config",
+                "--file",
+                &dir.join(".git/config").to_string_lossy(),
+                "user.email",
+            ])
             .output()
             .expect("read back user.email");
-        assert_eq!(String::from_utf8_lossy(&email.stdout).trim(), "test@example.com");
+        assert_eq!(
+            String::from_utf8_lossy(&email.stdout).trim(),
+            "test@example.com"
+        );
     }
 
     #[test]
@@ -2524,13 +2760,14 @@ mod tests {
         // Modify the file so a tracked diff exists.
         fs::write(&file, "first line\nCHANGED line\n").expect("rewrite");
 
-        let diff = git_diff_file_blocking(
-            dir.to_string_lossy().to_string(),
-            "note.txt".to_string(),
-        )
-        .expect("git_diff_file should succeed");
+        let diff =
+            git_diff_file_blocking(dir.to_string_lossy().to_string(), "note.txt".to_string())
+                .expect("git_diff_file should succeed");
         assert!(diff.contains("@@"), "expected a hunk marker, got: {diff}");
-        assert!(diff.contains("CHANGED line"), "expected changed line, got: {diff}");
+        assert!(
+            diff.contains("CHANGED line"),
+            "expected changed line, got: {diff}"
+        );
     }
 
     #[test]
@@ -2548,11 +2785,9 @@ mod tests {
         let file = dir.join("fresh.txt");
         fs::write(&file, "brand new content\nanother line\n").expect("write");
 
-        let diff = git_diff_file_blocking(
-            dir.to_string_lossy().to_string(),
-            "fresh.txt".to_string(),
-        )
-        .expect("git_diff_file should succeed via fallback");
+        let diff =
+            git_diff_file_blocking(dir.to_string_lossy().to_string(), "fresh.txt".to_string())
+                .expect("git_diff_file should succeed via fallback");
         assert!(!diff.is_empty(), "fallback diff should be non-empty");
         assert!(
             diff.contains("brand new content"),
@@ -2642,11 +2877,8 @@ filename note.txt
             assert!(ok, "git {args:?} failed");
         }
 
-        let blame = git_blame_blocking(
-            dir.to_string_lossy().to_string(),
-            "note.txt".to_string(),
-        )
-        .expect("git_blame should succeed");
+        let blame = git_blame_blocking(dir.to_string_lossy().to_string(), "note.txt".to_string())
+            .expect("git_blame should succeed");
         assert_eq!(blame.len(), 2, "two committed lines");
         assert_eq!(blame[0].line_no, 1);
         assert_eq!(blame[0].author, "Test User");
@@ -2669,7 +2901,9 @@ filename note.txt
     #[test]
     fn ignored_child_does_not_mark_whole_folder_ignored() {
         if !git_available() {
-            eprintln!("git not on PATH — skipping ignored_child_does_not_mark_whole_folder_ignored");
+            eprintln!(
+                "git not on PATH — skipping ignored_child_does_not_mark_whole_folder_ignored"
+            );
             return;
         }
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -2678,18 +2912,16 @@ filename note.txt
 
         // `partial/` has one ignored file and one tracked file → the folder
         // itself is NOT ignored. `whole/` is ignored in its entirety.
-        fs::write(dir.join(".gitignore"), "partial/ignored.log\nwhole/\n").expect("write .gitignore");
+        fs::write(dir.join(".gitignore"), "partial/ignored.log\nwhole/\n")
+            .expect("write .gitignore");
         fs::create_dir(dir.join("partial")).expect("mkdir partial");
         fs::write(dir.join("partial/ignored.log"), "log\n").expect("write log");
         fs::write(dir.join("partial/keep.txt"), "keep\n").expect("write keep");
         fs::create_dir(dir.join("whole")).expect("mkdir whole");
         fs::write(dir.join("whole/a.txt"), "a\n").expect("write a");
 
-        let statuses = git_file_statuses_blocking(
-            dir.to_string_lossy().to_string(),
-            String::new(),
-        )
-        .expect("git_file_statuses should succeed");
+        let statuses = git_file_statuses_blocking(dir.to_string_lossy().to_string(), String::new())
+            .expect("git_file_statuses should succeed");
 
         // A folder with only some ignored content stays out of the ignored bucket.
         assert_ne!(
@@ -2710,8 +2942,9 @@ filename note.txt
         // children as ignored, not silently come back empty (the bug this
         // test guards: plain `--ignored` collapses `whole/` to one line and
         // never descends into it).
-        let inner = git_file_statuses_blocking(dir.to_string_lossy().to_string(), "whole".to_string())
-            .expect("git_file_statuses on whole/ should succeed");
+        let inner =
+            git_file_statuses_blocking(dir.to_string_lossy().to_string(), "whole".to_string())
+                .expect("git_file_statuses on whole/ should succeed");
         assert_eq!(
             inner.get("a.txt").map(String::as_str),
             Some("ignored"),
@@ -2742,11 +2975,8 @@ filename note.txt
             .success();
         assert!(configured, "git config failed");
 
-        let statuses = git_file_statuses_blocking(
-            dir.to_string_lossy().to_string(),
-            String::new(),
-        )
-        .expect("git_file_statuses should override the user's untracked-files setting");
+        let statuses = git_file_statuses_blocking(dir.to_string_lossy().to_string(), String::new())
+            .expect("git_file_statuses should override the user's untracked-files setting");
 
         assert_eq!(statuses.get("cache").map(String::as_str), Some("ignored"));
     }
@@ -2847,7 +3077,10 @@ filename note.txt
     fn a_bare_name_resolves_inside_the_sanctioned_root() {
         let ctx = local_ctx("/home/u/proj");
         let p = resolve_worktree_path(&ctx, "feature-x").unwrap();
-        assert_eq!(path_components(&p), path_components("/home/u/proj/.eldrun/worktrees/feature-x"));
+        assert_eq!(
+            path_components(&p),
+            path_components("/home/u/proj/.eldrun/worktrees/feature-x")
+        );
     }
 
     #[test]
@@ -2865,8 +3098,8 @@ filename note.txt
         // unconstrained argument writes repo content anywhere writable.
         for bad in [
             "/etc/cron.d/x",
-            "/home/u/proj/wt",                       // inside the project, outside the root
-            "/home/u/proj/.eldrun/sessions/x",       // Eldrun reads this dir as intent
+            "/home/u/proj/wt", // inside the project, outside the root
+            "/home/u/proj/.eldrun/sessions/x", // Eldrun reads this dir as intent
             "../../elsewhere",
             "/home/u/proj/.eldrun/worktrees/../../x",
             "/home/u/proj/.eldrun/worktrees-evil/x", // prefix-match near miss
@@ -2899,14 +3132,21 @@ filename note.txt
         // I4: `worktree add` checks out, and a checkout runs `post-checkout` — which
         // for a container-toggled project lives in the container's writable mount.
         // `-c core.hooksPath=` suppresses it (verified against git 2.53.0).
-        let args = hardened_git_args(&["-c", "core.hooksPath=", "worktree", "add", "/p/wt", "feat"]);
+        let args =
+            hardened_git_args(&["-c", "core.hooksPath=", "worktree", "add", "/p/wt", "feat"]);
         assert_eq!(
             args,
             vec![
-                "-c", "core.fsmonitor=false",
-                "-c", "protocol.ext.allow=never",
-                "-c", "core.hooksPath=",
-                "worktree", "add", "/p/wt", "feat",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "protocol.ext.allow=never",
+                "-c",
+                "core.hooksPath=",
+                "worktree",
+                "add",
+                "/p/wt",
+                "feat",
             ]
         );
         // The caller's own `-c` pair must not be mistaken for the subcommand: a
@@ -2914,7 +3154,10 @@ filename note.txt
         // `--no-ext-diff`/`--no-textconv`.
         let diff = hardened_git_args(&["-c", "core.hooksPath=", "diff", "HEAD"]);
         assert!(diff.contains(&"--no-ext-diff".to_string()));
-        assert_eq!(diff[diff.len() - 4..], ["diff", "--no-ext-diff", "--no-textconv", "HEAD"]);
+        assert_eq!(
+            diff[diff.len() - 4..],
+            ["diff", "--no-ext-diff", "--no-textconv", "HEAD"]
+        );
     }
 
     #[test]
@@ -2923,7 +3166,14 @@ filename note.txt
         // argv-order regression on the remote path was caught only by the LOCAL
         // roundtrip — which cannot run it.
         use crate::services::ssh_exec::remote_git_command;
-        let args = hardened_git_args(&["-c", "core.hooksPath=", "worktree", "add", "/s/p/.eldrun/worktrees/a b", "feat"]);
+        let args = hardened_git_args(&[
+            "-c",
+            "core.hooksPath=",
+            "worktree",
+            "add",
+            "/s/p/.eldrun/worktrees/a b",
+            "feat",
+        ]);
         let cmd = remote_git_command("/scratch/proj", &args);
         assert_eq!(
             cmd,
@@ -3020,19 +3270,16 @@ filename note.txt
         run(&["add", "-A"]);
         let staged = run(&["ls-files", "--stage"]);
         let staged = String::from_utf8_lossy(&staged.stdout).to_string();
-        assert!(!staged.contains("160000"), "embedded gitlink staged: {staged}");
+        assert!(
+            !staged.contains("160000"),
+            "embedded gitlink staged: {staged}"
+        );
         run(&["reset"]);
 
         // Removing the worktree we are standing in is refused (D4) — git itself
         // does not refuse it, and it would delete the tree Eldrun works in.
-        let err = git_worktree_remove_blocking(
-            root_str.clone(),
-            root_str.clone(),
-            2,
-            None,
-            None,
-        )
-        .unwrap_err();
+        let err = git_worktree_remove_blocking(root_str.clone(), root_str.clone(), 2, None, None)
+            .unwrap_err();
         assert!(err.contains("own checkout"), "unexpected: {err}");
 
         // Remove it and confirm we are back to one.
@@ -3080,8 +3327,11 @@ filename note.txt
         .unwrap();
 
         let ctx = worktree_ctx(&root_str, None, None);
-        run_worktree_git(&ctx, &["worktree", "lock", "--reason", "on a removable drive", &wt])
-            .unwrap();
+        run_worktree_git(
+            &ctx,
+            &["worktree", "lock", "--reason", "on a removable drive", &wt],
+        )
+        .unwrap();
 
         let listed = git_worktree_list_blocking(root_str.clone(), None, None).unwrap();
         let locked = listed.iter().find(|w| !w.is_main).unwrap();
@@ -3089,13 +3339,13 @@ filename note.txt
         assert_eq!(locked.lock_reason, "on a removable drive");
 
         // One --force is not enough.
-        assert!(
-            git_worktree_remove_blocking(root_str.clone(), wt.clone(), 1, None, None).is_err()
-        );
+        assert!(git_worktree_remove_blocking(root_str.clone(), wt.clone(), 1, None, None).is_err());
         // Two is.
         git_worktree_remove_blocking(root_str.clone(), wt, 2, None, None).unwrap();
         assert_eq!(
-            git_worktree_list_blocking(root_str, None, None).unwrap().len(),
+            git_worktree_list_blocking(root_str, None, None)
+                .unwrap()
+                .len(),
             1
         );
     }
@@ -3286,7 +3536,11 @@ filename note.txt
 
     #[test]
     fn clone_error_explains_missing_token_for_https() {
-        let msg = clone_error("fatal: could not read Username for 'https://github.com'", false, true);
+        let msg = clone_error(
+            "fatal: could not read Username for 'https://github.com'",
+            false,
+            true,
+        );
         assert!(msg.contains("Settings → Git Hosting"), "{msg}");
 
         // A token IS stored but was rejected → point at the token, not at adding one.
@@ -3294,7 +3548,11 @@ filename note.txt
         assert!(msg.contains("was rejected"), "{msg}");
 
         // SSH auth failure gets the key/agent hint instead.
-        let msg = clone_error("git@github.com: Permission denied (publickey).\nfatal: Authentication failed", false, false);
+        let msg = clone_error(
+            "git@github.com: Permission denied (publickey).\nfatal: Authentication failed",
+            false,
+            false,
+        );
         assert!(msg.contains("ssh-agent"), "{msg}");
 
         // A non-auth failure is passed through unchanged (no misleading hint).

@@ -118,6 +118,9 @@ export interface Settings {
     port?: number;
     serve_origin?: string;
   };
+  /** Show Eldrun Mobile's host-connection control in the desktop header. This
+   * defaults to on when Mobile itself is enabled; an explicit false hides it. */
+  mobile_indicator?: boolean;
   git_profile_url?: string;
   git_token?: string;
   color_scheme?: string;
@@ -267,6 +270,11 @@ export interface Settings {
    *  (`"claude"`, `"codex"`, …). Set from the 🧠 menu's Agents section; every
    *  reader falls back to `"claude"` when unset. */
   default_agent_cmd?: string;
+  /** Built-in agent registry ids shown without searching in the compact Agents
+   *  group of the + tab menu. Set by the 🧠 menu's “+ tab” chips. Unset keeps
+   *  the familiar Claude/Codex/Gemini quick picks; an empty array is a deliberate
+   *  choice to show agents only after searching. */
+  compact_tab_agents?: string[];
   /** User-defined custom agents offered in the add-tab menu's Agents group,
    *  added/removed from the "＋ Add agent…" dialog. Round-trips through the
    *  backend settings `extra` catch-all — no Rust field needed. See CustomAgent. */
@@ -881,6 +889,8 @@ export interface ProjectEntry {
   categories?: string[];
   /** Explicit trusted-state opt-in for phone/tablet terminal access. */
   eldrun_mobile_access?: boolean;
+  /** Built-in permanent workspace for disposable, strictly-contained agents. */
+  eldrun_trash?: boolean;
   [key: string]: unknown;
 }
 

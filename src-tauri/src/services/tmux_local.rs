@@ -19,6 +19,22 @@
 
 use crate::terminal::PtyOptions;
 
+/// Prefix reserved for tmux sessions Eldrun creates on the local machine.
+///
+/// It is deliberately broad enough to include sessions created by a previous
+/// Eldrun run and whose tabs have not been opened in this run yet. A clean app
+/// quit reaps these sessions, while a crash leaves them available for restore.
+pub const ELDRUN_LOCAL_TMUX_PREFIX: &str = "eldrun-";
+
+/// Whether a local tmux session is owned by Eldrun.
+///
+/// Session names are minted by the frontend as `eldrun-<scope>--…`; keeping the
+/// ownership rule here means the quit path never touches a user-created session
+/// such as `train` or `work`.
+pub fn is_eldrun_local_tmux_session(session: &str) -> bool {
+    session.starts_with(ELDRUN_LOCAL_TMUX_PREFIX)
+}
+
 /// Single-quote `s` for a POSIX shell (mirrors `ssh_exec::shell_quote`). Used only
 /// to fold a command tab's `cmd`+`args` into the single command string tmux hands
 /// to `sh -c`.
@@ -226,6 +242,13 @@ mod tests {
             local_tmux_rename_args("old", "new"),
             vec!["rename-session", "-t", "old", "new"]
         );
+    }
+
+    #[test]
+    fn identifies_only_eldrun_owned_sessions() {
+        assert!(is_eldrun_local_tmux_session("eldrun-project--shell-123"));
+        assert!(!is_eldrun_local_tmux_session("train"));
+        assert!(!is_eldrun_local_tmux_session("my-eldrun-run"));
     }
 
     #[test]

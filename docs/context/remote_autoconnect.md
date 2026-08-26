@@ -1,6 +1,6 @@
 # Remote auto-connect
 
-Referenced from `CLAUDE.md`.
+Referenced from `AGENTS.md`.
 
 A remote project connects **on demand** (the pill's connection lamp opens the
 `RemoteConnectDialog`) — *unless* it opts into `remote.auto_connect`, which

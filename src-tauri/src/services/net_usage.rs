@@ -96,9 +96,7 @@ mod linux {
     /// master's `connection_id` is already in the process's tracked set.
     fn decide_booking(prev: Option<&Baseline>, cur: &Baseline, cid_known: bool) -> Booking {
         match prev {
-            Some(p)
-                if p.connection_id == cur.connection_id && cur.rx >= p.rx && cur.tx >= p.tx =>
-            {
+            Some(p) if p.connection_id == cur.connection_id && cur.rx >= p.rx && cur.tx >= p.tx => {
                 Booking::Delta(cur.rx - p.rx, cur.tx - p.tx)
             }
             // First sight, a restarted master (new connection_id), or a backwards
@@ -170,15 +168,15 @@ mod linux {
                 // Guaranteed `Some` — the `is_none()` guard above `continue`d.
                 let cid = snap.connection_id.clone().unwrap_or_default();
 
-                let booked = match decide_booking(baselines.get(id), &cur, known_conns.contains(&cid))
-                {
-                    Booking::Delta(d_rx, d_tx) => Some((d_rx, d_tx)),
-                    Booking::Fresh(d_rx, d_tx) => {
-                        known_conns.insert(cid);
-                        Some((d_rx, d_tx))
-                    }
-                    Booking::Rebaseline => None,
-                };
+                let booked =
+                    match decide_booking(baselines.get(id), &cur, known_conns.contains(&cid)) {
+                        Booking::Delta(d_rx, d_tx) => Some((d_rx, d_tx)),
+                        Booking::Fresh(d_rx, d_tx) => {
+                            known_conns.insert(cid);
+                            Some((d_rx, d_tx))
+                        }
+                        Booking::Rebaseline => None,
+                    };
                 if let Some((d_rx, d_tx)) = booked {
                     if d_rx != 0 || d_tx != 0 {
                         let acc = pending.entry(id.clone()).or_default();
@@ -228,14 +226,21 @@ mod linux {
         use super::{decide_booking, Baseline, Booking};
 
         fn base(cid: &str, rx: u64, tx: u64) -> Baseline {
-            Baseline { connection_id: Some(cid.to_string()), rx, tx }
+            Baseline {
+                connection_id: Some(cid.to_string()),
+                rx,
+                tx,
+            }
         }
 
         #[test]
         fn same_master_advancing_books_the_delta() {
             let prev = base("pid1:a:b", 100, 40);
             let cur = base("pid1:a:b", 175, 55);
-            assert_eq!(decide_booking(Some(&prev), &cur, true), Booking::Delta(75, 15));
+            assert_eq!(
+                decide_booking(Some(&prev), &cur, true),
+                Booking::Delta(75, 15)
+            );
         }
 
         #[test]
@@ -243,7 +248,10 @@ mod linux {
             // No baseline yet and a connection_id never tracked → the whole
             // cumulative counter is the seed that landed before the first sample.
             let cur = base("pid1:a:b", 9000, 4000);
-            assert_eq!(decide_booking(None, &cur, false), Booking::Fresh(9000, 4000));
+            assert_eq!(
+                decide_booking(None, &cur, false),
+                Booking::Fresh(9000, 4000)
+            );
         }
 
         #[test]
@@ -252,7 +260,10 @@ mod linux {
             // id is unknown, so its from-zero counter is booked, not discarded.
             let prev = base("pid1:a:b", 9000, 4000);
             let cur = base("pid2:a:b", 120, 30);
-            assert_eq!(decide_booking(Some(&prev), &cur, false), Booking::Fresh(120, 30));
+            assert_eq!(
+                decide_booking(Some(&prev), &cur, false),
+                Booking::Fresh(120, 30)
+            );
         }
 
         #[test]

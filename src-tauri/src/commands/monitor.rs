@@ -52,9 +52,8 @@ pub async fn system_monitor_snapshot(
     {
         let spec = target.spec.clone();
         let key = crate::services::hpc_mode::key_for(&spec);
-        let mode = careful.or_else(|| {
-            crate::services::hpc_mode::is_known_careful(&key).then_some(true)
-        });
+        let mode =
+            careful.or_else(|| crate::services::hpc_mode::is_known_careful(&key).then_some(true));
         return tokio::task::spawn_blocking(move || {
             let out = crate::services::ssh_exec::run_remote_script(
                 &spec,

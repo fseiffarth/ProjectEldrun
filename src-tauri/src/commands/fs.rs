@@ -259,7 +259,11 @@ pub async fn dir_size(
 
 /// Local-fs recursive directory size (bytes). Confinement-checked like the local
 /// lister, then a symlink-skipping walk (so a symlink cycle can't loop forever).
-pub fn dir_size_local(project_dir: &str, rel_path: &str, excluded: &[String]) -> Result<u64, String> {
+pub fn dir_size_local(
+    project_dir: &str,
+    rel_path: &str,
+    excluded: &[String],
+) -> Result<u64, String> {
     let root = canonical(project_dir)?;
     let target = if rel_path.is_empty() {
         root.clone()
@@ -269,7 +273,11 @@ pub fn dir_size_local(project_dir: &str, rel_path: &str, excluded: &[String]) ->
     enforce_confinement(&root, &target)?;
     // The walk builds rel paths from `rel_path` down, so the exclusion list —
     // which is project-root-relative — matches at any depth under the folder.
-    Ok(walk_dir_size(&target, rel_path.trim_matches('/'), &excluded_rel_set(excluded)))
+    Ok(walk_dir_size(
+        &target,
+        rel_path.trim_matches('/'),
+        &excluded_rel_set(excluded),
+    ))
 }
 
 /// Normalise the caller's scan-exclusion list into the same project-relative,
@@ -283,7 +291,12 @@ pub fn excluded_rel_set(excluded: &[String]) -> HashSet<String> {
     excluded
         .iter()
         .map(|raw| raw.replace('\\', "/"))
-        .map(|rel| rel.trim().trim_matches('/').trim_start_matches("./").to_string())
+        .map(|rel| {
+            rel.trim()
+                .trim_matches('/')
+                .trim_start_matches("./")
+                .to_string()
+        })
         .filter(|rel| !rel.is_empty())
         .collect()
 }
@@ -307,7 +320,11 @@ fn walk_dir_size(dir: &Path, rel_prefix: &str, excluded: &HashSet<String>) -> u6
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        let child_rel = if rel_prefix.is_empty() { name } else { format!("{rel_prefix}/{name}") };
+        let child_rel = if rel_prefix.is_empty() {
+            name
+        } else {
+            format!("{rel_prefix}/{name}")
+        };
         if excluded.contains(&child_rel) {
             continue;
         }
@@ -343,9 +360,11 @@ pub async fn dir_size_breakdown(
     excluded: Option<Vec<String>>,
 ) -> Result<DirSizeBreakdown, String> {
     let excluded = excluded.unwrap_or_default();
-    tokio::task::spawn_blocking(move || dir_size_breakdown_local(&project_dir, &rel_path, &excluded))
-        .await
-        .map_err(|e| e.to_string())?
+    tokio::task::spawn_blocking(move || {
+        dir_size_breakdown_local(&project_dir, &rel_path, &excluded)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn dir_size_breakdown_local(
@@ -382,12 +401,18 @@ fn dir_size_breakdown_local(
     let prefix = rel_path.trim_matches('/');
     let excluded = excluded_rel_set(excluded);
     if !root.join(".git").exists() {
-        return Ok(DirSizeBreakdown { total: walk_dir_size(&target, prefix, &excluded), ignored: 0 });
+        return Ok(DirSizeBreakdown {
+            total: walk_dir_size(&target, prefix, &excluded),
+            ignored: 0,
+        });
     }
 
     let ignored = ignored_paths_under(&root, rel_path);
     let (total, ignored_bytes) = walk_dir_size_breakdown(&target, prefix, &ignored, &excluded);
-    Ok(DirSizeBreakdown { total, ignored: ignored_bytes })
+    Ok(DirSizeBreakdown {
+        total,
+        ignored: ignored_bytes,
+    })
 }
 
 /// The set of repo-root-relative paths (matching git's own porcelain output)
@@ -401,7 +426,12 @@ fn dir_size_breakdown_local(
 /// `git` yields an empty set, so the breakdown degrades to "0 ignored"
 /// rather than erroring.
 fn ignored_paths_under(root: &Path, rel_path: &str) -> HashSet<String> {
-    let mut args = vec!["status", "--porcelain", "--ignored", "--untracked-files=all"];
+    let mut args = vec![
+        "status",
+        "--porcelain",
+        "--ignored",
+        "--untracked-files=all",
+    ];
     if !rel_path.is_empty() {
         args.push("--");
         args.push(rel_path);
@@ -446,7 +476,11 @@ fn walk_dir_size_breakdown(
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        let child_rel = if rel_prefix.is_empty() { name } else { format!("{rel_prefix}/{name}") };
+        let child_rel = if rel_prefix.is_empty() {
+            name
+        } else {
+            format!("{rel_prefix}/{name}")
+        };
         if excluded.contains(&child_rel) {
             continue;
         }
@@ -474,7 +508,11 @@ fn join_remote_dir(remote_path: &str, rel: &str) -> String {
     let base = remote_path.trim_end_matches('/');
     let rel = rel.trim_start_matches('/');
     if rel.is_empty() {
-        if base.is_empty() { "/".to_string() } else { base.to_string() }
+        if base.is_empty() {
+            "/".to_string()
+        } else {
+            base.to_string()
+        }
     } else if base.is_empty() {
         format!("/{rel}")
     } else {
@@ -535,7 +573,9 @@ fn confine_remote_abs(remote_root: &str, path: &str) -> Result<(), String> {
         .components()
         .any(|c| matches!(c, std::path::Component::ParentDir))
     {
-        return Err(format!("remote path '{path}' contains a parent-directory component"));
+        return Err(format!(
+            "remote path '{path}' contains a parent-directory component"
+        ));
     }
     let root = remote_root.trim_end_matches('/');
     let p = path.trim_end_matches('/');
@@ -552,11 +592,18 @@ fn confine_remote_abs(remote_root: &str, path: &str) -> Result<(), String> {
 }
 
 /// Clone the pooled SFTP session for the target's project, or `None` (cold pool).
-async fn pooled(pool: &RemotePoolState, target: &RemoteTarget) -> Option<std::sync::Arc<openssh_sftp_client::Sftp>> {
+async fn pooled(
+    pool: &RemotePoolState,
+    target: &RemoteTarget,
+) -> Option<std::sync::Arc<openssh_sftp_client::Sftp>> {
     crate::services::remote::pooled_sftp(pool, &target.project_id).await
 }
 
-pub(crate) async fn remote_read(pool: &RemotePoolState, target: &RemoteTarget, path: &str) -> Result<Vec<u8>, String> {
+pub(crate) async fn remote_read(
+    pool: &RemotePoolState,
+    target: &RemoteTarget,
+    path: &str,
+) -> Result<Vec<u8>, String> {
     let s = &target.spec;
     match pooled(pool, target).await {
         Some(sftp) => crate::services::sftp::read_file_on(&sftp, path).await,
@@ -564,15 +611,26 @@ pub(crate) async fn remote_read(pool: &RemotePoolState, target: &RemoteTarget, p
     }
 }
 
-async fn remote_write(pool: &RemotePoolState, target: &RemoteTarget, path: &str, bytes: &[u8]) -> Result<(), String> {
+async fn remote_write(
+    pool: &RemotePoolState,
+    target: &RemoteTarget,
+    path: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
     let s = &target.spec;
     match pooled(pool, target).await {
         Some(sftp) => crate::services::sftp::write_file_on(&sftp, path, bytes).await,
-        None => crate::services::sftp::write_file(&s.user, &s.host, s.port, None, path, bytes).await,
+        None => {
+            crate::services::sftp::write_file(&s.user, &s.host, s.port, None, path, bytes).await
+        }
     }
 }
 
-async fn remote_create_file(pool: &RemotePoolState, target: &RemoteTarget, path: &str) -> Result<(), String> {
+async fn remote_create_file(
+    pool: &RemotePoolState,
+    target: &RemoteTarget,
+    path: &str,
+) -> Result<(), String> {
     let s = &target.spec;
     match pooled(pool, target).await {
         Some(sftp) => crate::services::sftp::create_file_on(&sftp, path).await,
@@ -580,7 +638,11 @@ async fn remote_create_file(pool: &RemotePoolState, target: &RemoteTarget, path:
     }
 }
 
-async fn remote_mkdir(pool: &RemotePoolState, target: &RemoteTarget, path: &str) -> Result<(), String> {
+async fn remote_mkdir(
+    pool: &RemotePoolState,
+    target: &RemoteTarget,
+    path: &str,
+) -> Result<(), String> {
     let s = &target.spec;
     match pooled(pool, target).await {
         Some(sftp) => crate::services::sftp::mkdir_on(&sftp, path).await,
@@ -588,7 +650,11 @@ async fn remote_mkdir(pool: &RemotePoolState, target: &RemoteTarget, path: &str)
     }
 }
 
-async fn remote_remove_file(pool: &RemotePoolState, target: &RemoteTarget, path: &str) -> Result<(), String> {
+async fn remote_remove_file(
+    pool: &RemotePoolState,
+    target: &RemoteTarget,
+    path: &str,
+) -> Result<(), String> {
     let s = &target.spec;
     match pooled(pool, target).await {
         Some(sftp) => crate::services::sftp::remove_file_on(&sftp, path).await,
@@ -596,7 +662,11 @@ async fn remote_remove_file(pool: &RemotePoolState, target: &RemoteTarget, path:
     }
 }
 
-async fn remote_remove_dir(pool: &RemotePoolState, target: &RemoteTarget, path: &str) -> Result<(), String> {
+async fn remote_remove_dir(
+    pool: &RemotePoolState,
+    target: &RemoteTarget,
+    path: &str,
+) -> Result<(), String> {
     let s = &target.spec;
     match pooled(pool, target).await {
         Some(sftp) => crate::services::sftp::remove_dir_on(&sftp, path).await,
@@ -604,7 +674,12 @@ async fn remote_remove_dir(pool: &RemotePoolState, target: &RemoteTarget, path: 
     }
 }
 
-async fn remote_rename(pool: &RemotePoolState, target: &RemoteTarget, from: &str, to: &str) -> Result<(), String> {
+async fn remote_rename(
+    pool: &RemotePoolState,
+    target: &RemoteTarget,
+    from: &str,
+    to: &str,
+) -> Result<(), String> {
     let s = &target.spec;
     match pooled(pool, target).await {
         Some(sftp) => crate::services::sftp::rename_on(&sftp, from, to).await,
@@ -612,7 +687,11 @@ async fn remote_rename(pool: &RemotePoolState, target: &RemoteTarget, from: &str
     }
 }
 
-async fn remote_metadata(pool: &RemotePoolState, target: &RemoteTarget, path: &str) -> Result<(u64, Option<u64>), String> {
+async fn remote_metadata(
+    pool: &RemotePoolState,
+    target: &RemoteTarget,
+    path: &str,
+) -> Result<(u64, Option<u64>), String> {
     let s = &target.spec;
     match pooled(pool, target).await {
         Some(sftp) => crate::services::sftp::metadata_on(&sftp, path).await,
@@ -798,7 +877,11 @@ pub async fn write_project_file(
 }
 
 /// Local-fs text write — byte-identical pre-Phase-3 body.
-pub fn write_project_file_local(project_dir: &str, rel_path: &str, content: &str) -> Result<(), String> {
+pub fn write_project_file_local(
+    project_dir: &str,
+    rel_path: &str,
+    content: &str,
+) -> Result<(), String> {
     let root = canonical(project_dir)?;
     let target = root.join(rel_path);
     let target_c = canonical_or_new(&target);
@@ -826,7 +909,11 @@ pub async fn write_project_file_bytes(
 }
 
 /// Local-fs byte write — byte-identical pre-Phase-3 body.
-pub fn write_project_file_bytes_local(project_dir: &str, rel_path: &str, content: &[u8]) -> Result<(), String> {
+pub fn write_project_file_bytes_local(
+    project_dir: &str,
+    rel_path: &str,
+    content: &[u8],
+) -> Result<(), String> {
     let root = canonical(project_dir)?;
     let target = root.join(rel_path);
     let target_c = canonical_or_new(&target);
@@ -1015,7 +1102,11 @@ pub fn import_external_file(
 pub fn project_path_exists(project_dir: String, rel_path: String) -> Result<bool, String> {
     let root = canonical(&project_dir)?;
     let rel = normalize_project_rel_path(&rel_path)?;
-    let target = if rel.is_empty() { root.clone() } else { root.join(&rel) };
+    let target = if rel.is_empty() {
+        root.clone()
+    } else {
+        root.join(&rel)
+    };
     let target_c = canonical_or_new(&target);
     enforce_confinement(&root, &target_c)?;
     Ok(target_c.exists())
@@ -1355,7 +1446,11 @@ pub async fn write_file_text(
 }
 
 /// Local-fs text write (existing regular file only) — byte-identical pre-Phase-3 body.
-pub fn write_file_text_local(path: &str, content: &str, scope_id: Option<&str>) -> Result<(), String> {
+pub fn write_file_text_local(
+    path: &str,
+    content: &str,
+    scope_id: Option<&str>,
+) -> Result<(), String> {
     let p = PathBuf::from(path);
     confine_abs_write(&p, scope_id)?;
     let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
@@ -1478,7 +1573,11 @@ async fn write_file_bytes_routed(
 }
 
 /// Local-fs byte write (may create a new file) — byte-identical pre-Phase-3 body.
-pub fn write_file_bytes_local(path: &str, content: &[u8], scope_id: Option<&str>) -> Result<(), String> {
+pub fn write_file_bytes_local(
+    path: &str,
+    content: &[u8],
+    scope_id: Option<&str>,
+) -> Result<(), String> {
     let p = PathBuf::from(path);
     confine_abs_write(&p, scope_id)?;
     if content.len() as u64 > MAX_BINARY_VIEW_BYTES {
@@ -1651,7 +1750,8 @@ fn compute_allowed_roots(
     };
     let Some(anchor) = anchor else {
         // No current project: the root scope still reads its own folder.
-        roots.iter_mut()
+        roots
+            .iter_mut()
             .for_each(|r| *r = r.canonicalize().unwrap_or_else(|_| r.clone()));
         return roots;
     };
@@ -1861,8 +1961,15 @@ fn gitignore_ignore_rules(rel_path: &str, is_dir: bool) -> Vec<String> {
 
 fn gitignore_unignore_rules(rel_path: &str, is_dir: bool) -> Vec<String> {
     let mut rules = Vec::new();
-    let parts: Vec<&str> = rel_path.split('/').filter(|part| !part.is_empty()).collect();
-    let parent_count = if is_dir { parts.len() } else { parts.len().saturating_sub(1) };
+    let parts: Vec<&str> = rel_path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let parent_count = if is_dir {
+        parts.len()
+    } else {
+        parts.len().saturating_sub(1)
+    };
     for i in 0..parent_count {
         rules.push(format!("!/{}/", parts[..=i].join("/")));
     }
@@ -2019,7 +2126,10 @@ mod tests {
             Some("/home/f/eldrun/projects/thesis/thesis.pdf")
         );
         // Non-ASCII: `encodeURIComponent("Übung")` is the UTF-8 bytes, percent-escaped.
-        assert_eq!(percent_decode("%C3%9Cbung/a%20b.pdf").as_deref(), Some("Übung/a b.pdf"));
+        assert_eq!(
+            percent_decode("%C3%9Cbung/a%20b.pdf").as_deref(),
+            Some("Übung/a b.pdf")
+        );
         // A `+` is a literal here — encodeURIComponent never writes one for a space.
         assert_eq!(percent_decode("a+b").as_deref(), Some("a+b"));
     }
@@ -2035,11 +2145,17 @@ mod tests {
 
     #[test]
     fn json_byte_array_accepts_only_bytes() {
-        assert_eq!(json_byte_array(&serde_json::json!([37, 80, 68, 70])), Some(vec![37, 80, 68, 70]));
+        assert_eq!(
+            json_byte_array(&serde_json::json!([37, 80, 68, 70])),
+            Some(vec![37, 80, 68, 70])
+        );
         assert_eq!(json_byte_array(&serde_json::json!([])), Some(vec![]));
         assert_eq!(json_byte_array(&serde_json::json!([256])), None);
         assert_eq!(json_byte_array(&serde_json::json!([-1])), None);
-        assert_eq!(json_byte_array(&serde_json::json!({ "content": [1] })), None);
+        assert_eq!(
+            json_byte_array(&serde_json::json!({ "content": [1] })),
+            None
+        );
         assert_eq!(json_byte_array(&serde_json::json!("nope")), None);
     }
 
@@ -2054,7 +2170,10 @@ mod tests {
 
     #[test]
     fn join_remote_dir_appends_relative() {
-        assert_eq!(join_remote_dir("/srv/project", "sub/dir"), "/srv/project/sub/dir");
+        assert_eq!(
+            join_remote_dir("/srv/project", "sub/dir"),
+            "/srv/project/sub/dir"
+        );
         // A leading slash on the rel is normalized away (no doubled slash).
         assert_eq!(join_remote_dir("/srv/project", "/sub"), "/srv/project/sub");
         assert_eq!(join_remote_dir("/srv/project/", "sub"), "/srv/project/sub");
@@ -2192,7 +2311,8 @@ mod tests {
         std::fs::write(dir.join("src/whole/a.txt"), "1234567890").unwrap(); // 10 bytes, ignored
         std::fs::write(dir.join("src/whole/sub/b.txt"), "12345678901234567890").unwrap(); // 20 bytes, ignored
 
-        let breakdown = dir_size_breakdown_local(&dir.to_string_lossy(), "src", &[]).expect("breakdown");
+        let breakdown =
+            dir_size_breakdown_local(&dir.to_string_lossy(), "src", &[]).expect("breakdown");
         assert_eq!(breakdown.total, 35);
         assert_eq!(breakdown.ignored, 30);
     }
@@ -2203,7 +2323,8 @@ mod tests {
         let dir = tmp.path();
         std::fs::write(dir.join("a.txt"), "hello").unwrap();
 
-        let breakdown = dir_size_breakdown_local(&dir.to_string_lossy(), "", &[]).expect("breakdown");
+        let breakdown =
+            dir_size_breakdown_local(&dir.to_string_lossy(), "", &[]).expect("breakdown");
         assert_eq!(breakdown.total, 5);
         assert_eq!(breakdown.ignored, 0);
     }
@@ -2218,8 +2339,14 @@ mod tests {
 
         copy_path(dir.clone(), "a.txt".into(), dir.clone(), "b.txt".into()).unwrap();
 
-        assert_eq!(std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(), "hello");
-        assert_eq!(std::fs::read_to_string(tmp.path().join("b.txt")).unwrap(), "hello");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+            "hello"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("b.txt")).unwrap(),
+            "hello"
+        );
     }
 
     #[test]
@@ -2248,7 +2375,10 @@ mod tests {
         let err = copy_path(dir.clone(), "a.txt".into(), dir.clone(), "b.txt".into()).unwrap_err();
         assert!(err.contains("already exists"), "{err}");
         // The pre-existing destination is untouched.
-        assert_eq!(std::fs::read_to_string(tmp.path().join("b.txt")).unwrap(), "2");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("b.txt")).unwrap(),
+            "2"
+        );
     }
 
     // ── extract_archive ────────────────────────────────────────────────────
@@ -2330,7 +2460,8 @@ mod tests {
         let dir = tmp.path().to_string_lossy().to_string();
         std::fs::create_dir(tmp.path().join("src")).unwrap();
 
-        let err = copy_path(dir.clone(), "src".into(), dir.clone(), "src/inner".into()).unwrap_err();
+        let err =
+            copy_path(dir.clone(), "src".into(), dir.clone(), "src/inner".into()).unwrap_err();
         assert!(err.contains("into itself"), "{err}");
     }
 
@@ -2343,7 +2474,10 @@ mod tests {
         move_path(dir.clone(), "a.txt".into(), dir.clone(), "sub/b.txt".into()).unwrap();
 
         assert!(!tmp.path().join("a.txt").exists());
-        assert_eq!(std::fs::read_to_string(tmp.path().join("sub/b.txt")).unwrap(), "hello");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("sub/b.txt")).unwrap(),
+            "hello"
+        );
     }
 
     // ── import_external_file ───────────────────────────────────────────────
@@ -2389,8 +2523,14 @@ mod tests {
 
         assert_eq!(rel, "a (1).txt");
         // The pre-existing file is untouched; the import lands beside it.
-        assert_eq!(std::fs::read_to_string(proj.path().join("a.txt")).unwrap(), "old");
-        assert_eq!(std::fs::read_to_string(proj.path().join("a (1).txt")).unwrap(), "new");
+        assert_eq!(
+            std::fs::read_to_string(proj.path().join("a.txt")).unwrap(),
+            "old"
+        );
+        assert_eq!(
+            std::fs::read_to_string(proj.path().join("a (1).txt")).unwrap(),
+            "new"
+        );
     }
 
     #[test]
@@ -2410,7 +2550,10 @@ mod tests {
 
         // Same name, content overwritten — no " (1)" copy created.
         assert_eq!(rel, "a.txt");
-        assert_eq!(std::fs::read_to_string(proj.path().join("a.txt")).unwrap(), "new");
+        assert_eq!(
+            std::fs::read_to_string(proj.path().join("a.txt")).unwrap(),
+            "new"
+        );
         assert!(!proj.path().join("a (1).txt").exists());
     }
 
@@ -2475,8 +2618,7 @@ mod tests {
         std::fs::write(tmp.path().join("src/lib.py"), "x = 1").unwrap();
         std::os::unix::fs::symlink(tmp.path(), tmp.path().join("repo")).unwrap();
 
-        let endings =
-            list_project_endings(tmp.path().to_string_lossy().to_string()).unwrap();
+        let endings = list_project_endings(tmp.path().to_string_lossy().to_string()).unwrap();
 
         // Real file endings are collected; the self-symlink is never entered.
         assert!(endings.contains(&".rs".to_string()));
@@ -2530,14 +2672,14 @@ mod tests {
     #[test]
     fn write_project_file_blocks_parent_escape() {
         let tmp = tempfile::tempdir().unwrap();
-        let err = write_project_file_local(
-            &tmp.path().to_string_lossy(),
-            "../outside.md",
-            "escape",
-        )
-        .unwrap_err();
+        let err =
+            write_project_file_local(&tmp.path().to_string_lossy(), "../outside.md", "escape")
+                .unwrap_err();
 
-        assert!(err.contains("escapes project root"), "unexpected error: {err}");
+        assert!(
+            err.contains("escapes project root"),
+            "unexpected error: {err}"
+        );
     }
 
     // ── Remote path join / confinement (mount-free remote, Phase 3) ─────────
@@ -2549,7 +2691,10 @@ mod tests {
             "/srv/project/src/main.rs"
         );
         // Empty rel resolves to the project root itself.
-        assert_eq!(remote_join_confined("/srv/project", "").unwrap(), "/srv/project");
+        assert_eq!(
+            remote_join_confined("/srv/project", "").unwrap(),
+            "/srv/project"
+        );
     }
 
     #[test]
@@ -2657,7 +2802,11 @@ mod tests {
         // A remote (SSH) project's browsable tree is its local mirror, relocated
         // outside the state dir via extra["mirror"]. That mirror must be reachable
         // or opening a mirrored local file fails confinement (#28k regression).
-        let mut r = entry("r", "current", "/home/u/.local/share/eldrun/remote-projects/r");
+        let mut r = entry(
+            "r",
+            "current",
+            "/home/u/.local/share/eldrun/remote-projects/r",
+        );
         r.extra.insert(
             "mirror".to_string(),
             Value::String("/home/u/eldrun/projects-ssh/myproj".to_string()),
@@ -2673,7 +2822,10 @@ mod tests {
     fn allowed_roots_empty_when_scope_unknown() {
         let projects = vec![entry("x", "current", "/home/u/code/projectx")];
         // An unknown scope id resolves to no project → fail closed.
-        assert!(compute_allowed_roots(&projects, &Vec::new(), Some("nope"), Path::new(ROOT_WORK)).is_empty());
+        assert!(
+            compute_allowed_roots(&projects, &Vec::new(), Some("nope"), Path::new(ROOT_WORK))
+                .is_empty()
+        );
     }
 
     #[test]

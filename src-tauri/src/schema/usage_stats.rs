@@ -400,7 +400,10 @@ mod tests {
 
     #[test]
     fn sub_composes_a_dotted_key() {
-        assert_eq!(metric::sub(metric::AGENT_PROMPT, "claude"), "agent.prompt.claude");
+        assert_eq!(
+            metric::sub(metric::AGENT_PROMPT, "claude"),
+            "agent.prompt.claude"
+        );
         assert_eq!(
             metric::sub(metric::AGENT_TAB_LOCAL, "qwen3:8b"),
             "agent.tab.local.qwen3:8b"
@@ -475,9 +478,13 @@ mod tests {
         }
         s.prune();
         assert_eq!(s.hours.len(), HOUR_RETENTION);
-        assert!(!s.hours.contains_key("2020-01-01T00-00000"), "oldest dropped");
         assert!(
-            s.hours.contains_key(&format!("2020-01-01T00-{:05}", HOUR_RETENTION)),
+            !s.hours.contains_key("2020-01-01T00-00000"),
+            "oldest dropped"
+        );
+        assert!(
+            s.hours
+                .contains_key(&format!("2020-01-01T00-{:05}", HOUR_RETENTION)),
             "newest kept"
         );
     }
@@ -520,7 +527,10 @@ mod tests {
         s.add("p1", "2026-07-13T14", "agent.prompt.claude", 37);
         let json = serde_json::to_string(&s).unwrap();
         let back: UsageStats = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.counters_on("p1", "2026-07-13")["agent.prompt.claude"], 37);
+        assert_eq!(
+            back.counters_on("p1", "2026-07-13")["agent.prompt.claude"],
+            37
+        );
         assert_eq!(back.version, 1);
     }
 

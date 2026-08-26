@@ -608,18 +608,30 @@ fn one_addr(a: &mail_parser::Addr<'_>) -> MailAddress {
 
 fn strip_controls(s: &str) -> String {
     s.chars()
-        .filter(|c| !c.is_control() && !matches!(
-            c,
-            '\u{200E}' | '\u{200F}' | '\u{202A}' | '\u{202B}' | '\u{202C}' | '\u{202D}'
-                | '\u{202E}' | '\u{2066}' | '\u{2067}' | '\u{2068}' | '\u{2069}' | '\u{061C}'
-        ))
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(
+                    c,
+                    '\u{200E}'
+                        | '\u{200F}'
+                        | '\u{202A}'
+                        | '\u{202B}'
+                        | '\u{202C}'
+                        | '\u{202D}'
+                        | '\u{202E}'
+                        | '\u{2066}'
+                        | '\u{2067}'
+                        | '\u{2068}'
+                        | '\u{2069}'
+                        | '\u{061C}'
+                )
+        })
         .collect()
 }
 
 /// The modified-BASE64 alphabet of RFC 3501 §5.1.3: RFC 2045's, with `,` in
 /// place of `/` (because `/` is the hierarchy separator on many servers).
-const MUTF7_ALPHABET: &[u8] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+,";
+const MUTF7_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+,";
 
 /// Decode an IMAP mailbox name from **modified UTF-7** (RFC 3501 §5.1.3) for
 /// display.
@@ -1026,7 +1038,9 @@ async fn tls_stream(server: &MailServer) -> Result<TlsStream<TcpStream>, MailErr
         .map_err(|_| MailError::Protocol(format!("'{host}' is not a valid server name")))?;
     let stream = tokio::time::timeout(HANDSHAKE_TIMEOUT, connector.connect(name, tcp))
         .await
-        .map_err(|_| MailError::Timeout { op: "TLS handshake" })?
+        .map_err(|_| MailError::Timeout {
+            op: "TLS handshake",
+        })?
         .map_err(|e| MailError::Protocol(describe_tls_error(&host, &e)))?;
     Ok(stream)
 }
@@ -1061,15 +1075,14 @@ fn describe_tls_error(host: &str, e: &std::io::Error) -> String {
     }
 }
 
-async fn imap_login(
-    server: &MailServer,
-    password: &Password,
-) -> Result<ImapSession, MailError> {
+async fn imap_login(server: &MailServer, password: &Password) -> Result<ImapSession, MailError> {
     let stream = tls_stream(server).await?;
     let mut client = async_imap::Client::new(stream);
     let greeting = tokio::time::timeout(GREETING_TIMEOUT, client.read_response())
         .await
-        .map_err(|_| MailError::Timeout { op: "IMAP greeting" })?
+        .map_err(|_| MailError::Timeout {
+            op: "IMAP greeting",
+        })?
         .map_err(|e| MailError::Protocol(format!("IMAP greeting failed: {e}")))?;
     if greeting.is_none() {
         return Err(MailError::Protocol(
@@ -1418,10 +1431,11 @@ impl MailEngine for InProcessEngine {
         let out: Result<Vec<FetchedFolder>, MailError> = async {
             let mut out = Vec::new();
             {
-                let mut stream = tokio::time::timeout(COMMAND_TIMEOUT, session.list(Some(""), Some("*")))
-                    .await
-                    .map_err(|_| MailError::Timeout { op: "IMAP LIST" })?
-                    .map_err(classify_imap_error)?;
+                let mut stream =
+                    tokio::time::timeout(COMMAND_TIMEOUT, session.list(Some(""), Some("*")))
+                        .await
+                        .map_err(|_| MailError::Timeout { op: "IMAP LIST" })?
+                        .map_err(classify_imap_error)?;
                 while let Some(name) = stream.next().await {
                     let name = name.map_err(classify_imap_error)?;
                     let path = name.name().to_string();
@@ -1476,7 +1490,10 @@ impl MailEngine for InProcessEngine {
             let mut out = Vec::new();
             if mailbox.exists > 0 {
                 let limit = limit.clamp(1, 500);
-                let first = mailbox.exists.saturating_sub(limit.saturating_sub(1)).max(1);
+                let first = mailbox
+                    .exists
+                    .saturating_sub(limit.saturating_sub(1))
+                    .max(1);
                 let set = format!("{first}:{}", mailbox.exists);
                 // BODY.PEEK — never BODY — so listing a folder cannot mark mail as
                 // read on the server (and cannot be used to tell a sender that a
@@ -1787,8 +1804,14 @@ pub fn build_outgoing(
 ) -> Result<Vec<u8>, MailError> {
     let from_addr = validate_recipient(from_addr)?;
     let subject = reject_header_injection(subject)?;
-    let to: Vec<String> = to.iter().map(|a| validate_recipient(a)).collect::<Result<_, _>>()?;
-    let cc: Vec<String> = cc.iter().map(|a| validate_recipient(a)).collect::<Result<_, _>>()?;
+    let to: Vec<String> = to
+        .iter()
+        .map(|a| validate_recipient(a))
+        .collect::<Result<_, _>>()?;
+    let cc: Vec<String> = cc
+        .iter()
+        .map(|a| validate_recipient(a))
+        .collect::<Result<_, _>>()?;
     // Bcc is validated but deliberately NOT written as a header — it goes in
     // the SMTP envelope only, which is the whole point of a blind copy.
     for b in bcc {
@@ -1858,7 +1881,10 @@ mod tests {
 
     #[test]
     fn uid_set_mixes_runs_and_singles() {
-        assert_eq!(uid_set_chunks(&[1, 2, 3, 7, 10, 11], 1000), vec!["1:3,7,10:11"]);
+        assert_eq!(
+            uid_set_chunks(&[1, 2, 3, 7, 10, 11], 1000),
+            vec!["1:3,7,10:11"]
+        );
     }
 
     #[test]
@@ -1983,7 +2009,10 @@ mod tests {
                 concat!("port: ", "143"),
                 concat!("port: ", "587"),
             ] {
-                assert!(!src.contains(port), "{name} names a cleartext port `{port}`");
+                assert!(
+                    !src.contains(port),
+                    "{name} names a cleartext port `{port}`"
+                );
             }
         }
     }
@@ -2234,7 +2263,10 @@ mod tests {
         let wire = "[Gmail]/Entw&APw-rfe";
         let leaf = wire.rsplit(['/', '.']).next().unwrap();
         assert_eq!(decode_modified_utf7(leaf), "Entwürfe");
-        assert_eq!(wire, "[Gmail]/Entw&APw-rfe", "the path must not be rewritten");
+        assert_eq!(
+            wire, "[Gmail]/Entw&APw-rfe",
+            "the path must not be rewritten"
+        );
     }
 
     /// A server-supplied label goes through the same control-stripping a subject
@@ -2243,7 +2275,10 @@ mod tests {
     fn a_bidi_override_in_a_folder_name_is_stripped() {
         // `&IC8-` is U+202F… use the actual override: U+202E is `&IC4-`.
         let decoded = decode_modified_utf7("Rechnung&IC4-gnp.exe");
-        assert!(decoded.contains('\u{202E}'), "the fixture must contain the override");
+        assert!(
+            decoded.contains('\u{202E}'),
+            "the fixture must contain the override"
+        );
         assert!(!strip_controls(&decoded).contains('\u{202E}'));
     }
 
@@ -2275,7 +2310,10 @@ mod tests {
 
         // …and it reaches ParsedHeaders, still untrusted.
         let parsed = parse_message(raw).unwrap();
-        let auth = parsed.headers.auth.expect("the header must reach ParsedHeaders");
+        let auth = parsed
+            .headers
+            .auth
+            .expect("the header must reach ParsedHeaders");
         assert_eq!(auth.authserv_id.as_deref(), Some("mx.example.net"));
         assert_eq!(auth.header_count, 2);
         assert_eq!(
@@ -2287,7 +2325,11 @@ mod tests {
 
     #[test]
     fn a_message_with_no_authentication_results_reports_none() {
-        assert!(parse_message(&fixture("simple.eml")).unwrap().headers.auth.is_none());
+        assert!(parse_message(&fixture("simple.eml"))
+            .unwrap()
+            .headers
+            .auth
+            .is_none());
     }
 
     #[test]
@@ -2366,7 +2408,10 @@ mod tests {
         // It is still shown, as text, escaped by the plain-text path.
         let text = msg.text.unwrap_or_default();
         let escaped = crate::services::mail_sanitize::plain_text_to_html(&text);
-        assert!(!escaped.to_ascii_lowercase().contains("<script"), "{escaped}");
+        assert!(
+            !escaped.to_ascii_lowercase().contains("<script"),
+            "{escaped}"
+        );
     }
 
     #[test]
@@ -2388,7 +2433,13 @@ mod tests {
         ] {
             assert!(charset_is_refused(Some(cs)), "{cs} must be refused");
         }
-        for cs in ["utf-8", "iso-8859-1", "windows-1252", "us-ascii", "shift_jis"] {
+        for cs in [
+            "utf-8",
+            "iso-8859-1",
+            "windows-1252",
+            "us-ascii",
+            "shift_jis",
+        ] {
             assert!(!charset_is_refused(Some(cs)), "{cs} must be accepted");
         }
         assert!(!charset_is_refused(None), "no charset is not a refusal");

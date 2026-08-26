@@ -25,10 +25,12 @@ import { commitDrop } from "./commitDrop";
 import { TabDropPlaceholder } from "./TabDropPlaceholder";
 import {
   EMPTY_CUSTOM_AGENTS,
+  DEFAULT_COMPACT_AGENT_IDS,
   SHELL_ITEMS,
   TAB_ACCENT,
   agentMenuEntries,
   buildStaticTabSpec,
+  compactAgentMenuEntries,
   enabledInstalledAgentBins,
   isFileTabKind,
   itemLabel,
@@ -59,6 +61,7 @@ import { useActivityStore } from "../../stores/activity";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
 import { AGENT_REGISTRY_CHANGED_EVENT } from "../../lib/agentRegistry";
+import { TRASH_PROJECT_ID } from "../../lib/trashProject";
 
 /** Default fly-out card size when no live pane thumbnail is available (group
  *  detach via the bar drag carries no preview). */
@@ -142,6 +145,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // The 3D project-blob tab is a root-scope feature, offered only once at least
   // one project exists (it has nothing to show otherwise).
   const scope = useTabsStore((s) => s.scope);
+  const trashScope = scope === TRASH_PROJECT_ID;
   const hasProjects = useProjectsStore((s) => s.projects.length > 0);
   const showBlobItem = scope === "root" && hasProjects;
   const focusGroup = useTabsStore((s) => s.focusGroup);
@@ -287,12 +291,24 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // Built-in agents the user turned off in "Manage Agents" (Settings) despite
   // being installed — hidden from this menu without uninstalling the CLI.
   const disabledAgents = useSettingsStore((s) => s.settings?.disabled_agents);
+  const compactAgentIds = useSettingsStore(
+    (s) => s.settings?.compact_tab_agents ?? DEFAULT_COMPACT_AGENT_IDS,
+  );
   // Installed commands minus Manage Agents' disabled registry ids — the set every tab-choice consumer
   // below (Agents group, Mistral/vibe local-model driver) should use.
   const enabledAgents = useMemo(() => {
     if (!agentStatuses) return null;
     return enabledInstalledAgentBins(agentStatuses, disabledAgents);
   }, [agentStatuses, disabledAgents]);
+  const compactAgentBins = useMemo(() => {
+    if (!agentStatuses) return new Set<string>();
+    const compactIds = new Set(compactAgentIds);
+    return new Set(
+      agentStatuses
+        .filter((agent) => compactIds.has(agent.id) || compactIds.has(agent.bin))
+        .map((agent) => agent.bin),
+    );
+  }, [agentStatuses, compactAgentIds]);
   // User-defined custom agents (Settings.custom_agents) + the manage-dialog it
   // opens. Their commands aren't in the built-in registry, so they're probed
   // separately (`probe_binaries`); `null` until resolved. See agentMenuEntries.
@@ -1410,10 +1426,12 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             groups={[
               {
                 label: t("newTabMenu.groupAgents"),
+                moreLabel: t("newTabMenu.moreAgents"),
                 entries: agentMenuEntries({
                   installedBuiltins: enabledAgents,
                   installedCmds: installedCustom,
                   customAgents,
+                  allowCustom: !trashScope,
                   pick: handleAdd,
                   onAddCustom: () => {
                     setMenuPos(null);
@@ -1421,11 +1439,26 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   },
                   t,
                 }),
+                compactEntries: compactAgentMenuEntries(
+                  agentMenuEntries({
+                    installedBuiltins: enabledAgents,
+                    installedCmds: installedCustom,
+                    customAgents,
+                    allowCustom: !trashScope,
+                    pick: handleAdd,
+                    onAddCustom: () => {
+                      setMenuPos(null);
+                      setAgentDialogOpen(true);
+                    },
+                    t,
+                  }),
+                  compactAgentBins,
+                ),
               },
               // Only offer agents whose binary is actually installed: Mistral/vibe
               // (checked against `enabledAgents`) and the drivers the backend
               // already marks `available` (which now includes an installed check).
-              {
+              ...(!trashScope ? [{
                 label: localModel
                   ? t("newTabMenu.groupLocalModelWithName", { model: localModel })
                   : t("newTabMenu.groupLocalModel"),
@@ -1464,8 +1497,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   : localDrivers.some((d) => d.needs_tools_unsupported)
                     ? t("newTabMenu.localModelNoToolsHint", { model: localModel })
                     : t("newTabMenu.noLocalAgentHint"),
-              },
-              {
+              }] : []),
+              ...(!trashScope ? [{
                 label: t("newTabMenu.groupShell"),
                 entries: SHELL_ITEMS.filter((i) => i.kind === "shell").map((item) => ({
                   key: item.cmd || "shell",
@@ -1473,8 +1506,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   color: TAB_ACCENT[item.kind],
                   onPick: () => handleAdd(item),
                 })),
-              },
-              {
+              }] : []),
+              ...(!trashScope ? [{
                 label: t("newTabMenu.groupFiles"),
                 entries: SHELL_ITEMS.filter((i) => isFileTabKind(i.kind)).map((item) => ({
                   key: item.cmd,
@@ -1483,11 +1516,11 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   disabled: !projectCwd,
                   onPick: () => handleAdd(item),
                 })),
-              },
+              }] : []),
               // System Monitor is whole-machine and Disk Usage picks its own scan
               // root, so both are offered in every scope; Network Traffic is
               // per-project (host/SSH link), so root has none.
-              {
+              ...(!trashScope ? [{
                 label: t("newTabMenu.groupMonitoring"),
                 entries: [
                   {
@@ -1512,8 +1545,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                       }]
                     : []),
                 ],
-              },
-              ...(showBlobItem
+              }] : []),
+              ...(!trashScope && showBlobItem
                 ? [{
                     label: t("newTabMenu.groupWorkspace"),
                     entries: [{
@@ -1525,7 +1558,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     }],
                   }]
                 : []),
-              {
+              ...(!trashScope ? [{
                 label: t("newTabMenu.calendar"),
                 entries: [{
                   key: "calendar",
@@ -1534,8 +1567,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   color: TAB_ACCENT.calendar,
                   onPick: handleAddCalendar,
                 }],
-              },
-              {
+              }] : []),
+              ...(!trashScope ? [{
                 label: t("printing.title"),
                 entries: [{
                   key: "printing",
@@ -1545,12 +1578,12 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   untested: true,
                   onPick: handleAddPrinting,
                 }],
-              },
+              }] : []),
               // Offered at the root scope too since the personal install scope
               // exists: the catalog is machine state and a skill can be
               // installed for every project here without one being open. See
               // `NewTabMenu`, which carries the same entry.
-              {
+              ...(!trashScope ? [{
                 label: t("skillsLibrary.title"),
                 entries: [{
                   key: "skillslibrary",
@@ -1560,8 +1593,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   untested: true,
                   onPick: handleAddSkills,
                 }],
-              },
-              ...(webBrowser
+              }] : []),
+              ...(!trashScope && webBrowser
                 ? [{
                     label: t("newTabMenu.browser"),
                     entries: [{

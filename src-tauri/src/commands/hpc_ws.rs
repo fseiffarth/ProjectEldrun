@@ -457,7 +457,10 @@ pub async fn hpc_ws_available(target: HpcWsTarget) -> Result<HpcWsInfo, String> 
         if !stdout.contains("ELDRUN-WS-OK") {
             return Ok(HpcWsInfo::default());
         }
-        let rest = stdout.split_once("ELDRUN-WS-OK").map(|(_, b)| b).unwrap_or("");
+        let rest = stdout
+            .split_once("ELDRUN-WS-OK")
+            .map(|(_, b)| b)
+            .unwrap_or("");
         Ok(HpcWsInfo {
             available: true,
             filesystems: parse_ws_locations(rest),
@@ -667,14 +670,7 @@ pub struct ScratchCandidate {
 /// and what they mean, exactly as `ws_list -l` does at a workspace site. Ordered
 /// by how specifically each usually means "bulk working data".
 const SCRATCH_VARS: &[&str] = &[
-    "SCRATCH",
-    "WORK",
-    "WORKDIR",
-    "WRKDIR",
-    "BIGWORK",
-    "PROJECT",
-    "FASTDATA",
-    "DATA",
+    "SCRATCH", "WORK", "WORKDIR", "WRKDIR", "BIGWORK", "PROJECT", "FASTDATA", "DATA",
 ];
 
 /// Parse the candidate probe's `source\tlabel\tpath\twritable\tfree` lines,
@@ -716,9 +712,7 @@ pub fn parse_scratch_candidates(stdout: &str) -> Vec<ScratchCandidate> {
 /// Writability is stated rather than filtered on, because a read-only hit is
 /// still information (it is usually the group's shared tree, not yours).
 #[tauri::command]
-pub async fn hpc_scratch_candidates(
-    target: HpcWsTarget,
-) -> Result<Vec<ScratchCandidate>, String> {
+pub async fn hpc_scratch_candidates(target: HpcWsTarget) -> Result<Vec<ScratchCandidate>, String> {
     run_off_thread(move || {
         // `eval` only ever expands a name from SCRATCH_VARS, and every value is
         // handled as data (quoted `"$p"`), never re-evaluated.
@@ -808,7 +802,11 @@ pub async fn hpc_ws_anchor(
     run_off_thread(move || {
         let rel = validate_anchor_rel(&anchor_rel)?;
         let logs = make_logs.unwrap_or(true);
-        let ws_path = match workspace_path.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        let ws_path = match workspace_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        {
             Some(p) => Some(validate_abs_path("workspace path", p)?),
             None => None,
         };
@@ -1014,7 +1012,8 @@ pub async fn hpc_ws_move_root(
 
         let proj_path = std::path::PathBuf::from(&local_file);
         if proj_path.exists() {
-            if let Ok(mut project) = storage::read_json::<crate::schema::project::Project>(&proj_path)
+            if let Ok(mut project) =
+                storage::read_json::<crate::schema::project::Project>(&proj_path)
             {
                 project.remote = Some(spec.clone());
                 storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
@@ -1080,7 +1079,10 @@ mod tests {
 
     #[test]
     fn anchor_rel_is_home_relative_and_path_safe() {
-        assert_eq!(validate_anchor_rel("eldrun/my-project").unwrap(), "eldrun/my-project");
+        assert_eq!(
+            validate_anchor_rel("eldrun/my-project").unwrap(),
+            "eldrun/my-project"
+        );
         assert_eq!(validate_anchor_rel("/eldrun/p/").unwrap(), "eldrun/p");
         assert!(validate_anchor_rel("../../etc").is_err());
         assert!(validate_anchor_rel("a/../b").is_err());
@@ -1130,7 +1132,10 @@ mod tests {
         assert_eq!(ws[0].filesystem.as_deref(), Some("scratch"));
         assert_eq!(ws[0].remaining_days, Some(89));
         assert_eq!(ws[0].extensions, Some(3));
-        assert_eq!(ws[0].expiration.as_deref(), Some("Sun Oct 19 10:00:00 2026"));
+        assert_eq!(
+            ws[0].expiration.as_deref(),
+            Some("Sun Oct 19 10:00:00 2026")
+        );
         assert_eq!(ws[1].id, "fast");
         assert_eq!(ws[1].remaining_days, Some(5));
     }

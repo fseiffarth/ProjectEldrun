@@ -435,6 +435,9 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
               <button onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new Event("eldrun:start-tour")); }}>
                 {t("settings.takeTour")}
               </button>
+              <button onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new Event("eldrun:start-advanced-tour")); }}>
+                {t("settings.takeAdvancedTour")}
+              </button>
               <button onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new Event("eldrun:open-lessons")); }}>
                 {t("settings.lessons")}
               </button>

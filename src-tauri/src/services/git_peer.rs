@@ -667,7 +667,10 @@ pub fn parse_probe_block(stdout: &str) -> Option<PeerSnapshot> {
             .filter(|s| !s.is_empty()),
         // Absent on a git too old to list worktrees → an empty set, i.e. "nothing
         // linked", which is the pre-#23 reading and never a false *block*.
-        checked_out: parts.get(6).map(|s| checked_out_branches(s)).unwrap_or_default(),
+        checked_out: parts
+            .get(6)
+            .map(|s| checked_out_branches(s))
+            .unwrap_or_default(),
     })
 }
 
@@ -835,8 +838,12 @@ pub enum PairPlan {
 pub fn pair_plan(local: &PeerSnapshot, remote: &PeerSnapshot) -> PairPlan {
     match (is_seeded(local), is_seeded(remote)) {
         (true, true) => PairPlan::Sync,
-        (true, false) => PairPlan::Pair { source_is_local: true },
-        (false, true) => PairPlan::Pair { source_is_local: false },
+        (true, false) => PairPlan::Pair {
+            source_is_local: true,
+        },
+        (false, true) => PairPlan::Pair {
+            source_is_local: false,
+        },
         (false, false) => PairPlan::Nothing,
     }
 }
@@ -1001,9 +1008,7 @@ pub fn select_prunable(
     sorted
         .iter()
         .enumerate()
-        .filter(|(i, r)| {
-            *i > 0 && *i >= keep_n && now.saturating_sub(r.ts) > max_age_secs
-        })
+        .filter(|(i, r)| *i > 0 && *i >= keep_n && now.saturating_sub(r.ts) > max_age_secs)
         .map(|(_, r)| r.refname.clone())
         .collect()
 }
@@ -1216,7 +1221,9 @@ pub fn non_ignored_paths(project_id: &str) -> Option<HashSet<String>> {
 
 /// Transient bundle file paths (inside `.git`, so file-sync/status never see them).
 fn local_bundle_path(project_id: &str) -> PathBuf {
-    mirror_dir(project_id).join(".git").join("eldrun-lockstep.bundle")
+    mirror_dir(project_id)
+        .join(".git")
+        .join("eldrun-lockstep.bundle")
 }
 fn remote_bundle_path(spec: &RemoteSpec) -> String {
     remote_sync::join_remote(&spec.remote_path, ".git/eldrun-lockstep.bundle")
@@ -1275,9 +1282,15 @@ async fn transfer_and_apply(
     excludes.dedup();
 
     let (src_peer, dst_peer) = if to_remote {
-        (Peer::Local(mirror_dir(project_id)), Peer::Remote(spec.clone()))
+        (
+            Peer::Local(mirror_dir(project_id)),
+            Peer::Remote(spec.clone()),
+        )
     } else {
-        (Peer::Remote(spec.clone()), Peer::Local(mirror_dir(project_id)))
+        (
+            Peer::Remote(spec.clone()),
+            Peer::Local(mirror_dir(project_id)),
+        )
     };
 
     // #28q: when the dest is the LOCAL mirror, the apply below can move its checked-out
@@ -1285,7 +1298,11 @@ async fn transfer_and_apply(
     // deletes the tracked files the incoming commit dropped. Snapshot the tip now so the
     // audit at the end can name them. `None` for a remote dest (nothing local at risk) or
     // an unborn local one (nothing there to lose).
-    let local_head_before = if to_remote { None } else { local_head_sha(project_id) };
+    let local_head_before = if to_remote {
+        None
+    } else {
+        local_head_sha(project_id)
+    };
 
     // …but only the ones the source actually has. An exclude the source has never seen
     // is not a delta hint to git, it is a fatal argument: `bundle create --not <unknown>`
@@ -1409,7 +1426,14 @@ async fn transfer_and_apply(
                 // Under a resolution the authority wins even where the dest is ahead:
                 // discard the dest's extra commits (backed up) and reset to source.
                 if force {
-                    force_reset_branch(&dst_peer, &src_ref.name, &src_ref.sha, dst_sha.unwrap(), is_head, ts);
+                    force_reset_branch(
+                        &dst_peer,
+                        &src_ref.name,
+                        &src_ref.sha,
+                        dst_sha.unwrap(),
+                        is_head,
+                        ts,
+                    );
                     result.applied += 1;
                 }
             }
@@ -1435,9 +1459,10 @@ async fn transfer_and_apply(
                             // retry; otherwise report what git actually said (#28p D1/D2).
                             let stderr = String::from_utf8_lossy(&o.stderr).to_string();
                             let colliding = parse_untracked_overwrite_paths(&stderr);
-                            let residue =
-                                stale_byte_sync_residue(manifest, project_id, &dst_peer, &colliding)
-                                    .await;
+                            let residue = stale_byte_sync_residue(
+                                manifest, project_id, &dst_peer, &colliding,
+                            )
+                            .await;
                             match retry_ff_clearing_identical(
                                 &dst_peer,
                                 &src_ref.sha,
@@ -1518,7 +1543,14 @@ async fn transfer_and_apply(
             }
             RefAction::Diverged => {
                 if force {
-                    force_reset_branch(&dst_peer, &src_ref.name, &src_ref.sha, dst_sha.unwrap(), is_head, ts);
+                    force_reset_branch(
+                        &dst_peer,
+                        &src_ref.name,
+                        &src_ref.sha,
+                        dst_sha.unwrap(),
+                        is_head,
+                        ts,
+                    );
                     result.applied += 1;
                 } else {
                     result.diverged.push(src_ref.name.clone());
@@ -1642,9 +1674,7 @@ fn ancestry_map(peer: &Peer, pairs: &[(String, String)]) -> Vec<(bool, bool)> {
         return Vec::new();
     }
     if let Peer::Remote(spec) = peer {
-        let all_hex = pairs
-            .iter()
-            .all(|(a, b)| is_hex_sha(a) && is_hex_sha(b));
+        let all_hex = pairs.iter().all(|(a, b)| is_hex_sha(a) && is_hex_sha(b));
         if all_hex {
             if let Ok(out) = ssh_exec::run_remote_script(spec, &ancestry_script(pairs)) {
                 if let Some(v) =
@@ -1786,7 +1816,11 @@ async fn stale_byte_sync_residue(
     let candidates: Vec<String> = {
         let mut g = manifest.lock().await;
         let m = remote_sync::ensure_loaded(&mut g, project_id);
-        paths.iter().filter(|p| m.contains_key(p.as_str())).cloned().collect()
+        paths
+            .iter()
+            .filter(|p| m.contains_key(p.as_str()))
+            .cloned()
+            .collect()
     };
     for p in candidates {
         if object_already_known(dst_peer, &p) {
@@ -2007,7 +2041,11 @@ async fn init_pairing(
     } else {
         (Peer::Local(mirror_dir(project_id)), false)
     };
-    let dest_label = if source_is_local { "remote host" } else { "local mirror" };
+    let dest_label = if source_is_local {
+        "remote host"
+    } else {
+        "local mirror"
+    };
     if let Peer::Local(dir) = &dest_peer {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -2059,7 +2097,10 @@ async fn init_pairing(
     // recognize; reporting it means the user sees why, and the next pass retries the seed
     // instead of settling into a permanent head mismatch.
     let dest = probe(&dest_peer);
-    transfer_and_apply(pool, manifest, project_id, spec, to_remote, source, &dest, false).await?;
+    transfer_and_apply(
+        pool, manifest, project_id, spec, to_remote, source, &dest, false,
+    )
+    .await?;
 
     // Position HEAD + populate the working tree to match the source's HEAD. The
     // `reset --hard` here is only reached once `pairing_conflicts` has confirmed that
@@ -2089,7 +2130,10 @@ async fn init_pairing(
             )?;
         }
         Some(HeadRef::Detached { sha }) => {
-            checked("checking out the detached HEAD", dest_peer.run(&["checkout", sha])?)?;
+            checked(
+                "checking out the detached HEAD",
+                dest_peer.run(&["checkout", sha])?,
+            )?;
         }
         // Unborn/None source → nothing committed yet; leave the empty repo unborn too.
         // Unreachable via `pair_plan` (an unseeded side is never the source), kept as a
@@ -2139,9 +2183,15 @@ async fn pairing_conflicts(
     source_is_local: bool,
 ) -> Vec<String> {
     let (source_peer, dest_peer) = if source_is_local {
-        (Peer::Local(mirror_dir(project_id)), Peer::Remote(spec.clone()))
+        (
+            Peer::Local(mirror_dir(project_id)),
+            Peer::Remote(spec.clone()),
+        )
     } else {
-        (Peer::Remote(spec.clone()), Peer::Local(mirror_dir(project_id)))
+        (
+            Peer::Remote(spec.clone()),
+            Peer::Local(mirror_dir(project_id)),
+        )
     };
 
     // What the source would write: every tracked blob at HEAD, with its size + sha.
@@ -2165,7 +2215,13 @@ async fn pairing_conflicts(
             Ok(files) => {
                 for f in files {
                     if source.contains_key(&f.rel) {
-                        dest.insert(f.rel, Fingerprint { size: f.size, hash: None });
+                        dest.insert(
+                            f.rel,
+                            Fingerprint {
+                                size: f.size,
+                                hash: None,
+                            },
+                        );
                     }
                 }
             }
@@ -2179,8 +2235,9 @@ async fn pairing_conflicts(
             if !source.contains_key(&rel) {
                 continue;
             }
-            let (size, _) =
-                remote_sync::local_size_mtime(std::fs::metadata(mirror_local_path(project_id, &rel)).ok());
+            let (size, _) = remote_sync::local_size_mtime(
+                std::fs::metadata(mirror_local_path(project_id, &rel)).ok(),
+            );
             dest.insert(rel, Fingerprint { size, hash: None });
         }
     }
@@ -2216,7 +2273,11 @@ fn hash_objects(peer: &Peer, paths: &[String]) -> HashMap<String, String> {
             continue;
         }
         let text = String::from_utf8_lossy(&o.stdout);
-        let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        let lines: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
         if lines.len() != chunk.len() {
             continue;
         }
@@ -2269,10 +2330,12 @@ fn reset_collisions(source_peer: &Peer, dest_peer: &Peer, target_sha: &str) -> V
     let hashes = hash_objects(dest_peer, &candidates);
     let mut out: Vec<String> = candidates
         .into_iter()
-        .filter(|p| match (target[p].hash.as_deref(), hashes.get(p).map(String::as_str)) {
-            (Some(a), Some(b)) => a != b,
-            _ => true, // unprovable → treat as a difference, the safe direction
-        })
+        .filter(
+            |p| match (target[p].hash.as_deref(), hashes.get(p).map(String::as_str)) {
+                (Some(a), Some(b)) => a != b,
+                _ => true, // unprovable → treat as a difference, the safe direction
+            },
+        )
         .collect();
     out.sort();
     out
@@ -2372,8 +2435,10 @@ async fn reconcile_with(
         // discarded: dropping it leaves `diverged`/`blocked` empty, which computes to
         // Synchronized — claiming green about work we never managed to do, the same
         // misreport D4 fixed for a cold pool.
-        match transfer_and_apply(pool, manifest, project_id, spec, true, &local, &remote, false)
-            .await
+        match transfer_and_apply(
+            pool, manifest, project_id, spec, true, &local, &remote, false,
+        )
+        .await
         {
             Ok(r) => {
                 diverged.extend(r.diverged);
@@ -2383,8 +2448,10 @@ async fn reconcile_with(
         }
         // Re-probe the remote so the reverse pass sees any ref we just moved.
         let remote2 = probe(&Peer::Remote(spec.clone()));
-        match transfer_and_apply(pool, manifest, project_id, spec, false, &remote2, &local, false)
-            .await
+        match transfer_and_apply(
+            pool, manifest, project_id, spec, false, &remote2, &local, false,
+        )
+        .await
         {
             Ok(r) => {
                 for d in r.diverged {
@@ -2412,7 +2479,11 @@ async fn reconcile_with(
             local.probe_error
         };
         if dest_probe_error {
-            let side = if source_is_local { "Remote host" } else { "Local mirror" };
+            let side = if source_is_local {
+                "Remote host"
+            } else {
+                "Local mirror"
+            };
             pairing_blocked = Some(format!(
                 "{side} repository could not be read; refusing to auto-initialize it. \
                  Retry once git is reachable there."
@@ -2480,7 +2551,11 @@ async fn reconcile_with(
         let where_ = if c.source_is_local { "host" } else { "mirror" };
         let shown: Vec<&str> = c.paths.iter().take(3).map(String::as_str).collect();
         let more = c.paths.len() - shown.len();
-        let extra = if more > 0 { format!(" (+{more} more)") } else { String::new() };
+        let extra = if more > 0 {
+            format!(" (+{more} more)")
+        } else {
+            String::new()
+        };
         (
             SyncStatus::Desynchronized,
             Some(format!(
@@ -2699,9 +2774,16 @@ pub async fn checkout_lockstep(
     }
     crate::services::sync_auto::pause(auto, project_id).await;
     // Guarantee resume even on an early error.
-    let result =
-        checkout_lockstep_inner(pool, manifest, project_id, spec, target, initiating_side, already_checked_out)
-            .await;
+    let result = checkout_lockstep_inner(
+        pool,
+        manifest,
+        project_id,
+        spec,
+        target,
+        initiating_side,
+        already_checked_out,
+    )
+    .await;
     crate::services::sync_auto::resume(auto, project_id).await;
     result
 }
@@ -2752,7 +2834,10 @@ async fn checkout_lockstep_inner(
         manifest,
         project_id,
         spec,
-        ReconcileOpts { mid_checkout: true, ..Default::default() },
+        ReconcileOpts {
+            mid_checkout: true,
+            ..Default::default()
+        },
     )
     .await;
 
@@ -2878,20 +2963,34 @@ async fn resolve_inner(
     // guess — the same "blocked, user clears it, retries" UX a blocked fast-forward
     // already gets (D1/D2) — instead of trusting the backup-ref safety net to cover
     // something it structurally cannot (an untracked file was never a git object).
-    if let Some(HeadRef::Branch { name, sha: dest_sha }) = &dest.head {
+    if let Some(HeadRef::Branch {
+        name,
+        sha: dest_sha,
+    }) = &dest.head
+    {
         if let Some(target) = source.branches.iter().find(|r| &r.name == name) {
             if &target.sha != dest_sha {
                 let (source_peer, dest_peer) = if to_remote {
-                    (Peer::Local(mirror_dir(project_id)), Peer::Remote(spec.clone()))
+                    (
+                        Peer::Local(mirror_dir(project_id)),
+                        Peer::Remote(spec.clone()),
+                    )
                 } else {
-                    (Peer::Remote(spec.clone()), Peer::Local(mirror_dir(project_id)))
+                    (
+                        Peer::Remote(spec.clone()),
+                        Peer::Local(mirror_dir(project_id)),
+                    )
                 };
                 let collisions = reset_collisions(&source_peer, &dest_peer, &target.sha);
                 if !collisions.is_empty() {
                     let where_ = if to_remote { "host" } else { "mirror" };
                     let shown: Vec<&str> = collisions.iter().take(5).map(String::as_str).collect();
                     let more = collisions.len() - shown.len();
-                    let extra = if more > 0 { format!(" (+{more} more)") } else { String::new() };
+                    let extra = if more > 0 {
+                        format!(" (+{more} more)")
+                    } else {
+                        String::new()
+                    };
                     return Err(format!(
                         "Refusing: {} untracked file(s) on the {where_} differ from '{name}' \
                          and are not in git: {}{extra}. Move or remove them, then retry.",
@@ -2903,7 +3002,10 @@ async fn resolve_inner(
         }
     }
 
-    transfer_and_apply(pool, manifest, project_id, spec, to_remote, source, dest, true).await?;
+    transfer_and_apply(
+        pool, manifest, project_id, spec, to_remote, source, dest, true,
+    )
+    .await?;
 
     // A losing local branch was `reset --hard`, rewriting mirror tracked files — refresh
     // the file-sync bases so the resumed auto-sync reads them green (no-op when the
@@ -3008,7 +3110,11 @@ pub async fn restore_backup(
             crate::services::sync_auto::resume(auto, project_id).await;
             let shown: Vec<&str> = collisions.iter().take(5).map(String::as_str).collect();
             let more = collisions.len() - shown.len();
-            let extra = if more > 0 { format!(" (+{more} more)") } else { String::new() };
+            let extra = if more > 0 {
+                format!(" (+{more} more)")
+            } else {
+                String::new()
+            };
             return Err(format!(
                 "Refusing to restore: {} untracked file(s) on the {peer_label} differ from \
                  the backup and are not in git: {}{extra}. Move or remove them, then retry.",
@@ -3233,7 +3339,10 @@ async fn poll_loop(
         &auto,
         &project_id,
         &spec,
-        ReconcileOpts { forced: true, ..Default::default() },
+        ReconcileOpts {
+            forced: true,
+            ..Default::default()
+        },
     )
     .await;
     emit_status(&app, &project_id, &s);
@@ -3324,20 +3433,16 @@ pub async fn detect_and_sync(
 
     if local_moved {
         if let Some(t) = target_of(&local.head) {
-            if let Ok(s) = checkout_lockstep(
-                pool, manifest, auto, project_id, spec, &t, "local", true,
-            )
-            .await
+            if let Ok(s) =
+                checkout_lockstep(pool, manifest, auto, project_id, spec, &t, "local", true).await
             {
                 return s;
             }
         }
     } else if remote_moved {
         if let Some(t) = target_of(&remote.head) {
-            if let Ok(s) = checkout_lockstep(
-                pool, manifest, auto, project_id, spec, &t, "remote", true,
-            )
-            .await
+            if let Ok(s) =
+                checkout_lockstep(pool, manifest, auto, project_id, spec, &t, "remote", true).await
             {
                 return s;
             }
@@ -3391,7 +3496,13 @@ mod tests {
         let out = "abc123 main\ndef456 feature/x\n\n  \n";
         let refs = parse_refs(out);
         assert_eq!(refs.len(), 2);
-        assert_eq!(refs[0], RefEntry { name: "main".into(), sha: "abc123".into() });
+        assert_eq!(
+            refs[0],
+            RefEntry {
+                name: "main".into(),
+                sha: "abc123".into()
+            }
+        );
         assert_eq!(refs[1].name, "feature/x");
     }
 
@@ -3399,9 +3510,15 @@ mod tests {
     fn parse_head_branch_detached_unborn() {
         assert_eq!(
             parse_head("main\n", "abc\n"),
-            HeadRef::Branch { name: "main".into(), sha: "abc".into() }
+            HeadRef::Branch {
+                name: "main".into(),
+                sha: "abc".into()
+            }
         );
-        assert_eq!(parse_head("", "abc\n"), HeadRef::Detached { sha: "abc".into() });
+        assert_eq!(
+            parse_head("", "abc\n"),
+            HeadRef::Detached { sha: "abc".into() }
+        );
         assert_eq!(parse_head("", ""), HeadRef::Unborn);
     }
 
@@ -3418,8 +3535,14 @@ mod tests {
     fn decide_truth_table() {
         assert_eq!(decide(None, "a", false, false), RefAction::CreateOnDest);
         assert_eq!(decide(Some("a"), "a", false, false), RefAction::InSync);
-        assert_eq!(decide(Some("old"), "new", true, false), RefAction::FastForwardDest);
-        assert_eq!(decide(Some("new"), "old", false, true), RefAction::DestAhead);
+        assert_eq!(
+            decide(Some("old"), "new", true, false),
+            RefAction::FastForwardDest
+        );
+        assert_eq!(
+            decide(Some("new"), "old", false, true),
+            RefAction::DestAhead
+        );
         assert_eq!(decide(Some("x"), "y", false, false), RefAction::Diverged);
     }
 
@@ -3431,10 +3554,15 @@ mod tests {
         assert!(args.iter().any(|a| a == "--branches"));
         assert!(args.iter().any(|a| a == "--tags"));
         assert!(args.iter().any(|a| a == "--not"));
-        assert!(args.iter().position(|a| a == "--not").unwrap() < args.iter().position(|a| a == "r1").unwrap());
+        assert!(
+            args.iter().position(|a| a == "--not").unwrap()
+                < args.iter().position(|a| a == "r1").unwrap()
+        );
         // Guardrail: never `--all` (could pull odd refs), and no config/hook words.
         assert!(!args.iter().any(|a| a == "--all"));
-        assert!(!args.iter().any(|a| a.contains("config") || a.contains("hooks") || a.contains("remotes")));
+        assert!(!args
+            .iter()
+            .any(|a| a.contains("config") || a.contains("hooks") || a.contains("remotes")));
     }
 
     #[test]
@@ -3448,7 +3576,9 @@ mod tests {
     #[test]
     fn empty_bundle_error_is_recognized_precisely() {
         // Git's own literal refusal text (verified against a real `git bundle create`).
-        assert!(is_empty_bundle_error("fatal: Refusing to create empty bundle.\n"));
+        assert!(is_empty_bundle_error(
+            "fatal: Refusing to create empty bundle.\n"
+        ));
         // A genuine I/O failure must NOT be mistaken for the no-op case — that is
         // exactly the false-green D11 exists to close.
         assert!(!is_empty_bundle_error(
@@ -3464,23 +3594,25 @@ mod tests {
         // so a future git release changing this wording fails loudly here rather than
         // silently making every genuine failure look like the safe no-op case.
         if !git_available() {
-            eprintln!("git not on PATH — skipping bundle_create_fails_empty_with_gits_exact_message");
+            eprintln!(
+                "git not on PATH — skipping bundle_create_fails_empty_with_gits_exact_message"
+            );
             return;
         }
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir = tmp.path();
         let peer = Peer::Local(dir.to_path_buf());
         peer.run(&["init", "-q", "."]).expect("git init");
-        peer.run(&["config", "user.email", "t@e"]).expect("git config");
+        peer.run(&["config", "user.email", "t@e"])
+            .expect("git config");
         peer.run(&["config", "user.name", "t"]).expect("git config");
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
         peer.run(&["add", "a.txt"]).expect("git add");
         peer.run(&["commit", "-qm", "init"]).expect("git commit");
-        let head = String::from_utf8_lossy(
-            &peer.run(&["rev-parse", "HEAD"]).expect("rev-parse").stdout,
-        )
-        .trim()
-        .to_string();
+        let head =
+            String::from_utf8_lossy(&peer.run(&["rev-parse", "HEAD"]).expect("rev-parse").stdout)
+                .trim()
+                .to_string();
 
         let bundle_path = dir.join("out.bundle").to_string_lossy().to_string();
         let args = bundle_create_args(&bundle_path, &["--branches"], &[head]);
@@ -3507,9 +3639,27 @@ mod tests {
         let ns = "M\tsrc/a.rs\nD\tsrc/gone.rs\nR100\told/name.rs\tnew/name.rs\nA\tadded.rs\n";
         let ch = changed_tracked_paths(ns);
         assert_eq!(ch.len(), 4);
-        assert_eq!(ch[0], TrackedChange { path: "src/a.rs".into(), deleted: false });
-        assert_eq!(ch[1], TrackedChange { path: "src/gone.rs".into(), deleted: true });
-        assert_eq!(ch[2], TrackedChange { path: "new/name.rs".into(), deleted: false });
+        assert_eq!(
+            ch[0],
+            TrackedChange {
+                path: "src/a.rs".into(),
+                deleted: false
+            }
+        );
+        assert_eq!(
+            ch[1],
+            TrackedChange {
+                path: "src/gone.rs".into(),
+                deleted: true
+            }
+        );
+        assert_eq!(
+            ch[2],
+            TrackedChange {
+                path: "new/name.rs".into(),
+                deleted: false
+            }
+        );
         assert!(!ch[3].deleted);
     }
 
@@ -3542,9 +3692,15 @@ mod tests {
         // reconcile leaves for the user: a real divergence, and the loser being ahead.
         // (`force_reset_branch` is IO; this pins which classifications route into it.)
         assert_eq!(decide(Some("x"), "y", false, false), RefAction::Diverged);
-        assert_eq!(decide(Some("new"), "old", false, true), RefAction::DestAhead);
+        assert_eq!(
+            decide(Some("new"), "old", false, true),
+            RefAction::DestAhead
+        );
         // Fast-forwardable / create / in-sync never need forcing (no data loss).
-        assert_eq!(decide(Some("old"), "new", true, false), RefAction::FastForwardDest);
+        assert_eq!(
+            decide(Some("old"), "new", true, false),
+            RefAction::FastForwardDest
+        );
         assert_eq!(decide(None, "a", false, false), RefAction::CreateOnDest);
         assert_eq!(decide(Some("a"), "a", false, false), RefAction::InSync);
     }
@@ -3554,7 +3710,8 @@ mod tests {
     #[test]
     fn parse_untracked_overwrite_paths_reads_gits_list() {
         // Verbatim shape of a real `git merge --ff-only` refusal (captured from git).
-        let stderr = "error: The following untracked working tree files would be overwritten by merge:\n\
+        let stderr =
+            "error: The following untracked working tree files would be overwritten by merge:\n\
                       \tnew.txt\n\
                       \tsp ace.txt\n\
                       \tsrc/deep/file.rs\n\
@@ -3569,7 +3726,8 @@ mod tests {
     #[test]
     fn parse_untracked_overwrite_paths_unquotes_and_ignores_other_errors() {
         // core.quotePath wraps non-ASCII paths in C-escapes; \303\251 is "é".
-        let stderr = "error: The following untracked working tree files would be overwritten by merge:\n\
+        let stderr =
+            "error: The following untracked working tree files would be overwritten by merge:\n\
                       \t\"caf\\303\\251.txt\"\n\
                       Please move or remove them before you merge.\n";
         assert_eq!(parse_untracked_overwrite_paths(stderr), vec!["café.txt"]);
@@ -3584,7 +3742,8 @@ mod tests {
 
     #[test]
     fn blocked_detail_names_the_untracked_files_not_uncommitted_changes() {
-        let stderr = "error: The following untracked working tree files would be overwritten by merge:\n\
+        let stderr =
+            "error: The following untracked working tree files would be overwritten by merge:\n\
                       \ta.txt\n\tb.txt\n\tc.txt\n\td.txt\n\
                       Please move or remove them before you merge.\n";
         let d = blocked_detail("main", stderr);
@@ -3612,7 +3771,9 @@ mod tests {
     #[test]
     fn tracked_paths_lists_the_mirrors_tracked_files_only() {
         if !git_available() {
-            eprintln!("git not on PATH — skipping tracked_paths_lists_the_mirrors_tracked_files_only");
+            eprintln!(
+                "git not on PATH — skipping tracked_paths_lists_the_mirrors_tracked_files_only"
+            );
             return;
         }
         // `tracked_paths` reads the mirror of a project id, so drive it through a repo
@@ -3643,7 +3804,10 @@ mod tests {
             .map(|s| String::from_utf8_lossy(s).replace('\\', "/"))
             .collect();
         assert!(set.contains("tracked.txt"));
-        assert!(!set.contains("untracked.txt"), "byte-sync keeps the untracked files");
+        assert!(
+            !set.contains("untracked.txt"),
+            "byte-sync keeps the untracked files"
+        );
         assert!(!set.iter().any(|p| p.starts_with(".git/")));
     }
 
@@ -3710,11 +3874,10 @@ mod tests {
         let dir = tmp.path();
         let feat = repo_behind_by_one(dir);
         let peer = Peer::Local(dir.to_path_buf());
-        let main = String::from_utf8_lossy(
-            &peer.run(&["rev-parse", "HEAD"]).expect("rev-parse").stdout,
-        )
-        .trim()
-        .to_string();
+        let main =
+            String::from_utf8_lossy(&peer.run(&["rev-parse", "HEAD"]).expect("rev-parse").stdout)
+                .trim()
+                .to_string();
 
         assert!(
             deleted_between(&peer, &main, &feat).is_empty(),
@@ -3733,7 +3896,10 @@ mod tests {
     /// The blocked `merge --ff-only` and its stderr, against a real git.
     fn try_ff(peer: &Peer, sha: &str) -> (bool, String) {
         let o = peer.run(&["merge", "--ff-only", sha]).expect("merge");
-        (o.status.success(), String::from_utf8_lossy(&o.stderr).to_string())
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        )
     }
 
     #[test]
@@ -3755,7 +3921,10 @@ mod tests {
         // Git refuses even though the bytes match — the behaviour the whole fix exists
         // for. (If this ever stops being true, the retry is dead code and should go.)
         let (ok, stderr) = try_ff(&peer, &sha);
-        assert!(!ok, "git is expected to refuse over identical untracked files");
+        assert!(
+            !ok,
+            "git is expected to refuse over identical untracked files"
+        );
         assert!(!parse_untracked_overwrite_paths(&stderr).is_empty());
 
         // #28q: the retry reports WHICH files it deleted to get here, so the caller can
@@ -3773,7 +3942,10 @@ mod tests {
         let head = probe(&peer);
         assert_eq!(
             head.head,
-            Some(HeadRef::Branch { name: "main".into(), sha: sha.clone() })
+            Some(HeadRef::Branch {
+                name: "main".into(),
+                sha: sha.clone()
+            })
         );
         assert_eq!(checked_out(&dir.join("new.txt")), b"incoming content\n");
         assert!(!head.dirty_tracked);
@@ -3782,7 +3954,9 @@ mod tests {
     #[test]
     fn ff_retry_refuses_when_any_colliding_file_differs() {
         if !git_available() {
-            eprintln!("git not on PATH — skipping ff_retry_refuses_when_any_colliding_file_differs");
+            eprintln!(
+                "git not on PATH — skipping ff_retry_refuses_when_any_colliding_file_differs"
+            );
             return;
         }
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -3871,7 +4045,9 @@ mod tests {
         // `h.txt` holds git-known content too, but carries NO manifest entry, so the
         // scope gate must exclude it regardless of what its content proves.
         if !git_available() {
-            eprintln!("git not on PATH — skipping stale_residue_recognizes_content_already_known_to_git");
+            eprintln!(
+                "git not on PATH — skipping stale_residue_recognizes_content_already_known_to_git"
+            );
             return;
         }
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -3907,7 +4083,11 @@ mod tests {
         }
 
         let peer = Peer::Local(dir.to_path_buf());
-        let paths = vec!["f.txt".to_string(), "g.txt".to_string(), "h.txt".to_string()];
+        let paths = vec![
+            "f.txt".to_string(),
+            "g.txt".to_string(),
+            "h.txt".to_string(),
+        ];
         let residue = stale_byte_sync_residue(&manifest, &project_id, &peer, &paths).await;
         assert!(
             residue.contains("f.txt"),
@@ -3927,7 +4107,10 @@ mod tests {
         {
             let mut g = manifest.lock().await;
             let m = remote_sync::ensure_loaded(&mut g, &project_id);
-            assert!(m.is_empty(), "the bases must be dropped once lockstep owns the paths");
+            assert!(
+                m.is_empty(),
+                "the bases must be dropped once lockstep owns the paths"
+            );
         }
 
         if let Some(parent) = remote_sync::manifest_path(&project_id).parent() {
@@ -3938,7 +4121,10 @@ mod tests {
     // ── #28p D3: pairing collisions + symmetric probe-error refusal ──────────
 
     fn fp(size: u64, hash: Option<&str>) -> Fingerprint {
-        Fingerprint { size, hash: hash.map(str::to_string) }
+        Fingerprint {
+            size,
+            hash: hash.map(str::to_string),
+        }
     }
 
     #[test]
@@ -3976,8 +4162,9 @@ mod tests {
     fn pairing_collisions_treat_an_unprovable_match_as_a_difference() {
         // Same size but the dest's hash couldn't be computed: `reset --hard` is
         // destructive, so "probably fine" is not good enough.
-        let source: HashMap<String, Fingerprint> =
-            [("f".to_string(), fp(3, Some("aaa")))].into_iter().collect();
+        let source: HashMap<String, Fingerprint> = [("f".to_string(), fp(3, Some("aaa")))]
+            .into_iter()
+            .collect();
         let dest: HashMap<String, Fingerprint> =
             [("f".to_string(), fp(3, None))].into_iter().collect();
         assert_eq!(pairing_collisions(&source, &dest), vec!["f"]);
@@ -3987,7 +4174,11 @@ mod tests {
     fn parse_ls_tree_long_reads_blobs_with_sizes() {
         let out = b"100644 blob aaa111    6\tsrc/a.rs\x00100755 blob bbb222   12\tb in.sh\x00160000 commit ccc333       -\tsub\x00";
         let m = parse_ls_tree_long(out);
-        assert_eq!(m.len(), 2, "submodules/commits carry no bytes and are skipped");
+        assert_eq!(
+            m.len(),
+            2,
+            "submodules/commits carry no bytes and are skipped"
+        );
         assert_eq!(m["src/a.rs"], fp(6, Some("aaa111")));
         assert_eq!(m["b in.sh"], fp(12, Some("bbb222")));
     }
@@ -3995,7 +4186,10 @@ mod tests {
     #[test]
     fn pairing_dest_probe_error_is_symmetric() {
         let clean = PeerSnapshot::default();
-        let errored = PeerSnapshot { probe_error: true, ..Default::default() };
+        let errored = PeerSnapshot {
+            probe_error: true,
+            ..Default::default()
+        };
         // Source local ⇒ the host is the side we'd init+reset: its probe error blocks.
         assert!(pairing_dest_probe_error(true, &clean, &errored));
         assert!(!pairing_dest_probe_error(true, &errored, &clean));
@@ -4021,8 +4215,14 @@ mod tests {
         let prior = GitPeerState {
             enabled: true,
             status: SyncStatus::Synchronized,
-            local_head: Some(HeadRef::Branch { name: "main".into(), sha: "a".into() }),
-            remote_head: Some(HeadRef::Branch { name: "main".into(), sha: "a".into() }),
+            local_head: Some(HeadRef::Branch {
+                name: "main".into(),
+                sha: "a".into(),
+            }),
+            remote_head: Some(HeadRef::Branch {
+                name: "main".into(),
+                sha: "a".into(),
+            }),
             local_sig: Some("sig".into()),
             remote_sig: Some("sig".into()),
             ..Default::default()
@@ -4030,7 +4230,10 @@ mod tests {
         let s = disconnected_state(&prior);
         assert_eq!(s.status, SyncStatus::Disconnected);
         assert!(s.enabled, "the opt-in survives a dropped link");
-        assert_eq!(s.local_head, prior.local_head, "last-known heads are still shown");
+        assert_eq!(
+            s.local_head, prior.local_head,
+            "last-known heads are still shown"
+        );
         // Signatures must not persist across a disconnect, else the first pass after
         // reconnecting could early-out on a stale green.
         assert!(s.local_sig.is_none() && s.remote_sig.is_none());
@@ -4045,11 +4248,26 @@ mod tests {
         );
         let s = parse_probe_block(&block).expect("parses");
         assert!(s.is_repo && !s.probe_error);
-        assert_eq!(s.head, Some(HeadRef::Branch { name: "main".into(), sha: "abc123".into() }));
+        assert_eq!(
+            s.head,
+            Some(HeadRef::Branch {
+                name: "main".into(),
+                sha: "abc123".into()
+            })
+        );
         assert_eq!(s.branches.len(), 2);
         assert_eq!(s.branches[1].name, "feat");
-        assert_eq!(s.tags, vec![RefEntry { name: "v1.0".into(), sha: "t1t1".into() }]);
-        assert!(s.dirty_tracked, "a tracked modification, despite the ?? line");
+        assert_eq!(
+            s.tags,
+            vec![RefEntry {
+                name: "v1.0".into(),
+                sha: "t1t1".into()
+            }]
+        );
+        assert!(
+            s.dirty_tracked,
+            "a tracked modification, despite the ?? line"
+        );
         assert_eq!(s.head_subject.as_deref(), Some("Fix the thing"));
     }
 
@@ -4085,7 +4303,10 @@ mod tests {
             parse_ancestry_block("10\n01\n", 2),
             Some(vec![(true, false), (false, true)])
         );
-        assert_eq!(parse_ancestry_block("00\n11\n", 2), Some(vec![(false, false), (true, true)]));
+        assert_eq!(
+            parse_ancestry_block("00\n11\n", 2),
+            Some(vec![(false, false), (true, true)])
+        );
         // A misaligned answer is never used: a wrong bit here would misclassify a
         // divergence, so the caller falls back to per-branch checks instead.
         assert_eq!(parse_ancestry_block("10\n", 2), None);
@@ -4128,7 +4349,10 @@ mod tests {
         assert!(snap.is_repo && !snap.probe_error);
         assert!(matches!(&snap.head, Some(HeadRef::Branch { name, .. }) if name == "main"));
         assert_eq!(snap.branches.len(), 2, "main + feat");
-        assert!(snap.branches.iter().any(|b| b.name == "feat" && b.sha == sha));
+        assert!(snap
+            .branches
+            .iter()
+            .any(|b| b.name == "feat" && b.sha == sha));
         assert!(snap.dirty_tracked);
         assert_eq!(snap.head_subject.as_deref(), Some("base"));
 
@@ -4169,7 +4393,11 @@ mod tests {
             .current_dir(dir)
             .output()
             .expect("git worktree add");
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         let snap = parse_probe_block(&run_sh(dir, PROBE_SCRIPT)).expect("parses");
         // HEAD alone still says only "main" — which is exactly the blind spot.
@@ -4292,8 +4520,14 @@ mod tests {
     fn early_out_only_when_green_and_nothing_moved() {
         let snap = PeerSnapshot {
             is_repo: true,
-            head: Some(HeadRef::Branch { name: "main".into(), sha: "a".into() }),
-            branches: vec![RefEntry { name: "main".into(), sha: "a".into() }],
+            head: Some(HeadRef::Branch {
+                name: "main".into(),
+                sha: "a".into(),
+            }),
+            branches: vec![RefEntry {
+                name: "main".into(),
+                sha: "a".into(),
+            }],
             ..Default::default()
         };
         let sig = refs_signature(&snap);
@@ -4311,19 +4545,35 @@ mod tests {
         // no ref at all — deleting an untracked collision, say).
         assert!(!can_early_out(&green, &sig, &sig, true, true));
         // Never skip a pass that has real work: a red state, or an unpaired side.
-        let red = GitPeerState { status: SyncStatus::Desynchronized, ..green.clone() };
+        let red = GitPeerState {
+            status: SyncStatus::Desynchronized,
+            ..green.clone()
+        };
         assert!(!can_early_out(&red, &sig, &sig, true, false));
         assert!(!can_early_out(&green, &sig, &sig, false, false));
         // A first-ever pass has no signatures to compare against.
-        assert!(!can_early_out(&GitPeerState::default(), &sig, &sig, true, false));
+        assert!(!can_early_out(
+            &GitPeerState::default(),
+            &sig,
+            &sig,
+            true,
+            false
+        ));
     }
 
     #[test]
     fn refs_signature_moves_when_dirty_flips() {
         // A dirty→clean transition can unblock a fast-forward, so it must not be
         // invisible to the early-out.
-        let clean = PeerSnapshot { is_repo: true, ..Default::default() };
-        let dirty = PeerSnapshot { is_repo: true, dirty_tracked: true, ..Default::default() };
+        let clean = PeerSnapshot {
+            is_repo: true,
+            ..Default::default()
+        };
+        let dirty = PeerSnapshot {
+            is_repo: true,
+            dirty_tracked: true,
+            ..Default::default()
+        };
         assert_ne!(refs_signature(&clean), refs_signature(&dirty));
     }
 
@@ -4332,16 +4582,25 @@ mod tests {
     fn on_branch(name: &str, sha: &str) -> PeerSnapshot {
         PeerSnapshot {
             is_repo: true,
-            head: Some(HeadRef::Branch { name: name.into(), sha: sha.into() }),
+            head: Some(HeadRef::Branch {
+                name: name.into(),
+                sha: sha.into(),
+            }),
             ..Default::default()
         }
     }
 
     #[test]
     fn peers_on_the_same_head_are_in_step() {
-        assert_eq!(head_mismatch(&on_branch("main", "aaa"), &on_branch("main", "aaa")), None);
+        assert_eq!(
+            head_mismatch(&on_branch("main", "aaa"), &on_branch("main", "aaa")),
+            None
+        );
         // Nothing observed on a side → nothing to claim.
-        assert_eq!(head_mismatch(&on_branch("main", "aaa"), &PeerSnapshot::default()), None);
+        assert_eq!(
+            head_mismatch(&on_branch("main", "aaa"), &PeerSnapshot::default()),
+            None
+        );
     }
 
     #[test]
@@ -4358,7 +4617,9 @@ mod tests {
     fn detached_peer_is_reported_against_a_branch() {
         let detached = PeerSnapshot {
             is_repo: true,
-            head: Some(HeadRef::Detached { sha: "cafebabe1234".into() }),
+            head: Some(HeadRef::Detached {
+                sha: "cafebabe1234".into(),
+            }),
             ..Default::default()
         };
         let msg = head_mismatch(&on_branch("main", "aaa"), &detached).expect("out of step");
@@ -4377,7 +4638,10 @@ mod tests {
             );
         }
         assert_eq!(parse_backup_ref_name("refs/heads/main"), None);
-        assert_eq!(parse_backup_ref_name("refs/eldrun/backup/notanumber/x"), None);
+        assert_eq!(
+            parse_backup_ref_name("refs/eldrun/backup/notanumber/x"),
+            None
+        );
     }
 
     #[test]
@@ -4417,9 +4681,11 @@ mod tests {
         // anyway; the three ancient ones beyond the count go.
         let pruned = select_prunable(&refs, now, 2, 30 * day);
         assert_eq!(pruned.len(), 3);
-        assert!(pruned.iter().all(|r| r.contains(&format!("{}", now - 100 * day))
-            || r.contains(&format!("{}", now - 90 * day))
-            || r.contains(&format!("{}", now - 80 * day))));
+        assert!(pruned
+            .iter()
+            .all(|r| r.contains(&format!("{}", now - 100 * day))
+                || r.contains(&format!("{}", now - 90 * day))
+                || r.contains(&format!("{}", now - 80 * day))));
 
         // Age alone protects a ref even past the count.
         assert!(select_prunable(&refs, now, 0, 30 * day).len() == 3);
@@ -4457,8 +4723,14 @@ mod tests {
         // Everything in step (or already resolved) clears the ref, so it never outlives
         // the divergence it documents.
         assert_eq!(peer_ref_op(RefAction::InSync, false), PeerRefOp::Delete);
-        assert_eq!(peer_ref_op(RefAction::FastForwardDest, false), PeerRefOp::Delete);
-        assert_eq!(peer_ref_op(RefAction::CreateOnDest, false), PeerRefOp::Delete);
+        assert_eq!(
+            peer_ref_op(RefAction::FastForwardDest, false),
+            PeerRefOp::Delete
+        );
+        assert_eq!(
+            peer_ref_op(RefAction::CreateOnDest, false),
+            PeerRefOp::Delete
+        );
         assert_eq!(peer_ref_op(RefAction::DestAhead, false), PeerRefOp::Delete);
         // A forced pass RESOLVES the divergence, so it clears rather than parks.
         assert_eq!(peer_ref_op(RefAction::Diverged, true), PeerRefOp::Delete);
@@ -4517,7 +4789,9 @@ mod tests {
     #[test]
     fn reset_collisions_allows_byte_identical_untracked_files() {
         if !git_available() {
-            eprintln!("git not on PATH — skipping reset_collisions_allows_byte_identical_untracked_files");
+            eprintln!(
+                "git not on PATH — skipping reset_collisions_allows_byte_identical_untracked_files"
+            );
             return;
         }
         let src_tmp = tempfile::tempdir().expect("tempdir");
@@ -4566,7 +4840,10 @@ mod tests {
         std::fs::write(dir.join("secret.env"), b"NEW LOCAL WORK\n").unwrap();
 
         let peer = Peer::Local(dir.to_path_buf());
-        assert_eq!(reset_collisions(&peer, &peer, &backup_sha), vec!["secret.env"]);
+        assert_eq!(
+            reset_collisions(&peer, &peer, &backup_sha),
+            vec!["secret.env"]
+        );
     }
 
     #[test]
@@ -4582,7 +4859,10 @@ mod tests {
             enabled: true,
             status: SyncStatus::Desynchronized,
             detail: Some("Diverged: main".into()),
-            local_head: Some(HeadRef::Branch { name: "main".into(), sha: "a".into() }),
+            local_head: Some(HeadRef::Branch {
+                name: "main".into(),
+                sha: "a".into(),
+            }),
             remote_head: Some(HeadRef::Detached { sha: "b".into() }),
             last_sync_ts: Some(42),
             local_subject: Some("Fix it".into()),
@@ -4603,7 +4883,10 @@ mod tests {
         assert!(json.contains("\"sourceIsLocal\":true"));
         let back: GitPeerState = serde_json::from_str(&json).unwrap();
         assert_eq!(back.status, SyncStatus::Desynchronized);
-        assert_eq!(back.remote_head, Some(HeadRef::Detached { sha: "b".into() }));
+        assert_eq!(
+            back.remote_head,
+            Some(HeadRef::Detached { sha: "b".into() })
+        );
         assert_eq!(back.pairing_conflict.unwrap().paths, vec!["README.md"]);
     }
 
@@ -4641,9 +4924,17 @@ mod tests {
         // …while a real head still parses exactly as before.
         assert_eq!(
             parse_head("main", "abc123"),
-            HeadRef::Branch { name: "main".into(), sha: "abc123".into() }
+            HeadRef::Branch {
+                name: "main".into(),
+                sha: "abc123".into()
+            }
         );
-        assert_eq!(parse_head("", "abc123"), HeadRef::Detached { sha: "abc123".into() });
+        assert_eq!(
+            parse_head("", "abc123"),
+            HeadRef::Detached {
+                sha: "abc123".into()
+            }
+        );
     }
 
     /// Bug 1, at the level that actually shipped. `parse_probe_block_tolerates_empty_
@@ -4677,7 +4968,10 @@ mod tests {
         assert!(snap.branches.is_empty() && snap.head_subject.is_none());
         // The batched remote probe and the per-command local one must agree about what
         // unborn looks like, or the bug simply moves to whichever path a peer takes.
-        assert_eq!(snap.head, probe_per_command(&Peer::Local(dir.to_path_buf())).head);
+        assert_eq!(
+            snap.head,
+            probe_per_command(&Peer::Local(dir.to_path_buf())).head
+        );
         // And the whole point: this side is not seeded, so it is still pairable.
         assert!(!is_seeded(&snap));
     }
@@ -4689,11 +4983,21 @@ mod tests {
     /// checks out. Hence: objects and refs on the host, empty tree, forever.
     #[test]
     fn a_bare_git_init_is_not_seeded_and_stays_pairable() {
-        let unborn = PeerSnapshot { is_repo: true, head: Some(HeadRef::Unborn), ..Default::default() };
+        let unborn = PeerSnapshot {
+            is_repo: true,
+            head: Some(HeadRef::Unborn),
+            ..Default::default()
+        };
         let seeded = PeerSnapshot {
             is_repo: true,
-            head: Some(HeadRef::Branch { name: "transfer-learning".into(), sha: "a5b535d".into() }),
-            branches: vec![RefEntry { name: "transfer-learning".into(), sha: "a5b535d".into() }],
+            head: Some(HeadRef::Branch {
+                name: "transfer-learning".into(),
+                sha: "a5b535d".into(),
+            }),
+            branches: vec![RefEntry {
+                name: "transfer-learning".into(),
+                sha: "a5b535d".into(),
+            }],
             ..Default::default()
         };
         let absent = PeerSnapshot::default();
@@ -4703,25 +5007,46 @@ mod tests {
         assert!(is_seeded(&seeded));
         assert!(is_seeded(&PeerSnapshot {
             is_repo: true,
-            head: Some(HeadRef::Detached { sha: "abc123".into() }),
+            head: Some(HeadRef::Detached {
+                sha: "abc123".into()
+            }),
             ..Default::default()
         }));
 
         // The live case: mirror seeded, host `git init`ed and never checked out.
         assert_eq!(
             pair_plan(&seeded, &unborn),
-            PairPlan::Pair { source_is_local: true },
+            PairPlan::Pair {
+                source_is_local: true
+            },
             "the half-seeded host must be re-paired, not treated as a peer"
         );
         // Under the old `is_repo` gate this was `Sync` — which moved refs and never a
         // single file, which is exactly how it wedged.
-        assert!(seeded.is_repo && unborn.is_repo, "…and both ARE repos, which is the trap");
+        assert!(
+            seeded.is_repo && unborn.is_repo,
+            "…and both ARE repos, which is the trap"
+        );
 
-        assert_eq!(pair_plan(&seeded, &absent), PairPlan::Pair { source_is_local: true });
-        assert_eq!(pair_plan(&absent, &seeded), PairPlan::Pair { source_is_local: false });
+        assert_eq!(
+            pair_plan(&seeded, &absent),
+            PairPlan::Pair {
+                source_is_local: true
+            }
+        );
+        assert_eq!(
+            pair_plan(&absent, &seeded),
+            PairPlan::Pair {
+                source_is_local: false
+            }
+        );
         assert_eq!(pair_plan(&seeded, &seeded), PairPlan::Sync);
         assert_eq!(pair_plan(&absent, &absent), PairPlan::Nothing);
-        assert_eq!(pair_plan(&unborn, &unborn), PairPlan::Nothing, "nothing to move either way");
+        assert_eq!(
+            pair_plan(&unborn, &unborn),
+            PairPlan::Nothing,
+            "nothing to move either way"
+        );
     }
 
     /// The nastiest shape of bug 2: the refs DID land (the steady-state pass creates them
@@ -4732,8 +5057,14 @@ mod tests {
     fn a_host_with_refs_but_no_checkout_is_still_unseeded() {
         let mirror = PeerSnapshot {
             is_repo: true,
-            head: Some(HeadRef::Branch { name: "transfer-learning".into(), sha: "a5b535d".into() }),
-            branches: vec![RefEntry { name: "transfer-learning".into(), sha: "a5b535d".into() }],
+            head: Some(HeadRef::Branch {
+                name: "transfer-learning".into(),
+                sha: "a5b535d".into(),
+            }),
+            branches: vec![RefEntry {
+                name: "transfer-learning".into(),
+                sha: "a5b535d".into(),
+            }],
             ..Default::default()
         };
         // Every ref arrived; HEAD is still unborn. Empty working tree.
@@ -4741,13 +5072,24 @@ mod tests {
             is_repo: true,
             head: Some(HeadRef::Unborn),
             branches: vec![
-                RefEntry { name: "transfer-learning".into(), sha: "a5b535d".into() },
-                RefEntry { name: "main".into(), sha: "64bd1c3".into() },
+                RefEntry {
+                    name: "transfer-learning".into(),
+                    sha: "a5b535d".into(),
+                },
+                RefEntry {
+                    name: "main".into(),
+                    sha: "64bd1c3".into(),
+                },
             ],
             ..Default::default()
         };
         assert!(!is_seeded(&host), "refs are not a checkout");
-        assert_eq!(pair_plan(&mirror, &host), PairPlan::Pair { source_is_local: true });
+        assert_eq!(
+            pair_plan(&mirror, &host),
+            PairPlan::Pair {
+                source_is_local: true
+            }
+        );
     }
 
     /// Bug 3's other half: a half-seeded side must never be able to *early-out* of the
@@ -4780,39 +5122,79 @@ mod tests {
     #[test]
     fn pairing_into_the_mirror_refuses_to_clobber_unproven_local_files() {
         let source: HashMap<String, Fingerprint> = [
-            ("README.md".to_string(), Fingerprint { size: 10, hash: Some("aaa".into()) }),
-            ("src/a.rs".to_string(), Fingerprint { size: 20, hash: Some("bbb".into()) }),
+            (
+                "README.md".to_string(),
+                Fingerprint {
+                    size: 10,
+                    hash: Some("aaa".into()),
+                },
+            ),
+            (
+                "src/a.rs".to_string(),
+                Fingerprint {
+                    size: 20,
+                    hash: Some("bbb".into()),
+                },
+            ),
         ]
         .into_iter()
         .collect();
 
         // Same path, same size, but the hash could not be established → NOT provably
         // identical → refused rather than overwritten.
-        let unproven: HashMap<String, Fingerprint> =
-            [("README.md".to_string(), Fingerprint { size: 10, hash: None })].into_iter().collect();
-        assert_eq!(pairing_collisions(&source, &unproven), vec!["README.md".to_string()]);
+        let unproven: HashMap<String, Fingerprint> = [(
+            "README.md".to_string(),
+            Fingerprint {
+                size: 10,
+                hash: None,
+            },
+        )]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            pairing_collisions(&source, &unproven),
+            vec!["README.md".to_string()]
+        );
 
         // Differing content → refused.
-        let differs: HashMap<String, Fingerprint> =
-            [("src/a.rs".to_string(), Fingerprint { size: 20, hash: Some("zzz".into()) })]
-                .into_iter()
-                .collect();
-        assert_eq!(pairing_collisions(&source, &differs), vec!["src/a.rs".to_string()]);
+        let differs: HashMap<String, Fingerprint> = [(
+            "src/a.rs".to_string(),
+            Fingerprint {
+                size: 20,
+                hash: Some("zzz".into()),
+            },
+        )]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            pairing_collisions(&source, &differs),
+            vec!["src/a.rs".to_string()]
+        );
 
         // Byte-identical → adopting it is a no-op, so pairing proceeds (the intended
         // "the mirror already holds these files" path).
-        let identical: HashMap<String, Fingerprint> =
-            [("README.md".to_string(), Fingerprint { size: 10, hash: Some("aaa".into()) })]
-                .into_iter()
-                .collect();
+        let identical: HashMap<String, Fingerprint> = [(
+            "README.md".to_string(),
+            Fingerprint {
+                size: 10,
+                hash: Some("aaa".into()),
+            },
+        )]
+        .into_iter()
+        .collect();
         assert!(pairing_collisions(&source, &identical).is_empty());
 
         // A local file the source does not track is not a collision at all — and
         // `reset --hard` never removes untracked paths, so it survives the pairing.
-        let untracked: HashMap<String, Fingerprint> =
-            [("data/big.npz".to_string(), Fingerprint { size: 999, hash: None })]
-                .into_iter()
-                .collect();
+        let untracked: HashMap<String, Fingerprint> = [(
+            "data/big.npz".to_string(),
+            Fingerprint {
+                size: 999,
+                hash: None,
+            },
+        )]
+        .into_iter()
+        .collect();
         assert!(pairing_collisions(&source, &untracked).is_empty());
     }
 }

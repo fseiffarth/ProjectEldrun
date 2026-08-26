@@ -14,6 +14,7 @@ import { RunHostPicker } from "../tabs/TabLocalityBadges";
 import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFilesSettings";
 import { useImportDrop } from "./importDrop";
 import { logoutRemote, useProjectsStore } from "../../stores/projects";
+import { isTrashProject } from "../../lib/trashProject";
 import { useSyncStore, amberPaths, localNewPaths } from "../../stores/sync";
 import { confirmSyncTransfer } from "../../stores/syncConfirm";
 import { openLinkedFile, viewerForPath } from "../embed/FileViewerPane";
@@ -69,6 +70,37 @@ import { useT, type TranslationKey } from "../../lib/i18n";
  *  (TODO #85) — same value and rationale as `FileTree`'s `TOOLTIP_DWELL_MS`:
  *  long enough that a mouse merely passing over the list never triggers it. */
 const TOOLTIP_DWELL_MS = 400;
+const MOBILE_STATUS_POLL_MS = 15_000;
+
+interface MobileHostStatus {
+  running: boolean;
+}
+
+/** Phone glyph for the header's Mobile access button — the same silhouette as
+ *  the header `MobileIndicator`'s icon, so the machine-wide host lamp and this
+ *  per-project switch read as one feature. Off draws a slash through it: the
+ *  button is a plain icon, and a dimmed tint alone would be a state you have to
+ *  compare against something to read. Inherits `currentColor`. */
+function MobileAccessIcon({ on }: { on: boolean }) {
+  return (
+    <svg
+      className="right-panel-mobile-btn-icon"
+      viewBox="0 0 16 16"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
+      <rect x="4.1" y="1.5" width="7.8" height="13" rx="1.6" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M6.7 3.6H9.3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <circle cx="8" cy="12.3" r="0.7" fill="currentColor" />
+      {on ? (
+        <circle cx="12.6" cy="3.4" r="2.25" fill="currentColor" />
+      ) : (
+        <path d="M2.6 14.2L13.4 1.8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      )}
+    </svg>
+  );
+}
 
 /** The row's own name button shows a short, stable label rather than the raw
  *  `eldrun-<uuid>` — meaningless to read at a glance and mostly there to keep
@@ -308,6 +340,7 @@ export function ProjectFilesView({
   // this viewer is mounted many times over) would be a control that doesn't work.
   // Being the same switch the Settings dialog writes, the two can't disagree.
   const alertsEnabled = useSettingsStore((s) => s.settings?.files_alerts ?? true);
+  const mobileHostEnabled = useSettingsStore((s) => s.settings?.eldrun_mobile_host?.enabled ?? false);
   // ...but never in the docked subwindow column (`compact`), whatever the
   // setting says: that viewer is a ~300px sidebar beside a terminal, where a
   // strip of mail/appointment/card rows takes the space the tree is there for
@@ -318,10 +351,60 @@ export function ProjectFilesView({
   // The right panel and the Files (Project) tab are unaffected.
   const alertsHere = alertsEnabled && !compact;
   const updateSettings = useSettingsStore((s) => s.updateSettings);
+  const setProjectMobileAccess = useProjectsStore((s) => s.setProjectMobileAccess);
+  const mobileEligible = !!projectId
+    && !!project
+    && !project.remote
+    && !project.sandbox?.enabled
+    && !project.vm?.enabled
+    && !isTrashProject(project);
+  const [mobileHostConnected, setMobileHostConnected] = useState(false);
+  const [mobileAccessBusy, setMobileAccessBusy] = useState(false);
+  const [mobileAccessError, setMobileAccessError] = useState<string | null>(null);
   // Kept here (not in the pane): the pane unmounts while the view shows Git or
   // Search, and the chosen sort must survive the trip back to Files.
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [descending, setDescending] = useState(false);
+
+  // The Mobile host is machine-wide, but enabling its deliberately narrow
+  // terminal surface is a per-project decision. Keep the quick toggle out of
+  // the viewer until the host is actually reachable, matching the header's
+  // green Mobile indicator rather than trusting its persisted enabled setting.
+  useEffect(() => {
+    if (!active || !mobileHostEnabled || !mobileEligible) {
+      setMobileHostConnected(false);
+      return;
+    }
+    let cancelled = false;
+    const refresh = () => {
+      void invoke<MobileHostStatus>("mobile_host_status")
+        .then((status) => {
+          if (!cancelled) setMobileHostConnected(status.running);
+        })
+        .catch(() => {
+          if (!cancelled) setMobileHostConnected(false);
+        });
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    const interval = window.setInterval(refresh, MOBILE_STATUS_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", refresh);
+      window.clearInterval(interval);
+    };
+  }, [active, mobileEligible, mobileHostEnabled]);
+
+  const mobileAccessOn = project?.eldrun_mobile_access ?? false;
+
+  const toggleMobileAccess = (enabled: boolean) => {
+    if (!projectId) return;
+    setMobileAccessBusy(true);
+    setMobileAccessError(null);
+    void setProjectMobileAccess(projectId, enabled)
+      .catch((reason) => setMobileAccessError(String(reason)))
+      .finally(() => setMobileAccessBusy(false));
+  };
 
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   const [unpushedCommits, setUnpushedCommits] = useState<string[]>([]);
@@ -1118,6 +1201,31 @@ export function ProjectFilesView({
               );
             })}
           </span>
+        )}
+        {/* Per-project Eldrun Mobile opt-in. Deliberately NOT shaped like the
+            tag chips beside it: those are static labels, this one is a live
+            switch, and a chip that looked like them would invite reading it as
+            another fact about the project. It is the header's own icon-button
+            family instead — square, hover-lit, phone slashed while off. */}
+        {mobileHostConnected && mobileEligible && (
+          <button
+            type="button"
+            className={`right-panel-mobile-btn${mobileAccessOn ? " on" : ""}`}
+            disabled={mobileAccessBusy}
+            aria-pressed={mobileAccessOn}
+            aria-label={t("projectFilesView.mobileAccessAria", { name: project?.name ?? "" })}
+            title={
+              mobileAccessOn
+                ? t("projectFilesView.mobileAccessOnTitle")
+                : t("projectFilesView.mobileAccessOffTitle")
+            }
+            onClick={() => toggleMobileAccess(!mobileAccessOn)}
+          >
+            <MobileAccessIcon on={mobileAccessOn} />
+          </button>
+        )}
+        {mobileAccessError && (
+          <div className="right-panel-mobile-access-error" role="alert">{mobileAccessError}</div>
         )}
         {sshTagMenu && projectId && createPortal(
           <>

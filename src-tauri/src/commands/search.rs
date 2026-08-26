@@ -230,12 +230,20 @@ mod tests {
     fn finds_matches_with_line_and_col() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        fs::write(root.join("a.txt"), "hello world\nsecond NEEDLE here\nplain\n").unwrap();
+        fs::write(
+            root.join("a.txt"),
+            "hello world\nsecond NEEDLE here\nplain\n",
+        )
+        .unwrap();
         fs::write(root.join("b.rs"), "fn main() { let needle = 1; }\n").unwrap();
 
-        let matches =
-            project_search(root.to_string_lossy().to_string(), "NEEDLE".into(), true, None)
-                .unwrap();
+        let matches = project_search(
+            root.to_string_lossy().to_string(),
+            "NEEDLE".into(),
+            true,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(matches.len(), 1, "only the case-sensitive line matches");
         let m = &matches[0];

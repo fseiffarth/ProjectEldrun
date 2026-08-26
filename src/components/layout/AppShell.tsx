@@ -26,6 +26,7 @@ import { useRendererWatchdog } from "../../lib/rendererWatchdog";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
+import { LogoIcon } from "./LogoIcon";
 import { MobileBridgeHost } from "../mobile/MobileBridgeHost";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { AlarmPopup } from "../calendar/AlarmPopup";
@@ -102,6 +103,48 @@ const RIGHT_PANEL_DEFAULT = 280;
 function clampRightWidth(px: number): number {
   const max = Math.max(RIGHT_PANEL_MIN, Math.min(900, window.innerWidth - 240));
   return Math.round(Math.max(RIGHT_PANEL_MIN, Math.min(max, px)));
+}
+
+/**
+ * A small launch curtain gives the otherwise-empty WebView a clear "Eldrun is
+ * starting" state while the settings and project records arrive over IPC. It
+ * has a minimum display time so a warm launch does not flash a single frame.
+ */
+function StartupSplash({ ready }: { ready: boolean }) {
+  const [closing, setClosing] = useState(false);
+  const [shown, setShown] = useState(true);
+
+  useEffect(() => {
+    if (!ready) return;
+    const closeAfter = Math.max(0, 700 - performance.now());
+    const closeTimer = window.setTimeout(() => setClosing(true), closeAfter);
+    const removeTimer = window.setTimeout(() => setShown(false), closeAfter + 360);
+    return () => {
+      window.clearTimeout(closeTimer);
+      window.clearTimeout(removeTimer);
+    };
+  }, [ready]);
+
+  if (!shown) return null;
+  const message = ready ? "Workspace ready" : "Opening your workspace…";
+
+  return (
+    <div
+      className={`startup-splash${closing ? " leaving" : ""}`}
+      role="status"
+      aria-live="polite"
+      aria-label={message}
+    >
+      <div className="startup-splash-mark" aria-hidden="true">
+        <span className="startup-splash-orbit startup-splash-orbit-one" />
+        <span className="startup-splash-orbit startup-splash-orbit-two" />
+        <LogoIcon />
+      </div>
+      <div className="startup-splash-name">ELDRUN</div>
+      <div className="startup-splash-message">{message}</div>
+      <div className="startup-splash-progress" aria-hidden="true"><span /></div>
+    </div>
+  );
 }
 
 /**
@@ -555,6 +598,12 @@ export function AppShell() {
       if (localFile) {
         await useTabsStore.getState().saveLayout(localFile).catch(() => {});
       }
+      // A clean Eldrun quit ends only the local tmux sessions named and owned by
+      // Eldrun. It runs after the layout flush so an abnormal close still has a
+      // durable tab/session pairing to restore, but before `destroy()` causes the
+      // backend's general PTY teardown. A crash never reaches this path: its tmux
+      // sessions remain alive and the saved tabs reattach on the next launch.
+      await invoke<void>("local_tmux_kill_eldrun_sessions").catch(() => {});
       // Close any popped-out subwindows so they don't strand on screen; they
       // persist + re-open at their saved bounds next launch (see the helper).
       await shutdownDetachedWindows().catch(() => {});
@@ -788,6 +837,7 @@ export function AppShell() {
 
   return (
     <div className="app-shell">
+      <StartupSplash ready={settingsLoaded && projectsLoaded} />
       <MobileBridgeHost />
       <HeaderBar />
       {switchToast != null && (

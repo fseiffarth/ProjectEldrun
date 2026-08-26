@@ -147,9 +147,7 @@ pub struct WinRect {
 pub fn frontmost_at_point(windows: &[WinRect], x: f64, y: f64) -> Option<u64> {
     windows
         .iter()
-        .find(|w| {
-            w.layer == 0 && x >= w.x && x < w.x + w.w && y >= w.y && y < w.y + w.h
-        })
+        .find(|w| w.layer == 0 && x >= w.x && x < w.x + w.w && y >= w.y && y < w.y + w.h)
         .map(|w| w.id)
 }
 
@@ -292,14 +290,24 @@ mod tests {
     // ── occlusion geometry (popout drop-merge check, #42) ───────────────────
 
     fn rect(id: u64, layer: i32, x: f64, y: f64, w: f64, h: f64) -> WinRect {
-        WinRect { id, layer, x, y, w, h }
+        WinRect {
+            id,
+            layer,
+            x,
+            y,
+            w,
+            h,
+        }
     }
 
     #[test]
     fn topmost_containing_window_wins() {
         // Front-to-back order: window 1 overlaps window 2; the point is inside
         // both, so the front one (listed first) must win.
-        let wins = [rect(1, 0, 0.0, 0.0, 100.0, 100.0), rect(2, 0, 50.0, 50.0, 100.0, 100.0)];
+        let wins = [
+            rect(1, 0, 0.0, 0.0, 100.0, 100.0),
+            rect(2, 0, 50.0, 50.0, 100.0, 100.0),
+        ];
         assert_eq!(frontmost_at_point(&wins, 60.0, 60.0), Some(1));
         // A point only inside the back window resolves to it.
         assert_eq!(frontmost_at_point(&wins, 120.0, 120.0), Some(2));
