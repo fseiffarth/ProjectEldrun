@@ -8,20 +8,22 @@ interface AuthRecord { deviceId: string; privateKey: CryptoKey }
 
 function b64url(bytes: ArrayBuffer): string {
   const raw = String.fromCharCode(...new Uint8Array(bytes));
-  return btoa(raw).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-async function db(): Promise<IDBDatabase> {
+export async function openAuthDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(STORE);
+    const request = indexedDB.open(DB, 2);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(STORE)) request.result.createObjectStore(STORE);
+    };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
 }
 
 async function load(): Promise<AuthRecord | null> {
-  const database = await db();
+  const database = await openAuthDatabase();
   return new Promise((resolve, reject) => {
     const request = database.transaction(STORE).objectStore(STORE).get(DEVICE);
     request.onsuccess = () => resolve((request.result as AuthRecord | undefined) ?? null);
@@ -30,7 +32,7 @@ async function load(): Promise<AuthRecord | null> {
 }
 
 async function save(record: AuthRecord): Promise<void> {
-  const database = await db();
+  const database = await openAuthDatabase();
   await new Promise<void>((resolve, reject) => {
     const request = database.transaction(STORE, "readwrite").objectStore(STORE).put(record, DEVICE);
     request.onsuccess = () => resolve(); request.onerror = () => reject(request.error);
@@ -61,8 +63,24 @@ export async function resumeAuth(): Promise<ResumeResult> {
     await login(record);
     return "paired";
   } catch (reason) {
-    return reason instanceof ApiError && reason.status < 500 ? "unpaired" : "unavailable";
+    // Only a rejection of *this device's identity* means "re-pair". A timeout,
+    // an offline phone, or a 429 from the rate limiter must not send the user
+    // to the pairing screen, which is what `status < 500` used to do.
+    const rejected = reason instanceof ApiError
+      && (reason.status === 403 || reason.code === "unknown_device" || reason.code === "invalid_signature");
+    return rejected ? "unpaired" : "unavailable";
   }
+}
+
+export async function hasPairedDevice(): Promise<boolean> {
+  return !!await load();
+}
+
+/** End the server-side session when the local app is locked. The paired
+ * non-exportable signing key stays in IndexedDB, so a verified local unlock
+ * can obtain a fresh session without making the user pair again. */
+export async function logoutAuth(): Promise<void> {
+  await api("/api/v1/auth/session", { method: "DELETE" });
 }
 
 export async function pair(code: string, deviceName: string): Promise<void> {
@@ -74,5 +92,4 @@ export async function pair(code: string, deviceName: string): Promise<void> {
   });
   const record = { deviceId: paired.device_id, privateKey: keys.privateKey };
   await save(record);
-  await login(record);
 }
