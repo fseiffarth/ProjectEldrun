@@ -7,7 +7,7 @@ use std::{
 };
 
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::{ws::WebSocketUpgrade, DefaultBodyLimit, Path, Query, State},
     http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode},
     middleware::{self, Next},
@@ -380,7 +380,7 @@ async fn create_tab(
     State(state): State<HostState>,
     headers: HeaderMap,
     Path(project_id): Path<String>,
-    Json(mut request): Json<CreateTabRequest>,
+    body: Bytes,
 ) -> impl IntoResponse {
     if let Err(error) = authenticate(&headers, &state) {
         return error;
@@ -388,6 +388,12 @@ async fn create_tab(
     if !exact_origin(&headers, &state) {
         return api_error(StatusCode::FORBIDDEN, "invalid_origin");
     }
+    // Parsed only after the request is authenticated and same-origin: as a
+    // `Json<T>` extractor this ran first, so an unauthenticated caller got a
+    // 422 naming the fields of the desktop-bridge protocol.
+    let Ok(mut request) = serde_json::from_slice::<CreateTabRequest>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
     if request.project_id != project_id
         || request.idempotency_key.len() < 16
         || request.idempotency_key.len() > 128
@@ -618,7 +624,7 @@ async fn calendar_mutate(
     State(state): State<HostState>,
     headers: HeaderMap,
     Query(query): Query<CalendarQuery>,
-    Json(action): Json<CalendarAction>,
+    body: Bytes,
 ) -> impl IntoResponse {
     if let Err(error) = authenticate(&headers, &state) {
         return error;
@@ -626,6 +632,9 @@ async fn calendar_mutate(
     if !exact_origin(&headers, &state) {
         return api_error(StatusCode::FORBIDDEN, "invalid_origin");
     }
+    let Ok(action) = serde_json::from_slice::<CalendarAction>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
     let Some(month) = query.month.filter(|value| valid_calendar_month(value)) else {
         return api_error(StatusCode::BAD_REQUEST, "invalid_month");
     };
@@ -662,7 +671,7 @@ async fn calendar_mutate(
 async fn todo_mutate(
     State(state): State<HostState>,
     headers: HeaderMap,
-    Json(action): Json<TodoAction>,
+    body: Bytes,
 ) -> impl IntoResponse {
     if let Err(error) = authenticate(&headers, &state) {
         return error;
@@ -670,6 +679,9 @@ async fn todo_mutate(
     if !exact_origin(&headers, &state) {
         return api_error(StatusCode::FORBIDDEN, "invalid_origin");
     }
+    let Ok(action) = serde_json::from_slice::<TodoAction>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
     let valid = match &action {
         TodoAction::Create { task } => valid_todo_task(task),
         TodoAction::Move {
@@ -926,7 +938,11 @@ fn asset_response(path: &str) -> Response<Body> {
     // stored under a JavaScript URL after every upgrade.
     let hit = match direct {
         Some(hit) => Some(hit),
-        None if requested.starts_with("/assets/") => None,
+        // The SPA fallback covers app routes only. A miss under `/assets/` or
+        // `/api/` must be a plain 404: serving the shell for an unknown
+        // endpoint turned a removed or mistyped route into a 200 full of HTML
+        // that the client then tried to parse as JSON.
+        None if requested.starts_with("/assets/") || requested.starts_with("/api/") => None,
         None => MOBILE_ASSETS
             .iter()
             .find(|(name, _, _)| *name == "/index.html"),
@@ -948,6 +964,40 @@ fn asset_response(path: &str) -> Response<Body> {
         )
         .body(Body::from(bytes::Bytes::from_static(bytes)))
         .unwrap()
+}
+
+/// The whole HTTP surface in one place, so tests can drive every route
+/// through the same middleware stack the sidecar serves.
+fn router(state: HostState) -> Router {
+    Router::new()
+        .route("/healthz", get(health))
+        .route("/api/v1/pair", post(pair))
+        .route("/api/v1/auth/challenge", post(challenge))
+        .route("/api/v1/auth/session", post(login).delete(logout))
+        .route("/api/v1/status", get(status))
+        .route("/api/v1/todo", get(todo).post(todo_mutate))
+        .route("/api/v1/alerts", get(alerts))
+        .route("/api/v1/calendar", get(calendar).post(calendar_mutate))
+        .route("/api/v1/mail", get(mail_overview))
+        .route("/api/v1/mail/folders/{folder_id}", get(mail_folder))
+        .route(
+            "/api/v1/mail/folders/{folder_id}/messages/{message_id}",
+            get(mail_message),
+        )
+        .route("/api/v1/projects", get(projects))
+        .route("/api/v1/projects/{project_id}", get(project))
+        .route(
+            "/api/v1/projects/{project_id}/activate",
+            post(activate_project),
+        )
+        .route("/api/v1/projects/{project_id}/tabs", post(create_tab))
+        .route("/api/v1/tabs/{tab_id}", get(tab))
+        .route("/api/v1/tabs/{tab_id}/terminal", get(terminal))
+        .route("/", get(index))
+        .route("/{*path}", get(static_asset))
+        .layer(DefaultBodyLimit::max(MAX_CONTROL_MESSAGE))
+        .layer(middleware::from_fn(security_headers))
+        .with_state(state)
 }
 
 pub async fn run(state_dir: PathBuf) -> Result<(), String> {
@@ -992,35 +1042,7 @@ pub async fn run(state_dir: PathBuf) -> Result<(), String> {
             }
         }
     });
-    let app = Router::new()
-        .route("/healthz", get(health))
-        .route("/api/v1/pair", post(pair))
-        .route("/api/v1/auth/challenge", post(challenge))
-        .route("/api/v1/auth/session", post(login).delete(logout))
-        .route("/api/v1/status", get(status))
-        .route("/api/v1/todo", get(todo).post(todo_mutate))
-        .route("/api/v1/alerts", get(alerts))
-        .route("/api/v1/calendar", get(calendar).post(calendar_mutate))
-        .route("/api/v1/mail", get(mail_overview))
-        .route("/api/v1/mail/folders/{folder_id}", get(mail_folder))
-        .route(
-            "/api/v1/mail/folders/{folder_id}/messages/{message_id}",
-            get(mail_message),
-        )
-        .route("/api/v1/projects", get(projects))
-        .route("/api/v1/projects/{project_id}", get(project))
-        .route(
-            "/api/v1/projects/{project_id}/activate",
-            post(activate_project),
-        )
-        .route("/api/v1/projects/{project_id}/tabs", post(create_tab))
-        .route("/api/v1/tabs/{tab_id}", get(tab))
-        .route("/api/v1/tabs/{tab_id}/terminal", get(terminal))
-        .route("/", get(index))
-        .route("/{*path}", get(static_asset))
-        .layer(DefaultBodyLimit::max(MAX_CONTROL_MESSAGE))
-        .layer(middleware::from_fn(security_headers))
-        .with_state(state);
+    let app = router(state);
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let listener = tokio::net::TcpListener::bind(address)
         .await
@@ -1043,7 +1065,235 @@ pub async fn run(state_dir: PathBuf) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::MOBILE_PERMISSIONS_POLICY;
+    use super::*;
+
+    use axum::body::to_bytes;
+    use p256::{
+        ecdsa::{signature::Signer, Signature, SigningKey},
+        pkcs8::EncodePublicKey,
+    };
+    use serde_json::Value;
+    use tower::ServiceExt;
+
+    use crate::services::mobile_control::config::MobileHostSettings;
+
+    const ORIGIN: &str = "https://desk.example.ts.net";
+    /// A raw project id and a filesystem path the phone must never be able to
+    /// read back out of any response.
+    const RAW_PROJECT: &str = "raw-project-id-7f3";
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        root: PathBuf,
+        state: HostState,
+    }
+
+    impl Fixture {
+        /// A host with no project catalog at all.
+        fn bare() -> Self {
+            let dir = tempfile::tempdir().expect("state dir");
+            let state_dir = dir.path().to_path_buf();
+            let control_dir = state_dir.join("mobile-control");
+            let auth = AuthStore::open(&control_dir, ORIGIN.to_string()).expect("auth store");
+            let root = state_dir.join("work");
+            std::fs::create_dir_all(&root).expect("project root");
+            Self {
+                _dir: dir,
+                root,
+                state: HostState {
+                    config: HostConfig {
+                        state_dir,
+                        control_dir,
+                        host: MobileHostSettings {
+                            display_name: "Desk".into(),
+                            ..MobileHostSettings::default()
+                        },
+                        origin: ORIGIN.into(),
+                    },
+                    auth: Arc::new(Mutex::new(auth)),
+                    catalog: Arc::new(Mutex::new(CatalogCache::default())),
+                    terminal_registry: TerminalRegistry::default(),
+                },
+            }
+        }
+
+        /// A host with one opted-in project holding one resumable agent tab.
+        fn with_project() -> Self {
+            let fixture = Self::bare();
+            let state_dir = &fixture.state.config.state_dir;
+            std::fs::write(
+                state_dir.join("projects.json"),
+                serde_json::to_vec(&serde_json::json!([{
+                    "id": RAW_PROJECT,
+                    "name": "Aurora",
+                    "status": "active",
+                    "directory": fixture.root.to_string_lossy(),
+                    "eldrun_mobile_access": true,
+                }]))
+                .expect("projects fixture"),
+            )
+            .expect("write projects");
+            let sessions = state_dir.join("sessions").join(RAW_PROJECT);
+            std::fs::create_dir_all(&sessions).expect("session dir");
+            std::fs::write(
+                sessions.join("terminals.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "tabLayout": [{
+                        "label": "Claude",
+                        "cmd": "claude",
+                        "cwd": fixture.root.to_string_lossy(),
+                        "kind": "agent",
+                        "sessionId": "9d0f-session",
+                        "tmuxSession": format!("eldrun-{RAW_PROJECT}--agent-abcdef123"),
+                    }]
+                }))
+                .expect("session fixture"),
+            )
+            .expect("write session");
+            fixture
+        }
+
+        async fn send(&self, request: Request<Body>) -> (StatusCode, HeaderMap, String) {
+            let response = router(self.state.clone())
+                .oneshot(request)
+                .await
+                .expect("router response");
+            let status = response.status();
+            let headers = response.headers().clone();
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body");
+            (status, headers, String::from_utf8_lossy(&body).into_owned())
+        }
+
+        /// The real pair → challenge → sign → session flow, returning the
+        /// session cookie and the paired device id.
+        async fn pair_device(&self, signing: &SigningKey) -> (String, String) {
+            let code = self
+                .state
+                .auth
+                .lock()
+                .unwrap()
+                .create_pairing_code()
+                .expect("pairing code")
+                .0;
+            let public_key = Base64UrlUnpadded::encode_string(
+                signing
+                    .verifying_key()
+                    .to_public_key_der()
+                    .expect("public key der")
+                    .as_bytes(),
+            );
+            let (status, _, body) = self
+                .send(post_json(
+                    "/api/v1/pair",
+                    ORIGIN,
+                    &serde_json::json!({
+                        "code": code,
+                        "device_name": "Phone",
+                        "public_key": public_key,
+                    }),
+                ))
+                .await;
+            assert_eq!(status, StatusCode::CREATED, "pair failed: {body}");
+            let device_id = json(&body)["device_id"].as_str().expect("device id").into();
+
+            let (status, _, body) = self
+                .send(post_json(
+                    "/api/v1/auth/challenge",
+                    ORIGIN,
+                    &serde_json::json!({ "device_id": device_id }),
+                ))
+                .await;
+            assert_eq!(status, StatusCode::OK, "challenge failed: {body}");
+            let challenge = json(&body);
+            let nonce = challenge["nonce"].as_str().expect("nonce").to_string();
+            let payload = challenge["payload"].as_str().expect("payload").to_string();
+
+            let (status, headers, body) = self
+                .send(post_json(
+                    "/api/v1/auth/session",
+                    ORIGIN,
+                    &serde_json::json!({
+                        "device_id": device_id,
+                        "nonce": nonce,
+                        "signature": sign(signing, &payload),
+                    }),
+                ))
+                .await;
+            assert_eq!(status, StatusCode::OK, "login failed: {body}");
+            (set_cookie(&headers), device_id)
+        }
+    }
+
+    fn signing_key(seed: u8) -> SigningKey {
+        SigningKey::from_slice(&[seed; 32]).expect("test signing key")
+    }
+
+    fn sign(signing: &SigningKey, payload: &str) -> String {
+        let signature: Signature = signing.sign(payload.as_bytes());
+        Base64UrlUnpadded::encode_string(&signature.to_bytes())
+    }
+
+    fn json(body: &str) -> Value {
+        serde_json::from_str(body).unwrap_or_else(|_| panic!("not JSON: {body}"))
+    }
+
+    fn set_cookie(headers: &HeaderMap) -> String {
+        headers
+            .get(header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .expect("Set-Cookie")
+            .to_string()
+    }
+
+    fn cookie_pair(set_cookie: &str) -> String {
+        set_cookie
+            .split(';')
+            .next()
+            .expect("cookie pair")
+            .trim()
+            .to_string()
+    }
+
+    fn get_request(uri: &str) -> Request<Body> {
+        Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .expect("request")
+    }
+
+    fn get_as(uri: &str, cookie: &str) -> Request<Body> {
+        Request::builder()
+            .uri(uri)
+            .header(header::COOKIE, cookie_pair(cookie))
+            .body(Body::empty())
+            .expect("request")
+    }
+
+    fn post_json(uri: &str, origin: &str, body: &Value) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::ORIGIN, origin)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(body).expect("body")))
+            .expect("request")
+    }
+
+    /// Every route that serves project, tab, mail, calendar or task data.
+    const AUTHENTICATED_GETS: &[&str] = &[
+        "/api/v1/status",
+        "/api/v1/todo",
+        "/api/v1/alerts",
+        "/api/v1/calendar",
+        "/api/v1/mail",
+        "/api/v1/mail/folders/anything",
+        "/api/v1/mail/folders/anything/messages/anything",
+        "/api/v1/projects",
+        "/api/v1/projects/anything",
+        "/api/v1/tabs/anything",
+    ];
 
     #[test]
     fn mobile_policy_allows_only_same_origin_microphone_capture() {
@@ -1052,5 +1302,372 @@ mod tests {
         assert!(MOBILE_PERMISSIONS_POLICY.contains("camera=()"));
         assert!(!MOBILE_PERMISSIONS_POLICY.contains("microphone=()"));
         assert!(!MOBILE_PERMISSIONS_POLICY.contains("microphone=(*"));
+    }
+
+    #[tokio::test]
+    async fn every_data_route_refuses_an_unauthenticated_request() {
+        let host = Fixture::with_project();
+        for uri in AUTHENTICATED_GETS {
+            let (status, _, body) = host.send(get_request(uri)).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri} answered: {body}");
+            assert_eq!(json(&body)["error"], "authentication_required", "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn mutating_routes_refuse_an_unauthenticated_request() {
+        let host = Fixture::with_project();
+        let create = serde_json::json!({
+            "project_id": "anything",
+            "kind": "shell",
+            "idempotency_key": "0123456789abcdef",
+        });
+        for uri in [
+            "/api/v1/projects/anything/tabs",
+            "/api/v1/projects/anything/activate",
+            "/api/v1/todo",
+            "/api/v1/calendar",
+        ] {
+            let (status, _, body) = host.send(post_json(uri, ORIGIN, &create)).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri} answered: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_cookie_must_carry_the_exact_host_prefixed_name() {
+        let host = Fixture::bare();
+        let cookie = host.pair_device(&signing_key(9)).await.0;
+        let token = cookie_pair(&cookie)
+            .split_once('=')
+            .expect("token")
+            .1
+            .to_string();
+
+        let (status, ..) = host.send(get_as("/api/v1/status", &cookie)).await;
+        assert_eq!(status, StatusCode::OK);
+
+        // The same token under an unprefixed name carries none of the
+        // `__Host-` guarantees and must not authenticate.
+        let request = Request::builder()
+            .uri("/api/v1/status")
+            .header(header::COOKIE, format!("eldrun_session={token}"))
+            .body(Body::empty())
+            .expect("request");
+        let (status, _, body) = host.send(request).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "answered: {body}");
+    }
+
+    #[tokio::test]
+    async fn mutating_routes_require_the_exact_serve_origin() {
+        let host = Fixture::bare();
+        let cookie = host.pair_device(&signing_key(11)).await.0;
+        let body = serde_json::json!({ "device_id": "anything" });
+        // A prefix of the real origin, a suffix of it, and no header at all.
+        for origin in [
+            "https://desk.example.ts.net.evil.example",
+            "https://evil.example",
+            "http://desk.example.ts.net",
+            "null",
+        ] {
+            let (status, _, answer) = host.send(post_json("/api/v1/auth/challenge", origin, &body)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{origin} answered: {answer}");
+            assert_eq!(json(&answer)["error"], "invalid_origin", "{origin}");
+        }
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/challenge")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(&body).expect("body")))
+            .expect("request");
+        let (status, ..) = host.send(request).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "a missing Origin is not exact");
+
+        // An authenticated mutation is refused on origin too, not just on session.
+        let create = Request::builder()
+            .method("POST")
+            .uri("/api/v1/projects/anything/tabs")
+            .header(header::ORIGIN, "https://evil.example")
+            .header(header::COOKIE, cookie_pair(&cookie))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "project_id": "anything",
+                    "kind": "shell",
+                    "idempotency_key": "0123456789abcdef",
+                }))
+                .expect("body"),
+            ))
+            .expect("request");
+        let (status, _, answer) = host.send(create).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "answered: {answer}");
+    }
+
+    #[tokio::test]
+    async fn a_paired_login_issues_a_hardened_session_cookie() {
+        let host = Fixture::bare();
+        let (cookie, _) = host.pair_device(&signing_key(13)).await;
+        for attribute in [
+            "__Host-eldrun_session=",
+            "Path=/",
+            "Secure",
+            "HttpOnly",
+            "SameSite=Strict",
+        ] {
+            assert!(cookie.contains(attribute), "{attribute} missing from {cookie}");
+        }
+        let (status, headers, _) = host.send(get_as("/api/v1/status", &cookie)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    }
+
+    #[tokio::test]
+    async fn a_signature_from_another_key_never_logs_in() {
+        let host = Fixture::bare();
+        let device = host.pair_device(&signing_key(17)).await.1;
+        let (_, _, body) = host
+            .send(post_json(
+                "/api/v1/auth/challenge",
+                ORIGIN,
+                &serde_json::json!({ "device_id": device }),
+            ))
+            .await;
+        let challenge = json(&body);
+        let (status, _, answer) = host
+            .send(post_json(
+                "/api/v1/auth/session",
+                ORIGIN,
+                &serde_json::json!({
+                    "device_id": device,
+                    "nonce": challenge["nonce"],
+                    // Correct payload, wrong device key.
+                    "signature": sign(&signing_key(18), challenge["payload"].as_str().unwrap()),
+                }),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "answered: {answer}");
+        assert_eq!(json(&answer)["error"], "invalid_signature");
+    }
+
+    #[tokio::test]
+    async fn a_captured_challenge_cannot_be_replayed() {
+        let host = Fixture::bare();
+        let signing = signing_key(19);
+        let device = host.pair_device(&signing).await.1;
+        let (_, _, body) = host
+            .send(post_json(
+                "/api/v1/auth/challenge",
+                ORIGIN,
+                &serde_json::json!({ "device_id": device }),
+            ))
+            .await;
+        let challenge = json(&body);
+        let login = serde_json::json!({
+            "device_id": device,
+            "nonce": challenge["nonce"],
+            "signature": sign(&signing, challenge["payload"].as_str().unwrap()),
+        });
+        let (first, ..) = host.send(post_json("/api/v1/auth/session", ORIGIN, &login)).await;
+        assert_eq!(first, StatusCode::OK);
+        let (second, _, answer) = host.send(post_json("/api/v1/auth/session", ORIGIN, &login)).await;
+        assert_eq!(second, StatusCode::UNAUTHORIZED, "replay answered: {answer}");
+        assert_eq!(json(&answer)["error"], "invalid_challenge");
+    }
+
+    #[tokio::test]
+    async fn revoking_a_device_kills_its_live_session() {
+        let host = Fixture::bare();
+        let (cookie, device) = host.pair_device(&signing_key(23)).await;
+        let (status, ..) = host.send(get_as("/api/v1/status", &cookie)).await;
+        assert_eq!(status, StatusCode::OK);
+
+        host.state.auth.lock().unwrap().revoke(&device).expect("revoke");
+
+        let (status, _, body) = host.send(get_as("/api/v1/status", &cookie)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "a lost phone kept access: {body}");
+    }
+
+    #[tokio::test]
+    async fn logging_out_clears_the_cookie_and_the_session() {
+        let host = Fixture::bare();
+        let cookie = host.pair_device(&signing_key(29)).await.0;
+        let request = Request::builder()
+            .method("DELETE")
+            .uri("/api/v1/auth/session")
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::COOKIE, cookie_pair(&cookie))
+            .body(Body::empty())
+            .expect("request");
+        let (status, headers, _) = host.send(request).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(set_cookie(&headers).contains("Max-Age=0"));
+
+        let (status, ..) = host.send(get_as("/api/v1/status", &cookie)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn a_pairing_flood_is_rate_limited_at_the_http_edge() {
+        let host = Fixture::bare();
+        host.state
+            .auth
+            .lock()
+            .unwrap()
+            .create_pairing_code()
+            .expect("pairing code");
+        let guess = serde_json::json!({
+            "code": "00000000",
+            "device_name": "Attacker",
+            "public_key": "not-a-key",
+        });
+        let mut limited = false;
+        // One more than the pairing budget in `auth::PAIR_ATTEMPT_BUDGET`.
+        for _ in 0..11 {
+            let (status, _, body) = host.send(post_json("/api/v1/pair", ORIGIN, &guess)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+            limited |= json(&body)["error"] == "too_many_attempts";
+        }
+        assert!(limited, "the pair flood was never rate limited");
+    }
+
+    #[tokio::test]
+    async fn an_oversized_control_body_never_reaches_a_handler() {
+        let host = Fixture::bare();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/pair")
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(vec![b'x'; MAX_CONTROL_MESSAGE + 1]))
+            .expect("request");
+        let (status, ..) = host.send(request).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn every_response_carries_the_hardened_security_headers() {
+        let host = Fixture::bare();
+        for uri in ["/healthz", "/api/v1/status", "/"] {
+            let (_, headers, _) = host.send(get_request(uri)).await;
+            assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff", "{uri}");
+            assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY", "{uri}");
+            assert!(
+                headers[header::CONTENT_SECURITY_POLICY]
+                    .to_str()
+                    .unwrap()
+                    .contains("frame-ancestors 'none'"),
+                "{uri}"
+            );
+            assert_eq!(headers["permissions-policy"], MOBILE_PERMISSIONS_POLICY, "{uri}");
+        }
+        // Only the API and health probe are no-store; the shell is revalidated.
+        let (_, api, _) = host.send(get_request("/api/v1/status")).await;
+        assert_eq!(api[header::CACHE_CONTROL], "no-store");
+        let (_, shell, _) = host.send(get_request("/")).await;
+        assert_eq!(shell[header::CACHE_CONTROL], "no-cache");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_api_path_is_not_answered_with_the_app_shell() {
+        let host = Fixture::bare();
+        let (status, headers, body) = host.send(get_request("/api/v1/does-not-exist")).await;
+        let content_type = headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            !content_type.contains("text/html"),
+            "an /api/ miss served the SPA shell ({status}): {content_type}"
+        );
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+    }
+
+    #[tokio::test]
+    async fn the_catalog_hands_the_phone_opaque_ids_and_no_paths() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(31)).await.0;
+
+        let (status, _, body) = host
+            .send(get_as("/api/v1/projects?view=search&q=aurora", &cookie))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert!(body.contains("Aurora"), "the display label is missing: {body}");
+        assert!(!body.contains(RAW_PROJECT), "a raw project id leaked: {body}");
+        assert!(
+            !body.contains(&host.root.to_string_lossy().to_string()),
+            "a filesystem path leaked: {body}"
+        );
+
+        let opaque = json(&body)["projects"][0]["id"]
+            .as_str()
+            .expect("opaque project id")
+            .to_string();
+
+        // The opaque id resolves; the raw one the desktop uses does not.
+        let (status, ..) = host
+            .send(get_as(&format!("/api/v1/projects/{opaque}"), &cookie))
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _, body) = host
+            .send(get_as(&format!("/api/v1/projects/{RAW_PROJECT}"), &cookie))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "a raw id resolved: {body}");
+    }
+
+    #[tokio::test]
+    async fn a_tab_without_a_live_session_is_reported_gone() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(37)).await.0;
+        let (status, _, body) = host
+            .send(get_as("/api/v1/projects?view=search&q=aurora", &cookie))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let opaque = json(&body)["projects"][0]["id"].as_str().unwrap().to_string();
+        let (_, _, body) = host
+            .send(get_as(&format!("/api/v1/projects/{opaque}"), &cookie))
+            .await;
+        let tab = &json(&body)["tabs"][0];
+        assert_eq!(tab["kind"], "agent");
+        assert_eq!(
+            tab["available"], false,
+            "a tab with no tmux session must not be attachable: {body}"
+        );
+        assert!(!body.contains("eldrun-raw-project"), "a tmux name leaked: {body}");
+    }
+
+    #[tokio::test]
+    async fn a_create_request_for_another_project_is_refused_before_any_state_is_read() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(41)).await.0;
+        let request = |body: Value| {
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/projects/target/tabs")
+                .header(header::ORIGIN, ORIGIN)
+                .header(header::COOKIE, cookie_pair(&cookie))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).expect("body")))
+                .expect("request")
+        };
+        // The body's project id disagrees with the path's.
+        let (status, _, answer) = host
+            .send(request(serde_json::json!({
+                "project_id": "somewhere-else",
+                "kind": "shell",
+                "idempotency_key": "0123456789abcdef",
+            })))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {answer}");
+        assert_eq!(json(&answer)["error"], "invalid_request");
+
+        // An unknown project resolves to nothing rather than to a raw id.
+        let (status, _, answer) = host
+            .send(request(serde_json::json!({
+                "project_id": "target",
+                "kind": "shell",
+                "idempotency_key": "0123456789abcdef",
+            })))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {answer}");
     }
 }

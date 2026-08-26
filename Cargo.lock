@@ -1835,6 +1835,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-rustls",
+ "tower",
  "url",
  "webkit2gtk",
  "windows 0.61.3",

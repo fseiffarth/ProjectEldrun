@@ -291,6 +291,9 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# `oneshot` drives the mobile host's real router — middleware, body limit
+# and all — without binding a port or reaching tailscaled.
+tower = { version = "0.5", features = ["util"] }
 # test-util unlocks the paused clock (`start_paused`) the terminal batcher's
 # wakeup-discipline tests depend on; it is a test-only feature added on top of
 # the main dependency's "full".
