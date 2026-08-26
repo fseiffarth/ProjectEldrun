@@ -762,6 +762,15 @@ QA uses the user's existing instance under the single-instance rules.
 
 ## 12. Later phases, requiring a new review
 
+That review now exists for several of these:
+[`eldrun_mobile_future_plan.md`](eldrun_mobile_future_plan.md) (2026-08-26)
+specs push notifications, dead-session relaunch, code-splitting, read-only
+file browsing, mail actions, and display-only worker-tab awareness. The items
+below remain the authoritative deferral list for everything it does not cover
+(remote/container/VM *attach*, structured agent-supplied attention state, tab
+termination/rename/move, native wrappers, multi-user hosts, non-Tailscale
+publication, desktop-absent creation).
+
 - creation while the desktop is absent, which requires a daemon-owned or
   transactional shared tab-state model;
 - remote primary/worker tabs, containers, and VMs, each with its own authority
