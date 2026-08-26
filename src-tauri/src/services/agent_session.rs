@@ -632,8 +632,7 @@ fn register_hook_in_settings(settings_path: &std::path::Path) -> std::io::Result
         "hooks": [ { "type": "command", "command": cmd } ]
     }));
 
-    let serialized = serde_json::to_string_pretty(&root)
-        .map_err(std::io::Error::other)?;
+    let serialized = serde_json::to_string_pretty(&root).map_err(std::io::Error::other)?;
     std::fs::write(settings_path, serialized)?;
     Ok(())
 }
@@ -737,7 +736,10 @@ mod tests {
         opts.cmd = "bash".to_string();
         let out = resolve_agent_session(opts);
         assert_eq!(out.cmd, "bash");
-        assert_eq!(out.args, vec!["--session-id".to_string(), "abc-123".to_string()]);
+        assert_eq!(
+            out.args,
+            vec!["--session-id".to_string(), "abc-123".to_string()]
+        );
     }
 
     #[test]
@@ -770,10 +772,15 @@ mod tests {
         let uuid = "00000000-0000-0000-0000-000000000000";
         let projects = projects_with_sessions(&[]);
         let out =
-            resolve_claude_session_impl(opts_with_args(&["--session-id", uuid]), &projects, |_| None);
+            resolve_claude_session_impl(opts_with_args(&["--session-id", uuid]), &projects, |_| {
+                None
+            });
         assert_eq!(out.args, vec!["--session-id".to_string(), uuid.to_string()]);
         // The launch id is always exposed to the SessionStart hook.
-        assert_eq!(out.env.get("ELDRUN_TAB_UID").map(String::as_str), Some(uuid));
+        assert_eq!(
+            out.env.get("ELDRUN_TAB_UID").map(String::as_str),
+            Some(uuid)
+        );
         let _ = std::fs::remove_dir_all(&projects);
     }
 
@@ -782,7 +789,9 @@ mod tests {
         let uuid = "00000000-0000-0000-0000-000000000000";
         let projects = projects_with_sessions(&[uuid]);
         let out =
-            resolve_claude_session_impl(opts_with_args(&["--session-id", uuid]), &projects, |_| None);
+            resolve_claude_session_impl(opts_with_args(&["--session-id", uuid]), &projects, |_| {
+                None
+            });
         assert_eq!(out.args, vec!["--resume".to_string(), uuid.to_string()]);
         let _ = std::fs::remove_dir_all(&projects);
     }
@@ -801,7 +810,10 @@ mod tests {
             |uid| (uid == launch).then(|| live.to_string()),
         );
         assert_eq!(out.args, vec!["--resume".to_string(), live.to_string()]);
-        assert_eq!(out.env.get("ELDRUN_TAB_UID").map(String::as_str), Some(launch));
+        assert_eq!(
+            out.env.get("ELDRUN_TAB_UID").map(String::as_str),
+            Some(launch)
+        );
         let _ = std::fs::remove_dir_all(&projects);
     }
 
@@ -811,12 +823,12 @@ mod tests {
         // → downgrade to `--session-id` so Claude starts fresh instead of erroring.
         let launch = "00000000-0000-0000-0000-000000000000";
         let projects = projects_with_sessions(&[]);
-        let out = resolve_claude_session_impl(
-            opts_with_args(&["--resume", launch]),
-            &projects,
-            |_| None,
+        let out =
+            resolve_claude_session_impl(opts_with_args(&["--resume", launch]), &projects, |_| None);
+        assert_eq!(
+            out.args,
+            vec!["--session-id".to_string(), launch.to_string()]
         );
-        assert_eq!(out.args, vec!["--session-id".to_string(), launch.to_string()]);
         let _ = std::fs::remove_dir_all(&projects);
     }
 
@@ -826,7 +838,10 @@ mod tests {
         opts.cmd = "bash".to_string();
         let projects = projects_with_sessions(&[]);
         let out = resolve_claude_session_impl(opts, &projects, |_| Some("x".to_string()));
-        assert_eq!(out.args, vec!["--session-id".to_string(), "abc-123".to_string()]);
+        assert_eq!(
+            out.args,
+            vec!["--session-id".to_string(), "abc-123".to_string()]
+        );
         assert!(!out.env.contains_key("ELDRUN_TAB_UID"));
         let _ = std::fs::remove_dir_all(&projects);
     }
@@ -848,7 +863,8 @@ mod tests {
     #[test]
     fn resolve_leaves_args_without_session_flag_untouched() {
         let projects = projects_with_sessions(&[]);
-        let out = resolve_claude_session_impl(opts_with_args(&["--foo", "bar"]), &projects, |_| None);
+        let out =
+            resolve_claude_session_impl(opts_with_args(&["--foo", "bar"]), &projects, |_| None);
         assert_eq!(out.args, vec!["--foo".to_string(), "bar".to_string()]);
         let _ = std::fs::remove_dir_all(&projects);
     }
@@ -877,7 +893,8 @@ mod tests {
         let live = "019ea7c8-b7d5-7a13-80e2-1ad6608db5e6";
         let root = codex_sessions_with(live);
         let mut opts = codex_opts();
-        opts.env.insert("ELDRUN_TAB_UID".to_string(), "tab-key-123".to_string());
+        opts.env
+            .insert("ELDRUN_TAB_UID".to_string(), "tab-key-123".to_string());
         let out = resolve_codex_session_impl(opts, &root, |uid| {
             (uid == "tab-key-123").then(|| live.to_string())
         });
@@ -890,7 +907,8 @@ mod tests {
         let root = codex_sessions_with("00000000-0000-0000-0000-000000000000");
         // No live record → fresh launch (args stay empty).
         let mut opts = codex_opts();
-        opts.env.insert("ELDRUN_TAB_UID".to_string(), "tab-key".to_string());
+        opts.env
+            .insert("ELDRUN_TAB_UID".to_string(), "tab-key".to_string());
         let out = resolve_codex_session_impl(opts, &root, |_| None);
         assert!(out.args.is_empty());
         // No ELDRUN_TAB_UID at all → cannot track → fresh launch.
@@ -903,7 +921,8 @@ mod tests {
     fn codex_ignores_when_recorded_session_missing_on_disk() {
         let root = codex_sessions_with("aaaaaaaa-0000-0000-0000-000000000000");
         let mut opts = codex_opts();
-        opts.env.insert("ELDRUN_TAB_UID".to_string(), "tab-key".to_string());
+        opts.env
+            .insert("ELDRUN_TAB_UID".to_string(), "tab-key".to_string());
         // Recorded id has no rollout log → don't pass a bad `resume` arg.
         let out = resolve_codex_session_impl(opts, &root, |_| {
             Some("ffffffff-1111-2222-3333-444444444444".to_string())
@@ -944,7 +963,9 @@ mod tests {
         assert!(!is_uuid_shaped("----"));
         assert!(!is_uuid_shaped("deadbeef"));
         assert!(!is_uuid_shaped("../etc/passwd"));
-        assert!(!is_uuid_shaped("11111111-2222-3333-4444-555555555555-extra"));
+        assert!(!is_uuid_shaped(
+            "11111111-2222-3333-4444-555555555555-extra"
+        ));
         assert!(!is_uuid_shaped("11111111-2222-3333-4444-55555555555"));
         assert!(!is_uuid_shaped("g1111111-2222-3333-4444-555555555555"));
         // A key that only passed the looser value guard is now refused as a key.
@@ -972,13 +993,19 @@ mod tests {
         // The containerized agent's own record, written later, wins.
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(own.join(uid), contained_id).unwrap();
-        assert_eq!(read_live_session_in(&own, uid).as_deref(), Some(contained_id));
+        assert_eq!(
+            read_live_session_in(&own, uid).as_deref(),
+            Some(contained_id)
+        );
 
         // A DIFFERENT project's subdir is not consulted for this project.
         let other = root.join("p2");
         std::fs::create_dir_all(&other).unwrap();
         std::fs::write(other.join(uid), "cccccccc-3333-3333-3333-333333333333").unwrap();
-        assert_eq!(read_live_session_in(&own, uid).as_deref(), Some(contained_id));
+        assert_eq!(
+            read_live_session_in(&own, uid).as_deref(),
+            Some(contained_id)
+        );
 
         // The project id is reduced to exactly one path-safe component.
         assert_eq!(sanitize_project_key("my proj/../x"), "my_proj____x");
@@ -1013,7 +1040,11 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("eldrun-settings-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         let settings = tmp.join("settings.json");
-        std::fs::write(&settings, r#"{"model":"opus","hooks":{"Stop":[{"hooks":[]}]}}"#).unwrap();
+        std::fs::write(
+            &settings,
+            r#"{"model":"opus","hooks":{"Stop":[{"hooks":[]}]}}"#,
+        )
+        .unwrap();
 
         register_hook_in_settings(&settings).unwrap();
         register_hook_in_settings(&settings).unwrap(); // second call must not duplicate
@@ -1088,13 +1119,19 @@ mod tests {
              trusted_hash = \"sha256:93f0\"\nenabled = false\n",
             our_hook()
         );
-        assert_eq!(codex_hook_state_in(&src, CFG, CMD), CodexHookState::Disabled);
+        assert_eq!(
+            codex_hook_state_in(&src, CFG, CMD),
+            CodexHookState::Disabled
+        );
     }
 
     #[test]
     fn codex_hook_state_reports_untrusted_without_a_verdict() {
         let src = our_hook();
-        assert_eq!(codex_hook_state_in(&src, CFG, CMD), CodexHookState::Untrusted);
+        assert_eq!(
+            codex_hook_state_in(&src, CFG, CMD),
+            CodexHookState::Untrusted
+        );
     }
 
     #[test]
@@ -1116,7 +1153,10 @@ mod tests {
              {}\n[hooks.state.\"{CFG}:session_start:0:0\"]\nenabled = true\n",
             our_hook()
         );
-        assert_eq!(codex_hook_state_in(&src, CFG, CMD), CodexHookState::Untrusted);
+        assert_eq!(
+            codex_hook_state_in(&src, CFG, CMD),
+            CodexHookState::Untrusted
+        );
 
         // And with the verdict at *our* index, we read it.
         let trusted = format!("{src}\n[hooks.state.\"{CFG}:session_start:1:0\"]\nenabled = true\n");
@@ -1143,7 +1183,10 @@ mod tests {
             "{}\n[hooks.state.\"/private{CFG}:session_start:0:0\"]\nenabled = false\n",
             our_hook()
         );
-        assert_eq!(codex_hook_state_in(&src, CFG, CMD), CodexHookState::Disabled);
+        assert_eq!(
+            codex_hook_state_in(&src, CFG, CMD),
+            CodexHookState::Disabled
+        );
     }
 
     #[test]
@@ -1177,9 +1220,9 @@ mod tests {
         write_live_session_in(&live_dir, uid, live).unwrap();
 
         let mut opts = codex_opts();
-        opts.env.insert("ELDRUN_TAB_UID".to_string(), uid.to_string());
-        let out =
-            resolve_codex_session_impl(opts, &root, |u| read_live_session_in(&live_dir, u));
+        opts.env
+            .insert("ELDRUN_TAB_UID".to_string(), uid.to_string());
+        let out = resolve_codex_session_impl(opts, &root, |u| read_live_session_in(&live_dir, u));
         assert_eq!(out.args, vec!["resume".to_string(), live.to_string()]);
 
         let _ = std::fs::remove_dir_all(&root);

@@ -29,8 +29,8 @@ fn settings_agent_remote_control() -> bool {
 /// override falls back to the global setting.
 fn resolve_agent_remote_control(project_id: Option<&str>) -> bool {
     let list_path = storage::state_dir().join("projects.json");
-    let list = storage::read_json::<crate::schema::projects::ProjectsList>(&list_path)
-        .unwrap_or_default();
+    let list =
+        storage::read_json::<crate::schema::projects::ProjectsList>(&list_path).unwrap_or_default();
     agent_remote_control_effective(&list, project_id, settings_agent_remote_control())
 }
 
@@ -215,6 +215,18 @@ pub async fn pty_spawn(
     // every step below sees the enforced values.
     crate::services::sandbox::enforce_spawn_authority(&mut opts);
 
+    // Trash is an agent-only workspace. The project record cannot be weakened
+    // from its writable folder, and this spawn gate also refuses stale UI tabs
+    // or renderer-crafted shell commands before anything reaches the host.
+    if opts
+        .project_id
+        .as_deref()
+        .is_some_and(crate::paths::is_trash_project_id)
+        && !crate::services::sandbox::is_agent_cmd(&opts.cmd)
+    {
+        return Err("The Trash project accepts recognised agent CLIs only.".to_string());
+    }
+
     // VM-tier hard refusals (`docs/vm_projects_plan.md`): for a VM project the
     // remote→local fallback that exists elsewhere is not a perf surprise but
     // the untrusted agent stepping outside the boundary — so a local spawn is
@@ -310,7 +322,12 @@ pub async fn pty_spawn(
                 .project_id
                 .as_deref()
                 .is_some_and(|id| crate::services::remote::remote_target_for(id).is_some());
-        if let Some(uid) = opts.env.get("ELDRUN_TAB_UID").filter(|_| !is_remote).cloned() {
+        if let Some(uid) = opts
+            .env
+            .get("ELDRUN_TAB_UID")
+            .filter(|_| !is_remote)
+            .cloned()
+        {
             // Args at this point are `["resume", <id>]` iff we just resumed a
             // recorded session — hand that id over so the binder claims it for
             // this tab rather than offering it to a sibling.
@@ -418,7 +435,14 @@ pub async fn pty_spawn(
     // now `cmd == "ssh"` (its tmux is inside the remote command) and a container tab
     // is `cmd == "docker"`, so both are skipped. No-op on Windows / without tmux.
     #[cfg(unix)]
-    if opts.tmux_session.is_some() && opts.cmd != "ssh" && opts.cmd != "docker" {
+    if opts.tmux_session.is_some()
+        && opts.cmd != "ssh"
+        && (opts.cmd != "docker"
+            || opts
+                .project_id
+                .as_deref()
+                .is_some_and(crate::paths::is_trash_project_id))
+    {
         crate::services::tmux_local::wrap_pty_options_local(&mut opts);
     }
 
@@ -464,12 +488,106 @@ pub async fn local_tmux_kill(session: String) -> Result<(), String> {
         return Ok(());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        let _ = crate::paths::command_no_window("tmux")
+        let output = crate::paths::command_no_window("tmux")
             .args(crate::services::tmux_local::local_tmux_kill_args(&session))
-            .output();
+            .output()
+            .map_err(|e| format!("could not run tmux: {e}"))?;
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            // Explicit close is idempotent: a session that already exited is
+            // already in the desired state.
+            if detail.contains("can't find session")
+                || detail.contains("no server running")
+                || detail.contains("failed to connect to server")
+            {
+                return Ok(());
+            }
+            return Err(if detail.is_empty() {
+                format!("tmux could not kill session '{session}'")
+            } else {
+                format!("tmux could not kill session '{session}': {detail}")
+            });
+        }
+        Ok(())
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?
+}
+
+/// End every tmux session Eldrun created on the local machine during a clean
+/// application quit. This deliberately lists the daemon rather than only the
+/// tabs currently hydrated in the frontend: a session recovered from an earlier
+/// crash may belong to an inactive project and therefore have no mounted tab in
+/// this run yet. The `eldrun-` prefix is reserved for sessions Eldrun mints, so
+/// user-managed sessions are never affected.
+///
+/// This command is called only by the frontend's normal close path. A renderer
+/// or process crash never reaches it, leaving the sessions alive for restore.
+#[tauri::command]
+pub async fn local_tmux_kill_eldrun_sessions() -> Result<(), String> {
+    if !crate::services::tmux_local::tmux_available() {
+        return Ok(());
+    }
+    tauri::async_runtime::spawn_blocking(|| {
+        let listed = crate::paths::command_no_window("tmux")
+            .args(crate::services::tmux_local::local_tmux_ls_args())
+            .output()
+            .map_err(|e| format!("could not list tmux sessions: {e}"))?;
+        // `tmux ls` returns non-zero when no server is running, which is already
+        // the desired end state for the quit path.
+        if !listed.status.success() {
+            return Ok(());
+        }
+        let sessions =
+            crate::services::ssh_exec::parse_tmux_ls(&String::from_utf8_lossy(&listed.stdout));
+        let mut failures = Vec::new();
+        for session in sessions {
+            // Trash sessions are deliberately mobile-persistent. Their host
+            // tmux owns the attach point while the strictly isolated container
+            // remains the process/filesystem boundary, so a clean Eldrun quit
+            // must not turn a phone detach into an agent kill.
+            if session
+                .name
+                .starts_with(&format!("eldrun-{}--", crate::paths::TRASH_PROJECT_ID))
+            {
+                continue;
+            }
+            if !crate::services::tmux_local::is_eldrun_local_tmux_session(&session.name) {
+                continue;
+            }
+            let output = crate::paths::command_no_window("tmux")
+                .args(crate::services::tmux_local::local_tmux_kill_args(
+                    &session.name,
+                ))
+                .output()
+                .map_err(|e| format!("could not run tmux: {e}"))?;
+            if !output.status.success() {
+                let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                // A session can exit between `ls` and `kill-session`; that is
+                // indistinguishable from a successful cleanup.
+                if !detail.contains("can't find session")
+                    && !detail.contains("no server running")
+                    && !detail.contains("failed to connect to server")
+                {
+                    failures.push(if detail.is_empty() {
+                        session.name
+                    } else {
+                        format!("{}: {detail}", session.name)
+                    });
+                }
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "could not stop every Eldrun local tmux session: {}",
+                failures.join("; ")
+            ))
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Rename a **local** tmux session (TODO #85). `new_name` must be a safe tmux name.
@@ -483,7 +601,9 @@ pub async fn local_tmux_rename(session: String, new_name: String) -> Result<(), 
     }
     tauri::async_runtime::spawn_blocking(move || {
         let _ = crate::paths::command_no_window("tmux")
-            .args(crate::services::tmux_local::local_tmux_rename_args(&session, &new_name))
+            .args(crate::services::tmux_local::local_tmux_rename_args(
+                &session, &new_name,
+            ))
             .output();
     })
     .await
@@ -500,11 +620,14 @@ pub async fn pty_write(
     // what marks this PTY as a legitimate destination for the matching saved
     // credential (see `commands::credentials`).
     crate::commands::credentials::note_pty_input(&id, &data);
-    registry
-        .lock()
-        .unwrap()
-        .write(&id, &data)
-        .map_err(|e| e.to_string())
+    let sender = registry.lock().unwrap().input_sender(&id);
+    if let Some(sender) = sender {
+        sender
+            .send(data)
+            .await
+            .map_err(|_| format!("terminal '{id}' is no longer accepting input"))?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -523,8 +646,20 @@ pub async fn pty_resize(
 /// indicators — and re-showing drains the buffer as one `terminal-replay`.
 /// See the routing block in `terminal/mod.rs`.
 #[tauri::command]
-pub async fn pty_set_visible(app: AppHandle, id: String, visible: bool) -> Result<(), String> {
-    crate::terminal::route_set_visible(&app, &id, visible);
+pub async fn pty_set_visible(
+    app: AppHandle,
+    id: String,
+    viewer_id: String,
+    visible: bool,
+    update_seq: u64,
+) -> Result<(), String> {
+    crate::terminal::route_set_visible(&app, &id, &viewer_id, visible, update_seq);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn pty_remove_view(id: String, viewer_id: String, update_seq: u64) -> Result<(), String> {
+    crate::terminal::route_remove_view(&id, &viewer_id, update_seq);
     Ok(())
 }
 
@@ -550,6 +685,23 @@ pub async fn pty_kill(registry: State<'_, RegistryState>, id: String) -> Result<
     crate::commands::credentials::forget_login_pty(&id);
     registry.lock().unwrap().kill(&id);
     Ok(())
+}
+
+/// Kill every live PTY belonging to one project scope. PTY ids are
+/// `<scope>:<tab-key>`; the delimiter is part of the match so similarly named
+/// projects cannot affect each other.
+#[tauri::command]
+pub async fn pty_kill_scope(
+    registry: State<'_, RegistryState>,
+    scope: String,
+) -> Result<Vec<String>, String> {
+    let ids = registry.lock().unwrap().ids_for_scope(&scope);
+    for id in &ids {
+        crate::commands::credentials::forget_login_pty(id);
+        crate::terminal::route_remove_all_views(id);
+        registry.lock().unwrap().kill(id);
+    }
+    Ok(ids)
 }
 
 /// Live CPU usage (percent of a single core; may exceed 100 on multi-core work)

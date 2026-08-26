@@ -1,6 +1,6 @@
 # Git lockstep + byte-sync
 
-Referenced from `CLAUDE.md`.
+Referenced from `AGENTS.md`.
 
 - **Two transports keep a remote project in step, and they split the tree by
   git.** *Git lockstep* (`services::git_peer`) owns the **git-tracked** files and

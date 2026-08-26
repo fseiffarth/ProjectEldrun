@@ -1,4 +1,7 @@
 pub mod agent_session;
+// "Check for a new Eldrun" against the GitHub releases page: version compare,
+// per-platform asset pick, staged download, per-platform install.
+pub mod app_update;
 pub mod big_folders;
 // In-app browser (TODO J #61): reader-mode fetch+sanitize, the live-page window
 // registry, and download quarantine. See docs/browser_plan_{b,c}.md.
@@ -22,6 +25,7 @@ pub mod mail_filters;
 pub mod mail_pgp;
 pub mod mail_sanitize;
 pub mod mail_store;
+pub mod mobile_control;
 pub mod net_usage;
 pub mod openvpn;
 pub mod project_runtime;
@@ -57,5 +61,5 @@ pub mod vm_proxy;
 // re-exports what it used to own.
 pub mod web_safety;
 pub mod window_service;
-pub mod worker_sync;
 pub mod window_state;
+pub mod worker_sync;

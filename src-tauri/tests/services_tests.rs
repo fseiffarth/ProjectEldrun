@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use eldrun_lib::commands::apps::{
-    TrackedWindow, ORIGIN_GLOBAL_APP, ORIGIN_MANUAL_LAUNCH,
-    ORIGIN_MIDDLE_FILE_BROWSER, ORIGIN_RESTORED, ORIGIN_RIGHT_FILE_TREE,
+    TrackedWindow, ORIGIN_GLOBAL_APP, ORIGIN_MANUAL_LAUNCH, ORIGIN_MIDDLE_FILE_BROWSER,
+    ORIGIN_RESTORED, ORIGIN_RIGHT_FILE_TREE,
 };
 use eldrun_lib::platform::{WorkspaceBackend, WorkspaceInfo};
 use eldrun_lib::schema::project::{Project, TabEntry};
@@ -226,7 +226,10 @@ fn save_and_load_right_panel_folder_roundtrip() {
     let local_file_str = local_file.to_string_lossy().to_string();
 
     // No session file yet -> nothing saved.
-    assert_eq!(project_runtime::load_right_panel_folder(&local_file_str), None);
+    assert_eq!(
+        project_runtime::load_right_panel_folder(&local_file_str),
+        None
+    );
 
     project_runtime::save_right_panel_folder(&local_file_str, Some("src/components".to_string()))
         .unwrap();
@@ -311,8 +314,7 @@ fn save_tab_layout_round_trips_agent_session_id() {
     assert_eq!(loaded[1].session_id, Some(session_id));
 
     // The on-disk JSON uses the camelCase `sessionId` key.
-    let raw: serde_json::Value =
-        eldrun_lib::storage::read_json(&state_session_file(&id)).unwrap();
+    let raw: serde_json::Value = eldrun_lib::storage::read_json(&state_session_file(&id)).unwrap();
     assert_eq!(
         raw["tabLayout"][1]["sessionId"],
         serde_json::json!("22222222-2222-4222-8222-222222222222")
@@ -385,8 +387,15 @@ fn save_tab_layout_persists_open_session_uuids() {
     let sessions = serde_json::json!([
         { "sessionId": "11111111-1111-4111-8111-111111111111", "cmd": "claude", "label": "Claude" }
     ]);
-    terminal_service::save_tab_layout(Some(&id), &path_str, &[], None, Some(sessions.clone()), true)
-        .unwrap();
+    terminal_service::save_tab_layout(
+        Some(&id),
+        &path_str,
+        &[],
+        None,
+        Some(sessions.clone()),
+        true,
+    )
+    .unwrap();
     assert_eq!(
         terminal_service::load_terminal_session(&id).open_tab_sessions,
         Some(sessions)
@@ -395,7 +404,9 @@ fn save_tab_layout_persists_open_session_uuids() {
     // A subsequent layout save with `None` (the project-switch path) must leave
     // the stored UUIDs untouched, while `Some([])` clears them.
     terminal_service::save_terminal_session(Some(&id), &path_str, &[], 0, None).unwrap();
-    assert!(terminal_service::load_terminal_session(&id).open_tab_sessions.is_some());
+    assert!(terminal_service::load_terminal_session(&id)
+        .open_tab_sessions
+        .is_some());
 
     terminal_service::save_tab_layout(
         Some(&id),
@@ -448,7 +459,9 @@ fn save_empty_tabs_clears_layout_field_when_clearing_is_allowed() {
     // The user really did close every tab.
     terminal_service::save_tab_layout(Some("clear-ok"), &path_str, &[], None, None, true).unwrap();
 
-    assert!(terminal_service::load_terminal_session("clear-ok").tab_layout.is_empty());
+    assert!(terminal_service::load_terminal_session("clear-ok")
+        .tab_layout
+        .is_empty());
 }
 
 /// The DemoProj regression: an empty layout arriving from a caller that cannot
@@ -469,7 +482,11 @@ fn save_empty_tabs_preserves_layout_when_clearing_is_not_allowed() {
         .unwrap();
 
     let loaded = terminal_service::load_terminal_session("clear-refused").tab_layout;
-    assert_eq!(loaded.len(), 1, "an unvouched empty save must not erase tabs");
+    assert_eq!(
+        loaded.len(),
+        1,
+        "an unvouched empty save must not erase tabs"
+    );
     assert_eq!(loaded[0].key, "old");
     assert_eq!(
         loaded[0].session_id.as_deref(),
@@ -549,7 +566,9 @@ fn a_layout_planted_in_the_project_tree_is_never_loaded() {
     eldrun_lib::storage::write_json(&sessions_dir.join("terminals.json"), &planted).unwrap();
 
     assert!(
-        terminal_service::load_terminal_session("p-planted").tab_layout.is_empty(),
+        terminal_service::load_terminal_session("p-planted")
+            .tab_layout
+            .is_empty(),
         "nothing in the project tree may reach the restore path on its own"
     );
 }
@@ -577,9 +596,10 @@ fn adopting_a_folder_layout_is_explicit_and_sanitized() {
         session_id: None,
         extra: Default::default(),
     };
-    hostile
-        .extra
-        .insert("env".to_string(), serde_json::json!({ "LD_PRELOAD": "/tmp/x.so" }));
+    hostile.extra.insert(
+        "env".to_string(),
+        serde_json::json!({ "LD_PRELOAD": "/tmp/x.so" }),
+    );
     let saved = eldrun_lib::schema::TerminalSession {
         tab_layout: vec![
             hostile,
@@ -606,7 +626,10 @@ fn adopting_a_folder_layout_is_explicit_and_sanitized() {
 
     let adopted = terminal_service::adopt_project_tree_session("p-adopt", &path_str).unwrap();
     assert_eq!(adopted.tab_layout.len(), 2, "an adopt keeps every pane");
-    assert_eq!(adopted.tab_layout[0].cmd, "", "an unknown command is neutralized");
+    assert_eq!(
+        adopted.tab_layout[0].cmd, "",
+        "an unknown command is neutralized"
+    );
     assert!(!adopted.tab_layout[0].extra.contains_key("env"));
     assert_eq!(adopted.tab_layout[1].cmd, "bash");
     assert!(
@@ -616,11 +639,12 @@ fn adopting_a_folder_layout_is_explicit_and_sanitized() {
 
     // …and what it adopted is what the ordinary load now returns.
     assert_eq!(
-        terminal_service::load_terminal_session("p-adopt").tab_layout.len(),
+        terminal_service::load_terminal_session("p-adopt")
+            .tab_layout
+            .len(),
         2
     );
 }
-
 
 // ── window_service: session save/load ─────────────────────────────────────
 
@@ -647,7 +671,8 @@ fn save_and_load_window_session_roundtrip() {
 
 #[test]
 fn load_window_session_returns_empty_when_missing() {
-    let loaded = eldrun_lib::services::window_service::load_window_session("/nonexistent/project.json");
+    let loaded =
+        eldrun_lib::services::window_service::load_window_session("/nonexistent/project.json");
     assert!(loaded.project_window_ids.is_empty());
 }
 
@@ -705,7 +730,11 @@ fn switch_hides_previous_project_windows_using_null_backend() {
     .collect();
 
     let prev_ids = window_service::project_window_ids(&windows, Some("prev"));
-    assert_eq!(prev_ids.len(), 2, "must collect exactly the two prev-owned windows");
+    assert_eq!(
+        prev_ids.len(),
+        2,
+        "must collect exactly the two prev-owned windows"
+    );
 
     // NullBackend::hide_window must not error.
     let backend = NullBackend;
@@ -720,7 +749,12 @@ fn switch_uses_hide_show_as_workspace_backend_boundary() {
         tracked("prev-restored", Some("prev"), ORIGIN_RESTORED, Some(11)),
         tracked("prev-global", Some("prev"), ORIGIN_GLOBAL_APP, Some(12)),
         tracked("prev-manual", Some("prev"), ORIGIN_MANUAL_LAUNCH, Some(13)),
-        tracked("next-file", Some("next"), ORIGIN_MIDDLE_FILE_BROWSER, Some(20)),
+        tracked(
+            "next-file",
+            Some("next"),
+            ORIGIN_MIDDLE_FILE_BROWSER,
+            Some(20),
+        ),
         tracked("next-restored", Some("next"), ORIGIN_RESTORED, Some(21)),
         tracked("root-file", None, ORIGIN_RIGHT_FILE_TREE, Some(30)),
     ]
@@ -783,7 +817,11 @@ fn switch_ignores_global_app_and_manual_windows_when_hiding() {
     .collect();
 
     let ids = window_service::project_window_ids(&windows, Some("prev"));
-    assert_eq!(ids, vec![3], "only the project-owned window must be selected");
+    assert_eq!(
+        ids,
+        vec![3],
+        "only the project-owned window must be selected"
+    );
 
     let backend = NullBackend;
     window_service::hide_windows(&backend, &ids);
@@ -791,15 +829,18 @@ fn switch_ignores_global_app_and_manual_windows_when_hiding() {
 
 #[test]
 fn switch_restored_apps_are_project_owned() {
-    let windows: HashMap<String, TrackedWindow> = [
-        tracked("r", Some("p1"), ORIGIN_RESTORED, Some(10)),
-    ]
-    .into_iter()
-    .map(|w| (w.id.clone(), w))
-    .collect();
+    let windows: HashMap<String, TrackedWindow> =
+        [tracked("r", Some("p1"), ORIGIN_RESTORED, Some(10))]
+            .into_iter()
+            .map(|w| (w.id.clone(), w))
+            .collect();
 
     let owned = window_service::project_tracked_ids(&windows, Some("p1"));
-    assert_eq!(owned, vec!["r"], "restored apps must be treated as project-owned");
+    assert_eq!(
+        owned,
+        vec!["r"],
+        "restored apps must be treated as project-owned"
+    );
 }
 
 #[test]

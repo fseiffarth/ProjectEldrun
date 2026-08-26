@@ -116,7 +116,10 @@ fn origin_of(base_url: &str) -> String {
         .next()
         .unwrap_or(after_scheme);
     // A `user@host` in the URL is not part of the target's identity.
-    let host = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+    let host = authority
+        .rsplit_once('@')
+        .map(|(_, h)| h)
+        .unwrap_or(authority);
     host.trim().trim_end_matches('.').to_lowercase()
 }
 
@@ -182,8 +185,9 @@ pub fn openvpn_user_account(config: &str) -> String {
 /// secret-service-only behaviour. Constructing the credential directly is the whole
 /// point of the feature, so it is done here, once.
 #[cfg(target_os = "linux")]
-fn entry(account: &str) -> Result<keyring::keyutils_persistent::KeyutilsPersistentCredential, String>
-{
+fn entry(
+    account: &str,
+) -> Result<keyring::keyutils_persistent::KeyutilsPersistentCredential, String> {
     keyring::keyutils_persistent::KeyutilsPersistentCredential::new_with_target(
         None, SERVICE, account,
     )
@@ -208,7 +212,8 @@ fn entry(account: &str) -> Result<keyring::Entry, String> {
 #[cfg(target_os = "linux")]
 fn get_cached_only(account: &str) -> Option<String> {
     use keyring::credential::CredentialApi;
-    let cred = keyring::keyutils::KeyutilsCredential::new_with_target(None, SERVICE, account).ok()?;
+    let cred =
+        keyring::keyutils::KeyutilsCredential::new_with_target(None, SERVICE, account).ok()?;
     cred.get_password().ok().filter(|p| !p.is_empty())
 }
 
@@ -287,7 +292,9 @@ pub fn set(account: &str, password: Option<&str>) -> Result<(), String> {
     // reach `delete_credential` with nothing standing in its way (G.24). Windows'
     // store reports `Unlocked` unconditionally, so this is a no-op there.
     if cached_keyring_state() != KeyringState::Unlocked {
-        return Err("the OS keyring is locked, so nothing was saved — unlock it and try again".into());
+        return Err(
+            "the OS keyring is locked, so nothing was saved — unlock it and try again".into(),
+        );
     }
     let e = entry(account)?;
     let wrote = match password.filter(|p| !p.is_empty()) {
@@ -687,9 +694,15 @@ mod tests {
 
     #[test]
     fn ssh_account_omitted_user_is_empty() {
-        assert_eq!(ssh_account(&None, "host.example", Some(2222)), "ssh:@host.example:2222");
+        assert_eq!(
+            ssh_account(&None, "host.example", Some(2222)),
+            "ssh:@host.example:2222"
+        );
         // A blank/whitespace user normalizes to the same empty-user key.
-        assert_eq!(ssh_account(&Some("  ".into()), "host.example", Some(2222)), "ssh:@host.example:2222");
+        assert_eq!(
+            ssh_account(&Some("  ".into()), "host.example", Some(2222)),
+            "ssh:@host.example:2222"
+        );
     }
 
     /// One machine, one entry. DNS is case-insensitive, so the same host typed

@@ -1,8 +1,9 @@
 [package]
 name = "eldrun"
-version = "0.1.51"
+version = "0.1.53"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+default-run = "eldrun"
 
 [lib]
 name = "eldrun_lib"
@@ -11,6 +12,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [[bin]]
 name = "eldrun"
 path = "src/main.rs"
+
+[[bin]]
+name = "eldrun-mobile-host"
+path = "src/bin/eldrun-mobile-host.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -187,6 +192,10 @@ rand = "0.8"
 # implementation of "what host is this" is how `https://example.com@evil.example/`
 # gets read as `example.com`. Already resolved in the tree via `tauri`.
 url = "2"
+axum = { version = "0.8", features = ["ws"] }
+base64ct = { version = "1", features = ["alloc"] }
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+subtle = "2"
 # RFC 1918 / ULA / CGNAT / link-local classification for the loopback-and-intranet
 # navigation gate. `IpAddr::is_global()` is still unstable, so this is the stable
 # replacement rather than a convenience. Already in the tree transitively.
@@ -283,6 +292,9 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# `oneshot` drives the mobile host's real router — middleware, body limit
+# and all — without binding a port or reaching tailscaled.
+tower = { version = "0.5", features = ["util"] }
 # test-util unlocks the paused clock (`start_paused`) the terminal batcher's
 # wakeup-discipline tests depend on; it is a test-only feature added on top of
 # the main dependency's "full".

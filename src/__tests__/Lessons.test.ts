@@ -19,17 +19,25 @@ describe("LESSONS catalog", () => {
       "arrange-tabs",
       "yaml-viewer",
       "pdf-viewer",
+      "tex-workspace",
+      "deck-presenter",
       "run-python",
       "file-search",
+      "browser",
+      "printing",
       "calendar",
+      "todo-board",
+      "mail",
       "usage-recap",
       // Agents & models
       "install-agent",
       "local-model",
       "add-local-model",
+      "skills-library",
       // Advanced
       "project-boxes",
       "docker-sandbox",
+      "vm-project",
       "add-ssh-project",
       "ssh-via-openvpn",
       "vpn-tunnel",
@@ -37,6 +45,7 @@ describe("LESSONS catalog", () => {
       "compute-machines",
       "persistent-sessions",
       "hpc-pipeline",
+      "mobile",
     ]);
   });
 

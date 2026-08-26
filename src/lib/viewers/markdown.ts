@@ -27,11 +27,16 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-const SAFE_HREF = /^(https?:|mailto:|tel:|#|\/|\.\/|\.\.\/)/i;
-
 function safeHref(url: string): string | null {
   const trimmed = url.trim();
-  return SAFE_HREF.test(trimmed) ? trimmed : null;
+  if (!trimmed || /^\/\//.test(trimmed)) return null;
+  // Explicit schemes are opt-in. Everything else is a relative filesystem
+  // target: Markdown commonly writes `[guide](docs/guide.md)`, without a `./`.
+  // Keep Windows drive paths in that local category rather than mistaking `C:`
+  // for an unrecognised URI scheme.
+  if (/^(https?:|mailto:|tel:|file:|#)/i.test(trimmed)) return trimmed;
+  if (/^[a-z]:[\\/]/i.test(trimmed)) return trimmed;
+  return /^[a-z][a-z0-9+.-]*:/i.test(trimmed) ? null : trimmed;
 }
 
 /** Classify an image URL from `![alt](url)`. Remote `http(s)` and `data:image/`
@@ -54,7 +59,12 @@ function imgSrc(url: string): { kind: "remote" | "local"; url: string } | null {
  *  Relative paths, absolute paths, and the `file:` scheme count; http(s)/
  *  mailto/tel and pure `#anchor` links do not. */
 function isLocalHref(href: string): boolean {
-  return /^(file:|\/|\.\/|\.\.\/)/i.test(href.trim());
+  const trimmed = href.trim();
+  if (!trimmed || trimmed.startsWith("#") || /^\/\//.test(trimmed)) return false;
+  if (/^(https?:|mailto:|tel:)/i.test(trimmed)) return false;
+  return /^file:/i.test(trimmed)
+    || /^[a-z]:[\\/]/i.test(trimmed)
+    || !/^[a-z][a-z0-9+.-]*:/i.test(trimmed);
 }
 
 /** Map a fenced-code info string (the word after the opening ```) to a
@@ -172,8 +182,13 @@ function renderInline(raw: string, spans?: InlineSpans): string {
     // `file-link` class so it reads as clickable, matching the editor's dotted
     // underline. Remote/anchor links keep the plain style.
     const fileCls = href && isLocalHref(href) ? ' class="file-link"' : "";
+    // Native file links are handled by MarkdownView, and fragment links should
+    // stay in this preview. Only external links need a new browsing context.
+    const target = href && (fileCls || href.startsWith("#"))
+      ? ""
+      : ' target="_blank" rel="noopener noreferrer"';
     const html = href
-      ? `<a href="${escapeHtml(href)}"${fileCls} target="_blank" rel="noopener noreferrer">${inner}</a>`
+      ? `<a href="${escapeHtml(href)}"${fileCls}${target}>${inner}</a>`
       : `[${inner}]`;
     const idx = links.push(html) - 1;
     return mark("L", idx);
@@ -205,7 +220,11 @@ function renderInline(raw: string, spans?: InlineSpans): string {
   text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   text = text.replace(/__([^_]+)__/g, "<strong>$1</strong>");
   text = text.replace(/(^|[^*])\*([^*\s][^*]*?)\*/g, "$1<em>$2</em>");
-  text = text.replace(/(^|[^_])_([^_\s][^_]*?)_/g, "$1<em>$2</em>");
+  // CommonMark does not emphasise underscores embedded in a word, so a file
+  // link label such as `build_output.md` must remain legible rather than turning
+  // into `build<em>output</em>.md`. Keep underscore emphasis where it is
+  // delimited by whitespace/punctuation, matching the asterisk behaviour above.
+  text = text.replace(/(^|[^\w_])_([^\s_](?:[^_]*?[^\s_])?)_(?!\w)/g, "$1<em>$2</em>");
   text = text.replace(/~~([^~]+)~~/g, "<del>$1</del>");
 
   // Restore math, then links, then code spans. A marker with no entry behind it

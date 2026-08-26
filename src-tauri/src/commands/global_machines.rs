@@ -84,9 +84,7 @@ pub fn global_machine_add(
         return Err("host must not be empty".to_string());
     }
     crate::services::ssh_common::validate_arg("host", &host)?;
-    let user = user
-        .map(|u| u.trim().to_string())
-        .filter(|u| !u.is_empty());
+    let user = user.map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
     if let Some(u) = &user {
         crate::services::ssh_common::validate_arg("user", u)?;
     }
@@ -147,7 +145,9 @@ pub fn global_machine_update(
     if let Some(u) = &user {
         crate::services::ssh_common::validate_arg("user", u)?;
     }
-    let label = label.map(|l| l.trim().to_string()).filter(|l| !l.is_empty());
+    let label = label
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty());
     let mut list = load_all();
     if !list.iter().any(|m| m.id == id) {
         return Err("machine not found".to_string());
@@ -255,7 +255,10 @@ pub fn global_machines_export(ids: Vec<String>, path: String) -> Result<(), Stri
     if machines.is_empty() {
         return Err("no machines selected to export".to_string());
     }
-    let file = MachineExportFile { version: 1, machines };
+    let file = MachineExportFile {
+        version: 1,
+        machines,
+    };
     let json = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| format!("failed to write {path}: {e}"))?;
     Ok(())
@@ -277,8 +280,9 @@ pub fn global_machines_import_read(path: String) -> Result<Vec<MachineIo>, Strin
     let raw = match serde_json::from_str::<MachineExportFile>(&content) {
         Ok(f) => f.machines,
         // Fall back to a bare array (a hand-written file) before giving up.
-        Err(_) => serde_json::from_str::<Vec<MachineIo>>(&content)
-            .map_err(|_| "not a machines export file (expected {version, machines} or a JSON array)".to_string())?,
+        Err(_) => serde_json::from_str::<Vec<MachineIo>>(&content).map_err(|_| {
+            "not a machines export file (expected {version, machines} or a JSON array)".to_string()
+        })?,
     };
     let mut out = Vec::new();
     for m in raw {
@@ -355,10 +359,16 @@ pub async fn global_machine_monitor_snapshot(
         // fall back to what earlier probes of this target found; the host's own
         // SLURM check covers a first sample either way.
         let key = crate::services::ssh_common::target_key(user.as_deref(), &host, port);
-        let mode = careful.or_else(|| crate::services::hpc_mode::is_known_careful(&key).then_some(true));
+        let mode =
+            careful.or_else(|| crate::services::hpc_mode::is_known_careful(&key).then_some(true));
         let script = crate::sysstat::remote_snapshot_script(mode);
-        let stdout =
-            crate::commands::ssh::run_ssh_auth(&user, &host, port, password.as_deref(), &[&script])?;
+        let stdout = crate::commands::ssh::run_ssh_auth(
+            &user,
+            &host,
+            port,
+            password.as_deref(),
+            &[&script],
+        )?;
         if stdout.trim().is_empty() {
             return Err("system monitor probe returned no output".to_string());
         }

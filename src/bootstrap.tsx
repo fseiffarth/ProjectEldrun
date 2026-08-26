@@ -10,11 +10,20 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import { installCrashReporter } from "./crashReporter";
+import { installCustomScrollbars } from "./lib/customScrollbar";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
 import "./styles/themes.css";
 
 installCrashReporter();
+/**
+ * Installed here rather than from a component, and in EVERY window: the main
+ * shell, a popped-out subwindow and the presenter audience each have their own
+ * document, and each needs its own thumb layer. It is a DOM-level concern with
+ * no React state, so it has nothing to gain from living in the tree and would
+ * only be at the mercy of when that tree mounts.
+ */
+installCustomScrollbars();
 
 /**
  * Dev-only: hand each commit's duration to the perf monitor. Reached through

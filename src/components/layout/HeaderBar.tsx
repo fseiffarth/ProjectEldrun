@@ -10,6 +10,7 @@ import { Clock } from "../header/Clock";
 import { useQuiesce, saverInterval, usePowerStore } from "../../stores/power";
 import { ConnTypeIcon } from "../header/ConnTypeIcon";
 import { BatteryIndicator } from "../header/BatteryIndicator";
+import { MobileIndicator } from "../header/MobileIndicator";
 import { VpnIndicator } from "../header/VpnIndicator";
 import { MachinesIndicator } from "../header/MachinesIndicator";
 import { MailIndicator } from "../header/MailIndicator";
@@ -136,6 +137,7 @@ export function HeaderBar() {
         {batterySupported && (
           <BatteryIndicator percentage={batteryPercentage} plugged={!onBattery} />
         )}
+        <MobileIndicator />
         <VpnIndicator />
         <MachinesIndicator />
         <AppResourceDisplay />

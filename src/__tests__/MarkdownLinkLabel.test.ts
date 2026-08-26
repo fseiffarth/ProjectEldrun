@@ -85,6 +85,14 @@ describe("markdown link labels", () => {
     expect(renderMarkdown("foo[a](https://example.com)bar")).toContain("<p>foo<a ");
   });
 
+  it("preserves underscores in local file-link labels", () => {
+    const html = renderMarkdown("[build_output.md](docs/build_output.md)");
+    expect(html).toContain('href="docs/build_output.md" class="file-link"');
+    expect(html).toContain(">build_output.md</a>");
+    expect(html).not.toContain("<em>output</em>");
+    expect(renderMarkdown("[_emphasis_](docs/a.md)")).toContain("<em>emphasis</em>");
+  });
+
   it("strips NUL from the source so a marker cannot be forged", () => {
     const forged = `x${String.fromCharCode(0)}L0${String.fromCharCode(0)}y [real](https://example.com)`;
     const html = renderMarkdown(forged);

@@ -144,10 +144,13 @@ export function shouldPersistLocalTab(
   scopeKey: string,
   localRunning: boolean,
   localEnabled: boolean,
+  mobileAccess = false,
+  resumableAgent = false,
 ): boolean {
   return (
-    kind === "shell" &&
+    (kind === "shell" || (kind === "agent" && mobileAccess && resumableAgent)) &&
     !scopeKey.startsWith("box:") &&
+    (scopeKey !== "root" || kind === "shell") &&
     localRunning &&
     localEnabled
   );

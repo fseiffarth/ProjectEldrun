@@ -45,6 +45,9 @@ export function GlobalAppMenu() {
       <button
         type="button"
         className="global-apps-menu-btn"
+        // The tour spotlights this button; `.global-apps-menu-btn` alone is
+        // shared with every header indicator, so it gets its own anchor.
+        data-hint-anchor="global-apps"
         title={t("globalAppMenu.title")}
         aria-label={t("globalAppMenu.title")}
         aria-haspopup="menu"

@@ -407,6 +407,31 @@ skip-scaffold checkbox), `ProjectPill.tsx` (Publish window + menu),
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
 
+209. ✅ **`AGENTS.md` is the canonical scaffold; `CLAUDE.md`/`GEMINI.md` are
+    pointers.** The three agent docs used to be interchangeable one-line stubs,
+    so guidance either got written three times or (in practice) into whichever
+    file the agent of the day reads. `AGENTS.md` now carries the actual template
+    — Project / Running / Conventions sections plus a link block covering both
+    sibling agent files and every other scaffold doc (README, DOCUMENTATION,
+    ROADMAP, TODO, STATUS) — and `CLAUDE.md`/`GEMINI.md` are pointers that
+    `@AGENTS.md`-import it (real import syntax in both CLIs, so the text is
+    loaded, not merely referenced) and link the other agent files. Applies on
+    **new project and import** alike, since both go through `scaffold_project`.
+    A **repair** additionally upgrades an agent doc still byte-identical to its
+    old stub (or empty) — provably untouched text, reported as `updated_files`
+    and summarized as "updated …" — while anything a user or agent wrote is left
+    alone; `project_scaffold_missing` counts a legacy stub as missing so the
+    pill's tag agrees with what a repair would do. The agent-fill prompt now
+    tells the filling agent to keep the pointers pointing.
+    - *Test (e.g.):* create a project → `AGENTS.md` links `./CLAUDE.md` +
+      `./GEMINI.md` and `CLAUDE.md` contains a bare `@AGENTS.md` line; repair a
+      project whose `CLAUDE.md` is still `# Claude Context` → it becomes the
+      pointer template, while a `GEMINI.md` the user wrote is untouched.
+    - [x] 🤖 Automated test — `commands/projects.rs::agent_docs_point_at_agents_md_and_link_each_other`, `::legacy_stub_detection_only_matches_untouched_agent_docs`, `::repair_upgrades_untouched_legacy_agent_stubs`, `::repair_leaves_current_agent_docs_alone`; `ScaffoldRepair.test.ts`, `ScaffoldAgentFill.test.ts`
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
 ---
 
 ---

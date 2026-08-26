@@ -469,7 +469,10 @@ pub fn remote_command(
 /// (it may be an arbitrary name from the Sessions view). `|| true` keeps the
 /// exit status clean when the session is already gone.
 pub fn tmux_kill_session_script(session: &str) -> String {
-    format!("tmux kill-session -t {} 2>/dev/null || true", shell_quote(session))
+    format!(
+        "tmux kill-session -t {} 2>/dev/null || true",
+        shell_quote(session)
+    )
 }
 
 /// Kill every tmux session owned by the connected SSH user. Used when Eldrun
@@ -519,8 +522,8 @@ pub fn tmux_ls_script() -> &'static str {
 /// sitting idle at its prompt (tmux prefixes a login shell with `-`, e.g. `-bash`).
 /// Anything else running in the active pane counts as the session "working".
 const IDLE_SHELL_COMMANDS: &[&str] = &[
-    "bash", "-bash", "zsh", "-zsh", "sh", "-sh", "dash", "-dash", "fish", "-fish",
-    "tcsh", "-tcsh", "csh", "-csh", "ksh", "-ksh", "pwsh", "-pwsh",
+    "bash", "-bash", "zsh", "-zsh", "sh", "-sh", "dash", "-dash", "fish", "-fish", "tcsh", "-tcsh",
+    "csh", "-csh", "ksh", "-ksh", "pwsh", "-pwsh",
 ];
 
 /// One host tmux session, as surfaced by the Sessions view (TODO #85).
@@ -576,7 +579,10 @@ pub fn parse_tmux_ls(output: &str) -> Vec<TmuxSession> {
             // tmux prints `session_attached` as a count of attached clients; any
             // positive count means at least one client is on it.
             let attached = f.next()?.trim().parse::<u32>().ok()? > 0;
-            let activity = f.next().and_then(|v| v.trim().parse().ok()).unwrap_or(created);
+            let activity = f
+                .next()
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(created);
             let current_command = f.next().map(|v| v.trim().to_string()).unwrap_or_default();
             let current_path = f.next().map(|v| v.trim().to_string()).unwrap_or_default();
             let working = !current_command.is_empty()
@@ -602,7 +608,13 @@ pub fn parse_tmux_ls(output: &str) -> Vec<TmuxSession> {
 fn sanitize_tmux_key(id: &str) -> String {
     let safe: String = id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if safe.is_empty() {
         "x".to_string()
@@ -888,7 +900,10 @@ pub fn remote_dir_size(spec: &RemoteSpec, remote_dir: &str) -> Result<u64, Strin
 /// or `/proc` under the root cannot make it run forever. `du` dedups hard links
 /// itself. Parsing lives in [`crate::duscan::parse_du_output`], which is where the
 /// output shape is documented and tested. The path is validated + single-quoted.
-pub fn remote_du_tree(spec: &RemoteSpec, remote_dir: &str) -> Result<crate::duscan::DuScan, String> {
+pub fn remote_du_tree(
+    spec: &RemoteSpec,
+    remote_dir: &str,
+) -> Result<crate::duscan::DuScan, String> {
     validate_arg("remote path", remote_dir)?;
     let cmd = format!("du -ak -x {} 2>/dev/null", shell_quote(remote_dir));
     let out = run_remote_shell(spec, &cmd)?;
@@ -1202,9 +1217,19 @@ mod tests {
     #[test]
     fn remote_command_bootstraps_the_other_agent_clis() {
         for (bin, needle) in [
-            ("codex", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"),
+            (
+                "codex",
+                "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+            ),
             ("gemini", "npm install -g @google/gemini-cli"),
-            ("vibe", "curl -LsSf https://mistral.ai/vibe/install.sh | bash"),
+            (
+                "agy",
+                "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+            ),
+            (
+                "vibe",
+                "curl -LsSf https://mistral.ai/vibe/install.sh | bash",
+            ),
             ("opencode", "curl -fsSL https://opencode.ai/install | bash"),
         ] {
             let cmd = remote_command(bin, &[], &HashMap::new(), "/srv/p", None);
@@ -1432,7 +1457,13 @@ mod tests {
         let wrap = TmuxWrap::Attach("train".to_string());
         // Even with a target command, an attach ignores it and just reattaches the
         // named (possibly hand-started) session.
-        let cmd = remote_command("python", &["run.py".to_string()], &HashMap::new(), "/srv/p", Some(&wrap));
+        let cmd = remote_command(
+            "python",
+            &["run.py".to_string()],
+            &HashMap::new(),
+            "/srv/p",
+            Some(&wrap),
+        );
         assert!(cmd.contains("exec tmux new-session -A -D -s 'train' "));
         // No fresh target is exec'd inside the attach (the session already runs).
         assert!(!cmd.contains("run.py"));
@@ -1450,7 +1481,10 @@ mod tests {
 
     #[test]
     fn tmux_kill_server_script_is_best_effort() {
-        assert_eq!(tmux_kill_server_script(), "tmux kill-server 2>/dev/null || true");
+        assert_eq!(
+            tmux_kill_server_script(),
+            "tmux kill-server 2>/dev/null || true"
+        );
     }
 
     #[test]
@@ -1458,8 +1492,32 @@ mod tests {
         let out = "eldrun-p1_shell-1\t2\t1700000000\t1\t1700003600\t-bash\t/code/p1\ntrain\t1\t1700000500\t0\t1700009000\tpython\t/code/p1/run\n";
         let v = parse_tmux_ls(out);
         assert_eq!(v.len(), 2);
-        assert_eq!(v[0], TmuxSession { name: "eldrun-p1_shell-1".into(), windows: 2, created: 1_700_000_000, attached: true, activity: 1_700_003_600, current_command: "-bash".into(), working: false, current_path: "/code/p1".into() });
-        assert_eq!(v[1], TmuxSession { name: "train".into(), windows: 1, created: 1_700_000_500, attached: false, activity: 1_700_009_000, current_command: "python".into(), working: true, current_path: "/code/p1/run".into() });
+        assert_eq!(
+            v[0],
+            TmuxSession {
+                name: "eldrun-p1_shell-1".into(),
+                windows: 2,
+                created: 1_700_000_000,
+                attached: true,
+                activity: 1_700_003_600,
+                current_command: "-bash".into(),
+                working: false,
+                current_path: "/code/p1".into()
+            }
+        );
+        assert_eq!(
+            v[1],
+            TmuxSession {
+                name: "train".into(),
+                windows: 1,
+                created: 1_700_000_500,
+                attached: false,
+                activity: 1_700_009_000,
+                current_command: "python".into(),
+                working: true,
+                current_path: "/code/p1/run".into()
+            }
+        );
         // "no server running" / absent tmux → empty output → zero sessions.
         assert!(parse_tmux_ls("").is_empty());
         assert!(parse_tmux_ls("\n").is_empty());
@@ -1496,34 +1554,67 @@ mod tests {
     fn session_visible_scopes_by_name_then_by_working_directory() {
         let root = "/code/p1";
         // 1. The name settles it when it carries a project id, whatever the path.
-        assert!(session_visible_for_project("eldrun-p1--abcd", "/somewhere/else", "p1", root));
-        assert!(!session_visible_for_project("eldrun-p2--abcd", "/code/p1", "p1", root));
+        assert!(session_visible_for_project(
+            "eldrun-p1--abcd",
+            "/somewhere/else",
+            "p1",
+            root
+        ));
+        assert!(!session_visible_for_project(
+            "eldrun-p2--abcd",
+            "/code/p1",
+            "p1",
+            root
+        ));
         // 2. Otherwise the working directory does. A legacy (pre-scoping) session
         //    running in this project's tree is this project's.
-        assert!(session_visible_for_project("eldrun-legacyuuid", "/code/p1/src", "p1", root));
+        assert!(session_visible_for_project(
+            "eldrun-legacyuuid",
+            "/code/p1/src",
+            "p1",
+            root
+        ));
         // …and one running in ANOTHER project's tree is not.
-        assert!(!session_visible_for_project("eldrun-legacyuuid", "/code/p2", "p1", root));
+        assert!(!session_visible_for_project(
+            "eldrun-legacyuuid",
+            "/code/p2",
+            "p1",
+            root
+        ));
         // A hand-started session is attributed the same way.
         assert!(session_visible_for_project("train", "/code/p1", "p1", root));
-        assert!(!session_visible_for_project("train", "/home/me", "p1", root));
+        assert!(!session_visible_for_project(
+            "train", "/home/me", "p1", root
+        ));
         // A row whose host reported no path at all is unattributable → shown,
         // never silently dropped.
         assert!(session_visible_for_project("train", "", "p1", root));
         // An id needing sanitizing is matched consistently on both sides.
-        assert!(session_visible_for_project("eldrun-we_rd--abcd", "/elsewhere", "we:rd", root));
+        assert!(session_visible_for_project(
+            "eldrun-we_rd--abcd",
+            "/elsewhere",
+            "we:rd",
+            root
+        ));
     }
 
     #[test]
     fn filter_sessions_for_project_scopes_and_honours_include_all() {
         let s = |name: &str, path: &str| TmuxSession {
-            name: name.into(), windows: 1, created: 0, attached: false, activity: 0,
-            current_command: "".into(), working: false, current_path: path.into(),
+            name: name.into(),
+            windows: 1,
+            created: 0,
+            attached: false,
+            activity: 0,
+            current_command: "".into(),
+            working: false,
+            current_path: path.into(),
         };
         let sessions = vec![
             s("eldrun-p1--a", "/code/p1"),
             s("eldrun-p2--b", "/code/p2"),
-            s("train", "/code/p1"),          // hand-started inside this project
-            s("other", "/home/me"),          // hand-started elsewhere
+            s("train", "/code/p1"), // hand-started inside this project
+            s("other", "/home/me"), // hand-started elsewhere
             s("eldrun-legacyuuid", "/code/p1/run"), // pre-scoping, this project's tree
             s("eldrun-legacyother", "/code/p2/run"), // pre-scoping, another's tree
         ];
@@ -1532,7 +1623,10 @@ mod tests {
         assert_eq!(names, vec!["eldrun-p1--a", "train", "eldrun-legacyuuid"]);
         // The escape hatch returns the host listing untouched, so an orphaned run
         // is always reachable to kill.
-        assert_eq!(filter_sessions_for_project(sessions, "p1", "/code/p1", true).len(), 6);
+        assert_eq!(
+            filter_sessions_for_project(sessions, "p1", "/code/p1", true).len(),
+            6
+        );
     }
 
     #[test]
@@ -1597,8 +1691,8 @@ mod tests {
 
     #[test]
     fn ssh_control_check_uses_shared_path_and_target() {
-        let args = ssh_control_check_args(&spec(Some("alice"), "host.example", Some(2200), "/p"))
-            .unwrap();
+        let args =
+            ssh_control_check_args(&spec(Some("alice"), "host.example", Some(2200), "/p")).unwrap();
         assert_eq!(args[0], "-S");
         assert!(args[1].contains("cm-%C"));
         assert!(args.windows(2).any(|w| w == ["-O", "check"]));

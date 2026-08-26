@@ -21,11 +21,14 @@ import {
   saverInterval,
   startFocusTracking,
 } from "../../stores/power";
+import { applyFastModeAttribute, useFastMode } from "../../lib/fastMode";
 import { useOllamaAutoloadOnLaunch } from "../../stores/ollamaAutoload";
 import { useRendererWatchdog } from "../../lib/rendererWatchdog";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
+import { LogoIcon } from "./LogoIcon";
+import { MobileBridgeHost } from "../mobile/MobileBridgeHost";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { AlarmPopup } from "../calendar/AlarmPopup";
 import { RemoteConnectDialog } from "../projects/RemoteConnectDialog";
@@ -76,6 +79,7 @@ import { useTimerStore } from "../../stores/timer";
 import { flushUsage } from "../../stores/usage";
 import { useKeyboard } from "../../hooks/useKeyboard";
 import { useT, useI18nStore, translate } from "../../lib/i18n";
+import { noteTerminalOutputChars } from "../../dev/terminalOutputRate";
 
 // Dev-only perf panel (src/dev/). The ternary is statically resolved at build
 // time (`import.meta.env.DEV` → false), so in a shipped bundle the lazy() —
@@ -100,6 +104,48 @@ const RIGHT_PANEL_DEFAULT = 280;
 function clampRightWidth(px: number): number {
   const max = Math.max(RIGHT_PANEL_MIN, Math.min(900, window.innerWidth - 240));
   return Math.round(Math.max(RIGHT_PANEL_MIN, Math.min(max, px)));
+}
+
+/**
+ * A small launch curtain gives the otherwise-empty WebView a clear "Eldrun is
+ * starting" state while the settings and project records arrive over IPC. It
+ * has a minimum display time so a warm launch does not flash a single frame.
+ */
+function StartupSplash({ ready }: { ready: boolean }) {
+  const [closing, setClosing] = useState(false);
+  const [shown, setShown] = useState(true);
+
+  useEffect(() => {
+    if (!ready) return;
+    const closeAfter = Math.max(0, 700 - performance.now());
+    const closeTimer = window.setTimeout(() => setClosing(true), closeAfter);
+    const removeTimer = window.setTimeout(() => setShown(false), closeAfter + 360);
+    return () => {
+      window.clearTimeout(closeTimer);
+      window.clearTimeout(removeTimer);
+    };
+  }, [ready]);
+
+  if (!shown) return null;
+  const message = ready ? "Workspace ready" : "Opening your workspace…";
+
+  return (
+    <div
+      className={`startup-splash${closing ? " leaving" : ""}`}
+      role="status"
+      aria-live="polite"
+      aria-label={message}
+    >
+      <div className="startup-splash-mark" aria-hidden="true">
+        <span className="startup-splash-orbit startup-splash-orbit-one" />
+        <span className="startup-splash-orbit startup-splash-orbit-two" />
+        <LogoIcon />
+      </div>
+      <div className="startup-splash-name">ELDRUN</div>
+      <div className="startup-splash-message">{message}</div>
+      <div className="startup-splash-progress" aria-hidden="true"><span /></div>
+    </div>
+  );
 }
 
 /**
@@ -168,6 +214,7 @@ export function AppShell() {
   const initTimer = useTimerStore((s) => s.init);
   const flushTimer = useTimerStore((s) => s.flush);
   const quiesce = useQuiesce();
+  const fastMode = useFastMode();
   // Load the armed local (Ollama) models into memory at launch — main window
   // only, and skipped (loudly) while Energy Saver is on. See stores/ollamaAutoload.
   useOllamaAutoloadOnLaunch();
@@ -553,6 +600,12 @@ export function AppShell() {
       if (localFile) {
         await useTabsStore.getState().saveLayout(localFile).catch(() => {});
       }
+      // A clean Eldrun quit ends only the local tmux sessions named and owned by
+      // Eldrun. It runs after the layout flush so an abnormal close still has a
+      // durable tab/session pairing to restore, but before `destroy()` causes the
+      // backend's general PTY teardown. A crash never reaches this path: its tmux
+      // sessions remain alive and the saved tabs reattach on the next launch.
+      await invoke<void>("local_tmux_kill_eldrun_sessions").catch(() => {});
       // Close any popped-out subwindows so they don't strand on screen; they
       // persist + re-open at their saved bounds next launch (see the helper).
       await shutdownDetachedWindows().catch(() => {});
@@ -666,6 +719,13 @@ export function AppShell() {
       // The chunk itself rides along: the store classifies a quiet agent tab —
       // finished vs blocked on a prompt — off its tail.
       notePtyOutput(ev.payload.id, ev.payload.data);
+      // Development-only transport-rate readout in the right-panel footer.
+      // Count here because this is already the one app-wide listener: adding a
+      // second listener just for profiling would add dispatch work to the hot
+      // path being measured. Vite folds this branch away in production.
+      if (import.meta.env.DEV) {
+        noteTerminalOutputChars(ev.payload.id, ev.payload.data.length);
+      }
     })
       .then((fn) => { unlisten = fn; })
       .catch(() => {});
@@ -712,6 +772,12 @@ export function AppShell() {
     if (quiesce) root.dataset.energySaver = "on";
     else delete root.dataset.energySaver;
   }, [quiesce]);
+
+  // The same publication for fast mode (`[data-fast-mode]`), which collapses
+  // animations *and* transitions — a standing preference rather than a
+  // battery reading, so it is its own attribute rather than a third writer of
+  // `data-energy-saver`.
+  useEffect(() => applyFastModeAttribute(fastMode), [fastMode]);
 
   useEffect(() => {
     if (projectsLoaded) {
@@ -779,6 +845,8 @@ export function AppShell() {
 
   return (
     <div className="app-shell">
+      <StartupSplash ready={settingsLoaded && projectsLoaded} />
+      <MobileBridgeHost />
       <HeaderBar />
       {switchToast != null && (
         <div

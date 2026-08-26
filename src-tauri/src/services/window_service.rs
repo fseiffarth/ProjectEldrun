@@ -207,7 +207,10 @@ mod tests {
             tracked("g1", Some("p1"), ORIGIN_GLOBAL_APP, Some(303)),
         ]);
         let p1_ids = project_window_ids(&wins, Some("p1"));
-        assert!(p1_ids.contains(&101), "p1's detached window is hidden with p1");
+        assert!(
+            p1_ids.contains(&101),
+            "p1's detached window is hidden with p1"
+        );
         assert!(!p1_ids.contains(&202), "p2's detached window is not p1's");
         assert!(
             !p1_ids.contains(&303),
@@ -234,7 +237,7 @@ mod tests {
         let mut wins = registry(vec![
             tracked("a", Some("p1"), ORIGIN_RIGHT_FILE_TREE, None), // pid 10
             tracked("b", Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(5)), // pid 11
-            tracked("c", Some("p1"), ORIGIN_GLOBAL_APP, None),     // pid 12
+            tracked("c", Some("p1"), ORIGIN_GLOBAL_APP, None),      // pid 12
             tracked("d", Some("p2"), ORIGIN_RIGHT_FILE_TREE, None), // pid 13
         ]);
         // Give each a distinct pid so the fake resolver can be asserted per-window.
@@ -257,12 +260,7 @@ mod tests {
 
     #[test]
     fn resolve_missing_window_ids_leaves_none_when_resolver_fails() {
-        let mut wins = registry(vec![tracked(
-            "a",
-            Some("p1"),
-            ORIGIN_RIGHT_FILE_TREE,
-            None,
-        )]);
+        let mut wins = registry(vec![tracked("a", Some("p1"), ORIGIN_RIGHT_FILE_TREE, None)]);
         // A window the OS could not map (e.g. opener::open pid=0) stays unparked.
         resolve_missing_window_ids(&mut wins, Some("p1"), |_pid| None);
         assert_eq!(wins["a"].window_id, None);
@@ -295,8 +293,18 @@ mod tests {
         // its non-detached project-owned windows (those go through the X11/desktop
         // path), should be returned.
         let wins = registry(vec![
-            tracked("detached-p1-g3", Some("p1"), ORIGIN_DETACHED_SUBWINDOW, Some(101)),
-            tracked("detached-p2-g1", Some("p2"), ORIGIN_DETACHED_SUBWINDOW, Some(202)),
+            tracked(
+                "detached-p1-g3",
+                Some("p1"),
+                ORIGIN_DETACHED_SUBWINDOW,
+                Some(101),
+            ),
+            tracked(
+                "detached-p2-g1",
+                Some("p2"),
+                ORIGIN_DETACHED_SUBWINDOW,
+                Some(202),
+            ),
             tracked("file-p1", Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(303)),
         ]);
         let p1 = project_detached_labels(&wins, Some("p1"));

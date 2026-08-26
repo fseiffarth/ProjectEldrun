@@ -374,6 +374,19 @@ pub fn root_work_dir() -> PathBuf {
     home_dir().join("eldrun").join("root")
 }
 
+/// The permanent, isolated workspace for disposable agent work. Unlike the
+/// root workspace this is a real project, so its terminal authority is always
+/// resolved through the project sandbox rather than falling back to the host.
+pub const TRASH_PROJECT_ID: &str = "eldrun-trash";
+
+pub fn trash_work_dir() -> PathBuf {
+    home_dir().join("eldrun").join("trash")
+}
+
+pub fn is_trash_project_id(project_id: &str) -> bool {
+    project_id == TRASH_PROJECT_ID
+}
+
 pub fn boxes_root() -> PathBuf {
     home_dir().join("eldrun").join("boxes")
 }
@@ -509,7 +522,8 @@ mod tests {
             .iter()
             .any(|path| path.ends_with(Path::new("Programs/OpenAI/Codex/bin"))));
         assert!(windows.iter().any(|path| {
-            path.starts_with(r"C:\Program Files") && path.ends_with(Path::new("MiKTeX/miktex/bin/x64"))
+            path.starts_with(r"C:\Program Files")
+                && path.ends_with(Path::new("MiKTeX/miktex/bin/x64"))
         }));
     }
 

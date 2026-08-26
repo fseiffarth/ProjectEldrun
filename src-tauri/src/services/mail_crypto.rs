@@ -43,7 +43,7 @@
 //! covered. The panel therefore never implies that a green tick vouches for the
 //! sender line above it.
 
-use crate::schema::mail::{MailCryptoInfo, MailCryptoState, MailCryptoFormat};
+use crate::schema::mail::{MailCryptoFormat, MailCryptoInfo, MailCryptoState};
 
 // ── What a message turns out to be ──────────────────────────────────────────
 
@@ -79,9 +79,9 @@ impl CryptoKind {
             | CryptoKind::PgpEncrypted
             | CryptoKind::PgpInlineSigned
             | CryptoKind::PgpInlineEncrypted => MailCryptoFormat::OpenPgp,
-            CryptoKind::SmimeSigned | CryptoKind::SmimeEncrypted | CryptoKind::SmimeOpaqueSigned => {
-                MailCryptoFormat::Smime
-            }
+            CryptoKind::SmimeSigned
+            | CryptoKind::SmimeEncrypted
+            | CryptoKind::SmimeOpaqueSigned => MailCryptoFormat::Smime,
         }
     }
 
@@ -393,7 +393,9 @@ mod tests {
     use super::*;
 
     fn parse(raw: &str) -> mail_parser::Message<'_> {
-        mail_parser::MessageParser::default().parse(raw.as_bytes()).unwrap()
+        mail_parser::MessageParser::default()
+            .parse(raw.as_bytes())
+            .unwrap()
     }
 
     const HEAD: &str = "From: a@example.com\r\nTo: b@example.org\r\nSubject: x\r\n";
@@ -450,7 +452,8 @@ mod tests {
     /// claim there is readable content beside the blob when there is not.
     #[test]
     fn an_unknown_smime_type_is_treated_as_enveloped() {
-        let odd = format!("{HEAD}Content-Type: application/pkcs7-mime; smime-type=future\r\n\r\nX\r\n");
+        let odd =
+            format!("{HEAD}Content-Type: application/pkcs7-mime; smime-type=future\r\n\r\nX\r\n");
         assert_eq!(detect(&parse(&odd)), Some(CryptoKind::SmimeEncrypted));
     }
 
@@ -529,7 +532,12 @@ mod tests {
 
     #[test]
     fn a_bad_signature_and_a_missing_key_do_not_share_a_state() {
-        let bad = info_for(CryptoKind::PgpSigned, Some(&VerifyOutcome::Bad), false, "a@example.com");
+        let bad = info_for(
+            CryptoKind::PgpSigned,
+            Some(&VerifyOutcome::Bad),
+            false,
+            "a@example.com",
+        );
         let none = info_for(
             CryptoKind::PgpSigned,
             Some(&VerifyOutcome::NoKey { key_id: None }),
@@ -538,7 +546,10 @@ mod tests {
         );
         assert_eq!(bad.state, MailCryptoState::Invalid);
         assert_eq!(none.state, MailCryptoState::NoKey);
-        assert_ne!(bad.state, none.state, "'forged' and 'I cannot tell' are different sentences");
+        assert_ne!(
+            bad.state, none.state,
+            "'forged' and 'I cannot tell' are different sentences"
+        );
     }
 
     #[test]

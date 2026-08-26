@@ -88,6 +88,8 @@ describe("agentLabel", () => {
   it("gives known agents their product names", () => {
     expect(agentLabel("claude")).toBe("Claude");
     expect(agentLabel("cursor-agent")).toBe("Cursor");
+    expect(agentLabel("agy")).toBe("Google Antigravity");
+    expect(agentLabel("gemini")).toBe("Google Gemini");
   });
 
   it("shows a local model by its bare name", () => {

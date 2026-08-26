@@ -193,7 +193,10 @@ fn check_printer_name(name: &str) -> Result<(), String> {
     }
     let bad = |c: char| {
         c.is_control()
-            || matches!(c, '\'' | '"' | '`' | '$' | ';' | '|' | '&' | '\\' | '<' | '>')
+            || matches!(
+                c,
+                '\'' | '"' | '`' | '$' | ';' | '|' | '&' | '\\' | '<' | '>'
+            )
     };
     if name.chars().any(bad) {
         return Err("that is not a printer name".into());
@@ -377,12 +380,10 @@ pub fn parse_lpq_titles(out: &str) -> HashMap<u32, (String, String)> {
         // Strip the trailing "<size> bytes" to leave the file column.
         let rest: Vec<&str> = it.collect();
         let title = match rest.split_last() {
-            Some((last, head)) if last.eq_ignore_ascii_case("bytes") => {
-                match head.split_last() {
-                    Some((_size, name)) => name.join(" "),
-                    None => String::new(),
-                }
-            }
+            Some((last, head)) if last.eq_ignore_ascii_case("bytes") => match head.split_last() {
+                Some((_size, name)) => name.join(" "),
+                None => String::new(),
+            },
             _ => rest.join(" "),
         };
         let state = match rank.to_ascii_lowercase().as_str() {
@@ -398,7 +399,10 @@ pub fn parse_lpq_titles(out: &str) -> HashMap<u32, (String, String)> {
 /// Join the two CUPS readings: titles and the active/held state come from
 /// `lpq`, everything else from `lpstat`. A job `lpq` never mentioned keeps its
 /// id as a title, so no row is blank.
-fn merge_cups_jobs(mut jobs: Vec<PrintJob>, titles: &HashMap<u32, (String, String)>) -> Vec<PrintJob> {
+fn merge_cups_jobs(
+    mut jobs: Vec<PrintJob>,
+    titles: &HashMap<u32, (String, String)>,
+) -> Vec<PrintJob> {
     for job in &mut jobs {
         if let Some((title, state)) = titles.get(&job.number) {
             if !title.is_empty() {
@@ -685,7 +689,11 @@ fn snapshot_impl() -> PrintSnapshot {
             Err(e) => PrintSnapshot {
                 supported: true,
                 backend: "windows".into(),
-                note: if err.trim().is_empty() { e } else { err.trim().into() },
+                note: if err.trim().is_empty() {
+                    e
+                } else {
+                    err.trim().into()
+                },
                 ..Default::default()
             },
         },
@@ -892,7 +900,10 @@ printer Lab-Plotter now printing Lab-Plotter-7.  enabled since Mon 28 Jul 2026 0
             parse_lpstat_default("system default destination: Office_Laser\n").as_deref(),
             Some("Office_Laser")
         );
-        assert_eq!(parse_lpstat_default("no system default destination\n"), None);
+        assert_eq!(
+            parse_lpstat_default("no system default destination\n"),
+            None
+        );
         assert_eq!(parse_lpstat_default(""), None);
     }
 
@@ -940,7 +951,10 @@ printer Lab-Plotter now printing Lab-Plotter-7.  enabled since Mon 28 Jul 2026 0
         );
         assert_eq!(
             map.get(&42),
-            Some(&("quarterly report final.pdf".to_string(), "printing".to_string()))
+            Some(&(
+                "quarterly report final.pdf".to_string(),
+                "printing".to_string()
+            ))
         );
         assert_eq!(
             map.get(&7),

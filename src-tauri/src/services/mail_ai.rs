@@ -259,13 +259,7 @@ pub const TASK_SYSTEM: &str =
      task, set title to an empty string.";
 
 /// The task prompt, anchored the same way as [`event_user`].
-pub fn task_user(
-    subject: &str,
-    from: &str,
-    body: &str,
-    message_date: &str,
-    today: &str,
-) -> String {
+pub fn task_user(subject: &str, from: &str, body: &str, message_date: &str, today: &str) -> String {
     format!(
         "The email was sent on: {message_date}\nToday's date is: {today}\n\n\
          Subject: {subject}\nFrom: {from}\n\n{body}"
@@ -569,7 +563,10 @@ mod tests {
             "2026-07-30T09:00:00Z",
             "2026-07-31",
         );
-        assert!(user.contains("2026-07-30T09:00:00Z"), "message date missing");
+        assert!(
+            user.contains("2026-07-30T09:00:00Z"),
+            "message date missing"
+        );
         assert!(user.contains("2026-07-31"), "today missing");
         assert!(user.contains("next Tuesday"), "body missing");
     }
@@ -619,8 +616,8 @@ mod tests {
 
     #[test]
     fn json_is_extracted_from_prose_and_fences() {
-        let v = extract_json_object("Sure! ```json\n{\"a\": 1}\n``` hope that helps")
-            .expect("object");
+        let v =
+            extract_json_object("Sure! ```json\n{\"a\": 1}\n``` hope that helps").expect("object");
         assert_eq!(v["a"], 1);
         // A brace inside a string must not close the object early.
         let v = extract_json_object("{\"title\": \"a } b\", \"n\": 2}").expect("nested brace");
@@ -648,12 +645,11 @@ mod tests {
         )
         .is_none());
         // Missing a title → nothing.
-        assert!(
-            parse_event("{\"start\":\"2026-08-04T15:00\",\"confidence\":0.9}").is_none()
-        );
+        assert!(parse_event("{\"start\":\"2026-08-04T15:00\",\"confidence\":0.9}").is_none());
         // A start that is not date-shaped → nothing.
-        assert!(parse_event("{\"title\":\"X\",\"start\":\"sometime\",\"confidence\":0.9}")
-            .is_none());
+        assert!(
+            parse_event("{\"title\":\"X\",\"start\":\"sometime\",\"confidence\":0.9}").is_none()
+        );
         // An all-day date-only start is fine.
         let allday = parse_event(
             "{\"title\":\"Holiday\",\"start\":\"2026-12-25\",\"all_day\":true,\"confidence\":0.8}",
@@ -664,8 +660,10 @@ mod tests {
 
     #[test]
     fn a_task_parses_and_normalizes_priority() {
-        let t = parse_task("{\"title\":\"Send report\",\"due\":\"2026-08-07\",\"priority\":\"urgent\"}")
-            .expect("task");
+        let t = parse_task(
+            "{\"title\":\"Send report\",\"due\":\"2026-08-07\",\"priority\":\"urgent\"}",
+        )
+        .expect("task");
         assert_eq!(t.title, "Send report");
         assert_eq!(t.due.as_deref(), Some("2026-08-07"));
         assert_eq!(t.priority.as_deref(), Some("high"));

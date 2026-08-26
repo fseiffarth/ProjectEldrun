@@ -17,6 +17,7 @@ import { DEFAULT_MAIL_CHECK_MIN } from "../../lib/mail";
 import type {
   ArchivedProject,
   CalendarViewKind,
+  GitProvider,
   KeyboardChord,
   ProjectEntry,
   Theme,
@@ -25,7 +26,9 @@ import type {
 import { THEMES } from "../../types";
 import type { LinkOpenTarget } from "../../types/browser";
 import { summarizeScaffoldRepair, type ProjectScaffoldRepair } from "../projects/scaffold";
+import { providerName } from "../projects/projectTypeTags";
 import { Toggle } from "../common/Toggle";
+import { GitTokenScopes, tokenPageUrl } from "../common/GitTokenScopes";
 import { OPEN_STATS_EVENT } from "../stats/StatsRecapHost";
 import {
   SHORTCUT_DEFS,
@@ -51,6 +54,8 @@ import { useHintsStore } from "../../stores/hints";
 import { canConnectVpnSilently } from "../../lib/vpnConnect";
 import { setVpnAutoConnect, vpnUsernameFor } from "../../lib/vpnAutoConnect";
 import type { StoredVpnConfig } from "../../types";
+import { MobileSettings } from "../mobile/MobileSettings";
+import { UpdatesPanel } from "./UpdatesPanel";
 
 // The workspace-layout help text. On Linux a lone Super toggles the panels; on
 // Windows it's F9 (the lone Win key is OS-reserved — Start opens on release, see
@@ -71,7 +76,9 @@ function ToggleCard({
   onChange,
   help,
 }: {
-  label: string;
+  /** `ReactNode`, not `string`: a card's label may carry an `<UntestedTag />`
+   *  beside its text, the way the rows outside this component do. */
+  label: ReactNode;
   checked: boolean;
   onChange: ChangeEventHandler<HTMLInputElement>;
   help?: ReactNode;
@@ -98,6 +105,13 @@ interface HelpSection {
   items: HelpItem[];
 }
 
+/**
+ * The Feature Guide's contents, in reading order: the window itself, then
+ * projects, then what runs in a tab, then the surfaces that are their own
+ * applications, then everything that leaves this machine, then the rest.
+ * Terms and descriptions are i18n keys (`help.<section>.item<N>.term|desc`) —
+ * add a row here and its two keys in every language block.
+ */
 const HELP_SECTIONS: HelpSection[] = [
   {
     titleKey: "help.workspaceLayout.title",
@@ -116,6 +130,7 @@ const HELP_SECTIONS: HelpSection[] = [
       { termKey: "help.projects.item2.term", descKey: "help.projects.item2.desc" },
       { termKey: "help.projects.item3.term", descKey: "help.projects.item3.desc" },
       { termKey: "help.projects.item4.term", descKey: "help.projects.item4.desc" },
+      { termKey: "help.projects.item5.term", descKey: "help.projects.item5.desc" },
     ],
   },
   {
@@ -123,6 +138,37 @@ const HELP_SECTIONS: HelpSection[] = [
     items: [
       { termKey: "help.aiTerminals.item1.term", descKey: "help.aiTerminals.item1.desc" },
       { termKey: "help.aiTerminals.item2.term", descKey: "help.aiTerminals.item2.desc" },
+      { termKey: "help.aiTerminals.item3.term", descKey: "help.aiTerminals.item3.desc" },
+      { termKey: "help.aiTerminals.item4.term", descKey: "help.aiTerminals.item4.desc" },
+    ],
+  },
+  {
+    titleKey: "help.filesViewers.title",
+    items: [
+      { termKey: "help.filesViewers.item1.term", descKey: "help.filesViewers.item1.desc" },
+      { termKey: "help.filesViewers.item2.term", descKey: "help.filesViewers.item2.desc" },
+      { termKey: "help.filesViewers.item3.term", descKey: "help.filesViewers.item3.desc" },
+      { termKey: "help.filesViewers.item4.term", descKey: "help.filesViewers.item4.desc" },
+      { termKey: "help.filesViewers.item5.term", descKey: "help.filesViewers.item5.desc" },
+    ],
+  },
+  {
+    titleKey: "help.mailCalendar.title",
+    items: [
+      { termKey: "help.mailCalendar.item1.term", descKey: "help.mailCalendar.item1.desc" },
+      { termKey: "help.mailCalendar.item2.term", descKey: "help.mailCalendar.item2.desc" },
+      { termKey: "help.mailCalendar.item3.term", descKey: "help.mailCalendar.item3.desc" },
+      { termKey: "help.mailCalendar.item4.term", descKey: "help.mailCalendar.item4.desc" },
+    ],
+  },
+  {
+    titleKey: "help.remoteMachines.title",
+    items: [
+      { termKey: "help.remoteMachines.item1.term", descKey: "help.remoteMachines.item1.desc" },
+      { termKey: "help.remoteMachines.item2.term", descKey: "help.remoteMachines.item2.desc" },
+      { termKey: "help.remoteMachines.item3.term", descKey: "help.remoteMachines.item3.desc" },
+      { termKey: "help.remoteMachines.item4.term", descKey: "help.remoteMachines.item4.desc" },
+      { termKey: "help.remoteMachines.item5.term", descKey: "help.remoteMachines.item5.desc" },
     ],
   },
   {
@@ -131,6 +177,7 @@ const HELP_SECTIONS: HelpSection[] = [
       { termKey: "help.settingsExtras.item1.term", descKey: "help.settingsExtras.item1.desc" },
       { termKey: "help.settingsExtras.item2.term", descKey: "help.settingsExtras.item2.desc" },
       { termKey: "help.settingsExtras.item3.term", descKey: "help.settingsExtras.item3.desc" },
+      { termKey: "help.settingsExtras.item4.term", descKey: "help.settingsExtras.item4.desc" },
     ],
   },
 ];
@@ -248,6 +295,13 @@ function GitHostingSettings({ onBack }: { onBack: () => void }) {
     void updateSettings({ git_token: gitToken.trim() });
   };
 
+  // Which provider the token hint and permission guide describe. Derived live
+  // from the profile URL being typed (the only provider signal a global,
+  // project-less setting has), defaulting to GitHub as everywhere else.
+  const provider: GitProvider = gitProfileUrl.toLowerCase().includes("gitlab")
+    ? "gitlab"
+    : "github";
+
   return (
     <>
       <div className="settings-title-row">
@@ -279,6 +333,19 @@ function GitHostingSettings({ onBack }: { onBack: () => void }) {
           }}
         />
       </label>
+      <span className="ssh-optional-hint">
+        {t("pill.getTokenHint")}{" "}
+        <button
+          type="button"
+          className="inline-link-btn"
+          onClick={() =>
+            void invoke("open_external_url", { url: tokenPageUrl(provider, gitProfileUrl) })
+          }
+        >
+          {t("pill.getTokenCta", { provider: providerName(provider) })}
+        </button>
+      </span>
+      <GitTokenScopes provider={provider} />
     </>
   );
 }
@@ -598,7 +665,9 @@ function ScaffoldRepairPanel({ onBack }: { onBack: () => void }) {
   return (
     <>
       <div className="settings-title-row">
-        <h2>{t("nav.scaffoldRepair.title")}</h2>
+        {/* The repair now *rewrites* untouched legacy agent stubs, not just
+            fills gaps — new behavior, never run in a live window. */}
+        <h2>{t("nav.scaffoldRepair.title")} <UntestedTag /></h2>
         <button type="button" onClick={onBack}>{t("common.back")}</button>
       </div>
       <p className="settings-help">{t("scaffoldRepair.help")}</p>
@@ -657,7 +726,7 @@ function HelpPanel({ onBack }: { onBack: () => void }) {
   );
 }
 
-export type SettingsPanelKind = "main" | "global" | "filetypes" | "ollama" | "agents" | "shortcuts" | "git" | "vpn" | "remoteHosts" | "archive" | "scaffoldRepair" | "help";
+export type SettingsPanelKind = "main" | "global" | "filetypes" | "ollama" | "agents" | "shortcuts" | "git" | "vpn" | "remoteHosts" | "archive" | "scaffoldRepair" | "updates" | "help";
 
 /** Sub-panel navigation shown as a card menu at the foot of the main settings
  *  panel (styled like the Lessons / How-to-start menus). Titles/blurbs are
@@ -672,6 +741,7 @@ const SETTINGS_NAV: Exclude<SettingsPanelKind, "main" | "ollama">[] = [
   "shortcuts",
   "archive",
   "scaffoldRepair",
+  "updates",
   "help",
 ];
 
@@ -770,6 +840,19 @@ export function SettingsDialog({
               />
             )}
 
+            {!IS_WINDOWS && (
+              <>
+                <div className="settings-section-title">Mobile</div>
+                <MobileSettings />
+                <ToggleCard
+                  label="Show Mobile connection in header"
+                  checked={settings?.mobile_indicator ?? true}
+                  onChange={(e) => void updateSettings({ mobile_indicator: e.target.checked })}
+                  help="Shows the Eldrun Mobile host status and quick reconnect controls beside the battery indicator."
+                />
+              </>
+            )}
+
             <div className="settings-section-title">{t("settings.remoteFeatures")}</div>
             <div className="settings-toggle-card">
               <label className="settings-toggle-card-row">
@@ -805,6 +888,22 @@ export function SettingsDialog({
               {t("settings.energyHelp")}
               {" "}{energyStatus}
             </p>
+
+            {/* Beside Energy Saver rather than folded into it: that one widens
+                timers off a live battery reading, this removes features off a
+                standing preference, and "plugged in, still want it lean" is the
+                case a merged control could not express. `lib/fastMode` holds the
+                list of what goes — the help string above mirrors it. */}
+            <ToggleCard
+              label={
+                <>
+                  {t("settings.fastMode")} <UntestedTag />
+                </>
+              }
+              checked={settings?.fast_mode === true}
+              onChange={(e) => void updateSettings({ fast_mode: e.target.checked })}
+              help={t("settings.fastModeHelp")}
+            />
 
             <ToggleCard
               label={t("settings.debug")}
@@ -1163,6 +1262,15 @@ export function SettingsDialog({
                 type="button"
                 onClick={() => {
                   onClose();
+                  window.dispatchEvent(new Event("eldrun:start-advanced-tour"));
+                }}
+              >
+                {t("settings.takeAdvancedTour")} <UntestedTag />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
                   window.dispatchEvent(new Event("eldrun:open-lessons"));
                 }}
               >
@@ -1341,6 +1449,7 @@ export function SettingsDialog({
         {panel === "remoteHosts" && <RemoteHostsSettings onBack={() => setPanel("main")} />}
         {panel === "archive" && <ArchivedProjectsPanel onBack={() => setPanel("main")} />}
         {panel === "scaffoldRepair" && <ScaffoldRepairPanel onBack={() => setPanel("main")} />}
+        {panel === "updates" && <UpdatesPanel onBack={() => setPanel("main")} />}
         {panel === "help" && <HelpPanel onBack={() => setPanel("main")} />}
        </div>
       </div>

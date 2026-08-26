@@ -174,7 +174,9 @@ fn run_in<S: AsRef<std::ffi::OsStr>>(dir: &Path, bin: &str, args: &[S]) -> Resul
     };
 
     let mut text = String::from_utf8_lossy(&out_reader.join().unwrap_or_default()).into_owned();
-    text.push_str(&String::from_utf8_lossy(&err_reader.join().unwrap_or_default()));
+    text.push_str(&String::from_utf8_lossy(
+        &err_reader.join().unwrap_or_default(),
+    ));
 
     match status {
         Some(s) => Ok(RunOut {
@@ -250,7 +252,12 @@ fn filter_extra_flags(extra: &[String]) -> Vec<String> {
 ///
 /// `out_dir`, when set, becomes latexmk's `-outdir=<dir>` so artefacts (incl. the
 /// PDF) land there. `extra` carries already-filtered user flags (#54).
-fn latexmk_args(engine: Option<&str>, file_name: &str, out_dir: Option<&str>, extra: &[String]) -> Vec<String> {
+fn latexmk_args(
+    engine: Option<&str>,
+    file_name: &str,
+    out_dir: Option<&str>,
+    extra: &[String],
+) -> Vec<String> {
     let mut args: Vec<String> = vec![
         latexmk_flag(engine).to_string(),
         "-interaction=nonstopmode".to_string(),
@@ -323,9 +330,11 @@ pub async fn compile_tex(
     out_dir: Option<String>,
     extra_flags: Option<Vec<String>>,
 ) -> Result<TexCompileResult, String> {
-    tauri::async_runtime::spawn_blocking(move || compile_tex_blocking(path, engine, out_dir, extra_flags))
-        .await
-        .map_err(|e| format!("compile task failed: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        compile_tex_blocking(path, engine, out_dir, extra_flags)
+    })
+    .await
+    .map_err(|e| format!("compile task failed: {e}"))?
 }
 
 fn compile_tex_blocking(
@@ -381,7 +390,8 @@ fn compile_tex_blocking(
             } else {
                 dir.join(p)
             };
-            fs::create_dir_all(&abs).map_err(|e| format!("create output dir {}: {e}", abs.display()))?;
+            fs::create_dir_all(&abs)
+                .map_err(|e| format!("create output dir {}: {e}", abs.display()))?;
             Some(abs)
         }
         None => None,
@@ -546,7 +556,9 @@ fn collect_fonts(dir: &Path, depth: u32, out: &mut Vec<FontFile>) {
     if depth > 3 || out.len() > 4000 {
         return;
     }
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         // `metadata` follows symlinks; a font directory that links to itself
@@ -564,7 +576,9 @@ fn collect_fonts(dir: &Path, depth: u32, out: &mut Vec<FontFile>) {
         if !FONT_EXTS.contains(&ext.as_str()) {
             continue;
         }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
         out.push(FontFile {
             name: font_display_name(stem),
             path: path.to_string_lossy().into_owned(),
@@ -582,7 +596,12 @@ pub async fn list_fonts() -> Result<Vec<FontFile>, String> {
         for dir in font_dirs() {
             collect_fonts(&dir, 0, &mut out);
         }
-        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then(a.path.cmp(&b.path)));
+        out.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then(a.path.cmp(&b.path))
+        });
         out.dedup_by(|a, b| a.path == b.path);
         Ok(out)
     })
@@ -631,10 +650,13 @@ pub fn parse_synctex_pages(text: &str, want_tag: Option<u32>) -> Vec<PageLines> 
     let mut lines: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
 
     let flush = |page: &mut Option<u32>,
-                     lines: &mut std::collections::BTreeSet<u32>,
-                     out: &mut Vec<PageLines>| {
+                 lines: &mut std::collections::BTreeSet<u32>,
+                 out: &mut Vec<PageLines>| {
         if let Some(p) = page.take() {
-            out.push(PageLines { page: p, lines: lines.iter().copied().collect() });
+            out.push(PageLines {
+                page: p,
+                lines: lines.iter().copied().collect(),
+            });
             lines.clear();
         }
     };
@@ -653,14 +675,13 @@ pub fn parse_synctex_pages(text: &str, want_tag: Option<u32>) -> Vec<PageLines> 
             // Box open/close-with-content, void boxes, and the glyph/kern/glue
             // records. `]` and `)` are the closers and carry no tag, so they are
             // not listed.
-            '[' | '(' | 'v' | 'h' | 'x' | 'k' | 'g' | '$' | 'r'
-                if page.is_some() => {
-                    if let Some((tag, line)) = parse_record_tag_line(&l[1..]) {
-                        if want_tag.is_none_or(|w| w == tag) && line > 0 {
-                            lines.insert(line);
-                        }
+            '[' | '(' | 'v' | 'h' | 'x' | 'k' | 'g' | '$' | 'r' if page.is_some() => {
+                if let Some((tag, line)) = parse_record_tag_line(&l[1..]) {
+                    if want_tag.is_none_or(|w| w == tag) && line > 0 {
+                        lines.insert(line);
                     }
                 }
+            }
             _ => {}
         }
     }
@@ -770,7 +791,11 @@ fn parse_synctex_edit(out: &str, base: &Path) -> Option<SyncSource> {
         if let Some(v) = l.strip_prefix("Input:") {
             if input.is_none() {
                 let p = Path::new(v.trim());
-                let abs = if p.is_absolute() { p.to_path_buf() } else { base.join(p) };
+                let abs = if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    base.join(p)
+                };
                 let abs = fs::canonicalize(&abs).unwrap_or(abs);
                 input = Some(abs.to_string_lossy().into_owned());
             }
@@ -789,7 +814,11 @@ fn parse_synctex_edit(out: &str, base: &Path) -> Option<SyncSource> {
     if line == 0 {
         return None;
     }
-    Some(SyncSource { input, line, column })
+    Some(SyncSource {
+        input,
+        line,
+        column,
+    })
 }
 
 /// Reverse search: which source line produced the point `(x, y)` (big points
@@ -821,7 +850,11 @@ pub async fn synctex_edit(
         let pdf_path = Path::new(&pdf);
         let dir = pdf_path.parent().unwrap_or_else(|| Path::new("."));
         if let Some((input, line)) = crate::commands::synctex::resolve(pdf_path, page, x, y) {
-            return Ok(Some(SyncSource { input, line, column: 0 }));
+            return Ok(Some(SyncSource {
+                input,
+                line,
+                column: 0,
+            }));
         }
         if !on_path("synctex") {
             return Ok(None);
@@ -1031,7 +1064,11 @@ fn scan_tex_includes(root: &Path) -> Vec<std::path::PathBuf> {
         let dir = file.parent().unwrap_or_else(|| Path::new("."));
         for rel in parse_includes(&text) {
             let p = Path::new(&rel);
-            let abs = if p.is_absolute() { p.to_path_buf() } else { dir.join(p) };
+            let abs = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                dir.join(p)
+            };
             let abs = fs::canonicalize(&abs).unwrap_or(abs);
             if seen.insert(abs.clone()) {
                 out.push(abs.clone());
@@ -1093,7 +1130,11 @@ fn magic_root(source: &str, dir: &Path) -> Option<std::path::PathBuf> {
                 return None;
             }
             let p = Path::new(val);
-            let abs = if p.is_absolute() { p.to_path_buf() } else { dir.join(p) };
+            let abs = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                dir.join(p)
+            };
             return Some(fs::canonicalize(&abs).unwrap_or(abs));
         }
     }
@@ -1121,9 +1162,9 @@ pub fn resolve_tex_root(path: String) -> Result<String, String> {
 
     // 2. Stored map, verified.
     let src_str = src.to_string_lossy().into_owned();
-    if let Ok(map) = crate::storage::read_json::<std::collections::HashMap<String, String>>(
-        &tex_roots_path(),
-    ) {
+    if let Ok(map) =
+        crate::storage::read_json::<std::collections::HashMap<String, String>>(&tex_roots_path())
+    {
         if let Some(root) = map.get(&src_str) {
             let root_path = Path::new(root);
             if root_path.exists()
@@ -1175,7 +1216,10 @@ Count:2
 
     #[test]
     fn font_names_are_readable_in_a_picker() {
-        assert_eq!(font_display_name("LiberationSerif-BoldItalic"), "Liberation Serif Bold Italic");
+        assert_eq!(
+            font_display_name("LiberationSerif-BoldItalic"),
+            "Liberation Serif Bold Italic"
+        );
         assert_eq!(font_display_name("DejaVuSans"), "Deja Vu Sans");
         assert_eq!(font_display_name("lmroman10-regular"), "lmroman10 regular");
         // A run of capitals is an acronym, not words: don't shatter it.
@@ -1218,8 +1262,14 @@ Count:2
         assert_eq!(
             pages,
             vec![
-                PageLines { page: 1, lines: vec![12, 14, 15] },
-                PageLines { page: 2, lines: vec![12, 15, 18] },
+                PageLines {
+                    page: 1,
+                    lines: vec![12, 14, 15]
+                },
+                PageLines {
+                    page: 2,
+                    lines: vec![12, 15, 18]
+                },
             ]
         );
         // The package's own tag is excluded: line numbers from two files are not
@@ -1345,7 +1395,9 @@ Count:2
             "runsystem(rm -rf /tmp/x)...executed.\n"
         ));
         // A clean build does not.
-        assert!(!log_shows_shell_escape("Output written on doc.pdf (1 page).\n"));
+        assert!(!log_shows_shell_escape(
+            "Output written on doc.pdf (1 page).\n"
+        ));
     }
 
     #[test]
@@ -1407,9 +1459,15 @@ Count:2
         // viewer parses for jump-to-error. Both build paths must request it.
         let no_extra: Vec<String> = vec![];
         let mk = latexmk_args(None, "doc.tex", None, &no_extra);
-        assert!(mk.iter().any(|a| a == "-file-line-error"), "latexmk: {mk:?}");
+        assert!(
+            mk.iter().any(|a| a == "-file-line-error"),
+            "latexmk: {mk:?}"
+        );
         let eng = engine_args("doc.tex", None, &no_extra);
-        assert!(eng.iter().any(|a| a == "-file-line-error"), "engine: {eng:?}");
+        assert!(
+            eng.iter().any(|a| a == "-file-line-error"),
+            "engine: {eng:?}"
+        );
     }
 
     #[test]
@@ -1428,8 +1486,15 @@ Count:2
     fn parse_synctex_edit_none_without_input() {
         // No Input:/Line: block → no answer. An Output:-only block (just the PDF
         // name, no source) must not be mistaken for a source location.
-        assert!(parse_synctex_edit("SyncTeX result begin\nSyncTeX result end\n", Path::new("/")).is_none());
-        assert!(parse_synctex_edit("SyncTeX result begin\nOutput:doc.pdf\nSyncTeX result end\n", Path::new("/")).is_none());
+        assert!(
+            parse_synctex_edit("SyncTeX result begin\nSyncTeX result end\n", Path::new("/"))
+                .is_none()
+        );
+        assert!(parse_synctex_edit(
+            "SyncTeX result begin\nOutput:doc.pdf\nSyncTeX result end\n",
+            Path::new("/")
+        )
+        .is_none());
     }
 
     #[test]
@@ -1478,7 +1543,10 @@ Count:2
     fn parse_includes_finds_tex_children() {
         let src = "\\documentclass{article}\n\\begin{document}\n\\input{intro}\n\\include{chapters/two.tex}\n\\includegraphics{fig.png}\n\\end{document}\n";
         let inc = parse_includes(src);
-        assert_eq!(inc, vec!["intro.tex".to_string(), "chapters/two.tex".to_string()]);
+        assert_eq!(
+            inc,
+            vec!["intro.tex".to_string(), "chapters/two.tex".to_string()]
+        );
     }
 
     #[test]
@@ -1504,7 +1572,10 @@ Count:2
     #[test]
     fn magic_root_reads_tex_root_comment() {
         let dir = std::env::temp_dir();
-        let root = magic_root("% !TEX root = ../main.tex\n\\section{x}\n", Path::new("/proj/chapters"));
+        let root = magic_root(
+            "% !TEX root = ../main.tex\n\\section{x}\n",
+            Path::new("/proj/chapters"),
+        );
         assert!(root.is_some());
         assert!(root.unwrap().to_string_lossy().ends_with("main.tex"));
         // Case-insensitive and colon form.

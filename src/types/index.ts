@@ -112,6 +112,15 @@ export interface CustomAgent {
 
 export interface Settings {
   debug?: boolean;
+  eldrun_mobile_host?: {
+    enabled: boolean;
+    display_name?: string;
+    port?: number;
+    serve_origin?: string;
+  };
+  /** Show Eldrun Mobile's host-connection control in the desktop header. This
+   * defaults to on when Mobile itself is enabled; an explicit false hides it. */
+  mobile_indicator?: boolean;
   git_profile_url?: string;
   git_token?: string;
   color_scheme?: string;
@@ -261,6 +270,11 @@ export interface Settings {
    *  (`"claude"`, `"codex"`, …). Set from the 🧠 menu's Agents section; every
    *  reader falls back to `"claude"` when unset. */
   default_agent_cmd?: string;
+  /** Built-in agent registry ids shown without searching in the compact Agents
+   *  group of the + tab menu. Set by the 🧠 menu's “+ tab” chips. Unset keeps
+   *  the familiar Claude/Codex/Gemini quick picks; an empty array is a deliberate
+   *  choice to show agents only after searching. */
+  compact_tab_agents?: string[];
   /** User-defined custom agents offered in the add-tab menu's Agents group,
    *  added/removed from the "＋ Add agent…" dialog. Round-trips through the
    *  backend settings `extra` catch-all — no Rust field needed. See CustomAgent. */
@@ -443,6 +457,17 @@ export interface Settings {
    *  active, Eldrun pauses the blob auto-spin, collapses idle animations, and
    *  widens always-on UI timers to reduce CPU/battery drain. */
   energy_saver?: "off" | "battery" | "always";
+  /** Fast mode: drop the display aids that cost a directory walk, a standing
+   *  poll or a per-file read. **Default false.** Read through `lib/fastMode`
+   *  (`useFastMode` / `fastModeActive`), which is also where the exact list of
+   *  what it withdraws lives — never off this key directly, so the list has one
+   *  home and every surface withdraws the same things.
+   *
+   *  A separate switch from `energy_saver` rather than a fourth value of it:
+   *  energy saver widens timers off a *battery reading*, this removes features
+   *  off a *standing preference*, and one merged control could not say "plugged
+   *  in, still want it lean" — which is the case that asks for this. */
+  fast_mode?: boolean;
   /** When true, the right panel is docked open (reflows layout) instead of hover-revealed. */
   right_panel_pinned?: boolean;
   /** Width of the right (file/git) panel in px. Set by dragging the panel's left
@@ -873,6 +898,10 @@ export interface ProjectEntry {
    *  set via the pill / blob-node right-click menu. Stored in the entry's
    *  flattened `extra` (mirrored into project.json). */
   categories?: string[];
+  /** Explicit trusted-state opt-in for phone/tablet terminal access. */
+  eldrun_mobile_access?: boolean;
+  /** Built-in permanent workspace for disposable, strictly-contained agents. */
+  eldrun_trash?: boolean;
   [key: string]: unknown;
 }
 

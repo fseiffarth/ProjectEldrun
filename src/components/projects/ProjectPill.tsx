@@ -23,7 +23,9 @@ import { runInstallInTab, PROVIDER_CLI_INSTALL, providerAuthLoginCmd } from "../
 import { PythonInterpreterWindow } from "./PythonInterpreterWindow";
 import { useGitDirtyStore, type GitDirtyState } from "../../stores/gitDirty";
 import { providerName, gitTypeLabel } from "./projectTypeTags";
+import { GitTokenScopes, tokenPageUrl } from "../common/GitTokenScopes";
 import { ProjectHoverCard, projectDescription, useProjectHoverCard } from "./ProjectHoverCard";
+import { useFastMode } from "../../lib/fastMode";
 import { ActivityCalendar } from "./ActivityCalendar";
 import { CategoryEditor } from "./CategoryEditor";
 import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
@@ -41,6 +43,8 @@ import { categoryColor, primaryCategoryColor, projectCategories } from "../../li
 import { usePillDragStore } from "../../stores/pillDrag";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { isTrashProject } from "../../lib/trashProject";
+import { TrashProjectIcon } from "./TrashProjectIcon";
 
 interface Props {
   project: ProjectEntry;
@@ -251,22 +255,6 @@ function guessProvider(project: ProjectEntry): GitProvider {
   }
   if (project.git_profile_url?.toLowerCase().includes("gitlab")) return "gitlab";
   return "github";
-}
-
-/** The provider's own "create a personal access token" page. Reads the host
- *  off a configured profile URL so a self-hosted GitLab/GitHub Enterprise
- *  instance gets its own token page rather than the public one. */
-function tokenPageUrl(provider: GitProvider, profileUrl: string): string {
-  let host = provider === "gitlab" ? "gitlab.com" : "github.com";
-  try {
-    const parsed = new URL(profileUrl);
-    if (parsed.host) host = parsed.host;
-  } catch {
-    // No usable profile URL yet — fall back to the public host.
-  }
-  return provider === "gitlab"
-    ? `https://${host}/-/user_settings/personal_access_tokens`
-    : `https://${host}/settings/tokens`;
 }
 
 function PublishWindow({
@@ -583,6 +571,7 @@ function GitHostingWindow({
             {t("pill.getTokenCta", { provider: providerName(tokenProvider) })}
           </button>
         </span>
+        <GitTokenScopes provider={tokenProvider} />
         <div className="project-dialog-path">{tokenStatus}</div>
         {info?.has_token && !newToken.trim() && (
           <label className="settings-switch-row">
@@ -1258,6 +1247,9 @@ export function ProjectPill({
   // Shared hover card (identical popup in the right file-viewer). Owns the
   // popup position, today's time, CPU% and the scaffold-missing flag.
   const hover = useProjectHoverCard(project);
+  // Fast mode withdraws the card (see `lib/fastMode`) — the hook stays
+  // mounted and simply never opens, since it arms nothing until `open`.
+  const fastMode = useFastMode();
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
   // With `connections_headless` off Eldrun handles no passwords at all, so neither
   // key auth nor a saved password can ever be the answer — auto-connect there means
@@ -1290,6 +1282,7 @@ export function ProjectPill({
   const [movePickerInitial, setMovePickerInitial] = useState<string | null>(null);
   const pillRef = useRef<HTMLDivElement>(null);
   const dir = resolveProjectDirectory(project);
+  const trashProject = isTrashProject(project);
   const categories = projectCategories(project);
   const catColor = primaryCategoryColor(categories);
 
@@ -1344,6 +1337,18 @@ export function ProjectPill({
   // wrongly (the dialog probes the host for that project anyway).
   const [hasPythonFiles, setHasPythonFiles] = useState<boolean | null>(null);
   const showPython = project.remote ? true : hasPythonFiles === true;
+  // Whether a `remote-*` project really has an `origin` — i.e. whether it was
+  // ever actually published. The git type is only a label, and the new-project
+  // dialog writes it from its "Push to GitHub/GitLab" choice, so a project can
+  // wear a hosting badge with no repository behind it. Probed lazily when this
+  // menu opens (like the Python scan above), because the difference decides
+  // whether the menu below offers *Publish…* or the manage-a-repo actions —
+  // every one of which fails against an origin that isn't there. `null` = not
+  // probed yet, and reads as "believe the label".
+  const [hasOrigin, setHasOrigin] = useState<boolean | null>(null);
+  const publishedGitType =
+    typeof project.git_type === "string" && project.git_type.startsWith("remote");
+  const trulyPublished = publishedGitType && hasOrigin !== false;
 
   // Flip the project-container toggle. The flag is in every TerminalView's
   // spawn deps, so flipping respawns each live tab of this project —
@@ -1519,6 +1524,14 @@ export function ProjectPill({
 
   const handleMouseEnter = () => {
     if (contextMenu) return;
+    // The Trash pill has no project to report on — no path, no git, no tracked
+    // time — so it gets the plain descriptive tooltip below instead of the
+    // project hover card, which could only show a card full of blanks.
+    if (trashProject) return;
+    // Fast mode takes the same exit for a different reason: the card polls
+    // `project_cpu_percent` every 1.5 s for as long as the pointer rests, plus
+    // a scaffold probe per open. It falls back to the same plain tooltip.
+    if (fastMode) return;
     if (!pillRef.current) return;
     void hover.open(pillRef.current.getBoundingClientRect());
   };
@@ -1534,6 +1547,16 @@ export function ProjectPill({
     // entry below. A cheap local ending scan (already the file tree's "hide these
     // endings" source), skipped for remote projects whose files live on the host
     // (showPython shows those regardless — see hasPythonFiles).
+    // Was a project labeled "pushed to GitHub/GitLab" ever published? One local
+    // `git remote get-url origin` (the backend answers `true` unasked for a
+    // work-remote project, whose origin can live on its host).
+    if (publishedGitType) {
+      void invoke<boolean>("project_has_origin", { projectId: project.id })
+        .then(setHasOrigin)
+        // An older backend without the command must not turn the menu into a
+        // publish offer for a project that is published — believe the label.
+        .catch(() => setHasOrigin(null));
+    }
     if (!project.remote) {
       const dir = resolveProjectDirectory(project);
       if (dir) {
@@ -1713,7 +1736,7 @@ export function ProjectPill({
   return (
     <>
       {/* Hover popup — hidden while context menu is open (which calls hover.close). */}
-      {!contextMenu && <ProjectHoverCard project={project} state={hover} />}
+      {!contextMenu && !trashProject && !fastMode && <ProjectHoverCard project={project} state={hover} />}
 
       {/* Right-click context menu */}
       {contextMenu && createPortal(
@@ -1829,7 +1852,7 @@ export function ProjectPill({
                   <UntestedTag />
                 </button>
               )
-            ) : typeof project.git_type === "string" && project.git_type.startsWith("remote") ? (
+            ) : trulyPublished ? (
               // Already published — offer in-place management, not another publish.
               <>
                 <button
@@ -1878,17 +1901,25 @@ export function ProjectPill({
                 </button>
               </>
             ) : (
-              // Local git repo, not yet pushed anywhere.
-              <button
-                className="untested"
-                onClick={() => {
-                  setContextMenu(null);
-                  setShowPublish(true);
-                }}
-              >
-                {t("pill.publishEllipsis")}
-                <UntestedTag />
-              </button>
+              // A local git repo that isn't on a host yet — either because no
+              // hosting was ever chosen, or because it was chosen at creation
+              // and only recorded (`hasOrigin === false`). Both want the same
+              // thing: publish it.
+              <>
+                {publishedGitType && (
+                  <div className="context-menu-note">{t("pill.labeledButNotPublished")}</div>
+                )}
+                <button
+                  className="untested"
+                  onClick={() => {
+                    setContextMenu(null);
+                    setShowPublish(true);
+                  }}
+                >
+                  {t("pill.publishEllipsis")}
+                  <UntestedTag />
+                </button>
+              </>
             )}
           </div>
 
@@ -2316,7 +2347,7 @@ export function ProjectPill({
       <div
         ref={pillRef}
         data-pill-id={project.id}
-        className={`project-pill${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}${groupHintActive ? " drag-group" : ""}${isDragged ? " dragging" : ""}${!isDragged && shiftPx ? " reorder-parting" : ""}${catColor ? " has-category" : ""}`}
+        className={`project-pill${trashProject ? " trash-project-pill" : ""}${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}${groupHintActive ? " drag-group" : ""}${isDragged ? " dragging" : ""}${!isDragged && shiftPx ? " reorder-parting" : ""}${catColor ? " has-category" : ""}`}
         style={{
           ...(catColor ? { "--cat-color": catColor } : {}),
           ...(isDragged
@@ -2330,24 +2361,35 @@ export function ProjectPill({
         onContextMenu={handleContextMenu}
         onPointerDown={startPillDrag}
       >
-        <button className="pill-main" onClick={onClick}>
-          <span
-            className={`pill-folder-icon git-${gitDirty ?? "clean"}`}
-            title={t(GIT_ICON_TITLE_KEY[gitDirty ?? "clean"])}
-            aria-hidden
-          >
-            {/* The folder + its git color are shown ALWAYS — the git dirty state
-                must never be hidden by an unrelated concern. A paused time-tracking
-                timer is signalled non-destructively: a small ⏸ overlay badge (plus
-                the pill's own `.timer-paused` dimming), never by swapping the icon
-                out, which used to erase every pill's git colour the moment you
-                paused the timer. */}
-            <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-              <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
-            </svg>
-            {timerPaused && <span className="pill-folder-pause">⏸</span>}
-          </span>
-          <span className="project-pill-label">{project.name}</span>
+        <button
+          className="pill-main"
+          onClick={onClick}
+          title={trashProject ? t("pill.trashProjectTitle") : fastMode ? project.name : undefined}
+          aria-label={trashProject ? t("pill.trashProjectTitle") : undefined}
+        >
+          {trashProject ? (
+            <TrashProjectIcon className="trash-project-icon" />
+          ) : (
+            <>
+              <span
+                className={`pill-folder-icon git-${gitDirty ?? "clean"}`}
+                title={t(GIT_ICON_TITLE_KEY[gitDirty ?? "clean"])}
+                aria-hidden
+              >
+                {/* The folder + its git color are shown ALWAYS — the git dirty state
+                    must never be hidden by an unrelated concern. A paused time-tracking
+                    timer is signalled non-destructively: a small ⏸ overlay badge (plus
+                    the pill's own `.timer-paused` dimming), never by swapping the icon
+                    out, which used to erase every pill's git colour the moment you
+                    paused the timer. */}
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+                  <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
+                </svg>
+                {timerPaused && <span className="pill-folder-pause">⏸</span>}
+              </span>
+              <span className="project-pill-label">{project.name}</span>
+            </>
+          )}
         </button>
         {categories.length > 0 && (
           <span className="pill-category-dots" title={t("pill.categoriesLabel", { list: categories.join(", ") })}>
@@ -2376,13 +2418,15 @@ export function ProjectPill({
           </button>
         )}
         {project.remote && <RemoteConnMenu project={project} compact />}
-        <button
-          className="pill-close-btn"
-          title={t("pill.closeProject")}
-          onClick={(e) => { e.stopPropagation(); onClose(); }}
-        >
-          ×
-        </button>
+        {!trashProject && (
+          <button
+            className="pill-close-btn"
+            title={t("pill.closeProject")}
+            onClick={(e) => { e.stopPropagation(); onClose(); }}
+          >
+            ×
+          </button>
+        )}
         <PillStatusBars scope={project.id} />
       </div>
     </>

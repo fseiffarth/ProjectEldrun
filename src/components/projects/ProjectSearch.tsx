@@ -42,7 +42,9 @@ export function ProjectSearch({
 }) {
   const t = useT();
   const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState(0);
   const searchRef = useRef<HTMLDivElement>(null);
+  const resultsRef = useRef<HTMLDivElement>(null);
 
   const results = useMemo<SearchRow[]>(() => {
     const q = query.trim().toLowerCase();
@@ -65,10 +67,22 @@ export function ProjectSearch({
     return [...boxRows, ...projectRows];
   }, [projects, boxes, query]);
 
+  // A narrowed query can remove the currently highlighted row. Keep the
+  // selection valid so Enter always picks a visible result.
+  useEffect(() => {
+    setSelected((index) => (results.length === 0 ? 0 : Math.min(index, results.length - 1)));
+  }, [results]);
+
+  useEffect(() => {
+    const row = resultsRef.current?.querySelector<HTMLElement>(`[data-result-index="${selected}"]`);
+    row?.scrollIntoView?.({ block: "nearest" });
+  }, [results, selected]);
+
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
       if (!searchRef.current?.contains(event.target as Node)) {
         setQuery("");
+        setSelected(0);
       }
     };
     window.addEventListener("pointerdown", onPointerDown);
@@ -91,28 +105,43 @@ export function ProjectSearch({
         type="search"
         placeholder={t("projectSearch.placeholder")}
         value={query}
-        onChange={(e) => setQuery(e.target.value)}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setSelected(0);
+        }}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && results.length === 1) {
-            activateSearchResult(results[0]);
-          }
-          // (results is a project|box union; activateSearchResult branches.)
-          if (e.key === "Escape") {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setSelected((index) => (results.length === 0 ? 0 : (index + 1) % results.length));
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setSelected((index) =>
+              results.length === 0 ? 0 : (index - 1 + results.length) % results.length,
+            );
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            const row = results[selected];
+            if (row) activateSearchResult(row);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
             setQuery("");
+            setSelected(0);
           }
         }}
       />
       {query.trim() && (
-        <div className="project-search-popover">
+        <div className="project-search-popover" ref={resultsRef}>
           {results.length === 0 ? (
             <div className="project-search-empty">{t("projectSearch.noProjects")}</div>
           ) : (
-            results.map((row) =>
+            results.map((row, index) =>
               row.kind === "box" ? (
                 <button
                   key={`box:${row.box.id}`}
-                  className="project-search-row is-box"
+                  data-result-index={index}
+                  className={`project-search-row is-box${index === selected ? " is-selected" : ""}`}
                   onClick={() => activateSearchResult(row)}
+                  onMouseEnter={() => setSelected(index)}
                 >
                   <span>
                     <span className="project-box-badge" aria-hidden>▣</span> {row.box.name}
@@ -126,8 +155,10 @@ export function ProjectSearch({
               ) : (
                 <button
                   key={row.project.id}
-                  className="project-search-row"
+                  data-result-index={index}
+                  className={`project-search-row${index === selected ? " is-selected" : ""}`}
                   onClick={() => activateSearchResult(row)}
+                  onMouseEnter={() => setSelected(index)}
                 >
                   <span>{row.project.name}</span>
                   {searchPaths(row.project).map((loc) => (

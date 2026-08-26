@@ -78,7 +78,11 @@ pub fn tally_dirs(files: &[(String, u64)]) -> HashMap<String, FolderTally> {
 }
 
 fn depth_of(rel: &str) -> usize {
-    if rel.is_empty() { 0 } else { rel.matches('/').count() + 1 }
+    if rel.is_empty() {
+        0
+    } else {
+        rel.matches('/').count() + 1
+    }
 }
 
 fn children_of<'a>(tallies: &'a HashMap<String, FolderTally>, parent: &str) -> Vec<&'a str> {
@@ -111,9 +115,14 @@ pub fn pick(
     max_depth: usize,
 ) -> Vec<BigFolder> {
     let mut out = Vec::new();
-    let mut queue: Vec<String> = children_of(tallies, "").iter().map(|s| s.to_string()).collect();
+    let mut queue: Vec<String> = children_of(tallies, "")
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     while let Some(rel) = queue.pop() {
-        let Some(t) = tallies.get(&rel).copied() else { continue };
+        let Some(t) = tallies.get(&rel).copied() else {
+            continue;
+        };
         if t.files < min_files && t.bytes < min_bytes {
             // Totals are cumulative, so a folder under both thresholds cannot
             // contain one over them — the whole subtree is done.
@@ -138,7 +147,11 @@ pub fn pick(
             .flatten();
         match dominant {
             Some(child) => queue.push(child.to_string()),
-            None => out.push(BigFolder { rel, files: t.files, bytes: t.bytes }),
+            None => out.push(BigFolder {
+                rel,
+                files: t.files,
+                bytes: t.bytes,
+            }),
         }
     }
     out.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| b.files.cmp(&a.files)));
@@ -160,13 +173,19 @@ pub fn walk_local_files(root: &Path) -> Vec<(String, u64)> {
         if out.len() >= MAX_ENTRIES {
             break;
         }
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if name == ".git" || name == ".eldrun" {
                 continue;
             }
-            let child_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            let child_rel = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel}/{name}")
+            };
             // `symlink_metadata`: a symlink is neither walked nor billed.
             let Ok(meta) = entry.metadata() else { continue };
             if meta.is_symlink() {
@@ -200,8 +219,12 @@ pub fn parse_du_files(root: &str, out: &str) -> Vec<(String, u64)> {
     let mut rows: Vec<(String, u64)> = Vec::new();
     for line in out.lines().take(MAX_ENTRIES) {
         let mut parts = line.splitn(2, '\t');
-        let (Some(kb), Some(path)) = (parts.next(), parts.next()) else { continue };
-        let Ok(kb) = kb.trim().parse::<u64>() else { continue };
+        let (Some(kb), Some(path)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let Ok(kb) = kb.trim().parse::<u64>() else {
+            continue;
+        };
         let path = path.trim_end_matches('/');
         let rel = if path == root {
             String::new()
@@ -221,9 +244,13 @@ pub fn parse_du_files(root: &str, out: &str) -> Vec<(String, u64)> {
         rows.push((rel, kb.saturating_mul(1024)));
     }
     // A path with anything beneath it is a directory; only the leaves are files.
-    let dirs: std::collections::HashSet<String> =
-        rows.iter().map(|(rel, _)| parent_of(rel).to_string()).collect();
-    rows.into_iter().filter(|(rel, _)| !dirs.contains(rel)).collect()
+    let dirs: std::collections::HashSet<String> = rows
+        .iter()
+        .map(|(rel, _)| parent_of(rel).to_string())
+        .collect();
+    rows.into_iter()
+        .filter(|(rel, _)| !dirs.contains(rel))
+        .collect()
 }
 
 /// The whole local-side answer: walk the mirror, tally, pick.
@@ -249,8 +276,20 @@ mod tests {
     #[test]
     fn tallies_are_cumulative_over_every_ancestor() {
         let t = tally_dirs(&files(&[("a/b/c.txt", 10), ("a/d.txt", 5)]));
-        assert_eq!(t["a"], FolderTally { files: 2, bytes: 15 });
-        assert_eq!(t["a/b"], FolderTally { files: 1, bytes: 10 });
+        assert_eq!(
+            t["a"],
+            FolderTally {
+                files: 2,
+                bytes: 15
+            }
+        );
+        assert_eq!(
+            t["a/b"],
+            FolderTally {
+                files: 1,
+                bytes: 10
+            }
+        );
         assert!(!t.contains_key(""), "the project root is never a candidate");
     }
 
@@ -290,7 +329,10 @@ mod tests {
             ("data/raw/big.bin", MIN_BYTES),
             ("data/notes.md", 10),
         ]));
-        assert_eq!(pick(&dominant, MIN_FILES, MIN_BYTES, MAX_DEPTH)[0].rel, "data/raw");
+        assert_eq!(
+            pick(&dominant, MIN_FILES, MIN_BYTES, MAX_DEPTH)[0].rel,
+            "data/raw"
+        );
 
         // Two comparable children: naming either would understate the ask.
         let split = tally_dirs(&files(&[
@@ -336,6 +378,9 @@ mod tests {
     #[test]
     fn du_output_skips_git_and_foreign_paths() {
         let out = "4\t/srv/proj/.git/objects/aa\n4\t/elsewhere/x\n4\t/srv/proj/keep.txt\n";
-        assert_eq!(parse_du_files("/srv/proj", out), vec![("keep.txt".to_string(), 4096)]);
+        assert_eq!(
+            parse_du_files("/srv/proj", out),
+            vec![("keep.txt".to_string(), 4096)]
+        );
     }
 }

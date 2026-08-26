@@ -68,7 +68,9 @@ mod tests {
     #[test]
     fn null_backend_switch_never_errors() {
         assert!(NullBackend.switch_to_project(None, None, &[], &[]).is_ok());
-        assert!(NullBackend.switch_to_project(Some("p1"), Some("p0"), &[1, 2], &[3]).is_ok());
+        assert!(NullBackend
+            .switch_to_project(Some("p1"), Some("p0"), &[1, 2], &[3])
+            .is_ok());
     }
 
     #[test]

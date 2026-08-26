@@ -1,6 +1,6 @@
 # tmux session persistence
 
-Referenced from `CLAUDE.md`.
+Referenced from `AGENTS.md`.
 
 **A shell/script tab runs inside a tmux session so a long run survives** (#85,
 `docs/tmux_remote_plan.md`) — decoupled from the disposable channel, the tab

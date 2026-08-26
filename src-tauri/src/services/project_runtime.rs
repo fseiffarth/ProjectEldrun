@@ -1,4 +1,3 @@
-
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -6,8 +5,8 @@ use crate::commands::apps::WindowRegistryState;
 use crate::commands::workspace::WorkspaceStateArc;
 use crate::schema::project::TabEntry;
 use crate::schema::session::{FileTabSession, LayoutSession, ProjectState};
-use crate::services::{restore_service, terminal_service, window_service};
 use crate::services::terminal_service::eldrun_sessions_dir;
+use crate::services::{restore_service, terminal_service, window_service};
 use crate::storage;
 
 // ── Public snapshot types ─────────────────────────────────────────────────
@@ -232,7 +231,12 @@ pub fn switch(
                 // unplugged display can't strand it off-screen. Size before
                 // position so a resize can't shift the placement. PHYSICAL px →
                 // correct monitor regardless of per-monitor scaling (#42).
-                let saved = win_registry.lock().unwrap().detached_bounds.get(label).copied();
+                let saved = win_registry
+                    .lock()
+                    .unwrap()
+                    .detached_bounds
+                    .get(label)
+                    .copied();
                 if let Some(b) = saved {
                     let monitors = window_service::monitor_rects(&win);
                     let fitted = crate::services::window_state::resolve_detached_geometry(

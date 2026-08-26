@@ -62,8 +62,7 @@ pub const BASE_VERSION: u32 = 1;
 const STOCK_IMAGE_NAME: &str = "ubuntu-24.04-server-cloudimg-amd64.img";
 const STOCK_IMAGE_URL: &str =
     "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img";
-const STOCK_SUMS_URL: &str =
-    "https://cloud-images.ubuntu.com/releases/noble/release/SHA256SUMS";
+const STOCK_SUMS_URL: &str = "https://cloud-images.ubuntu.com/releases/noble/release/SHA256SUMS";
 
 // ── Paths ──────────────────────────────────────────────────────────────────
 
@@ -80,7 +79,13 @@ pub fn vm_dir(project_id: &str) -> PathBuf {
     // projects.json can never traverse out of the vm root.
     let safe: String = project_id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     vm_root().join(safe)
 }
@@ -407,7 +412,11 @@ fn disk_free_gb(dir: &Path) -> Option<u64> {
 /// `spawn_blocking`.
 pub fn doctor() -> VmDoctorReport {
     let supported = cfg!(target_os = "linux");
-    let (kvm, kvm_reason) = if supported { probe_kvm() } else { (false, None) };
+    let (kvm, kvm_reason) = if supported {
+        probe_kvm()
+    } else {
+        (false, None)
+    };
     let probes = VmDoctorProbes {
         supported,
         qemu: supported && binary_ok("qemu-system-x86_64", "--version"),
@@ -692,7 +701,10 @@ pub fn qemu_args(
         "-smp".to_string(),
         cpus.to_string(),
         "-drive".to_string(),
-        format!("file={},if=virtio,format=qcow2,discard=unmap", disk.display()),
+        format!(
+            "file={},if=virtio,format=qcow2,discard=unmap",
+            disk.display()
+        ),
         "-drive".to_string(),
         format!(
             "file={},if=virtio,media=cdrom,format=raw,readonly=on",
@@ -852,7 +864,8 @@ fn wait_ssh_ready(port: u16, timeout: Duration) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     while Instant::now() < deadline {
-        if let Ok(mut conn) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(800))
+        if let Ok(mut conn) =
+            std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(800))
         {
             let _ = conn.set_read_timeout(Some(Duration::from_secs(3)));
             let mut buf = [0u8; 4];
@@ -1228,7 +1241,10 @@ mod tests {
         };
         let report = doctor_verdict(&probes);
         assert!(!report.ok);
-        assert!(report.reasons.iter().any(|r| r.contains("qemu-system-x86_64")));
+        assert!(report
+            .reasons
+            .iter()
+            .any(|r| r.contains("qemu-system-x86_64")));
         assert!(report.reasons.iter().any(|r| r == "kvm group"));
         assert!(report.reasons.iter().any(|r| r.contains("genisoimage")));
     }
@@ -1348,7 +1364,10 @@ mod tests {
     fn seed_iso_args_per_tool() {
         assert_eq!(seed_iso_args("genisoimage")[0], "-output");
         assert_eq!(seed_iso_args("xorriso")[..2], ["-as", "mkisofs"]);
-        assert_eq!(seed_iso_args("cloud-localds"), ["seed.iso", "user-data", "meta-data"]);
+        assert_eq!(
+            seed_iso_args("cloud-localds"),
+            ["seed.iso", "user-data", "meta-data"]
+        );
     }
 
     // ── vm_ssh_opts ────────────────────────────────────────────────────────
@@ -1373,8 +1392,7 @@ mod tests {
         let opts = vm_ssh_opts("127.0.0.1", Some(45998));
         assert!(opts
             .iter()
-            .any(|o| o == "/state/vm/test-ssh-opts/known_hosts"
-                || o.ends_with("known_hosts")));
+            .any(|o| o == "/state/vm/test-ssh-opts/known_hosts" || o.ends_with("known_hosts")));
         assert!(opts.iter().any(|o| o == "IdentitiesOnly=yes"));
         // A real (non-loopback) host on the same port must never match.
         assert!(vm_ssh_opts("build.example.com", Some(45998)).is_empty());

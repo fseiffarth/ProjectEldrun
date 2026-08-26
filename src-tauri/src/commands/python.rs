@@ -55,10 +55,10 @@ pub struct PyInterpreter {
 /// A `conda` (named, not active) env never auto-wins — see the module note.
 fn auto_rank(kind: &str) -> u8 {
     match kind {
-        "venv" => 0,    // in the project tree: unambiguous
-        "poetry" => 1,  // this project's env, per poetry itself
-        "active" => 2,  // the shell Eldrun was launched from
-        "pyenv" => 3,   // usually pinned by an in-tree .python-version
+        "venv" => 0,   // in the project tree: unambiguous
+        "poetry" => 1, // this project's env, per poetry itself
+        "active" => 2, // the shell Eldrun was launched from
+        "pyenv" => 3,  // usually pinned by an in-tree .python-version
         "system" => 5,
         _ => 4, // "conda" (named): offered, never auto-selected
     }
@@ -72,7 +72,11 @@ fn auto_selectable(kind: &str) -> bool {
 const WINDOWS: bool = cfg!(windows);
 
 fn default_interpreter() -> String {
-    if WINDOWS { "python".into() } else { "python3".into() }
+    if WINDOWS {
+        "python".into()
+    } else {
+        "python3".into()
+    }
 }
 
 /// The venv directory names we look for in the project root, in preference order.
@@ -105,7 +109,11 @@ fn prunes_venv_scan(name: &str) -> bool {
 
 /// The interpreter inside a venv root, relative to it.
 fn venv_python_rel() -> &'static str {
-    if WINDOWS { "Scripts\\python.exe" } else { "bin/python" }
+    if WINDOWS {
+        "Scripts\\python.exe"
+    } else {
+        "bin/python"
+    }
 }
 
 /// True when `dir` is a venv root: it carries a `pyvenv.cfg` (PEP 405, the
@@ -183,7 +191,11 @@ fn probe(dir: &Path, program: &str, args: &[&str]) -> Option<String> {
         return None;
     }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 /// Interpreters visible from a LOCAL project directory.
@@ -508,9 +520,10 @@ pub fn set_project_python(
 
     match &value {
         Some(v) => {
-            entry
-                .extra
-                .insert("python_interpreter".into(), serde_json::Value::String(v.clone()));
+            entry.extra.insert(
+                "python_interpreter".into(),
+                serde_json::Value::String(v.clone()),
+            );
         }
         None => {
             entry.extra.remove("python_interpreter");
@@ -599,7 +612,9 @@ mod tests {
     #[test]
     fn local_discovery_finds_an_in_tree_venv_as_a_relative_path() {
         let tmp = std::env::temp_dir().join(format!("eldrun-py-{}", std::process::id()));
-        let bin = tmp.join(".venv").join(if WINDOWS { "Scripts" } else { "bin" });
+        let bin = tmp
+            .join(".venv")
+            .join(if WINDOWS { "Scripts" } else { "bin" });
         std::fs::create_dir_all(&bin).unwrap();
         let py = bin.join(if WINDOWS { "python.exe" } else { "python" });
         std::fs::write(&py, b"#!/bin/sh\n").unwrap();
@@ -660,7 +675,10 @@ mod tests {
             .join("api")
             .join(".venv")
             .join(venv_python_rel());
-        assert!(venvs.contains(&root_py.to_string_lossy().as_ref()), "root venv missing: {venvs:?}");
+        assert!(
+            venvs.contains(&root_py.to_string_lossy().as_ref()),
+            "root venv missing: {venvs:?}"
+        );
         assert!(
             venvs.contains(&nested_py.to_string_lossy().as_ref()),
             "nested venv missing: {venvs:?}"
@@ -679,7 +697,10 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
         make_fake_venv(&tmp, "node_modules/pkg/.venv");
         let found = find_venvs(&tmp);
-        assert!(found.is_empty(), "should not descend into node_modules: {found:?}");
+        assert!(
+            found.is_empty(),
+            "should not descend into node_modules: {found:?}"
+        );
         std::fs::remove_dir_all(&tmp).ok();
     }
 

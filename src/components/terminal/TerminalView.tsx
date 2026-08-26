@@ -19,6 +19,7 @@ import { onTerminalExit, onTerminalOutput, onTerminalReady, onTerminalReplay } f
 import { hpcGuardRefusal } from "../../lib/hpcGuard";
 import { useHpcGuardStore } from "../../stores/hpcGuardPrompt";
 import { claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isTerminalIdentityResponse, isTerminalReport, stripTerminalQueries } from "../../lib/terminalControl";
+import { clearPtyInput, writePtyInput } from "../../lib/terminalInput";
 import "@xterm/xterm/css/xterm.css";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
@@ -205,6 +206,8 @@ function readAgentFontSize(): number {
 }
 
 export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, remoteHostId = null, tmuxSession = null, tmuxAttach = null, hostBoundUid = null, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false }: Props) {
+  const viewerId = useRef(crypto.randomUUID()).current;
+  const viewerUpdateSeq = useRef(0);
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -497,7 +500,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       }
       noteUserInput(id);
       if (noteInput(id, data) > 0) countSubmit();
-      invoke("pty_write", { id, data: PTY_ENCODER.encode(data) }).catch(console.error);
+      writePtyInput(id, PTY_ENCODER.encode(data)).catch(console.error);
     });
 
     // A terminal bell means the agent wants to be looked at NOW, so it shortcuts
@@ -616,7 +619,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
           .then((text) => {
             if (text) {
               noteUserInput(id);
-              invoke("pty_write", { id, data: PTY_ENCODER.encode(text) }).catch(console.error);
+              writePtyInput(id, PTY_ENCODER.encode(text)).catch(console.error);
             }
           })
           .catch(() => {});
@@ -629,7 +632,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // pane calling `listen()` itself — the backend emits these window-wide, not
     // scoped per PTY, so one `listen()` per mounted terminal meant every output
     // chunk from every running PTY was dispatched to and filtered by every
-    // mounted terminal (CenterPanel keeps ALL tabs, ALL scopes, mounted forever).
+    // mounted terminal (CenterPanel keeps every loaded active scope mounted).
     // The bus does that dispatch once, in O(1) per id, no matter how many panes
     // are mounted. Subscribing is synchronous, so these are wired up before
     // `setupAndSpawn` below ever awaits `pty_spawn` — no output can arrive first.
@@ -691,13 +694,13 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
           // Typed on the user's behalf — they triggered the flow that
           // opened this tab with a command, so its work counts as asked-for.
           noteUserInput(id);
-          invoke("pty_write", {
+          writePtyInput(
             id,
-            data: PTY_ENCODER.encode(initialInputForPty(initialInput, kind)),
-          }).catch(console.error);
+            PTY_ENCODER.encode(initialInputForPty(initialInput, kind)),
+          ).catch(console.error);
           initialEnterTimer.current = setTimeout(() => {
             initialInputPending.current = false;
-            invoke("pty_write", { id, data: new Uint8Array([0x0d]) }).catch(console.error);
+            writePtyInput(id, new Uint8Array([0x0d])).catch(console.error);
           }, 200);
         };
         typeWhenReady();
@@ -714,6 +717,24 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // a duplicate id would kill+respawn it, destroying scrollback / the agent
       // session. We only subscribe to the broadcast output/input by id.
       if (attachOnly) return;
+
+      // Register this view with the visible-only output router *before* starting
+      // the child. The ordinary visibility effect below also keeps that state in
+      // sync after mount, but effects run after this one and its IPC call is not
+      // ordered against a very short-lived process. Without this handshake, a
+      // CLI that prints an error and exits immediately (OpenClaw rejecting an
+      // unsupported Node version is one example) can finish while no view is
+      // registered: `route_close` drops its buffered output and the tab is left
+      // as an empty pane. Waiting for the router acknowledgement makes the
+      // spawn/output lifetime start with a concrete recipient.
+      const updateSeq = ++viewerUpdateSeq.current;
+      try {
+        await invoke("pty_set_visible", { id, viewerId, visible, updateSeq });
+      } catch {
+        // Output routing is an optimization. Preserve the normal spawn path if
+        // an older backend does not expose the registration command.
+      }
+      if (cancelled) return;
 
       // A (re)spawn is a new program: wipe what the activity store recorded
       // about the previous occupant of this id, so a reopened project's resume
@@ -769,7 +790,18 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       }
     };
 
-    setupAndSpawn();
+    // React Strict Mode deliberately runs an effect setup → cleanup → setup cycle
+    // on an initial development mount. Starting a PTY synchronously in the first
+    // setup made the second one replace it under the same id; replacement reaps
+    // the first child with SIGTERM. Most CLIs exit quietly, but Antigravity logs
+    // that signal as a scary raw gRPC error in the terminal it is about to
+    // resume. Defer the actual spawn by one microtask: Strict Mode's synthetic
+    // cleanup marks this lifecycle cancelled before the task runs, leaving only
+    // the real setup to create the PTY. A genuine quick unmount gets the same
+    // safe outcome (no process was ever started).
+    queueMicrotask(() => {
+      if (!cancelled) void setupAndSpawn();
+    });
 
     // Resize observer — handles container-level resizes (e.g. panel open/close)
     // and the hidden→visible transition (display:none→flex changes the box from
@@ -848,6 +880,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
 
     return () => {
       cancelled = true;
+      clearPtyInput(id);
       if (initialEnterTimer.current) clearTimeout(initialEnterTimer.current);
       if (openWatchTimer.current) clearTimeout(openWatchTimer.current);
       if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
@@ -943,13 +976,19 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   // emitting a hidden pane's output over IPC entirely (it buffers in Rust and
   // condenses throttled `terminal-activity` digests for the pill indicators;
   // the buffer comes back as one `terminal-replay` when the pane is shown).
-  // Deliberately no unmount teardown: a detached tab's new pane re-reports
-  // from its own window, and a real close removes the backend route with the
-  // PTY — while an unmount-time "hidden" here could land AFTER the other
-  // window's "visible" and silence a pane that is on screen.
+  // Each mounted view owns a stable token. Cleanup removes only that view, so a
+  // hidden main pane can never silence a visible detached pane (or vice versa).
   useEffect(() => {
-    invoke("pty_set_visible", { id, visible }).catch(() => {});
-  }, [id, visible]);
+    const updateSeq = ++viewerUpdateSeq.current;
+    invoke("pty_set_visible", { id, viewerId, visible, updateSeq }).catch(() => {});
+  }, [id, viewerId, visible]);
+
+  useEffect(() => {
+    return () => {
+      const updateSeq = ++viewerUpdateSeq.current;
+      invoke("pty_remove_view", { id, viewerId, updateSeq }).catch(() => {});
+    };
+  }, [id, viewerId]);
 
   // Take keyboard focus only when this pane is the focused one (and opened).
   useEffect(() => {

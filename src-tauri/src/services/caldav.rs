@@ -224,7 +224,10 @@ pub fn parse_multistatus(xml: &str) -> Result<Multistatus, String> {
     let mut out = Multistatus::default();
     for child in root.children().filter(|n| n.is_element()) {
         if is(&child, NS_DAV, "sync-token") {
-            out.sync_token = child.text().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+            out.sync_token = child
+                .text()
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty());
             continue;
         }
         if !is(&child, NS_DAV, "response") {
@@ -477,7 +480,9 @@ pub fn normalize_base_url(raw: &str) -> Result<Url, String> {
     let url = Url::parse(&with_scheme).map_err(|e| format!("not a usable URL: {e}"))?;
     match url.scheme() {
         "https" | "http" => Ok(url),
-        other => Err(format!("unsupported URL scheme '{other}' — CalDAV is HTTP(S)")),
+        other => Err(format!(
+            "unsupported URL scheme '{other}' — CalDAV is HTTP(S)"
+        )),
     }
 }
 
@@ -568,7 +573,10 @@ async fn dav_reply(
             // `reqwest`'s Display walks the source chain and can print the URL,
             // which never carries the password (it is a header) — but the host
             // is enough context on its own.
-            format!("could not reach {}: {e}", url.host_str().unwrap_or("the server"))
+            format!(
+                "could not reach {}: {e}",
+                url.host_str().unwrap_or("the server")
+            )
         })?;
         let status = resp.status();
 
@@ -696,7 +704,10 @@ pub fn credentials_may_follow(from: &Url, to: &Url) -> bool {
     let from_host = from_host.to_ascii_lowercase();
     let to_host = to_host.to_ascii_lowercase();
 
-    if from.scheme() == to.scheme() && from_host == to_host && from.port_or_known_default() == to.port_or_known_default() {
+    if from.scheme() == to.scheme()
+        && from_host == to_host
+        && from.port_or_known_default() == to.port_or_known_default()
+    {
         return true;
     }
     // A subdomain hop is only ever allowed under TLS, on both ends: over plain
@@ -863,9 +874,11 @@ pub async fn discover(base_url: &str, cred: &Credentials) -> Result<Vec<CalDavCo
         }
     }
 
-    Err("no calendars found there — check the URL, or paste the address of the calendar \
+    Err(
+        "no calendars found there — check the URL, or paste the address of the calendar \
          collection itself (your provider's CalDAV documentation usually gives one)"
-        .to_string())
+            .to_string(),
+    )
 }
 
 /// Steps 1–3 of [`discover`] against one URL. `Ok(None)` means "nothing here",
@@ -875,15 +888,8 @@ async fn discover_from(
     url: &Url,
     cred: &Credentials,
 ) -> Result<Option<Vec<CalDavCollection>>, String> {
-    let (status, body, final_url) = dav_request(
-        client,
-        "PROPFIND",
-        url,
-        cred,
-        Some("0"),
-        Some(body_probe()),
-    )
-    .await?;
+    let (status, body, final_url) =
+        dav_request(client, "PROPFIND", url, cred, Some("0"), Some(body_probe())).await?;
     if !status.is_success() {
         return Ok(None);
     }
@@ -993,7 +999,9 @@ pub async fn change_tokens(
         .first()
         .ok_or_else(|| "the server answered with an empty multistatus".to_string())?;
     Ok((
-        resp.text(NS_CALSERVER, "getctag").unwrap_or_default().to_string(),
+        resp.text(NS_CALSERVER, "getctag")
+            .unwrap_or_default()
+            .to_string(),
         resp.text(NS_DAV, "sync-token").map(|s| s.to_string()),
     ))
 }
@@ -1510,7 +1518,11 @@ mod tests {
             .filter(|r| r.is_calendar())
             .filter_map(|r| collection_from(&base, r))
             .collect();
-        assert_eq!(calendars.len(), 1, "the home collection itself is not a calendar");
+        assert_eq!(
+            calendars.len(),
+            1,
+            "the home collection itself is not a calendar"
+        );
         let cal = &calendars[0];
         assert_eq!(cal.href, "https://dav.example.org/calendars/user/personal/");
         assert_eq!(cal.display_name, "Personal");
@@ -1550,7 +1562,10 @@ mod tests {
         let base = Url::parse("https://dav.example.org/").unwrap();
         let parsed = parse_multistatus(shared).unwrap();
         let cal = collection_from(&base, &parsed.responses[0]).unwrap();
-        assert!(cal.read_only, "read-only privileges are a fact the server stated");
+        assert!(
+            cal.read_only,
+            "read-only privileges are a fact the server stated"
+        );
 
         // A server that reports no privileges at all asserts nothing — the
         // field stays false rather than claiming writability either way.
@@ -1585,7 +1600,11 @@ mod tests {
 </D:multistatus>"#;
         let base = Url::parse("https://dav.example.org/").unwrap();
         let parsed = parse_multistatus(xml).unwrap();
-        assert!(!collection_from(&base, &parsed.responses[0]).unwrap().read_only);
+        assert!(
+            !collection_from(&base, &parsed.responses[0])
+                .unwrap()
+                .read_only
+        );
     }
 
     #[test]
@@ -1646,11 +1665,20 @@ END:VCALENDAR</C:calendar-data></D:prop>
 </D:multistatus>"#;
         let base = Url::parse("https://dav.example.org/cal/").unwrap();
         let parsed = parse_multistatus(xml).unwrap();
-        assert_eq!(parsed.sync_token.as_deref(), Some("http://example.com/sync/2"));
+        assert_eq!(
+            parsed.sync_token.as_deref(),
+            Some("http://example.com/sync/2")
+        );
         let changes = changes_from(&base, &parsed, true);
         assert_eq!(changes.resources.len(), 1);
-        assert_eq!(changes.resources[0].href, "https://dav.example.org/cal/kept.ics");
-        assert_eq!(changes.removed, vec!["https://dav.example.org/cal/gone.ics"]);
+        assert_eq!(
+            changes.resources[0].href,
+            "https://dav.example.org/cal/kept.ics"
+        );
+        assert_eq!(
+            changes.removed,
+            vec!["https://dav.example.org/cal/gone.ics"]
+        );
         assert!(changes.incremental);
     }
 
@@ -1692,7 +1720,11 @@ END:VCALENDAR</C:calendar-data></D:prop>
         );
         let base = Url::parse("https://dav.example.org/").unwrap();
         assert_eq!(
-            absolute(&base, resp.href_in(NS_DAV, "current-user-principal").unwrap()).as_deref(),
+            absolute(
+                &base,
+                resp.href_in(NS_DAV, "current-user-principal").unwrap()
+            )
+            .as_deref(),
             Some("https://dav.example.org/principals/users/me/")
         );
     }
@@ -1744,7 +1776,9 @@ END:VCALENDAR</C:calendar-data></D:prop>
         // An explicit http:// the user typed is honoured — that is the
         // self-hosted-on-localhost case.
         assert_eq!(
-            normalize_base_url("http://localhost:5232/").unwrap().as_str(),
+            normalize_base_url("http://localhost:5232/")
+                .unwrap()
+                .as_str(),
             "http://localhost:5232/"
         );
         assert!(normalize_base_url("ftp://example.org").is_err());
@@ -1758,10 +1792,19 @@ END:VCALENDAR</C:calendar-data></D:prop>
     #[test]
     fn credentials_ride_a_hop_inside_the_same_origin() {
         let from = u("https://dav.example.org/dav/");
-        assert!(credentials_may_follow(&from, &u("https://dav.example.org/dav/me/")));
-        assert!(credentials_may_follow(&from, &u("https://dav.example.org/other")));
+        assert!(credentials_may_follow(
+            &from,
+            &u("https://dav.example.org/dav/me/")
+        ));
+        assert!(credentials_may_follow(
+            &from,
+            &u("https://dav.example.org/other")
+        ));
         // A different port is a different service, whoever runs it.
-        assert!(!credentials_may_follow(&from, &u("https://dav.example.org:8443/dav/")));
+        assert!(!credentials_may_follow(
+            &from,
+            &u("https://dav.example.org:8443/dav/")
+        ));
     }
 
     #[test]
@@ -1769,7 +1812,10 @@ END:VCALENDAR</C:calendar-data></D:prop>
         // RFC 6764's own shape: the user types the bare domain, and
         // `/.well-known/caldav` redirects to the DAV host.
         let from = u("https://example.org/.well-known/caldav");
-        assert!(credentials_may_follow(&from, &u("https://caldav.example.org/dav/")));
+        assert!(credentials_may_follow(
+            &from,
+            &u("https://caldav.example.org/dav/")
+        ));
         assert!(credentials_may_follow(
             &from,
             &u("https://a.b.example.org/dav/")
@@ -1780,11 +1826,17 @@ END:VCALENDAR</C:calendar-data></D:prop>
     fn credentials_never_ride_a_hop_to_another_host() {
         let from = u("https://dav.example.org/dav/");
         // The attack this whole check exists for.
-        assert!(!credentials_may_follow(&from, &u("https://evil.example/dav/")));
+        assert!(!credentials_may_follow(
+            &from,
+            &u("https://evil.example/dav/")
+        ));
         // A sibling host is refused too: without a public-suffix list, "same
         // organization" is not something this can tell from "same last two
         // labels", and `a.co.uk`/`evil.co.uk` would pass such a test.
-        assert!(!credentials_may_follow(&from, &u("https://other.example.org/dav/")));
+        assert!(!credentials_may_follow(
+            &from,
+            &u("https://other.example.org/dav/")
+        ));
         // Suffix matching must not be substring matching.
         assert!(!credentials_may_follow(
             &from,
@@ -1802,8 +1854,14 @@ END:VCALENDAR</C:calendar-data></D:prop>
         // that is the localhost/Radicale case `normalize_base_url` honours — but
         // it earns no subdomain latitude, since the header is readable anyway.
         let local = u("http://localhost:5232/");
-        assert!(credentials_may_follow(&local, &u("http://localhost:5232/dav/")));
-        assert!(!credentials_may_follow(&local, &u("http://sub.localhost:5232/")));
+        assert!(credentials_may_follow(
+            &local,
+            &u("http://localhost:5232/dav/")
+        ));
+        assert!(!credentials_may_follow(
+            &local,
+            &u("http://sub.localhost:5232/")
+        ));
     }
 
     #[test]

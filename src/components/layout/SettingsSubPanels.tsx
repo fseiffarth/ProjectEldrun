@@ -19,6 +19,7 @@ import { parseSshAddress } from "../projects/scaffold";
 import { useProjectsStore } from "../../stores/projects";
 import { useGlobalMachinesStore } from "../../stores/globalMachines";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { notifyAgentRegistryChanged } from "../../lib/agentRegistry";
 
 interface OllamaModelInfo {
   name: string;
@@ -648,8 +649,9 @@ function NodeRuntimeNotice() {
 
 /**
  * "Manage Agents" panel: detect and one-click-install the AI coding-agent CLIs
- * Eldrun can launch as agent tabs (Claude, Codex, Gemini, Mistral/vibe, Aider,
- * OpenCode, Cursor, Copilot, Grok, Qwen, OpenClaw). The
+ * Eldrun can launch as agent tabs (Claude, Codex, Google Antigravity, Google
+ * Gemini, Mistral/vibe, Aider, OpenCode, Cursor, Copilot, Grok, Qwen, OpenClaw).
+ * The
  * registry lives in the backend (`commands::agents`); this just renders each
  * entry with an install button, a live install log, and a manual fallback.
  */
@@ -716,6 +718,7 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
     try {
       await invoke<string>("install_agent", { id });
       refresh();
+      notifyAgentRegistryChanged();
     } catch (err) {
       setErrors((e) => ({ ...e, [id]: String(err) }));
     } finally {
@@ -733,6 +736,7 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
     try {
       await invoke<string>("uninstall_agent", { id });
       refresh();
+      notifyAgentRegistryChanged();
       return true;
     } catch (err) {
       setErrors((e) => ({ ...e, [id]: String(err) }));
@@ -755,6 +759,7 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
         setAgents((prev) =>
           prev?.map((a) => (a.id === id ? { ...a, installed: ok } : a)) ?? prev,
         );
+        notifyAgentRegistryChanged();
         if (!ok) {
           setErrors((e) => ({
             ...e,
@@ -834,6 +839,7 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
         {t("agents.help1")} <strong>+</strong> {t("agents.help2")} <code>npm</code>{" "}
         {t("agents.help3")} <code>PATH</code> {t("agents.help4")}
       </p>
+      <p className="settings-help">{t("agents.googleCliChoice")}</p>
       <NodeRuntimeNotice />
       {agents === null ? (
         <p className="settings-help">{t("agents.checkingInstalled")}</p>

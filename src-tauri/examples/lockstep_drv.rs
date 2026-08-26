@@ -77,7 +77,9 @@ fn show_result(r: Result<git_peer::GitPeerState, String>) {
 
 #[tokio::main]
 async fn main() {
-    let script_path = std::env::args().nth(1).expect("usage: lockstep_drv <script>");
+    let script_path = std::env::args()
+        .nth(1)
+        .expect("usage: lockstep_drv <script>");
     let project_id = std::env::var("ELDRUN_PROJECT").expect("set ELDRUN_PROJECT=<project-id>");
     let script = std::fs::read_to_string(&script_path).expect("cannot read script");
 
@@ -124,7 +126,9 @@ async fn main() {
             }
             // Mirrors `commands::sync::sync_set_auto`.
             "bs-auto" => {
-                let (rel, on) = rest.split_once(char::is_whitespace).expect("bs-auto <rel> on|off");
+                let (rel, on) = rest
+                    .split_once(char::is_whitespace)
+                    .expect("bs-auto <rel> on|off");
                 let rel = if rel == "." { "" } else { rel };
                 let on = on.trim() == "on";
                 let mut g = manifest.lock().await;
@@ -137,7 +141,10 @@ async fn main() {
                 }
                 e.is_dir = rel.is_empty() || !mirror.join(rel).is_file();
                 remote_sync::save_manifest(&project_id, m).expect("save sync.json");
-                println!("   byte-sync auto[{}] = {on}", if rel.is_empty() { "." } else { rel });
+                println!(
+                    "   byte-sync auto[{}] = {on}",
+                    if rel.is_empty() { "." } else { rel }
+                );
             }
             "bs" => {
                 sync_auto::reconcile_once(&pool, &manifest, &target, &project_id).await;
@@ -164,7 +171,14 @@ async fn main() {
                 };
                 show_result(
                     git_peer::checkout_lockstep(
-                        &pool, &manifest, &auto, &project_id, &spec, tgt, side, false,
+                        &pool,
+                        &manifest,
+                        &auto,
+                        &project_id,
+                        &spec,
+                        tgt,
+                        side,
+                        false,
                     )
                     .await,
                 );
@@ -185,7 +199,9 @@ async fn main() {
                 }
             }
             "restore" => {
-                let (peer, refname) = rest.split_once(char::is_whitespace).expect("restore <peer> <ref>");
+                let (peer, refname) = rest
+                    .split_once(char::is_whitespace)
+                    .expect("restore <peer> <ref>");
                 show_result(
                     git_peer::restore_backup(
                         &pool,
@@ -251,7 +267,10 @@ async fn main() {
         }
         // Elapsed is the only way to *see* the D5 early-out (case 9): it skips the
         // bundle+transfer round trip, not the probe, so it shows up as a fast pass.
-        if matches!(cmd, "sync" | "sync-soft" | "pair-confirm" | "bs" | "resolve" | "checkout") {
+        if matches!(
+            cmd,
+            "sync" | "sync-soft" | "pair-confirm" | "bs" | "resolve" | "checkout"
+        ) {
             println!("   ({} ms)", t0.elapsed().as_millis());
         }
     }

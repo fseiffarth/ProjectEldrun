@@ -1127,7 +1127,10 @@ mod tests {
     /// A rename here silently breaks `src/types/mail.ts`, which is frozen.
     #[test]
     fn enums_serialize_as_the_frozen_lowercase_strings() {
-        assert_eq!(serde_json::to_string(&MailSecurity::Tls).unwrap(), "\"tls\"");
+        assert_eq!(
+            serde_json::to_string(&MailSecurity::Tls).unwrap(),
+            "\"tls\""
+        );
         assert_eq!(
             serde_json::to_string(&MailSecurity::Starttls).unwrap(),
             "\"starttls\""
@@ -1182,7 +1185,10 @@ mod tests {
                 "accounts.json must carry no secret field, found {banned} in {raw}"
             );
         }
-        assert!(raw.contains("\"save_password\":false"), "opt-in defaults off");
+        assert!(
+            raw.contains("\"save_password\":false"),
+            "opt-in defaults off"
+        );
     }
 
     /// A field a newer build wrote must survive an older build reading and
@@ -1228,7 +1234,10 @@ mod authserv_roundtrip_tests {
         assert!(json.contains("authserv_id"), "not serialized: {json}");
         let back: MailAccount = serde_json::from_str(&json).unwrap();
         assert_eq!(back.authserv_id.as_deref(), Some("mx.google.com"));
-        assert!(!back.extra.contains_key("authserv_id"), "swallowed by the catch-all");
+        assert!(
+            !back.extra.contains_key("authserv_id"),
+            "swallowed by the catch-all"
+        );
 
         // And the value the frontend actually sends: a camelCase-free object
         // with the field present among unknown extras.

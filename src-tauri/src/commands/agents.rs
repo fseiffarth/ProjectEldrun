@@ -1,6 +1,7 @@
 //! Agent-CLI management: detect and install the AI coding-agent command-line
-//! tools Eldrun can launch as agent tabs (Claude, Codex, Gemini, Mistral/vibe,
-//! Aider, OpenCode, Cursor, Copilot, Grok, Qwen, OpenClaw).
+//! tools Eldrun can launch as agent tabs. The registry covers the major hosted,
+//! open-source, and provider-agnostic terminal agents (Claude, Codex, Gemini,
+//! Kiro, Cline, Goose, OpenHands, Pi, and more).
 //!
 //! This mirrors the local-model install flow in `commands::ollama` (see
 //! `install_vibe`), but is registry-driven so the set of agents lives in one
@@ -36,7 +37,11 @@ struct AgentSpec {
 /// itself: `irm … | iex` is PowerShell-only; `npm`/`python` installs work in
 /// either PowerShell or the classic Command Prompt.
 fn windows_shell(cmd: &str) -> &'static str {
-    if cmd.contains("iex") || cmd.trim_start().starts_with("irm") {
+    if cmd.contains("iex")
+        || cmd.trim_start().starts_with("irm")
+        || cmd.contains("Invoke-RestMethod")
+        || cmd.contains("Invoke-Expression")
+    {
         "PowerShell"
     } else {
         "PowerShell or Command Prompt"
@@ -44,7 +49,11 @@ fn windows_shell(cmd: &str) -> &'static str {
 }
 
 fn windows_shell_kind(cmd: &str) -> &'static str {
-    if cmd.contains("iex") || cmd.trim_start().starts_with("irm") {
+    if cmd.contains("iex")
+        || cmd.trim_start().starts_with("irm")
+        || cmd.contains("Invoke-RestMethod")
+        || cmd.contains("Invoke-Expression")
+    {
         "powershell"
     } else {
         "default"
@@ -91,13 +100,40 @@ const AGENTS: &[AgentSpec] = &[
         docs: "https://github.com/openai/codex",
     },
     AgentSpec {
+        id: "antigravity",
+        label: "Google Antigravity",
+        bin: "agy",
+        install_cmd: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+        install_cmd_windows: Some("irm https://antigravity.google/cli/install.ps1 | iex"),
+        extra_paths: &[".local/bin/agy", "AppData/Local/agy/bin/agy"],
+        docs: "https://antigravity.google/docs/cli/install/",
+    },
+    AgentSpec {
         id: "gemini",
-        label: "Gemini",
+        label: "Google Gemini",
         bin: "gemini",
         install_cmd: "npm install -g @google/gemini-cli",
         install_cmd_windows: Some("npm install -g @google/gemini-cli"),
         extra_paths: &[".local/bin/gemini"],
         docs: "https://github.com/google-gemini/gemini-cli",
+    },
+    AgentSpec {
+        id: "kiro",
+        label: "Kiro",
+        bin: "kiro",
+        install_cmd: "curl -fsSL https://cli.kiro.dev/install | bash",
+        install_cmd_windows: None,
+        extra_paths: &[".local/bin/kiro"],
+        docs: "https://kiro.dev/docs/cli/installation/",
+    },
+    AgentSpec {
+        id: "cline",
+        label: "Cline",
+        bin: "cline",
+        install_cmd: "npm install -g cline",
+        install_cmd_windows: Some("npm install -g cline"),
+        extra_paths: &[],
+        docs: "https://docs.cline.bot/getting-started/installing-cline",
     },
     AgentSpec {
         id: "vibe",
@@ -113,8 +149,15 @@ const AGENTS: &[AgentSpec] = &[
         id: "aider",
         label: "Aider",
         bin: "aider",
-        install_cmd: "python -m pip install aider-install && aider-install",
-        install_cmd_windows: Some("python -m pip install aider-install && aider-install"),
+        // Use Aider's official uv-based one-liners. Unlike the pip bootstrap,
+        // these do not assume the host provides a `python` alias (many Linux
+        // distributions only ship `python3`) or permits writes to its
+        // distro-managed Python environment.
+        install_cmd: "curl -LsSf https://aider.chat/install.sh | sh",
+        // `installer_command` already supplies the PowerShell process and
+        // execution-policy override, so this is the body of Aider's documented
+        // `powershell ... -c "..."` command.
+        install_cmd_windows: Some("irm https://aider.chat/install.ps1 | iex"),
         extra_paths: &[".local/bin/aider"],
         docs: "https://aider.chat/docs/install.html",
     },
@@ -172,6 +215,114 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("npm install -g openclaw"),
         extra_paths: &[".local/bin/openclaw"],
         docs: "https://docs.openclaw.ai",
+    },
+    AgentSpec {
+        id: "goose",
+        label: "Goose",
+        bin: "goose",
+        install_cmd: "curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | bash",
+        install_cmd_windows: None,
+        extra_paths: &[".local/bin/goose"],
+        docs: "https://github.com/aaif-goose/goose",
+    },
+    AgentSpec {
+        id: "openhands",
+        label: "OpenHands",
+        bin: "openhands",
+        install_cmd: "curl -fsSL https://install.openhands.dev/install.sh | sh",
+        install_cmd_windows: None,
+        extra_paths: &[".local/bin/openhands"],
+        docs: "https://docs.openhands.dev/openhands/usage/cli/installation",
+    },
+    AgentSpec {
+        id: "pi",
+        label: "Pi",
+        bin: "pi",
+        install_cmd: "npm install -g @mariozechner/pi-coding-agent",
+        install_cmd_windows: Some("npm install -g @mariozechner/pi-coding-agent"),
+        extra_paths: &[],
+        docs: "https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent",
+    },
+    AgentSpec {
+        id: "plandex",
+        label: "Plandex",
+        bin: "plandex",
+        install_cmd: "curl -sL https://plandex.ai/install.sh | bash",
+        install_cmd_windows: None,
+        extra_paths: &[],
+        docs: "https://docs.plandex.ai/docs/cli-reference/",
+    },
+    AgentSpec {
+        id: "swe-agent",
+        label: "SWE-agent",
+        bin: "sweagent",
+        install_cmd: "pip install swe-agent",
+        install_cmd_windows: Some("pip install swe-agent"),
+        extra_paths: &[".local/bin/sweagent"],
+        docs: "https://swe-agent.com/latest/installation/source/",
+    },
+    AgentSpec {
+        id: "mini-swe-agent",
+        label: "mini-SWE-agent",
+        bin: "mini",
+        install_cmd: "pip install mini-swe-agent",
+        install_cmd_windows: Some("pip install mini-swe-agent"),
+        extra_paths: &[".local/bin/mini"],
+        docs: "https://mini-swe-agent.com/latest/quickstart/",
+    },
+    AgentSpec {
+        id: "mentat",
+        label: "Mentat",
+        bin: "mentat",
+        install_cmd: "pip install mentat",
+        install_cmd_windows: Some("pip install mentat"),
+        extra_paths: &[".local/bin/mentat"],
+        docs: "https://github.com/biobootloader/mentat",
+    },
+    AgentSpec {
+        id: "gpt-engineer",
+        label: "GPT Engineer",
+        bin: "gpte",
+        install_cmd: "pip install gpt-engineer",
+        install_cmd_windows: Some("pip install gpt-engineer"),
+        extra_paths: &[".local/bin/gpte"],
+        docs: "https://github.com/AntonOsika/gpt-engineer",
+    },
+    AgentSpec {
+        id: "crush",
+        label: "Crush",
+        bin: "crush",
+        install_cmd: "npm install -g @charmland/crush",
+        install_cmd_windows: Some("npm install -g @charmland/crush"),
+        extra_paths: &[],
+        docs: "https://github.com/charmbracelet/crush",
+    },
+    AgentSpec {
+        id: "amp",
+        label: "Amp",
+        bin: "amp",
+        install_cmd: "npm install -g @sourcegraph/amp",
+        install_cmd_windows: Some("npm install -g @sourcegraph/amp"),
+        extra_paths: &[],
+        docs: "https://ampcode.com/",
+    },
+    AgentSpec {
+        id: "kimi",
+        label: "Kimi Code",
+        bin: "kimi",
+        install_cmd: "curl -LsSf https://code.kimi.com/install.sh | bash",
+        install_cmd_windows: Some("Invoke-RestMethod https://code.kimi.com/install.ps1 | Invoke-Expression"),
+        extra_paths: &[".local/bin/kimi"],
+        docs: "https://github.com/MoonshotAI/kimi-cli",
+    },
+    AgentSpec {
+        id: "qoder",
+        label: "Qoder",
+        bin: "qoder",
+        install_cmd: "curl -fsSL https://qoder.com/install | bash",
+        install_cmd_windows: Some("irm https://qoder.com/install.ps1 | iex"),
+        extra_paths: &[".local/bin/qoder"],
+        docs: "https://docs.qoder.com/cli/installation",
     },
 ];
 
@@ -258,13 +409,9 @@ fn remote_install_script(spec: &AgentSpec) -> String {
 /// the global machine monitor. The command itself is registry-owned and runs in
 /// the remote account's login shell, where npm/nvm and user install paths live.
 #[tauri::command]
-pub async fn install_agent_remote(
-    agent_id: String,
-    machine_id: String,
-) -> Result<String, String> {
+pub async fn install_agent_remote(agent_id: String, machine_id: String) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
-        let spec = find_spec(&agent_id)
-            .ok_or_else(|| format!("unknown agent: {agent_id}"))?;
+        let spec = find_spec(&agent_id).ok_or_else(|| format!("unknown agent: {agent_id}"))?;
         let machine = crate::commands::global_machines::find_by_id(&machine_id)
             .ok_or_else(|| "remote machine is no longer configured".to_string())?;
 
@@ -432,7 +579,9 @@ pub async fn codex_hook_status() -> crate::services::agent_session::CodexHookSta
 /// installer targets the user's own home directory, where running it as root
 /// would create root-owned files there instead of fixing anything.
 fn sudo_variant(cmd: &str) -> String {
-    if !cfg!(windows) && (cmd.starts_with("npm install -g ") || cmd.starts_with("npm uninstall -g ")) {
+    if !cfg!(windows)
+        && (cmd.starts_with("npm install -g ") || cmd.starts_with("npm uninstall -g "))
+    {
         format!("sudo {cmd}")
     } else {
         String::new()
@@ -550,27 +699,39 @@ pub async fn install_agent(app: tauri::AppHandle, id: String) -> Result<String, 
     };
     emit(&format!("Starting {} installer…", spec.label));
 
-    let mut child = installer_command(spec)?
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("failed to launch installer: {e}"))?;
-
     let mut lines: Vec<String> = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        for line in BufReader::new(stdout).lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => break,
-            };
-            emit(&line);
-            lines.push(line);
-        }
-    }
+    let mut retried_npm_reify = false;
+    let status = loop {
+        let mut child = installer_command(spec)?
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("failed to launch installer: {e}"))?;
 
-    let status = child
-        .wait()
-        .map_err(|e| format!("installer did not finish: {e}"))?;
+        if let Some(stdout) = child.stdout.take() {
+            for line in BufReader::new(stdout).lines() {
+                let line = match line {
+                    Ok(l) => l,
+                    Err(_) => break,
+                };
+                emit(&line);
+                lines.push(line);
+            }
+        }
+
+        let status = child
+            .wait()
+            .map_err(|e| format!("installer did not finish: {e}"))?;
+        let output = lines.join("\n");
+        if !status.success() && !retried_npm_reify && should_retry_npm_install(spec, &output) {
+            retried_npm_reify = true;
+            emit(
+                "npm hit a stale reify staging directory; retrying the install once with a fresh staging path…",
+            );
+            continue;
+        }
+        break status;
+    };
     let combined = lines.join("\n").trim().to_string();
 
     if !status.success() {
@@ -661,6 +822,27 @@ fn is_permission_error(msg: &str) -> bool {
         .any(|needle| lower.contains(needle))
 }
 
+/// Whether npm failed while atomically swapping a global package directory.
+///
+/// npm's reifier retires the old package as a hidden sibling before it moves
+/// the replacement into place.  If an earlier npm process was interrupted at
+/// exactly that point, a stale `.package-random` directory can make the first
+/// later install fail with `ENOTEMPTY` on `rename`.  The retired-name suffix is
+/// fresh on every invocation, so one retry is safe and normally completes the
+/// update without Eldrun deleting anything from the user's global npm prefix.
+fn is_npm_reify_rename_collision(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    lower.contains("enotempty") && lower.contains("syscall rename")
+}
+
+/// Npm packages are the only installers that use Arborist/reify.  Keep the
+/// retry narrow: a failed curl, PowerShell, or pip installer must retain its
+/// original failure rather than being run a second time.
+fn should_retry_npm_install(spec: &AgentSpec, output: &str) -> bool {
+    npm_package_from_cmd(manual_install_cmd(spec)).is_some()
+        && is_npm_reify_rename_collision(output)
+}
+
 /// Build the `npm uninstall -g <pkg>` process for the host OS (same shell
 /// choice as the npm branch of `installer_command`: `cmd /C` on Windows, `sh -c`
 /// elsewhere).
@@ -731,7 +913,8 @@ pub async fn uninstall_agent(id: String) -> Result<String, String> {
         });
     }
 
-    let path = resolve_spec_path(spec).ok_or_else(|| format!("{} is not installed.", spec.label))?;
+    let path =
+        resolve_spec_path(spec).ok_or_else(|| format!("{} is not installed.", spec.label))?;
     std::fs::remove_file(&path).map_err(|e| {
         let shown = path.display();
         if e.kind() == std::io::ErrorKind::PermissionDenied {
@@ -782,6 +965,75 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_uses_the_official_native_installers() {
+        let antigravity = find_spec("antigravity").expect("antigravity in registry");
+        assert_eq!(antigravity.bin, "agy");
+        assert_eq!(
+            antigravity.install_cmd,
+            "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+        );
+        assert_eq!(
+            antigravity.install_cmd_windows,
+            Some("irm https://antigravity.google/cli/install.ps1 | iex")
+        );
+        assert!(antigravity.extra_paths.contains(&".local/bin/agy"));
+        assert!(antigravity
+            .extra_paths
+            .contains(&"AppData/Local/agy/bin/agy"));
+    }
+
+    #[test]
+    fn expanded_agent_registry_keeps_official_commands_and_binaries() {
+        let expected = [
+            (
+                "kiro",
+                "kiro",
+                "curl -fsSL https://cli.kiro.dev/install | bash",
+            ),
+            ("cline", "cline", "npm install -g cline"),
+            ("goose", "goose", "https://github.com/aaif-goose/goose/"),
+            (
+                "openhands",
+                "openhands",
+                "https://install.openhands.dev/install.sh",
+            ),
+            ("pi", "pi", "npm install -g @mariozechner/pi-coding-agent"),
+            ("plandex", "plandex", "https://plandex.ai/install.sh"),
+            ("swe-agent", "sweagent", "pip install swe-agent"),
+            ("mini-swe-agent", "mini", "pip install mini-swe-agent"),
+            ("mentat", "mentat", "pip install mentat"),
+            ("gpt-engineer", "gpte", "pip install gpt-engineer"),
+            ("crush", "crush", "npm install -g @charmland/crush"),
+            ("amp", "amp", "npm install -g @sourcegraph/amp"),
+            ("kimi", "kimi", "https://code.kimi.com/install.sh"),
+            ("qoder", "qoder", "https://qoder.com/install"),
+        ];
+        for (id, bin, install_fragment) in expected {
+            let spec = find_spec(id).unwrap_or_else(|| panic!("{id} missing from registry"));
+            assert_eq!(spec.bin, bin, "{id} has the wrong executable");
+            assert!(
+                spec.install_cmd.contains(install_fragment),
+                "{id} no longer uses its official installer"
+            );
+        }
+    }
+
+    #[test]
+    fn aider_uses_the_official_uv_installers_without_requiring_python() {
+        let aider = find_spec("aider").expect("aider in registry");
+        assert_eq!(
+            aider.install_cmd,
+            "curl -LsSf https://aider.chat/install.sh | sh"
+        );
+        assert_eq!(
+            aider.install_cmd_windows,
+            Some("irm https://aider.chat/install.ps1 | iex")
+        );
+        assert!(!aider.install_cmd.contains("python"));
+        assert!(aider.extra_paths.contains(&".local/bin/aider"));
+    }
+
+    #[test]
     fn npm_package_from_cmd_extracts_the_package_spec() {
         assert_eq!(
             npm_package_from_cmd("npm install -g @google/gemini-cli"),
@@ -805,31 +1057,63 @@ mod tests {
     #[test]
     fn is_permission_error_matches_npm_and_windows_lock_failures() {
         // Real npm output, old and new formats, both cases.
-        assert!(is_permission_error("npm ERR! code EACCES\nnpm ERR! syscall rename"));
+        assert!(is_permission_error(
+            "npm ERR! code EACCES\nnpm ERR! syscall rename"
+        ));
         assert!(is_permission_error("npm error code EACCES"));
         assert!(is_permission_error("Access is denied. (os error 5) EPERM"));
-        assert!(is_permission_error("resource busy or locked, rename 'x' EBUSY"));
+        assert!(is_permission_error(
+            "resource busy or locked, rename 'x' EBUSY"
+        ));
         assert!(is_permission_error("Permission denied (os error 13)"));
         assert!(!is_permission_error("npm ERR! 404 Not Found"));
-        assert!(!is_permission_error("command exited unsuccessfully (exit status: 1)"));
+        assert!(!is_permission_error(
+            "command exited unsuccessfully (exit status: 1)"
+        ));
+    }
+
+    #[test]
+    fn npm_reify_rename_collision_retries_npm_installers_only() {
+        let collision = "npm ERR! code ENOTEMPTY\n\
+            npm ERR! syscall rename\n\
+            npm ERR! path /usr/local/lib/node_modules/@google/gemini-cli\n\
+            npm ERR! dest /usr/local/lib/node_modules/@google/.gemini-cli-0qPrCG8o";
+        assert!(is_npm_reify_rename_collision(collision));
+        assert!(!is_npm_reify_rename_collision("npm ERR! code ENOTEMPTY"));
+
+        let gemini = find_spec("gemini").expect("gemini in registry");
+        let claude = find_spec("claude").expect("claude in registry");
+        assert!(should_retry_npm_install(gemini, collision));
+        assert!(!should_retry_npm_install(claude, collision));
     }
 
     #[test]
     fn sudo_variant_only_covers_plain_npm_commands() {
         assert_eq!(
             sudo_variant("npm install -g @vibe-kit/grok-cli"),
-            if cfg!(windows) { String::new() } else { "sudo npm install -g @vibe-kit/grok-cli".to_string() }
+            if cfg!(windows) {
+                String::new()
+            } else {
+                "sudo npm install -g @vibe-kit/grok-cli".to_string()
+            }
         );
         assert_eq!(
             sudo_variant("npm uninstall -g @vibe-kit/grok-cli"),
-            if cfg!(windows) { String::new() } else { "sudo npm uninstall -g @vibe-kit/grok-cli".to_string() }
+            if cfg!(windows) {
+                String::new()
+            } else {
+                "sudo npm uninstall -g @vibe-kit/grok-cli".to_string()
+            }
         );
         // A curl/irm/pip installer targets the user's own home directory —
         // running it as root would create root-owned files there instead of
         // fixing anything, so it must never get a sudo variant.
-        assert_eq!(sudo_variant("curl -fsSL https://claude.ai/install.sh | bash"), "");
         assert_eq!(
-            sudo_variant("python -m pip install aider-install && aider-install"),
+            sudo_variant("curl -fsSL https://claude.ai/install.sh | bash"),
+            ""
+        );
+        assert_eq!(
+            sudo_variant("curl -LsSf https://aider.chat/install.sh | sh"),
             ""
         );
         assert_eq!(sudo_variant(""), "");
@@ -844,7 +1128,10 @@ mod tests {
         let uninstall = cmd
             .and_then(npm_package_from_cmd)
             .map(|pkg| format!("npm uninstall -g {pkg}"));
-        assert_eq!(uninstall.as_deref(), Some("npm uninstall -g @google/gemini-cli"));
+        assert_eq!(
+            uninstall.as_deref(),
+            Some("npm uninstall -g @google/gemini-cli")
+        );
 
         // Claude's curl/irm script installer has no npm package, so no
         // uninstall command should be synthesized for it.
@@ -859,7 +1146,10 @@ mod tests {
         // through `npm_package_from_cmd`, since `uninstall_agent` relies on it
         // to target `npm uninstall -g` rather than deleting a shim.
         for spec in AGENTS {
-            for cmd in [Some(spec.install_cmd), spec.install_cmd_windows].into_iter().flatten() {
+            for cmd in [Some(spec.install_cmd), spec.install_cmd_windows]
+                .into_iter()
+                .flatten()
+            {
                 if cmd.trim_start().starts_with("npm install -g") {
                     assert!(
                         npm_package_from_cmd(cmd).is_some(),

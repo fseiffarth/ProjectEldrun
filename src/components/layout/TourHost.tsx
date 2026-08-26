@@ -11,9 +11,48 @@ import { useT } from "../../lib/i18n";
 // must never deadlock the walkthrough.
 const ANCHOR_WAIT_MS = 600;
 
+// How long to keep re-measuring after a step becomes active. Some anchors move
+// under a CSS transition the moment the step opens them — the file panel slides
+// in from the window edge — and a transform transition fires no ResizeObserver
+// callback, so a single measure would freeze the spotlight mid-slide.
+const SETTLE_MS = 700;
+
+/** Union of every element the selector matches, or just the first when the step
+ *  doesn't ask to span them. `spanAll` is for a step whose subject is a row of
+ *  sibling controls; the default keeps a comma-separated anchor meaning "first
+ *  of these that exists" (the panel-or-its-edge-marker fallback). */
+function measureAnchor(selector: string, spanAll: boolean): DOMRect | null {
+  if (!spanAll) {
+    const el = document.querySelector(selector);
+    return el ? el.getBoundingClientRect() : null;
+  }
+  const els = Array.from(document.querySelectorAll(selector));
+  if (els.length === 0) return null;
+  const rects = els.map((el) => el.getBoundingClientRect()).filter((r) => r.width > 0 || r.height > 0);
+  if (rects.length === 0) return null;
+  const left = Math.min(...rects.map((r) => r.left));
+  const top = Math.min(...rects.map((r) => r.top));
+  const right = Math.max(...rects.map((r) => r.right));
+  const bottom = Math.max(...rects.map((r) => r.bottom));
+  return new DOMRect(left, top, right - left, bottom - top);
+}
+
+/** Two rects close enough to treat as the same position — the settle loop stops
+ *  once a measurement repeats, so sub-pixel jitter must not keep it alive. */
+function sameRect(a: DOMRect | null, b: DOMRect | null): boolean {
+  if (!a || !b) return a === b;
+  return (
+    Math.abs(a.left - b.left) < 0.5 &&
+    Math.abs(a.top - b.top) < 0.5 &&
+    Math.abs(a.width - b.width) < 0.5 &&
+    Math.abs(a.height - b.height) < 0.5
+  );
+}
+
 /**
- * Drives the guided "Take a tour" walkthrough: listens for the
- * `eldrun:start-tour` event, measures the active step's anchor (re-measuring as
+ * Drives the guided walkthroughs — the main tour, the advanced (remote) tour,
+ * and the lessons: listens for the `eldrun:start-tour` /
+ * `eldrun:start-advanced-tour` events, measures the active step's anchor (re-measuring as
  * the layout shifts), pulses the highlighted element, owns the keyboard
  * navigation, and renders the `TourCoachmark` overlay. Mounted once in
  * `AppShell` beside `HintHost` (never in detached windows). Selection/ordering
@@ -26,6 +65,7 @@ export function TourHost() {
   const index = useTourStore((s) => s.index);
   const steps = useTourStore((s) => s.steps);
   const start = useTourStore((s) => s.start);
+  const startAdvanced = useTourStore((s) => s.startAdvanced);
   const next = useTourStore((s) => s.next);
   const prev = useTourStore((s) => s.prev);
   const skip = useTourStore((s) => s.skip);
@@ -38,12 +78,18 @@ export function TourHost() {
 
   const step = active ? steps[index] : null;
 
-  // Entry point: the gear menu / Settings / HowToStart all dispatch this.
+  // Entry points: the gear menu / Settings / HowToStart dispatch the first, the
+  // gear menu and Settings the second (the first-run modal stays local-only).
   useEffect(() => {
     const onStart = () => start();
+    const onStartAdvanced = () => startAdvanced();
     window.addEventListener("eldrun:start-tour", onStart);
-    return () => window.removeEventListener("eldrun:start-tour", onStart);
-  }, [start]);
+    window.addEventListener("eldrun:start-advanced-tour", onStartAdvanced);
+    return () => {
+      window.removeEventListener("eldrun:start-tour", onStart);
+      window.removeEventListener("eldrun:start-advanced-tour", onStartAdvanced);
+    };
+  }, [start, startAdvanced]);
 
   // Run a step's optional prepare side-effect (e.g. reveal the file panel so
   // the step has an anchor to spotlight) when it becomes active.
@@ -65,16 +111,33 @@ export function TourHost() {
     }
     gaveUp.current = false;
     const selector = step.anchor;
+    const spanAll = step.spanAll === true;
     let waitTimer = 0;
+    let settleFrame = 0;
+    let settleUntil = 0;
+    let last: DOMRect | null = null;
     const measure = () => {
-      const el = document.querySelector(selector);
-      if (el) {
-        setRect(el.getBoundingClientRect());
+      const next = measureAnchor(selector, spanAll);
+      if (next) {
+        last = next;
+        setRect(next);
       } else if (!gaveUp.current) {
+        last = null;
         setRect(null);
       }
     };
+    // Re-measure every frame until the rect stops moving (or the budget runs
+    // out): a step that reveals the file panel is measuring a sliding target.
+    const settle = () => {
+      const before = last;
+      measure();
+      const stable = sameRect(before, last);
+      if (!stable) settleUntil = performance.now() + SETTLE_MS;
+      if (performance.now() < settleUntil) settleFrame = requestAnimationFrame(settle);
+    };
     measure();
+    settleUntil = performance.now() + SETTLE_MS;
+    settleFrame = requestAnimationFrame(settle);
     // If the anchor isn't there yet, retry briefly, then give up to a banner.
     if (!document.querySelector(selector)) {
       waitTimer = window.setTimeout(() => {
@@ -83,12 +146,15 @@ export function TourHost() {
       }, ANCHOR_WAIT_MS);
     }
     const ro = new ResizeObserver(measure);
-    const el = document.querySelector(selector);
-    if (el) ro.observe(el);
+    for (const el of Array.from(document.querySelectorAll(selector))) {
+      ro.observe(el);
+      if (!spanAll) break;
+    }
     window.addEventListener("resize", measure, true);
     window.addEventListener("scroll", measure, true);
     return () => {
       window.clearTimeout(waitTimer);
+      cancelAnimationFrame(settleFrame);
       ro.disconnect();
       window.removeEventListener("resize", measure, true);
       window.removeEventListener("scroll", measure, true);
@@ -101,10 +167,14 @@ export function TourHost() {
   // contextual-hint `.hint-target` glow), cleaned up on step change/teardown.
   useEffect(() => {
     if (!step?.anchor) return;
-    const el = document.querySelector(step.anchor);
-    if (!el) return;
-    el.classList.add("hint-target");
-    return () => el.classList.remove("hint-target");
+    const els = step.spanAll
+      ? Array.from(document.querySelectorAll(step.anchor))
+      : [document.querySelector(step.anchor)].filter((e): e is Element => e != null);
+    if (els.length === 0) return;
+    for (const el of els) el.classList.add("hint-target");
+    return () => {
+      for (const el of els) el.classList.remove("hint-target");
+    };
   }, [step, projectCount, activeId]);
 
   // Keyboard navigation while the tour runs: Esc skips, ←/→ and Enter step.

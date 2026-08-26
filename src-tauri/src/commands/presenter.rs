@@ -14,9 +14,7 @@
 //! projector. So it is registered nowhere and owned only by the presenter that
 //! opened it.
 
-use tauri::{
-    AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 
 /// A monitor's placement, in physical desktop px — the shape both the real
 /// `tauri::Monitor` and the unit tests reduce to.
@@ -235,7 +233,9 @@ static INHIBIT: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex
 pub fn presenter_inhibit_sleep(reason: String) -> Result<bool, String> {
     #[cfg(target_os = "linux")]
     {
-        let mut held = INHIBIT.lock().map_err(|_| "inhibit lock poisoned".to_string())?;
+        let mut held = INHIBIT
+            .lock()
+            .map_err(|_| "inhibit lock poisoned".to_string())?;
         if held.is_some() {
             // Idempotent: two presenters (main window + a popout) share one.
             return Ok(true);
@@ -243,7 +243,11 @@ pub fn presenter_inhibit_sleep(reason: String) -> Result<bool, String> {
         // The reason string is shown by the desktop's own "what is keeping this
         // machine awake" UI, so it is passed as a single argv element (never a
         // shell) and clipped to something a list can render.
-        let why: String = reason.chars().filter(|c| !c.is_control()).take(80).collect();
+        let why: String = reason
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(80)
+            .collect();
         let child = crate::paths::command_no_window("systemd-inhibit")
             .args([
                 "--what=idle:sleep",
@@ -279,7 +283,9 @@ pub fn presenter_inhibit_sleep(reason: String) -> Result<bool, String> {
 /// wanted, and the presenter's unmount races app exit's own release.
 #[tauri::command]
 pub fn presenter_release_sleep() -> Result<(), String> {
-    let mut held = INHIBIT.lock().map_err(|_| "inhibit lock poisoned".to_string())?;
+    let mut held = INHIBIT
+        .lock()
+        .map_err(|_| "inhibit lock poisoned".to_string())?;
     if let Some(mut child) = held.take() {
         let _ = child.kill();
         let _ = child.wait();
@@ -295,12 +301,7 @@ fn audience_monitor(app: &AppHandle) -> Option<MonitorRect> {
         w: m.size().width,
         h: m.size().height,
     };
-    let monitors: Vec<MonitorRect> = app
-        .available_monitors()
-        .ok()?
-        .iter()
-        .map(to_rect)
-        .collect();
+    let monitors: Vec<MonitorRect> = app.available_monitors().ok()?.iter().map(to_rect).collect();
     let main = app
         .get_webview_window("main")
         .and_then(|w| w.current_monitor().ok().flatten())
@@ -313,7 +314,12 @@ mod tests {
     use super::*;
 
     fn rect(x: i32, y: i32) -> MonitorRect {
-        MonitorRect { x, y, w: 1920, h: 1080 }
+        MonitorRect {
+            x,
+            y,
+            w: 1920,
+            h: 1080,
+        }
     }
 
     #[test]
@@ -328,25 +334,40 @@ mod tests {
         // Path/query injection into the window URL.
         assert!(!valid_presenter_label("present-../../etc"));
         assert!(!valid_presenter_label("present-x?y=1"));
-        assert!(!valid_presenter_label(&format!("present-{}", "x".repeat(80))));
+        assert!(!valid_presenter_label(&format!(
+            "present-{}",
+            "x".repeat(80)
+        )));
     }
 
     #[test]
     fn query_carries_the_label() {
-        assert_eq!(presenter_query("present-zz"), "index.html?present=present-zz");
+        assert_eq!(
+            presenter_query("present-zz"),
+            "index.html?present=present-zz"
+        );
     }
 
     #[test]
     fn one_monitor_means_no_takeover() {
-        assert_eq!(choose_audience_monitor(&[rect(0, 0)], Some(rect(0, 0))), None);
+        assert_eq!(
+            choose_audience_monitor(&[rect(0, 0)], Some(rect(0, 0))),
+            None
+        );
         assert_eq!(choose_audience_monitor(&[], None), None);
     }
 
     #[test]
     fn picks_the_monitor_the_main_window_is_not_on() {
         let ms = [rect(0, 0), rect(1920, 0)];
-        assert_eq!(choose_audience_monitor(&ms, Some(rect(0, 0))), Some(rect(1920, 0)));
-        assert_eq!(choose_audience_monitor(&ms, Some(rect(1920, 0))), Some(rect(0, 0)));
+        assert_eq!(
+            choose_audience_monitor(&ms, Some(rect(0, 0))),
+            Some(rect(1920, 0))
+        );
+        assert_eq!(
+            choose_audience_monitor(&ms, Some(rect(1920, 0))),
+            Some(rect(0, 0))
+        );
     }
 
     #[test]
@@ -371,6 +392,9 @@ mod tests {
         // The main window reported a monitor that is not in the list (a hot-plug
         // between the two reads). Any second screen beats refusing to open.
         let ms = [rect(0, 0), rect(1920, 0)];
-        assert_eq!(choose_audience_monitor(&ms, Some(rect(-1080, 0))), Some(rect(0, 0)));
+        assert_eq!(
+            choose_audience_monitor(&ms, Some(rect(-1080, 0))),
+            Some(rect(0, 0))
+        );
     }
 }

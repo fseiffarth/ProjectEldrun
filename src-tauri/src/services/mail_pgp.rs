@@ -58,7 +58,9 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::services::mail_crypt::{self, MailKeys};
-use crate::services::mail_crypto::{CryptoKind, DecryptError, MailCrypto, SignerTrust, VerifyOutcome};
+use crate::services::mail_crypto::{
+    CryptoKind, DecryptError, MailCrypto, SignerTrust, VerifyOutcome,
+};
 
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::STANDARD;
@@ -139,7 +141,9 @@ pub struct PgpKeyring {
 
 impl std::fmt::Debug for PgpKeyring {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PgpKeyring").field("path", &self.path).finish()
+        f.debug_struct("PgpKeyring")
+            .field("path", &self.path)
+            .finish()
     }
 }
 
@@ -158,8 +162,8 @@ impl PgpKeyring {
             Ok(raw) => {
                 let plain = mail_crypt::open(&self.wrap, KEYRING_AAD, &raw)
                     .map_err(|e| format!("the keyring could not be decrypted: {e}"))?;
-                let file: KeyringFile =
-                    serde_json::from_slice(&plain).map_err(|e| format!("the keyring is corrupt: {e}"))?;
+                let file: KeyringFile = serde_json::from_slice(&plain)
+                    .map_err(|e| format!("the keyring is corrupt: {e}"))?;
                 if file.version != KEYRING_VERSION {
                     return Err(format!(
                         "this keyring was written by a newer version of Eldrun (v{})",
@@ -189,7 +193,12 @@ impl PgpKeyring {
 
     pub fn get(&self, fingerprint: &str) -> Result<Option<PgpKeyInfo>, String> {
         let fp = normalize_fingerprint(fingerprint);
-        Ok(self.read()?.entries.iter().find(|e| e.fingerprint == fp).map(info_of))
+        Ok(self
+            .read()?
+            .entries
+            .iter()
+            .find(|e| e.fingerprint == fp)
+            .map(info_of))
     }
 
     /// Generate a fresh Curve25519 key and bind it to `account_id`.
@@ -286,7 +295,11 @@ impl PgpKeyring {
                 let fingerprint = fingerprint_hex(&key.fingerprint());
                 // Never downgrade: re-importing the public half of a key whose
                 // private half we hold must not throw the private half away.
-                if file.entries.iter().any(|e| e.fingerprint == fingerprint && e.secret) {
+                if file
+                    .entries
+                    .iter()
+                    .any(|e| e.fingerprint == fingerprint && e.secret)
+                {
                     continue;
                 }
                 let material = key.to_bytes().map_err(|e| e.to_string())?;
@@ -333,7 +346,12 @@ impl PgpKeyring {
     }
 
     /// Bind (or with `None`, unbind) one of our own keys to a mail account.
-    pub fn bind_account(&self, fingerprint: &str, account_id: &str, bind: bool) -> Result<(), String> {
+    pub fn bind_account(
+        &self,
+        fingerprint: &str,
+        account_id: &str,
+        bind: bool,
+    ) -> Result<(), String> {
         let fp = normalize_fingerprint(fingerprint);
         let mut file = self.read()?;
         // One key per account: a second binding would make "which key signs this
@@ -349,7 +367,9 @@ impl PgpKeyring {
             .find(|e| e.fingerprint == fp)
             .ok_or("no such key")?;
         if !entry.secret && bind {
-            return Err("only a key you hold the private half of can be an account's identity".into());
+            return Err(
+                "only a key you hold the private half of can be an account's identity".into(),
+            );
         }
         entry.accounts.retain(|a| a != account_id);
         if bind {
@@ -378,7 +398,11 @@ impl PgpKeyring {
     pub fn export_public(&self, fingerprint: &str) -> Result<String, String> {
         let fp = normalize_fingerprint(fingerprint);
         let file = self.read()?;
-        let entry = file.entries.iter().find(|e| e.fingerprint == fp).ok_or("no such key")?;
+        let entry = file
+            .entries
+            .iter()
+            .find(|e| e.fingerprint == fp)
+            .ok_or("no such key")?;
         let material = B64.decode(&entry.material).map_err(|e| e.to_string())?;
         let public = if entry.secret {
             SignedPublicKey::from(
@@ -424,7 +448,10 @@ impl PgpKeyring {
 
     /// A public key by fingerprint (accepts the spaced/lowercase forms users
     /// paste).
-    pub fn public_by_fingerprint(&self, fingerprint: &str) -> Result<Option<SignedPublicKey>, String> {
+    pub fn public_by_fingerprint(
+        &self,
+        fingerprint: &str,
+    ) -> Result<Option<SignedPublicKey>, String> {
         let fp = normalize_fingerprint(fingerprint);
         let file = self.read()?;
         match file.entries.iter().find(|e| e.fingerprint == fp) {
@@ -451,7 +478,10 @@ impl PgpKeyring {
     ///
     /// A key id is the last 8 bytes of a v4 fingerprint, so one `ends_with`
     /// covers both spellings.
-    pub fn candidates_for(&self, key_ids: &[String]) -> Result<Vec<(SignedPublicKey, PgpKeyInfo)>, String> {
+    pub fn candidates_for(
+        &self,
+        key_ids: &[String],
+    ) -> Result<Vec<(SignedPublicKey, PgpKeyInfo)>, String> {
         let file = self.read()?;
         let wanted: Vec<String> = key_ids
             .iter()
@@ -479,7 +509,10 @@ impl PgpKeyring {
     }
 
     /// The public key to encrypt to for `address`, if we hold one.
-    pub fn public_for_address(&self, address: &str) -> Result<Option<(SignedPublicKey, PgpKeyInfo)>, String> {
+    pub fn public_for_address(
+        &self,
+        address: &str,
+    ) -> Result<Option<(SignedPublicKey, PgpKeyInfo)>, String> {
         let wanted = address.trim().to_ascii_lowercase();
         let file = self.read()?;
         // Prefer a verified key over a merely known one with the same address:
@@ -748,17 +781,16 @@ impl MailCrypto for PgpKeyring {
 /// `mail-parser` records each part's byte offsets in the original message,
 /// which is what makes rule 2 achievable at all: the slice is the original
 /// bytes, not a re-serialization.
-pub fn signed_part_bytes(
-    raw: &[u8],
-    msg: &mail_parser::Message<'_>,
-) -> Option<(Vec<u8>, Vec<u8>)> {
+pub fn signed_part_bytes(raw: &[u8], msg: &mail_parser::Message<'_>) -> Option<(Vec<u8>, Vec<u8>)> {
     use mail_parser::{MimeHeaders, PartType};
 
     // The `multipart/signed` node, and its two children in order.
     let children = msg.parts.iter().find_map(|part| {
         let ctype = part.content_type()?;
         let signed = ctype.ctype().eq_ignore_ascii_case("multipart")
-            && ctype.subtype().is_some_and(|s| s.eq_ignore_ascii_case("signed"));
+            && ctype
+                .subtype()
+                .is_some_and(|s| s.eq_ignore_ascii_case("signed"));
         match (&part.body, signed) {
             (PartType::Multipart(ids), true) if ids.len() >= 2 => Some(ids.clone()),
             _ => None,
@@ -794,7 +826,9 @@ pub fn encrypted_part_bytes(raw: &[u8], msg: &mail_parser::Message<'_>) -> Optio
     let children = msg.parts.iter().find_map(|part| {
         let ctype = part.content_type()?;
         let enc = ctype.ctype().eq_ignore_ascii_case("multipart")
-            && ctype.subtype().is_some_and(|s| s.eq_ignore_ascii_case("encrypted"));
+            && ctype
+                .subtype()
+                .is_some_and(|s| s.eq_ignore_ascii_case("encrypted"));
         match (&part.body, enc) {
             (PartType::Multipart(ids), true) if ids.len() >= 2 => Some(ids.clone()),
             _ => None,
@@ -834,7 +868,10 @@ fn canonical_crlf(bytes: &[u8]) -> Vec<u8> {
 fn boundary() -> String {
     let mut bytes = [0u8; 18];
     getrandom::fill(&mut bytes).expect("the OS RNG must be available to send mail");
-    format!("=_eldrun_{}", B64.encode(bytes).replace(['+', '/', '='], "x"))
+    format!(
+        "=_eldrun_{}",
+        B64.encode(bytes).replace(['+', '/', '='], "x")
+    )
 }
 
 /// Wrap `body` (a complete MIME entity: headers + body) as RFC 3156
@@ -934,7 +971,10 @@ impl PgpKeyring {
             // Strip the header block `reassemble` added: when encryption follows,
             // this whole thing is the *inner* entity and its Content-Type belongs
             // to it, not to the outer message.
-            current = current.strip_prefix(b"\r\n".as_slice()).unwrap_or(&current).to_vec();
+            current = current
+                .strip_prefix(b"\r\n".as_slice())
+                .unwrap_or(&current)
+                .to_vec();
         }
 
         if opts.encrypt {
@@ -1083,7 +1123,11 @@ fn was_verified(file: &KeyringFile, fingerprint: &str) -> bool {
 fn info_of(entry: &StoredKey) -> PgpKeyInfo {
     PgpKeyInfo {
         fingerprint: entry.fingerprint.clone(),
-        addresses: entry.identities.iter().filter_map(|u| address_of(u)).collect(),
+        addresses: entry
+            .identities
+            .iter()
+            .filter_map(|u| address_of(u))
+            .collect(),
         identities: entry.identities.clone(),
         secret: entry.secret,
         verified: entry.verified,
@@ -1226,11 +1270,16 @@ mod tests {
     #[test]
     fn a_generated_key_is_curve25519_and_bound_to_its_account() {
         let (_d, ring) = keyring();
-        let info = ring.generate("Alice", "alice@example.com", "acct-1").unwrap();
+        let info = ring
+            .generate("Alice", "alice@example.com", "acct-1")
+            .unwrap();
         assert_eq!(info.algorithm, "Curve25519", "RSA must never be generated");
         assert_eq!(info.addresses, vec!["alice@example.com"]);
         assert!(info.secret);
-        assert!(info.verified, "a key we made ourselves needs no out-of-band check");
+        assert!(
+            info.verified,
+            "a key we made ourselves needs no out-of-band check"
+        );
         assert_eq!(info.accounts, vec!["acct-1"]);
         assert_eq!(info.fingerprint.len(), 40, "v4 fingerprint, uppercase hex");
 
@@ -1241,9 +1290,15 @@ mod tests {
     #[test]
     fn the_keyring_file_holds_no_readable_key_material() {
         let (dir, ring) = keyring();
-        ring.generate("Alice", "alice@example.com", "acct-1").unwrap();
+        ring.generate("Alice", "alice@example.com", "acct-1")
+            .unwrap();
         let raw = std::fs::read(dir.path().join(KEYRING_FILE)).unwrap();
-        for probe in [&b"alice@example.com"[..], b"Alice", b"PRIVATE KEY", b"fingerprint"] {
+        for probe in [
+            &b"alice@example.com"[..],
+            b"Alice",
+            b"PRIVATE KEY",
+            b"fingerprint",
+        ] {
             assert!(
                 !raw.windows(probe.len()).any(|w| w == probe),
                 "{:?} is readable in the keyring file",
@@ -1255,11 +1310,8 @@ mod tests {
     #[test]
     fn another_store_key_cannot_open_the_keyring() {
         let dir = tempfile::tempdir().unwrap();
-        let ring = PgpKeyring::open(
-            dir.path(),
-            &MailKeys::derive(Key::from_bytes([11u8; 32])),
-        )
-        .unwrap();
+        let ring =
+            PgpKeyring::open(dir.path(), &MailKeys::derive(Key::from_bytes([11u8; 32]))).unwrap();
         ring.generate("Alice", "alice@example.com", "a").unwrap();
 
         let wrong =
@@ -1282,7 +1334,10 @@ mod tests {
         let added = mine.import(armored.as_bytes()).unwrap();
         assert_eq!(added.len(), 1);
         assert!(!added[0].secret, "only the public half travelled");
-        assert!(!added[0].verified, "an imported key is Known, never Verified");
+        assert!(
+            !added[0].verified,
+            "an imported key is Known, never Verified"
+        );
         assert_eq!(added[0].trust(), SignerTrust::Known);
         assert_eq!(added[0].addresses, vec!["bob@example.org"]);
     }
@@ -1291,10 +1346,14 @@ mod tests {
     fn verifying_a_fingerprint_is_the_only_promotion() {
         let (_d, source) = keyring();
         source.generate("Bob", "bob@example.org", "b").unwrap();
-        let armored = source.export_public(&source.list().unwrap()[0].fingerprint).unwrap();
+        let armored = source
+            .export_public(&source.list().unwrap()[0].fingerprint)
+            .unwrap();
 
         let (_d2, mine) = keyring();
-        let fp = mine.import(armored.as_bytes()).unwrap()[0].fingerprint.clone();
+        let fp = mine.import(armored.as_bytes()).unwrap()[0]
+            .fingerprint
+            .clone();
         assert_eq!(mine.get(&fp).unwrap().unwrap().trust(), SignerTrust::Known);
         let promoted = mine.set_verified(&fp, true).unwrap();
         assert_eq!(promoted.trust(), SignerTrust::Verified);
@@ -1311,35 +1370,62 @@ mod tests {
     #[test]
     fn a_public_import_never_downgrades_a_secret_key() {
         let (_d, ring) = keyring();
-        let mine = ring.generate("Alice", "alice@example.com", "acct-1").unwrap();
+        let mine = ring
+            .generate("Alice", "alice@example.com", "acct-1")
+            .unwrap();
         let armored = ring.export_public(&mine.fingerprint).unwrap();
         ring.import(armored.as_bytes()).ok();
 
         let back = ring.get(&mine.fingerprint).unwrap().unwrap();
-        assert!(back.secret, "the private half must survive a public re-import");
-        assert_eq!(back.accounts, vec!["acct-1"], "and so must its account binding");
+        assert!(
+            back.secret,
+            "the private half must survive a public re-import"
+        );
+        assert_eq!(
+            back.accounts,
+            vec!["acct-1"],
+            "and so must its account binding"
+        );
         assert!(ring.secret_for_account("acct-1").unwrap().is_some());
     }
 
     #[test]
     fn one_account_has_exactly_one_key() {
         let (_d, ring) = keyring();
-        let a = ring.generate("Alice", "alice@example.com", "acct-1").unwrap();
-        let b = ring.generate("Alice Work", "alice@work.example", "acct-1").unwrap();
+        let a = ring
+            .generate("Alice", "alice@example.com", "acct-1")
+            .unwrap();
+        let b = ring
+            .generate("Alice Work", "alice@work.example", "acct-1")
+            .unwrap();
         let list = ring.list().unwrap();
-        let bound: Vec<&PgpKeyInfo> = list.iter().filter(|k| k.accounts.contains(&"acct-1".into())).collect();
-        assert_eq!(bound.len(), 1, "a second binding would make signing ambiguous");
+        let bound: Vec<&PgpKeyInfo> = list
+            .iter()
+            .filter(|k| k.accounts.contains(&"acct-1".into()))
+            .collect();
+        assert_eq!(
+            bound.len(),
+            1,
+            "a second binding would make signing ambiguous"
+        );
         assert_eq!(bound[0].fingerprint, b.fingerprint);
-        assert!(ring.get(&a.fingerprint).unwrap().is_some(), "the old key is kept, just unbound");
+        assert!(
+            ring.get(&a.fingerprint).unwrap().is_some(),
+            "the old key is kept, just unbound"
+        );
     }
 
     #[test]
     fn only_a_key_we_hold_the_private_half_of_can_be_an_identity() {
         let (_d, source) = keyring();
         source.generate("Bob", "bob@example.org", "b").unwrap();
-        let armored = source.export_public(&source.list().unwrap()[0].fingerprint).unwrap();
+        let armored = source
+            .export_public(&source.list().unwrap()[0].fingerprint)
+            .unwrap();
         let (_d2, mine) = keyring();
-        let fp = mine.import(armored.as_bytes()).unwrap()[0].fingerprint.clone();
+        let fp = mine.import(armored.as_bytes()).unwrap()[0]
+            .fingerprint
+            .clone();
         assert!(mine.bind_account(&fp, "acct-1", true).is_err());
     }
 
@@ -1348,11 +1434,17 @@ mod tests {
         let (_d, source) = keyring();
         source.generate("Bob One", "bob@example.org", "b1").unwrap();
         source.generate("Bob Two", "bob@example.org", "b2").unwrap();
-        let fps: Vec<String> = source.list().unwrap().iter().map(|k| k.fingerprint.clone()).collect();
+        let fps: Vec<String> = source
+            .list()
+            .unwrap()
+            .iter()
+            .map(|k| k.fingerprint.clone())
+            .collect();
 
         let (_d2, mine) = keyring();
         for fp in &fps {
-            mine.import(source.export_public(fp).unwrap().as_bytes()).unwrap();
+            mine.import(source.export_public(fp).unwrap().as_bytes())
+                .unwrap();
         }
         mine.set_verified(&fps[1], true).unwrap();
         let (_key, info) = mine.public_for_address("BOB@Example.ORG").unwrap().unwrap();
@@ -1365,7 +1457,10 @@ mod tests {
         let info = ring.generate("Alice", "alice@example.com", "a").unwrap();
         ring.delete(&info.fingerprint).unwrap();
         assert!(ring.list().unwrap().is_empty());
-        assert!(ring.delete(&info.fingerprint).is_err(), "twice is an error, not a no-op");
+        assert!(
+            ring.delete(&info.fingerprint).is_err(),
+            "twice is an error, not a no-op"
+        );
     }
 
     #[test]
@@ -1390,7 +1485,9 @@ mod tests {
     #[test]
     fn a_signature_round_trips_and_reports_the_signer() {
         let (_d, ring) = keyring();
-        let me = ring.generate("Alice", "alice@example.com", "acct-1").unwrap();
+        let me = ring
+            .generate("Alice", "alice@example.com", "acct-1")
+            .unwrap();
         let body = b"Content-Type: text/plain\r\n\r\nthe signed body\r\n";
 
         let sig = ring.sign_detached("acct-1", body).unwrap();
@@ -1413,7 +1510,8 @@ mod tests {
     #[test]
     fn a_signature_does_not_survive_a_changed_body() {
         let (_d, ring) = keyring();
-        ring.generate("Alice", "alice@example.com", "acct-1").unwrap();
+        ring.generate("Alice", "alice@example.com", "acct-1")
+            .unwrap();
         let sig = ring.sign_detached("acct-1", b"pay Bob 100").unwrap();
         assert_eq!(
             ring.verify_detached(b"pay Bob 900", sig.as_bytes()),
@@ -1466,10 +1564,14 @@ mod tests {
         // recipient's public half, and nothing else.
         let (_d1, bob) = keyring();
         bob.generate("Bob", "bob@example.org", "acct-b").unwrap();
-        let bob_pub = bob.export_public(&bob.list().unwrap()[0].fingerprint).unwrap();
+        let bob_pub = bob
+            .export_public(&bob.list().unwrap()[0].fingerprint)
+            .unwrap();
 
         let (_d2, alice) = keyring();
-        alice.generate("Alice", "alice@example.com", "acct-a").unwrap();
+        alice
+            .generate("Alice", "alice@example.com", "acct-a")
+            .unwrap();
         alice.import(bob_pub.as_bytes()).unwrap();
         let alice_pub = alice
             .export_public(
@@ -1496,7 +1598,10 @@ mod tests {
         // The encrypt-to-self half: without it a sent message is one the sender
         // can never read again, and phase 8's Sent copy would be unopenable.
         assert_eq!(
-            alice.decrypt_message(armored.as_bytes()).unwrap().as_slice(),
+            alice
+                .decrypt_message(armored.as_bytes())
+                .unwrap()
+                .as_slice(),
             b"the secret"
         );
     }
@@ -1505,7 +1610,9 @@ mod tests {
     fn a_third_party_cannot_read_it() {
         let (_d1, bob) = keyring();
         bob.generate("Bob", "bob@example.org", "b").unwrap();
-        let bob_pub = bob.export_public(&bob.list().unwrap()[0].fingerprint).unwrap();
+        let bob_pub = bob
+            .export_public(&bob.list().unwrap()[0].fingerprint)
+            .unwrap();
         let (_d2, alice) = keyring();
         alice.generate("Alice", "alice@example.com", "a").unwrap();
         alice.import(bob_pub.as_bytes()).unwrap();
@@ -1530,7 +1637,10 @@ mod tests {
         let err = ring
             .encrypt_to("a", &["nobody@example.net".into()], b"x")
             .unwrap_err();
-        assert!(err.contains("nobody@example.net"), "the error must name who: {err}");
+        assert!(
+            err.contains("nobody@example.net"),
+            "the error must name who: {err}"
+        );
     }
 
     #[test]
@@ -1563,12 +1673,20 @@ mod tests {
             "SIGNATURE-BYTES\r\n",
             "--BB--\r\n",
         );
-        let msg = mail_parser::MessageParser::default().parse(raw.as_bytes()).unwrap();
+        let msg = mail_parser::MessageParser::default()
+            .parse(raw.as_bytes())
+            .unwrap();
         let (signed, sig) = signed_part_bytes(raw.as_bytes(), &msg).unwrap();
 
         let text = String::from_utf8(signed).unwrap();
-        assert!(text.starts_with("Content-Type: text/plain"), "headers are covered: {text:?}");
-        assert!(text.ends_with("hello"), "the CRLF before the boundary is not: {text:?}");
+        assert!(
+            text.starts_with("Content-Type: text/plain"),
+            "headers are covered: {text:?}"
+        );
+        assert!(
+            text.ends_with("hello"),
+            "the CRLF before the boundary is not: {text:?}"
+        );
         assert!(String::from_utf8_lossy(&sig).contains("SIGNATURE-BYTES"));
     }
 
@@ -1577,7 +1695,11 @@ mod tests {
     #[test]
     fn bare_lf_is_canonicalized_to_crlf() {
         assert_eq!(canonical_crlf(b"a\nb\n"), b"a\r\nb\r\n");
-        assert_eq!(canonical_crlf(b"a\r\nb\r\n"), b"a\r\nb\r\n", "and CRLF is not doubled");
+        assert_eq!(
+            canonical_crlf(b"a\r\nb\r\n"),
+            b"a\r\nb\r\n",
+            "and CRLF is not doubled"
+        );
         assert_eq!(canonical_crlf(b"a\rb"), b"a\r\nb", "a lone CR too");
     }
 
@@ -1598,28 +1720,41 @@ mod tests {
             "CIPHERTEXT\r\n",
             "--BB--\r\n",
         );
-        let msg = mail_parser::MessageParser::default().parse(raw.as_bytes()).unwrap();
+        let msg = mail_parser::MessageParser::default()
+            .parse(raw.as_bytes())
+            .unwrap();
         let payload = encrypted_part_bytes(raw.as_bytes(), &msg).unwrap();
         let text = String::from_utf8_lossy(&payload);
         assert!(text.contains("CIPHERTEXT"));
-        assert!(!text.contains("Version: 1"), "the version marker is not the message");
+        assert!(
+            !text.contains("Version: 1"),
+            "the version marker is not the message"
+        );
     }
 
     /// The wrappers have to produce something `detect` reads back as what it is
     /// — otherwise we send mail our own client would not recognize.
     #[test]
     fn what_we_wrap_is_what_detection_reads_back() {
-        let (ctype, mime) = wrap_signed("Content-Type: text/plain\r\n\r\nhi", "-----BEGIN PGP SIGNATURE-----");
+        let (ctype, mime) = wrap_signed(
+            "Content-Type: text/plain\r\n\r\nhi",
+            "-----BEGIN PGP SIGNATURE-----",
+        );
         let raw = format!("From: a@example.com\r\nContent-Type: {ctype}\r\n\r\n{mime}");
-        let msg = mail_parser::MessageParser::default().parse(raw.as_bytes()).unwrap();
+        let msg = mail_parser::MessageParser::default()
+            .parse(raw.as_bytes())
+            .unwrap();
         assert_eq!(
             crate::services::mail_crypto::detect(&msg),
             Some(CryptoKind::PgpSigned)
         );
 
-        let (ctype, mime) = wrap_encrypted("-----BEGIN PGP MESSAGE-----\nx\n-----END PGP MESSAGE-----");
+        let (ctype, mime) =
+            wrap_encrypted("-----BEGIN PGP MESSAGE-----\nx\n-----END PGP MESSAGE-----");
         let raw = format!("From: a@example.com\r\nContent-Type: {ctype}\r\n\r\n{mime}");
-        let msg = mail_parser::MessageParser::default().parse(raw.as_bytes()).unwrap();
+        let msg = mail_parser::MessageParser::default()
+            .parse(raw.as_bytes())
+            .unwrap();
         assert_eq!(
             crate::services::mail_crypto::detect(&msg),
             Some(CryptoKind::PgpEncrypted)
@@ -1633,7 +1768,8 @@ mod tests {
     #[test]
     fn a_wrapped_signed_message_verifies_after_a_round_trip_through_mime() {
         let (_d, ring) = keyring();
-        ring.generate("Alice", "alice@example.com", "acct-1").unwrap();
+        ring.generate("Alice", "alice@example.com", "acct-1")
+            .unwrap();
 
         let body = "Content-Type: text/plain; charset=utf-8\r\n\r\nthe body of the mail\r\n";
         // Sign exactly what the wrapper will emit, minus the CRLF that
@@ -1643,7 +1779,9 @@ mod tests {
         let (ctype, mime) = wrap_signed(body.trim_end_matches("\r\n"), &sig);
         let raw = format!("From: alice@example.com\r\nContent-Type: {ctype}\r\n\r\n{mime}");
 
-        let msg = mail_parser::MessageParser::default().parse(raw.as_bytes()).unwrap();
+        let msg = mail_parser::MessageParser::default()
+            .parse(raw.as_bytes())
+            .unwrap();
         let (signed, signature) = signed_part_bytes(raw.as_bytes(), &msg).unwrap();
         assert!(
             matches!(
@@ -1673,7 +1811,10 @@ mod tests {
 
         assert!(outer.contains("From: Alice"));
         assert!(outer.contains("Subject: quarterly numbers"));
-        assert!(!outer.contains("Content-Type"), "content headers move inside");
+        assert!(
+            !outer.contains("Content-Type"),
+            "content headers move inside"
+        );
 
         assert!(inner.starts_with("MIME-Version: 1.0\r\nContent-Type: text/plain"));
         assert!(inner.ends_with("the body\r\n"));
@@ -1694,7 +1835,8 @@ mod tests {
     #[test]
     fn a_signed_message_keeps_its_addresses_and_verifies_end_to_end() {
         let (_d, ring) = keyring();
-        ring.generate("Alice", "alice@example.com", "acct-1").unwrap();
+        ring.generate("Alice", "alice@example.com", "acct-1")
+            .unwrap();
 
         let sealed = ring
             .seal_outgoing(
@@ -1708,10 +1850,15 @@ mod tests {
             )
             .unwrap();
         let text = String::from_utf8_lossy(&sealed);
-        assert!(text.contains("Subject: quarterly numbers"), "headers survive");
+        assert!(
+            text.contains("Subject: quarterly numbers"),
+            "headers survive"
+        );
         assert!(text.contains("multipart/signed"));
 
-        let msg = mail_parser::MessageParser::default().parse(&sealed).unwrap();
+        let msg = mail_parser::MessageParser::default()
+            .parse(&sealed)
+            .unwrap();
         assert_eq!(
             crate::services::mail_crypto::detect(&msg),
             Some(CryptoKind::PgpSigned)
@@ -1730,7 +1877,9 @@ mod tests {
     fn an_encrypted_message_hides_the_body_but_not_the_subject() {
         let (_d1, bob) = keyring();
         bob.generate("Bob", "bob@example.org", "b").unwrap();
-        let bob_pub = bob.export_public(&bob.list().unwrap()[0].fingerprint).unwrap();
+        let bob_pub = bob
+            .export_public(&bob.list().unwrap()[0].fingerprint)
+            .unwrap();
         let (_d2, alice) = keyring();
         alice.generate("Alice", "alice@example.com", "a").unwrap();
         alice.import(bob_pub.as_bytes()).unwrap();
@@ -1752,7 +1901,9 @@ mod tests {
         assert!(text.contains("Subject: quarterly numbers"));
         assert!(text.contains("To: bob@example.org"));
 
-        let msg = mail_parser::MessageParser::default().parse(&sealed).unwrap();
+        let msg = mail_parser::MessageParser::default()
+            .parse(&sealed)
+            .unwrap();
         assert_eq!(
             crate::services::mail_crypto::detect(&msg),
             Some(CryptoKind::PgpEncrypted)
@@ -1769,12 +1920,19 @@ mod tests {
     fn signing_happens_inside_the_encryption() {
         let (_d1, bob) = keyring();
         bob.generate("Bob", "bob@example.org", "b").unwrap();
-        let bob_pub = bob.export_public(&bob.list().unwrap()[0].fingerprint).unwrap();
+        let bob_pub = bob
+            .export_public(&bob.list().unwrap()[0].fingerprint)
+            .unwrap();
         let (_d2, alice) = keyring();
         let alice_key = alice.generate("Alice", "alice@example.com", "a").unwrap();
         alice.import(bob_pub.as_bytes()).unwrap();
-        bob.import(alice.export_public(&alice_key.fingerprint).unwrap().as_bytes())
-            .unwrap();
+        bob.import(
+            alice
+                .export_public(&alice_key.fingerprint)
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
 
         let sealed = alice
             .seal_outgoing(
@@ -1787,7 +1945,9 @@ mod tests {
                 },
             )
             .unwrap();
-        let outer = mail_parser::MessageParser::default().parse(&sealed).unwrap();
+        let outer = mail_parser::MessageParser::default()
+            .parse(&sealed)
+            .unwrap();
         assert_eq!(
             crate::services::mail_crypto::detect(&outer),
             Some(CryptoKind::PgpEncrypted),
@@ -1796,7 +1956,9 @@ mod tests {
 
         let payload = encrypted_part_bytes(&sealed, &outer).unwrap();
         let plain = bob.decrypt_message(&payload).unwrap();
-        let inner = mail_parser::MessageParser::default().parse(&plain[..]).unwrap();
+        let inner = mail_parser::MessageParser::default()
+            .parse(&plain[..])
+            .unwrap();
         assert_eq!(
             crate::services::mail_crypto::detect(&inner),
             Some(CryptoKind::PgpSigned),
@@ -1835,16 +1997,26 @@ mod tests {
     fn no_options_is_the_message_unchanged() {
         let (_d, ring) = keyring();
         assert_eq!(
-            ring.seal_outgoing("a", &[], PLAIN, SealOpts::default()).unwrap(),
+            ring.seal_outgoing("a", &[], PLAIN, SealOpts::default())
+                .unwrap(),
             PLAIN
         );
     }
 
     #[test]
     fn addresses_come_out_of_every_user_id_shape() {
-        assert_eq!(address_of("Alice <A@Example.com>").as_deref(), Some("a@example.com"));
-        assert_eq!(address_of("a@example.com").as_deref(), Some("a@example.com"));
+        assert_eq!(
+            address_of("Alice <A@Example.com>").as_deref(),
+            Some("a@example.com")
+        );
+        assert_eq!(
+            address_of("a@example.com").as_deref(),
+            Some("a@example.com")
+        );
         assert_eq!(address_of("Alice"), None);
-        assert_eq!(address_of("Alice (work) <a@b.example>").as_deref(), Some("a@b.example"));
+        assert_eq!(
+            address_of("Alice (work) <a@b.example>").as_deref(),
+            Some("a@b.example")
+        );
     }
 }

@@ -27,8 +27,7 @@ const LIST_TABLES_SQL: &str = "SELECT name FROM sqlite_master \
 
 /// Open the database file strictly read-only — never create or modify it.
 fn open_readonly(path: &str) -> Result<Connection, String> {
-    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| e.to_string())
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| e.to_string())
 }
 
 /// Run `LIST_TABLES_SQL` against an open connection, returning the names.
@@ -174,8 +173,7 @@ mod tests {
     #[test]
     fn rejects_unknown_table() {
         let (_dir, path) = fixture();
-        let err = sqlite_page(path, "people; DROP TABLE people".to_string(), 10, 0)
-            .unwrap_err();
+        let err = sqlite_page(path, "people; DROP TABLE people".to_string(), 10, 0).unwrap_err();
         assert!(err.contains("unknown table"), "got: {err}");
     }
 }

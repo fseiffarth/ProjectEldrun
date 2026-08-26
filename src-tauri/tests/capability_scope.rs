@@ -37,12 +37,7 @@ use serde_json::Value;
 
 /// Labels that must keep working. If one of these ever stops matching, the UI is
 /// silently dead — every `invoke` from that window is rejected by the ACL.
-const MUST_STILL_MATCH: &[&str] = &[
-    "main",
-    "detached-p1-g1",
-    "detached-abc",
-    "present-deck1",
-];
+const MUST_STILL_MATCH: &[&str] = &["main", "detached-p1-g1", "detached-abc", "present-deck1"];
 
 /// The label the in-app browser's live-page windows use. Nothing but
 /// `browser.json` (which grants nothing) may match it.
@@ -151,7 +146,12 @@ fn the_default_capability_still_reaches_every_shipping_webview() {
         );
     }
     assert!(
-        !default.get("permissions").unwrap().as_array().unwrap().is_empty(),
+        !default
+            .get("permissions")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty(),
         "default.json granting nothing would be a silently dead UI"
     );
 }
@@ -264,7 +264,9 @@ fn the_app_config_keeps_its_security_posture() {
          widens what a navigation-policy bug can reach"
     );
     assert!(
-        security.get("dangerousDisableAssetCspModification").is_none(),
+        security
+            .get("dangerousDisableAssetCspModification")
+            .is_none(),
         "dangerousDisableAssetCspModification"
     );
     assert!(

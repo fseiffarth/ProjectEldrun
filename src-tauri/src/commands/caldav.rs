@@ -36,11 +36,11 @@ use std::sync::{Arc, Mutex};
 use tauri::State;
 
 use crate::commands::projects::uuid_v4;
-use crate::schema::calendar::CalendarData;
 use crate::schema::caldav::{
     CalDavAccount, CalDavAccountSaved, CalDavAccounts, CalDavChanges, CalDavCollection,
     CalDavParsed, CalDavPasswordState, CalDavWrite, ACCOUNTS_VERSION,
 };
+use crate::schema::calendar::CalendarData;
 use crate::services::caldav::{self, Credentials};
 use crate::services::remote_credentials::{self, KeyringState};
 use crate::storage;
@@ -325,7 +325,8 @@ pub async fn caldav_forget_password(
         // `remember_secret(Some(false), …)` refuses to clear an entry it could
         // not first read, so a locked keyring cannot destroy a password the user
         // still wants.
-        let outcome = remote_credentials::remember_secret(&account_key(&account), Some(false), None);
+        let outcome =
+            remote_credentials::remember_secret(&account_key(&account), Some(false), None);
         if let Ok(mut guard) = rt.lock() {
             guard.passwords.remove(&account_id);
         }
@@ -582,7 +583,10 @@ pub async fn caldav_push(
     let existing = resource_href.unwrap_or_default();
     let existing = existing.trim();
     let (target, condition) = if existing.is_empty() {
-        (caldav::resource_url(&href, &uid)?, caldav::WriteCondition::Create)
+        (
+            caldav::resource_url(&href, &uid)?,
+            caldav::WriteCondition::Create,
+        )
     } else {
         (
             existing.to_string(),

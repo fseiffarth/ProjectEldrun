@@ -129,7 +129,10 @@ impl std::fmt::Display for CryptError {
                 write!(f, "sealed by a newer version of Eldrun (envelope v{v})")
             }
             CryptError::UnsupportedAlgorithm(a) => {
-                write!(f, "sealed with an algorithm this build does not have (alg {a})")
+                write!(
+                    f,
+                    "sealed with an algorithm this build does not have (alg {a})"
+                )
             }
             CryptError::NotAuthentic => f.write_str("could not decrypt (wrong key, or altered)"),
         }
@@ -223,7 +226,8 @@ pub fn looks_sealed(bytes: &[u8]) -> bool {
 /// separator whose safety rests on "the inputs happen not to contain it" is one
 /// refactor from being wrong, and NUL cannot appear in any of these.
 pub fn field_aad(account_id: &str, table: &str, column: &str, row_key: &str) -> Vec<u8> {
-    let mut aad = Vec::with_capacity(account_id.len() + table.len() + column.len() + row_key.len() + 3);
+    let mut aad =
+        Vec::with_capacity(account_id.len() + table.len() + column.len() + row_key.len() + 3);
     aad.extend_from_slice(account_id.as_bytes());
     aad.push(0);
     aad.extend_from_slice(table.as_bytes());
@@ -484,7 +488,8 @@ fn harden(path: &Path, mode: u32) {
     }
 }
 
-const B64: base64::engine::general_purpose::GeneralPurpose = base64::engine::general_purpose::STANDARD;
+const B64: base64::engine::general_purpose::GeneralPurpose =
+    base64::engine::general_purpose::STANDARD;
 
 fn derive_passphrase_kek(passphrase: &str, salt: &[u8], kdf: KdfParams) -> Result<Key, String> {
     use argon2::{Algorithm, Argon2, Params, Version};
@@ -661,7 +666,12 @@ pub fn enable_with_passphrase(dir: &Path, passphrase: &str) -> Result<MailKeys, 
 /// Nothing in the store is re-encrypted — that is the point of the wrap
 /// indirection. Switching from keychain to passphrase and back is a key-file
 /// rewrite, not a re-seal of a hundred thousand rows.
-pub fn rewrap(dir: &Path, keys: &MailKeys, mode: UnlockMode, passphrase: Option<&str>) -> Result<(), String> {
+pub fn rewrap(
+    dir: &Path,
+    keys: &MailKeys,
+    mode: UnlockMode,
+    passphrase: Option<&str>,
+) -> Result<(), String> {
     let salt = fresh_salt()?;
     let kdf = KdfParams::default();
     let kek = match mode {
@@ -674,7 +684,9 @@ pub fn rewrap(dir: &Path, keys: &MailKeys, mode: UnlockMode, passphrase: Option<
             kek
         }
         UnlockMode::Passphrase => {
-            let pass = passphrase.filter(|p| !p.is_empty()).ok_or("a passphrase is required")?;
+            let pass = passphrase
+                .filter(|p| !p.is_empty())
+                .ok_or("a passphrase is required")?;
             derive_passphrase_kek(pass, &salt, kdf)?
         }
     };
@@ -764,7 +776,10 @@ mod tests {
         let other_account = field_aad("other", "messages", "subject", "row-1");
         let sealed = seal(&k, &subject, b"hello");
         assert_eq!(open(&k, &preview, &sealed), Err(CryptError::NotAuthentic));
-        assert_eq!(open(&k, &other_account, &sealed), Err(CryptError::NotAuthentic));
+        assert_eq!(
+            open(&k, &other_account, &sealed),
+            Err(CryptError::NotAuthentic)
+        );
     }
 
     #[test]
@@ -785,16 +800,25 @@ mod tests {
         let mut tampered = sealed.clone();
         let last = tampered.len() - 1;
         tampered[last] ^= 1;
-        assert_eq!(open(&key(), b"aad", &tampered), Err(CryptError::NotAuthentic));
+        assert_eq!(
+            open(&key(), b"aad", &tampered),
+            Err(CryptError::NotAuthentic)
+        );
     }
 
     #[test]
     fn a_non_envelope_is_reported_as_such_and_not_as_a_key_failure() {
         let k = key();
         assert_eq!(open(&k, b"", b""), Err(CryptError::NotAnEnvelope));
-        assert_eq!(open(&k, b"", b"a plaintext subject line"), Err(CryptError::NotAnEnvelope));
+        assert_eq!(
+            open(&k, b"", b"a plaintext subject line"),
+            Err(CryptError::NotAnEnvelope)
+        );
         // Right magic, too short to hold a nonce and a tag.
-        assert_eq!(open(&k, b"", b"ELMC\x01\x01"), Err(CryptError::NotAnEnvelope));
+        assert_eq!(
+            open(&k, b"", b"ELMC\x01\x01"),
+            Err(CryptError::NotAnEnvelope)
+        );
     }
 
     #[test]
@@ -802,11 +826,17 @@ mod tests {
         let k = key();
         let mut sealed = seal(&k, b"", b"x");
         sealed[4] = 2;
-        assert_eq!(open(&k, b"", &sealed), Err(CryptError::UnsupportedVersion(2)));
+        assert_eq!(
+            open(&k, b"", &sealed),
+            Err(CryptError::UnsupportedVersion(2))
+        );
 
         let mut sealed = seal(&k, b"", b"x");
         sealed[5] = 2;
-        assert_eq!(open(&k, b"", &sealed), Err(CryptError::UnsupportedAlgorithm(2)));
+        assert_eq!(
+            open(&k, b"", &sealed),
+            Err(CryptError::UnsupportedAlgorithm(2))
+        );
     }
 
     #[test]
@@ -840,7 +870,11 @@ mod tests {
         let addr = Key::from_bytes([3u8; 32]);
         let a = blob_id(&addr, b"attachment bytes");
         assert_eq!(a, blob_id(&addr, b"attachment bytes"), "dedupe still works");
-        assert_eq!(a.len(), 64, "still 64 hex chars, so get_blob's check is unchanged");
+        assert_eq!(
+            a.len(),
+            64,
+            "still 64 hex chars, so get_blob's check is unchanged"
+        );
         assert!(a.bytes().all(|b| b.is_ascii_hexdigit()));
         assert_ne!(a, blob_id(&addr, b"other bytes"));
         // The point of keying it: the same file under a different store is a
@@ -851,9 +885,18 @@ mod tests {
     #[test]
     fn name_digests_preserve_equality_and_nothing_else() {
         let name = Key::from_bytes([5u8; 32]);
-        assert_eq!(name_digest(&name, "a1", "INBOX"), name_digest(&name, "a1", "INBOX"));
-        assert_ne!(name_digest(&name, "a1", "INBOX"), name_digest(&name, "a2", "INBOX"));
-        assert_ne!(name_digest(&name, "a1", "INBOX"), name_digest(&name, "a1", "Sent"));
+        assert_eq!(
+            name_digest(&name, "a1", "INBOX"),
+            name_digest(&name, "a1", "INBOX")
+        );
+        assert_ne!(
+            name_digest(&name, "a1", "INBOX"),
+            name_digest(&name, "a2", "INBOX")
+        );
+        assert_ne!(
+            name_digest(&name, "a1", "INBOX"),
+            name_digest(&name, "a1", "Sent")
+        );
     }
 
     // ── Key file ────────────────────────────────────────────────────────────
@@ -869,7 +912,11 @@ mod tests {
         drop(keys);
 
         let back = unlock_with_passphrase(dir.path(), "correct horse").unwrap();
-        assert_eq!(back.field.as_bytes().to_vec(), field, "same master, same subkeys");
+        assert_eq!(
+            back.field.as_bytes().to_vec(),
+            field,
+            "same master, same subkeys"
+        );
         assert!(unlock_with_passphrase(dir.path(), "wrong horse").is_err());
     }
 
@@ -908,7 +955,10 @@ mod tests {
         let keys = enable_with_cheap_kdf(dir.path(), "pw");
         drop(keys);
         let file = read_key_file(dir.path()).unwrap().unwrap();
-        assert_eq!(file.kdf, cheap, "the parameters used must be the ones recorded");
+        assert_eq!(
+            file.kdf, cheap,
+            "the parameters used must be the ones recorded"
+        );
         // Reading it back with the recorded parameters is the only way the
         // unlock can succeed; if `unlock_with_passphrase` ignored them and used
         // the defaults it would derive a different KEK and fail.

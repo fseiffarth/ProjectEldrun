@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { writePtyInput } from "../../lib/terminalInput";
 
 /**
  * "Paste it for me" for a **login terminal** — the row of buttons above the embedded
@@ -79,7 +80,7 @@ export function CredentialPasteBar({
   const paste = async (entry: PasteEntry) => {
     try {
       if (entry.text) {
-        await invoke("pty_write", { id: ptyId, data: ENCODER.encode(entry.text) });
+        await writePtyInput(ptyId, ENCODER.encode(entry.text));
         flash(t("credentialPasteBar.pastedFlash"));
         return;
       }

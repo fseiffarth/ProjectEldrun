@@ -61,7 +61,9 @@ const RECONCILE_FILE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Await a transfer future under [`RECONCILE_FILE_TIMEOUT`], folding a stall into the
 /// same `Err(String)` the transfer itself returns — so the caller's existing
 /// error arm skips the file instead of the whole pass hanging on the pooled session.
-async fn run_bounded<T>(fut: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+async fn run_bounded<T>(
+    fut: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
     match tokio::time::timeout(RECONCILE_FILE_TIMEOUT, fut).await {
         Ok(r) => r,
         Err(_) => Err(format!(
@@ -439,7 +441,9 @@ async fn reconcile_pass(
                     // must not hang this background task forever (which, sharing the
                     // session, would wedge every manual push too). A timeout abandons
                     // the pass; the pool keepalive then evicts a dead master.
-                    match run_bounded(remote_sync::pull_file(&sftp, &host_abs, hsize, &local_path)).await {
+                    match run_bounded(remote_sync::pull_file(&sftp, &host_abs, hsize, &local_path))
+                        .await
+                    {
                         Ok((ls, lm)) => {
                             let (hs, hm) = host.unwrap_or((hsize, None));
                             let mut g = manifest.lock().await;
@@ -457,7 +461,9 @@ async fn reconcile_pass(
                 // Local changed only → push, but only if the host still matches the
                 // recorded base (never clobber a racing host change).
                 if remote_sync::push_decision(&entry, host) == PushDecision::Safe {
-                    match run_bounded(remote_sync::push_file_atomic(&sftp, &local_path, &host_abs)).await {
+                    match run_bounded(remote_sync::push_file_atomic(&sftp, &local_path, &host_abs))
+                        .await
+                    {
                         Ok((hs, hm)) => {
                             let (ls, lm) =
                                 remote_sync::local_size_mtime(std::fs::metadata(&local_path).ok());

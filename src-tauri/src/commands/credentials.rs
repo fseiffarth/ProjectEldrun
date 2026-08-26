@@ -240,11 +240,15 @@ pub async fn credential_paste_to_pty(
     if submit.unwrap_or(false) {
         bytes.push(b'\r');
     }
-    registry
+    let sender = registry
         .lock()
         .unwrap()
-        .write(&pty, &bytes)
-        .map_err(|e| e.to_string())?;
+        .input_sender(&pty)
+        .ok_or_else(|| "the login terminal is no longer running".to_string())?;
+    sender
+        .send(bytes)
+        .await
+        .map_err(|_| "the login terminal is no longer accepting input".to_string())?;
     Ok(true)
 }
 
@@ -258,8 +262,16 @@ mod tests {
     fn only_a_pty_running_the_matching_login_accepts_a_secret() {
         let config = format!("/tmp/eldrun-test-{}.ovpn", std::process::id());
         let vpn_cmd = format!("pkexec openvpn --config {config} --auth-nocache");
-        let ssh_cmd = format!("ssh -o ControlMaster=auto alice@host-{}", std::process::id());
-        note_minted_login(&vpn_cmd, LoginTarget::Vpn { config: config.clone() });
+        let ssh_cmd = format!(
+            "ssh -o ControlMaster=auto alice@host-{}",
+            std::process::id()
+        );
+        note_minted_login(
+            &vpn_cmd,
+            LoginTarget::Vpn {
+                config: config.clone(),
+            },
+        );
         note_minted_login(
             &ssh_cmd,
             LoginTarget::Ssh {
@@ -270,7 +282,11 @@ mod tests {
         );
 
         let vpn_account = creds::openvpn_account(&config);
-        let ssh_account = creds::ssh_account(&Some("alice".to_string()), &format!("host-{}", std::process::id()), None);
+        let ssh_account = creds::ssh_account(
+            &Some("alice".to_string()),
+            &format!("host-{}", std::process::id()),
+            None,
+        );
 
         // An unmarked PTY — the "spawn `cat > /tmp/loot`" case — is refused.
         assert!(!paste_allowed("pty-evil", &vpn_account));
@@ -280,8 +296,14 @@ mod tests {
         note_pty_input("pty-vpn", format!("\x15{vpn_cmd}").as_bytes());
         assert!(paste_allowed("pty-vpn", &vpn_account));
         // …and the tunnel's other two secrets are legitimate there too.
-        assert!(paste_allowed("pty-vpn", &creds::openvpn_key_account(&config)));
-        assert!(paste_allowed("pty-vpn", &creds::openvpn_user_account(&config)));
+        assert!(paste_allowed(
+            "pty-vpn",
+            &creds::openvpn_key_account(&config)
+        ));
+        assert!(paste_allowed(
+            "pty-vpn",
+            &creds::openvpn_user_account(&config)
+        ));
         // But an SSH password is not: a VPN login is not that host's login.
         assert!(!paste_allowed("pty-vpn", &ssh_account));
 

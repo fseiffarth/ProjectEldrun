@@ -5,6 +5,7 @@ import { useHintsStore } from "./hints";
 import type { HintId } from "../lib/hints";
 import {
   TOUR_STEPS,
+  ADVANCED_TOUR_STEPS,
   COVERED_HINTS,
   nextEligibleIndex,
   prevEligibleIndex,
@@ -35,6 +36,9 @@ interface TourStore {
   persistKey: "tour_completed" | null;
   /** Begin the high-level "Take a tour" walkthrough. */
   start: () => void;
+  /** Begin the opt-in advanced walkthrough (remote machines and friends).
+   *  Replayable: nothing is persisted, so it never counts as onboarding done. */
+  startAdvanced: () => void;
   /** Begin a task lesson (replayable; nothing persisted). */
   startLesson: (steps: TourStep[]) => void;
   /** Advance to the next eligible step, or finish past the end. */
@@ -78,6 +82,8 @@ export const useTourStore = create<TourStore>((set, get) => {
     persistKey: null,
 
     start: () => begin(TOUR_STEPS, "tour_completed"),
+
+    startAdvanced: () => begin(ADVANCED_TOUR_STEPS, null),
 
     startLesson: (steps) => begin(steps, null),
 

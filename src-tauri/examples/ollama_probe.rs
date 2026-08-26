@@ -102,7 +102,10 @@ async fn main() {
     println!("\n── ollama server version (network) ───────────────");
     let v = ollama::ollama_version_status(true).await;
     println!("  current={:?} latest={:?}", v.current, v.latest);
-    println!("  update_available={} error={:?}", v.update_available, v.error);
+    println!(
+        "  update_available={} error={:?}",
+        v.update_available, v.error
+    );
     println!("  install_cmd={:?} shell={:?}", v.install_cmd, v.shell_kind);
 
     // The integrated-GPU gate. Headless for the same reason the rest of this

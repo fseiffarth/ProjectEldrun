@@ -1,0 +1,19 @@
+{
+  "name": "Eldrun Mobile",
+  "short_name": "Eldrun",
+  "description": "Private project agent and shell control for Eldrun",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#11131a",
+  "theme_color": "#11131a",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "id": "/",
+  "scope": "/"
+}

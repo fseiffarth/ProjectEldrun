@@ -97,13 +97,32 @@ for p in "${patterns[@]}"; do grep_args+=(-e "$p"); done
 # left is cleared. RFC 1918 ranges (10/8, 172.16/12, 192.168/16) are deliberately
 # NOT scrubbed — those do name a host on somebody's network.
 scrub_args=(
+  # FIRST, because every rule below reads the line as text: strip grep's own
+  # `<lineno>:` prefix and the diff's `+` marker. Neither is part of the line,
+  # and `+` is in the email pattern's local-part class — which is why a bare
+  # `@AGENTS.md` import directive at the start of an added line scanned as an
+  # address, with the diff marker standing in for the name.
+  -e 's/^[0-9]+:\+//'
   -e 's/\b127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b//g'
   -e 's/\b(0\.0\.0\.0|255\.255\.255\.255)\b//g'
   # RFC 5737 documentation ranges — reserved so examples and tests can name an
   # address that is guaranteed never to route anywhere.
   -e 's/\b(192\.0\.2|198\.51\.100|203\.0\.113)\.[0-9]{1,3}\b//g'
-  -e 's/[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)*(example|test|invalid|localhost)\b//g'
-  -e 's/[A-Za-z0-9._%+-]+@example\.(com|org|net)\b//g'
+  # RFC 3927 link-local (169.254/16): autoconfigured, never routed, and names no
+  # host on anybody's network — loopback's reasoning above. Unavoidable in this
+  # tree, since 169.254.169.254 is the cloud metadata endpoint the reader
+  # fetch's SSRF gate exists to block, and that gate cannot be described or
+  # tested without writing the address down.
+  -e 's/\b169\.254\.[0-9]{1,3}\.[0-9]{1,3}\b//g'
+  # Reserved domains are matched case-insensitively, because a domain IS
+  # case-insensitive: `A@Example.com` names the same reserved domain as
+  # `a@example.com`, and a fixture that capitalizes it is still a fixture.
+  -e 's/[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)*(example|test|invalid|localhost)\b//gI'
+  -e 's/[A-Za-z0-9._%+-]+@example\.(com|org|net)\b//gI'
+  # `git@<host>` is the SSH login every git host shares — a service account, not
+  # a person — and it is what a clone URL and every OpenSSH failure message
+  # carries. Only that exact local part: `florian@github.com` still reports.
+  -e 's/\bgit@[A-Za-z0-9.-]+\.[A-Za-z]{2,}//g'
   # A credential keyword followed by a TYPE rather than a value: `password:
   # &Password` in a Rust signature declares a parameter, it does not carry one.
   -e 's/(password|secret|api[_-]?key)[[:space:]]*:[[:space:]]*&?(mut[[:space:]]+)?[A-Z][A-Za-z0-9_]*//gI'
@@ -118,6 +137,30 @@ scrub_args=(
   # `::`/`.` path ending in `(`, so `password = "hunter2"` and a bare
   # `password=hunter2` are both still reported.
   -e 's/(password|secret|api[_-]?key)[[:space:]]*=[[:space:]]*&?[A-Za-z_][A-Za-z0-9_]*([:.]{1,2}[A-Za-z_][A-Za-z0-9_]*)*\(//gI'
+  # ...or by NOTHING AT ALL: a prompt string the SSH and OpenVPN matchers compare
+  # against (`"…'s password: "`), not an assignment. Cleared only when the
+  # separator is followed by a quote that ENDS the line, bar trailing
+  # punctuation — so `password: "hunter2"` keeps its value and is still reported.
+  -e 's/(password|secret|api[_-]?key)[[:space:]]*[:=][[:space:]]*"[[:space:]]*[,;)]*[[:space:]]*$//gI'
+  # ...or by a PLACEHOLDER word rather than a secret: `ANTHROPIC_API_KEY=sk-test`
+  # is a fixture asserting the variable is passed through at all. Narrow to
+  # values built out of the standard placeholder words, so a real `sk-ant-api03-`
+  # value is untouched.
+  -e 's/(password|secret|api[_-]?key)[[:space:]]*[:=][[:space:]]*"?[A-Za-z0-9_-]*(test|dummy|fake|placeholder|redacted|changeme|sample)[A-Za-z0-9_-]*//gI'
+  # A PEM header immediately followed by the two-character escape `\n` is a
+  # string literal in source, not a key file: a real key's header is followed by
+  # an actual line break. ONLY the header is cleared — any base64 body sharing
+  # the line survives the scrub and is still reported.
+  -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----\\n//g'
+  # A token PREFIX followed by an ellipsis or an angle placeholder is a UI hint
+  # showing the reader what their own token looks like (`GitLab (glpat-…)`).
+  # A real token continues in base62, so it keeps its prefix and is reported.
+  -e 's/\b(glpat-|ghp_|sk-)(…|\.\.\.|<)//g'
+  # ...or by a placeholder WORD AND NOTHING ELSE (`git_token: "ghp_test"`), which
+  # is the shape a fixture takes when the keyword itself is not one this scan
+  # knows (`git_token` is not `api_key`). The trailing `\b` is what keeps it
+  # narrow: a real `ghp_testAbC123…` continues into the word and still reports.
+  -e 's/\b(glpat-|ghp_|sk-)(test|dummy|fake|placeholder|redacted|changeme|sample)\b//gI'
 )
 
 # Last resort for a line that is genuinely fine but that no general rule can

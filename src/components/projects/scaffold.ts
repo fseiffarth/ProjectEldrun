@@ -28,6 +28,11 @@ export interface ScaffoldPreviewItem {
 
 export interface ScaffoldRepairReport {
   createdFiles: string[];
+  /** Agent docs that were still an untouched legacy stub and got rewritten to
+   *  the current template (AGENTS.md canonical, CLAUDE/GEMINI pointing at it).
+   *  Optional because the backend restarts on the user's schedule: a window
+   *  still running a pre-`updatedFiles` binary must summarize, not crash. */
+  updatedFiles?: string[];
   gitignoreLinesAdded: string[];
   gitInitialized: boolean;
 }
@@ -42,6 +47,7 @@ export interface ProjectScaffoldRepair {
 export function scaffoldRepairIsEmpty(report: ScaffoldRepairReport) {
   return (
     report.createdFiles.length === 0 &&
+    (report.updatedFiles?.length ?? 0) === 0 &&
     report.gitignoreLinesAdded.length === 0 &&
     !report.gitInitialized
   );
@@ -52,6 +58,9 @@ export function summarizeScaffoldRepair(report: ScaffoldRepairReport): string {
   const parts: string[] = [];
   if (report.createdFiles.length > 0) {
     parts.push(`added ${report.createdFiles.join(", ")}`);
+  }
+  if (report.updatedFiles && report.updatedFiles.length > 0) {
+    parts.push(`updated ${report.updatedFiles.join(", ")}`);
   }
   if (report.gitignoreLinesAdded.length > 0) {
     parts.push(`.gitignore +${report.gitignoreLinesAdded.join(", ")}`);
@@ -131,7 +140,10 @@ export function buildScaffoldFillPrompt(files: string[]) {
     "- Inspect the project first so the files reflect the actual codebase and purpose.",
     "- Replace placeholder scaffold content with useful, project-specific guidance.",
     "- Preserve unrelated existing content and do not rewrite files outside this list.",
-    "- Keep AGENTS.md practical for coding agents, including architecture, workflows, and constraints.",
+    "- All agent guidance belongs in the canonical AGENTS.md — architecture, workflows",
+    "  and constraints — kept practical for coding agents.",
+    "- The CLAUDE.md and GEMINI.md files are pointers to it: keep their `@AGENTS.md`",
+    "  import and their links to the other agent files, and never copy guidance into them.",
     "",
     "Files to fill:",
     fileList,

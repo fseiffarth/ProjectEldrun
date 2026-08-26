@@ -163,7 +163,9 @@ pub(crate) fn resolve_ollama_addr(raw: Option<&str>, allow_remote: bool) -> Resu
             .chars()
             .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
     {
-        return Err(format!("Ollama host `{raw}` contains characters a host cannot have."));
+        return Err(format!(
+            "Ollama host `{raw}` contains characters a host cannot have."
+        ));
     }
 
     if !host_is_loopback(host) && !allow_remote {
@@ -248,7 +250,11 @@ pub(crate) fn host_is_loopback(host: &str) -> bool {
 
 /// Send a request to the local Ollama REST API and return the response body.
 /// Uses HTTP/1.0 to avoid chunked transfer encoding.
-pub(crate) fn ollama_http(method: &str, path: &str, json_body: Option<&str>) -> Result<String, String> {
+pub(crate) fn ollama_http(
+    method: &str,
+    path: &str,
+    json_body: Option<&str>,
+) -> Result<String, String> {
     let addr = ollama_addr()?;
     let mut stream = connect_ollama(&addr)?;
     // 10-minute timeout accommodates large model pulls
@@ -1464,8 +1470,7 @@ fn wanted_updates(models: Vec<(String, String)>) -> Vec<OllamaModelUpdate> {
                 // A local digest we never read is not evidence of anything;
                 // comparing it to a real remote one would report an update for
                 // every model.
-                let update_available =
-                    !local_digest.is_empty() && local_digest != remote_digest;
+                let update_available = !local_digest.is_empty() && local_digest != remote_digest;
                 OllamaModelUpdate {
                     model,
                     local_digest,
@@ -1547,7 +1552,9 @@ fn parse_version(text: &str) -> Option<String> {
             let t = tok.trim().trim_start_matches('v');
             let core = t.split('-').next().unwrap_or(t);
             let looks_like = core.split('.').count() >= 2
-                && core.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+                && core
+                    .split('.')
+                    .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
             looks_like.then(|| t.to_string())
         })
         .next()
@@ -1570,7 +1577,10 @@ fn version_is_newer(candidate: &str, current: &str) -> Option<bool> {
     let len = a.len().max(b.len());
     for i in 0..len {
         // A missing component is zero: 0.15 and 0.15.0 are the same version.
-        let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
+        let (x, y) = (
+            a.get(i).copied().unwrap_or(0),
+            b.get(i).copied().unwrap_or(0),
+        );
         if x != y {
             return Some(x > y);
         }
@@ -1697,7 +1707,9 @@ fn registry_repo_tag(model: &str) -> Result<(String, String), String> {
 
 fn registry_manifest_url(model: &str) -> Result<String, String> {
     let (repo, tag) = registry_repo_tag(model)?;
-    Ok(format!("https://registry.ollama.ai/v2/{repo}/manifests/{tag}"))
+    Ok(format!(
+        "https://registry.ollama.ai/v2/{repo}/manifests/{tag}"
+    ))
 }
 
 fn fetch_registry_manifest(model: &str) -> Result<serde_json::Value, String> {
@@ -1968,8 +1980,9 @@ fn parse_search_html(html: &str) -> Vec<RegistryModel> {
             }
             // Description is the first <p> with the max-w-lg class.
             let description = tag_text_after(card, "class=\"max-w-lg").unwrap_or_default();
-            let (sizes, capabilities): (Vec<String>, Vec<String>) =
-                badge_texts(card).into_iter().partition(|b| looks_like_size(b));
+            let (sizes, capabilities): (Vec<String>, Vec<String>) = badge_texts(card)
+                .into_iter()
+                .partition(|b| looks_like_size(b));
             Some(RegistryModel {
                 name,
                 description,
@@ -2742,8 +2755,8 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
         cmd.env(IGPU_ENABLE_VAR, "1");
     }
 
-    let pid =
-        crate::paths::spawn_reaped(cmd).map_err(|e| format!("failed to start ollama serve: {e}"))?;
+    let pid = crate::paths::spawn_reaped(cmd)
+        .map_err(|e| format!("failed to start ollama serve: {e}"))?;
     // Recorded before the wait, not after: a server that came up too slowly for
     // the 8 s deadline is still *ours* and still running, and forgetting it here
     // is precisely how one outlives the app.
@@ -3800,7 +3813,10 @@ pub async fn prepare_local_launch(agent: String, model: String) -> Result<LocalL
              (its Ollama page lists `tools` under Capabilities)."
                 .to_string()
         } else {
-            format!("Pick one of these in the 🧠 menu instead: {}.", usable.join(", "))
+            format!(
+                "Pick one of these in the 🧠 menu instead: {}.",
+                usable.join(", ")
+            )
         };
         return Err(format!(
             "{} drives a model through tool calls, and '{model}' doesn't support them. \
@@ -4262,7 +4278,10 @@ mod tests {
             Some("0.32.5")
         );
         // A release tag, straight out of the API's JSON.
-        assert_eq!(parse_version("\"tag_name\": \"v0.32.5\",").as_deref(), Some("0.32.5"));
+        assert_eq!(
+            parse_version("\"tag_name\": \"v0.32.5\",").as_deref(),
+            Some("0.32.5")
+        );
         assert_eq!(parse_version("no version here").as_deref(), None);
     }
 
@@ -4395,7 +4414,10 @@ mod tests {
         let doc: serde_json::Value =
             serde_json::from_str(&local_catalog_json("m:latest", Some(true), None, true)).unwrap();
         let m = &doc["models"][0];
-        assert!(!m["supported_reasoning_levels"].as_array().unwrap().is_empty());
+        assert!(!m["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .is_empty());
         assert!(m["input_modalities"]
             .as_array()
             .unwrap()
@@ -5076,7 +5098,10 @@ mod tests {
         let path = "/data/ollama/models";
         // No service to reconfigure → nothing to run (an Eldrun-spawned server
         // already honours the setting).
-        assert_eq!(models_dir_service_command(path, false), (String::new(), String::new()));
+        assert_eq!(
+            models_dir_service_command(path, false),
+            (String::new(), String::new())
+        );
 
         let (cmd, shell) = models_dir_service_command(path, true);
         assert_eq!(shell, "bash");
@@ -5107,7 +5132,10 @@ mod tests {
     fn unset_ollama_host_is_the_address_it_always_was() {
         // The whole compatibility promise: every install that predates this
         // change keeps dialling exactly what it dialled before.
-        assert_eq!(resolve_ollama_addr(None, false).unwrap(), DEFAULT_OLLAMA_ADDR);
+        assert_eq!(
+            resolve_ollama_addr(None, false).unwrap(),
+            DEFAULT_OLLAMA_ADDR
+        );
         assert_eq!(addr("").unwrap(), DEFAULT_OLLAMA_ADDR);
         assert_eq!(addr("   ").unwrap(), DEFAULT_OLLAMA_ADDR);
     }
@@ -5125,7 +5153,10 @@ mod tests {
     fn spellings_that_get_copied_in_are_understood() {
         assert_eq!(addr("http://127.0.0.1:11434").unwrap(), "127.0.0.1:11434");
         assert_eq!(addr("http://localhost:11500/").unwrap(), "localhost:11500");
-        assert_eq!(addr("http://localhost:11500/v1").unwrap(), "localhost:11500");
+        assert_eq!(
+            addr("http://localhost:11500/v1").unwrap(),
+            "localhost:11500"
+        );
         // `0.0.0.0` is what you write to make the *server* listen everywhere; as
         // a connect address it means this machine.
         assert_eq!(addr("0.0.0.0:11500").unwrap(), "127.0.0.1:11500");
@@ -5161,7 +5192,13 @@ mod tests {
             );
         }
         // Loopback never needs the opt-in, whatever it is spelled as.
-        for host in ["127.0.0.1", "127.1.2.3", "localhost", "dev.localhost", "::1"] {
+        for host in [
+            "127.0.0.1",
+            "127.1.2.3",
+            "localhost",
+            "dev.localhost",
+            "::1",
+        ] {
             assert!(resolve_ollama_addr(Some(host), false).is_ok(), "{host}");
         }
     }

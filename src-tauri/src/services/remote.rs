@@ -424,7 +424,11 @@ pub async fn disconnect(pool: &RemotePoolState, project_id: &str) {
 
 /// Close and remove the pooled connection for a specific `(project, host)`.
 pub async fn disconnect_host(pool: &RemotePoolState, project_id: &str, host_id: &str) {
-    let removed = pool.lock().await.conns.remove(&conn_key(project_id, host_id));
+    let removed = pool
+        .lock()
+        .await
+        .conns
+        .remove(&conn_key(project_id, host_id));
     if let Some(conn) = removed {
         teardown_pooled(conn).await;
     }
@@ -441,7 +445,9 @@ pub async fn disconnect_project(pool: &RemotePoolState, project_id: &str) {
             .filter(|k| project_of_key(k) == project_id)
             .cloned()
             .collect();
-        keys.into_iter().filter_map(|k| guard.conns.remove(&k)).collect()
+        keys.into_iter()
+            .filter_map(|k| guard.conns.remove(&k))
+            .collect()
     };
     for conn in removed {
         teardown_pooled(conn).await;

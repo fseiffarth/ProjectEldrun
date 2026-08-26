@@ -4,6 +4,7 @@
  * (callers persist it explicitly). See tabs.ts closeAllTabs.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(undefined) }));
 
@@ -56,5 +57,18 @@ describe("tabs store — closeAllTabs", () => {
     const before = useTabsStore.getState().tabsByScope;
     useTabsStore.getState().closeAllTabs("does-not-exist");
     expect(useTabsStore.getState().tabsByScope).toBe(before);
+  });
+
+  it("unloads a scope without replacing its saved layout with an empty one", async () => {
+    await useTabsStore.getState().unloadScope("b");
+    const s = useTabsStore.getState();
+    expect(s.tabsByScope.b).toBeUndefined();
+    expect(s.layoutByScope.b).toBeUndefined();
+    expect(s.focusedGroupByScope.b).toBeUndefined();
+    expect(s.tabsByScope.a).toHaveLength(2);
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith(
+      "save_tab_layout",
+      expect.anything(),
+    );
   });
 });

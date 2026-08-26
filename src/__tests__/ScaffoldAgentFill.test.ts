@@ -43,6 +43,9 @@ describe("scaffold agent fill guidance", () => {
     expect(prompt).toContain("Inspect the project first");
     expect(prompt).toContain("- AGENTS.md");
     expect(prompt).toContain("- TODO.md");
+    // The agent must not undo the pointer scheme it was handed.
+    expect(prompt).toContain("canonical AGENTS.md");
+    expect(prompt).toContain("`@AGENTS.md`");
   });
 
   it("builds a concrete prompt for agent-filled project descriptions", () => {

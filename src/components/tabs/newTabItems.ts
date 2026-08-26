@@ -47,8 +47,11 @@ export interface StaticMenuItem {
 export const AGENT_ITEMS: StaticMenuItem[] = [
   { label: "Claude",   cmd: "claude",       kind: "agent", sessionRename: (n) => `/rename ${n}`, sessionIdArgs: (id) => ["--session-id", id] },
   { label: "Codex",    cmd: "codex",        kind: "agent" },
-  { label: "Gemini",   cmd: "gemini",       kind: "agent", sessionIdArgs: (id) => ["--session-id", id] },
+  { label: "Google Antigravity", cmd: "agy", kind: "agent" },
+  { label: "Google Gemini", cmd: "gemini", kind: "agent", sessionIdArgs: (id) => ["--session-id", id] },
   { label: "Mistral",  cmd: "vibe",         kind: "agent" },
+  { label: "Kiro",     cmd: "kiro",         kind: "agent" },
+  { label: "Cline",    cmd: "cline",        kind: "agent" },
   { label: "Aider",    cmd: "aider",        kind: "agent" },
   { label: "OpenCode", cmd: "opencode",     kind: "agent" },
   { label: "Cursor",   cmd: "cursor-agent", kind: "agent" },
@@ -56,6 +59,18 @@ export const AGENT_ITEMS: StaticMenuItem[] = [
   { label: "Grok",     cmd: "grok",         kind: "agent" },
   { label: "Qwen",     cmd: "qwen",         kind: "agent" },
   { label: "OpenClaw", cmd: "openclaw",     kind: "agent" },
+  { label: "Goose",    cmd: "goose",        kind: "agent" },
+  { label: "OpenHands", cmd: "openhands",   kind: "agent" },
+  { label: "Pi",       cmd: "pi",           kind: "agent" },
+  { label: "Plandex",  cmd: "plandex",      kind: "agent" },
+  { label: "SWE-agent", cmd: "sweagent",    kind: "agent" },
+  { label: "mini-SWE-agent", cmd: "mini",   kind: "agent" },
+  { label: "Mentat",   cmd: "mentat",       kind: "agent" },
+  { label: "GPT Engineer", cmd: "gpte",     kind: "agent" },
+  { label: "Crush",    cmd: "crush",        kind: "agent" },
+  { label: "Amp",      cmd: "amp",          kind: "agent" },
+  { label: "Kimi Code", cmd: "kimi",        kind: "agent" },
+  { label: "Qoder",    cmd: "qoder",        kind: "agent" },
 ];
 
 export const SHELL_ITEMS: StaticMenuItem[] = [
@@ -147,6 +162,48 @@ export function buildStaticTabSpec(
  *  effect that depends on it). */
 export const EMPTY_CUSTOM_AGENTS: CustomAgent[] = [];
 
+/** The useful first-launch shortlist. Once the user touches a 🧠 "+ tab" chip,
+ *  their persisted list (including an intentional empty one) takes over. */
+export const DEFAULT_COMPACT_AGENT_IDS = ["claude", "codex", "gemini"];
+
+/** Keep only the selected built-in agents in the menu's idle compact view, but
+ * always retain the management row. Searching still receives the full list. */
+export function compactAgentMenuEntries(
+  entries: AddMenuEntry[],
+  compactBins: ReadonlySet<string>,
+): AddMenuEntry[] {
+  return entries.filter(
+    (entry) => compactBins.has(entry.key) || entry.key === "__add_custom_agent__",
+  );
+}
+
+/** The installed built-in commands from the backend's agent registry. Agent
+ * ids are not necessarily executable names (Google Antigravity is
+ * `antigravity` / `agy`), while menu items launch by executable name. */
+export interface BuiltInAgentStatus {
+  bin: string;
+  installed: boolean;
+}
+
+export function installedAgentBins(agents: readonly BuiltInAgentStatus[]): Set<string> {
+  return new Set(agents.filter((agent) => agent.installed).map((agent) => agent.bin));
+}
+
+/** Apply Manage Agents' persisted registry ids to the executable-name set used
+ * by tab launchers. Most ids equal their command, but this must also cover
+ * entries such as `antigravity`/`agy` and `swe-agent`/`sweagent`. */
+export function enabledInstalledAgentBins(
+  agents: readonly (BuiltInAgentStatus & { id: string })[],
+  disabledIds: readonly string[] | undefined,
+): Set<string> {
+  if (!disabledIds?.length) return installedAgentBins(agents);
+  const disabled = new Set(disabledIds);
+  for (const agent of agents) {
+    if (disabled.has(agent.id)) disabled.add(agent.bin);
+  }
+  return new Set([...installedAgentBins(agents)].filter((bin) => !disabled.has(bin)));
+}
+
 /** Adapt a persisted {@link CustomAgent} into a menu item so it launches through
  *  the same `buildStaticTabSpec` path as the built-in agents. */
 export function customAgentToItem(ca: CustomAgent): StaticMenuItem {
@@ -177,6 +234,8 @@ export function agentMenuEntries(opts: {
   installedBuiltins: Set<string> | null;
   installedCmds: Set<string> | null;
   customAgents: CustomAgent[];
+  /** Strict built-in-only surfaces (Trash) must not offer arbitrary commands. */
+  allowCustom?: boolean;
   pick: (item: StaticMenuItem) => void;
   onAddCustom: () => void;
   t: (key: TranslationKey) => string;
@@ -189,7 +248,7 @@ export function agentMenuEntries(opts: {
     color: TAB_ACCENT[item.kind],
     onPick: () => opts.pick(item),
   }));
-  const custom = opts.customAgents.map((ca) => {
+  const custom = (opts.allowCustom !== false ? opts.customAgents : []).map((ca) => {
     const missing = opts.installedCmds != null && !opts.installedCmds.has(ca.cmd);
     return {
       key: `custom:${ca.id}`,
@@ -202,12 +261,14 @@ export function agentMenuEntries(opts: {
   return [
     ...builtins,
     ...custom,
-    {
-      key: "__add_custom_agent__",
-      label: opts.t("newTabMenu.addAgent"),
-      dot: "＋",
-      color: "var(--text-muted)",
-      onPick: opts.onAddCustom,
-    },
+    ...(opts.allowCustom !== false
+      ? [{
+          key: "__add_custom_agent__",
+          label: opts.t("newTabMenu.addAgent"),
+          dot: "＋",
+          color: "var(--text-muted)",
+          onPick: opts.onAddCustom,
+        }]
+      : []),
   ];
 }

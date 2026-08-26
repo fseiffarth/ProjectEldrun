@@ -1,12 +1,14 @@
 {
   "name": "eldrun",
   "private": true,
-  "version": "0.1.51",
+  "version": "0.1.53",
   "license": "MIT OR Apache-2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc && vite build && npm run mobile:build",
+    "mobile:build": "tsc -p tsconfig.mobile.json && vite build --config vite.mobile.config.ts",
+    "mobile:dev": "vite --config vite.mobile.config.ts",
     "preview": "vite preview",
     "tauri": "tauri",
     "pretauri:dev": "./scripts/guard-single-instance.sh",
@@ -25,8 +27,6 @@
   },
   "dependencies": {
     "@crabnebula/tauri-plugin-drag": "^2.1.0",
-    "@dnd-kit/core": "^6",
-    "@dnd-kit/sortable": "^8",
     "@fontsource-variable/inter": "^5.2.8",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@pdf-lib/fontkit": "^1.1.1",

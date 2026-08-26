@@ -359,7 +359,12 @@ pub fn open_file(
     // failure never fails the open (X11-only; a no-op elsewhere).
     let place = |window_id: Option<u64>| {
         if let (Some(wid), Some(px), Some(py)) = (window_id, x, y) {
-            if let Err(e) = workspace.lock().unwrap().backend.position_window(wid, px, py) {
+            if let Err(e) = workspace
+                .lock()
+                .unwrap()
+                .backend
+                .position_window(wid, px, py)
+            {
                 eprintln!("position_window failed: {e}");
             }
         }
@@ -1987,12 +1992,14 @@ mod tests {
 
     #[test]
     fn opened_windows_are_only_project_file_ui_windows() {
-        let windows = [tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+        let windows = [
+            tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
             tracked(Some("p1"), ORIGIN_MIDDLE_FILE_BROWSER, Some(11)),
             tracked(Some("p1"), ORIGIN_GLOBAL_APP, Some(12)),
             tracked(Some("p1"), ORIGIN_MANUAL_LAUNCH, Some(13)),
             tracked(Some("p2"), ORIGIN_RIGHT_FILE_TREE, Some(20)),
-            tracked(None, ORIGIN_RIGHT_FILE_TREE, Some(30))];
+            tracked(None, ORIGIN_RIGHT_FILE_TREE, Some(30)),
+        ];
 
         let opened = opened_windows_for_project(windows.iter(), Some("p1"));
         let ids = opened
@@ -2115,8 +2122,10 @@ mod tests {
 
     #[test]
     fn opened_windows_returns_empty_for_wrong_project() {
-        let windows = [tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
-            tracked(Some("p1"), ORIGIN_MIDDLE_FILE_BROWSER, Some(11))];
+        let windows = [
+            tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+            tracked(Some("p1"), ORIGIN_MIDDLE_FILE_BROWSER, Some(11)),
+        ];
         let opened = opened_windows_for_project(windows.iter(), Some("p2"));
         assert!(opened.is_empty());
     }
@@ -2202,7 +2211,10 @@ mod tests {
 
     #[test]
     fn split_exec_command_no_whitespace_is_single_program() {
-        assert_eq!(split_exec_command("/usr/bin/firefox"), ("/usr/bin/firefox", vec![]));
+        assert_eq!(
+            split_exec_command("/usr/bin/firefox"),
+            ("/usr/bin/firefox", vec![])
+        );
     }
 
     #[test]
@@ -2210,16 +2222,16 @@ mod tests {
         let (program, args) =
             split_exec_command("/usr/bin/flatpak run --branch=stable com.prusa3d.PrusaSlicer");
         assert_eq!(program, "/usr/bin/flatpak");
-        assert_eq!(args, vec!["run", "--branch=stable", "com.prusa3d.PrusaSlicer"]);
+        assert_eq!(
+            args,
+            vec!["run", "--branch=stable", "com.prusa3d.PrusaSlicer"]
+        );
     }
 
     #[test]
     fn split_exec_command_keeps_existing_path_with_spaces_whole() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "eldrun test app {}.txt",
-            std::process::id()
-        ));
+        let path = dir.join(format!("eldrun test app {}.txt", std::process::id()));
         fs::write(&path, b"").unwrap();
         let exec = path.to_string_lossy().into_owned();
         assert_eq!(split_exec_command(&exec), (exec.as_str(), vec![]));

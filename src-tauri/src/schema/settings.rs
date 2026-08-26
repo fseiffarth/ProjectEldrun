@@ -12,6 +12,18 @@ pub struct GlobalAppEntry {
     pub extra: HashMap<String, Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EldrunMobileHostSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serve_origin: Option<String>,
+}
+
 /// `~/.local/share/eldrun/settings.json`.
 ///
 /// Ollama fields (ollama_host, ollama_model, ollama_autostart) are preserved
@@ -241,6 +253,12 @@ pub struct Settings {
     /// back to `"claude"` when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_agent_cmd: Option<String>,
+    /// Built-in agent registry ids shown before a search in the compact Agents
+    /// group of the + tab menu. Chosen through the 🧠 menu's "+ tab" chips.
+    /// Unset is interpreted by the frontend as Claude/Codex/Gemini; an empty
+    /// list intentionally leaves every agent behind the menu's search field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_tab_agents: Option<Vec<String>>,
     /// When true (the default), running a `.sh` from the right panel spawns it
     /// as a detached background process instead of opening a terminal tab.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -473,6 +491,21 @@ pub struct Settings {
     /// Read entirely on the frontend; kept here only so it round-trips.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub energy_saver: Option<String>,
+    /// Fast mode: drop the display aids that cost a walk, a poll or a file read,
+    /// so the interface answers faster on a slow disk, a busy machine or a
+    /// high-latency remote. **Defaults off** — only an explicit `true` engages it.
+    ///
+    /// Deliberately a separate switch from `energy_saver`, not a fourth value of
+    /// it. Energy saver *widens timers* and pauses animation on a battery
+    /// reading; this *removes features* on a standing preference, and the two
+    /// compose (fast mode is the stronger of the two wherever both apply). One
+    /// merged control could not express "plugged in, still want it lean", which
+    /// is the case that asks for this.
+    ///
+    /// Read entirely on the frontend (`src/lib/fastMode.ts`, which names the
+    /// exact list); kept here only so it round-trips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_mode: Option<bool>,
     /// Header resource-monitor row toggles. Each defaults ON when unset so the
     /// pill shows CPU/RAM/GPU by default; flip one off to hide that row. Shown in
     /// every build (independent of `debug`).
@@ -526,6 +559,13 @@ pub struct Settings {
     /// maximized, wherever the WM puts it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_state: Option<WindowState>,
+    /// Private, tailnet-published companion host. Absent means fully disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eldrun_mobile_host: Option<EldrunMobileHostSettings>,
+    /// Whether the Eldrun Mobile host-status control is visible in the desktop
+    /// header. Unset means visible whenever the Mobile host is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mobile_indicator: Option<bool>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -779,6 +819,36 @@ mod tests {
         let back: Settings =
             serde_json::from_str(&serde_json::to_string(&s).unwrap()).expect("round trip");
         assert_eq!(back.browser_link_target.as_deref(), Some("in_app"));
+    }
+
+    /// Fast mode is **absent by default and never inferred**: a fresh
+    /// `settings.json` omits the key, and only an explicit `true` engages a mode
+    /// that removes features. It is a real named field rather than an `extra`
+    /// passenger so the frontend's `Settings` type declares it and a typo in the
+    /// key fails the round trip instead of being silently carried along.
+    #[test]
+    fn fast_mode_defaults_absent_and_is_a_real_field() {
+        let raw = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(
+            !raw.contains("fast_mode"),
+            "default settings must omit fast_mode: {raw}"
+        );
+
+        let off: Settings = serde_json::from_str(r#"{"fast_mode":false}"#).expect("parse");
+        assert_eq!(off.fast_mode, Some(false));
+        assert!(
+            off.extra.is_empty(),
+            "fast_mode fell through to `extra`: {:?}",
+            off.extra.keys().collect::<Vec<_>>()
+        );
+
+        // An explicit `false` must survive a round trip as `false`, not be
+        // normalized back to absent: the two read the same today, but a stored
+        // `false` is what a deliberate "I turned this off" looks like.
+        let s: Settings = serde_json::from_str(r#"{"fast_mode":true}"#).expect("parse");
+        let back: Settings =
+            serde_json::from_str(&serde_json::to_string(&s).unwrap()).expect("round trip");
+        assert_eq!(back.fast_mode, Some(true));
     }
 
     /// The global Mail AI master switch (Group Q) is **absent by default** — a

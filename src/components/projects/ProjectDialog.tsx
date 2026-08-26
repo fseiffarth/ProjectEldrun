@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
-import type { ProjectEntry, SandboxToggleOutcome, VmDoctorReport } from "../../types";
+import type { GitProvider, ProjectEntry, SandboxToggleOutcome, VmDoctorReport } from "../../types";
 import { resolveProjectDirectory } from "../../types";
 import { basename } from "../../lib/paths";
 import { cmdToKind, useTabsStore } from "../../stores/tabs";
@@ -52,6 +52,12 @@ const GIT_INSTALL_CMD = IS_WINDOWS
  *  on the host so there is something to push to. */
 export type ImportSource = "folder" | "git" | "fork";
 
+/** The agent docs scaffolded as pointers to AGENTS.md rather than as
+ *  instructions of their own. Named in the scaffold preview because the fill
+ *  dropdown otherwise invites writing guidance into a file that should carry
+ *  none — AGENTS.md is where it belongs. */
+const AGENT_POINTER_DOCS = new Set(["CLAUDE.md", "GEMINI.md"]);
+
 /** The already-registered project a new one would collide with, as the backend's
  *  `check_project_site` reports it. `kind` is a machine token so the wording can
  *  live in `i18n.ts` ×5 — the same split `lib/browser.ts` makes for the
@@ -86,6 +92,10 @@ export function ProjectDialog({
   // decide whether picking a "Push to GitHub/GitLab" git type can proceed or
   // should first send the user to set the connection up.
   const gitToken = useSettingsStore((s) => s.settings?.git_token ?? "");
+  // The same setting's profile URL, which is what says *which* provider that
+  // global connection belongs to (Settings → Git Hosting derives its own token
+  // hints from it the same way).
+  const gitProfileUrl = useSettingsStore((s) => s.settings?.git_profile_url ?? "");
   const [projectsRoot, setProjectsRoot] = useState("");
   // Remote (SSH) projects only: the chosen parent dir for the LOCAL mirror (the
   // synced working copy). The mirror lands at `<mirrorParent>/<name>`. Seeded
@@ -121,6 +131,21 @@ export function ProjectDialog({
   // Whether that provider's CLI (`gh`/`glab`) is on PATH. `null` while probing,
   // so a pending probe never blocks submit or flashes the install banner.
   const [forkCliAvailable, setForkCliAvailable] = useState<boolean | null>(null);
+  // Which hosting provider a "Push to GitHub/GitLab" project is published to.
+  // "" follows the Eldrun connection — the Settings → Git Hosting profile URL is
+  // the only provider signal a *global* token carries, same sniff the pill's
+  // publish window makes.
+  const [publishProvider, setPublishProvider] = useState("");
+  // Whether that provider's CLI is on PATH here (`null` while probing, so a
+  // pending answer never blocks submit or flashes the banner) — the publish runs
+  // it, exactly as the pill's Publish… does.
+  const [publishCliAvailable, setPublishCliAvailable] = useState<boolean | null>(null);
+  // The project this dialog already created, when the publish that follows it
+  // failed. A retry must publish *only*: the folder, the scaffold and the
+  // registry entry are already written, and creating again would collide with
+  // them.
+  const [pendingPublish, setPendingPublish] = useState<ProjectEntry | null>(null);
+  const [publishing, setPublishing] = useState(false);
   const [cloning, setCloning] = useState(false);
   const [scaffoldPreview, setScaffoldPreview] = useState<ScaffoldPreviewItem[]>([]);
   const [scaffoldFillModes, setScaffoldFillModes] = useState<Record<string, string>>({});
@@ -263,6 +288,45 @@ export function ProjectDialog({
   const needsGitInstall =
     !isVmProject && gitAvailable === false && (gitType !== "none" || isCloneImport);
 
+  // Which provider the publish goes through: the explicit pick, else what the
+  // global connection's profile URL says (GitHub when it says nothing).
+  const publishProviderResolved: GitProvider =
+    publishProvider === "github" || publishProvider === "gitlab"
+      ? publishProvider
+      : gitProfileUrl.toLowerCase().includes("gitlab")
+        ? "gitlab"
+        : "github";
+  // Whether *this* creation publishes the repository itself.
+  //
+  // "Push to GitHub/GitLab" used to be recorded and nothing more: the project
+  // came out labeled `remote-private` with no repo on the host, no `origin`, and
+  // nothing pushed — the actual publish waited in the pill's Publish… menu. It
+  // now happens here, through the same `publish_project` that menu drives.
+  //
+  // Excluded, because for them the create-time publish is not the right move:
+  //  - a clone/fork import is already hosted and already has an `origin`;
+  //  - a VM project's tree lives in the guest, whose git has no provider login
+  //    (and, under a closed egress policy, no route to one);
+  //  - a work-remote project publishes from its lockstep mirror, and lockstep
+  //    has not yet had a chance to confirm the mirror holds the host's commits —
+  //    `publish_project` rightly refuses until it does;
+  //  - a *new* project with scaffolding skipped is the one shape that ends up
+  //    with no local repository at all (`skip_scaffold` never runs `git init`),
+  //    so there is nothing to create a hosted repo from. An import can skip the
+  //    scaffold and still be a repo, so it is not excluded.
+  // The VM and work-remote cases keep the dropdown's recorded intent and are
+  // told, below, that the repository is published from the project menu instead.
+  const publishesAtCreation =
+    wantsRemoteGit &&
+    !isCloneImport &&
+    !isVmProject &&
+    !isRemoteProject &&
+    !(kind === "new" && skipScaffold);
+  const publishCli = PROVIDER_CLI_INSTALL[publishProviderResolved];
+  // Same shape as the fork banner: only claim the CLI is missing once the probe
+  // has actually answered.
+  const needsPublishCliInstall = publishesAtCreation && publishCliAvailable === false;
+
   // Switching the import source resets the git-hosting default to the one that
   // fits it: a clone comes from a host, a plain folder does not. Both remain
   // freely overridable in the dropdown below.
@@ -322,6 +386,25 @@ export function ProjectDialog({
       cancelled = true;
     };
   }, [isForkImport, forkProviderResolved]);
+
+  // Probe the publish provider's CLI whenever it changes. Same probe (and same
+  // `null`-while-pending discipline) as the fork banner above — `publish_project`
+  // shells out to `gh`/`glab`, so a missing one is the difference between a
+  // published repo and a project labeled as pushed that never was.
+  useEffect(() => {
+    if (!publishesAtCreation) {
+      setPublishCliAvailable(null);
+      return;
+    }
+    let cancelled = false;
+    setPublishCliAvailable(null);
+    invoke<boolean>("provider_cli_available", { provider: publishProviderResolved })
+      .then((ok) => !cancelled && setPublishCliAvailable(ok))
+      .catch(() => !cancelled && setPublishCliAvailable(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [publishesAtCreation, publishProviderResolved]);
 
   // Seed the remote local-mirror parent from the backend default (the
   // `projects-ssh` root) so the picker's default agrees with the backend
@@ -574,10 +657,49 @@ export function ProjectDialog({
     onClose();
   };
 
+  /** Create the hosted repository and push the project's first commit to it —
+   *  the thing "Push to GitHub/GitLab · private/public" says it does.
+   *
+   *  Runs the very same `publish_project` the pill's Publish… window drives, so
+   *  the create+wire+push and the recorded push target can never disagree about
+   *  what happened. `publishFrom: "local"` is the only meaningful side here:
+   *  `publishesAtCreation` already excludes the work-remote case.
+   *
+   *  A failure is *not* fatal to the creation — the project exists, with its
+   *  local repo and its scaffold commit. It is reported in the dialog (which
+   *  stays open) and the button retries the publish alone. */
+  const publishCreated = async (created: ProjectEntry): Promise<boolean> => {
+    setPublishing(true);
+    try {
+      await useProjectsStore
+        .getState()
+        .publishProject(
+          created.id,
+          publishProviderResolved,
+          gitType === "remote-public" ? "public" : "private",
+          "local",
+        );
+      setPendingPublish(null);
+      return true;
+    } catch (err) {
+      setPendingPublish(created);
+      setError(t("projectDialog.publishFailed", { error: String(err) }));
+      return false;
+    } finally {
+      setPublishing(false);
+    }
+  };
+
   const submit = async () => {
     setError("");
     setBusy(true);
     try {
+      // A previous attempt got as far as creating the project and only the
+      // publish failed: retry that half by itself.
+      if (pendingPublish) {
+        if (await publishCreated(pendingPublish)) onClose();
+        return;
+      }
       if (isVmProject) {
         await submitVmProject();
         return;
@@ -712,6 +834,9 @@ export function ProjectDialog({
       await onProject(created);
       await openScaffoldAgentTabs(created, scaffoldAgentFills);
       await openDescriptionAgentTab(created, descriptionAgent);
+      // Last, because it is the one step that can fail with the project already
+      // made: everything above has to have happened either way.
+      if (publishesAtCreation && !(await publishCreated(created))) return;
       onClose();
     } catch (err) {
       setError(String(err));
@@ -721,6 +846,13 @@ export function ProjectDialog({
   };
 
   const canSubmit =
+    // Publishing runs the provider's CLI; without it the publish half of the
+    // creation cannot happen (and this dropdown promised it would).
+    !needsPublishCliInstall &&
+    // Only the publish is left to do — the create-time checks below have all
+    // already been passed once, and half of them no longer describe anything
+    // this click will do.
+    (pendingPublish !== null ||
     // The folder / host path is already a project. Blocked here so a clone never
     // downloads a repository the backend is going to refuse; the backend's own
     // check stays the gate, since this one can be answering a stale list.
@@ -760,7 +892,7 @@ export function ProjectDialog({
               sourceDir &&
               (mode === "keep" || safeName) &&
               (mode === "keep" || manualValidationConfirmed),
-            ));
+            )));
 
   const missingFillableScaffoldCount = scaffoldPreview.filter((item) => !item.exists && item.kind === "file").length;
 
@@ -776,7 +908,8 @@ export function ProjectDialog({
 
   const scaffoldStatusText = (item: ScaffoldPreviewItem) => {
     if (item.path === ".git") return item.exists ? "Already there" : "Missing";
-    return item.exists ? "Already there, will be kept" : "Missing, will be added";
+    const base = item.exists ? "Already there, will be kept" : "Missing, will be added";
+    return AGENT_POINTER_DOCS.has(item.path) ? `${base} · points at AGENTS.md` : base;
   };
 
   // The shared project name + description fields. They live in the always-visible
@@ -1017,7 +1150,7 @@ export function ProjectDialog({
         {!isRemoteProject && descriptionField}
 
         <label>
-          Git hosting
+          {t("projectDialog.gitHostingLabel")}
           <Dropdown
             className="dropdown-block"
             value={gitType}
@@ -1036,6 +1169,72 @@ export function ProjectDialog({
               : "."}
           </span>
         </label>
+
+        {/* Which host the repository is created on, and the promise that it is
+            created *now* — the dropdown above used to record the intent and
+            leave the publishing to the pill menu. */}
+        {publishesAtCreation && (
+          <label>
+            {t("projectDialog.publishProviderLabel")}
+            <Dropdown
+              className="dropdown-block"
+              value={publishProvider}
+              onChange={setPublishProvider}
+              options={[
+                {
+                  value: "",
+                  label: t("projectDialog.publishProviderFromConnection", {
+                    provider: publishProviderResolved === "gitlab" ? "GitLab" : "GitHub",
+                  }),
+                },
+                { value: "github", label: "GitHub" },
+                { value: "gitlab", label: "GitLab" },
+              ]}
+            />
+            <span className="ssh-optional-hint">
+              {t("projectDialog.publishAtCreationHint", {
+                provider: publishProviderResolved === "gitlab" ? "GitLab" : "GitHub",
+              })}{" "}
+              <UntestedTag />
+            </span>
+          </label>
+        )}
+
+        {/* The two shapes that keep the push target but cannot publish from
+            here — say so, rather than leave a chosen "push to GitHub" looking
+            like it already happened. */}
+        {wantsRemoteGit && !isCloneImport && (isVmProject || isRemoteProject) && (
+          <span className="ssh-optional-hint">
+            {isVmProject
+              ? t("projectDialog.publishLaterVmHint")
+              : t("projectDialog.publishLaterRemoteHint")}
+          </span>
+        )}
+
+        {needsPublishCliInstall && (
+          <div className="tex-install-banner" role="status">
+            <span className="tex-install-banner-text">
+              {t("projectDialog.publishCliMissingPre")} <code>{publishCli.bin}</code>{" "}
+              {t("projectDialog.publishCliMissingMid")} <code>{publishCli.bin} auth login</code>
+              {t("projectDialog.publishCliMissingPost")}
+            </span>
+            <code className="ollama-install-cmd">{publishCli.cmd}</code>
+            <button
+              type="button"
+              className="ollama-action-btn primary"
+              title={t("projectDialog.runInTerminalTitle")}
+              onClick={() =>
+                runInstallInTab(
+                  t("projectDialog.installBinLabel", { bin: publishCli.bin }),
+                  publishCli.cmd,
+                  IS_WINDOWS ? "default" : "bash",
+                )
+              }
+            >
+              {t("projectDialog.runInTerminalBtn")}
+            </button>
+          </div>
+        )}
 
         {needsGitConnection && (
           <div className="git-connect-notice" role="status">
@@ -1302,15 +1501,19 @@ export function ProjectDialog({
                 ? isForkImport
                   ? t("projectDialog.forking")
                   : t("projectDialog.cloningEllipsis")
-                : busy
-                  ? t("projectDialog.working")
-                  : kind === "new"
-                    ? t("projectDialog.create")
-                    : isForkImport
-                      ? t("projectDialog.forkAndImport")
-                      : isCloneImport
-                        ? t("projectDialog.cloneAndImport")
-                        : t("projectDialog.import")}
+                : publishing
+                  ? t("projectDialog.publishingEllipsis")
+                  : busy
+                    ? t("projectDialog.working")
+                    : pendingPublish
+                      ? t("projectDialog.retryPublish")
+                      : kind === "new"
+                        ? t("projectDialog.create")
+                        : isForkImport
+                          ? t("projectDialog.forkAndImport")
+                          : isCloneImport
+                            ? t("projectDialog.cloneAndImport")
+                            : t("projectDialog.import")}
             </button>
           )}
         </div>

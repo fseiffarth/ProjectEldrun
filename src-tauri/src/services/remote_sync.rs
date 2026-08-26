@@ -186,7 +186,9 @@ pub fn is_under_mirror(project_id: &str, abs_path: &str) -> bool {
     // still matches; fall back to the literal path when it doesn't exist yet.
     let candidate = Path::new(abs_path);
     let mirror_norm = mirror.canonicalize().unwrap_or(mirror);
-    let cand_norm = candidate.canonicalize().unwrap_or_else(|_| candidate.to_path_buf());
+    let cand_norm = candidate
+        .canonicalize()
+        .unwrap_or_else(|_| candidate.to_path_buf());
     cand_norm.starts_with(&mirror_norm)
 }
 
@@ -313,10 +315,7 @@ pub fn content_verify_worth_it(
 ) -> bool {
     let (host_size, host_mtime) = host;
     let (local_size, local_mtime) = local;
-    host_mtime.is_some()
-        && local_mtime.is_some()
-        && host_size == local_size
-        && host_size <= cutoff
+    host_mtime.is_some() && local_mtime.is_some() && host_size == local_size && host_size <= cutoff
 }
 
 /// Whether `rel` auto-syncs, by **nearest explicit marker wins**. A marker is an
@@ -465,7 +464,11 @@ pub fn join_remote(remote_root: &str, rel: &str) -> String {
     let base = remote_root.trim_end_matches('/');
     let rel = rel.trim_start_matches('/');
     if rel.is_empty() {
-        if base.is_empty() { "/".to_string() } else { base.to_string() }
+        if base.is_empty() {
+            "/".to_string()
+        } else {
+            base.to_string()
+        }
     } else if base.is_empty() {
         format!("/{rel}")
     } else {
@@ -591,10 +594,7 @@ pub async fn pull_file(
 /// Re-stat a host path over SFTP, returning `(size, mtime)` or `(0, None)` when
 /// the path is gone/unreadable — the input to [`compute_state`] for the amber
 /// refresh.
-pub async fn stat_or_zero(
-    sftp: &openssh_sftp_client::Sftp,
-    host_abs: &str,
-) -> (u64, Option<u64>) {
+pub async fn stat_or_zero(sftp: &openssh_sftp_client::Sftp, host_abs: &str) -> (u64, Option<u64>) {
     sftp::metadata_on(sftp, host_abs).await.unwrap_or((0, None))
 }
 
@@ -632,9 +632,12 @@ pub fn record_pull(
 /// SSH keepalive options threaded into rsync's `-e` ssh transport (matches the
 /// pooled-session keepalive so a dropped link fails fast rather than hanging).
 const RSYNC_SSH_KEEPALIVE: &[&str] = &[
-    "-o", "ServerAliveInterval=15",
-    "-o", "ServerAliveCountMax=3",
-    "-o", "BatchMode=yes",
+    "-o",
+    "ServerAliveInterval=15",
+    "-o",
+    "ServerAliveCountMax=3",
+    "-o",
+    "BatchMode=yes",
 ];
 
 /// Whether the bulk rsync fast-path applies: rsync present on BOTH ends and the
@@ -735,7 +738,12 @@ pub fn rsync_pull_dir(
 ) -> Result<(), String> {
     std::fs::create_dir_all(local_dest_dir).map_err(|e| e.to_string())?;
     let src = format!("{}/", host_src_dir.trim_end_matches('/'));
-    let dest = format!("{}/", local_dest_dir.to_string_lossy().trim_end_matches(['/', '\\']));
+    let dest = format!(
+        "{}/",
+        local_dest_dir
+            .to_string_lossy()
+            .trim_end_matches(['/', '\\'])
+    );
     let args = rsync_pull_args(user, host, port, &src, &dest);
     let out = crate::paths::command_no_window("rsync")
         .args(&args)
@@ -953,7 +961,11 @@ mod tests {
         // A linked worktree: `.git` is a FILE holding `gitdir: …`.
         let wt = root.join("wt-feature");
         std::fs::create_dir_all(wt.join("deep")).unwrap();
-        std::fs::write(wt.join(".git"), b"gitdir: /elsewhere/.git/worktrees/feature").unwrap();
+        std::fs::write(
+            wt.join(".git"),
+            b"gitdir: /elsewhere/.git/worktrees/feature",
+        )
+        .unwrap();
         std::fs::write(wt.join("deep/copy.rs"), b"x").unwrap();
 
         // A nested clone: `.git` is a DIRECTORY.
@@ -989,13 +1001,25 @@ mod tests {
     }
 
     fn excluded_dir() -> SyncEntry {
-        SyncEntry { is_dir: true, excluded: true, auto_off: true, ..Default::default() }
+        SyncEntry {
+            is_dir: true,
+            excluded: true,
+            auto_off: true,
+            ..Default::default()
+        }
     }
 
     #[test]
     fn exclusion_covers_the_subtree_of_a_whole_project_transfer() {
         let mut m = Manifest::new();
-        m.insert("".into(), SyncEntry { is_dir: true, auto_sync: true, ..Default::default() });
+        m.insert(
+            "".into(),
+            SyncEntry {
+                is_dir: true,
+                auto_sync: true,
+                ..Default::default()
+            },
+        );
         m.insert("data".into(), excluded_dir());
         assert!(is_excluded(&m, "data/raw/big.bin", ""));
         assert!(!is_excluded(&m, "src/main.rs", ""));
@@ -1023,7 +1047,12 @@ mod tests {
         m.insert("data".into(), excluded_dir());
         m.insert(
             "data/small".into(),
-            SyncEntry { is_dir: true, auto_sync: true, selected: true, ..Default::default() },
+            SyncEntry {
+                is_dir: true,
+                auto_sync: true,
+                selected: true,
+                ..Default::default()
+            },
         );
         assert!(!is_excluded(&m, "data/small/notes.md", ""));
         assert!(is_excluded(&m, "data/raw/big.bin", ""));
@@ -1050,13 +1079,22 @@ mod tests {
             last_pull_ts: Some(1),
             ..Default::default()
         };
-        assert_eq!(push_decision(&e, Some((11, Some(100)))), PushDecision::Stale);
-        assert_eq!(push_decision(&e, Some((10, Some(200)))), PushDecision::Stale);
+        assert_eq!(
+            push_decision(&e, Some((11, Some(100)))),
+            PushDecision::Stale
+        );
+        assert_eq!(
+            push_decision(&e, Some((10, Some(200)))),
+            PushDecision::Stale
+        );
     }
 
     #[test]
     fn push_decision_create_safe_when_never_synced_and_host_absent() {
-        let e = SyncEntry { selected: true, ..Default::default() };
+        let e = SyncEntry {
+            selected: true,
+            ..Default::default()
+        };
         assert_eq!(push_decision(&e, None), PushDecision::Safe);
     }
 
@@ -1064,7 +1102,10 @@ mod tests {
     fn push_decision_stale_when_never_synced_but_host_exists() {
         // A local file the user wants to push, but the host already has an
         // unsynced file there — don't clobber blindly.
-        let e = SyncEntry { selected: true, ..Default::default() };
+        let e = SyncEntry {
+            selected: true,
+            ..Default::default()
+        };
         assert_eq!(push_decision(&e, Some((5, Some(3)))), PushDecision::Stale);
     }
 
@@ -1147,20 +1188,25 @@ mod tests {
     #[test]
     fn local_new_candidates_filters_manifest_tracked_and_excluded() {
         let mut m = Manifest::new();
-        m.insert("synced.txt".into(), SyncEntry { selected: true, ..Default::default() });
+        m.insert(
+            "synced.txt".into(),
+            SyncEntry {
+                selected: true,
+                ..Default::default()
+            },
+        );
         m.insert("data".into(), excluded_dir());
         let all = vec![
-            "synced.txt".to_string(),      // manifest'd → has a row already
-            "src/lib.rs".to_string(),      // tracked → lockstep's when enabled
-            "data/cache.bin".to_string(),  // under an excluded folder marker
+            "synced.txt".to_string(),          // manifest'd → has a row already
+            "src/lib.rs".to_string(),          // tracked → lockstep's when enabled
+            "data/cache.bin".to_string(),      // under an excluded folder marker
             "configs/new_v10.yml".to_string(), // genuinely new
-            "".to_string(),                // defensive: never a file
+            "".to_string(),                    // defensive: never a file
         ];
         let tracked: HashSet<String> = ["src/lib.rs".to_string()].into_iter().collect();
 
         // Lockstep on: the tracked file belongs to lockstep (#28p D1), not here.
-        let with_lockstep =
-            local_new_candidates(&m, all.clone(), &tracked, true, 100);
+        let with_lockstep = local_new_candidates(&m, all.clone(), &tracked, true, 100);
         assert_eq!(with_lockstep, vec!["configs/new_v10.yml".to_string()]);
 
         // Lockstep off: byte-sync owns the tracked tree too, so a tracked file
@@ -1247,15 +1293,27 @@ mod tests {
             SyncState::Amber,
         );
         // Also amber offline (host not stat'd) when the local size moved.
-        assert_eq!(compute_state(&e, None, Some((12, Some(50))), false), SyncState::Amber);
+        assert_eq!(
+            compute_state(&e, None, Some((12, Some(50))), false),
+            SyncState::Amber
+        );
         // Mirror deleted after a prior sync → diverged.
-        assert_eq!(compute_state(&e, Some((10, Some(100))), None, false), SyncState::Amber);
+        assert_eq!(
+            compute_state(&e, Some((10, Some(100))), None, false),
+            SyncState::Amber
+        );
     }
 
     #[test]
     fn compute_state_none_when_unselected() {
-        let e = SyncEntry { selected: false, ..Default::default() };
-        assert_eq!(compute_state(&e, Some((0, None)), None, false), SyncState::None);
+        let e = SyncEntry {
+            selected: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            compute_state(&e, Some((0, None)), None, false),
+            SyncState::None
+        );
     }
 
     #[test]
@@ -1334,7 +1392,10 @@ mod tests {
         // Local still present → same, the conflict machinery owns it.
         assert!(!should_prune(&synced, &gone, &present));
         // Never synced → a bare marker, nothing to forget.
-        let never = SyncEntry { selected: true, ..Default::default() };
+        let never = SyncEntry {
+            selected: true,
+            ..Default::default()
+        };
         assert!(!should_prune(&never, &gone, &gone));
         // A stat ERROR is "could not check", NEVER "gone": a dropped session
         // mid-refresh must not read as every file deleted (mass-prune hazard).
@@ -1347,18 +1408,42 @@ mod tests {
     fn content_verify_gate() {
         let cutoff = 1024;
         // Same size, both present, within cutoff → worth reading to disprove amber.
-        assert!(content_verify_worth_it((10, Some(100)), (10, Some(50)), cutoff));
+        assert!(content_verify_worth_it(
+            (10, Some(100)),
+            (10, Some(50)),
+            cutoff
+        ));
         // Different sizes can't be byte-identical → never read.
-        assert!(!content_verify_worth_it((10, Some(100)), (12, Some(50)), cutoff));
+        assert!(!content_verify_worth_it(
+            (10, Some(100)),
+            (12, Some(50)),
+            cutoff
+        ));
         // A missing side (no mtime) is a real divergence → don't downgrade, don't read.
         assert!(!content_verify_worth_it((10, None), (10, Some(50)), cutoff));
-        assert!(!content_verify_worth_it((10, Some(100)), (10, None), cutoff));
+        assert!(!content_verify_worth_it(
+            (10, Some(100)),
+            (10, None),
+            cutoff
+        ));
         // Above the cutoff → large files keep the pure metadata heuristic.
-        assert!(!content_verify_worth_it((2048, Some(100)), (2048, Some(50)), cutoff));
+        assert!(!content_verify_worth_it(
+            (2048, Some(100)),
+            (2048, Some(50)),
+            cutoff
+        ));
         // Exactly at the cutoff is still verified (boundary is inclusive).
-        assert!(content_verify_worth_it((1024, Some(100)), (1024, Some(50)), cutoff));
+        assert!(content_verify_worth_it(
+            (1024, Some(100)),
+            (1024, Some(50)),
+            cutoff
+        ));
         // Two empty files (size 0, both present) → trivially worth it (and equal).
-        assert!(content_verify_worth_it((0, Some(100)), (0, Some(50)), cutoff));
+        assert!(content_verify_worth_it(
+            (0, Some(100)),
+            (0, Some(50)),
+            cutoff
+        ));
     }
 
     #[test]
@@ -1367,17 +1452,30 @@ mod tests {
         // A file with its own auto flag.
         m.insert(
             "solo.txt".to_string(),
-            SyncEntry { selected: true, auto_sync: true, ..Default::default() },
+            SyncEntry {
+                selected: true,
+                auto_sync: true,
+                ..Default::default()
+            },
         );
         // An auto folder marker; its descendants inherit auto even with no entry.
         m.insert(
             "src".to_string(),
-            SyncEntry { selected: true, is_dir: true, auto_sync: true, ..Default::default() },
+            SyncEntry {
+                selected: true,
+                is_dir: true,
+                auto_sync: true,
+                ..Default::default()
+            },
         );
         // A NON-auto folder marker; its descendants are not auto.
         m.insert(
             "vendor".to_string(),
-            SyncEntry { selected: true, is_dir: true, ..Default::default() },
+            SyncEntry {
+                selected: true,
+                is_dir: true,
+                ..Default::default()
+            },
         );
 
         assert!(is_auto(&m, "solo.txt"));
@@ -1389,7 +1487,12 @@ mod tests {
         // A plain FILE entry named like a dir must not act as a folder marker.
         m.insert(
             "notadir".to_string(),
-            SyncEntry { selected: true, auto_sync: true, is_dir: false, ..Default::default() },
+            SyncEntry {
+                selected: true,
+                auto_sync: true,
+                is_dir: false,
+                ..Default::default()
+            },
         );
         assert!(!is_auto(&m, "notadir/child.rs"));
     }
@@ -1400,7 +1503,12 @@ mod tests {
         // Project-wide "auto-sync all": the root "" directory marker.
         m.insert(
             "".to_string(),
-            SyncEntry { selected: true, is_dir: true, auto_sync: true, ..Default::default() },
+            SyncEntry {
+                selected: true,
+                is_dir: true,
+                auto_sync: true,
+                ..Default::default()
+            },
         );
         // Everything is auto under the project-wide marker, at any depth and for
         // top-level files (which `rfind('/')` never resolves to the root).
@@ -1411,7 +1519,12 @@ mod tests {
         // A local OFF override carves a subtree out of the project-wide auto.
         m.insert(
             "vendor".to_string(),
-            SyncEntry { selected: true, is_dir: true, auto_off: true, ..Default::default() },
+            SyncEntry {
+                selected: true,
+                is_dir: true,
+                auto_off: true,
+                ..Default::default()
+            },
         );
         assert!(!is_auto(&m, "vendor/lib.rs"));
         assert!(!is_auto(&m, "vendor")); // the folder itself
@@ -1420,7 +1533,11 @@ mod tests {
         // A single excluded file under an otherwise-auto tree.
         m.insert(
             "src/secret.rs".to_string(),
-            SyncEntry { selected: true, auto_off: true, ..Default::default() },
+            SyncEntry {
+                selected: true,
+                auto_off: true,
+                ..Default::default()
+            },
         );
         assert!(!is_auto(&m, "src/secret.rs"));
         assert!(is_auto(&m, "src/other.rs"));
@@ -1428,7 +1545,12 @@ mod tests {
         // A local ON override wins over an ancestor exclusion (nearest marker).
         m.insert(
             "vendor/keep".to_string(),
-            SyncEntry { selected: true, is_dir: true, auto_sync: true, ..Default::default() },
+            SyncEntry {
+                selected: true,
+                is_dir: true,
+                auto_sync: true,
+                ..Default::default()
+            },
         );
         assert!(is_auto(&m, "vendor/keep/x.rs"));
         assert!(!is_auto(&m, "vendor/other/y.rs")); // still excluded
@@ -1436,7 +1558,12 @@ mod tests {
         // Project-wide OFF (root auto_off): nothing auto except explicit ON paths.
         m.insert(
             "".to_string(),
-            SyncEntry { selected: true, is_dir: true, auto_off: true, ..Default::default() },
+            SyncEntry {
+                selected: true,
+                is_dir: true,
+                auto_off: true,
+                ..Default::default()
+            },
         );
         assert!(!is_auto(&m, "README.md"));
         assert!(is_auto(&m, "vendor/keep/x.rs")); // explicit ON still wins
@@ -1489,7 +1616,11 @@ mod tests {
 
         // Cleared (as a fresh pairing must be), the very same file behaves correctly: it
         // is simply a local file the host lacks, so it gets created there.
-        let fresh = SyncEntry { selected: true, auto_sync: true, ..Default::default() };
+        let fresh = SyncEntry {
+            selected: true,
+            auto_sync: true,
+            ..Default::default()
+        };
         assert_eq!(push_decision(&fresh, None), PushDecision::Safe);
         assert_eq!(
             divergence(&fresh, None, local_unchanged),

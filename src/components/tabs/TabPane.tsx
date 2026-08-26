@@ -45,6 +45,8 @@ export interface TabPaneProps {
   scope: string;
   /** Laid out on screen (its group's active tab, and not hidden by fullscreen). */
   visible: boolean;
+  /** The one visible pane that owns keyboard focus in this OS window. */
+  focused: boolean;
   /** The group this pane sits in (viewer scroll-sync). Undefined in a popout. */
   groupId?: string;
   /** Popout: attach to the main window's PTY instead of spawning one. */
@@ -77,6 +79,7 @@ function TabPaneImpl({
   tab,
   scope,
   visible,
+  focused,
   groupId,
   attachOnly = false,
   ownsTabs = false,
@@ -199,7 +202,7 @@ function TabPaneImpl({
           hostBoundUid={tab.hostBoundUid ?? null}
           zoomable={zoomable}
           visible={visible}
-          focused={visible}
+          focused={focused}
           attachOnly={attachOnly}
         />
       );

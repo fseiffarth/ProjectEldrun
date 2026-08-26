@@ -256,7 +256,10 @@ fn move_tasks_at(path: &Path, moves: Vec<TaskPlacement>) -> Result<Vec<CalendarT
         let new_rank = if settled {
             None
         } else {
-            let before_rank = index.checked_sub(1).and_then(|i| siblings.get(i)).map(|s| s.1);
+            let before_rank = index
+                .checked_sub(1)
+                .and_then(|i| siblings.get(i))
+                .map(|s| s.1);
             let after_rank = siblings.get(index).map(|s| s.1);
             Some(match (before_rank, after_rank) {
                 (None, None) => RANK_GAP,
@@ -493,7 +496,11 @@ pub const CALDAV_HREF_KEY: &str = "caldav_href";
 pub const CALDAV_ETAG_KEY: &str = "caldav_etag";
 
 fn extra_str(extra: &std::collections::HashMap<String, serde_json::Value>, key: &str) -> String {
-    extra.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
+    extra
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Copy the local row's `extra` keys the server knows nothing about onto the
@@ -660,10 +667,12 @@ pub(crate) fn merge_caldav_calendar_at(
     // exact resource, which is not ambiguous.
     if !gone.is_empty() {
         data.events.retain(|e| {
-            !(e.calendar_id == calendar_id && gone.contains(extra_str(&e.extra, CALDAV_HREF_KEY).as_str()))
+            !(e.calendar_id == calendar_id
+                && gone.contains(extra_str(&e.extra, CALDAV_HREF_KEY).as_str()))
         });
         data.tasks.retain(|t| {
-            !(t.calendar_id == calendar_id && gone.contains(extra_str(&t.extra, CALDAV_HREF_KEY).as_str()))
+            !(t.calendar_id == calendar_id
+                && gone.contains(extra_str(&t.extra, CALDAV_HREF_KEY).as_str()))
         });
     }
 
@@ -962,7 +971,8 @@ mod tests {
     #[test]
     fn update_replaces_the_event() {
         let (_dir, path) = tmp_path();
-        let ev = create_event_at(&path, event("old", "2026-07-08T09:00", "2026-07-08T10:00")).unwrap();
+        let ev =
+            create_event_at(&path, event("old", "2026-07-08T09:00", "2026-07-08T10:00")).unwrap();
 
         let mut edited = ev.clone();
         edited.title = "new".into();
@@ -990,7 +1000,8 @@ mod tests {
     #[test]
     fn delete_removes_the_event() {
         let (_dir, path) = tmp_path();
-        let ev = create_event_at(&path, event("x", "2026-07-08T09:00", "2026-07-08T10:00")).unwrap();
+        let ev =
+            create_event_at(&path, event("x", "2026-07-08T09:00", "2026-07-08T10:00")).unwrap();
         delete_event_at(&path, &ev.id).unwrap();
         assert!(read_data(&path).unwrap().events.is_empty());
     }
@@ -1053,7 +1064,14 @@ mod tests {
         hidden.visible = false;
         update_calendar_at(&path, hidden).unwrap();
         let data = read_data(&path).unwrap();
-        assert!(!data.calendars.iter().find(|c| c.id == cal.id).unwrap().visible);
+        assert!(
+            !data
+                .calendars
+                .iter()
+                .find(|c| c.id == cal.id)
+                .unwrap()
+                .visible
+        );
     }
 
     #[test]
@@ -1075,7 +1093,11 @@ mod tests {
         let mut in_work = event("meeting", "2026-07-08T09:00", "2026-07-08T10:00");
         in_work.calendar_id = cal.id.clone();
         create_event_at(&path, in_work).unwrap();
-        create_event_at(&path, event("personal", "2026-07-08T18:00", "2026-07-08T19:00")).unwrap();
+        create_event_at(
+            &path,
+            event("personal", "2026-07-08T18:00", "2026-07-08T19:00"),
+        )
+        .unwrap();
 
         delete_calendar_at(&path, &cal.id).unwrap();
 
@@ -1135,15 +1157,25 @@ mod tests {
         create_event_at(&path, event("new", "2026-07-10T09:00", "2026-07-10T10:00")).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(raw.contains("\"version\""), "upgraded file carries a version: {raw}");
+        assert!(
+            raw.contains("\"version\""),
+            "upgraded file carries a version: {raw}"
+        );
         let data = read_data(&path).unwrap();
-        assert_eq!(data.events.len(), 2, "the migrated event survives the write");
+        assert_eq!(
+            data.events.len(),
+            2,
+            "the migrated event survives the write"
+        );
     }
 
     #[test]
     fn ics_path_guard_accepts_calendar_extensions() {
         for ok in ["a.ics", "a.ical", "a.ifb", "A.ICS"] {
-            assert!(check_ics_path(Path::new(ok)).is_ok(), "{ok} should be accepted");
+            assert!(
+                check_ics_path(Path::new(ok)).is_ok(),
+                "{ok} should be accepted"
+            );
         }
     }
 
@@ -1151,8 +1183,17 @@ mod tests {
     fn ics_path_guard_refuses_anything_else() {
         // The whole point of the guard: an ICS command must not become a
         // read-any-file primitive.
-        for bad in ["id_rsa", "/home/u/.ssh/id_rsa", "notes.txt", "a.ics.txt", "config.toml"] {
-            assert!(check_ics_path(Path::new(bad)).is_err(), "{bad} should be refused");
+        for bad in [
+            "id_rsa",
+            "/home/u/.ssh/id_rsa",
+            "notes.txt",
+            "a.ics.txt",
+            "config.toml",
+        ] {
+            assert!(
+                check_ics_path(Path::new(bad)).is_err(),
+                "{bad} should be refused"
+            );
         }
     }
 
@@ -1178,11 +1219,7 @@ mod tests {
     fn write_ics_refuses_a_non_ics_path() {
         let (dir, _) = tmp_path();
         let target = dir.path().join("important.conf");
-        assert!(calendar_write_ics(
-            target.to_string_lossy().into_owned(),
-            "x".into()
-        )
-        .is_err());
+        assert!(calendar_write_ics(target.to_string_lossy().into_owned(), "x".into()).is_err());
         assert!(!target.exists(), "the refused write must not have happened");
     }
 
@@ -1191,11 +1228,26 @@ mod tests {
         let (_dir, path) = tmp_path();
         create_event_at(&path, event("x", "2026-07-08T09:00", "2026-07-08T10:00")).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(!raw.contains("\"notes\""), "empty notes must be skipped: {raw}");
-        assert!(!raw.contains("\"location\""), "empty location must be skipped: {raw}");
-        assert!(!raw.contains("\"rrule\""), "absent rrule must be skipped: {raw}");
-        assert!(!raw.contains("\"column\""), "board fields must be skipped: {raw}");
-        assert!(!raw.contains("\"task_columns\""), "unused board must be skipped: {raw}");
+        assert!(
+            !raw.contains("\"notes\""),
+            "empty notes must be skipped: {raw}"
+        );
+        assert!(
+            !raw.contains("\"location\""),
+            "empty location must be skipped: {raw}"
+        );
+        assert!(
+            !raw.contains("\"rrule\""),
+            "absent rrule must be skipped: {raw}"
+        );
+        assert!(
+            !raw.contains("\"column\""),
+            "board fields must be skipped: {raw}"
+        );
+        assert!(
+            !raw.contains("\"task_columns\""),
+            "unused board must be skipped: {raw}"
+        );
     }
 
     // ── Todo board ──────────────────────────────────────────────────────────
@@ -1252,14 +1304,7 @@ mod tests {
     fn update_task_returns_the_reconciled_record() {
         let (_dir, path) = tmp_path();
         let t = card(&path, "t");
-        let out = update_task_at(
-            &path,
-            CalendarTask {
-                percent: 100,
-                ..t
-            },
-        )
-        .unwrap();
+        let out = update_task_at(&path, CalendarTask { percent: 100, ..t }).unwrap();
         assert_eq!(out.column, "done", "ticking must return the moved card");
     }
 
@@ -1269,15 +1314,24 @@ mod tests {
         let a = card(&path, "a");
         let b = card(&path, "b");
         let c = card(&path, "c");
-        assert_eq!(order_of(&path, "backlog"), vec![a.id.clone(), b.id.clone(), c.id.clone()]);
+        assert_eq!(
+            order_of(&path, "backlog"),
+            vec![a.id.clone(), b.id.clone(), c.id.clone()]
+        );
 
         // c to the top.
         move_tasks_at(&path, vec![place(&c.id, "backlog", 0)]).unwrap();
-        assert_eq!(order_of(&path, "backlog"), vec![c.id.clone(), a.id.clone(), b.id.clone()]);
+        assert_eq!(
+            order_of(&path, "backlog"),
+            vec![c.id.clone(), a.id.clone(), b.id.clone()]
+        );
 
         // a to the middle.
         move_tasks_at(&path, vec![place(&a.id, "backlog", 1)]).unwrap();
-        assert_eq!(order_of(&path, "backlog"), vec![c.id.clone(), a.id.clone(), b.id.clone()]);
+        assert_eq!(
+            order_of(&path, "backlog"),
+            vec![c.id.clone(), a.id.clone(), b.id.clone()]
+        );
 
         // c past the end appends.
         move_tasks_at(&path, vec![place(&c.id, "backlog", 999)]).unwrap();
@@ -1462,7 +1516,10 @@ mod tests {
             })
             .collect();
         let data = columns_set_at(&path, renamed, None).unwrap();
-        assert_eq!(data.tasks[0].column, "doing", "a rename must not move a card");
+        assert_eq!(
+            data.tasks[0].column, "doing",
+            "a rename must not move a card"
+        );
         assert!(data.task_columns.iter().any(|c| c.name == "In flight"));
     }
 
@@ -1477,7 +1534,11 @@ mod tests {
             ..Default::default()
         });
         let data = columns_set_at(&path, columns, None).unwrap();
-        let added = data.task_columns.iter().find(|c| c.name == "Blocked").unwrap();
+        let added = data
+            .task_columns
+            .iter()
+            .find(|c| c.name == "Blocked")
+            .unwrap();
         assert!(!added.id.is_empty(), "a new column must be given an id");
     }
 
@@ -1551,9 +1612,15 @@ mod tests {
         let event = &data.events[0];
         assert!(!event.id.is_empty(), "the store owns identity");
         assert_eq!(event.calendar_id, cal);
-        assert_eq!(extra_str(&event.extra, CALDAV_HREF_KEY), "https://d/e/a.ics");
+        assert_eq!(
+            extra_str(&event.extra, CALDAV_HREF_KEY),
+            "https://d/e/a.ics"
+        );
         assert_eq!(extra_str(&event.extra, CALDAV_ETAG_KEY), "\"1\"");
-        assert_eq!(extra_str(&data.tasks[0].extra, CALDAV_HREF_KEY), "https://d/e/t.ics");
+        assert_eq!(
+            extra_str(&data.tasks[0].extra, CALDAV_HREF_KEY),
+            "https://d/e/t.ics"
+        );
     }
 
     #[test]
@@ -1573,9 +1640,15 @@ mod tests {
 
         set_caldav_identity_at(&path, "event", "e1", "https://d/e/e1.ics", "\"7\"").unwrap();
         let after = read_data(&path).unwrap().events.remove(0);
-        assert_eq!(extra_str(&after.extra, CALDAV_HREF_KEY), "https://d/e/e1.ics");
+        assert_eq!(
+            extra_str(&after.extra, CALDAV_HREF_KEY),
+            "https://d/e/e1.ics"
+        );
         assert_eq!(extra_str(&after.extra, CALDAV_ETAG_KEY), "\"7\"");
-        assert_eq!(after.title, "written here", "the row itself is not rewritten");
+        assert_eq!(
+            after.title, "written here",
+            "the row itself is not rewritten"
+        );
 
         // A server that accepted the write but named no version must clear the
         // old validator, not keep one that no longer describes anything.
@@ -1595,8 +1668,14 @@ mod tests {
         // which is the whole reason this function exists.
         let (_dir, path) = tmp_path();
         let cal = caldav_calendar(&path);
-        merge_caldav_calendar_at(&path, &cal, vec![parsed_task("https://d/e/t.ics", "\"1\"", "draft", 0)], &[], true)
-            .unwrap();
+        merge_caldav_calendar_at(
+            &path,
+            &cal,
+            vec![parsed_task("https://d/e/t.ics", "\"1\"", "draft", 0)],
+            &[],
+            true,
+        )
+        .unwrap();
 
         // The user drags the card, tags it, and adds a subtask.
         let mut task = read_data(&path).unwrap().tasks.remove(0);
@@ -1624,13 +1703,23 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(data.tasks.len(), 1, "a matched row is updated, not duplicated");
+        assert_eq!(
+            data.tasks.len(),
+            1,
+            "a matched row is updated, not duplicated"
+        );
         let after = &data.tasks[0];
-        assert_eq!(after.id, id, "the id every other surface references survives");
+        assert_eq!(
+            after.id, id,
+            "the id every other surface references survives"
+        );
         assert_eq!(after.title, "draft (v2)", "the server owns the title");
         assert_eq!(after.percent, 50);
         assert_eq!(extra_str(&after.extra, CALDAV_ETAG_KEY), "\"2\"");
-        assert_eq!(after.column, "doing", "the board column is the user's, not the server's");
+        assert_eq!(
+            after.column, "doing",
+            "the board column is the user's, not the server's"
+        );
         assert_eq!(after.rank, Some(2048.0));
         assert_eq!(after.tags, vec!["thesis".to_string()]);
         assert_eq!(after.subtasks.len(), 1);
@@ -1649,13 +1738,25 @@ mod tests {
         let data = merge_caldav_calendar_at(
             &path,
             &cal,
-            vec![parsed_task("https://d/e/new.ics", "\"1\"", "from the server", 0)],
+            vec![parsed_task(
+                "https://d/e/new.ics",
+                "\"1\"",
+                "from the server",
+                0,
+            )],
             &[],
             true,
         )
         .unwrap();
-        let fresh = data.tasks.iter().find(|t| t.title == "from the server").unwrap();
-        assert!(!fresh.column.is_empty(), "an unplaced card is filed by normalize");
+        let fresh = data
+            .tasks
+            .iter()
+            .find(|t| t.title == "from the server")
+            .unwrap();
+        assert!(
+            !fresh.column.is_empty(),
+            "an unplaced card is filed by normalize"
+        );
         assert!(fresh.rank.is_some());
     }
 
@@ -1667,7 +1768,12 @@ mod tests {
             &path,
             &cal,
             vec![
-                parsed_event("https://d/e/a.ics", "\"1\"", "gone soon", "2026-07-08T09:00"),
+                parsed_event(
+                    "https://d/e/a.ics",
+                    "\"1\"",
+                    "gone soon",
+                    "2026-07-08T09:00",
+                ),
                 parsed_task("https://d/e/t.ics", "\"1\"", "gone soon too", 0),
             ],
             &[],
@@ -1679,7 +1785,10 @@ mod tests {
             &path,
             &cal,
             vec![],
-            &["https://d/e/a.ics".to_string(), "https://d/e/t.ics".to_string()],
+            &[
+                "https://d/e/a.ics".to_string(),
+                "https://d/e/t.ics".to_string(),
+            ],
             false,
         )
         .unwrap();
@@ -1708,8 +1817,15 @@ mod tests {
         .unwrap();
 
         let data = merge_caldav_calendar_at(&path, &cal, vec![], &[], true).unwrap();
-        assert!(data.events.is_empty(), "an event absent from a full listing is gone");
-        assert_eq!(data.tasks.len(), 1, "a task absent from a full listing is NOT deleted");
+        assert!(
+            data.events.is_empty(),
+            "an event absent from a full listing is gone"
+        );
+        assert_eq!(
+            data.tasks.len(),
+            1,
+            "a task absent from a full listing is NOT deleted"
+        );
     }
 
     #[test]
@@ -1719,7 +1835,12 @@ mod tests {
         merge_caldav_calendar_at(
             &path,
             &cal,
-            vec![parsed_event("https://d/e/a.ics", "\"1\"", "meeting", "2026-07-08T09:00")],
+            vec![parsed_event(
+                "https://d/e/a.ics",
+                "\"1\"",
+                "meeting",
+                "2026-07-08T09:00",
+            )],
             &[],
             true,
         )

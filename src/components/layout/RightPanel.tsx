@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ProjectFilesView } from "../files/ProjectFilesView";
 import { useFileSource } from "../files/ProjectFilesPane";
 import { openProjectFilesTab } from "../files/ProjectFilesTab";
@@ -13,6 +13,7 @@ import {
 import { useActivityStore, type AttentionKind } from "../../stores/activity";
 import { resolveProjectDirectory } from "../../types";
 import { useT } from "../../lib/i18n";
+import { terminalCharsPerSecond } from "../../dev/terminalOutputRate";
 // Single source of truth for the displayed version: package.json is kept in
 // lockstep with the Tauri manifests on each version bump.
 import { version as APP_VERSION } from "../../../package.json";
@@ -71,6 +72,29 @@ function rollUpStatus(
   return null;
 }
 
+/** Debug-only, scope-local raw terminal transport rate. A fixed repaint tick
+ * keeps terminal chunks off React's render path; the hot listener only bumps
+ * counters in `dev/terminalOutputRate`. */
+function TerminalOutputRate({ ptyIds }: { ptyIds: readonly string[] }) {
+  const [rate, setRate] = useState(() => terminalCharsPerSecond(ptyIds));
+
+  useEffect(() => {
+    const update = () => setRate(terminalCharsPerSecond(ptyIds));
+    update();
+    const timer = window.setInterval(update, 250);
+    return () => window.clearInterval(timer);
+  }, [ptyIds]);
+
+  return (
+    <span
+      className="terminal-output-rate"
+      title="Raw output from visible terminals in this project over the last second (ANSI/control sequences included)"
+    >
+      TTY {rate.toLocaleString()} chars/s
+    </span>
+  );
+}
+
 /**
  * The file-tree overlay panel. Its file *viewer* — the view switcher, git bar +
  * history, search, apps, orange list, type tags, source switch and settings — is
@@ -127,6 +151,13 @@ export function RightPanel({
   // from there. `unhideGroup`/`closeHiddenGroup` restore or discard them.
   const hiddenGroups = useTabsStore((s) => s.hiddenGroupsByScope[s.scope]);
   const scopeTabs = useTabsStore((s) => s.tabsByScope[s.scope]);
+  const scopePtyIds = useMemo(
+    () =>
+      (scopeTabs ?? [])
+        .filter((tab) => isPtyTabKind(tab.kind))
+        .map((tab) => `${scope}:${tab.key}`),
+    [scope, scopeTabs],
+  );
   // Same working/decision/finished glow the tab bar draws for a live tab — a
   // hidden subwindow's tabs are still running underneath the pane, so they keep
   // reporting status even while parked.
@@ -271,7 +302,12 @@ export function RightPanel({
 
   const versionFooter = (
     <div className="right-panel-frame-footer">
-      {import.meta.env.DEV && <span className="debug-badge">DEBUG</span>}
+      {import.meta.env.DEV && (
+        <>
+          <TerminalOutputRate ptyIds={scopePtyIds} />
+          <span className="debug-badge">DEBUG</span>
+        </>
+      )}
       <span className="app-version-label">v{APP_VERSION}</span>
     </div>
   );

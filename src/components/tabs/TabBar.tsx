@@ -4,7 +4,6 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   BLOB_TAB_CMD,
   BROWSER_TAB_CMD,
-  CALENDAR_TAB_CMD,
   PRINTING_TAB_CMD,
   DISKUSAGE_TAB_CMD,
   NETWORK_TAB_CMD,
@@ -25,10 +24,13 @@ import { commitDrop } from "./commitDrop";
 import { TabDropPlaceholder } from "./TabDropPlaceholder";
 import {
   EMPTY_CUSTOM_AGENTS,
+  DEFAULT_COMPACT_AGENT_IDS,
   SHELL_ITEMS,
   TAB_ACCENT,
   agentMenuEntries,
   buildStaticTabSpec,
+  compactAgentMenuEntries,
+  enabledInstalledAgentBins,
   isFileTabKind,
   itemLabel,
   type StaticMenuItem,
@@ -38,6 +40,7 @@ import { CustomAgentDialog } from "./CustomAgentDialog";
 import { type AgentMode, supportsAgentMode } from "./agentModes";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
 import { TabHoverCard } from "./TabHoverCard";
+import { useFastMode } from "../../lib/fastMode";
 import {
   TabSourceBadge,
   TabLocalityBadge,
@@ -57,6 +60,8 @@ import { listLocalDrivers, type LocalDriverInfo } from "../../lib/localDrivers";
 import { useActivityStore } from "../../stores/activity";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
+import { AGENT_REGISTRY_CHANGED_EVENT } from "../../lib/agentRegistry";
+import { TRASH_PROJECT_ID } from "../../lib/trashProject";
 
 /** Default fly-out card size when no live pane thumbnail is available (group
  *  detach via the bar drag carries no preview). */
@@ -140,6 +145,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // The 3D project-blob tab is a root-scope feature, offered only once at least
   // one project exists (it has nothing to show otherwise).
   const scope = useTabsStore((s) => s.scope);
+  const trashScope = scope === TRASH_PROJECT_ID;
   const hasProjects = useProjectsStore((s) => s.projects.length > 0);
   const showBlobItem = scope === "root" && hasProjects;
   const focusGroup = useTabsStore((s) => s.focusGroup);
@@ -221,6 +227,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // Tab currently hovered → drives the styled hover card (the tab-bar
   // counterpart to the project pill's hover popup). Anchored to the tab's
   // bottom-center; cleared on leave, drag, or when a menu opens.
+  // Fast mode drops the hover card: it carries its own ticking clock and
+  // store subscriptions per hover, for detail the tab strip and the pane
+  // itself already show.
+  const fastMode = useFastMode();
   const [hoverTab, setHoverTab] = useState<
     { key: string; x: number; y: number } | null
   >(null);
@@ -255,34 +265,54 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // it — `ollama launch` has its own opinion and may greet the tab with a
   // "Launch anyway?" prompt (see lib/localDrivers.ts).
   const [localDrivers, setLocalDrivers] = useState<LocalDriverInfo[]>([]);
-  useEffect(() => {
-    listLocalDrivers(localModel)
+  const refreshLocalDrivers = useCallback(() => {
+    void listLocalDrivers(localModel)
       .then(setLocalDrivers)
       .catch(() => {});
   }, [localModel]);
+  useEffect(() => {
+    refreshLocalDrivers();
+    window.addEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshLocalDrivers);
+    return () => window.removeEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshLocalDrivers);
+  }, [refreshLocalDrivers]);
   // Installed agent CLIs (by id == cmd). The add menu only offers agents whose
   // binary is actually present, so it never lists ones the user can't launch.
   // `null` until the probe resolves; render nothing until then to avoid a flash
-  // of the full list. Loaded once.
-  const [installedAgents, setInstalledAgents] = useState<Set<string> | null>(null);
-  useEffect(() => {
-    invoke<{ id: string; installed: boolean }[]>("list_agents")
-      .then((list) =>
-        setInstalledAgents(new Set(list.filter((a) => a.installed).map((a) => a.id))),
-      )
-      .catch(() => setInstalledAgents(new Set()));
+  // of the full list. Re-probed after Manage Agents changes the local registry.
+  const [agentStatuses, setAgentStatuses] = useState<
+    { id: string; bin: string; installed: boolean }[] | null
+  >(null);
+  const refreshInstalledAgents = useCallback(() => {
+    void invoke<{ id: string; bin: string; installed: boolean }[]>("list_agents")
+      .then(setAgentStatuses)
+      .catch(() => setAgentStatuses([]));
   }, []);
+  useEffect(() => {
+    refreshInstalledAgents();
+    window.addEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshInstalledAgents);
+    return () => window.removeEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshInstalledAgents);
+  }, [refreshInstalledAgents]);
   // Built-in agents the user turned off in "Manage Agents" (Settings) despite
   // being installed — hidden from this menu without uninstalling the CLI.
   const disabledAgents = useSettingsStore((s) => s.settings?.disabled_agents);
-  // installedAgents minus disabledAgents — the set every tab-choice consumer
+  const compactAgentIds = useSettingsStore(
+    (s) => s.settings?.compact_tab_agents ?? DEFAULT_COMPACT_AGENT_IDS,
+  );
+  // Installed commands minus Manage Agents' disabled registry ids — the set every tab-choice consumer
   // below (Agents group, Mistral/vibe local-model driver) should use.
   const enabledAgents = useMemo(() => {
-    if (!installedAgents) return null;
-    if (!disabledAgents?.length) return installedAgents;
-    const skip = new Set(disabledAgents);
-    return new Set([...installedAgents].filter((id) => !skip.has(id)));
-  }, [installedAgents, disabledAgents]);
+    if (!agentStatuses) return null;
+    return enabledInstalledAgentBins(agentStatuses, disabledAgents);
+  }, [agentStatuses, disabledAgents]);
+  const compactAgentBins = useMemo(() => {
+    if (!agentStatuses) return new Set<string>();
+    const compactIds = new Set(compactAgentIds);
+    return new Set(
+      agentStatuses
+        .filter((agent) => compactIds.has(agent.id) || compactIds.has(agent.bin))
+        .map((agent) => agent.bin),
+    );
+  }, [agentStatuses, compactAgentIds]);
   // User-defined custom agents (Settings.custom_agents) + the manage-dialog it
   // opens. Their commands aren't in the built-in registry, so they're probed
   // separately (`probe_binaries`); `null` until resolved. See agentMenuEntries.
@@ -540,7 +570,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     setMenuPos(null);
   }
 
-  // Add a disk usage analyzer tab. Unlike the monitor/blob/calendar panes above,
+  // Add a disk usage analyzer tab. Unlike the monitor/blob panes above,
   // this one is NOT a singleton: each tab holds its own independent scan root, and
   // comparing two folders side by side is the point — so it stacks (addTab) rather
   // than focusing an existing one (ensureTab, which matches across the whole scope).
@@ -550,21 +580,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     setMenuPos(null);
   }
 
-  // Open (or focus, if already open) the native calendar tab. The event store is
-  // global, so a calendar tab in any scope shows the same events — one per scope
-  // is enough, hence ensureTab rather than addTab.
-  function handleAddCalendar() {
-    focusGroup(groupId);
-    ensureTab(
-      { label: t("newTabMenu.calendar"), cmd: CALENDAR_TAB_CMD, cwd: projectCwd, kind: "calendar" },
-      (tab) => tab.kind === "calendar",
-    );
-    setMenuPos(null);
-  }
-
   // Open (or focus, if already open) the native print manager. Printers belong
   // to the machine, so a second tab in this scope would list the same ones —
-  // hence ensureTab, the bargain mail and the calendar make for the same reason.
+  // hence ensureTab, the bargain mail makes for the same reason.
   function handleAddPrinting() {
     focusGroup(groupId);
     ensureTab(
@@ -577,7 +595,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // Open (or focus, if already open) the Skills Library tab. Its catalog is
   // machine state and its install scopes are this project plus the personal
   // one, so a second tab in this scope would show exactly the same lists —
-  // hence ensureTab, the calendar/printing bargain, rather than addTab.
+  // hence ensureTab, the printing bargain, rather than addTab.
   function handleAddSkills() {
     focusGroup(groupId);
     ensureTab(
@@ -592,7 +610,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     setMenuPos(null);
   }
 
-  // Open an in-app browser tab. Unlike the calendar this is NOT a singleton:
+  // Open an in-app browser tab. Unlike the print manager this is NOT a singleton:
   // each tab holds its own page, and two browser tabs never show the same thing —
   // so it stacks (addTab), the way diskusage does. The tab starts on the
   // configured home address, or on its start page when there is none: an empty
@@ -1205,10 +1223,14 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             data-kind={tab.kind}
             onContextMenu={(e) => onTabContextMenu(e, tab.key, index)}
             onPointerDown={(e) => onTabPointerDown(e, tab)}
+            // Fast mode has no card, so the label becomes a plain tooltip —
+            // otherwise a tab whose name is ellipsized would have no way at all
+            // to read it out.
+            title={fastMode ? tab.label : undefined}
             // Styled hover card (mirrors the project pill's popup) anchored to
             // this tab's bottom-center. Skipped while inline-renaming.
             onMouseEnter={(e) => {
-              if (editing) return;
+              if (editing || fastMode) return;
               const r = e.currentTarget.getBoundingClientRect();
               setHoverTab({ key: tab.key, x: r.left + r.width / 2, y: r.bottom });
             }}
@@ -1400,10 +1422,12 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             groups={[
               {
                 label: t("newTabMenu.groupAgents"),
+                moreLabel: t("newTabMenu.moreAgents"),
                 entries: agentMenuEntries({
                   installedBuiltins: enabledAgents,
                   installedCmds: installedCustom,
                   customAgents,
+                  allowCustom: !trashScope,
                   pick: handleAdd,
                   onAddCustom: () => {
                     setMenuPos(null);
@@ -1411,11 +1435,26 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   },
                   t,
                 }),
+                compactEntries: compactAgentMenuEntries(
+                  agentMenuEntries({
+                    installedBuiltins: enabledAgents,
+                    installedCmds: installedCustom,
+                    customAgents,
+                    allowCustom: !trashScope,
+                    pick: handleAdd,
+                    onAddCustom: () => {
+                      setMenuPos(null);
+                      setAgentDialogOpen(true);
+                    },
+                    t,
+                  }),
+                  compactAgentBins,
+                ),
               },
               // Only offer agents whose binary is actually installed: Mistral/vibe
-              // (checked against `installedAgents`) and the drivers the backend
+              // (checked against `enabledAgents`) and the drivers the backend
               // already marks `available` (which now includes an installed check).
-              {
+              ...(!trashScope ? [{
                 label: localModel
                   ? t("newTabMenu.groupLocalModelWithName", { model: localModel })
                   : t("newTabMenu.groupLocalModel"),
@@ -1454,8 +1493,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   : localDrivers.some((d) => d.needs_tools_unsupported)
                     ? t("newTabMenu.localModelNoToolsHint", { model: localModel })
                     : t("newTabMenu.noLocalAgentHint"),
-              },
-              {
+              }] : []),
+              ...(!trashScope ? [{
                 label: t("newTabMenu.groupShell"),
                 entries: SHELL_ITEMS.filter((i) => i.kind === "shell").map((item) => ({
                   key: item.cmd || "shell",
@@ -1463,8 +1502,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   color: TAB_ACCENT[item.kind],
                   onPick: () => handleAdd(item),
                 })),
-              },
-              {
+              }] : []),
+              ...(!trashScope ? [{
                 label: t("newTabMenu.groupFiles"),
                 entries: SHELL_ITEMS.filter((i) => isFileTabKind(i.kind)).map((item) => ({
                   key: item.cmd,
@@ -1473,11 +1512,11 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   disabled: !projectCwd,
                   onPick: () => handleAdd(item),
                 })),
-              },
+              }] : []),
               // System Monitor is whole-machine and Disk Usage picks its own scan
               // root, so both are offered in every scope; Network Traffic is
               // per-project (host/SSH link), so root has none.
-              {
+              ...(!trashScope ? [{
                 label: t("newTabMenu.groupMonitoring"),
                 entries: [
                   {
@@ -1502,8 +1541,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                       }]
                     : []),
                 ],
-              },
-              ...(showBlobItem
+              }] : []),
+              ...(!trashScope && showBlobItem
                 ? [{
                     label: t("newTabMenu.groupWorkspace"),
                     entries: [{
@@ -1515,17 +1554,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     }],
                   }]
                 : []),
-              {
-                label: t("newTabMenu.calendar"),
-                entries: [{
-                  key: "calendar",
-                  label: t("newTabMenu.calendar"),
-                  dot: "◆",
-                  color: TAB_ACCENT.calendar,
-                  onPick: handleAddCalendar,
-                }],
-              },
-              {
+              ...(!trashScope ? [{
                 label: t("printing.title"),
                 entries: [{
                   key: "printing",
@@ -1535,12 +1564,12 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   untested: true,
                   onPick: handleAddPrinting,
                 }],
-              },
+              }] : []),
               // Offered at the root scope too since the personal install scope
               // exists: the catalog is machine state and a skill can be
               // installed for every project here without one being open. See
               // `NewTabMenu`, which carries the same entry.
-              {
+              ...(!trashScope ? [{
                 label: t("skillsLibrary.title"),
                 entries: [{
                   key: "skillslibrary",
@@ -1550,8 +1579,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   untested: true,
                   onPick: handleAddSkills,
                 }],
-              },
-              ...(webBrowser
+              }] : []),
+              ...(!trashScope && webBrowser
                 ? [{
                     label: t("newTabMenu.browser"),
                     entries: [{
@@ -1672,7 +1701,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       {/* Styled tab hover card (matches the project pill popup). Suppressed
           mid-drag and while a menu is open so it never overlaps them. The card
           derives its own content from the tab + this window's stores. */}
-      {hoverTab && dragKey === null && !menuOpen && !tabMenu && (() => {
+      {hoverTab && !fastMode && dragKey === null && !menuOpen && !tabMenu && (() => {
         const tab = tabs.find((tb) => tb.key === hoverTab.key);
         if (!tab) return null;
         return (

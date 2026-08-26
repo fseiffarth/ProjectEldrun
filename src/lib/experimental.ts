@@ -1,12 +1,13 @@
 /**
- * Experimental features and the one rule that governs them.
+ * Experimental features and the rule that governs them.
  *
- * An experimental feature is **off for everyone and on in debug mode**: the flag
- * is a tri-state, and when it is unset the answer is `settings.debug`. That is the
- * whole point of the gate — a feature that is still moving needs to be invisible
- * to someone using Eldrun to work, and present *by default* for someone using
- * Eldrun to build Eldrun, without them having to re-tick a list of toggles every
- * time a new one lands.
+ * Most experimental features are **off for everyone and on in debug mode**: the
+ * flag is a tri-state, and when it is unset the answer is `settings.debug`. That
+ * is the whole point of the gate — a feature that is still moving needs to be
+ * invisible to someone using Eldrun to work, and present *by default* for someone
+ * using Eldrun to build Eldrun, without them having to re-tick a list of toggles
+ * every time a new one lands. `terminal_webgl` is the exception: it exercises the
+ * GPU/driver path and must be explicitly opted into even in Debug mode.
  *
  * Unset is therefore NOT the same as false. An explicit value always wins, in both
  * directions: a user can opt into one experiment without debug mode, and can switch
@@ -61,6 +62,10 @@ export function experimentalEnabled(
   settings: Settings | null | undefined,
   flag: ExperimentalFlag,
 ): boolean {
+  // WebGL can fall back to software rendering (notably while DMABUF is disabled),
+  // which makes a visible terminal slower rather than faster. Keep the renderer
+  // opt-in until that platform path is dependable; an explicit true still wins.
+  if (flag === "terminal_webgl" && settings?.terminal_webgl === undefined) return false;
   return settings?.[flag] ?? settings?.debug ?? false;
 }
 

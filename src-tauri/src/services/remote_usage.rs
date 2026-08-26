@@ -309,8 +309,14 @@ fn parse_mem(lines: &[&str]) -> (u64, u64) {
         return (0, 0);
     };
     let fields: Vec<&str> = line.split_whitespace().collect();
-    let total = fields.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-    let used = fields.get(2).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+    let total = fields
+        .get(1)
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+    let used = fields
+        .get(2)
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
     (total, used)
 }
 
@@ -437,7 +443,10 @@ pub(crate) fn parse_report(output: &str) -> RemoteUsageReport {
     }
     for gpu in &gpus {
         if gpu.util_pct > GPU_BUSY_PCT {
-            reasons.push(format!("GPU \"{}\" is busy ({:.0}%)", gpu.name, gpu.util_pct));
+            reasons.push(format!(
+                "GPU \"{}\" is busy ({:.0}%)",
+                gpu.name, gpu.util_pct
+            ));
         }
     }
     if !users.is_empty() {
@@ -565,7 +574,10 @@ NVIDIA GeForce RTX 3090, 92, 20000, 24576
         assert!(report.reasons.iter().any(|r| r.contains("CPU usage")));
         // 14200/15974 = 88.9% > 85%
         assert!(report.reasons.iter().any(|r| r.contains("Memory usage")));
-        assert!(report.reasons.iter().any(|r| r.contains("GPU") && r.contains("92")));
+        assert!(report
+            .reasons
+            .iter()
+            .any(|r| r.contains("GPU") && r.contains("92")));
         assert!(report.reasons.iter().any(|r| r.contains("other session")));
         assert_eq!(report.gpus.len(), 1);
         assert_eq!(report.gpus[0].name, "NVIDIA GeForce RTX 3090");

@@ -111,7 +111,10 @@ impl std::fmt::Display for SanitizeError {
                 "message body is too large to display ({bytes} bytes; limit {MAX_HTML_BYTES})"
             ),
             SanitizeError::Timeout => {
-                write!(f, "message body took too long to sanitize and was not rendered")
+                write!(
+                    f,
+                    "message body took too long to sanitize and was not rendered"
+                )
             }
         }
     }
@@ -122,11 +125,60 @@ impl std::fmt::Display for SanitizeError {
 /// Tags kept, **replacing ammonia's default entirely** (`Builder::tags`, not
 /// `add_tags`) so a future ammonia default change cannot widen us.
 const ALLOWED_TAGS: &[&str] = &[
-    "a", "abbr", "b", "blockquote", "br", "caption", "cite", "code", "col", "colgroup", "dd",
-    "del", "dfn", "div", "dl", "dt", "em", "figcaption", "figure", "h1", "h2", "h3", "h4", "h5",
-    "h6", "hr", "i", "img", "ins", "kbd", "li", "mark", "ol", "p", "pre", "q", "s", "samp",
-    "small", "span", "strong", "sub", "sup", "table", "tbody", "td", "tfoot", "th", "thead", "tr",
-    "u", "ul", "var", "wbr",
+    "a",
+    "abbr",
+    "b",
+    "blockquote",
+    "br",
+    "caption",
+    "cite",
+    "code",
+    "col",
+    "colgroup",
+    "dd",
+    "del",
+    "dfn",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "figcaption",
+    "figure",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "i",
+    "img",
+    "ins",
+    "kbd",
+    "li",
+    "mark",
+    "ol",
+    "p",
+    "pre",
+    "q",
+    "s",
+    "samp",
+    "small",
+    "span",
+    "strong",
+    "sub",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "tr",
+    "u",
+    "ul",
+    "var",
+    "wbr",
 ];
 
 /// Removed **with their contents**. The contents of `<style>`/`<title>`/
@@ -374,7 +426,10 @@ fn rename_anchor_hrefs(html: &str) -> String {
             continue;
         }
         out.push_str(&rest[..pos]);
-        let end = after.find('>').map(|e| pos + 2 + e + 1).unwrap_or(rest.len());
+        let end = after
+            .find('>')
+            .map(|e| pos + 2 + e + 1)
+            .unwrap_or(rest.len());
         // `class="mail-link"` is added here, not carried from input (`class` is
         // in no allowlist, so the message cannot supply one). Without it the
         // frame's `.mail-link` rule matches nothing and every link in a body
@@ -594,9 +649,7 @@ fn bound_raw(raw: &str) -> (Cow<'_, str>, bool) {
         } else if next.is_ascii_alphabetic() {
             let start = i + 1;
             let mut end = start;
-            while end < bytes.len()
-                && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'-')
-            {
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'-') {
                 end += 1;
             }
             let name = raw[start..end].to_ascii_lowercase();
@@ -786,7 +839,6 @@ pub use crate::services::web_safety::{
     has_userinfo, host_in_text, host_of, idna_display, is_format_char, registrable,
     sanitize_attachment_name, scheme_of, SafeName, FORMAT_CHARS, MAX_NAME_BYTES, RESERVED_NAMES,
 };
-
 
 #[cfg(test)]
 mod tests {
@@ -1086,7 +1138,10 @@ mod tests {
         for i in 0..19_000 {
             input.push_str(&format!("<a href=\"https://e{i}.example/p\">t</a>{pad}"));
         }
-        assert!(input.len() < MAX_HTML_BYTES, "the fixture must not be refused early");
+        assert!(
+            input.len() < MAX_HTML_BYTES,
+            "the fixture must not be refused early"
+        );
 
         let started = std::time::Instant::now();
         let out = sanitize_message_html(&input).expect("must not time out");
@@ -1140,20 +1195,18 @@ mod tests {
 
     #[test]
     fn a_link_whose_text_names_another_host_is_flagged() {
-        let out = sanitize_message_html(
-            "<a href=\"https://evil.example/login\">www.bank.example</a>",
-        )
-        .unwrap();
+        let out =
+            sanitize_message_html("<a href=\"https://evil.example/login\">www.bank.example</a>")
+                .unwrap();
         assert!(out.links[0].mismatch, "{:?}", out.links[0]);
         assert_eq!(out.links[0].display_host, "evil.example");
     }
 
     #[test]
     fn the_same_registrable_domain_is_not_a_mismatch() {
-        let out = sanitize_message_html(
-            "<a href=\"https://bank.example/y\">https://bank.example/x</a>",
-        )
-        .unwrap();
+        let out =
+            sanitize_message_html("<a href=\"https://bank.example/y\">https://bank.example/x</a>")
+                .unwrap();
         assert!(!out.links[0].mismatch, "{:?}", out.links[0]);
     }
 
@@ -1207,7 +1260,11 @@ mod tests {
         ] {
             let out = sanitize_message_html(input).unwrap();
             assert!(!out.html.contains("href"), "{input} → {}", out.html);
-            assert!(out.html.contains("data-lid=\"0\""), "{input} → {}", out.html);
+            assert!(
+                out.html.contains("data-lid=\"0\""),
+                "{input} → {}",
+                out.html
+            );
             // Without the class the frame's `.mail-link` rule matches nothing
             // and a link renders as indistinguishable plain text.
             assert!(

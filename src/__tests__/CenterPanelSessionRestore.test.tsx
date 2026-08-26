@@ -291,10 +291,20 @@ describe("loadFromLayout — resume args", () => {
     expect(tab.sessionId).toBe(sid);
   });
 
-  it("resumable Codex agent restores with NO frontend args (backend injects resume) and carries sessionId", () => {
+  it("resumable Codex agent restores with its binding key repaired in env", () => {
     const sid = "codex-tab-key-1";
     const layout = [
-      { key: "agent-1", label: "codex", cmd: "codex", cwd: "/stale", kind: "agent" as const, sessionId: sid },
+      {
+        key: "agent-1",
+        label: "codex",
+        cmd: "codex",
+        cwd: "/stale",
+        kind: "agent" as const,
+        sessionId: sid,
+        // Older layouts omitted this field, while a malformed one could carry
+        // the binding key from a different tab. Both must resolve to `sid`.
+        env: { ELDRUN_TAB_UID: "wrong-tab-key", KEEP_ME: "yes" },
+      },
     ];
 
     useTabsStore.getState().loadFromLayout(layout, "/project-r-dir", "project-r");
@@ -304,6 +314,7 @@ describe("loadFromLayout — resume args", () => {
     // so the frontend passes no resume args; the backend resolves the live id.
     expect(tab.args).toEqual([]);
     expect(tab.sessionId).toBe(sid);
+    expect(tab.env).toEqual({ ELDRUN_TAB_UID: sid, KEEP_ME: "yes" });
   });
 
   it("Claude agent without a sessionId gets no resume args", () => {

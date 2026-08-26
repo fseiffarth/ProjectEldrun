@@ -111,7 +111,10 @@ fn list_dir_directory_has_zero_size() {
     fs::create_dir_all(tmp.path().join("subdir")).unwrap();
 
     let entries = list_dir_local(&dir, "").unwrap();
-    let subdir = entries.iter().find(|e| e.name == "subdir" && e.is_dir).unwrap();
+    let subdir = entries
+        .iter()
+        .find(|e| e.name == "subdir" && e.is_dir)
+        .unwrap();
     assert_eq!(subdir.size, 0);
 }
 
@@ -224,7 +227,10 @@ fn delete_dir_removes_directory_tree() {
 
     delete_dir_local(&dir, "subtree").unwrap();
 
-    assert!(!tmp.path().join("subtree").exists(), "dir tree must be removed");
+    assert!(
+        !tmp.path().join("subtree").exists(),
+        "dir tree must be removed"
+    );
 }
 
 #[test]
@@ -238,7 +244,10 @@ fn delete_dir_rejects_project_root() {
     // Passing "." expands to root — that must be rejected.
     let result2 = delete_dir_local(&dir, ".");
     // At least one of these must error.
-    assert!(result.is_err() || result2.is_err(), "deleting project root must be rejected");
+    assert!(
+        result.is_err() || result2.is_err(),
+        "deleting project root must be rejected"
+    );
 }
 
 #[test]
@@ -274,7 +283,10 @@ fn rename_path_renames_a_file() {
 
     assert!(!tmp.path().join("old.txt").exists());
     assert!(tmp.path().join("new.txt").exists());
-    assert_eq!(fs::read_to_string(tmp.path().join("new.txt")).unwrap(), "content");
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("new.txt")).unwrap(),
+        "content"
+    );
 }
 
 #[test]
@@ -353,7 +365,7 @@ fn scaffold_project_claude_settings_is_valid_json() {
     scaffold_project(tmp.path(), true).unwrap();
 
     let content = fs::read_to_string(tmp.path().join(".claude/settings.json")).unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&content)
-        .expect(".claude/settings.json must be valid JSON");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&content).expect(".claude/settings.json must be valid JSON");
     assert!(parsed.is_object());
 }

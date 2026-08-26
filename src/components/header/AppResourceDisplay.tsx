@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settings";
 import { useQuiesce, saverInterval } from "../../stores/power";
+import { useFastMode } from "../../lib/fastMode";
 import {
   formatBytes,
   gpuBusy,
@@ -38,7 +39,11 @@ export function AppResourceDisplay() {
   const showCpu = useSettingsStore((s) => s.settings?.show_cpu_usage ?? true);
   const showRam = useSettingsStore((s) => s.settings?.show_ram_usage ?? true);
   const showGpu = useSettingsStore((s) => s.settings?.show_gpu_usage ?? true);
-  const anyShown = showCpu || showRam || showGpu;
+  // Fast mode withdraws the readout: a poll every 2.5 s, forever, for a figure
+  // that is by construction a readout of Eldrun's own overhead — so the reading
+  // and the cost of taking it are the same thing.
+  const fastMode = useFastMode();
+  const anyShown = (showCpu || showRam || showGpu) && !fastMode;
   const [usage, setUsage] = useState<AppResourceUsage | null>(null);
   const quiesce = useQuiesce();
 

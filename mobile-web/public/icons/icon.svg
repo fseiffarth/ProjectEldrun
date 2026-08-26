@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none" role="img" aria-label="Eldrun">
+  <title>Eldrun</title>
+  <defs>
+    <linearGradient id="eldrun-coaster" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#101624" />
+      <stop offset="0.5" stop-color="#16213a" />
+      <stop offset="1" stop-color="#241735" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#eldrun-coaster)" />
+  <g transform="translate(46 46) scale(.82)">
+    <g stroke="#fff" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <path d="M214 491A239 239 0 1 1 298 491" stroke-width="10" />
+      <path d="M256 161V499" stroke-width="10" />
+      <path d="M165 176V238L233 306V440L222 483M98 235V289L134.1 325.1M155 343.7L233 405" stroke-width="10" />
+      <circle cx="165" cy="162" r="14" stroke-width="8" />
+      <circle cx="98" cy="221" r="14" stroke-width="8" />
+      <circle cx="144" cy="335" r="14" stroke-width="8" />
+      <path d="M347 176V238L279 306V440L290 483M414 235V289L377.9 325.1M357 343.7L279 405" stroke-width="10" />
+      <circle cx="347" cy="162" r="14" stroke-width="8" />
+      <circle cx="414" cy="221" r="14" stroke-width="8" />
+      <circle cx="368" cy="335" r="14" stroke-width="8" />
+    </g>
+    <path d="M256 61C261 92 268 96 292 101C268 106 261 110 256 142C251 110 244 106 220 101C244 96 251 92 256 61Z" fill="#c79a45" />
+  </g>
+</svg>

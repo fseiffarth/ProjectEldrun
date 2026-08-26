@@ -8,9 +8,12 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  AGENT_ITEMS,
   agentMenuEntries,
   buildStaticTabSpec,
   customAgentToItem,
+  enabledInstalledAgentBins,
+  installedAgentBins,
 } from "../components/tabs/newTabItems";
 import { isResumableAgentTab } from "../stores/tabs";
 import { translate, type TranslationKey } from "../lib/i18n";
@@ -94,5 +97,46 @@ describe("agentMenuEntries", () => {
       t,
     });
     expect(entries.map((e) => e.key)).toEqual(["__add_custom_agent__"]);
+  });
+});
+
+describe("Google Antigravity built-in", () => {
+  it("matches the backend's executable name, not its registry id", () => {
+    const installed = installedAgentBins([{ bin: "agy", installed: true }]);
+    const entries = agentMenuEntries({
+      installedBuiltins: installed,
+      installedCmds: new Set(),
+      customAgents: [],
+      pick: () => {},
+      onAddCustom: () => {},
+      t,
+    });
+    expect(entries.map((entry) => entry.label)).toEqual(["Google Antigravity", "Add agent…"]);
+  });
+
+  it("honors registry-id disables for agents whose command has another name", () => {
+    expect([...enabledInstalledAgentBins([
+      { id: "antigravity", bin: "agy", installed: true },
+      { id: "swe-agent", bin: "sweagent", installed: true },
+    ], ["antigravity", "swe-agent"])]).toEqual([]);
+  });
+
+  it("launches agy and restores with its documented continue flag", () => {
+    const item = AGENT_ITEMS.find((candidate) => candidate.cmd === "agy");
+    expect(item?.label).toBe("Google Antigravity");
+    const spec = buildStaticTabSpec(item!, "/proj", "Proj", t);
+    expect(spec.kind).toBe("agent");
+    expect(spec.sessionId).toBeTruthy();
+    expect(isResumableAgentTab(spec)).toBe(true);
+  });
+});
+
+describe("expanded built-in agents", () => {
+  it("offers each newly managed agent under its executable name", () => {
+    const cmds = new Set(AGENT_ITEMS.map((item) => item.cmd));
+    expect([
+      "kiro", "cline", "goose", "openhands", "pi", "plandex", "sweagent",
+      "mini", "mentat", "gpte", "crush", "amp", "kimi", "qoder",
+    ].every((cmd) => cmds.has(cmd))).toBe(true);
   });
 });

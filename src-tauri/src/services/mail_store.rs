@@ -142,7 +142,8 @@ impl MailStore {
     /// therefore restartable: interrupting it half-way leaves a store where some
     /// values are sealed and some are not, and the next open finishes the job.
     pub fn open_with_keys(dir: &Path, keys: Option<Arc<MailKeys>>) -> Result<Self, String> {
-        std::fs::create_dir_all(dir).map_err(|e| format!("could not create the mail store: {e}"))?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("could not create the mail store: {e}"))?;
         harden(dir, 0o700);
         let db = dir.join("mail.db");
         let conn = Connection::open(&db).map_err(|e| e.to_string())?;
@@ -216,7 +217,14 @@ impl MailStore {
     /// SQLite's dynamic typing is what makes this work without two schemas —
     /// `subject BLOB` and `subject TEXT` coexist in one column, which is also
     /// what makes [`MailStore::seal_existing`] restartable row by row.
-    fn seal_text(&self, account_id: &str, table: &str, column: &str, row: &str, value: &str) -> SqlValue {
+    fn seal_text(
+        &self,
+        account_id: &str,
+        table: &str,
+        column: &str,
+        row: &str,
+        value: &str,
+    ) -> SqlValue {
         match &self.keys {
             Some(k) => SqlValue::Blob(mail_crypt::seal(
                 &k.field,
@@ -295,7 +303,9 @@ impl MailStore {
         if matches!(r.get_ref(idx)?, ValueRef::Null) {
             return Ok(None);
         }
-        Ok(Some(self.open_text(r, idx, account_id, table, column, row)?))
+        Ok(Some(
+            self.open_text(r, idx, account_id, table, column, row)?,
+        ))
     }
 
     /// The cleartext stand-in a sealed column's `UNIQUE` moves onto.
@@ -462,7 +472,10 @@ impl MailStore {
         // database can be in any half-state, and "does the column exist" is a
         // question with one true answer where "what does `meta` claim" is a
         // question about a row that may have been written before a crash.
-        if conn.prepare("SELECT path_key FROM folders LIMIT 0").is_err() {
+        if conn
+            .prepare("SELECT path_key FROM folders LIMIT 0")
+            .is_err()
+        {
             let old: Vec<(String, String, String, String, String, i64, i64)> = {
                 let mut stmt = conn
                     .prepare("SELECT id, account_id, path, name, kind, unread, total FROM folders")
@@ -480,7 +493,8 @@ impl MailStore {
                         ))
                     })
                     .map_err(|e| e.to_string())?;
-                rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?
             };
             conn.execute_batch(
                 r#"
@@ -535,7 +549,8 @@ impl MailStore {
                 let rows = stmt
                     .query_map([], |r| r.get::<_, String>(0))
                     .map_err(|e| e.to_string())?;
-                rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?
             };
             conn.execute_batch(
                 r#"
@@ -651,8 +666,20 @@ impl MailStore {
                 folder.id,
                 folder.account_id,
                 self.digest_of(&folder.account_id, &folder.path),
-                self.seal_text(&folder.account_id, "folders", "path", &folder.id, &folder.path),
-                self.seal_text(&folder.account_id, "folders", "name", &folder.id, &folder.name),
+                self.seal_text(
+                    &folder.account_id,
+                    "folders",
+                    "path",
+                    &folder.id,
+                    &folder.path
+                ),
+                self.seal_text(
+                    &folder.account_id,
+                    "folders",
+                    "name",
+                    &folder.id,
+                    &folder.name
+                ),
                 folder.kind.as_str(),
                 folder.unread,
                 folder.total
@@ -697,7 +724,9 @@ impl MailStore {
         let rows = stmt
             .query_map(params![account_id], |r| self.row_to_folder(r))
             .map_err(|e| e.to_string())?;
-        let mut all: Vec<MailFolder> = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        let mut all: Vec<MailFolder> = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
         // Ordered here rather than in SQL: `ORDER BY path` over a sealed column
         // would sort by ciphertext, i.e. at random, and a folder list whose order
         // changed on every sync would be its own bug report. The list is one
@@ -859,7 +888,15 @@ impl MailStore {
         sort: MailSort,
         desc: bool,
     ) -> Result<MailHeaderPage, String> {
-        self.page("folder_id = ?1 AND deleted = 0", folder_id, offset, limit, query, sort, desc)
+        self.page(
+            "folder_id = ?1 AND deleted = 0",
+            folder_id,
+            offset,
+            limit,
+            query,
+            sort,
+            desc,
+        )
     }
 
     /// One page of whichever set `scope_where`/`scope_param` select.
@@ -911,7 +948,9 @@ impl MailStore {
                         Self::order_clause(sort, desc),
                     ))
                     .map_err(|e| e.to_string())?;
-                let mut rows = stmt.query(params![scope_param]).map_err(|e| e.to_string())?;
+                let mut rows = stmt
+                    .query(params![scope_param])
+                    .map_err(|e| e.to_string())?;
 
                 let mut items = Vec::new();
                 let mut matched = 0u32;
@@ -966,9 +1005,13 @@ impl MailStore {
                 ))
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map(params![scope_param, limit, offset], |r| self.row_to_header(r))
+                .query_map(params![scope_param, limit, offset], |r| {
+                    self.row_to_header(r)
+                })
                 .map_err(|e| e.to_string())?;
-            let items = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+            let items = rows
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
             return Ok(MailHeaderPage {
                 items,
                 total,
@@ -1046,7 +1089,10 @@ impl MailStore {
     pub fn header(&self, message_id: &str) -> Result<Option<MailHeader>, String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
         conn.query_row(
-            &format!("SELECT {} FROM messages WHERE id = ?1", Self::HEADER_COLUMNS),
+            &format!(
+                "SELECT {} FROM messages WHERE id = ?1",
+                Self::HEADER_COLUMNS
+            ),
             params![message_id],
             |r| self.row_to_header(r),
         )
@@ -1347,7 +1393,11 @@ impl MailStore {
         Ok(changed as u32)
     }
 
-    pub fn move_messages(&self, message_ids: &[String], dest_folder_id: &str) -> Result<(), String> {
+    pub fn move_messages(
+        &self,
+        message_ids: &[String],
+        dest_folder_id: &str,
+    ) -> Result<(), String> {
         let mut conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         for id in message_ids {
@@ -1400,13 +1450,9 @@ impl MailStore {
         Ok(match row {
             Some((html, text, links, refs, truncated)) => match (html, text, links) {
                 (Some(None), _, _) | (_, Some(None), _) | (_, _, None) => None,
-                (html, text, Some(links)) => Some((
-                    html.flatten(),
-                    text.flatten(),
-                    links,
-                    refs,
-                    truncated,
-                )),
+                (html, text, Some(links)) => {
+                    Some((html.flatten(), text.flatten(), links, refs, truncated))
+                }
             },
             None => None,
         })
@@ -1492,7 +1538,13 @@ impl MailStore {
         format!("{message_id}\u{0}{part_id}")
     }
 
-    fn seal_attachment(&self, message_id: &str, part_id: &str, column: &str, value: &str) -> SqlValue {
+    fn seal_attachment(
+        &self,
+        message_id: &str,
+        part_id: &str,
+        column: &str,
+        value: &str,
+    ) -> SqlValue {
         self.seal_text(
             "",
             "attachments",
@@ -1518,7 +1570,11 @@ impl MailStore {
         )
     }
 
-    fn row_to_attachment(&self, r: &Row<'_>, message_id: &str) -> rusqlite::Result<MailAttachmentMeta> {
+    fn row_to_attachment(
+        &self,
+        r: &Row<'_>,
+        message_id: &str,
+    ) -> rusqlite::Result<MailAttachmentMeta> {
         let part_id: String = r.get(0)?;
         let row = Self::attachment_row(message_id, &part_id);
         let t = "attachments";
@@ -1526,7 +1582,9 @@ impl MailStore {
             filename: self
                 .open_text(r, 1, "", t, "filename", &row)?
                 .unwrap_or_default(),
-            mime: self.open_text(r, 2, "", t, "mime", &row)?.unwrap_or_default(),
+            mime: self
+                .open_text(r, 2, "", t, "mime", &row)?
+                .unwrap_or_default(),
             size: r.get::<_, i64>(3)? as u64,
             inline: r.get::<_, i64>(4)? != 0,
             type_mismatch: self.open_opt_text(r, 5, "", t, "mismatch", &row)?.flatten(),
@@ -1543,9 +1601,12 @@ impl MailStore {
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![message_id], |r| self.row_to_attachment(r, message_id))
+            .query_map(params![message_id], |r| {
+                self.row_to_attachment(r, message_id)
+            })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// One attachment's metadata plus the blob digest holding its bytes.
@@ -1559,7 +1620,12 @@ impl MailStore {
             "SELECT part_id, filename, mime, size, inline, mismatch, blob
              FROM attachments WHERE message_id = ?1 AND part_id = ?2",
             params![message_id, part_id],
-            |r| Ok((self.row_to_attachment(r, message_id)?, r.get::<_, String>(6)?)),
+            |r| {
+                Ok((
+                    self.row_to_attachment(r, message_id)?,
+                    r.get::<_, String>(6)?,
+                ))
+            },
         )
         .optional()
         .map_err(|e| e.to_string())
@@ -1670,8 +1736,20 @@ impl MailStore {
             params![
                 draft_id,
                 staged.staged_id,
-                self.seal_text("", "staged", "filename", &staged_row(draft_id, staged_id), &staged.filename),
-                self.seal_text("", "staged", "mime", &staged_row(draft_id, staged_id), &staged.mime),
+                self.seal_text(
+                    "",
+                    "staged",
+                    "filename",
+                    &staged_row(draft_id, staged_id),
+                    &staged.filename
+                ),
+                self.seal_text(
+                    "",
+                    "staged",
+                    "mime",
+                    &staged_row(draft_id, staged_id),
+                    &staged.mime
+                ),
                 staged.size as i64
             ],
         )
@@ -1716,7 +1794,8 @@ impl MailStore {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     pub fn staged_bytes(&self, draft_id: &str, staged_id: &str) -> Result<Vec<u8>, String> {
@@ -1811,7 +1890,12 @@ impl MailStore {
                 "authres_json",
             ],
         )?;
-        changed += self.seal_table("bodies_cache", &["message_id"], None, &["html", "text", "links_json"])?;
+        changed += self.seal_table(
+            "bodies_cache",
+            &["message_id"],
+            None,
+            &["html", "text", "links_json"],
+        )?;
         changed += self.seal_table(
             "attachments",
             &["message_id", "part_id"],
@@ -1819,7 +1903,12 @@ impl MailStore {
             &["filename", "mime", "mismatch"],
         )?;
         changed += self.seal_table("drafts", &["id"], Some("account_id"), &["json"])?;
-        changed += self.seal_table("staged", &["draft_id", "staged_id"], None, &["filename", "mime"])?;
+        changed += self.seal_table(
+            "staged",
+            &["draft_id", "staged_id"],
+            None,
+            &["filename", "mime"],
+        )?;
         changed += self.seal_table("folders", &["id"], Some("account_id"), &["path", "name"])?;
         changed += self.seal_table("mail_remote_allow", &["addr_key"], None, &["address"])?;
         changed += self.reseal_blobs()?;
@@ -1963,7 +2052,8 @@ impl MailStore {
                     Ok((id, account_id, path_key, path))
                 })
                 .map_err(|e| e.to_string())?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?
         };
         // (stored addr_key, plaintext address)
         let allowed: Vec<(String, Option<String>)> = {
@@ -1973,11 +2063,13 @@ impl MailStore {
             let rows = stmt
                 .query_map([], |r| {
                     let addr_key: String = r.get(0)?;
-                    let address = self.open_text(r, 1, "", "mail_remote_allow", "address", &addr_key)?;
+                    let address =
+                        self.open_text(r, 1, "", "mail_remote_allow", "address", &addr_key)?;
                     Ok((addr_key, address))
                 })
                 .map_err(|e| e.to_string())?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?
         };
 
         let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -2171,10 +2263,16 @@ impl MailStore {
             params![account_id],
         )
         .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM messages WHERE account_id = ?1", params![account_id])
-            .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM folders WHERE account_id = ?1", params![account_id])
-            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM messages WHERE account_id = ?1",
+            params![account_id],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM folders WHERE account_id = ?1",
+            params![account_id],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 }
@@ -2542,12 +2640,16 @@ mod tests {
             );
             store.upsert_header(&h).unwrap();
         }
-        let page = store.headers_page(&f.id, 0, 10, None, MailSort::Date, true).unwrap();
+        let page = store
+            .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+            .unwrap();
         assert_eq!(page.total, 25);
         assert_eq!(page.items.len(), 10);
         assert_eq!(page.items[0].uid, 25, "newest first");
 
-        let page2 = store.headers_page(&f.id, 20, 10, None, MailSort::Date, true).unwrap();
+        let page2 = store
+            .headers_page(&f.id, 20, 10, None, MailSort::Date, true)
+            .unwrap();
         assert_eq!(page2.items.len(), 5, "the last page is short");
         assert_eq!(page2.items[0].uid, 5);
     }
@@ -2580,7 +2682,10 @@ mod tests {
 
         for sort in [MailSort::Flagged, MailSort::Attachments, MailSort::Size] {
             let page = store.headers_page(&f.id, 0, 10, None, sort, true).unwrap();
-            assert_eq!(page.items[0].uid, 1, "{sort:?} must put the marked mail first");
+            assert_eq!(
+                page.items[0].uid, 1,
+                "{sort:?} must put the marked mail first"
+            );
             // The rest is a single group, so the tie-break is all that orders it.
             assert_eq!(
                 page.items[1].uid, 5,
@@ -2607,17 +2712,29 @@ mod tests {
             .upsert_header(&header(&f, 2, "holiday", "2026-07-02T09:00:00Z"))
             .unwrap();
 
-        let hits = store.headers_page(&f.id, 0, 10, Some("invoi"), MailSort::Date, true).unwrap();
+        let hits = store
+            .headers_page(&f.id, 0, 10, Some("invoi"), MailSort::Date, true)
+            .unwrap();
         assert_eq!(hits.total, 1);
         assert_eq!(hits.items[0].subject, "invoice");
 
         // A query that would be an injection if it were interpolated.
         let hostile = store
-            .headers_page(&f.id, 0, 10, Some("'; DROP TABLE messages; --"), MailSort::Date, true)
+            .headers_page(
+                &f.id,
+                0,
+                10,
+                Some("'; DROP TABLE messages; --"),
+                MailSort::Date,
+                true,
+            )
             .unwrap();
         assert_eq!(hostile.total, 0);
         assert_eq!(
-            store.headers_page(&f.id, 0, 10, None, MailSort::Date, true).unwrap().total,
+            store
+                .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+                .unwrap()
+                .total,
             2,
             "the table must still be there"
         );
@@ -2652,7 +2769,13 @@ mod tests {
         let h = header(&f, 1, "x", "2026-07-01T09:00:00Z");
         store.upsert_header(&h).unwrap();
         store.set_flag(&h.id, MailFlag::Deleted, true).unwrap();
-        assert_eq!(store.headers_page(&f.id, 0, 10, None, MailSort::Date, true).unwrap().total, 0);
+        assert_eq!(
+            store
+                .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+                .unwrap()
+                .total,
+            0
+        );
     }
 
     #[test]
@@ -2665,10 +2788,23 @@ mod tests {
         let h = header(&inbox, 1, "x", "2026-07-01T09:00:00Z");
         store.upsert_header(&h).unwrap();
 
-        store.move_messages(std::slice::from_ref(&h.id), &archive.id)
+        store
+            .move_messages(std::slice::from_ref(&h.id), &archive.id)
             .unwrap();
-        assert_eq!(store.headers_page(&inbox.id, 0, 10, None, MailSort::Date, true).unwrap().total, 0);
-        assert_eq!(store.headers_page(&archive.id, 0, 10, None, MailSort::Date, true).unwrap().total, 1);
+        assert_eq!(
+            store
+                .headers_page(&inbox.id, 0, 10, None, MailSort::Date, true)
+                .unwrap()
+                .total,
+            0
+        );
+        assert_eq!(
+            store
+                .headers_page(&archive.id, 0, 10, None, MailSort::Date, true)
+                .unwrap()
+                .total,
+            1
+        );
     }
 
     #[test]
@@ -2786,7 +2922,13 @@ mod tests {
         let (dir, store) = store();
         let root = dir.path().canonicalize().unwrap();
         store
-            .stage_attachment("../../escape", "../../../etc/passwd", "x", "text/plain", b"z")
+            .stage_attachment(
+                "../../escape",
+                "../../../etc/passwd",
+                "x",
+                "text/plain",
+                b"z",
+            )
             .unwrap();
         for entry in walk(&root) {
             assert!(
@@ -2826,14 +2968,26 @@ mod tests {
         store.upsert_header(&h).unwrap();
         let blob = store.put_blob(b"body bytes").unwrap();
         store
-            .cache_body(&h.id, 1, Some("<p>x</p>"), None, "[]", 0, false, Some(&blob))
+            .cache_body(
+                &h.id,
+                1,
+                Some("<p>x</p>"),
+                None,
+                "[]",
+                0,
+                false,
+                Some(&blob),
+            )
             .unwrap();
 
         store.clear_cached_mail().unwrap();
         assert!(store.cached_body(&h.id, 1).unwrap().is_none());
         assert!(store.get_blob(&blob).is_err(), "blobs are gone");
         assert_eq!(
-            store.headers_page(&f.id, 0, 10, None, MailSort::Date, true).unwrap().total,
+            store
+                .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+                .unwrap()
+                .total,
             1,
             "the header index survives"
         );
@@ -2856,7 +3010,13 @@ mod tests {
         store.delete_account_mail("a1").unwrap();
         assert!(store.folders("a1").unwrap().is_empty());
         assert_eq!(store.folders("a2").unwrap().len(), 1);
-        assert_eq!(store.headers_page(&b.id, 0, 10, None, MailSort::Date, true).unwrap().total, 1);
+        assert_eq!(
+            store
+                .headers_page(&b.id, 0, 10, None, MailSort::Date, true)
+                .unwrap()
+                .total,
+            1
+        );
     }
 
     #[test]
@@ -2902,7 +3062,9 @@ mod tests {
         // Re-marking as the other value replaces rather than accumulates: a
         // message is Important *or* Urgent, never both, or the two lists would
         // both claim it and neither would be a priority.
-        store.set_priority(&id, Some(MailPriority::Important)).unwrap();
+        store
+            .set_priority(&id, Some(MailPriority::Important))
+            .unwrap();
         assert_eq!(
             store.header(&id).unwrap().unwrap().priority,
             Some(MailPriority::Important)
@@ -3113,7 +3275,9 @@ mod tests {
         store
             .set_priority(&format!("{}#1", b.id), Some(MailPriority::Urgent))
             .unwrap();
-        store.set_flag(&format!("{}#1", a.id), MailFlag::Seen, true).unwrap();
+        store
+            .set_flag(&format!("{}#1", a.id), MailFlag::Seen, true)
+            .unwrap();
 
         let c = store.priority_counts().unwrap();
         assert_eq!((c.important, c.urgent), (1, 1));
@@ -3182,7 +3346,9 @@ mod tests {
             .upsert_header(&header(&a, 1, "x", "2026-07-01T09:00:00Z"))
             .unwrap();
         let id = format!("{}#1", a.id);
-        assert!(store.set_priority(&id, Some(MailPriority::Important)).unwrap());
+        assert!(store
+            .set_priority(&id, Some(MailPriority::Important))
+            .unwrap());
         assert_eq!(
             store.header(&id).unwrap().unwrap().priority,
             Some(MailPriority::Important)
@@ -3221,7 +3387,12 @@ mod tests {
             use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
             h.update(path.as_bytes());
-            let short: String = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
+            let short: String = h
+                .finalize()
+                .iter()
+                .take(8)
+                .map(|b| format!("{b:02x}"))
+                .collect();
             MailFolder {
                 id: format!("{account}-{short}"),
                 account_id: account.into(),
@@ -3262,7 +3433,16 @@ mod tests {
             assert_eq!(store.attachment(&h.id, "3").unwrap().unwrap().0, meta);
 
             store
-                .cache_body(&h.id, 1, Some("<p>hi</p>"), Some("hi"), "[]", 0, false, None)
+                .cache_body(
+                    &h.id,
+                    1,
+                    Some("<p>hi</p>"),
+                    Some("hi"),
+                    "[]",
+                    0,
+                    false,
+                    None,
+                )
                 .unwrap();
             let body = store.cached_body(&h.id, 1).unwrap().unwrap();
             assert_eq!(body.0.as_deref(), Some("<p>hi</p>"));
@@ -3297,7 +3477,16 @@ mod tests {
                 h.preview = "the following roles are at risk".into();
                 store.upsert_header(&h).unwrap();
                 store
-                    .cache_body(&h.id, 1, None, Some("body of the message"), "[]", 0, false, None)
+                    .cache_body(
+                        &h.id,
+                        1,
+                        None,
+                        Some("body of the message"),
+                        "[]",
+                        0,
+                        false,
+                        None,
+                    )
                     .unwrap();
                 let blob = store.put_blob(b"attachment plaintext").unwrap();
                 store
@@ -3373,7 +3562,10 @@ mod tests {
             }
             let db = std::fs::read(dir.path().join("mail.db")).unwrap();
             assert!(contains(&db, f.id.as_bytes()), "folder ids are cleartext");
-            assert!(contains(&db, b"2026-07-01T09:00:00Z"), "dates are cleartext");
+            assert!(
+                contains(&db, b"2026-07-01T09:00:00Z"),
+                "dates are cleartext"
+            );
             assert!(!contains(&db, b"secret"), "content is not");
         }
 
@@ -3447,7 +3639,11 @@ mod tests {
             let all = store.folders("a1").unwrap();
             assert_eq!(all.len(), 3, "the keyed UNIQUE must still deduplicate");
             let paths: Vec<&str> = all.iter().map(|f| f.path.as_str()).collect();
-            assert_eq!(paths, vec!["Archive", "INBOX", "Sent"], "sorted by the readable path");
+            assert_eq!(
+                paths,
+                vec!["Archive", "INBOX", "Sent"],
+                "sorted by the readable path"
+            );
             assert_eq!(all[1].unread, 4);
         }
 
@@ -3468,10 +3664,15 @@ mod tests {
                 .unwrap();
             assert_eq!(hits.total, 1, "case-insensitive, like the LIKE it replaces");
             assert_eq!(hits.items[0].subject, "invoice 42");
-            assert!(hits.scanned.is_none(), "the whole folder fit inside the bound");
+            assert!(
+                hits.scanned.is_none(),
+                "the whole folder fit inside the bound"
+            );
 
             // No query: no scan at all, and the count is the real one.
-            let all = store.headers_page(&f.id, 0, 10, None, MailSort::Date, true).unwrap();
+            let all = store
+                .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+                .unwrap();
             assert_eq!(all.total, 2);
             assert_eq!(all.items[0].uid, 2, "still newest first");
 
@@ -3497,7 +3698,12 @@ mod tests {
             store.upsert_folder(&f).unwrap();
             for uid in 1..=20u32 {
                 store
-                    .upsert_header(&header(&f, uid, "needle", &format!("2026-07-{uid:02}T09:00:00Z")))
+                    .upsert_header(&header(
+                        &f,
+                        uid,
+                        "needle",
+                        &format!("2026-07-{uid:02}T09:00:00Z"),
+                    ))
                     .unwrap();
             }
             let full = store
@@ -3522,14 +3728,32 @@ mod tests {
             store.set_priority(&id, Some(MailPriority::Urgent)).unwrap();
 
             let hit = store
-                .priority_page(MailPriority::Urgent, 0, 10, Some("budget"), MailSort::Date, true)
+                .priority_page(
+                    MailPriority::Urgent,
+                    0,
+                    10,
+                    Some("budget"),
+                    MailSort::Date,
+                    true,
+                )
                 .unwrap();
             assert_eq!(hit.total, 1);
             let miss = store
-                .priority_page(MailPriority::Urgent, 0, 10, Some("nothing"), MailSort::Date, true)
+                .priority_page(
+                    MailPriority::Urgent,
+                    0,
+                    10,
+                    Some("nothing"),
+                    MailSort::Date,
+                    true,
+                )
                 .unwrap();
             assert_eq!(miss.total, 0);
-            assert_eq!(store.priority_counts().unwrap().urgent, 1, "counts are cleartext");
+            assert_eq!(
+                store.priority_counts().unwrap().urgent,
+                1,
+                "counts are cleartext"
+            );
         }
 
         // ── Migrating a store that already had plaintext in it ───────────────
@@ -3546,7 +3770,16 @@ mod tests {
                 store.upsert_header(&h).unwrap();
                 blob = store.put_blob(b"attachment plaintext").unwrap();
                 store
-                    .cache_body(&h.id, 1, None, Some("body text"), "[]", 0, false, Some(&blob))
+                    .cache_body(
+                        &h.id,
+                        1,
+                        None,
+                        Some("body text"),
+                        "[]",
+                        0,
+                        false,
+                        Some(&blob),
+                    )
                     .unwrap();
                 store
                     .put_attachment(
@@ -3569,8 +3802,14 @@ mod tests {
 
             let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
             assert_eq!(store.header(&h.id).unwrap().unwrap(), h);
-            assert_eq!(store.folder(&f.id).unwrap().unwrap().path, "INBOX/Personnel");
-            assert_eq!(store.staged_bytes("d1", "s1").unwrap(), b"outgoing plaintext");
+            assert_eq!(
+                store.folder(&f.id).unwrap().unwrap().path,
+                "INBOX/Personnel"
+            );
+            assert_eq!(
+                store.staged_bytes("d1", "s1").unwrap(),
+                b"outgoing plaintext"
+            );
 
             // The blob moved from its bare SHA-256 to its keyed name, and the
             // two columns that referenced it followed. If they had not, the
@@ -3587,7 +3826,12 @@ mod tests {
                     continue;
                 }
                 let bytes = std::fs::read(&path).unwrap();
-                for secret in ["Redundancy list", "body text", "attachment plaintext", "outgoing plaintext"] {
+                for secret in [
+                    "Redundancy list",
+                    "body text",
+                    "attachment plaintext",
+                    "outgoing plaintext",
+                ] {
                     assert!(
                         !contains(&bytes, secret.as_bytes()),
                         "{secret:?} survived the migration in {}",
@@ -3624,8 +3868,14 @@ mod tests {
             }
             let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
             let back = store.header(&h.id).unwrap().unwrap();
-            assert_eq!(back.subject, "half done", "the already-sealed value was not double-sealed");
-            assert_eq!(back.preview, "left in the clear", "the stragglers were picked up");
+            assert_eq!(
+                back.subject, "half done",
+                "the already-sealed value was not double-sealed"
+            );
+            assert_eq!(
+                back.preview, "left in the clear",
+                "the stragglers were picked up"
+            );
             for path in walk(dir.path()) {
                 if path.is_file() {
                     let bytes = std::fs::read(&path).unwrap();
@@ -3648,7 +3898,10 @@ mod tests {
             let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
             assert_eq!(store.folders("a1").unwrap().len(), 1);
             assert_eq!(
-                store.headers_page(&f.id, 0, 10, None, MailSort::Date, true).unwrap().total,
+                store
+                    .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+                    .unwrap()
+                    .total,
                 1
             );
         }
@@ -3669,7 +3922,10 @@ mod tests {
                 let key: String = conn
                     .query_row("SELECT path_key FROM folders", [], |r| r.get(0))
                     .unwrap();
-                assert_eq!(key, "INBOX/Personnel", "a plain store keys on the value itself");
+                assert_eq!(
+                    key, "INBOX/Personnel",
+                    "a plain store keys on the value itself"
+                );
             }
 
             let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
@@ -3751,7 +4007,8 @@ mod tests {
             let before: String = {
                 let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
                 let conn = store.conn.lock().unwrap();
-                conn.query_row("SELECT path_key FROM folders", [], |r| r.get(0)).unwrap()
+                conn.query_row("SELECT path_key FROM folders", [], |r| r.get(0))
+                    .unwrap()
             };
             let store = MailStore::open_with_keys(dir.path(), Some(keys(2))).unwrap();
             let after: String = store
@@ -3809,12 +4066,21 @@ mod tests {
                 store.upsert_folder(&f).unwrap();
                 let h = header(&f, 1, "in memory only", "2026-07-01T09:00:00Z");
                 store.upsert_header(&h).unwrap();
-                assert_eq!(store.header(&h.id).unwrap().unwrap().subject, "in memory only");
+                assert_eq!(
+                    store.header(&h.id).unwrap().unwrap().subject,
+                    "in memory only"
+                );
                 let blob = store.put_blob(b"payload").unwrap();
                 assert_eq!(store.get_blob(&blob).unwrap(), b"payload");
-                assert!(!scratch.join("mail.db").exists(), "the index never touches disk");
+                assert!(
+                    !scratch.join("mail.db").exists(),
+                    "the index never touches disk"
+                );
             }
-            assert!(!scratch.exists(), "the scratch directory goes with the store");
+            assert!(
+                !scratch.exists(),
+                "the scratch directory goes with the store"
+            );
         }
     }
 }

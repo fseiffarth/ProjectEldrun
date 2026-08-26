@@ -121,7 +121,12 @@ pub fn vm_set_spec(project_id: String, mut spec: VmSpec) -> Result<VmSpec, Strin
         .allow_hosts
         .iter()
         .map(|h| h.trim().trim_end_matches('.').to_ascii_lowercase())
-        .filter(|h| !h.is_empty() && !h.contains('/') && !h.contains(':') && !h.contains(char::is_whitespace))
+        .filter(|h| {
+            !h.is_empty()
+                && !h.contains('/')
+                && !h.contains(':')
+                && !h.contains(char::is_whitespace)
+        })
         .collect();
 
     let list_path = storage::state_dir().join("projects.json");
@@ -245,11 +250,7 @@ fn safe_local_name(name: &str) -> Result<&str, String> {
     Ok(name)
 }
 
-async fn walk_remote_size(
-    sftp: &Sftp,
-    path: &str,
-    depth: u32,
-) -> Result<RemoteTreeSize, String> {
+async fn walk_remote_size(sftp: &Sftp, path: &str, depth: u32) -> Result<RemoteTreeSize, String> {
     if depth > 64 {
         return Err("remote tree too deep".to_string());
     }
@@ -294,12 +295,7 @@ pub async fn remote_download_size(
     }
 }
 
-async fn download_tree(
-    sftp: &Sftp,
-    remote: &str,
-    dest: &Path,
-    depth: u32,
-) -> Result<u64, String> {
+async fn download_tree(sftp: &Sftp, remote: &str, dest: &Path, depth: u32) -> Result<u64, String> {
     if depth > 64 {
         return Err("remote tree too deep".to_string());
     }

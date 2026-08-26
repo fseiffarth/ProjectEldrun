@@ -48,7 +48,9 @@ pub fn remember(key: &str, careful: bool) {
         return;
     }
     let mut guard = CAREFUL_HOSTS.lock().unwrap();
-    guard.get_or_insert_with(HashSet::new).insert(key.to_string());
+    guard
+        .get_or_insert_with(HashSet::new)
+        .insert(key.to_string());
 }
 
 /// Whether a previous probe reported this target as an HPC host. `false` for a

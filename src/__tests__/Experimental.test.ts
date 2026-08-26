@@ -1,7 +1,7 @@
 /**
  * The experimental-flag rule (`lib/experimental.ts`): a flag is a tri-state, and
- * *unset* means "whatever debug mode says". Explicit always wins — in both
- * directions, which is the half that is easy to get wrong.
+ * *unset* means "whatever debug mode says" except for the GPU-sensitive WebGL
+ * renderer, which is explicit opt-in. Explicit always wins — in both directions.
  */
 import { describe, it, expect } from "vitest";
 import { experimentalEnabled, EXPERIMENTAL_FLAGS } from "../lib/experimental";
@@ -21,6 +21,11 @@ describe("experimentalEnabled", () => {
     expect(experimentalEnabled(s({ debug: true }), "agent_mode_toggle")).toBe(true);
   });
 
+  it("keeps the WebGL terminal renderer opt-in even in debug mode", () => {
+    expect(experimentalEnabled(s({ debug: true }), "terminal_webgl")).toBe(false);
+    expect(experimentalEnabled(s({ terminal_webgl: true }), "terminal_webgl")).toBe(true);
+  });
+
   it("lets an explicit value win over debug mode, both ways", () => {
     // Off while in debug mode — "turn this off" must work for the people most
     // likely to hit a broken experiment.
@@ -35,10 +40,10 @@ describe("experimentalEnabled", () => {
     expect(experimentalEnabled(undefined, "agent_mode_toggle")).toBe(false);
   });
 
-  it("applies the same rule to every flag in the list", () => {
+  it("applies the debug default to every non-WebGL flag", () => {
     for (const flag of EXPERIMENTAL_FLAGS) {
       expect(experimentalEnabled(s({}), flag)).toBe(false);
-      expect(experimentalEnabled(s({ debug: true }), flag)).toBe(true);
+      expect(experimentalEnabled(s({ debug: true }), flag)).toBe(flag !== "terminal_webgl");
       expect(experimentalEnabled(s({ debug: true, [flag]: false }), flag)).toBe(false);
     }
   });

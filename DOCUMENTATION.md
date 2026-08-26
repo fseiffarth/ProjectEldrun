@@ -1,13 +1,21 @@
 # ProjectEldrun — Documentation
 
 Eldrun is a Tauri 2 + React + TypeScript desktop workspace for AI-assisted
-development. It keeps a root control terminal, one terminal per active project,
-a bottom project switcher, a right-side file browser, global app launching,
-time tracking, local Ollama model management, and optional KDE/X11 workspace
-integration in one fullscreen window.
+development. It keeps a root control terminal, per-project terminal and agent
+tabs in a tiling layout, a project switcher in the top header, a file panel with
+native viewers, global app launching, time tracking, local Ollama model
+management, and best-effort X11/KDE workspace integration in one fullscreen
+window.
+
+Around that core it has grown surfaces that used to be someone else's
+application: an embedded mail client, a calendar with CalDAV and a to-do board,
+a reader-mode browser, a print manager, an Agent Skills library, TeX workspaces,
+a slide presenter, and a private daily recap. A project can also run somewhere
+else entirely — in a container, on an SSH host or HPC cluster, or in a VM — and
+an opt-in companion PWA reaches its agent tabs from a phone.
 
 This document reflects the code in `src/` and `src-tauri/src/` as of
-2026-06-06.
+2026-08-26.
 
 ## Document Boundaries
 
@@ -35,12 +43,18 @@ desktop state.
 - Local Ollama models appear as Local Agent tab choices when the Ollama server
   exposes installed models. They run through `vibe` with an isolated per-model
   `VIBE_HOME` under `~/.local/share/eldrun/vibe_local/`.
-- The right file panel, default app mappings, tracked external windows, and time
+- The file panel, default app mappings, tracked external windows, and time
   tracking follow the active project.
 - Global app shortcuts are intentionally cross-project. They launch or raise
-  tools such as a browser, mail client, notes app, screenshot tool, or system
-  monitor and keep those windows visible across project switches. They are not
-  owned by a single project.
+  tools such as a browser, password manager, notes app, or screenshot tool and
+  keep those windows visible across project switches. They are not owned by a
+  single project. Roles Eldrun has since grown its own surface for — mail,
+  calendar, file manager, system monitor, print manager — were **retired** from
+  that bar (`RETIRED_GLOBAL_APP_ROLES` in `GlobalAppBar.tsx`) rather than deleted
+  from settings, so a configured command survives if a role ever returns.
+- A project's tabs run in one of four **trust tiers** — local, containerized,
+  remote SSH, or VM — and the tier is a property of the project rather than a
+  different way of working. See *Trust Tiers* under Project Lifecycle.
 
 ## Stack
 
@@ -48,7 +62,7 @@ desktop state.
 |---------|-----------|
 | Window shell | Tauri v2 (`tauri-plugin-dialog`) |
 | Frontend framework | React 18, TypeScript, Vite |
-| Styling | Tailwind CSS + CSS variables (4 themes) |
+| Styling | Tailwind CSS + CSS variables (5 themes, `src/types/index.ts::THEMES`) |
 | Global state | Zustand |
 | Terminal UI | xterm.js (`@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`) |
 | PTY management | `portable-pty` Rust crate |
@@ -57,9 +71,17 @@ desktop state.
 | File/URL opening | `xdg-open` / `opener` crate |
 | Network monitoring | `network-interface` crate + TCP probe |
 | Local model integration | Ollama REST API over localhost TCP + Vibe config files |
-| Drag-to-reorder | `@dnd-kit/core` + `@dnd-kit/sortable` |
+| Drag-to-reorder | hand-rolled pointer events (HTML5 DnD breaks on WebKitGTK; no DnD library) |
 | X11 workspace | `xcb` crate (Linux only) |
 | KDE DBus | `zbus` crate (Linux only) |
+| Companion PWA | separate Vite bundle under `mobile-web/`, built by `npm run build` |
+| Mail | IMAP/SMTP engine + `ammonia` sanitizer; `pgp` (Curve25519 only) for OpenPGP |
+| Mail at-rest encryption | XChaCha20-Poly1305 per value, SQLite index (`services/mail_crypt.rs`) |
+| CalDAV | hand-rolled `PROPFIND`/`REPORT` bodies on `reqwest` + `roxmltree` |
+| Spreadsheets | `calamine` (`.xlsx`/`.xls`/`.xlsm`) |
+| PDF | in-app render + redaction rasterisation; SyncTeX for TeX round-trips |
+| Remote transport | pooled OpenSSH ControlMaster + SFTP (no sshfs/FUSE) |
+| Containers / VMs | Docker (`services/sandbox.rs`), QEMU/KVM (`services/vm.rs`) |
 
 ## Installation
 
@@ -77,17 +99,53 @@ npm install
 ### Launching
 
 ```bash
-./start-eldrun-tauri.sh
+docs/start-eldrun-tauri.sh
 ```
 
-Or for a development hot-reload build:
+Or for a development build:
 
 ```bash
-npm run tauri dev
+npm run tauri:dev
 ```
 
-The desktop launchers are `Eldrun.desktop` for the packaged app and
-`EldrunHotReload.desktop` for the hot-reload dev server.
+`tauri:dev` runs `tauri dev --no-watch` deliberately. Tauri's Rust watcher
+rebuilds *and relaunches the window* on any backend write, taking the user's
+open tabs and live terminals with it; `src/` changes hot-reload into a running
+window either way, while `src-tauri/` changes accumulate until a deliberate
+restart. `npm run tauri:dev:watch` is the opt-in escape hatch, and
+`npm run backend:stale` reports whether the running window is behind the backend
+sources. `scripts/guard-single-instance.sh` (wired into both `pretauri:dev`
+hooks) refuses a second session, including one that would silently attach to an
+orphaned vite on port 1420 and render its stale module graph.
+
+The desktop launchers are `docs/Eldrun.desktop` for the packaged app and
+`docs/EldrunHotReload.desktop` for the hot-reload dev server; both carry a
+`/path/to/projecteldrun/...` placeholder to point at your checkout.
+
+### Staying Current
+
+**Settings → Updates** compares the running version against the project's
+GitHub `/releases/latest`, and — for a release that published an artifact for
+your platform — downloads it and hands it to that platform's own installer.
+
+It is deliberately not the Tauri updater plugin, which expects a signed
+`latest.json` and a CI signing key that this project does not have; it reads
+the same public releases page a user would open by hand. Three properties are
+worth knowing:
+
+- **It only looks when you ask.** The check runs when that screen is opened and
+  at no other time — there is no background poll and no check at launch.
+- **The renderer names nothing.** No command takes a URL or a path: the
+  download re-checks which asset belongs to this platform, and the install acts
+  on what that download staged. Every asset URL is validated against this
+  repository's release-download prefix before it is fetched and again before
+  anything is installed.
+- **Restarting is yours.** On Linux the running `.AppImage` is swapped in place
+  (the previous build is kept beside it as `.old`) and the new one takes effect
+  at your next launch; on Windows the NSIS installer runs and offers to close
+  Eldrun first; on macOS the `.dmg` opens. A copy installed by a package
+  manager — the `.deb`, or a plain `cargo build` binary — is downloaded and
+  then left alone, since installing it is not Eldrun's to do.
 
 ## User Interface
 
@@ -95,33 +153,52 @@ The active layout is a single fullscreen orchestration surface:
 
 ```text
 +------------------------------------------------------------------+
-| status lamp | network icon | clock  tab bar  workspace | controls |
+| clock | project switcher + pills | tab bar | indicators | controls |
 +------------------------------------------------------------------+
 | global cross-project app toolbar (hover-revealed from left edge)  |
 +------------------------------------------------------------------+
 |                                                                  |
-| xterm.js PTY terminal or file browser tab                        | right panel
-|                                                                  | (hover-revealed
-|                                                                  |  from right edge)
-+------------------------------------------------------------------+
-| bottom project switcher (hover-revealed from bottom edge)        |
-+------------------------------------------------------------------+
+| tiling subwindow layout: xterm.js PTY tabs, file viewers,        | file panel
+| and full-surface tabs (mail, calendar, board, browser, print,    | (hover-revealed,
+| skills, monitor)                                                 |  pinnable, and
+|                                                                  |  movable to
++------------------------------------------------------------------+  either edge)
 ```
 
-The two side panels — global app bar (left) and right file panel — appear on
-pointer hover and auto-close after the pointer leaves; the project switcher now
-lives in the top header bar. `Super` hides the panels simultaneously; `F11`
-toggles fullscreen.
+The global app bar (left) and the file panel appear on pointer hover and
+auto-close after the pointer leaves; the file panel can also be pinned open,
+resized, and moved to the left edge. The project switcher lives in the top
+header bar. `Super` hides the panels simultaneously; `F11` toggles fullscreen.
+
+Some surfaces are **overlays over the whole window** rather than tabs — mail
+(`MailOverlay`), the calendar (`CalendarOverlay`), the to-do board
+(`TodoOverlay`), the Skills library (`SkillsOverlay`), and the presenter
+(`PresentationOverlay`) — opened from their header indicator or the `+` menu.
+Mail is the settled example: it was built as a tab *and* an overlay, and the tab
+was retired (`RETIRED_TAB_CMDS`) because the mail store is global, so a
+project-scoped tab could only ever show the same mailbox.
 
 ### Header Bar
 
 `HeaderBar.tsx` spans the full window width and acts as the drag handle. It
 contains:
 
-- Status lamp and network/connection icon.
-- Clock.
-- Tab bar (center, from `TabBar.tsx`).
+- Clock, and a connection icon (`ConnTypeIcon`) that shows LAN vs WiFi and
+  slashes itself when offline.
+- The project switcher and its pills (`ProjectSwitcher.tsx`, rendered in
+  `header-center`).
+- Tab bar (from `TabBar.tsx`).
+- Indicators, each owning its own surface and lifecycle: `MailIndicator` (✉),
+  `CalendarIndicator`, `TodoIndicator`, `MachinesIndicator` (the fleet, with a
+  live CPU/GPU bar per machine), `VpnIndicator` (machine-wide OpenVPN — project
+  UI must not imply the tunnel is project-scoped), `MobileIndicator`,
+  `BatteryIndicator`, `AppResourceDisplay`, and `AppTimerDisplay`.
 - Custom minimize, maximize/restore, and close buttons.
+
+**Online state** comes from the webview's own `navigator.onLine` plus the
+`online`/`offline` events — there is no backend reachability probe. Separately,
+`network_conn_type` is polled (10 s, stretched under the power saver) for the
+LAN/WiFi distinction.
 
 ### Global App Toolbar
 
@@ -129,23 +206,29 @@ contains:
 body. When the pointer enters the strip, the toolbar opens; it closes when the
 pointer leaves.
 
-Supported roles:
+Supported roles (`GLOBAL_APP_ROLES` in `GlobalAppBar.tsx`):
 
 | Role | Key |
 |------|-----|
 | Browser | `browser` |
-| Mail | `mail` |
-| Calendar | `calendar` |
-| Print Manager | `print_manager` |
-| File Manager | `file_manager` |
 | Password Manager | `password_manager` |
 | Video Conferencing | `video_conf` |
 | Media Player | `media_player` |
-| System Monitor | `system_monitor` |
 | Notes | `notes` |
 | Screenshot | `screenshot` |
 | Screen Recorder | `screen_recorder` |
 | Chat | `chat` |
+
+**Retired roles.** `mail`, `calendar`, `file_manager`, `print_manager` and
+`system_monitor` are in `RETIRED_GLOBAL_APP_ROLES`, because Eldrun renders each
+of them itself now. Dropping a role from `GLOBAL_APP_ROLES` alone is not enough:
+an existing `settings.json` (or a seeded platform default) still holds the entry,
+and `orderedGlobalApps` deliberately renders *unknown* roles so a hand-added one
+isn't swallowed — so a retired role would come back as an unnamed "●" button.
+They are filtered rather than deleted from settings, so a role that is re-added
+later still finds its configured command. `GlobalAppRoles.test.ts` pins the two
+lists together: `print_manager` was named as retired in the comment and missing
+from the set, which is exactly the stray button the set exists to prevent.
 
 Toolbar behavior:
 
@@ -162,17 +245,24 @@ Toolbar behavior:
 `CenterPanel.tsx` owns the terminal/file-browser stack and drives tab scoping.
 
 - When a project is activated, `CenterPanel` sets the tab scope to that
-  project's ID and restores its saved `tab_layout` from `project.json`, or
-  opens a default agent tab on an explicit switch.
+  project's ID and restores its saved layout from
+  `<state_dir>/sessions/<project id>/terminals.json`, or opens a default agent
+  tab on an explicit switch.
 - When the root is active, the scope is `"root"` and the root terminal opens in
   `~/eldrun/root/`.
 - `TabBar.tsx` renders tabs with close, rename (double-click), drag-to-reorder,
-  and a `+` menu for adding Claude/Codex/Gemini/Vibe/Shell/Files tabs plus
-  locally installed Ollama models.
+  and a `+` menu for adding agent, shell, and files tabs plus locally installed
+  Ollama models, the workspace-app tabs (browser, print manager, monitor, skills,
+  calendar, board), and any custom agent registered from "＋ Add agent…". The
+  Agents group is searchable, and `compact_tab_agents` decides which built-ins
+  appear before you search. Tab drag is **pointer-based**, not HTML5 DnD, which
+  breaks on WebKitGTK; the engine also skips a terminal `pointerup` for listeners
+  added mid-gesture, so the commit fires from a handler `TabBar` binds at
+  `pointerdown`.
 - The center panel is a tiling layout: dragging a tab onto another subwindow's
   left/right/top/bottom edge splits that direction into a new pane (center drops
   move the tab in), splits resize with draggable dividers, and the whole tree is
-  saved in `project.json` (`tab_layout`/`tab_groups`).
+  saved alongside the tabs in `terminals.json` (`tab_layout` / `tab_groups`).
 - **Detaching subwindows.** A subwindow tab bar exposes a pop-out button
   (`detachGroup`) that calls `detach_subwindow` (`commands/subwindow.rs`). The
   backend opens a borderless Tauri `WebviewWindow` rendering the same bundle under
@@ -185,18 +275,24 @@ Toolbar behavior:
   (WM/title-bar close) instead emits `detached-close`: the main window kills its
   tabs' PTYs, drops their payloads, and persists, so those tabs do NOT dock back
   and do NOT restore on next launch. Dock-back is session-only — a re-docked group
-  restores as docked on restart; only the main window persists `project.json`.
+  restores as docked on restart; only the main window is the persistence owner.
+  `attachOnly` never spawns a PTY, so the main window keeps owning the process.
 - Each tab with kind `"agent"` or `"shell"` renders a `TerminalView` backed by
   a PTY. Tabs with kind `"local_agent"` also render a PTY, using `vibe` with a
   per-model local Ollama configuration. Tabs with kind `"files"` render a
-  `FileBrowser`.
-- Tab layout is auto-saved to `project.json["tab_layout"]` whenever tabs change.
-- If no tabs exist for the active scope, the stack shows an empty placeholder.
+  `FileBrowser`. Viewer tabs (`kind: "files"` with a `viewer`) render the native
+  viewer for their file type; full-surface tabs render a workspace app.
+- Tab layout is auto-saved to the session file whenever tabs change.
+- If no tabs exist for the active scope, the stack shows an empty Subwindow with
+  a `+`.
 - A project-switch toast notification appears briefly after switching projects.
-- An offline banner appears over the center when the network probe reports offline.
+- An offline banner appears over the center when the webview reports offline.
 
 `TerminalView.tsx`:
-- Creates an xterm.js `Terminal` instance with the `FitAddon` and `WebLinksAddon`.
+- Creates an xterm.js `Terminal` instance with the fit, web-links, and
+  canvas/webgl addons (WebGL behind `terminal_webgl`). An open-watchdog guards
+  the case where xterm never `open()`s — on Windows, WebView2 can drop the
+  ResizeObserver callback, which showed up as a black, dead agent tab.
 - On mount, invokes `spawn_pty` on the backend; backend emits
   `pty-output-<key>` events which the frontend writes to the terminal.
 - Resize events call `resize_pty`; keyboard input calls `write_pty`.
@@ -204,19 +300,40 @@ Toolbar behavior:
 
 ### Right File Panel
 
-`RightPanel.tsx` is a hover-revealed overlay on the right edge.
+`RightPanel.tsx` is a hover-revealed overlay on either vertical edge — it can be
+pinned open, resized by dragging, and moved to the left edge. It and the Files
+(Project) tab share one component, `ProjectFilesView.tsx`, so viewer features
+cannot drift between the two surfaces: `ProjectFilesPane` owns tree/sort/source
+mechanics, and hosts own only identity, active state, browsed folder, and chrome
+slots.
 
-The panel has two views toggled by buttons in its header:
+Views, switched from the header toolbar:
 
-1. **Files** — renders `FileTree.tsx`: a recursive project file tree. Features:
-   - Toggle hidden files.
-   - Double-click to expand/collapse folders.
-   - File opens via per-project defaults → global defaults → system MIME →
-     `xdg-open` fallback; tracked via `open_file`.
-   - Context menu: open, open with, new file, new folder, copy path, reveal in
-     file manager, rename, delete, properties.
-2. **Windows** — lists tracked external windows from `windows.ts` store. Each
-   entry shows the app name and allows un-tracking.
+1. **Files** — a recursive project file tree. Hidden-file section, double-click
+   expand/collapse, per-file git status markers (modified, untracked, staged,
+   committed-but-unpushed, ignored), drag a file onto a subwindow's tab bar to
+   open it in a viewer, and a context menu (open, open with, new file, new
+   folder, copy path, reveal, rename, delete, properties). File opens resolve
+   per-project defaults → global defaults → system MIME → `xdg-open`, tracked via
+   `open_file`.
+2. **Git** — current branch, clickable branch pills for checkout, and a commit
+   list whose entries open an editable commit-message window (amend HEAD,
+   agent-generated messages, or checkout).
+3. **Search** — project-wide file-name and literal content search; a hit jumps
+   straight into the in-app viewer.
+4. **Apps** — tracked external windows from the `windows.ts` store, each with
+   un-tracking.
+5. **± (sync)** — for remote projects, the pending-change view with direction,
+   per-path upload/download offers, and never-synced (`localnew`) files.
+6. **Sessions / jobs / import** — tmux sessions across connected machines, SLURM
+   jobs, and import actions, shown when the project has them.
+
+Work in a hidden pane is gated through `PaneVisibleContext` and caught up on
+show. Mtime polls, animation loops, and terminal streaming all cost real time
+while invisible, and on a remote project each poll is an SFTP round trip.
+Remote/SFTP/git probes are additionally gated on the SSH session being
+connected: a synchronous Tauri command against a dead session freezes the
+window.
 
 The panel is only rendered when a project is active and panels are not hidden.
 
@@ -230,11 +347,17 @@ Contents:
 - **Root button** — switches to the root terminal.
 - **Search bar** — filters registered projects by name or path; `Enter`
   activates a unique match, `Escape` clears the search.
-- **Project pills** — one per active/current project, drag-to-reorder via
-  `@dnd-kit/sortable`. Hovering a pill shows a tooltip with the project path,
-  status, and today's active time (from `get_time_today`). Clicking switches to
-  the project; the × button closes it. The pill's menu also exposes **Publish to
-  GitHub / GitLab** (see below).
+- **Project pills** — one per active/current project, drag-to-reorder with
+  pointer events (`stores/pillDrag.ts`, `PILL_DRAG_TYPE`); HTML5 drag-and-drop is
+  not used anywhere in Eldrun because it breaks on WebKitGTK. Hovering a pill
+  shows the project path, status, today's active time (`get_time_today`), and
+  live CPU%; a running-task indicator spins on pills with live terminal output,
+  including backgrounded projects. Clicking switches to the project; the × button
+  closes it. The pill's menu exposes the container toggle, remote actions, and
+  **Publish to GitHub / GitLab** (see below).
+- **The Trash pill** — the permanent disposable-agent workspace
+  (`trash-project-pill`, `lib/trashProject.ts`). It renders without the ordinary
+  pill affordances and cannot be closed or archived.
 - **Box pills** — `BoxPill.tsx` renders a project box as a single project-style
   pill (`.project-pill.is-box`) with a member-count badge. Dropping a project
   pill onto a box (same `PILL_DRAG_TYPE` as pill reorder) assigns it to the box;
@@ -242,8 +365,8 @@ Contents:
   clicking the pill opens the box scope; right-click exposes Open / Rename /
   Delete. See **Project Boxes** under Project Lifecycle.
 - **Settings gear** — opens the settings dialog.
-- **+ button** — opens an add-project menu with "New project" and "Import
-  project" sub-options.
+- **+ button** — opens an add-project menu: "New project", "Import project",
+  and the remote/VM variants.
 
 **Publish to GitHub / GitLab.** `publishProject` (`stores/projects.ts`) invokes
 `publish_project` (`commands/git_publish.rs`) with a `provider` (`github` /
@@ -261,10 +384,180 @@ returns the CLI's stdout (the repo URL). Requires the chosen provider's CLI (`gh
 or `glab`) installed and authenticated, or a token under Settings → Git hosting
 (locally, or on the remote host for remote projects).
 
-Settings dialog covers: default agent command, theme (Dark/Bright/Fancy
-Dark/Fancy Bright), workspace management toggle, global app role visibility and
-commands, global file-extension defaults, and Ollama model management when the
-`ollama` binary is installed.
+Settings dialog (`SettingsPanel.tsx` + `SettingsSubPanels.tsx`) covers the main
+page — default agent command, theme, workspace management, experimental flags,
+the daily-recap toggle, and the Eldrun Mobile opt-in (`MobileSettings`) — plus
+these sub-panels: **Global apps** (role visibility and commands), **File types**
+(per-type viewer behaviour, autocomplete and grammar defaults, autosave),
+**Ollama** (model management, when the binary is installed), **Agents**,
+**Shortcuts**, **Git hosting** (provider tokens), **VPN auto-connect**, **Remote
+hosts**, **Archived projects**, **Scaffold repair**, and **Help**.
+
+Themes are `THEMES` in `src/types/index.ts` — Fancy Dark (the default), Plain
+Dark, Plain Light, Fancy Light, and Light Lavender.
+
+**Experimental flags** (`src/lib/experimental.ts`) gate surfaces that are not
+finished: `mail_client`, `web_browser`, `deck_presenter`, `python_run_debug`,
+`agent_mode_toggle`, and `terminal_webgl`. An unset flag falls back to
+`settings.debug`, so everything is on in a development build and off in a
+release one — except `terminal_webgl`, which stays opt-in because WebGL can fall
+back to software rendering while DMABUF is disabled, making a visible terminal
+slower rather than faster. `EXPERIMENTAL_TAB_KINDS` marks the flags that own a
+tab end to end and whose "off" closes something already open; the live sweep and
+the restore filter both do nothing until settings have actually loaded, because
+unknown must not read as off.
+
+### Eldrun Mobile
+
+Eldrun Mobile provides tailnet-only access to explicitly opted-in local project
+sessions. The independently installed `eldrun-mobile-host` binds to loopback;
+an existing, non-Funnel Tailscale Serve HTTPS root handler must be verified as
+an exact proxy to that port before Eldrun saves or starts it. Each browser pairs
+with a short-lived code and a device-held P-256 key and can be revoked
+individually.
+
+Only persistent local shells and resumable configured agents are discoverable.
+The sidecar derives opaque browser ids from trusted Eldrun state and revalidates
+the project, tab, tmux session, device session, and canonical project directory
+throughout an attachment. Mobile creation goes through the running desktop and
+accepts only a typed shell or cataloged resumable-agent request; it does not
+accept paths, commands, argv, or tmux names. See
+`docs/eldrun_mobile_agent_plan.md` for the protocol and acceptance matrix.
+
+### Workspace Apps
+
+Each of these replaced a global-app role, on the same reasoning: what sits
+behind the button is a list and a handful of verbs, and Eldrun can render a
+list. Where a link still needs an app, `src/lib/linkTarget.ts::routeUri` decides
+— it opens the in-app surface when its flag is on and falls back to
+`launch_app` for the configured external app when it is not.
+
+| Surface | Frontend | Backend | Notes |
+|---------|----------|---------|-------|
+| Mail | `components/mail/`, `stores/mail.ts` | `commands/mail.rs`, `services/mail_{engine,store,crypt,crypto,pgp,sanitize,filters,authres,ai}.rs` | IMAP/SMTP. Behind `mail_client`. |
+| Calendar | `components/calendar/`, `stores/calendar.ts` | `commands/calendar.rs`, `commands/caldav.rs`, `services/caldav.rs` | Month / time-grid / agenda, alarms, `.ics` import+export, CalDAV accounts. |
+| To-do board | `components/todo/`, `stores/todo.ts` | shares `calendar.json` | Cards **are** calendar tasks — one store, not a second one. |
+| Browser | `components/browser/`, `stores/browser.ts` | `commands/browser.rs`, `services/browser_engine.rs`, `services/web_safety.rs` | Reader mode, no scripts. Behind `web_browser`. |
+| Print manager | `components/printing/PrintManagerPane.tsx` | `commands/printing.rs` | CUPS on Linux/macOS, PowerShell on Windows. |
+| Skills library | `components/skills/`, `stores/skills.ts` | `commands/skills.rs`, `services/skills.rs` | Claude-only; no manifest or versioning by design. |
+| Deck presenter | `components/embed/deck/`, `lib/viewers/deck/` | `commands/presenter.rs` | Behind `deck_presenter`. |
+| Daily recap | `components/stats/` | `commands/usage_stats.rs`, `services/usage_stats.rs` | Local-only counters. |
+| System monitor | `components/monitoring/` | `commands/monitor.rs`, `gpustat.rs`, `sysstat.rs` | Local and remote hosts through the same parsers. |
+
+**Mail encryption is two independent tracks that share a prefix.**
+`services/mail_crypt.rs` seals the **local store**; `services/mail_crypto.rs` +
+`mail_pgp.rs` handle what the **sender** did before the message left their
+machine. They are sequenced, not merely ordered — the end-to-end track holds
+private keys and caches nothing, so putting either into a plaintext store would
+make the store key cryptographically equivalent to the mail key. `PgpKeyring::open`
+takes `MailKeys` and there is no constructor that does not: the coupling is
+enforced by the type.
+
+- **At rest.** Every *value* is an envelope before SQLite sees it, so the WAL and
+  the freelist can only ever hold ciphertext. XChaCha20-Poly1305 with a random
+  192-bit nonce (AES-GCM's 96-bit nonce would need a counter that must survive a
+  crash *and* a restore-from-backup — that is how reuse happens in the field),
+  and every ciphertext is bound to its row by AAD, so an attacker with disk write
+  access cannot relocate message A's sealed body onto message B's row. A sealed
+  column cannot carry a `UNIQUE`, so schema v2 moves that constraint onto a keyed
+  digest sitting in cleartext beside the sealed value. Search cannot use `LIKE`;
+  it is a bounded decrypt-on-scan that reports how far it got, because a
+  truncated answer that looks complete is the one thing a search must never
+  produce. An unreachable key **degrades** to an ephemeral in-memory store rather
+  than locking the mailbox — a locked Secret Service collection reads identically
+  to "nothing saved" and can block forever.
+- **End to end.** The ordering `decrypt → parse → sanitize → render` is
+  non-negotiable: decryption confers no trust, and a decrypted body may have been
+  encrypted *to* the victim by the attacker. Decrypted plaintext is never written
+  to disk. Curve25519 only, deliberately — `pgp`'s unconditional `rsa` dependency
+  carries an unpatched timing oracle (RUSTSEC-2023-0071).
+
+**CalDAV** is hand-rolled on `reqwest` + `roxmltree` rather than a crate (the
+Rust landscape is unmaintained or WebDAV-generic, and a `PROPFIND` body is a
+five-line template). A sync **merges by resource URL** instead of replacing, so a
+local edit is never silently dropped; an HTML login page fails loudly rather than
+importing zero events.
+
+### Native Viewers
+
+Dragging a file from the tree onto a subwindow's tab bar opens it in a tab; the
+viewer is chosen by extension (`lib/viewers/`, `components/embed/`). Text, YAML/
+JSON, BibTeX, and HTML/SVG viewers are **text-preserving views** — they edit the
+file's own bytes, so comments, delimiters, quoting, and line endings survive, and
+they withhold the affordance rather than mangle a construct they cannot rewrite
+safely. The full list, with per-viewer behaviour, is in `README.md`.
+
+Three that carry design decisions worth recording here:
+
+- **TeX** opens as a *single workspace tab per document* (deduped on
+  `resolve_tex_root`): a left sidebar of the main file's `\input` children and
+  graphics switches the center in-tab, and the compiled PDF is its **own** tab
+  tied to the source path, popout-aware through `FileDropContext.openTab`.
+  SyncTeX drives both directions across tiled or detached panes.
+- **PDF redaction** rasterises the pages you marked on save, so covered text is
+  gone from the file rather than hidden under a shape that any copy, extract, or
+  annotation-delete would lift. Only marked pages are flattened.
+- **Markdown** renders fenced `mermaid` code blocks and `$…$`/`$$…$$` math; KaTeX runs
+  with `trust: false` and mermaid script-free.
+
+Viewer state — editor/PDF scroll position, PDF/image zoom, image pan — persists
+per tab. Editable text/LaTeX/Markdown viewers carry opt-in, entirely local Ollama
+**autocomplete** (`Ctrl+Space`) and **grammar check**, both off by default with a
+per-tab header toggle; if Ollama is not running they fail silently, and nothing
+is ever sent off the machine.
+
+### Lessons, Tour, and i18n
+
+`src/lib/tour.ts` drives a first-run tour and `src/lib/lessons.ts` holds ~30
+step-by-step lessons that anchor onto real UI elements (`data-hint-anchor`),
+hosted by `TourHost.tsx` / `HintHost.tsx` and listed in `LessonsMenu.tsx`.
+
+Every user-facing string goes through `src/lib/i18n.ts` (`useT()`) — the one
+place every language lives. English is the source of truth and holds every key;
+`de`, `es`, `fr`, and `it` fall back to it. Display text is never hardcoded.
+
+New or not-yet-live-verified features carry an `UntestedTag` pill in the UI,
+removed per item only once the user says that item is tested.
+
+### Fast Mode
+
+**Settings → Fast mode** (default off) withdraws the display aids whose cost is
+a directory walk, a standing poll, or a read of every file in view. What it
+turns off:
+
+- **Folder sizes in the file tree**, and the group totals summed from them —
+  one recursive walk per visible folder, which on a remote project is a `du`
+  over SSH.
+- **The git-dirty dots on the project pills** — a `git status` per local
+  project every 12 seconds, including projects you are not in.
+- **The hover cards** on a project pill and on a tab; both fall back to a plain
+  tooltip.
+- **The CPU/RAM/GPU readout** in the header.
+- **The Python ▶ button's check** for a `__main__` guard, which means reading
+  every `.py` in view — a round trip per file on a remote listing. Files already
+  answered keep their ▶: it stops the scanning, not the answers.
+- **The file tree's periodic remote re-stat**, the 15-second refresh behind the
+  sync markers. They still catch up when the window regains focus and on every
+  explicit re-list.
+- **Animations and transitions** throughout the interface.
+
+Three properties hold for everything on that list, and are the rule for
+anything added to it: it costs work nobody asked for, its absence is *legible*
+(the number is simply not there — no spinner and no `…` that never resolves),
+and nothing is lost but the aid. No file goes unlisted, no edit unsaved, no
+lamp wrong. Fast mode may make Eldrun say less; it never makes it say something
+untrue.
+
+It is a separate switch from **Energy Saver**, and the two compose. Energy saver
+widens background timers and pauses idle animation off a live battery reading;
+fast mode removes features off a standing preference — "plugged in, still want
+it lean" is the case one merged control could not express. Everything is
+reactive: turning fast mode off brings every surface back in place, with no
+restart.
+
+The withdrawals are all in the interface. The backend loops that keep two trees
+in step — byte-sync, git lockstep, the usage watcher — are untouched, since
+skipping those would not be withdrawing an aid but declining to do the work.
 
 ### Ollama Model Management
 
@@ -306,9 +599,17 @@ keeps global `~/.vibe/config.toml` untouched.
 | Key | Behavior |
 |-----|----------|
 | `F11` | Toggle fullscreen. |
-| `Super` | Toggle all panels (right, bottom, global app bar). |
+| `Super` | Toggle all panels (file panel, switcher, global app bar). Only while Eldrun is focused. |
 | `Escape` | Close dialogs. |
 | `Enter` | Confirm create/import dialogs; activate a unique search result. |
+
+Beyond these, a **rebindable** set lives in `src/lib/shortcuts.ts` and is edited
+in Settings → Shortcuts, persisted as `settings.keyboard_shortcuts` overrides:
+toggle subwindow fullscreen, cycle to the next project, previous/next tab in a
+subwindow, cycle the focused subwindow up/down, cycle tabs, hide the focused
+subwindow, toggle its file viewer, close the focused subwindow, close the active
+tab, and close all tabs in a project. On macOS the Meta key is reserved for Cmd
+shortcuts, so the chord labels differ there.
 
 ## Project Lifecycle
 
@@ -354,15 +655,29 @@ New and imported projects receive these files when missing:
 
 | File | Purpose |
 |------|---------|
-| `AGENTS.md` | Agent instructions, scope, and permission boundary. |
-| `CLAUDE.md` | Claude Code context: paths, conventions, project notes. |
-| `GEMINI.md` | Gemini CLI context: paths, conventions, project notes. |
+| `AGENTS.md` | Canonical agent instructions — the single source of truth; links every sibling agent doc. |
+| `CLAUDE.md` | Claude Code pointer: `@AGENTS.md` import plus Claude-specific overrides. |
+| `GEMINI.md` | Gemini CLI pointer: `@AGENTS.md` import plus Gemini-specific overrides. |
 | `.claude/settings.json` | Claude permission allow/deny rules scoped to the project. |
 | `.gitignore` | Common ignores for Python, Node, macOS, logs, and build output. |
 | `TODO.md` | Concrete task backlog with grouped IDs. |
 | `ROADMAP.md` | High-level project direction and sequencing. |
 | `STATUS.md` | Current-state and validation snapshot. |
+| `README.md` | Project overview. |
 | `DOCUMENTATION.md` | Architecture, behavior, and persistence notes. |
+
+`AGENTS.md` carries the actual template; `CLAUDE.md` and `GEMINI.md` are
+pointers that `@AGENTS.md`-import it (real import syntax in both CLIs, so the
+text is loaded rather than merely referenced) and link the sibling agent files.
+Writing guidance in one file is the point — three interchangeable stubs meant it
+got written three times, or into whichever file that day's agent happened to
+read.
+
+A **scaffold repair** (Settings → Scaffold repair) additionally upgrades an agent
+doc still byte-identical to its old pre-`AGENTS.md` stub, or empty — provably
+untouched text — and reports it as `updated_files`. Anything a user or agent
+wrote is left alone, and `project_scaffold_missing` counts a legacy stub as
+missing so the pill's tag agrees with what a repair would actually do.
 
 The root terminal also gets context files in `~/eldrun/root/`:
 `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`.
@@ -399,65 +714,158 @@ A *box* groups related projects and appears as its own pill in the switcher
   shell tab. Box scopes are **not** persisted or restored — they are dropped on
   project switch / restart (full box activation is a follow-on).
 
+### Trust Tiers
+
+A project's shells and agents run in one of four tiers. The tier is a property of
+the project; nothing else about working in it changes.
+
+| Tier | Where tabs run | Files | Chosen |
+|------|----------------|-------|--------|
+| Local | host, in the project dir | host | default |
+| Containerized | one session-lived `eldrun-<id>` Docker container | host (bind-mounted at the *identical* absolute path) | pill toggle |
+| Remote SSH | the host, over `ssh -tt` on a pooled ControlMaster | the host, over SFTP | at creation, or by *extending* a local project |
+| VM | a QEMU/KVM guest, over SSH on a forwarded loopback port | guest only — **no shared filesystem** | at creation only |
+
+- **Containers** (`services/sandbox.rs`). Every shell/agent tab `docker exec`s
+  into ONE capability-dropped container; `local_agent` tabs stay on the host. The
+  identical-path bind mount is what makes it a *toggle*: the file tree, git,
+  viewers, and the usage watcher keep reading host bytes, and agent resume keeps
+  working from the `cwd` recorded inside a transcript. Local-only, hidden or
+  refused on unsupported platforms; closing a tab reaps in-container processes
+  through the wrapper/pidfile mechanism.
+- **VM projects** (`services/vm.rs`, `vm_proxy.rs`). A VM project *is* a remote
+  project: the guest boots, exposes SSH on a forwarded loopback port, and is from
+  then on an ordinary `RemoteSpec { host: "127.0.0.1", port, vm: true }`.
+  Mirrorless, locality pinned, with a CONNECT-proxy egress switch. Implemented;
+  never live-booted.
+- **The Trash workspace** (`commands/projects.rs::ensure_trash_project`). A
+  permanent built-in project pill for disposable agents. It is created or
+  repaired before *every* project-list save and at startup, so ordinary project
+  operations cannot deactivate, archive, or weaken it, and `remove_all_owned`
+  spares it. Its sandbox spec is `SandboxScope::All` — every PTY is contained,
+  not just recognised agent CLIs — as defence in depth, so a stale shell tab in
+  it can never become a host escape.
+
+**Agent authority** has three axes that compose: the project container sandbox
+(OS containment), the tab's `location` (local / primary host / `host:<id>`
+worker), and — behind `agent_mode_toggle` — its `agentMode`, **Plan** or
+**Auto** (Claude `--permission-mode plan`/`acceptEdits`, Gemini
+`--approval-mode plan`/`auto_edit`). The mode is a *launch flag*, so flipping it
+rewrites the tab's `args` and respawns the PTY; that is non-destructive only
+because the tab resumes its conversation, which is why
+`components/tabs/agentModes.ts` admits an agent only if it has both an absolute
+mode flag and a working resume path. Args are never persisted as the source of
+truth — they are rebuilt from layout state.
+
+### Remote, Sync, and Multi-Host
+
+Remote projects are **mount-free**: no sshfs, no FUSE. Tabs run on the host over
+`ssh -tt`, files go over SFTP, git runs on the host, all through pooled
+ControlMaster/SFTP sessions in `services::remote` — the source of truth for
+host-aware resolution. Remoteness is **explicit**: use `remote_target_for{,_dir}`
+and the host-aware variants, never inferred from path conventions.
+
+- **Workers.** A project's `remote` is the primary host; extra `compute_hosts`
+  are workers, each with its own pool entry, lamp, and tab locality (`host:<id>`).
+  `services::worker_sync` is push-only, tracked-files-only code fan-out via git
+  bundle/reset — never `git clean`, never the bidirectional divergence path.
+  Shared-filesystem workers (the default in the add-machine UI) see the primary
+  folder at their own `remote_path`: no git init/reset/fan-out, tabs just `cd`.
+- **Two transports, split by git.** `services::git_peer` owns **lockstep**, which
+  moves git-tracked commits and refs semantically via bundles over SFTP — never
+  `.git` bytes. **Byte-sync** owns everything else and moves raw bytes. The
+  `drop_tracked` split is what keeps the two from racing for one file. With
+  lockstep on, a saved edit to a tracked file reaches the peer only after it is
+  committed; that is the design, not a bug to fix back into continuous mirroring.
+  Byte-sync is opt-in per path from an explicit manifest and does **not** read
+  `.gitignore`, so a pull is previewed and confirmed before it drags a big host
+  tree down.
+- **Losses survive a relaunch.** Local-loss warnings are file-backed, not events:
+  destructive background git or sync moves record through `services::local_loss`.
+- **Credentials.** Passwords are never persisted by default; the opt-in save
+  keys them by host/config target, not project id, so a blank password can mean
+  "use the saved credential". Unix password auth runs through an OpenSSH
+  `SSH_ASKPASS` shim rather than `sshpass` (Windows still uses `sshpass`).
+- **Silence is a precondition.** Remote and VPN auto-connect must never prompt —
+  the silent-connect predicates are checked first. Never elevate for a connect
+  that cannot succeed silently: `pkexec` prompts *before* OpenVPN validates its
+  config or credentials.
+- **HPC.** `hpc_hosts` is user-set and gates *background behaviour* (scans, sync
+  and lockstep loops, auto-connect, login-node runs); `careful_hosts` gates how
+  much is read. The tag outranks careful mode. SLURM (`commands/slurm.rs`) and
+  `hpc-workspace` allocation (`commands/hpc_ws.rs`) are driven from the app;
+  nothing is site-specific — the host is asked what it offers.
+
 ## Architecture
+
+The tree below lists only load-bearing entries; the directory listing is the
+source of truth. `src/CLAUDE.md` and `src-tauri/CLAUDE.md` are the maintained
+file maps.
 
 ```text
 Tauri v2 Application
 +-- Rust backend (src-tauri/src/)
-|   +-- commands/         Tauri command handlers
+|   +-- commands/         Tauri command handlers (~55 modules)
 |   |   +-- terminal.rs   PTY lifecycle, spawn/resize/kill/write
-|   |   +-- projects.rs   Project CRUD, scaffold, file tree, stats
-|   |   +-- settings.rs   Settings load/save
-|   |   +-- workspace.rs  Workspace backend dispatch
-|   |   +-- apps.rs       Launch helpers, role mapping, icon resolution
-|   |   +-- default_apps.rs  File-extension app mapping
-|   |   +-- downloads.rs  ~/eldrun/downloads symlink + browser prefs
-|   |   +-- ollama.rs     Local model discovery, management, and Vibe config
+|   |   +-- projects.rs   Project CRUD, scaffold + repair, Trash project, file tree
+|   |   +-- fs.rs         Host-aware file read/write (local + SFTP paths)
+|   |   +-- git.rs / git_peer.rs / git_publish.rs / git_fork.rs
+|   |   +-- ssh.rs / remote.rs / sync.rs / vm.rs   Remote tiers and transports
+|   |   +-- slurm.rs / hpc_ws.rs                   Cluster jobs and workspaces
+|   |   +-- mail.rs / calendar.rs / caldav.rs / browser.rs / printing.rs
+|   |   +-- tex.rs / synctex.rs / presenter.rs / sqlite.rs / sheets.rs
+|   |   +-- skills.rs / agents.rs / ollama.rs / monitor.rs / usage_stats.rs
+|   |   +-- mobile_control.rs  Eldrun Mobile sidecar commands
+|   |   +-- apps.rs / default_apps.rs / workspace.rs / subwindow.rs
+|   +-- services/         Reusable runtime logic, AppHandle-free where that
+|   |                     is the established boundary (~45 modules)
+|   |   +-- remote.rs     ControlMaster/SFTP pool — host-aware resolution
+|   |   +-- git_peer.rs   Git lockstep (bundles, never .git bytes)
+|   |   +-- worker_sync.rs  Push-only, tracked-files-only worker fan-out
+|   |   +-- sandbox.rs    Docker project containers
+|   |   +-- vm.rs / vm_proxy.rs   QEMU/KVM guests and egress proxy
+|   |   +-- mail_*.rs     Engine, store, at-rest crypt, OpenPGP, sanitizer, AI
+|   |   +-- caldav.rs / openvpn.rs / skills.rs / usage_stats.rs
+|   |   +-- agent_session.rs  Claude/Codex session hooks for resumable tabs
+|   |   +-- mobile_control/   Path-free Mobile sidecar core
+|   |   +-- local_loss.rs File-backed loss warnings that survive a relaunch
 |   +-- platform/         Workspace backends
-|   |   +-- x11.rs        EWMH/xcb — two-desktop parking model
+|   |   +-- x11.rs        EWMH/xcb — two-desktop parking (also Cinnamon/Muffin)
 |   |   +-- wayland_kde.rs  KWin DBus — per-project virtual desktop
-|   |   +-- null.rs       No-op fallback
-|   +-- terminal/         PTY registry (mod.rs + active_session.rs)
-|   +-- schema/           Serde structs (project, settings, time_log, …)
-|   +-- storage.rs        Path helpers (~/.local/share/eldrun/)
+|   |   +-- windows.rs / macos.rs / null.rs
+|   +-- terminal/mod.rs   PTY registry the frontend reconnects to by id
+|   +-- schema/           Serde structs mirroring persisted JSON
+|   +-- paths.rs / storage.rs   Path helpers (~/.local/share/eldrun/)
 |   +-- lib.rs            Command registration and app setup
 |   +-- main.rs           Tauri entry point
 +-- React/TypeScript frontend (src/)
-    +-- components/layout/
-    |   +-- AppShell.tsx    Top-level layout, hover-panel orchestration
-    |   +-- HeaderBar.tsx   Drag handle, header icons, tab bar, window controls
-    |   +-- CenterPanel.tsx Terminal/file-browser stack and tab scoping
-    |   +-- GlobalAppBar.tsx  Cross-project app toolbar (hover-revealed)
-    |   +-- RightPanel.tsx  File tree + tracked windows (hover-revealed)
-    |   +-- ProjectSwitcher.tsx   Project pills, search, settings (hover-revealed)
-    +-- components/terminal/
-    |   +-- TerminalView.tsx  xterm.js PTY wrapper
-    +-- components/files/
-    |   +-- FileBrowser.tsx  Files tab wrapper
-    |   +-- FileTree.tsx     Recursive file tree with context menu
-    +-- components/projects/
-    |   +-- ProjectPill.tsx  Individual project tab pill
-    +-- components/tabs/
-    |   +-- TabBar.tsx       Tab strip with add/close/rename/reorder
-    +-- components/header/
-    |   +-- Clock.tsx        Live clock
-    |   +-- ConnTypeIcon.tsx  Network type icon
-    |   +-- StatusLamp.tsx   Online/offline status lamp
-    |   +-- WindowControls.tsx  Minimize/maximize/close buttons
-    +-- stores/
-    |   +-- projects.ts     Project list, active project, CRUD
-    |   +-- tabs.ts         Tab entries by scope, layout persistence
-    |   +-- settings.ts     App settings
-    |   +-- windows.ts      Tracked external windows
-    +-- hooks/
-    |   +-- useKeyboard.ts  F11 / Super key handlers
-    +-- types/index.ts      Shared TypeScript types
+|   +-- components/layout/    AppShell, HeaderBar, CenterPanel, GlobalAppBar,
+|   |                         RightPanel, ProjectSwitcher, SettingsPanel,
+|   |                         TourHost, DetachedApp/DetachedCenterPanel
+|   +-- components/header/    Clock, ConnTypeIcon, and the indicators
+|   |                         (Mail, Calendar, Todo, Machines, Vpn, Mobile,
+|   |                         Battery, WindowControls)
+|   +-- components/terminal/  TerminalView — xterm.js PTY wrapper
+|   +-- components/files/     ProjectFilesView (shared by panel and Files tab)
+|   +-- components/embed/     Native viewers, incl. deck/, pdf/, tex/
+|   +-- components/{mail,calendar,todo,browser,printing,skills,monitoring,
+|   |                stats,mobile,projects,tabs}/
+|   +-- lib/                  i18n.ts, viewers/, tour.ts, lessons.ts,
+|   |                         shortcuts.ts, experimental.ts, linkTarget.ts
+|   +-- stores/               ~55 Zustand stores (projects, tabs, settings,
+|   |                         mail, calendar, todo, sync, remote*, tour, …)
+|   +-- hooks/                useKeyboard, useClampToViewport, useWindowFocused
+|   +-- types/index.ts        Shared TypeScript types
++-- mobile-web/               The companion PWA — its own Vite bundle
 ```
 
-**IPC pattern:** Rust ↔ React via Tauri `invoke` for request/response and
-Tauri events (`emit_to` / `listen`) for push notifications (PTY output, network
-status, time ticks, workspace updates). Terminal output is batched before
-crossing IPC.
+**IPC pattern:** Rust ↔ React via Tauri `invoke` for request/response and Tauri
+events (`emit_to` / `listen`) for push notifications (PTY output, time ticks,
+workspace updates, sync and remote status). Terminal output is batched before
+crossing IPC, and **only visible** PTYs stream: a hidden tab emits nothing over
+IPC, feeding a terminal-activity digest for its pill instead, and replays on
+show. Keep Tauri command payload names compatible with the frontend's camelCase
+keys.
 
 ## Persistence Model
 
@@ -469,14 +877,40 @@ All global data is under `~/.local/share/eldrun/`.
 
 | File | Purpose |
 |------|---------|
-| `projects.json` | Lightweight index of known projects. |
+| `projects.json` | Lightweight index of known projects (including the Trash entry). |
 | `boxes.json` | Project-box definitions (id, name, ordered `member_ids`, `folder?`, relations). |
-| `settings.json` | User settings: agent command, theme, workspace management, global apps, etc. |
+| `settings.json` | User settings: agent command, theme, workspace management, global apps, experimental flags, shortcut overrides, window state. |
 | `default_apps.json` | Global file-extension → app command map. |
-| `time_log.json` | Append-only session records. |
-| `active_session.json` | Crash/orphan-session sentinel. |
+| `global_machines.json` | SSH machines registered independently of any project. |
+| `calendar.json` | Calendar events **and** to-do cards — one store for both. |
+| `time_log.json`, `time_summary.json` | Session time records and their rollup. |
+| `usage_stats.json` | Local-only rolling hour/day counters behind the daily recap. |
+| `net_usage.json` | Network byte counters (separate source from usage stats). |
 | `crash.log` | Appended on Rust panics. |
+| `sessions/<project id>/terminals.json` | **Tab layout and `open_apps`**, keyed by project id — outside the project tree. |
+| `mail/` | Sealed mail store: SQLite index, blobs, `accounts.json.enc`, `filters.json.enc`. |
+| `browser/`, `vm/`, `remote-projects/`, `skills_cache/`, `boxes/<name>/` | Per-subsystem state. |
 | `vibe_local/` | Per-model Vibe homes for local Ollama agent tabs. |
+
+`active_session.json` no longer exists; orphan-session recovery is handled
+inside the time-tracking service.
+
+**Session state lives outside the project tree.** Tab layout and `open_apps` are
+stored per project id under `sessions/`. The copy inside a project folder
+(`<project>/.eldrun/sessions/terminals.json`) is legacy/export-only and is
+adopted only on an explicit request (`commands::projects::adopt_folder_tab_layout`)
+— and `open_apps` is **never** adopted, since a folder-supplied list of host
+commands to launch is exactly what the move guarded against. Treat any in-project
+control file as attacker-controlled: Eldrun's control files live in a
+container's rw mount, and the host reads them as executable intent.
+
+Usage stats are deliberately **not** mixed with time (`time_summary.json`),
+network bytes (`net_usage.json`), or git statistics (re-derived from `git log` on
+demand) — the recap reads each at its own source so they cannot drift. Tab opens
+are counted in the frontend's `addTab`, not at `pty_spawn`, because the backend
+spawn fires again for every resumable agent tab respawned on relaunch. File churn
+comes from a `notify` watcher on the **active** project, which cannot see an SFTP
+tree, so a remote project is counted only via its local mirror.
 
 ### `projects.json`
 
@@ -507,7 +941,7 @@ Each entry:
   "id": "<uuid4>",
   "name": "My Project",
   "directory": "/home/user/eldrun/projects/my-project",
-  "git_type": "private",
+  "git_type": "remote-private",
   "created_at": "2026-06-01T10:00:00+00:00",
   "status": "current",
   "position": 10,
@@ -526,31 +960,35 @@ Each entry:
       { "date": "2026-06-01", "start": "2026-06-01 10:00", "duration_s": 3600.0 }
     ]
   },
-  "tab_layout": [
-    { "key": "tab-1", "label": "claude", "cmd": "claude", "cwd": "/home/user/eldrun/projects/my-project", "kind": "agent" },
-    {
-      "key": "local_agent-2",
-      "label": "llama3.2:3b",
-      "cmd": "vibe",
-      "cwd": "/home/user/eldrun/projects/my-project",
-      "kind": "local_agent",
-      "env": {
-        "VIBE_HOME": "/home/user/.local/share/eldrun/vibe_local/llama3.2-3b",
-        "VIBE_ACTIVE_MODEL": "llama3.2-3b"
-      }
-    }
-  ],
-  "open_apps": []
+  "remote": null,
+  "compute_hosts": [],
+  "sandbox": { "enabled": false },
+  "vm": null
 }
 ```
 
-- `tab_layout` is the persisted tab state restored on next project activation.
-  Local Ollama agent tabs persist `kind: "local_agent"` and the Vibe-related
-  environment variables needed to relaunch the same model.
-- `open_apps` stores best-effort metadata for tracked external windows.
-- `default_apps` holds per-project file-extension overrides.
+- `project.json` holds project **identity**: name, directory, git/push axis,
+  remote specs and `compute_hosts`, runtime/container and VM settings, per-project
+  file-viewer settings, per-project `default_apps` overrides, and time rollups.
+- `tab_layout` and `open_apps` are **no longer read from here.** The `tab_layout`
+  field still exists in the schema for the legacy/export copy, but live session
+  state is `<state_dir>/sessions/<project id>/terminals.json` (see above).
 - Unknown fields are preserved on read/write (serde `deny_unknown_fields` is
-  not used) to allow rollback to earlier versions.
+  not used) to allow rollback to earlier versions. Python-era JSON shapes are
+  preserved wherever the Rust schema already supports them — existing user state
+  must round-trip cleanly.
+
+The persisted tab entry itself is unchanged in shape: `{key, label, cmd, cwd,
+kind, env?}`, where local Ollama tabs carry `kind: "local_agent"` plus the
+`VIBE_HOME` / `VIBE_ACTIVE_MODEL` values needed to relaunch the same model, and
+resumable Claude/Codex tabs carry a `sessionId`. Plan/Auto is persisted as a
+launch *flag* per tab and re-applied when args are rebuilt — raw args are never
+the source of truth.
+
+The `git_type` field models the **push** axis (`local` / `remote-private` /
+`remote-public`) and is independent of whether the project's *work* is remote;
+a project can be local work with a GitHub push target, or SSH work with no
+remote git at all.
 
 ### `settings.json`
 
@@ -566,9 +1004,27 @@ Each entry:
 ```
 
 - `default_agent_cmd` drives the default tab type and project terminal respawn.
-  UI choices are `claude`, `codex`, `gemini`, `vibe`.
-- `color_scheme` supports `dark`, `light`, `fancy_dark`, `fancy_light`.
-- `global_apps` stores one entry per role with `exec` and `visible`.
+  UI choices are `claude`, `codex`, `gemini`, `vibe`, plus any custom agent
+  registered from "＋ Add agent…".
+- `color_scheme` supports `fancy_dark` (default), `dark`, `light`,
+  `fancy_light`, `light_lavender`.
+- `global_apps` stores one entry per role with `exec` and `visible`; retired
+  roles keep their entries but are filtered out of the bar.
+- `compact_tab_agents` lists the built-in agent ids shown before a search in the
+  `+` menu's compact Agents group. Unset means the familiar Claude/Codex/Gemini
+  quick picks; an **empty list** is a deliberate choice to show agents only after
+  searching, and is not the same as unset.
+- `mobile_indicator` controls the Mobile host-status control in the header;
+  unset means visible whenever the Mobile host is enabled.
+- `keyboard_shortcuts` holds per-action chord overrides (Settings → Shortcuts).
+- `fast_mode` is the Fast Mode switch (see above). **Unset and `false` both
+  mean off** — the mode is never inferred; only an explicit `true` engages it.
+  Read entirely on the frontend (`src/lib/fastMode.ts`), which also holds the
+  list of what it withdraws; the backend only round-trips the value.
+- `window_state` holds monitor, position, size, and maximized for startup
+  restore; experimental flags are stored as plain booleans keyed by flag name.
+- Custom agents round-trip through the settings `extra` catch-all — no Rust
+  field needed.
 
 ### `default_apps.json`
 
@@ -596,9 +1052,8 @@ Lookup order for file opens:
 ]
 ```
 
-`active_session.json` stores the active project id and start time while a
-session is open. On next startup, a leftover sentinel is closed as an orphaned
-session and removed.
+A session left open by a crash is closed as an orphaned session on the next
+startup. (The former `active_session.json` sentinel file is gone.)
 
 ## Runtime Behavior
 
@@ -620,19 +1075,28 @@ session and removed.
 3. Projects marked `current` or `active` appear as project-switcher pills.
 4. The project marked `current` is the initial active scope; if none, root.
 5. Workspace management (if enabled) allocates desktops for visible projects.
-6. Network monitoring begins; `network-status-changed` events drive the status
-   lamp and offline banner.
+6. `ensure_trash_project` creates or repairs the permanent Trash pill.
+7. The daily recap opens on the first launch of each day (`daily_stats_recap`,
+   default on).
+8. If Eldrun Mobile is enabled, the loopback sidecar starts; the header's
+   `MobileIndicator` reports its status.
+9. Connection lamps fill in. Keychain reads are **bounded**
+   (`remote_credentials::read_timed`, 4 s): a locked Secret Service collection
+   reads identically to "nothing saved" and can otherwise block forever, which is
+   what once left every lamp permanently amber.
 
 ### Project Activation
 
 Switching to a project pill:
 
 - Sets the active scope in the projects store.
-- `CenterPanel` reacts to `activeId` change: loads `tab_layout` from
-  `project.json` and restores or spawns tabs.
-- Updates the right panel to the new project directory.
+- `CenterPanel` reacts to the `activeId` change: loads the saved layout from
+  `<state_dir>/sessions/<project id>/terminals.json` and restores or spawns tabs.
+- Updates the file panel to the new project directory.
 - Starts a time-tracking session via `start_session`.
-- The workspace backend moves windows between desktops (if enabled).
+- The workspace backend moves windows between desktops (if enabled), including
+  any detached popout windows, which are registered as project-owned tracked
+  windows and park/restore with their project.
 
 Switching away closes the active time session via `end_session`.
 
@@ -649,8 +1113,26 @@ Switching away closes the active time session via `end_session`.
 - The backend has a crash-loop guard: if a process exits within 1 s, respawn is
   delayed.
 
-Tab layout is auto-saved to `project.json["tab_layout"]` with a 500 ms debounce
-after any tab change.
+Tab layout is auto-saved to `<state_dir>/sessions/<project id>/terminals.json`
+with a 500 ms debounce after any tab change.
+
+`kill` and `kill_all` must reap the child process **subtree**, not just the shell
+leader — and for a containerized project, the in-container processes through the
+wrapper/pidfile mechanism.
+
+**Restore.** Shell and files tabs always restore. Claude and Codex agent tabs
+that carry a `sessionId` are resumable and restored with `--resume`; Gemini and
+Vibe tabs are dropped. Eldrun installs `SessionStart` hooks (a POSIX script on
+Linux, a PowerShell `.ps1` on Windows) that record each tab's live session id
+keyed by an `ELDRUN_TAB_UID` env var, so resume follows the live session even
+across a `/clear`. Codex additionally has hook-free binding, and Codex user hooks
+may need a one-time `/hooks` trust.
+
+**Performance.** The PTY batcher parks when idle and quiesces on window blur.
+Hidden tabs do not stream (see the IPC note under Architecture); a heavy local
+job should go in `batch.slice` or `SCHED_IDLE` (`chrt -i 0`), since a batch load
+at nice 0 was measured starving the renderer by 57% versus 12% under
+`SCHED_IDLE`.
 
 ### File Opening and External Window Tracking
 
@@ -674,9 +1156,20 @@ as external processes tracked by PID.
 
 ### Network Monitoring
 
-A Tokio background task probes `1.1.1.1:53` every 5 seconds with a 3-second
-TCP timeout and scans `network-interface` for adapter type. State changes emit
-`network-status-changed` Tauri events to the frontend.
+Two unrelated things, often confused:
+
+- **Online / offline** is read from the webview's own `navigator.onLine` and its
+  `online`/`offline` events in `HeaderBar.tsx`. Eldrun runs **no** reachability
+  probe of its own and contacts no third-party host to decide this.
+- **Adapter type** (`lan` / `wlan`) comes from the `network_conn_type` command,
+  polled every 10 s and stretched under the power saver.
+
+Separately, `commands/network.rs` is a read-only **traffic monitor** for project
+tabs: a local project observes the local host, and a remote project observes its
+SSH host by riding the already-authenticated ControlMaster — it never opens a
+connection of its own. The SSH-link snapshot is collected locally from the
+ControlMaster's TCP socket, so it covers every multiplexed channel (terminal,
+SFTP, sync, git).
 
 ### Workspace Management
 
@@ -704,14 +1197,19 @@ Backend auto-detection:
 - KDE 5 and KDE 6 use different DBus paths (`/KWin` vs `/VirtualDesktopManager`).
 - Window enumeration uses KWin JS scripting via `org.kde.kwin.Scripting`.
 
-### Download Routing
+### Downloads (removed)
 
-On every project switch, the backend updates the `~/eldrun/downloads` symlink
-to point to `<active_project_dir>/tmp/downloads/`. When root is active, it
-points to `~/eldrun/root/tmp/downloads/`.
+Eldrun used to maintain a `~/eldrun/downloads` symlink and rewrite Firefox and
+Chromium preference files on project switch. **Both were removed on 2026-06-30**,
+along with `commands/downloads.rs`, under the rule that Eldrun must never
+manipulate another application's paths or config. `tests/no_foreign_config_writes.rs`
+is a regression guard that fails the build if such a write reappears in the source
+tree; the agent-session hooks (`services/agent_session.rs`) are the one deliberate
+exception to that rule.
 
-Firefox and Chromium preference files are updated on project switch (with
-backups). Profile detection is best-effort.
+What remains is Eldrun's own: the in-app browser writes into its own downloads
+directory — never the active project — and `commands/fs.rs::list_recent_downloads`
+is an unconfined lister sharing its shape with the project-confined one.
 
 ### Crash Logging
 
@@ -720,28 +1218,48 @@ backups). Profile detection is best-effort.
 
 ## Tests and Quality Checks
 
-Type-check frontend:
+Five gates, all of them enforced in CI:
 
 ```bash
-npx tsc --noEmit
+npm run build                                   # tsc + both bundles
+npm test                                        # vitest
+cargo test --manifest-path src-tauri/Cargo.toml
+npm run lint                                    # eslint
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
-Build frontend:
+`npm run build`, `npm test`, and `cargo test` run on all three platforms in CI.
+**Only `npm run build` type-checks** — `npm test` and ESLint do not — so a type
+error in `src/` *or* `mobile-web/` surfaces there and nowhere else. Lint and
+clippy are both at zero; keep them there. `cargo fmt` is deliberately not
+enforced.
+
+A green *local* clippy is not a green *CI* clippy: CI lints with today's stable
+while yours is whenever it was last `rustup update`d, and each release adds
+lints. Either update, or lint against CI's version with `cargo +<ver> clippy …`.
+
+**Before every push** — this repository is public — the privacy/secret scan must
+pass:
 
 ```bash
-npm run build
+git add -A && scripts/privacy-check.sh          # or: scripts/privacy-check.sh <base> <head>
 ```
 
-Run Rust schema round-trip tests:
+`.githooks/pre-push` runs it over the outgoing commits and a `privacy` CI job
+repeats it. Enable the hooks once per clone with
+`git config core.hooksPath .githooks`; that arms both the privacy scan and the
+automatic patch-version bump. Never hardcode institution or lab hostnames, and
+commits must use the GitHub `noreply` author email.
 
-```bash
-cd src-tauri && cargo test
-```
+Notable suites beyond schema round-trips: hostile-input fixtures for mail
+(`tests/mail_hostile_message.rs`, `mail_hostile_crypto.rs`), capability-scope and
+file-ops guards, the project-tree intent tripwire, the foreign-config regression
+guard, and Ollama config regressions (per-model Vibe homes, active-model
+ordering, alias sanitization, no-tools config, idempotent generation). The live
+Ollama integration test skips itself when no local server or model is available.
 
-The Rust suite also includes Ollama config regression tests that verify
-per-model Vibe homes, active-model ordering, alias sanitization, no-tools
-configuration, and idempotent config generation. The live Ollama integration
-test skips itself when no local Ollama server or model is available.
+`main` is the stable default branch; ongoing work lands on `develop` and reaches
+`main` by PR.
 
 ## Known Limitations
 
@@ -750,8 +1268,11 @@ test skips itself when no local Ollama server or model is available.
   untested end-to-end).
 - Non-KDE Wayland compositors use the null backend (no workspace switching, no
   sticky windows).
-- Tab layout is persisted but PTYs do not survive app restarts; tabs respawn
-  their processes on next activation.
+- PTYs do not survive an app restart; tabs respawn their processes on next
+  activation. Shell and files tabs restore, and Claude/Codex tabs with a
+  `sessionId` resume their conversation, but live scrollback is not restored and
+  Gemini/Vibe agent tabs are dropped. On a *remote* project, a tmux session per
+  shell tab does survive an SSH drop, a laptop sleep, or Eldrun quitting.
 - Detached (popped-out) subwindows are session-only: they re-dock into the main
   layout on restart rather than respawning as separate OS windows.
 - Project-box scopes are session-only: a box's tabs are dropped on project switch
@@ -768,18 +1289,60 @@ test skips itself when no local Ollama server or model is available.
   order of *externally launched app* windows are not restored. (Eldrun's own main
   window does restore its monitor, position, size, and maximized state — see
   Startup below.)
-- Network status depends on reaching Cloudflare DNS; may show offline on
-  networks that block direct TCP/53.
-- Download routing browser preference edits assume the browser is not running.
+- Online/offline reflects what the webview reports (`navigator.onLine`), which
+  can read as online on a captive-portal network.
+- **Much of the newer surface is code-complete but not live-verified.** Mail is
+  in daily use; the deck presenter, the to-do board, and VM projects have never
+  been run live (no VM has been booted), CalDAV has never been pointed at a real
+  server, and SLURM/HPC awaits real-cluster QA. Such items carry an `UntestedTag`
+  pill in the UI.
+- Eldrun Mobile is Linux-only (the macOS LaunchAgent phase is the follow-up),
+  requires Tailscale on both ends, and its real-phone security and acceptance QA
+  is open.
+- Containerized projects are local-only and hidden or refused where Docker is
+  unavailable; VM projects need QEMU/KVM.
+- The Agent Skills library is Claude-only, with no manifest, versioning, or
+  cross-agent generalization — deliberately outside the MVP.
+- Mail search is a bounded decrypt-on-scan (50 000 rows) because the store is
+  sealed; it reports where it stopped rather than implying a complete answer.
+  What stays readable on disk by design: message counts, folder structure,
+  arrival dates, sizes, and flags — plus folder ids, which are unkeyed
+  `sha256(path)[..8]`, so a wordlist recovers which folders exist.
+- Blurred box-shadows must never be animated: WebKitGTK renders them in software
+  with DMABUF off. DMABUF stays disabled — a 2026-08-05 re-test on WebKitGTK
+  2.52.3 was faster but produced flicker, missing PDF images, and a renderer
+  crash.
+- A native scrollbar's shape is unreachable from CSS on WebKitGTK, so Eldrun
+  hides the engine's bar and draws its own (`lib/customScrollbar.ts`).
 
 ## Practical Development Notes
 
-- Edit frontend under `src/`; backend under `src-tauri/src/`.
-- Run `npm run build` and `cargo test` before handing off changes.
-- Do not launch Eldrun from an agent terminal; a second instance corrupts
-  workspace state. Ask the user to restart the running instance.
+- Edit frontend under `src/`; backend under `src-tauri/src/`. Run all five gates
+  above before handing off changes.
+- **Agents must never start Eldrun**, and must never stop an instance they did
+  not start — a running window holds the user's open tabs and live terminals.
+  The app's lifecycle belongs to the user. To verify something live, ask them to
+  launch it or use a window they already have open; otherwise report the
+  automated gates only and say plainly that the change was not run live.
+- `src/` changes hot-reload into a running window — do not ask for a restart.
+  `src-tauri/` changes do not, because `tauri dev` runs `--no-watch`; backend
+  edits accumulate harmlessly until the user restarts deliberately. Run
+  `npm run backend:stale` after backend edits and report the result. The cost of
+  this trade is a backend fix that compiles and is silently not in the window.
+- All user-facing strings go through `src/lib/i18n.ts` (`useT()`); English holds
+  every key and the other four languages fall back to it. Never hardcode display
+  text.
+- Prefer local component state and existing Zustand stores over new global state.
+- Keep service modules `AppHandle`-free and unit-testable where that is the
+  established boundary.
 - Keep Tauri command payload names in camelCase to match frontend `invoke` calls.
 - Global/runtime data lives under `~/.local/share/eldrun/`; do not store it in
-  tracked markdown files.
-- Unknown JSON fields are preserved on read/write to allow rollback to earlier
-  versions.
+  tracked markdown files. Unknown JSON fields are preserved on read/write to
+  allow rollback to earlier versions, and existing user state must round-trip
+  cleanly.
+- Menus and dialogs share one canonical scheme (accent header + divider,
+  `--text-primary`, `--bg-panel` chrome). Portaled dialogs must set an explicit
+  color — `body` has none, so they inherit black.
+- Add a TODO to the matching group file in `todo/`; create a group only if none
+  fits. Avoid unrelated rewrites in docs, generated state, built assets, project
+  metadata, `dist/`, `target/`, and backup files.

@@ -1,6 +1,6 @@
 # OpenVPN tunnel
 
-Referenced from `CLAUDE.md`.
+Referenced from `AGENTS.md`.
 
 - The **OpenVPN tunnel is machine-wide, not project-scoped.** It runs elevated
   (`pkexec openvpn`) and Eldrun passes it no routing flags, so a config that pushes

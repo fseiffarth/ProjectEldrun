@@ -5,7 +5,7 @@ import { useT } from "../../lib/i18n";
 /**
  * The first-run "How to start" instruction: a single scannable modal shown once
  * on the first launch of an empty install, and re-openable from Settings / the
- * gear menu. Reuses the `.modal-backdrop` + `.settings-dialog` skeleton from
+ * gear menu. Reuses the `.modal-backdrop` + `.settings-dialog` split-scroll frame from
  * `SettingsDialog` (and, unlike it, brings its own Esc handler). Content comes
  * from `HOW_TO_START_STEPS` so it stays in lockstep with the Feature Guide.
  */
@@ -32,6 +32,11 @@ export function HowToStart({ onClose }: { onClose: () => void }) {
           <h2>{t("howToStart.title")}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
+        {/* Same split-scroll frame as LessonsMenu: `.settings-dialog` clips
+            (overflow:hidden, padding 0, gap 0) and this `.dialog-scroll` child
+            does the scrolling — without it the steps sit flush to the edges and
+            the button row below them is cut off on a short window. */}
+        <div className="dialog-scroll">
         <p className="settings-help">{t("howToStart.intro")}</p>
 
         <ol className="how-to-start-steps">
@@ -78,6 +83,7 @@ export function HowToStart({ onClose }: { onClose: () => void }) {
           <button type="button" className="how-to-start-got-it" onClick={onClose}>
             {t("howToStart.gotIt")}
           </button>
+        </div>
         </div>
       </div>
     </div>

@@ -1,6 +1,6 @@
 {
   "productName": "Eldrun",
-  "version": "0.1.51",
+  "version": "0.1.53",
   "identifier": "io.github.fseiffarth.eldrun",
   "build": {
     "frontendDist": "../dist",
@@ -54,7 +54,11 @@
     },
     "windows": {
       "nsis": {
-        "installMode": "perMachine"
+        "installMode": "perMachine",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "headerImage": "icons/installer/header.bmp",
+        "sidebarImage": "icons/installer/sidebar.bmp"
       },
       "webviewInstallMode": {
         "type": "downloadBootstrapper"

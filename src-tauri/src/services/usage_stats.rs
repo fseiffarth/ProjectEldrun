@@ -282,7 +282,11 @@ fn watch_pruned(
             if is_ignored_dir_name(name) {
                 continue;
             }
-            let child_rel = if rel.is_empty() { name.to_string() } else { format!("{rel}/{name}") };
+            let child_rel = if rel.is_empty() {
+                name.to_string()
+            } else {
+                format!("{rel}/{name}")
+            };
             if excluded.contains(&child_rel) {
                 continue;
             }
@@ -312,7 +316,11 @@ fn user_excluded_dirs(project_id: &str) -> std::collections::HashSet<String> {
     let list: Vec<String> = json
         .get("scan_excluded_paths")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
     crate::commands::fs::excluded_rel_set(&list)
 }
@@ -457,7 +465,9 @@ mod tests {
         // the second slipped through, and every `pip install` inside it was counted
         // as the user's own file churn.
         assert!(is_ignored(&p("/home/me/proj/venv/lib/python3.12/site.py")));
-        assert!(is_ignored(&p("/home/me/proj/venv-rocm/lib/python3.12/site.py")));
+        assert!(is_ignored(&p(
+            "/home/me/proj/venv-rocm/lib/python3.12/site.py"
+        )));
         assert!(is_ignored(&p("/home/me/proj/.venv-cuda/bin/python")));
         assert!(is_ignored(&p("/home/me/proj/venv313/bin/python")));
         assert!(is_ignored(&p("/home/me/proj/project_venv/bin/python")));
@@ -495,7 +505,10 @@ mod tests {
             Some(metric::FILE_CREATED)
         );
         assert_eq!(
-            classify_fs_event(&EventKind::Modify(ModifyKind::Data(DataChange::Content)), &path),
+            classify_fs_event(
+                &EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+                &path
+            ),
             Some(metric::FILE_MODIFIED)
         );
         assert_eq!(
@@ -536,7 +549,11 @@ mod tests {
         assert!(d.should_count(&path, metric::FILE_MODIFIED, t0));
         // One editor save fires several raw Modify events back to back.
         assert!(!d.should_count(&path, metric::FILE_MODIFIED, t0 + Duration::from_millis(5)));
-        assert!(!d.should_count(&path, metric::FILE_MODIFIED, t0 + Duration::from_millis(300)));
+        assert!(!d.should_count(
+            &path,
+            metric::FILE_MODIFIED,
+            t0 + Duration::from_millis(300)
+        ));
     }
 
     #[test]

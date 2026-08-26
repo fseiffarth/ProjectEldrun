@@ -205,7 +205,8 @@ mod tests {
         state.set_main(7);
         // In debug builds add_parkable debug_asserts; in release it returns false.
         // Either way the id must NOT be in the override set afterwards.
-        let added = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| state.add_parkable(7)));
+        let added =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| state.add_parkable(7)));
         let _ = added; // result intentionally ignored
         assert!(
             !state.is_parkable(7),

@@ -8,6 +8,7 @@
  * `pty_kill` on unmount — but a normal (non-attach) terminal DOES spawn + kill.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { StrictMode } from "react";
 import { render, act } from "@testing-library/react";
 
 // jsdom lacks ResizeObserver, which TerminalView observes for refit.
@@ -104,5 +105,28 @@ describe("TerminalView — attach-only (#42)", () => {
       unmount();
     });
     expect(names()).toContain("pty_kill");
+  });
+
+  it("registers visibility before spawning, so a fast failing CLI keeps its error output", async () => {
+    await act(async () => {
+      render(<TerminalView id="p:fast-exit" cmd="openclaw" cwd="/p" visible focused />);
+    });
+
+    const spawnAt = names().indexOf("pty_spawn");
+    const visibilityAt = names().indexOf("pty_set_visible");
+    expect(visibilityAt).toBeGreaterThanOrEqual(0);
+    expect(visibilityAt).toBeLessThan(spawnAt);
+  });
+
+  it("spawns only once through Strict Mode's development mount replay", async () => {
+    await act(async () => {
+      render(
+        <StrictMode>
+          <TerminalView id="p:strict" cmd="agy" args={["--continue"]} cwd="/p" visible focused />
+        </StrictMode>,
+      );
+    });
+
+    expect(names().filter((name) => name === "pty_spawn")).toHaveLength(1);
   });
 });

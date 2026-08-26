@@ -42,7 +42,10 @@ pub fn validate_arg(label: &str, value: &str) -> Result<(), String> {
     if value.chars().any(|c| c.is_control()) {
         return Err(format!("{label} contains invalid control characters"));
     }
-    if value.chars().any(crate::services::web_safety::is_format_char) {
+    if value
+        .chars()
+        .any(crate::services::web_safety::is_format_char)
+    {
         return Err(format!("{label} contains invalid formatting characters"));
     }
     Ok(())
@@ -950,10 +953,7 @@ impl Askpass {
     /// obtains the password from this shim instead of a controlling TTY.
     pub fn env_vars(&self) -> Vec<(&'static str, std::ffi::OsString)> {
         vec![
-            (
-                "SSH_ASKPASS",
-                self.path.clone().into_os_string(),
-            ),
+            ("SSH_ASKPASS", self.path.clone().into_os_string()),
             ("SSH_ASKPASS_REQUIRE", std::ffi::OsString::from("force")),
             ("ELDRUN_ASKPASS", std::ffi::OsString::from(&self.password)),
             (
@@ -1377,12 +1377,14 @@ pub fn locked_identity(
     if agent_has_keys() {
         return None;
     }
-    resolve_identity_files(user, host, port).into_iter().find(|p| {
-        std::fs::read_to_string(p)
-            .ok()
-            .and_then(|text| private_key_is_encrypted(&text))
-            .unwrap_or(false)
-    })
+    resolve_identity_files(user, host, port)
+        .into_iter()
+        .find(|p| {
+            std::fs::read_to_string(p)
+                .ok()
+                .and_then(|text| private_key_is_encrypted(&text))
+                .unwrap_or(false)
+        })
 }
 
 /// The order to try the user's one typed secret in, for a host that may want
@@ -1457,11 +1459,7 @@ pub fn is_wrong_passphrase(stderr: &str) -> bool {
 /// Always false for [`SecretKind::Password`]: there is nothing after it to fall
 /// back to.
 #[cfg(any(unix, windows))]
-pub fn secret_rejected_locally(
-    kind: SecretKind,
-    askpass: Option<&Askpass>,
-    stderr: &str,
-) -> bool {
+pub fn secret_rejected_locally(kind: SecretKind, askpass: Option<&Askpass>, stderr: &str) -> bool {
     kind == SecretKind::KeyPassphrase
         && (askpass.is_some_and(|a| a.answer_count() > 1) || is_wrong_passphrase(stderr))
 }
@@ -1688,7 +1686,10 @@ pub fn parse_keygen_fingerprints(text: &str) -> Vec<HostKeyFingerprint> {
 /// Returns the raw keyscan text alongside the fingerprints: accepting the host
 /// means appending exactly those lines to known_hosts, and re-scanning at that
 /// point would leave a window where the key shown is not the key stored.
-pub fn scan_host_keys(host: &str, port: Option<u16>) -> Result<(String, Vec<HostKeyFingerprint>), String> {
+pub fn scan_host_keys(
+    host: &str,
+    port: Option<u16>,
+) -> Result<(String, Vec<HostKeyFingerprint>), String> {
     validate_arg("host", host)?;
     let (resolved, resolved_port) = resolve_host_port(host, port);
     validate_arg("host", &resolved)?;
@@ -1763,7 +1764,10 @@ mod tests {
         // wrote reads as "not careful"), so each is pinned rather than trusted.
         let k = |u: Option<&str>, h: &str, p: Option<u16>| target_key(u, h, p);
         // Host case-insensitive.
-        assert_eq!(k(Some("alice"), "Login.Example.Org", Some(22)), k(Some("alice"), "login.example.org", Some(22)));
+        assert_eq!(
+            k(Some("alice"), "Login.Example.Org", Some(22)),
+            k(Some("alice"), "login.example.org", Some(22))
+        );
         // No port ≡ port 22.
         assert_eq!(k(Some("alice"), "h", None), k(Some("alice"), "h", Some(22)));
         // Blank user ≡ absent user.
@@ -1771,7 +1775,10 @@ mod tests {
         // Surrounding whitespace is not part of the identity.
         assert_eq!(k(Some(" alice "), " h ", None), k(Some("alice"), "h", None));
         // The exact wire shape both sides format.
-        assert_eq!(k(Some("alice"), "login.example.org", Some(2222)), "alice@login.example.org:2222");
+        assert_eq!(
+            k(Some("alice"), "login.example.org", Some(2222)),
+            "alice@login.example.org:2222"
+        );
         assert_eq!(k(None, "h", None), "@h:22");
         // A different login on the same host is a DIFFERENT machine identity —
         // it may hold different rights on it, so this must not collapse.
@@ -1916,10 +1923,8 @@ mod tests {
     #[test]
     fn explain_ssh_error_reports_a_wrong_password_as_such() {
         // The verbatim stderr a project host returns for a bad password.
-        let msg = explain_ssh_error(
-            "alice@build.example: Permission denied (publickey,password).",
-        )
-        .unwrap();
+        let msg = explain_ssh_error("alice@build.example: Permission denied (publickey,password).")
+            .unwrap();
         assert!(msg.contains("check the username and password"), "{msg}");
     }
 
@@ -1968,7 +1973,10 @@ mod tests {
     fn explain_ssh_error_passes_unknown_stderr_through() {
         // Unrecognized stderr must fall back to the raw text — a vague guess is
         // worse than the real message.
-        assert_eq!(explain_ssh_error("Kex error: no common kex algorithm"), None);
+        assert_eq!(
+            explain_ssh_error("Kex error: no common kex algorithm"),
+            None
+        );
         assert_eq!(explain_ssh_error(""), None);
     }
 
@@ -2072,7 +2080,9 @@ mod tests {
         let args = ssh_password_base_args(&Some("me".to_string()), "host.example", None).unwrap();
         assert_eq!(args.last().unwrap(), "me@host.example");
         assert!(args.iter().any(|a| a == "BatchMode=no"));
-        assert!(args.iter().any(|a| a == "PreferredAuthentications=password"));
+        assert!(args
+            .iter()
+            .any(|a| a == "PreferredAuthentications=password"));
         assert!(!args.iter().any(|a| a == "BatchMode=yes"));
     }
 
@@ -2082,7 +2092,9 @@ mod tests {
             ssh_password_master_base_args(&Some("me".to_string()), "host.example", None).unwrap();
         assert_eq!(args.last().unwrap(), "me@host.example");
         assert!(args.iter().any(|a| a == "BatchMode=no"));
-        assert!(args.iter().any(|a| a == "PreferredAuthentications=password"));
+        assert!(args
+            .iter()
+            .any(|a| a == "PreferredAuthentications=password"));
         assert!(args.iter().any(|a| a == "PubkeyAuthentication=no"));
         // Must never force BatchMode=yes (that would block the password prompt).
         assert!(!args.iter().any(|a| a == "BatchMode=yes"));
@@ -2223,8 +2235,12 @@ mod tests {
     fn only_openssh_own_password_request_is_answerable() {
         // The prompt OpenSSH builds for password auth — the one and only thing
         // Eldrun answers on the user's behalf.
-        assert!(prompt_is_password_request("alice@build.example's password: "));
-        assert!(prompt_is_password_request("alice@build.example's password:"));
+        assert!(prompt_is_password_request(
+            "alice@build.example's password: "
+        ));
+        assert!(prompt_is_password_request(
+            "alice@build.example's password:"
+        ));
 
         // A key passphrase: a *local* secret, and not the one we hold.
         assert!(!prompt_is_password_request(
@@ -2242,11 +2258,15 @@ mod tests {
         // check exists for — a host asking for anything it likes and being answered
         // with the account password.
         assert!(!prompt_is_password_request("Verification code: "));
-        assert!(!prompt_is_password_request("(alice@build.example) Password: "));
+        assert!(!prompt_is_password_request(
+            "(alice@build.example) Password: "
+        ));
         assert!(!prompt_is_password_request(
             "Enter your GitHub personal access token: "
         ));
-        assert!(!prompt_is_password_request("Duo two-factor login for alice"));
+        assert!(!prompt_is_password_request(
+            "Duo two-factor login for alice"
+        ));
     }
 
     #[test]
@@ -2301,7 +2321,10 @@ mod tests {
         // The record is part of the shim's temp files and goes with them.
         let reject = shim_file(&ap, "ELDRUN_ASKPASS_REJECT");
         drop(ap);
-        assert!(!reject.exists(), "the refusal record must be deleted on drop");
+        assert!(
+            !reject.exists(),
+            "the refusal record must be deleted on drop"
+        );
     }
 
     // ── Key passphrases: the secret that must never reach the server ───────
@@ -2352,7 +2375,10 @@ mod tests {
         );
         // Not a key at all → "don't know", never "unencrypted": the caller must be
         // able to tell an unreadable file from a confirmed plaintext key.
-        assert_eq!(private_key_is_encrypted("ssh-ed25519 AAAAC3Nz me@box"), None);
+        assert_eq!(
+            private_key_is_encrypted("ssh-ed25519 AAAAC3Nz me@box"),
+            None
+        );
         assert_eq!(private_key_is_encrypted(""), None);
     }
 
@@ -2524,7 +2550,10 @@ mod tests {
         // The form OpenSSH writes and `ssh-keygen -F` expects; getting this wrong
         // would call every non-22 host unknown, forever.
         assert_eq!(known_hosts_key("build.example", 22), "build.example");
-        assert_eq!(known_hosts_key("build.example", 2222), "[build.example]:2222");
+        assert_eq!(
+            known_hosts_key("build.example", 2222),
+            "[build.example]:2222"
+        );
     }
 
     #[test]
