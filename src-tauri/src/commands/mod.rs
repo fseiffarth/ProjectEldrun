@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod app_update;
 pub mod apps;
 pub mod boxes;
 pub mod browser;

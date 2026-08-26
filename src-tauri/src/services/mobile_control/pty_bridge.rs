@@ -337,6 +337,7 @@ pub async fn attach(
         return Ok(());
     }
     let mut authorization_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    let mut tick = 0u32;
     let mut last_client_message = std::time::Instant::now();
     let result: Result<(), String> = loop {
         tokio::select! {
@@ -345,14 +346,23 @@ pub async fn attach(
                 if last_client_message.elapsed() > std::time::Duration::from_secs(60) {
                     break Err("idle_timeout".into());
                 }
-                let (authorized, key) = {
-                    let mut auth = auth.lock().unwrap();
-                    (auth.authenticate(&token).is_some(), auth.host_key().to_vec())
-                };
-                let still_allowed = authorized && catalog.lock().unwrap().load(&state_dir, &key).ok()
-                    .and_then(|catalog| catalog.tab(&tab_id).map(|(_, tab)| tab.public.available && tab.tmux_name == tmux_name))
-                    .unwrap_or(false);
-                if !still_allowed { break Err("access_revoked".into()); }
+                // Eviction and idling stay on the 1-second tick above. The
+                // session/catalog re-check forks `tmux ls` (through the 1s-TTL
+                // cache) and walks the session snapshots, so it runs on every
+                // fifth tick: revocation — a rare, deliberate act — is enforced
+                // within 5 seconds instead of 1, for a fifth of the steady
+                // per-viewer fork rate.
+                if tick.is_multiple_of(5) {
+                    let (authorized, key) = {
+                        let mut auth = auth.lock().unwrap();
+                        (auth.authenticate(&token).is_some(), auth.host_key().to_vec())
+                    };
+                    let still_allowed = authorized && catalog.lock().unwrap().load(&state_dir, &key).ok()
+                        .and_then(|catalog| catalog.tab(&tab_id).map(|(_, tab)| tab.public.available && tab.tmux_name == tmux_name))
+                        .unwrap_or(false);
+                    if !still_allowed { break Err("access_revoked".into()); }
+                }
+                tick = tick.wrapping_add(1);
             }
             Some((cols, rows)) = window_rx.recv() => {
                 if ws_tx.send(Message::Text(TerminalEvent::Window { cols, rows }.to_frame().into())).await.is_err() { break Ok(()); }

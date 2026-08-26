@@ -4,7 +4,6 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   BLOB_TAB_CMD,
   BROWSER_TAB_CMD,
-  CALENDAR_TAB_CMD,
   PRINTING_TAB_CMD,
   DISKUSAGE_TAB_CMD,
   NETWORK_TAB_CMD,
@@ -566,7 +565,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     setMenuPos(null);
   }
 
-  // Add a disk usage analyzer tab. Unlike the monitor/blob/calendar panes above,
+  // Add a disk usage analyzer tab. Unlike the monitor/blob panes above,
   // this one is NOT a singleton: each tab holds its own independent scan root, and
   // comparing two folders side by side is the point — so it stacks (addTab) rather
   // than focusing an existing one (ensureTab, which matches across the whole scope).
@@ -576,21 +575,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     setMenuPos(null);
   }
 
-  // Open (or focus, if already open) the native calendar tab. The event store is
-  // global, so a calendar tab in any scope shows the same events — one per scope
-  // is enough, hence ensureTab rather than addTab.
-  function handleAddCalendar() {
-    focusGroup(groupId);
-    ensureTab(
-      { label: t("newTabMenu.calendar"), cmd: CALENDAR_TAB_CMD, cwd: projectCwd, kind: "calendar" },
-      (tab) => tab.kind === "calendar",
-    );
-    setMenuPos(null);
-  }
-
   // Open (or focus, if already open) the native print manager. Printers belong
   // to the machine, so a second tab in this scope would list the same ones —
-  // hence ensureTab, the bargain mail and the calendar make for the same reason.
+  // hence ensureTab, the bargain mail makes for the same reason.
   function handleAddPrinting() {
     focusGroup(groupId);
     ensureTab(
@@ -603,7 +590,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // Open (or focus, if already open) the Skills Library tab. Its catalog is
   // machine state and its install scopes are this project plus the personal
   // one, so a second tab in this scope would show exactly the same lists —
-  // hence ensureTab, the calendar/printing bargain, rather than addTab.
+  // hence ensureTab, the printing bargain, rather than addTab.
   function handleAddSkills() {
     focusGroup(groupId);
     ensureTab(
@@ -618,7 +605,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     setMenuPos(null);
   }
 
-  // Open an in-app browser tab. Unlike the calendar this is NOT a singleton:
+  // Open an in-app browser tab. Unlike the print manager this is NOT a singleton:
   // each tab holds its own page, and two browser tabs never show the same thing —
   // so it stacks (addTab), the way diskusage does. The tab starts on the
   // configured home address, or on its start page when there is none: an empty
@@ -1558,16 +1545,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     }],
                   }]
                 : []),
-              ...(!trashScope ? [{
-                label: t("newTabMenu.calendar"),
-                entries: [{
-                  key: "calendar",
-                  label: t("newTabMenu.calendar"),
-                  dot: "◆",
-                  color: TAB_ACCENT.calendar,
-                  onPick: handleAddCalendar,
-                }],
-              }] : []),
               ...(!trashScope ? [{
                 label: t("printing.title"),
                 entries: [{

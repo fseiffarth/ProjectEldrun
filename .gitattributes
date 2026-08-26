@@ -13,3 +13,11 @@
 
 # Consumed by cmd.exe, which wants CRLF.
 *.cmd text eol=crlf
+
+# Build inputs read as bytes. `text=auto` guesses binary from a NUL in the
+# first 8 KB, and a 24-bit BMP of a dark gradient can have very few — a CRLF
+# rewrite on a Windows checkout would corrupt the NSIS installer branding.
+*.bmp binary
+*.ico binary
+*.icns binary
+*.png binary

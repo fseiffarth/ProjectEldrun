@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   ADVANCED_TOUR_STEPS,
   TOUR_STEPS,
@@ -8,6 +8,7 @@ import {
   type TourCtx,
 } from "../lib/tour";
 import { translate } from "../lib/i18n";
+import { bubbleStyle } from "../components/common/TourCoachmark";
 
 const empty: TourCtx = { projectCount: 0, activeId: null };
 const active: TourCtx = { projectCount: 2, activeId: "p1" };
@@ -93,5 +94,49 @@ describe("tour catalogs", () => {
       i = nextEligibleIndex(ADVANCED_TOUR_STEPS, empty, i + 1);
     }
     expect(seen).toBe(ADVANCED_TOUR_STEPS.length);
+  });
+});
+
+// The bubble geometry: the "find your files" steps point at a marker that
+// follows the file panel to *either* window edge (`right_panel_side`), so a
+// left-placed bubble at x≈0 used to hang a full bubble-width off-screen.
+describe("bubbleStyle", () => {
+  const rect = (left: number, width = 6, top = 300, height = 120) =>
+    ({ left, top, width, height, right: left + width, bottom: top + height }) as DOMRect;
+  const H = 140;
+
+  beforeEach(() => {
+    window.innerWidth = 1440;
+    window.innerHeight = 900;
+  });
+
+  it("flips to the right of a target sitting on the left window edge", () => {
+    const s = bubbleStyle(rect(0), "left", H);
+    expect(Number(s.left)).toBeGreaterThanOrEqual(8);
+    expect(Number(s.left) + 300).toBeLessThanOrEqual(1440 - 8);
+  });
+
+  it("keeps the authored side when it fits (panel docked right)", () => {
+    const s = bubbleStyle(rect(1434), "left", H);
+    // Left of the padded spotlight, not flipped off the right edge.
+    expect(Number(s.left)).toBeLessThan(1434);
+    expect(Number(s.left)).toBeGreaterThanOrEqual(8);
+  });
+
+  it("never places a bubble outside the window on either axis", () => {
+    const cases: Array<[number, number, "top" | "bottom" | "left" | "right"]> = [
+      [0, 10, "top"],
+      [0, 860, "bottom"],
+      [1400, 10, "right"],
+      [0, 10, "left"],
+      [700, 440, "bottom"],
+    ];
+    for (const [x, y, placement] of cases) {
+      const s = bubbleStyle(rect(x, 6, y), placement, H);
+      expect(Number(s.left)).toBeGreaterThanOrEqual(8);
+      expect(Number(s.left) + 300).toBeLessThanOrEqual(1440 - 8);
+      expect(Number(s.top)).toBeGreaterThanOrEqual(8);
+      expect(Number(s.top) + H).toBeLessThanOrEqual(900 - 8);
+    }
   });
 });

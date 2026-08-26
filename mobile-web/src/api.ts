@@ -144,8 +144,15 @@ const REQUEST_TIMEOUT = 10_000;
 function withTimeout(signal?: AbortSignal | null): AbortSignal {
   const timeout = AbortSignal.timeout(REQUEST_TIMEOUT);
   if (!signal) return timeout;
-  // `AbortSignal.any` is Baseline; fall back to the caller's signal alone.
-  return typeof AbortSignal.any === "function" ? AbortSignal.any([signal, timeout]) : signal;
+  if (typeof AbortSignal.any === "function") return AbortSignal.any([signal, timeout]);
+  // Pre-Baseline fallback: falling back to the caller's signal alone silently
+  // dropped the timeout, reintroducing the forever-hung screen on bad signal.
+  const both = new AbortController();
+  const abort = () => both.abort();
+  if (signal.aborted || timeout.aborted) abort();
+  signal.addEventListener("abort", abort);
+  timeout.addEventListener("abort", abort);
+  return both.signal;
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {

@@ -52,6 +52,7 @@ import { canConnectVpnSilently } from "../../lib/vpnConnect";
 import { setVpnAutoConnect, vpnUsernameFor } from "../../lib/vpnAutoConnect";
 import type { StoredVpnConfig } from "../../types";
 import { MobileSettings } from "../mobile/MobileSettings";
+import { UpdatesPanel } from "./UpdatesPanel";
 
 // The workspace-layout help text. On Linux a lone Super toggles the panels; on
 // Windows it's F9 (the lone Win key is OS-reserved — Start opens on release, see
@@ -700,7 +701,7 @@ function HelpPanel({ onBack }: { onBack: () => void }) {
   );
 }
 
-export type SettingsPanelKind = "main" | "global" | "filetypes" | "ollama" | "agents" | "shortcuts" | "git" | "vpn" | "remoteHosts" | "archive" | "scaffoldRepair" | "help";
+export type SettingsPanelKind = "main" | "global" | "filetypes" | "ollama" | "agents" | "shortcuts" | "git" | "vpn" | "remoteHosts" | "archive" | "scaffoldRepair" | "updates" | "help";
 
 /** Sub-panel navigation shown as a card menu at the foot of the main settings
  *  panel (styled like the Lessons / How-to-start menus). Titles/blurbs are
@@ -715,6 +716,7 @@ const SETTINGS_NAV: Exclude<SettingsPanelKind, "main" | "ollama">[] = [
   "shortcuts",
   "archive",
   "scaffoldRepair",
+  "updates",
   "help",
 ];
 
@@ -1406,6 +1408,7 @@ export function SettingsDialog({
         {panel === "remoteHosts" && <RemoteHostsSettings onBack={() => setPanel("main")} />}
         {panel === "archive" && <ArchivedProjectsPanel onBack={() => setPanel("main")} />}
         {panel === "scaffoldRepair" && <ScaffoldRepairPanel onBack={() => setPanel("main")} />}
+        {panel === "updates" && <UpdatesPanel onBack={() => setPanel("main")} />}
         {panel === "help" && <HelpPanel onBack={() => setPanel("main")} />}
        </div>
       </div>

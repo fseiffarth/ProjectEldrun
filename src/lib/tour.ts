@@ -43,6 +43,12 @@ export interface TourStep {
    *  render as a centered card. A step whose anchor is absent at runtime falls
    *  back to the centered-card path rather than blocking the tour. */
   anchor: string | null;
+  /** Spotlight the union of *every* element the anchor matches instead of just
+   *  the first. For a step whose subject is a row of sibling controls (the
+   *  mail/calendar/to-do indicators), highlighting one of three while the copy
+   *  names all three is worse than highlighting the group. Off by default,
+   *  where a comma in `anchor` means "first of these that exists". */
+  spanAll?: boolean;
   placement: TourPlacement;
   titleKey: TranslationKey;
   bodyKey: TranslationKey;
@@ -60,6 +66,23 @@ export interface TourStep {
    *  pure selectors — only the host calls it. */
   prepare?: () => void;
 }
+
+/** Force the hover-revealed file panel open so a step has the whole panel to
+ *  spotlight (same event the lessons use). */
+const revealFilePanel = () => window.dispatchEvent(new Event("eldrun:reveal-right-panel"));
+
+/**
+ * The files steps spotlight the *whole* panel, not the 6px reveal marker: a
+ * hairline cutout at the window edge reads as a glitch rather than as "your
+ * files live here". The marker stays as the fallback for the moment before the
+ * panel has slid in (and for a workspace with no project open, where there is
+ * no panel at all).
+ *
+ * Order matters only in the DOM, not here — `querySelector` returns the first
+ * match in *document* order, and `AppShell` renders the panel before the
+ * marker, so an open panel always wins.
+ */
+const FILE_PANEL_ANCHOR = '.right-panel.open, [data-hint-anchor="file-tree-edge"]';
 
 export const TOUR_STEPS: TourStep[] = [
   {
@@ -103,17 +126,19 @@ export const TOUR_STEPS: TourStep[] = [
   },
   {
     id: "file-tree",
-    anchor: '[data-hint-anchor="file-tree-edge"]',
+    anchor: FILE_PANEL_ANCHOR,
     placement: "left",
     titleKey: "tour.fileTreeTitle",
     bodyKey: "hint.fileTreeBody",
+    prepare: revealFilePanel,
   },
   {
     id: "viewers",
-    anchor: '[data-hint-anchor="file-tree-edge"]',
+    anchor: FILE_PANEL_ANCHOR,
     placement: "left",
     titleKey: "tour.viewersTitle",
     bodyKey: "tour.viewersBody",
+    prepare: revealFilePanel,
   },
   {
     id: "local-models",
@@ -128,6 +153,7 @@ export const TOUR_STEPS: TourStep[] = [
     // step points at whichever of the three is in the header and falls back to
     // a centered card when none is — its copy covers all three either way.
     anchor: ".mail-indicator-btn, .calendar-indicator-btn, .todo-indicator-btn",
+    spanAll: true,
     placement: "bottom",
     titleKey: "tour.mailCalendarTitle",
     bodyKey: "tour.mailCalendarBody",

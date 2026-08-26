@@ -1522,6 +1522,10 @@ export function ProjectPill({
 
   const handleMouseEnter = () => {
     if (contextMenu) return;
+    // The Trash pill has no project to report on — no path, no git, no tracked
+    // time — so it gets the plain descriptive tooltip below instead of the
+    // project hover card, which could only show a card full of blanks.
+    if (trashProject) return;
     if (!pillRef.current) return;
     void hover.open(pillRef.current.getBoundingClientRect());
   };
@@ -1716,7 +1720,7 @@ export function ProjectPill({
   return (
     <>
       {/* Hover popup — hidden while context menu is open (which calls hover.close). */}
-      {!contextMenu && <ProjectHoverCard project={project} state={hover} />}
+      {!contextMenu && !trashProject && <ProjectHoverCard project={project} state={hover} />}
 
       {/* Right-click context menu */}
       {contextMenu && createPortal(
@@ -2336,8 +2340,8 @@ export function ProjectPill({
         <button
           className="pill-main"
           onClick={onClick}
-          title={trashProject ? project.name : undefined}
-          aria-label={trashProject ? project.name : undefined}
+          title={trashProject ? t("pill.trashProjectTitle") : undefined}
+          aria-label={trashProject ? t("pill.trashProjectTitle") : undefined}
         >
           {trashProject ? (
             <TrashProjectIcon className="trash-project-icon" />

@@ -101,13 +101,18 @@ See [VISION.md](docs/VISION.md) for the full strategy and platform rationale.
 
 ![Eldrun functionality map](screenshots/eldrun-functionality.svg)
 
-**①** pick a project and the desktop swaps to it. **②** inside, a tiling tab
-layout hosts agent terminals, shells, and native file viewers. **③** the
-project-desktop layer (window parking, default apps, time tracking)
-follows the active project automatically, with the right panel (Files · Git ·
-Search) and the global app toolbar alongside. **④** and the project carries the
-machines it runs on: its tabs, jobs, and files can live on an SSH host, a GPU
-box, or an HPC cluster without changing how any of the above works.
+**①** pick a project — or a box, or the disposable trash project — and the
+desktop swaps to it. **②** inside, a tiling tab layout hosts agent terminals
+(26 built-in CLIs plus your own, resumable, with a per-tab Plan/Auto mode),
+shells, native file viewers, and the app tabs Eldrun renders itself instead of
+sending you to another window. Alongside them sit the right panel (Files · Git
+· Search · Apps) and the header, where mail, the calendar, the to-do board, the
+machine hub, and the VPN live next to the global app toolbar. **③** the
+project-desktop layer — window parking, default-app mapping, time tracking and
+its daily recap, external windows, pop-out tab windows — follows the active
+project automatically. **④** and the project carries the machines it runs on:
+its tabs, jobs, and files can live on an SSH host, a GPU box, an HPC cluster, a
+container, or a VM without changing how any of the above works.
 
 And here's how that looks in the running app:
 
@@ -159,6 +164,12 @@ Prebuilt packages are published on the
 grab the `.AppImage` (portable Linux) or `.deb` (Debian/Ubuntu), or the `.exe`
 installer on Windows. To build from source instead, follow the requirements
 below.
+
+Once it is installed, **Settings → Updates** checks the same releases page from
+inside the app and can download and install a newer build for you. It only
+looks when you open that screen — Eldrun never checks in the background — and
+restarting is always yours to do. A copy installed from the `.deb` (or by any
+other package manager) downloads the new build but leaves installing it to you.
 
 ## Requirements
 

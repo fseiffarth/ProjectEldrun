@@ -5,6 +5,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+/// The load error meaning "not misconfigured — turned off". The sidecar's
+/// entry point exits *cleanly* on it, so `Restart=on-failure` does not spin an
+/// enabled unit forever against a deliberately disabled configuration.
+pub const DISABLED_ERROR: &str = "Eldrun Mobile is disabled";
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct MobileHostSettings {
     #[serde(default)]
@@ -237,7 +242,7 @@ impl HostConfig {
             .unwrap_or_default();
         let host = settings.eldrun_mobile_host.unwrap_or_default();
         if !host.enabled {
-            return Err("Eldrun Mobile is disabled".into());
+            return Err(DISABLED_ERROR.into());
         }
         if !(1024..=65535).contains(&host.port) {
             return Err("Mobile host port must be between 1024 and 65535".into());

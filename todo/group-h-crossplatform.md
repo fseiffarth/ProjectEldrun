@@ -351,4 +351,60 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       `bytes_out` columns) into the existing `SshLinkSnapshot`. Needs a mac to
       verify nettop's CSV shape/permissions before writing the parser.
 
+209. **Getting the app onto a machine, and keeping it current.** The two ends
+    of distribution that were never Eldrun's own: what the installer looks
+    like, and how a user learns a newer build exists. Both landed 2026-08-26,
+    both code-complete and **live-unverified** — the Windows half cannot be
+    checked on Linux at all, and the Linux half needs an AppImage install and a
+    real newer release to check against.
+    - [x] **209a — Brand the Windows installer.** ✅ Done. `icon.ico` was
+      already embedded in the exe (tauri-build does that from `bundle.icon`),
+      but the NSIS template only defines `MUI_ICON`/`MUI_UNICON` when
+      `installerIcon`/`uninstallerIcon` are set — unset, so the *setup* program
+      shipped with the stock NSIS icon, which is what a user sees in Explorer
+      and in the UAC prompt before anything is installed. Set both, plus
+      `headerImage` (150×57) and `sidebarImage` (164×314), rendered from the
+      brand SVG by `scripts/gen-installer-images.sh` into committed BMPs —
+      committed because MUI reads only plain BMP and the Windows CI runner has
+      no SVG renderer. `.gitattributes` marks image extensions `binary`: a
+      24-bit BMP of a dark gradient can hold very few NUL bytes, so
+      `text=auto`'s heuristic is not a safe thing to rely on when a CRLF
+      rewrite would corrupt a build input.
+      - [x] 🤖 Automated test — none possible; the bundler is the only consumer
+      - [ ] 🖐️ Manual test — run the CI-built `.exe` on Windows: the setup
+        program wears the Eldrun icon, the welcome/finish page shows the
+        sidebar, and the inner pages show the header
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **209b — Check for a new release, and install it.** ✅ Done.
+      Settings → Updates: `services::app_update` reads the project's
+      `/releases/latest` from the GitHub API, compares numerically (a lexical
+      compare calls 0.1.9 newer than 0.1.10), picks the artifact matching the
+      running platform, downloads it with progress, and hands it to that
+      platform's own installer. Deliberately **not** the Tauri updater plugin,
+      which wants a signed `latest.json` and a CI signing key that do not
+      exist here. Two rules hold the boundary, because this ends by running a
+      downloaded binary: every asset URL is checked against this repository's
+      release-download prefix (the JSON is network input), and **no command
+      takes a URL or a path** — the download re-checks for itself and the
+      install acts on what the download staged. **Restarting is never
+      Eldrun's**: the AppImage path swaps the running file and says so, the
+      NSIS path hands over to the installer (which offers to close Eldrun), a
+      `.deb`/package-manager copy is only told where the file went.
+      - [x] 🤖 Automated test — `services::app_update` (13: version compare,
+        pre-release ordering, the URL allowlist incl. a look-alike host, asset
+        pick per platform, untrusted asset names, release parsing) +
+        `src/__tests__/UpdatesPanel.test.tsx` (5: no URL/path crosses the IPC
+        boundary, nothing downloads on open, `manual` offers no install)
+      - [ ] 🖐️ Manual test — with an AppImage install and a newer release
+        published: open Settings → Updates, check, download, install, restart,
+        and confirm the new version runs
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] **Open:** no automatic check. A check happens only when the panel
+        is opened, so a user who never visits it never learns of a release. An
+        opt-in "check on launch" (default off) is the obvious follow-up and was
+        left out deliberately rather than forgotten — it is the one part that
+        reaches the network unasked.
+
 ---

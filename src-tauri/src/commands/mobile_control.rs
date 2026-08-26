@@ -187,9 +187,20 @@ fn systemd_path(path: &Path) -> Result<String, String> {
 /// `BindPaths=-/tmp/tmux-%U` was the alternative and is worse: the directory
 /// does not exist when tmux has not started yet, and one created later never
 /// appears inside an already-built namespace.
+///
+/// **`StartLimitIntervalSec=0` is load-bearing.** The sidecar exits non-zero on
+/// a Tailscale Serve verification failure precisely so `Restart=on-failure`
+/// brings it back — but while tailscaled is down, the *startup* verification
+/// fails too, and under systemd's default start limit (5 starts in 10 s) a
+/// `RestartSec=2` crash loop trips it in ~10 seconds and leaves the unit
+/// permanently `failed`: Mobile stays down after the outage ends, the exact
+/// outcome the non-zero exit was chosen to avoid. Disabling the limit and
+/// pacing the retries at 5 s keeps the loop cheap and self-healing. A disabled
+/// configuration cannot spin here: the binary exits 0 for it, which
+/// `on-failure` does not restart.
 #[cfg(target_os = "linux")]
 fn systemd_unit(binary: &Path, state_dir: &Path) -> Result<String, String> {
-    Ok(format!("[Unit]\nDescription=Eldrun Mobile Host\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart={} --mobile-host\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=true\nProtectSystem=strict\nProtectHome=read-only\nReadWritePaths={}\n\n[Install]\nWantedBy=default.target\n", systemd_path(binary)?, systemd_path(state_dir)?))
+    Ok(format!("[Unit]\nDescription=Eldrun Mobile Host\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nExecStart={} --mobile-host\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=true\nProtectSystem=strict\nProtectHome=read-only\nReadWritePaths={}\n\n[Install]\nWantedBy=default.target\n", systemd_path(binary)?, systemd_path(state_dir)?))
 }
 
 /// Replace the installed sidecar without opening its live executable for
@@ -358,6 +369,22 @@ mod tests {
         assert!(unit.contains("NoNewPrivileges=true"));
         assert!(unit.contains("ProtectSystem=strict"));
         assert!(unit.contains("ProtectHome=read-only"));
+    }
+
+    #[test]
+    fn systemd_unit_survives_a_transient_tailscale_outage() {
+        let unit =
+            systemd_unit(Path::new("/opt/eldrun-mobile-host"), Path::new("/state")).expect("unit");
+        // The sidecar exits non-zero while tailscaled is down so it is
+        // restarted — but systemd's default start limit (5 in 10s) turns a
+        // fast crash loop into a permanently `failed` unit. The limit must be
+        // off and the retries paced.
+        assert!(
+            unit.contains("StartLimitIntervalSec=0"),
+            "the default start limit permanently kills the unit mid-outage"
+        );
+        assert!(unit.contains("Restart=on-failure"));
+        assert!(unit.contains("RestartSec=5"));
     }
 
     #[test]

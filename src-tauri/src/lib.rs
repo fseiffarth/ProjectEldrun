@@ -658,6 +658,13 @@ pub fn run() {
             commands::settings::get_settings,
             commands::settings::save_settings,
             commands::settings::save_window_state,
+            // Updates (Settings → Updates): check the GitHub releases page,
+            // download this platform's artifact, hand it to its installer.
+            commands::app_update::check_app_update,
+            commands::app_update::download_app_update,
+            commands::app_update::install_app_update,
+            commands::app_update::app_update_staged,
+            commands::app_update::app_update_releases_url,
             commands::mobile_control::mobile_desktop_respond,
             commands::mobile_control::mobile_opaque_id,
             commands::mobile_control::mobile_prepare_phone_install_script,

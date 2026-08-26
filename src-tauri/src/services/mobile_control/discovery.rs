@@ -111,9 +111,10 @@ pub struct Catalog {
 
 /// A catalog load forks `tmux ls` and walks every mobile-enabled project's
 /// session directory. It is on the path of every HTTP handler, every WebSocket
-/// upgrade *and* the per-second authorization tick of each open terminal, so
-/// without a TTL an idle phone with one terminal open kept the workstation at
-/// roughly 1.7 tmux forks per second forever.
+/// upgrade *and* the periodic authorization re-check of each open terminal
+/// (every fifth second of `pty_bridge`'s tick), so without a TTL an idle phone
+/// with one terminal open kept the workstation at roughly 1.7 tmux forks per
+/// second forever.
 const CATALOG_TTL: Duration = Duration::from_millis(1_000);
 
 #[derive(Debug, Default)]

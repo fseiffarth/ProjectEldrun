@@ -3,7 +3,6 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
   BROWSER_TAB_CMD,
-  CALENDAR_TAB_CMD,
   PRINTING_TAB_CMD,
   DISKUSAGE_TAB_CMD,
   NETWORK_TAB_CMD,
@@ -373,22 +372,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                   }]
                 : []),
             ],
-          },
-          {
-            label: t("newTabMenu.calendar"),
-            entries: [{
-              key: "calendar",
-              label: t("newTabMenu.calendar"),
-              dot: "◆",
-              color: TAB_ACCENT.calendar,
-              onPick: () =>
-                pickFixed({
-                  label: t("newTabMenu.calendar"),
-                  cmd: CALENDAR_TAB_CMD,
-                  cwd: projectCwd,
-                  kind: "calendar",
-                }),
-            }],
           },
           {
             label: t("printing.title"),

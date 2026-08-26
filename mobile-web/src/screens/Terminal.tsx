@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import type { TabRow } from "../api";
+import { ApiError, api, type TabRow } from "../api";
 import { TERMINAL_PROTOCOL } from "../terminal/protocol";
 import { readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
 import { type TerminalEvent } from "../terminal/protocol";
@@ -51,6 +51,7 @@ const CLOSE_REASONS: Record<string, string> = {
   resize_failed: "The desktop could not resize the session.",
   replaced: "This session was opened on another device or tab.",
   session_busy: "Another viewer is holding this session.",
+  session_gone: "This session has ended on the desktop.",
 };
 
 /** One logical line of the session, with the colours the program actually
@@ -269,6 +270,21 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         term.write("\r\n\x1b[33m[Connection interrupted; reconnecting…]\x1b[0m\r\n");
         const delay = Math.min(1_000 * 2 ** reconnectAttempt, 15_000);
         reconnectAttempt += 1;
+        // A session that ended on the desktop refuses the upgrade at the HTTP
+        // layer, so no `closing` frame can ever say why — the phone would show
+        // "reconnecting…" forever. After two straight failures, ask the tab
+        // endpoint; a transient network failure keeps the reconnect loop.
+        if (reconnectAttempt >= 2) {
+          void api<{ tab: TabRow }>(`/api/v1/tabs/${tab.id}`)
+            .then((body) => { if (!body.tab.available) throw new ApiError(410, "session_gone"); })
+            .catch((reason) => {
+              if (stopped || !(reason instanceof ApiError)) return;
+              if (reason.status !== 404 && reason.status !== 410) return;
+              stopped = true;
+              clearTimeout(reconnectTimer);
+              setStoppedReason(CLOSE_REASONS.session_gone);
+            });
+        }
         reconnectTimer = window.setTimeout(connect, delay);
       };
       next.onmessage = (event) => {

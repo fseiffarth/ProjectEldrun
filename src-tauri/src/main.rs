@@ -11,7 +11,12 @@ fn main() {
             runtime.block_on(eldrun_lib::services::mobile_control::host::run(state_dir))
         {
             eprintln!("eldrun-mobile-host: {error}");
-            std::process::exit(1);
+            // Disabled is a decision, not a failure: exiting non-zero would make
+            // `Restart=on-failure` relaunch an enabled unit forever against a
+            // configuration that says off.
+            if error != eldrun_lib::services::mobile_control::config::DISABLED_ERROR {
+                std::process::exit(1);
+            }
         }
         return;
     }

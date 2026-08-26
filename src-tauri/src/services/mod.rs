@@ -1,4 +1,7 @@
 pub mod agent_session;
+// "Check for a new Eldrun" against the GitHub releases page: version compare,
+// per-platform asset pick, staged download, per-platform install.
+pub mod app_update;
 pub mod big_folders;
 // In-app browser (TODO J #61): reader-mode fetch+sanitize, the live-page window
 // registry, and download quarantine. See docs/browser_plan_{b,c}.md.

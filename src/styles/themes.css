@@ -18456,20 +18456,23 @@ select option {
   gap: 4px;
 }
 
-.ollama-download-bar {
+.ollama-download-bar,
+.app-update-bar {
   height: 5px;
   border-radius: var(--radius-sm);
   background: var(--border-subtle);
   overflow: hidden;
 }
 
-.ollama-download-bar-fill {
+.ollama-download-bar-fill,
+.app-update-bar-fill {
   height: 100%;
   background: var(--accent, var(--text-primary));
   transition: width var(--transition-slow);
 }
 
-.ollama-download-bar-fill.indeterminate {
+.ollama-download-bar-fill.indeterminate,
+.app-update-bar-fill.indeterminate {
   width: 35%;
   border-radius: var(--radius-sm);
   animation: ollama-download-indeterminate 1.1s ease-in-out infinite;
@@ -18478,6 +18481,101 @@ select option {
 @keyframes ollama-download-indeterminate {
   0% { margin-left: -35%; }
   100% { margin-left: 100%; }
+}
+
+/* Settings → Updates. The progress bar itself is the Ollama pull bar's rules,
+   shared by selector above rather than restated here — one treatment, one
+   definition. What is left is the panel's own layout. */
+.app-update-version {
+  font-family: ui-monospace, monospace;
+  color: var(--text-secondary);
+}
+
+.app-update-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-left: 2px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-main);
+  margin-top: 6px;
+}
+.app-update-status.done {
+  border-left-color: var(--success);
+  color: var(--text-primary);
+}
+
+.app-update-error {
+  font-size: 12px;
+  color: var(--danger);
+  padding: 6px 8px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  background: var(--bg-main);
+  margin-top: 6px;
+  /* A backend error is one long sentence; wrap it rather than clip it. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.app-update-release {
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-main);
+}
+
+.app-update-release-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.app-update-release-title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.app-update-release-date {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: ui-monospace, monospace;
+}
+
+/* The release body is the workflow's markdown, rendered as the plain text it
+   is — no markdown parser is run over text fetched from the network. */
+.app-update-notes {
+  margin: 6px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, monospace;
+}
+
+.app-update-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.app-update-progress-text {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.app-update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
 }
 
 .ollama-download-status {

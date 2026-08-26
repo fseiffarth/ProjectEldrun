@@ -217,7 +217,14 @@ impl AuthStore {
     }
 
     pub fn create_pairing_code(&mut self) -> Result<(String, u64), String> {
-        let raw = u32::from_be_bytes(random_bytes::<4>()?) % 100_000_000;
+        // Rejection-sample below the largest multiple of 10^8 that fits a u32:
+        // a bare modulo skews codes under 94 967 296 by ~2%.
+        let raw = loop {
+            let candidate = u32::from_be_bytes(random_bytes::<4>()?);
+            if candidate < 4_200_000_000 {
+                break candidate % 100_000_000;
+            }
+        };
         let code = format!("{raw:08}");
         let expires_at = now() + PAIR_TTL;
         self.pairing = Some(PairCode {

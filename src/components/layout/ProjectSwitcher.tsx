@@ -466,8 +466,8 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             <button
               type="button"
               className="root-pill-main"
-              title={t("header.rootTerminal")}
-              aria-label={t("header.rootTerminal")}
+              title={t("header.rootProject")}
+              aria-label={t("header.rootProject")}
               onClick={(e) => {
                 e.stopPropagation();
                 void setActive(null);

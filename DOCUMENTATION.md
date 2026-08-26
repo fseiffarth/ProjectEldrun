@@ -122,6 +122,31 @@ The desktop launchers are `docs/Eldrun.desktop` for the packaged app and
 `docs/EldrunHotReload.desktop` for the hot-reload dev server; both carry a
 `/path/to/projecteldrun/...` placeholder to point at your checkout.
 
+### Staying Current
+
+**Settings → Updates** compares the running version against the project's
+GitHub `/releases/latest`, and — for a release that published an artifact for
+your platform — downloads it and hands it to that platform's own installer.
+
+It is deliberately not the Tauri updater plugin, which expects a signed
+`latest.json` and a CI signing key that this project does not have; it reads
+the same public releases page a user would open by hand. Three properties are
+worth knowing:
+
+- **It only looks when you ask.** The check runs when that screen is opened and
+  at no other time — there is no background poll and no check at launch.
+- **The renderer names nothing.** No command takes a URL or a path: the
+  download re-checks which asset belongs to this platform, and the install acts
+  on what that download staged. Every asset URL is validated against this
+  repository's release-download prefix before it is fetched and again before
+  anything is installed.
+- **Restarting is yours.** On Linux the running `.AppImage` is swapped in place
+  (the previous build is kept beside it as `.old`) and the new one takes effect
+  at your next launch; on Windows the NSIS installer runs and offers to close
+  Eldrun first; on macOS the `.dmg` opens. A copy installed by a package
+  manager — the `.deb`, or a plain `cargo build` binary — is downloaded and
+  then left alone, since installing it is not Eldrun's to do.
+
 ## User Interface
 
 The active layout is a single fullscreen orchestration surface:

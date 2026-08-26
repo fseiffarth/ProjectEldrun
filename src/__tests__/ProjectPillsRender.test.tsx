@@ -117,6 +117,9 @@ describe("project switcher pill rendering", () => {
     expect(pill.querySelector(".trash-project-icon")).toBeTruthy();
     expect(pill.querySelector(".project-pill-label")).toBeNull();
     expect(pill.querySelector(".pill-close-btn")).toBeNull();
-    expect(pill.querySelector("button[aria-label='Trash']")).toBeTruthy();
+    // The pill's own label is the descriptive tooltip, not the bare project
+    // name — the Trash pill shows no name and gets no hover card.
+    const main = pill.querySelector(".pill-main") as HTMLElement;
+    expect(main.getAttribute("aria-label")).toMatch(/^Trash project —/);
   });
 });
