@@ -8939,7 +8939,7 @@ select option {
   padding: 0 5px;
   border-radius: var(--radius);
   background: var(--accent);
-  color: var(--bg-base, #111);
+  color: var(--bg-main);
   white-space: nowrap;
 }
 
@@ -8975,7 +8975,7 @@ select option {
   width: 100%;
   font-family: monospace;
   font-size: 12px;
-  background: var(--bg-base, #111);
+  background: var(--bg-panel);
   color: var(--text-primary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);

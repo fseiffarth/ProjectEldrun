@@ -38,3 +38,37 @@ profile (URL + token).*
       `remote-<visibility>`.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+80. **The hosting choice at creation is honored, not just recorded** (fixed
+    2026-08-26). "Push to GitHub/GitLab · private/public" in the new-project
+    dialog wrote `git_type = remote-<visibility>` and stopped: no repository was
+    created, no `origin` was wired, nothing was pushed — and since the Files
+    view's Push button keys off an upstream branch, such a project had no push
+    affordance either. Creating a project now runs the same
+    `publish_project` the pill's Publish… window drives (`ProjectDialog.tsx`,
+    `publishCreated`), and the pill's git menu asks `project_has_origin`
+    (`git_publish.rs`) so a project *labeled* as published but lacking an origin
+    is offered Publish… instead of the manage-a-repo actions that would all fail.
+    - [x] 🤖 Automated test — `src/__tests__/ProjectDialogPublish.test.tsx`
+      (publishes on create, keeps the dialog open + retries publish-only on
+      failure, leaves a `local` git type alone) and
+      `src/__tests__/ProjectPillPublishMenu.test.tsx` (menu follows the real
+      origin, not the label).
+    - Still open, deliberately:
+      - A **work-remote** or **VM** project keeps the recorded push target and
+        publishes from the pill later — the mirror has to be in lockstep first,
+        and a VM guest has no hosting login. The dialog now says so instead of
+        implying the repo exists.
+      - Publishing needs `gh`/`glab` on PATH; a saved access token alone is not
+        enough. The dialog blocks with a one-click install banner rather than
+        failing at the end. A token-only path (provider REST API + `git remote
+        add origin` + token push) would subsume this and the generic-URL bullet
+        in #79.
+      - The pill's *badge* still reads the label ("GitHub · private") for a
+        never-published project; only the menu is origin-aware.
+    - [ ] 🖐️ Manual test — create a project with "Push to GitHub · private" and
+      confirm the repo appears on GitHub with the scaffold commit pushed, the
+      pill shows the hosting badge, and the Files view offers Push after the
+      next commit.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

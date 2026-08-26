@@ -409,6 +409,32 @@ pub fn publish_project(
     Ok(stdout.trim().to_string())
 }
 
+/// Whether a project's recorded hosting push target actually **exists** — i.e.
+/// whether a publish ever wired an `origin` remote.
+///
+/// `git_type: "remote-*"` is only a label, and it is not written by
+/// [`publish_project`] alone: the new-project dialog's "Push to GitHub/GitLab"
+/// choice records it too. A project in that state claims to be published while
+/// having no repository on the host, no `origin`, and — since the Push button
+/// keys off an upstream branch — no way to push either. The pill reads this so it
+/// can offer *Publish…* for such a project instead of the manage-an-existing-repo
+/// actions (visibility, migrate, unpublish), every one of which would fail.
+///
+/// Local projects only. A work-remote project's `origin` may legitimately live on
+/// its host, and asking would be an ssh round trip, so those answer `true` —
+/// "nothing here contradicts the label".
+#[tauri::command]
+pub fn project_has_origin(project_id: String) -> Result<bool, String> {
+    let (entry_index, list) = find_entry(&project_id)?;
+    let local_file = list[entry_index].local_file.clone();
+    let project: Project =
+        storage::read_json(&PathBuf::from(&local_file)).map_err(|e| e.to_string())?;
+    if project.remote.is_some() {
+        return Ok(true);
+    }
+    Ok(has_origin(Path::new(&project.directory)))
+}
+
 /// Unpublish a project: forget its hosting push target **without** deleting
 /// either its local history or the hosted repository. Removes the `origin`
 /// remote (locally, or over ssh on the work-remote host where the repo lives),

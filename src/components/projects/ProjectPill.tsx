@@ -1337,6 +1337,18 @@ export function ProjectPill({
   // wrongly (the dialog probes the host for that project anyway).
   const [hasPythonFiles, setHasPythonFiles] = useState<boolean | null>(null);
   const showPython = project.remote ? true : hasPythonFiles === true;
+  // Whether a `remote-*` project really has an `origin` — i.e. whether it was
+  // ever actually published. The git type is only a label, and the new-project
+  // dialog writes it from its "Push to GitHub/GitLab" choice, so a project can
+  // wear a hosting badge with no repository behind it. Probed lazily when this
+  // menu opens (like the Python scan above), because the difference decides
+  // whether the menu below offers *Publish…* or the manage-a-repo actions —
+  // every one of which fails against an origin that isn't there. `null` = not
+  // probed yet, and reads as "believe the label".
+  const [hasOrigin, setHasOrigin] = useState<boolean | null>(null);
+  const publishedGitType =
+    typeof project.git_type === "string" && project.git_type.startsWith("remote");
+  const trulyPublished = publishedGitType && hasOrigin !== false;
 
   // Flip the project-container toggle. The flag is in every TerminalView's
   // spawn deps, so flipping respawns each live tab of this project —
@@ -1535,6 +1547,16 @@ export function ProjectPill({
     // entry below. A cheap local ending scan (already the file tree's "hide these
     // endings" source), skipped for remote projects whose files live on the host
     // (showPython shows those regardless — see hasPythonFiles).
+    // Was a project labeled "pushed to GitHub/GitLab" ever published? One local
+    // `git remote get-url origin` (the backend answers `true` unasked for a
+    // work-remote project, whose origin can live on its host).
+    if (publishedGitType) {
+      void invoke<boolean>("project_has_origin", { projectId: project.id })
+        .then(setHasOrigin)
+        // An older backend without the command must not turn the menu into a
+        // publish offer for a project that is published — believe the label.
+        .catch(() => setHasOrigin(null));
+    }
     if (!project.remote) {
       const dir = resolveProjectDirectory(project);
       if (dir) {
@@ -1830,7 +1852,7 @@ export function ProjectPill({
                   <UntestedTag />
                 </button>
               )
-            ) : typeof project.git_type === "string" && project.git_type.startsWith("remote") ? (
+            ) : trulyPublished ? (
               // Already published — offer in-place management, not another publish.
               <>
                 <button
@@ -1879,17 +1901,25 @@ export function ProjectPill({
                 </button>
               </>
             ) : (
-              // Local git repo, not yet pushed anywhere.
-              <button
-                className="untested"
-                onClick={() => {
-                  setContextMenu(null);
-                  setShowPublish(true);
-                }}
-              >
-                {t("pill.publishEllipsis")}
-                <UntestedTag />
-              </button>
+              // A local git repo that isn't on a host yet — either because no
+              // hosting was ever chosen, or because it was chosen at creation
+              // and only recorded (`hasOrigin === false`). Both want the same
+              // thing: publish it.
+              <>
+                {publishedGitType && (
+                  <div className="context-menu-note">{t("pill.labeledButNotPublished")}</div>
+                )}
+                <button
+                  className="untested"
+                  onClick={() => {
+                    setContextMenu(null);
+                    setShowPublish(true);
+                  }}
+                >
+                  {t("pill.publishEllipsis")}
+                  <UntestedTag />
+                </button>
+              </>
             )}
           </div>
 

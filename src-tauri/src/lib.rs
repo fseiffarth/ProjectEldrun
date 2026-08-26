@@ -1000,6 +1000,7 @@ pub fn run() {
             commands::credentials::credential_paste_to_pty,
             // Git hosting (GitHub / GitLab) publishing
             commands::git_publish::publish_project,
+            commands::git_publish::project_has_origin,
             commands::git_publish::unpublish_project,
             commands::git_publish::set_project_visibility,
             commands::git_publish::switch_project_provider,
