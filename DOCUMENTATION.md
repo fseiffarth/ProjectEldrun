@@ -71,7 +71,7 @@ desktop state.
 | File/URL opening | `xdg-open` / `opener` crate |
 | Network monitoring | `network-interface` crate + TCP probe |
 | Local model integration | Ollama REST API over localhost TCP + Vibe config files |
-| Drag-to-reorder | hand-rolled pointer events (HTML5 DnD breaks on WebKitGTK) |
+| Drag-to-reorder | hand-rolled pointer events (HTML5 DnD breaks on WebKitGTK; no DnD library) |
 | X11 workspace | `xcb` crate (Linux only) |
 | KDE DBus | `zbus` crate (Linux only) |
 | Companion PWA | separate Vite bundle under `mobile-web/`, built by `npm run build` |
@@ -194,16 +194,16 @@ Supported roles (`GLOBAL_APP_ROLES` in `GlobalAppBar.tsx`):
 | Screen Recorder | `screen_recorder` |
 | Chat | `chat` |
 
-**Retired roles.** `mail`, `calendar`, `file_manager` and `system_monitor` are
-in `RETIRED_GLOBAL_APP_ROLES` and `print_manager` was dropped outright, because
-Eldrun renders each of them itself now. Dropping a role from `GLOBAL_APP_ROLES`
-alone is not enough: an existing `settings.json` (or a seeded platform default)
-still holds the entry, and `orderedGlobalApps` deliberately renders *unknown*
-roles so a hand-added one isn't swallowed — so a retired role would come back as
-an unnamed "●" button. They are filtered rather than deleted from settings, so a
-role that is re-added later still finds its configured command. *(`print_manager`
-is the one gap: it is absent from both lists, so an older `settings.json`
-carrying it would render that stray button.)*
+**Retired roles.** `mail`, `calendar`, `file_manager`, `print_manager` and
+`system_monitor` are in `RETIRED_GLOBAL_APP_ROLES`, because Eldrun renders each
+of them itself now. Dropping a role from `GLOBAL_APP_ROLES` alone is not enough:
+an existing `settings.json` (or a seeded platform default) still holds the entry,
+and `orderedGlobalApps` deliberately renders *unknown* roles so a hand-added one
+isn't swallowed — so a retired role would come back as an unnamed "●" button.
+They are filtered rather than deleted from settings, so a role that is re-added
+later still finds its configured command. `GlobalAppRoles.test.ts` pins the two
+lists together: `print_manager` was named as retired in the comment and missing
+from the set, which is exactly the stray button the set exists to prevent.
 
 Toolbar behavior:
 

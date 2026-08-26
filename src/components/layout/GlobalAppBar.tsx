@@ -29,7 +29,7 @@ const ROLE_BY_KEY = Object.fromEntries(GLOBAL_APP_ROLES.map((role) => [role.key,
 
 // Roles Eldrun no longer launches an external app for, because it now has its
 // own: mail (the header's `MailIndicator` + its overlay), calendar
-// (`CalendarIndicator`/calendar tab), the file manager (the file panel, the Files tab, the docked file
+// (the header's `CalendarIndicator` + its overlay), the file manager (the file panel, the Files tab, the docked file
 // column), the print manager (the native Print Manager tab —
 // `PRINTING_TAB_CMD` / `printing/PrintManagerPane`, opened from the new-tab
 // menu) and the system monitor (the native Monitor tab — `MONITOR_TAB_CMD` /
@@ -41,10 +41,16 @@ const ROLE_BY_KEY = Object.fromEntries(GLOBAL_APP_ROLES.map((role) => [role.key,
 // hand-added one isn't swallowed, so without this they'd come back as unnamed
 // "●" buttons. Filtered rather than deleted from settings: a role that gets
 // re-added later should find its configured command still there.
+// Every role named in the paragraph above must therefore appear in the set
+// below. `print_manager` was named there and missing here, so an older
+// `settings.json` carrying that entry rendered exactly the stray button this
+// set exists to prevent; `GlobalAppRoles.test.ts` now pins the two lists
+// together so the next retirement cannot half-land the same way.
 const RETIRED_GLOBAL_APP_ROLES = new Set([
   "mail",
   "calendar",
   "file_manager",
+  "print_manager",
   "system_monitor",
 ]);
 
@@ -215,7 +221,9 @@ export function GlobalAppBar() {
   );
 }
 
-function orderedGlobalApps(apps: Record<string, GlobalAppEntry>): Array<[string, GlobalAppEntry]> {
+/** Exported for `GlobalAppRoles.test.ts` — the retirement filter is the whole
+ *  reason this function is not a bare `Object.entries`. */
+export function orderedGlobalApps(apps: Record<string, GlobalAppEntry>): Array<[string, GlobalAppEntry]> {
   const ordered = GLOBAL_APP_ROLES
     .map((role) => [role.key, apps[role.key]] as const)
     .filter((entry): entry is [string, GlobalAppEntry] => Boolean(entry[1]));
