@@ -65,7 +65,13 @@ pub async fn serve(
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
         .map_err(|e| e.to_string())?;
     loop {
-        let (mut stream, _) = listener.accept().await.map_err(|e| e.to_string())?;
+        // One transient accept failure (EMFILE, ECONNABORTED) must not take the
+        // admin plane down permanently — that is how the desktop reaches the
+        // sidecar to pair, revoke, and shut it down.
+        let Ok((mut stream, _)) = listener.accept().await else {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            continue;
+        };
         if !trusted_peer(&stream) {
             continue;
         }
@@ -127,11 +133,19 @@ pub async fn serve(
 
 #[cfg(unix)]
 pub async fn admin_call(socket: &Path, request: &AdminRequest) -> Result<AdminResponse, String> {
-    let mut stream = tokio::net::UnixStream::connect(socket)
-        .await
-        .map_err(|e| e.to_string())?;
-    write_frame(&mut stream, request).await?;
-    read_frame(&mut stream).await
+    let mut stream = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::net::UnixStream::connect(socket),
+    )
+    .await
+    .map_err(|_| "mobile host connection timed out")?
+    .map_err(|e| e.to_string())?;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        write_frame(&mut stream, request).await?;
+        read_frame(&mut stream).await
+    })
+    .await
+    .map_err(|_| "mobile host response timed out")?
 }
 
 #[cfg(not(unix))]
@@ -144,6 +158,13 @@ pub async fn desktop_call(
     socket: &Path,
     request: &DesktopRequest,
 ) -> Result<DesktopResponse, String> {
+    // A first message open may need a bounded IMAP BODY.PEEK fetch. The other
+    // control calls should still fail fast when the desktop is wedged.
+    let response_timeout = if matches!(request, DesktopRequest::MailMessage { .. }) {
+        std::time::Duration::from_secs(35)
+    } else {
+        std::time::Duration::from_secs(10)
+    };
     let mut stream = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         tokio::net::UnixStream::connect(socket),
@@ -152,7 +173,7 @@ pub async fn desktop_call(
     .map_err(|_| "desktop_unavailable")?
     .map_err(|_| "desktop_unavailable")?;
     write_frame(&mut stream, request).await?;
-    tokio::time::timeout(std::time::Duration::from_secs(10), read_frame(&mut stream))
+    tokio::time::timeout(response_timeout, read_frame(&mut stream))
         .await
         .map_err(|_| "desktop_unavailable")?
 }

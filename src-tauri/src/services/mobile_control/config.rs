@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MobileHostSettings {
@@ -84,6 +84,100 @@ pub fn serve_status_json() -> Result<serde_json::Value, String> {
     }
     serde_json::from_slice(&output.stdout)
         .map_err(|_| "Tailscale returned invalid Serve status JSON".into())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DetectedServeSettings {
+    pub display_name: String,
+    pub port: u16,
+    pub origin: String,
+}
+
+/// Find the one private HTTPS root handler that points at Eldrun's supported
+/// loopback listener shape. Detection is deliberately as strict as activation:
+/// a Funnel, non-root handler, non-loopback proxy, or ambiguous set is never
+/// turned into settings merely because it appeared in Tailscale's JSON.
+pub fn detect_serve_settings_json(
+    status: &serde_json::Value,
+) -> Result<DetectedServeSettings, String> {
+    let mut candidates = Vec::new();
+    let Some(web) = status.get("Web").and_then(serde_json::Value::as_object) else {
+        return Err("Tailscale Serve has no HTTPS web mappings".into());
+    };
+
+    for (authority, server) in web {
+        let Some(proxy) = server
+            .get("Handlers")
+            .and_then(|handlers| handlers.get("/"))
+            .and_then(|handler| handler.get("Proxy"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        let Ok(target) = url::Url::parse(proxy) else {
+            continue;
+        };
+        if target.scheme() != "http"
+            || target.host_str() != Some("127.0.0.1")
+            || !target.username().is_empty()
+            || target.password().is_some()
+            || target.path() != "/"
+            || target.query().is_some()
+            || target.fragment().is_some()
+        {
+            continue;
+        }
+        let Some(port) = target.port() else {
+            continue;
+        };
+        if !(1024..=65535).contains(&port) {
+            continue;
+        }
+
+        let raw_origin = format!("https://{authority}");
+        let Ok(origin) = validate_origin(&raw_origin) else {
+            continue;
+        };
+        let Ok(origin_url) = url::Url::parse(&origin) else {
+            continue;
+        };
+        let Some(host) = origin_url.host_str() else {
+            continue;
+        };
+        let Some(public_port) = origin_url.port_or_known_default() else {
+            continue;
+        };
+        if status
+            .pointer(&format!("/TCP/{public_port}/HTTPS"))
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+            || status
+                .get("AllowFunnel")
+                .and_then(|funnel| funnel.get(authority))
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+        {
+            continue;
+        }
+
+        let display_name = host.split('.').next().unwrap_or_default().trim();
+        if display_name.is_empty() || display_name.len() > 64 {
+            continue;
+        }
+        candidates.push(DetectedServeSettings {
+            display_name: display_name.into(),
+            port,
+            origin,
+        });
+    }
+
+    candidates.sort_by(|a, b| a.origin.cmp(&b.origin).then(a.port.cmp(&b.port)));
+    candidates.dedup();
+    match candidates.len() {
+        1 => Ok(candidates.remove(0)),
+        0 => Err("No private HTTPS root handler proxies to http://127.0.0.1:<port>".into()),
+        _ => Err("Multiple eligible Tailscale Serve mappings were found; keep only the Eldrun root mapping before detecting settings".into()),
+    }
 }
 
 pub fn verify_serve_json(
@@ -197,6 +291,31 @@ mod tests {
     #[test]
     fn verifies_exact_non_funnel_root_handler() {
         assert!(verify_serve_json(&serve_status(), "https://desk.example.ts.net", 8742).is_ok());
+    }
+
+    #[test]
+    fn detects_name_origin_and_loopback_port() {
+        assert_eq!(
+            detect_serve_settings_json(&serve_status()).unwrap(),
+            DetectedServeSettings {
+                display_name: "desk".into(),
+                port: 8742,
+                origin: "https://desk.example.ts.net".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn detection_rejects_funnel_and_ambiguous_mappings() {
+        let mut funnel = serve_status();
+        funnel["AllowFunnel"] = serde_json::json!({ "desk.example.ts.net:443": true });
+        assert!(detect_serve_settings_json(&funnel).is_err());
+
+        let mut ambiguous = serve_status();
+        ambiguous["Web"]["other.example.ts.net:443"] = serde_json::json!({
+            "Handlers": { "/": { "Proxy": "http://127.0.0.1:9000" } }
+        });
+        assert!(detect_serve_settings_json(&ambiguous).is_err());
     }
 
     #[test]

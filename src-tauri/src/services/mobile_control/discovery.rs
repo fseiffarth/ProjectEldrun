@@ -3,6 +3,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    time::{Duration, Instant},
 };
 
 use base64ct::{Base64UrlUnpadded, Encoding};
@@ -28,6 +29,8 @@ struct ProjectRecord {
     vm: Option<Value>,
     #[serde(default)]
     eldrun_mobile_access: bool,
+    #[serde(default)]
+    eldrun_trash: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -78,6 +81,10 @@ pub struct PublicTab {
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_label: Option<String>,
+    /// The desktop's derived state for an agent tab, if the desktop is online.
+    /// This intentionally never stores or infers terminal text in the sidecar.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_status: Option<String>,
     pub available: bool,
     pub viewer_busy: bool,
     pub last_activity: Option<u64>,
@@ -102,18 +109,41 @@ pub struct Catalog {
     pub projects: Vec<ResolvedProject>,
 }
 
+/// A catalog load forks `tmux ls` and walks every mobile-enabled project's
+/// session directory. It is on the path of every HTTP handler, every WebSocket
+/// upgrade *and* the per-second authorization tick of each open terminal, so
+/// without a TTL an idle phone with one terminal open kept the workstation at
+/// roughly 1.7 tmux forks per second forever.
+const CATALOG_TTL: Duration = Duration::from_millis(1_000);
+
 #[derive(Debug, Default)]
 pub struct CatalogCache {
     last_valid: Option<Catalog>,
+    loaded_at: Option<Instant>,
 }
 
 impl CatalogCache {
+    /// Serves a snapshot up to `CATALOG_TTL` old.
     pub fn load(&mut self, state_dir: &Path, host_key: &[u8]) -> Result<Catalog, String> {
+        if let (Some(catalog), Some(at)) = (self.last_valid.as_ref(), self.loaded_at) {
+            if at.elapsed() < CATALOG_TTL {
+                return Ok(catalog.clone());
+            }
+        }
+        self.load_fresh(state_dir, host_key)
+    }
+
+    /// Bypasses the TTL, for the one caller that is waiting on a change it knows
+    /// is not in the snapshot yet (a tab the desktop has just been told to open).
+    pub fn load_fresh(&mut self, state_dir: &Path, host_key: &[u8]) -> Result<Catalog, String> {
         match Catalog::load(state_dir, host_key) {
             Ok(next) => {
                 self.last_valid = Some(next.clone());
+                self.loaded_at = Some(Instant::now());
                 Ok(next)
             }
+            // A failed read leaves `loaded_at` alone so the next call retries
+            // rather than pinning a stale snapshot for the whole TTL.
             Err(error) => self.last_valid.clone().ok_or(error),
         }
     }
@@ -140,8 +170,18 @@ fn key_id(key: &[u8], domain: &str, parts: &[&str]) -> String {
     Base64UrlUnpadded::encode_string(&mac.finalize().into_bytes()[..20])
 }
 
+/// Domains used by the mobile protocol's opaque identities.  Keep this allow
+/// list narrow: callers may only derive IDs for the public objects the paired
+/// device is permitted to receive or send back to the desktop bridge.
+fn valid_opaque_control_domain(domain: &str) -> bool {
+    matches!(
+        domain,
+        "agent" | "request" | "task" | "mail" | "calendar" | "event" | "project" | "subtask"
+    )
+}
+
 pub fn opaque_control_id(state_dir: &Path, domain: &str, value: &str) -> Result<String, String> {
-    if !matches!(domain, "agent" | "request") {
+    if !valid_opaque_control_domain(domain) {
         return Err("invalid opaque id domain".into());
     }
     let key = fs::read(state_dir.join("mobile-control/host.key"))
@@ -234,7 +274,7 @@ impl Catalog {
         for project in projects {
             if !project.eldrun_mobile_access
                 || project.remote.is_some()
-                || enabled(&project.sandbox)
+                || (enabled(&project.sandbox) && !project.eldrun_trash)
                 || enabled(&project.vm)
             {
                 continue;
@@ -283,6 +323,7 @@ impl Catalog {
                     kind: tab.kind.clone(),
                     agent_label: (tab.kind == "agent")
                         .then(|| tab.label.chars().take(120).collect()),
+                    agent_status: None,
                     available: live_row.is_some(),
                     viewer_busy: false,
                     last_activity: live_row.map(|r| r.activity),
@@ -336,6 +377,16 @@ mod tests {
     }
 
     #[test]
+    fn mobile_protocol_domains_are_accepted_but_arbitrary_ones_are_not() {
+        for domain in [
+            "agent", "request", "task", "mail", "calendar", "event", "project", "subtask",
+        ] {
+            assert!(valid_opaque_control_domain(domain), "{domain}");
+        }
+        assert!(!valid_opaque_control_domain("filesystem_path"));
+    }
+
+    #[test]
     fn exact_session_names_only() {
         assert!(expected_tmux("p1", "shell", "eldrun-p1--shell-123456789"));
         assert!(!expected_tmux("p1", "shell", "eldrun-p2--shell-123456789"));
@@ -349,6 +400,18 @@ mod tests {
         let mut cache = CatalogCache::default();
         assert!(cache.load(dir.path(), &[7; 32]).is_ok());
         fs::write(dir.path().join("projects.json"), b"[").expect("partial projects");
+        assert!(cache.load_fresh(dir.path(), &[7; 32]).is_ok());
+    }
+
+    #[test]
+    fn repeat_loads_inside_the_ttl_do_not_touch_the_disk() {
+        let dir = tempfile::tempdir().expect("state dir");
+        fs::write(dir.path().join("projects.json"), b"[]").expect("projects");
+        let mut cache = CatalogCache::default();
+        cache.load(dir.path(), &[7; 32]).expect("first load");
+        // Removing the file would fail an uncached load; the TTL must absorb it.
+        fs::remove_file(dir.path().join("projects.json")).expect("remove");
         assert!(cache.load(dir.path(), &[7; 32]).is_ok());
+        assert!(cache.load_fresh(dir.path(), &[7; 32]).is_ok());
     }
 }

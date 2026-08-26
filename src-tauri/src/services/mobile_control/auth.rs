@@ -21,6 +21,16 @@ use super::{protocol::AdminDevice, store};
 type HmacSha256 = Hmac<Sha256>;
 const DEVICE_SCHEMA: u32 = 1;
 const PAIR_TTL: u64 = 5 * 60;
+/// Separate budgets so an unauthenticated `pair` flood cannot starve a paired
+/// device's `challenge`/`login`, and so one device cannot starve another.
+const PAIR_ATTEMPT_BUDGET: usize = 10;
+const AUTH_ATTEMPT_BUDGET: usize = 30;
+/// A pairing code retires after this many wrong guesses rather than after the
+/// first one: consuming it eagerly let any caller burn every code the user made.
+const PAIR_CODE_ATTEMPTS: u8 = 5;
+/// Backstop only. Scopes are `pair`, `auth:unknown`, and one per paired device,
+/// so the live count is bounded by the device list.
+const MAX_RATE_BUCKETS: usize = 64;
 const CHALLENGE_TTL: u64 = 60;
 const SESSION_TTL: u64 = 12 * 60 * 60;
 
@@ -35,6 +45,16 @@ fn random_bytes<const N: usize>() -> Result<[u8; N], String> {
     let mut bytes = [0u8; N];
     getrandom::fill(&mut bytes).map_err(|e| format!("no system randomness: {e}"))?;
     Ok(bytes)
+}
+
+/// Unknown device ids all share one bucket, so a flood of made-up ids can never
+/// evict a real device's bucket and lock the phone out.
+fn auth_scope(device_id: &str, known: bool) -> String {
+    if known {
+        format!("auth:{device_id}")
+    } else {
+        "auth:unknown".into()
+    }
 }
 
 fn random_id<const N: usize>() -> Result<String, String> {
@@ -70,6 +90,7 @@ impl Default for DeviceFile {
 struct PairCode {
     hash: [u8; 32],
     expires_at: u64,
+    attempts: u8,
 }
 
 #[derive(Clone)]
@@ -93,7 +114,7 @@ pub struct AuthStore {
     pairing: Option<PairCode>,
     challenges: HashMap<String, Challenge>,
     sessions: HashMap<String, Session>,
-    attempts: VecDeque<u64>,
+    attempts: HashMap<String, VecDeque<u64>>,
 }
 
 impl AuthStore {
@@ -145,7 +166,7 @@ impl AuthStore {
             pairing: None,
             challenges: HashMap::new(),
             sessions: HashMap::new(),
-            attempts: VecDeque::new(),
+            attempts: HashMap::new(),
         })
     }
 
@@ -153,19 +174,33 @@ impl AuthStore {
         &self.host_key
     }
 
-    fn rate_limit(&mut self) -> Result<(), String> {
+    /// Expired challenges and sessions are otherwise only ever removed when the
+    /// exact entry is presented again, so an abandoned login leaked one forever.
+    fn sweep_expired(&mut self, t: u64) {
+        self.challenges.retain(|_, c| c.expires_at >= t);
+        self.sessions.retain(|_, s| s.expires_at >= t);
+    }
+
+    /// Per-scope sliding window. A single global window meant 30 forged
+    /// `pair` posts a minute locked the real phone out of `login` permanently,
+    /// with no way back in because the same flood also ate each new code.
+    fn rate_limit(&mut self, scope: &str, budget: usize) -> Result<(), String> {
         let t = now();
-        while self
-            .attempts
-            .front()
-            .is_some_and(|v| t.saturating_sub(*v) > 60)
-        {
-            self.attempts.pop_front();
-        }
-        if self.attempts.len() >= 30 {
+        self.sweep_expired(t);
+        self.attempts.retain(|_, queue| {
+            while queue.front().is_some_and(|v| t.saturating_sub(*v) > 60) {
+                queue.pop_front();
+            }
+            !queue.is_empty()
+        });
+        if !self.attempts.contains_key(scope) && self.attempts.len() >= MAX_RATE_BUCKETS {
             return Err("too_many_attempts".into());
         }
-        self.attempts.push_back(t);
+        let queue = self.attempts.entry(scope.to_string()).or_default();
+        if queue.len() >= budget {
+            return Err("too_many_attempts".into());
+        }
+        queue.push_back(t);
         Ok(())
     }
 
@@ -188,18 +223,29 @@ impl AuthStore {
         self.pairing = Some(PairCode {
             hash: self.keyed(b"pair", code.as_bytes()),
             expires_at,
+            attempts: 0,
         });
         Ok((code, expires_at))
     }
 
     pub fn pair(&mut self, code: &str, name: &str, public_key: &str) -> Result<String, String> {
-        self.rate_limit()?;
+        self.rate_limit("pair", PAIR_ATTEMPT_BUDGET)?;
         if code.len() != 8 || !code.bytes().all(|b| b.is_ascii_digit()) {
             return Err("invalid_pairing_code".into());
         }
-        let pairing = self.pairing.take().ok_or("invalid_pairing_code")?;
         let supplied = self.keyed(b"pair", code.as_bytes());
-        if pairing.expires_at < now() || !bool::from(pairing.hash.ct_eq(&supplied)) {
+        let Some(pairing) = self.pairing.as_mut() else {
+            return Err("invalid_pairing_code".into());
+        };
+        if pairing.expires_at < now() {
+            self.pairing = None;
+            return Err("invalid_pairing_code".into());
+        }
+        if !bool::from(pairing.hash.ct_eq(&supplied)) {
+            pairing.attempts += 1;
+            if pairing.attempts >= PAIR_CODE_ATTEMPTS {
+                self.pairing = None;
+            }
             return Err("invalid_pairing_code".into());
         }
         let clean_name = name.trim().chars().take(64).collect::<String>();
@@ -211,6 +257,8 @@ impl AuthStore {
         if der.len() > 256 {
             return Err("invalid_public_key".into());
         }
+        // Everything is validated; only now is the code spent.
+        self.pairing = None;
         let id = random_id::<20>()?;
         self.devices.devices.push(Device {
             id: id.clone(),
@@ -225,8 +273,9 @@ impl AuthStore {
     }
 
     pub fn challenge(&mut self, device_id: &str) -> Result<(String, String, u64), String> {
-        self.rate_limit()?;
-        if !self.devices.devices.iter().any(|d| d.id == device_id) {
+        let known = self.devices.devices.iter().any(|d| d.id == device_id);
+        self.rate_limit(&auth_scope(device_id, known), AUTH_ATTEMPT_BUDGET)?;
+        if !known {
             return Err("unknown_device".into());
         }
         let nonce = random_id::<24>()?;
@@ -252,7 +301,8 @@ impl AuthStore {
         nonce: &str,
         signature: &str,
     ) -> Result<(String, u64), String> {
-        self.rate_limit()?;
+        let known = self.devices.devices.iter().any(|d| d.id == device_id);
+        self.rate_limit(&auth_scope(device_id, known), AUTH_ATTEMPT_BUDGET)?;
         let challenge = self.challenges.remove(nonce).ok_or("invalid_challenge")?;
         if challenge.device_id != device_id || challenge.expires_at < now() {
             return Err("invalid_challenge".into());
@@ -336,7 +386,22 @@ impl AuthStore {
         self.pairing = None;
         self.save_devices()?;
         let next = random_bytes::<32>()?;
-        fs::write(self.control_dir.join("host.key"), next).map_err(|e| e.to_string())?;
+        let key_path = self.control_dir.join("host.key");
+        let mut options = fs::OpenOptions::new();
+        options.create(true).write(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        {
+            use std::io::Write;
+            let mut file = options.open(&key_path).map_err(|e| e.to_string())?;
+            file.write_all(&next)
+                .and_then(|_| file.sync_all())
+                .map_err(|e| e.to_string())?;
+        }
+        store::ensure_private_file(&key_path)?;
         self.host_key = next.to_vec();
         self.audit("forgot_all", None);
         Ok(())
@@ -400,5 +465,92 @@ mod tests {
         assert_eq!(auth.authenticate(&token).as_deref(), Some(device.as_str()));
         auth.revoke(&device).expect("revoke");
         assert!(auth.authenticate(&token).is_none());
+    }
+
+    fn store() -> (tempfile::TempDir, AuthStore) {
+        let dir = tempfile::tempdir().expect("control dir");
+        let auth =
+            AuthStore::open(dir.path(), "https://desk.example.ts.net".into()).expect("auth store");
+        (dir, auth)
+    }
+
+    #[test]
+    fn a_wrong_pairing_code_does_not_burn_the_outstanding_one() {
+        let (_dir, mut auth) = store();
+        let signing = SigningKey::random(&mut OsRng);
+        let public = signing.verifying_key().to_public_key_der().expect("SPKI");
+        let public = Base64UrlUnpadded::encode_string(public.as_bytes());
+        let (code, _) = auth.create_pairing_code().expect("pairing code");
+        for _ in 0..(PAIR_CODE_ATTEMPTS - 1) {
+            assert!(auth.pair("00000000", "Phone", &public).is_err());
+        }
+        // The real code still works after the wrong guesses.
+        auth.pair(&code, "Phone", &public).expect("paired");
+    }
+
+    #[test]
+    fn a_pairing_code_retires_after_its_attempt_budget() {
+        let (_dir, mut auth) = store();
+        let signing = SigningKey::random(&mut OsRng);
+        let public = signing.verifying_key().to_public_key_der().expect("SPKI");
+        let public = Base64UrlUnpadded::encode_string(public.as_bytes());
+        let (code, _) = auth.create_pairing_code().expect("pairing code");
+        for _ in 0..PAIR_CODE_ATTEMPTS {
+            assert!(auth.pair("00000000", "Phone", &public).is_err());
+        }
+        assert!(auth.pair(&code, "Phone", &public).is_err());
+    }
+
+    #[test]
+    fn a_pair_flood_cannot_lock_a_paired_device_out_of_login() {
+        let (_dir, mut auth) = store();
+        let signing = SigningKey::random(&mut OsRng);
+        let public = signing.verifying_key().to_public_key_der().expect("SPKI");
+        let public = Base64UrlUnpadded::encode_string(public.as_bytes());
+        let (code, _) = auth.create_pairing_code().expect("pairing code");
+        let device = auth.pair(&code, "Phone", &public).expect("paired");
+        // Exhaust the pair budget several times over, as an unauthenticated
+        // tailnet peer would.
+        for _ in 0..(PAIR_ATTEMPT_BUDGET * 5) {
+            let _ = auth.pair("00000000", "Phone", &public);
+        }
+        let (nonce, payload, _) = auth.challenge(&device).expect("challenge still available");
+        let signature: Signature = signing.sign(payload.as_bytes());
+        let signature = Base64UrlUnpadded::encode_string(&signature.to_bytes());
+        auth.login(&device, &nonce, &signature).expect("login still available");
+    }
+
+    #[test]
+    fn unknown_device_ids_share_one_bucket_and_cannot_evict_a_real_one() {
+        let (_dir, mut auth) = store();
+        let signing = SigningKey::random(&mut OsRng);
+        let public = signing.verifying_key().to_public_key_der().expect("SPKI");
+        let public = Base64UrlUnpadded::encode_string(public.as_bytes());
+        let (code, _) = auth.create_pairing_code().expect("pairing code");
+        let device = auth.pair(&code, "Phone", &public).expect("paired");
+        for index in 0..(MAX_RATE_BUCKETS * 4) {
+            let _ = auth.challenge(&format!("made-up-{index}"));
+        }
+        assert!(auth.attempts.len() <= 3, "buckets: {}", auth.attempts.len());
+        auth.challenge(&device).expect("real device still served");
+    }
+
+    #[test]
+    fn expired_challenges_are_swept_rather_than_accumulating() {
+        let (_dir, mut auth) = store();
+        let signing = SigningKey::random(&mut OsRng);
+        let public = signing.verifying_key().to_public_key_der().expect("SPKI");
+        let public = Base64UrlUnpadded::encode_string(public.as_bytes());
+        let (code, _) = auth.create_pairing_code().expect("pairing code");
+        let device = auth.pair(&code, "Phone", &public).expect("paired");
+        for _ in 0..5 {
+            auth.challenge(&device).expect("challenge");
+        }
+        assert_eq!(auth.challenges.len(), 5);
+        for challenge in auth.challenges.values_mut() {
+            challenge.expires_at = 0;
+        }
+        auth.challenge(&device).expect("challenge");
+        assert_eq!(auth.challenges.len(), 1);
     }
 }

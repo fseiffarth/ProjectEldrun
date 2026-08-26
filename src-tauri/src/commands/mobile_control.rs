@@ -10,7 +10,10 @@ use tokio::sync::oneshot;
 use crate::{
     services::mobile_control::{
         admin::{self, read_frame, write_frame},
-        config::{serve_status_json, verify_tailscale_serve, HostConfig},
+        config::{
+            detect_serve_settings_json, serve_status_json, verify_tailscale_serve,
+            DetectedServeSettings, HostConfig,
+        },
         discovery::opaque_control_id,
         protocol::{AdminRequest, AdminResponse, DesktopRequest, DesktopResponse},
     },
@@ -18,6 +21,10 @@ use crate::{
 };
 
 pub const MOBILE_DESKTOP_EVENT: &str = "eldrun-mobile-desktop-request";
+const INSTALL_PHONE_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../scripts/install_phone.sh"
+));
 
 #[derive(Clone, Default)]
 pub struct MobileDesktopState {
@@ -47,6 +54,26 @@ pub fn mobile_opaque_id(domain: String, value: String) -> Result<String, String>
         return Err("invalid opaque id input".into());
     }
     opaque_control_id(&storage::state_dir(), &domain, &value)
+}
+
+/// Materialize the phone-install handoff where the root terminal can run it.
+/// Keep the script embedded so this action also works from a packaged app,
+/// whose installation directory does not contain the source checkout.
+#[tauri::command]
+pub fn mobile_prepare_phone_install_script() -> Result<(), String> {
+    let path = storage::state_dir().join("mobile-control/install_phone.sh");
+    let parent = path
+        .parent()
+        .ok_or("could not determine the Mobile control directory")?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    std::fs::write(&path, INSTALL_PHONE_SCRIPT).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -137,9 +164,59 @@ fn systemd_path(path: &Path) -> Result<String, String> {
     ))
 }
 
+/// Deliberately **no `PrivateTmp=`**.
+///
+/// The sidecar's entire job is reaching the desktop's tmux server, whose socket
+/// lives at `$TMUX_TMPDIR/tmux-$UID/default` — and `TMUX_TMPDIR` is unset in a
+/// normal desktop session, so that is `/tmp`. A private `/tmp` hands the service
+/// an empty directory instead: `tmux ls` finds nothing, every tab reports
+/// `available: false`, and no error anywhere explains why.
+///
+/// It did not fail that way in testing only because a systemd *user* manager
+/// needs an unprivileged user namespace to build a mount namespace, and
+/// distributions that set `kernel.apparmor_restrict_unprivileged_userns=1`
+/// (Ubuntu 24.04+) deny it. systemd then skips the namespacing options silently
+/// — `systemctl show` still reports `PrivateTmp=yes` while the process runs on
+/// the host mount table. So the directive bought nothing where userns is
+/// blocked and broke tab discovery where it is allowed, with the outcome
+/// decided by a kernel policy this unit never checks.
+///
+/// `NoNewPrivileges` is a `prctl` and applies regardless; the remaining
+/// directives need the namespace but are harmless when skipped, and correct
+/// when honoured — the sidecar only ever writes inside `ReadWritePaths`.
+/// `BindPaths=-/tmp/tmux-%U` was the alternative and is worse: the directory
+/// does not exist when tmux has not started yet, and one created later never
+/// appears inside an already-built namespace.
 #[cfg(target_os = "linux")]
 fn systemd_unit(binary: &Path, state_dir: &Path) -> Result<String, String> {
-    Ok(format!("[Unit]\nDescription=Eldrun Mobile Host\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart={} --mobile-host\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=read-only\nReadWritePaths={}\n\n[Install]\nWantedBy=default.target\n", systemd_path(binary)?, systemd_path(state_dir)?))
+    Ok(format!("[Unit]\nDescription=Eldrun Mobile Host\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart={} --mobile-host\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=true\nProtectSystem=strict\nProtectHome=read-only\nReadWritePaths={}\n\n[Install]\nWantedBy=default.target\n", systemd_path(binary)?, systemd_path(state_dir)?))
+}
+
+/// Replace the installed sidecar without opening its live executable for
+/// writing. `systemctl restart` leaves the old process running until after this
+/// install, so copying directly over the target intermittently fails on Linux
+/// with `ETXTBSY` ("Text file busy"). Renaming a completed sibling is atomic;
+/// the old process keeps its inode while the restarted service sees the new one.
+#[cfg(target_os = "linux")]
+fn install_mobile_binary(source: &Path, target_dir: &Path) -> Result<PathBuf, String> {
+    let target = target_dir.join("eldrun-mobile-host");
+    let mut staged = tempfile::NamedTempFile::new_in(target_dir)
+        .map_err(|error| format!("stage mobile host: {error}"))?;
+    let mut source_file =
+        std::fs::File::open(source).map_err(|error| format!("read mobile host: {error}"))?;
+    std::io::copy(&mut source_file, staged.as_file_mut())
+        .map_err(|error| format!("stage mobile host: {error}"))?;
+    staged
+        .as_file()
+        .sync_all()
+        .map_err(|error| format!("stage mobile host: {error}"))?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(staged.path(), std::fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("stage mobile host: {error}"))?;
+    staged
+        .persist(&target)
+        .map_err(|error| format!("install mobile host: {}", error.error))?;
+    Ok(target)
 }
 
 #[tauri::command]
@@ -175,14 +252,7 @@ pub async fn mobile_host_apply(enabled: bool) -> Result<(), String> {
         let version = env!("CARGO_PKG_VERSION");
         let target_dir = config.control_dir.join("bin").join(version);
         std::fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
-        let target = target_dir.join("eldrun-mobile-host");
-        std::fs::copy(source, &target).map_err(|e| format!("install mobile host: {e}"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700))
-                .map_err(|e| e.to_string())?;
-        }
+        let target = install_mobile_binary(&source, &target_dir)?;
         let unit_dir = crate::paths::home_dir().join(".config/systemd/user");
         std::fs::create_dir_all(&unit_dir).map_err(|e| e.to_string())?;
         std::fs::write(
@@ -220,6 +290,8 @@ pub struct TailscaleServeStatus {
     pub installed: bool,
     pub json: Option<serde_json::Value>,
     pub error: Option<String>,
+    pub detected: Option<DetectedServeSettings>,
+    pub detection_error: Option<String>,
 }
 
 #[tauri::command]
@@ -230,28 +302,37 @@ pub async fn mobile_verify_tailscale_serve(origin: String, port: u16) -> Result<
 #[tauri::command]
 pub async fn mobile_tailscale_serve_status() -> TailscaleServeStatus {
     match serve_status_json() {
-        Ok(json) => TailscaleServeStatus {
-            installed: true,
-            json: Some(json),
-            error: None,
-        },
+        Ok(json) => {
+            let detection = detect_serve_settings_json(&json);
+            TailscaleServeStatus {
+                installed: true,
+                json: Some(json),
+                error: None,
+                detected: detection.as_ref().ok().cloned(),
+                detection_error: detection.err(),
+            }
+        }
         Err(error) if error == "Tailscale is not installed" => TailscaleServeStatus {
             installed: false,
             json: None,
             error: None,
+            detected: None,
+            detection_error: None,
         },
         Err(error) => TailscaleServeStatus {
             installed: true,
             json: None,
             error: Some(error),
+            detected: None,
+            detection_error: None,
         },
     }
 }
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::systemd_unit;
-    use std::path::Path;
+    use super::{install_mobile_binary, systemd_unit};
+    use std::{os::unix::fs::PermissionsExt, path::Path};
 
     #[test]
     fn systemd_unit_quotes_installed_and_state_paths() {
@@ -259,6 +340,57 @@ mod tests {
             .expect("unit");
         assert!(unit.contains("ExecStart=\"/tmp/mobile host%%1\" --mobile-host"));
         assert!(unit.contains("ReadWritePaths=\"/tmp/state dir\""));
+    }
+
+    #[test]
+    fn systemd_unit_never_hides_the_tmux_socket_behind_a_private_tmp() {
+        let unit =
+            systemd_unit(Path::new("/opt/eldrun-mobile-host"), Path::new("/state")).expect("unit");
+        // tmux listens on /tmp/tmux-$UID/default. A private /tmp makes every tab
+        // report `available: false` with nothing in the log to explain it, on
+        // exactly those systems that permit unprivileged user namespaces.
+        assert!(
+            !unit.contains("PrivateTmp"),
+            "PrivateTmp hides the desktop's tmux socket from the sidecar"
+        );
+        assert!(!unit.contains("BindPaths"), "see systemd_unit's rationale");
+        // The hardening that costs nothing stays.
+        assert!(unit.contains("NoNewPrivileges=true"));
+        assert!(unit.contains("ProtectSystem=strict"));
+        assert!(unit.contains("ProtectHome=read-only"));
+    }
+
+    #[test]
+    fn install_mobile_binary_atomically_replaces_an_existing_target() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let source = temp.path().join("source");
+        let target_dir = temp.path().join("bin");
+        std::fs::create_dir(&target_dir).expect("target directory");
+        std::fs::write(&source, b"new mobile host").expect("source");
+        std::fs::write(target_dir.join("eldrun-mobile-host"), b"old mobile host")
+            .expect("existing target");
+
+        let target = install_mobile_binary(&source, &target_dir).expect("install");
+
+        assert_eq!(
+            std::fs::read(&target).expect("installed bytes"),
+            b"new mobile host"
+        );
+        assert_eq!(
+            std::fs::metadata(&target)
+                .expect("installed metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::read_dir(&target_dir)
+                .expect("target directory")
+                .count(),
+            1,
+            "atomic install should not leave its staged file behind"
+        );
     }
 }
 
@@ -301,6 +433,13 @@ pub fn start_desktop_bridge(app: AppHandle, state: MobileDesktopState) {
                     return;
                 };
                 let id = request.request_id().to_string();
+                // Reading an uncached message may perform one bounded
+                // BODY.PEEK. Keep quick control requests on their short SLA.
+                let response_timeout = if matches!(&request, DesktopRequest::MailMessage { .. }) {
+                    std::time::Duration::from_secs(30)
+                } else {
+                    std::time::Duration::from_secs(8)
+                };
                 let (tx, rx) = oneshot::channel();
                 state.pending.lock().unwrap().insert(id.clone(), tx);
                 if app.emit_to("main", MOBILE_DESKTOP_EVENT, request).is_err() {
@@ -315,7 +454,7 @@ pub fn start_desktop_bridge(app: AppHandle, state: MobileDesktopState) {
                     .await;
                     return;
                 }
-                let response = tokio::time::timeout(std::time::Duration::from_secs(8), rx)
+                let response = tokio::time::timeout(response_timeout, rx)
                     .await
                     .ok()
                     .and_then(Result::ok)
