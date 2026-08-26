@@ -138,12 +138,21 @@ fn decode_png_bytes_rgba(bytes: &[u8]) -> Result<(usize, usize, Vec<u8>), String
 
     let rgba = match info.color_type {
         png::ColorType::Rgba => px.to_vec(),
+        // `as_chunks::<N>` rather than `chunks_exact(N)`: the chunk size is a
+        // constant, so each pixel arrives as a fixed-size array the compiler can
+        // see through instead of a slice it must bounds-check. `.0` is the whole
+        // chunks — the `.1` remainder is the trailing partial pixel, which
+        // `chunks_exact` dropped too, so this is the same data.
         png::ColorType::Rgb => px
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .flat_map(|c| [c[0], c[1], c[2], 0xFF])
             .collect(),
         png::ColorType::GrayscaleAlpha => px
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .flat_map(|c| [c[0], c[0], c[0], c[1]])
             .collect(),
         png::ColorType::Grayscale => px.iter().flat_map(|&g| [g, g, g, 0xFF]).collect(),

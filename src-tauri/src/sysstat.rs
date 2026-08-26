@@ -1188,7 +1188,9 @@ const PROCESSOR_PERF_ENTRY_BYTES: usize = 48;
 /// trailing partial entry is ignored; negative times (never expected) clamp to 0.
 #[cfg(any(target_os = "windows", test))]
 fn parse_processor_perf_buffer(buf: &[u8]) -> Vec<CpuTimes> {
-    buf.chunks_exact(PROCESSOR_PERF_ENTRY_BYTES)
+    buf.as_chunks::<PROCESSOR_PERF_ENTRY_BYTES>()
+        .0
+        .iter()
         .map(|chunk| {
             let time = |off: usize| {
                 i64::from_le_bytes(chunk[off..off + 8].try_into().unwrap()).max(0) as u64
@@ -1233,7 +1235,9 @@ fn parse_host_processor_ticks(ticks: &[u32], ns_per_tick: u64) -> Vec<CpuTimes> 
     const CPU_STATE_IDLE: usize = 2;
     const CPU_STATE_NICE: usize = 3;
     ticks
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| {
             let busy =
                 (c[CPU_STATE_USER] as u64 + c[CPU_STATE_SYSTEM] as u64 + c[CPU_STATE_NICE] as u64)

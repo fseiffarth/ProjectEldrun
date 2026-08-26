@@ -274,8 +274,14 @@ pub async fn remote_connect(
 /// the Connect dialog both keep reporting "connected" from stale frontend
 /// state while every read that actually asks the pool (like the network-
 /// traffic pane) correctly reports disconnected.
+///
+/// The `Result` is Tauri's requirement for an async command borrowing `State`,
+/// not a failure mode — this reads an in-process map and cannot fail. The error
+/// type is `String` rather than `()` because every other command here uses
+/// `String` (and `clippy::result_unit_err` asks for a nameable error either way);
+/// nothing ever constructs one.
 #[tauri::command]
-pub async fn remote_connected_ids(pool: State<'_, RemotePoolState>) -> Result<Vec<String>, ()> {
+pub async fn remote_connected_ids(pool: State<'_, RemotePoolState>) -> Result<Vec<String>, String> {
     Ok(remote::connected_ids(pool.inner()).await)
 }
 
@@ -328,7 +334,7 @@ pub async fn remote_disconnect_all_hosts(
 #[tauri::command]
 pub async fn remote_connected_targets(
     pool: State<'_, RemotePoolState>,
-) -> Result<Vec<(String, String)>, ()> {
+) -> Result<Vec<(String, String)>, String> {
     Ok(remote::connected_targets(pool.inner()).await)
 }
 
