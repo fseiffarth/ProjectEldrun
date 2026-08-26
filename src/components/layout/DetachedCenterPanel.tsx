@@ -36,6 +36,7 @@ import {
 } from "../files/SubwindowFilesSidebar";
 import { useWindowFocused } from "../../hooks/useWindowFocused";
 import { TabHoverCard } from "../tabs/TabHoverCard";
+import { useFastMode } from "../../lib/fastMode";
 import { WindowControls } from "../header/WindowControls";
 import { DragGhost, SplitPreviewOverlay } from "./CenterPanel";
 import { TRASH_PROJECT_ID } from "../../lib/trashProject";
@@ -299,6 +300,10 @@ export function DetachedCenterPanel({
   const [agentDialogOpen, setAgentDialogOpen] = useState(false);
   // Tab hover card anchor (the hovered tab's bottom-centre), mirroring the main
   // window's TabBar — the popout has its own tab strip, so it renders its own.
+  // Fast mode drops the hover card: it carries its own ticking clock and
+  // store subscriptions per hover, for detail the tab strip and the pane
+  // itself already show.
+  const fastMode = useFastMode();
   const [hoverTab, setHoverTab] = useState<{ key: string; x: number; y: number } | null>(null);
   // Multi-host locality menu (shared with TabBar). Machine names + the primary
   // host come from the streamed `remoteInfo`; undefined ⇒ local project, no badge.
@@ -1663,7 +1668,7 @@ export function DetachedCenterPanel({
           and while the "+" menu is open so it never overlaps them. The card
           reads THIS window's stores; the machine names come from the streamed
           `remoteInfo` (the projects store is absent here). */}
-      {hoverTab && dragKey === null && !addMenu && (() => {
+      {hoverTab && !fastMode && dragKey === null && !addMenu && (() => {
         const tab = byKey.get(hoverTab.key);
         if (!tab) return null;
         return (

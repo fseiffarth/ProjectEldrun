@@ -73,7 +73,9 @@ function ToggleCard({
   onChange,
   help,
 }: {
-  label: string;
+  /** `ReactNode`, not `string`: a card's label may carry an `<UntestedTag />`
+   *  beside its text, the way the rows outside this component do. */
+  label: ReactNode;
   checked: boolean;
   onChange: ChangeEventHandler<HTMLInputElement>;
   help?: ReactNode;
@@ -863,6 +865,22 @@ export function SettingsDialog({
               {t("settings.energyHelp")}
               {" "}{energyStatus}
             </p>
+
+            {/* Beside Energy Saver rather than folded into it: that one widens
+                timers off a live battery reading, this removes features off a
+                standing preference, and "plugged in, still want it lean" is the
+                case a merged control could not express. `lib/fastMode` holds the
+                list of what goes — the help string above mirrors it. */}
+            <ToggleCard
+              label={
+                <>
+                  {t("settings.fastMode")} <UntestedTag />
+                </>
+              }
+              checked={settings?.fast_mode === true}
+              onChange={(e) => void updateSettings({ fast_mode: e.target.checked })}
+              help={t("settings.fastModeHelp")}
+            />
 
             <ToggleCard
               label={t("settings.debug")}

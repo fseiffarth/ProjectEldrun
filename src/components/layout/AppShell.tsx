@@ -21,6 +21,7 @@ import {
   saverInterval,
   startFocusTracking,
 } from "../../stores/power";
+import { applyFastModeAttribute, useFastMode } from "../../lib/fastMode";
 import { useOllamaAutoloadOnLaunch } from "../../stores/ollamaAutoload";
 import { useRendererWatchdog } from "../../lib/rendererWatchdog";
 import { CenterPanel } from "./CenterPanel";
@@ -213,6 +214,7 @@ export function AppShell() {
   const initTimer = useTimerStore((s) => s.init);
   const flushTimer = useTimerStore((s) => s.flush);
   const quiesce = useQuiesce();
+  const fastMode = useFastMode();
   // Load the armed local (Ollama) models into memory at launch — main window
   // only, and skipped (loudly) while Energy Saver is on. See stores/ollamaAutoload.
   useOllamaAutoloadOnLaunch();
@@ -770,6 +772,12 @@ export function AppShell() {
     if (quiesce) root.dataset.energySaver = "on";
     else delete root.dataset.energySaver;
   }, [quiesce]);
+
+  // The same publication for fast mode (`[data-fast-mode]`), which collapses
+  // animations *and* transitions — a standing preference rather than a
+  // battery reading, so it is its own attribute rather than a third writer of
+  // `data-energy-saver`.
+  useEffect(() => applyFastModeAttribute(fastMode), [fastMode]);
 
   useEffect(() => {
     if (projectsLoaded) {

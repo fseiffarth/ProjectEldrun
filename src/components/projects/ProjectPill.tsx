@@ -24,6 +24,7 @@ import { PythonInterpreterWindow } from "./PythonInterpreterWindow";
 import { useGitDirtyStore, type GitDirtyState } from "../../stores/gitDirty";
 import { providerName, gitTypeLabel } from "./projectTypeTags";
 import { ProjectHoverCard, projectDescription, useProjectHoverCard } from "./ProjectHoverCard";
+import { useFastMode } from "../../lib/fastMode";
 import { ActivityCalendar } from "./ActivityCalendar";
 import { CategoryEditor } from "./CategoryEditor";
 import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
@@ -1260,6 +1261,9 @@ export function ProjectPill({
   // Shared hover card (identical popup in the right file-viewer). Owns the
   // popup position, today's time, CPU% and the scaffold-missing flag.
   const hover = useProjectHoverCard(project);
+  // Fast mode withdraws the card (see `lib/fastMode`) — the hook stays
+  // mounted and simply never opens, since it arms nothing until `open`.
+  const fastMode = useFastMode();
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
   // With `connections_headless` off Eldrun handles no passwords at all, so neither
   // key auth nor a saved password can ever be the answer — auto-connect there means
@@ -1526,6 +1530,10 @@ export function ProjectPill({
     // time — so it gets the plain descriptive tooltip below instead of the
     // project hover card, which could only show a card full of blanks.
     if (trashProject) return;
+    // Fast mode takes the same exit for a different reason: the card polls
+    // `project_cpu_percent` every 1.5 s for as long as the pointer rests, plus
+    // a scaffold probe per open. It falls back to the same plain tooltip.
+    if (fastMode) return;
     if (!pillRef.current) return;
     void hover.open(pillRef.current.getBoundingClientRect());
   };
@@ -1720,7 +1728,7 @@ export function ProjectPill({
   return (
     <>
       {/* Hover popup — hidden while context menu is open (which calls hover.close). */}
-      {!contextMenu && !trashProject && <ProjectHoverCard project={project} state={hover} />}
+      {!contextMenu && !trashProject && !fastMode && <ProjectHoverCard project={project} state={hover} />}
 
       {/* Right-click context menu */}
       {contextMenu && createPortal(
@@ -2340,7 +2348,7 @@ export function ProjectPill({
         <button
           className="pill-main"
           onClick={onClick}
-          title={trashProject ? t("pill.trashProjectTitle") : undefined}
+          title={trashProject ? t("pill.trashProjectTitle") : fastMode ? project.name : undefined}
           aria-label={trashProject ? t("pill.trashProjectTitle") : undefined}
         >
           {trashProject ? (

@@ -10187,6 +10187,28 @@ select option {
   animation-play-state: paused !important;
 }
 
+/* Fast mode: no animation, and no transition either — the deliberate
+   difference from the blur rule above, which only *pauses* what is running.
+   That is right for a window nobody is looking at, where the mid-state visual
+   is about to be resumed; it is wrong here, where the user is looking and has
+   asked for the interface to stop spending frames on movement. So an animation
+   is cancelled outright rather than frozen mid-way (`none`, not `paused`,
+   which would leave a half-drawn spinner on screen), and every transition is
+   collapsed to zero so a state change lands in the frame it was asked for.
+
+   `1ms` rather than `0s` for the durations: a zero-length transition fires no
+   `transitionend`, and a handful of surfaces here wait for that event to unmount
+   or clean up — a rule that quietly stops those callbacks would leak elements
+   rather than speed anything up. The delay is a true `0s`, which no callback
+   depends on. */
+:root[data-fast-mode] *,
+:root[data-fast-mode] *::before,
+:root[data-fast-mode] *::after {
+  animation: none !important;
+  transition-duration: 1ms !important;
+  transition-delay: 0s !important;
+}
+
 .tab-close {
   display: flex;
   align-items: center;

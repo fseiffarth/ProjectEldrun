@@ -35,6 +35,7 @@ import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLin
 import { basename, dirname, relativePathWithin, resolvePath } from "../../lib/paths";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import { DirSizeUnavailable, guardedDirSize, isHostTimeout } from "../../lib/dirSizeGuard";
+import { useFastMode } from "../../lib/fastMode";
 import { isPythonPath } from "../../lib/viewers/python";
 import {
   checkMainScripts,
@@ -302,6 +303,11 @@ export function FileTree({
   // being wasted work, two independent walks of the same folder can disagree
   // if it's being actively written to, which would make the ignored split
   // exceed the total from the other call.
+  // Fast mode withdraws every recursive size walk below (and with it the row
+  // figures and the group totals summed from them). Reactive, so turning it
+  // off re-runs the effects and prices the folders on screen — the dedupe set
+  // was never filled while it was on, so nothing is skipped.
+  const fastMode = useFastMode();
   const [dirSizes, setDirSizes] = useState<Record<string, number>>({});
   const requestedSizes = useRef<Set<string>>(new Set());
   // Which listing the in-flight size calls belong to. Bumped by `load()`, the
@@ -653,6 +659,9 @@ export function FileTree({
   const [pyMainNonce, setPyMainNonce] = useState(0);
   const pyMainNonceSeen = useRef(0);
   useEffect(() => {
+    // Fast mode stops the *scanning*, not the answers already paid for: the
+    // cache is still read below, so a file whose verdict is known keeps its \u25b6.
+    if (fastMode) return;
     const forced = pyMainNonceSeen.current !== pyMainNonce;
     pyMainNonceSeen.current = pyMainNonce;
     // The ref object's identity never changes, so holding the Set itself is the
@@ -683,7 +692,7 @@ export function FileTree({
       // marked as in flight or the next listing would skip them forever.
       pending.forEach((f) => inFlight.delete(`${f.path}#${f.size}#${f.mtime}`));
     };
-  }, [entries, projectId, pyMainCache, pyMainNonce]);
+  }, [entries, projectId, pyMainCache, pyMainNonce, fastMode]);
 
   /** Re-list the current folder, and re-check every .py in it for the Run gate.
    *  Both refresh buttons (the remote bar's and the local breadcrumb's) call this,
@@ -878,7 +887,7 @@ export function FileTree({
   // all three size effects the same way: a hidden tree walks nothing, and the
   // dedupe set means reactivation prices exactly the still-unpriced folders.
   useEffect(() => {
-    if (!active) return;
+    if (!active || fastMode) return;
     const pending = rowWindow.gitignored.filter(
       (e) => e.is_dir && !requestedSizes.current.has(e.path) && !isScanExcluded(relForEntry(e)),
     );
@@ -901,13 +910,13 @@ export function FileTree({
         });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rowWindow.gitignored, active]);
+  }, [rowWindow.gitignored, active, fastMode]);
 
   // Same as the gitignored effect above, for the visible hidden-by-extension
   // rows — a plain `dir_size` is enough here too, since the group's own
   // total needs no ignored/non-ignored split.
   useEffect(() => {
-    if (!active) return;
+    if (!active || fastMode) return;
     const pending = rowWindow.hiddenExt.filter(
       (e) => e.is_dir && !requestedSizes.current.has(e.path) && !isScanExcluded(relForEntry(e)),
     );
@@ -930,7 +939,7 @@ export function FileTree({
         });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rowWindow.hiddenExt, active]);
+  }, [rowWindow.hiddenExt, active, fastMode]);
 
   // Lazily compute the recursive size of each visible regular/standard-section
   // folder, split into ignored vs. non-ignored bytes in the SAME backend walk
@@ -943,7 +952,7 @@ export function FileTree({
   // `requestedSizes` with the effect above so no folder is fetched twice.
   // Scoped to the rendered rows for the same reason that effect is — see there.
   useEffect(() => {
-    if (!active) return;
+    if (!active || fastMode) return;
     const candidates = [...rowWindow.regular, ...rowWindow.standard];
     const pending = candidates.filter(
       (e) => e.is_dir && !requestedSizes.current.has(e.path) && !isScanExcluded(relForEntry(e)),
@@ -989,7 +998,7 @@ export function FileTree({
         });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rowWindow.regular, rowWindow.standard, active]);
+  }, [rowWindow.regular, rowWindow.standard, active, fastMode]);
 
   // Total bytes contained in each section, kept separate rather than merged
   // into one figure — the point of splitting scaffold/gitignored out visually
@@ -1052,7 +1061,11 @@ export function FileTree({
    * the total.
    */
   const renderGroupTotal = (bytes: number, partial: boolean, title: string) => (
-    <span
+    // Fast mode: no folder walk means every sum is a permanent lower bound, so
+    // the header would read "\u2265 1.2 MB" for the rest of the session. A
+    // figure that can never resolve is worse than none — see `lib/fastMode`'s
+    // rule that an absence must be legible rather than look stuck.
+    fastMode ? null : <span
       className={`file-tree-path-total${partial ? " partial" : ""}`}
       title={partial ? `${title} — ${t("fileTree.sizeIncomplete")}` : title}
     >
@@ -1159,7 +1172,11 @@ export function FileTree({
     // open file tree is not a standing request to stat a cluster every quarter
     // minute. What survives is the focus listener and every explicit re-list —
     // both are gestures, and the amber marker still refreshes on each of them.
-    const id = primaryIsHpc
+    // Fast mode drops this tick for the HPC tag's reason applied to a preference
+    // rather than a host: an open file tree is not a standing request to stat a
+    // host every quarter minute. The focus listener above and every explicit
+    // re-list survive, so the markers still catch up on a gesture.
+    const id = primaryIsHpc || fastMode
       ? undefined
       : window.setInterval(() => {
           // Only tick while Eldrun is focused: a backgrounded window doesn't need
@@ -1171,7 +1188,7 @@ export function FileTree({
       window.removeEventListener("focus", refresh);
       if (id !== undefined) window.clearInterval(id);
     };
-  }, [isRemote, projectId, remoteSshState, refreshSyncStatus, primaryIsHpc, active]);
+  }, [isRemote, projectId, remoteSshState, refreshSyncStatus, primaryIsHpc, active, fastMode]);
 
   // Local-mirror view: readdir the HOST for the browsed folder so folders that
   // live only in the local mirror can be flagged (see `hostChildNames`). One

@@ -519,6 +519,46 @@ place every language lives. English is the source of truth and holds every key;
 New or not-yet-live-verified features carry an `UntestedTag` pill in the UI,
 removed per item only once the user says that item is tested.
 
+### Fast Mode
+
+**Settings → Fast mode** (default off) withdraws the display aids whose cost is
+a directory walk, a standing poll, or a read of every file in view. What it
+turns off:
+
+- **Folder sizes in the file tree**, and the group totals summed from them —
+  one recursive walk per visible folder, which on a remote project is a `du`
+  over SSH.
+- **The git-dirty dots on the project pills** — a `git status` per local
+  project every 12 seconds, including projects you are not in.
+- **The hover cards** on a project pill and on a tab; both fall back to a plain
+  tooltip.
+- **The CPU/RAM/GPU readout** in the header.
+- **The Python ▶ button's check** for a `__main__` guard, which means reading
+  every `.py` in view — a round trip per file on a remote listing. Files already
+  answered keep their ▶: it stops the scanning, not the answers.
+- **The file tree's periodic remote re-stat**, the 15-second refresh behind the
+  sync markers. They still catch up when the window regains focus and on every
+  explicit re-list.
+- **Animations and transitions** throughout the interface.
+
+Three properties hold for everything on that list, and are the rule for
+anything added to it: it costs work nobody asked for, its absence is *legible*
+(the number is simply not there — no spinner and no `…` that never resolves),
+and nothing is lost but the aid. No file goes unlisted, no edit unsaved, no
+lamp wrong. Fast mode may make Eldrun say less; it never makes it say something
+untrue.
+
+It is a separate switch from **Energy Saver**, and the two compose. Energy saver
+widens background timers and pauses idle animation off a live battery reading;
+fast mode removes features off a standing preference — "plugged in, still want
+it lean" is the case one merged control could not express. Everything is
+reactive: turning fast mode off brings every surface back in place, with no
+restart.
+
+The withdrawals are all in the interface. The backend loops that keep two trees
+in step — byte-sync, git lockstep, the usage watcher — are untouched, since
+skipping those would not be withdrawing an aid but declining to do the work.
+
 ### Ollama Model Management
 
 The Settings dialog shows an `Ollama...` panel when `ollama_is_installed`
@@ -977,6 +1017,10 @@ remote git at all.
 - `mobile_indicator` controls the Mobile host-status control in the header;
   unset means visible whenever the Mobile host is enabled.
 - `keyboard_shortcuts` holds per-action chord overrides (Settings → Shortcuts).
+- `fast_mode` is the Fast Mode switch (see above). **Unset and `false` both
+  mean off** — the mode is never inferred; only an explicit `true` engages it.
+  Read entirely on the frontend (`src/lib/fastMode.ts`), which also holds the
+  list of what it withdraws; the backend only round-trips the value.
 - `window_state` holds monitor, position, size, and maximized for startup
   restore; experimental flags are stored as plain booleans keyed by flag name.
 - Custom agents round-trip through the settings `extra` catch-all — no Rust

@@ -40,6 +40,7 @@ import { CustomAgentDialog } from "./CustomAgentDialog";
 import { type AgentMode, supportsAgentMode } from "./agentModes";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
 import { TabHoverCard } from "./TabHoverCard";
+import { useFastMode } from "../../lib/fastMode";
 import {
   TabSourceBadge,
   TabLocalityBadge,
@@ -226,6 +227,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // Tab currently hovered → drives the styled hover card (the tab-bar
   // counterpart to the project pill's hover popup). Anchored to the tab's
   // bottom-center; cleared on leave, drag, or when a menu opens.
+  // Fast mode drops the hover card: it carries its own ticking clock and
+  // store subscriptions per hover, for detail the tab strip and the pane
+  // itself already show.
+  const fastMode = useFastMode();
   const [hoverTab, setHoverTab] = useState<
     { key: string; x: number; y: number } | null
   >(null);
@@ -1218,10 +1223,14 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             data-kind={tab.kind}
             onContextMenu={(e) => onTabContextMenu(e, tab.key, index)}
             onPointerDown={(e) => onTabPointerDown(e, tab)}
+            // Fast mode has no card, so the label becomes a plain tooltip —
+            // otherwise a tab whose name is ellipsized would have no way at all
+            // to read it out.
+            title={fastMode ? tab.label : undefined}
             // Styled hover card (mirrors the project pill's popup) anchored to
             // this tab's bottom-center. Skipped while inline-renaming.
             onMouseEnter={(e) => {
-              if (editing) return;
+              if (editing || fastMode) return;
               const r = e.currentTarget.getBoundingClientRect();
               setHoverTab({ key: tab.key, x: r.left + r.width / 2, y: r.bottom });
             }}
@@ -1692,7 +1701,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       {/* Styled tab hover card (matches the project pill popup). Suppressed
           mid-drag and while a menu is open so it never overlaps them. The card
           derives its own content from the tab + this window's stores. */}
-      {hoverTab && dragKey === null && !menuOpen && !tabMenu && (() => {
+      {hoverTab && !fastMode && dragKey === null && !menuOpen && !tabMenu && (() => {
         const tab = tabs.find((tb) => tb.key === hoverTab.key);
         if (!tab) return null;
         return (

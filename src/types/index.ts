@@ -457,6 +457,17 @@ export interface Settings {
    *  active, Eldrun pauses the blob auto-spin, collapses idle animations, and
    *  widens always-on UI timers to reduce CPU/battery drain. */
   energy_saver?: "off" | "battery" | "always";
+  /** Fast mode: drop the display aids that cost a directory walk, a standing
+   *  poll or a per-file read. **Default false.** Read through `lib/fastMode`
+   *  (`useFastMode` / `fastModeActive`), which is also where the exact list of
+   *  what it withdraws lives — never off this key directly, so the list has one
+   *  home and every surface withdraws the same things.
+   *
+   *  A separate switch from `energy_saver` rather than a fourth value of it:
+   *  energy saver widens timers off a *battery reading*, this removes features
+   *  off a *standing preference*, and one merged control could not say "plugged
+   *  in, still want it lean" — which is the case that asks for this. */
+  fast_mode?: boolean;
   /** When true, the right panel is docked open (reflows layout) instead of hover-revealed. */
   right_panel_pinned?: boolean;
   /** Width of the right (file/git) panel in px. Set by dragging the panel's left

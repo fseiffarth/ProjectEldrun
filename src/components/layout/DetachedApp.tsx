@@ -39,6 +39,7 @@ import { withdrawnTabKinds } from "../../lib/experimental";
 import { PLATFORM } from "../../lib/platform";
 import { useTabLandStore } from "../../stores/tabLand";
 import { startFocusTracking, useQuiesce } from "../../stores/power";
+import { applyFastModeAttribute, useFastMode } from "../../lib/fastMode";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenEditorJump } from "../../stores/editorJump";
@@ -110,6 +111,12 @@ export function DetachedApp({ param }: Props) {
     if (quiesce) root.dataset.energySaver = "on";
     else delete root.dataset.energySaver;
   }, [quiesce]);
+
+  // Fast mode is a global preference, so a popout honours it too — and must
+  // publish it onto its OWN document, which is a different one from the main
+  // window's (see the focus tracker above for the same reason).
+  const fastMode = useFastMode();
+  useEffect(() => applyFastModeAttribute(fastMode), [fastMode]);
 
   // Clear a stray OS fullscreen, exactly as `restore_main_window` does for the
   // main window and for its reason: a `_NET_WM_STATE_FULLSCREEN` window loses

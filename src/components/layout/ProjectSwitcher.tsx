@@ -17,6 +17,7 @@ import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { PillStatusBars } from "../projects/PillStatusBars";
 import { useGitDirtyStore } from "../../stores/gitDirty";
 import { useQuiesce, saverInterval } from "../../stores/power";
+import { useFastMode } from "../../lib/fastMode";
 import { resolveProjectDirectory, type ProjectBox, type ProjectEntry } from "../../types";
 import { useT } from "../../lib/i18n";
 
@@ -161,15 +162,20 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     [gitDotTargets],
   );
   const quiesce = useQuiesce();
+  // Fast mode withdraws the dots entirely: this is a `git status` per local
+  // project every 12 s, for projects the user is not currently in, and the dot
+  // it feeds is the definition of an aid — the project's own file view says the
+  // same thing, on the project being worked in, for free.
+  const fastMode = useFastMode();
   useEffect(() => {
-    if (gitDotTargets.length === 0) return;
+    if (gitDotTargets.length === 0 || fastMode) return;
     const refresh = useGitDirtyStore.getState().refresh;
     const run = () => gitDotTargets.forEach((t) => void refresh(t.id, t.dir));
     run();
     const id = window.setInterval(run, saverInterval(12000, quiesce));
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gitDotSignature, quiesce]);
+  }, [gitDotSignature, quiesce, fastMode]);
 
   // Bucket the active pills into boxes (by `box_id`) + an ungrouped remainder,
   // interleaved by switcher position. A pill whose `box_id` points at a missing
