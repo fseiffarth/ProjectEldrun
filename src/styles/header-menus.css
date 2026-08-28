@@ -1,0 +1,2472 @@
+/* header-menus.css — split from the old monolithic themes.css (order-preserving).
+   Dialog footer row, big-folder prompt, activity calendar, Ollama/local-model menus + GPU readouts, connection lamps, update checks, install flow, VPN + Machines indicators, connect modal.
+   IMPORT ORDER IS LOAD-BEARING: these files are @imported in sequence from
+   styles/index.css; equal-specificity rules rely on source order exactly as
+   they did in the monolith, so never reorder the imports or move rules
+   between files without checking the cascade. */
+
+/* ── Dialog footer row ────────────────────────────────────────────────────
+   ONE layout for every dialog's action row. `.dialog-actions` is the neutral
+   name new dialogs should use; the older family names stay as aliases because
+   each also scopes its own button chrome (`.project-dialog-actions button`'s
+   shine, `.folder-picker-actions button`'s outline) that a rename would
+   detach. The geometry lives only here — do not re-declare it per family. */
+.dialog-actions,
+.project-dialog-actions,
+.mail-dialog-actions,
+.folder-picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* ── Large-folder sync prompt (BigFolderExcludeDialog) ───────────────── */
+/* One grid shared by the header row and every folder row, so the two side
+   columns line up without either knowing the other's width. */
+.big-folder-head,
+.big-folder-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 150px 150px;
+  align-items: center;
+  gap: 8px;
+}
+.big-folder-head {
+  margin-top: 10px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.big-folder-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+.big-folder-row {
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border-subtle, var(--border));
+  font-size: 12px;
+  cursor: pointer;
+}
+.big-folder-row:hover {
+  background: var(--bg-hover);
+}
+.big-folder-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, monospace);
+}
+.big-folder-files {
+  color: var(--text-muted);
+}
+.big-folder-absent {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+.big-folder-intro,
+.big-folder-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+/* The "measure the host anyway" action inside that note. It is deliberately a
+   link and not a dialog button: on a careful host the host scan is the exception
+   the user asks for by name, so it belongs in the sentence explaining why it did
+   not happen — not in the action row beside Apply, where it would read as part of
+   the normal flow. */
+.big-folder-note .link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent, var(--text-primary));
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.big-folder-note .link-button:disabled {
+  color: var(--text-muted);
+  text-decoration: none;
+  cursor: default;
+}
+
+/* A hint sentence's inline action (e.g. "Create a GitHub access token…") —
+   reads as part of the sentence, not a dialog button. Unscoped (unlike
+   .big-folder-note .link-button above) so any hint row can use it. */
+.inline-link-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent, var(--text-primary));
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ── Orbit spinner (active-tracking indicator) ───────────────────────── */
+@keyframes orbit-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.orbit-spinner {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 5px;
+  animation: orbit-spin 2s linear infinite;
+  flex-shrink: 0;
+}
+
+.orbit-dot {
+  fill: var(--accent);
+}
+
+/* ── Activity calendar ───────────────────────────────────────────────── */
+.activity-calendar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  user-select: none;
+}
+
+.activity-cell {
+  fill: var(--activity-0);
+  transition: opacity var(--transition);
+}
+.activity-cell:hover { opacity: 0.8; }
+.activity-cell-0 { fill: var(--activity-0); }
+.activity-cell-1 { fill: var(--activity-1); }
+.activity-cell-2 { fill: var(--activity-2); }
+.activity-cell-3 { fill: var(--activity-3); }
+.activity-cell-4 { fill: var(--activity-4); }
+.activity-today  { stroke: var(--accent); stroke-width: 1.5; }
+
+/* ── Activity year selector ──────────────────────────────────────────── */
+.activity-years {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.activity-year-btn {
+  padding: 2px 8px;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+}
+
+.activity-year-btn:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+}
+
+.activity-year-btn.selected {
+  background: var(--pill-active-bg);
+  border-color: var(--pill-active-border);
+  color: var(--text-primary);
+}
+
+.activity-legend {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 28px;
+}
+
+.activity-legend span {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* Pointer-following tooltip, portaled to <body> (activity calendar, disk-usage
+   chart). Positioning + layering live here — call sites set only left/top. */
+.activity-tooltip {
+  position: fixed;
+  transform: translate(-50%, -100%);
+  pointer-events: none;
+  z-index: var(--z-tooltip);
+  padding: 5px 9px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  box-shadow: var(--shadow-2);
+}
+
+.activity-tooltip strong {
+  color: var(--text-primary);
+}
+
+/* ── Ollama settings panel ───────────────────────────────────────────── */
+.ollama-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ollama-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.ollama-status-dot.running { background-color: var(--success); }
+.ollama-status-dot.stopped { background-color: var(--text-muted); }
+
+/* Vibe runtime section + its inline status dot (used inside flowing text). */
+.ollama-vibe-section { margin-top: 14px; }
+
+/* Each agent is one `.settings-card` (see the settings design system) — it
+   used to be a second, near-identical card with its own --bg-elevated surface
+   and --border-subtle edge, which is exactly the drift the shared card class
+   exists to prevent. Only its own head/toggle/result bits live here. */
+.agent-list-entry-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.agent-remote-install-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.agent-remote-install-row {
+  flex-wrap: wrap;
+}
+/* The themed `Dropdown` sits where a native <select> used to; it is an
+   inline-flex wrapper, so the flex basis goes on it and the trigger fills it. */
+.agent-remote-install-row .agent-remote-machine-picker {
+  min-width: 0;
+  flex: 1 1 180px;
+}
+.agent-remote-install-row .agent-remote-machine-picker .dropdown-trigger {
+  width: 100%;
+  justify-content: space-between;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.agent-remote-result {
+  margin-top: 6px;
+  color: var(--success);
+  font-size: 11px;
+}
+/* Enabled/Disabled toggle on an installed agent's row: hides it from tab-choice
+   menus (add-tab Agents group, Local Model drivers) without uninstalling it. */
+.agent-disable-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+/* Codex's session-hook-trust notice, nested inside its own agent-list-entry
+   card rather than floating as a separate top-of-panel section. */
+.agent-codex-hook {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+.ollama-vibe-section .ollama-status-dot {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+.ollama-status-text {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.ollama-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 0;
+}
+
+.ollama-section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* ── Local-model header button: live server-status dot ───────────────────── */
+.local-model-btn {
+  position: relative;
+}
+
+/* ── The 🧠 menu's section headers (Agents · Local models · Machine) ──────────
+   The shared `.tab-new-menu-group-label` is a small accent word, which is the
+   right weight for a menu of one-line entries. This menu is not that: its rows
+   are two and three lines tall (a model carries a badge strip, a chip row and a
+   progress bar), so four accent words scattered down it read as more of the same
+   text rather than as the boundaries between three different things.
+
+   So the header is given a *band*: a tinted, rounded strip with a solid accent
+   bar down its left edge — a shape none of the rows have, so the eye finds the
+   boundaries without reading them. Inset rather than bled to the menu's edge,
+   since the menu's own 4px padding, rounded corners and accent top rail are what
+   a full-bleed band would have to fight. Scoped to this menu deliberately: the
+   pinned titles of the VPN and mail menus lay their own flex out (a close button
+   pushed to the far edge), and a shared change here would break them. Flat
+   backgrounds only, never a blurred shadow (the WebKit software-rendering rule).
+   The 4px top margin is what separates a header from the section above it; the
+   first one drops it, having nothing to be separated from. */
+/* The tallest menu in the app — four sections of two- and three-line rows — so
+   it is bounded and its body scrolls (the pinned first title + `.menu-scroll-
+   region`, the unified scrolling-menu shape). Without a cap a machine with
+   several agents and models ran the Machine section off the bottom of a short
+   window, unreachable. */
+.local-model-menu {
+  max-height: min(80vh, 640px);
+}
+.local-model-menu .tab-new-menu-group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 3px;
+  padding: 5px 8px 5px 9px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  border-left: 2px solid var(--accent);
+  border-radius: calc(var(--radius) / 2);
+  color: color-mix(in srgb, var(--accent) 85%, var(--text-primary));
+}
+.local-model-menu > .tab-new-menu-group-label:first-child {
+  margin-top: 0;
+}
+.local-model-status-dot {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  pointer-events: none;
+}
+/* Server unreachable (red) → up but no model in memory (yellow) → model loaded (green). */
+.local-model-status-dot.stopped { background-color: var(--danger); }
+.local-model-status-dot.idle { background-color: var(--warning); }
+.local-model-status-dot.loaded { background-color: var(--success); }
+
+/* ── Local-model menu: live "loaded in memory" status line ───────────────── */
+.local-model-loaded {
+  padding: 4px 10px 6px;
+  border-bottom: 1px solid var(--control-border);
+  margin-bottom: 2px;
+}
+.local-model-loaded-idle {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.local-model-loaded-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.local-model-loaded-name {
+  font-size: 12px;
+  color: var(--text-primary);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.local-model-loaded-badges {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.local-model-loaded-badges > span {
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.local-model-loaded-badges > span.gpu {
+  background: color-mix(in srgb, var(--success) 22%, transparent);
+  color: var(--success);
+}
+/* "no tools": this model can't drive any of the tool-calling coding agents, so
+   picking it as the default silently empties the + menu's Local Model group.
+   Warning-toned rather than danger — the model is perfectly good, it just
+   can't do this one job, and it stays usable for autocomplete/grammar/Mistral. */
+.local-model-loaded-badges > span.local-model-notools-chip {
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
+  color: var(--warning);
+}
+
+/* ── The device's own GPU memory: how much headroom is left before the next
+      model is loaded. Toned by ratio, like the header's GPU row. ───────────── */
+/* ── Machine group: what's left for the next model (CPU / RAM / GPU) ──────── */
+/* Its own section of the 🧠 menu, so the readings stop interleaving with the
+   download rows. The group label carries the "untested" pill inline — the pill
+   belongs to the block as a whole, not to any one reading. */
+.local-model-machine-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.local-model-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 10px 4px;
+}
+/* One reading: label · value · a secondary fact, with the meter under all three.
+   The text stays in the menu's ordinary colour and the METER carries the tone —
+   three coloured lines of numbers read as an alarm, three quiet lines over three
+   coloured bars read as a gauge. */
+.local-model-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.local-model-stat-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary, var(--text-primary));
+}
+.local-model-stat-label {
+  min-width: 26px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+/* Tabular figures so a value changing every two seconds doesn't jitter the
+   line it sits on. */
+.local-model-stat-value {
+  font-variant-numeric: tabular-nums;
+}
+/* The sensor reading beside the value (CPU temperature, GPU utilization):
+   context, so it is dimmer than the value and never takes its place. */
+.local-model-stat-note {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+/* The row's end is always the headroom ("N GB free", "N cores") — the figure
+   the question is really about, pinned right so the three rows align. */
+.local-model-stat-detail {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.local-model-meter {
+  height: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+/* Width and colour both transition: a poll that jumps from amber to red should
+   read as the same bar moving, not as a different bar appearing. */
+.local-model-meter-fill {
+  height: 100%;
+  border-radius: var(--radius-sm);
+  transition: width var(--transition-slow), background-color var(--transition);
+}
+.local-model-meter-fill.low {
+  background: var(--success);
+}
+.local-model-meter-fill.medium {
+  background: var(--warning);
+}
+.local-model-meter-fill.high {
+  background: var(--danger);
+}
+
+/* ── Loaded-model row: green "resident" lamp + per-task tag chips ─────────── */
+/* The row (not the inner name button) owns the hover border/fill so the
+   highlight wraps the task tags below the name, not just the name itself.
+   `.local-model-load-row` (the "Load into memory" group below) shares this
+   card because the two lists are the same kind of thing seen twice — one
+   model per card, its name on top, its chips underneath — and the resident
+   list is the one the eye reads first. Two lists a few pixels apart that
+   disagree about what a model row looks like read as two features. */
+.local-model-row,
+.local-model-load-row {
+  display: flex;
+  flex-direction: column;
+  background: var(--control-bg);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--transition), border-color var(--transition);
+}
+.local-model-row:hover,
+.local-model-load-row:hover {
+  background-color: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+/* The clickable name button sits inside the row; the lamp replaces the old
+   leading dot and a "default" tag marks the fallback model. It stays transparent
+   so the row's hover treatment shows through and there's no double outline. */
+.local-model-pick,
+.local-model-row:hover .local-model-pick,
+.local-model-pick:hover {
+  width: 100%;
+  background: transparent;
+  border-color: transparent;
+}
+/* …and none of `.tab-new-menu-item`'s button decoration either: the accent
+   underline that wipes in on hover, and the press-in scale on click. Both are
+   right for a menu row that performs an action and wrong here, where the thing
+   under the pointer is a CARD — the same card the "Load into memory" list is
+   built from, which has no button inside it and so answered the pointer
+   differently. Two lists a few pixels apart reacting differently to the same
+   gesture read as two features. The card's own hover (`.local-model-row:hover`
+   above, shared with `.local-model-load-row`) is now the only reaction either
+   list gives, so they match. `cursor: pointer` deliberately stays: the click
+   still does something (it makes this the default model) and that is an
+   affordance, not decoration. */
+.local-model-pick::after {
+  content: none;
+}
+.local-model-pick:active:not(:disabled) {
+  transform: none;
+}
+/* Same rule for a resident row's own line: the name takes the slack, so the
+   size/quantization/GPU badges end at the row's right edge instead of trailing
+   the name at a different x on every row. */
+.local-model-pick .local-model-loaded-name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.local-model-pick .local-model-loaded-badges {
+  margin-left: auto;
+}
+.local-model-lamp {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--success);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--success) 70%, transparent);
+}
+
+/* ── Remote-connection status lamps (SSH / OpenVPN) ───────────────────────────
+   Red/orange/green dots shown in the project dialog (next to the connect
+   controls) and in the header (active remote project). Modeled on the
+   resident-model lamp above. NOTHING here animates — see `.conn-lamp-idle`. */
+.conn-lamp {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  vertical-align: middle;
+  background: color-mix(in srgb, var(--text-secondary) 45%, transparent);
+}
+.conn-lamp-connected {
+  background: var(--success);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--success) 75%, transparent);
+}
+.conn-lamp-connecting {
+  background: var(--warning);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--warning) 75%, transparent);
+}
+.conn-lamp-error {
+  background: var(--danger);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--danger) 75%, transparent);
+}
+
+/* ── Up vs. working ───────────────────────────────────────────────────────
+   A machine that is CONNECTED but has nothing running on it is drawn HOLLOW —
+   an outline of the same green — and one with live work on it (≥1 tmux session,
+   `stores/hostBusy`) stays the solid dot. It is the tab ring's vocabulary at dot
+   scale: same colour for the same subject, the shape saying whether it is under
+   way. With a fleet held open all day "connected" is the resting state and stops
+   distinguishing anything, so what the lamp usefully answers is "where am I
+   actually running something?" — and now it answers it at rest.
+
+   This replaced a PULSE, in two intensities, on the busy lamp. Three things were
+   wrong with it. It made the animation load-bearing: you had to watch a lamp for
+   a second to read it, and a still screenshot said nothing. It could only ever
+   emphasise the busy case, so an idle machine looked exactly like a lamp whose
+   pulse you had not waited for. And it was the most expensive thing on screen —
+   sixteen rows of animated halo in an open Machines menu, rasterised on the CPU
+   with the DMABUF renderer disabled (`lib.rs`), saturated a core for as long as
+   the menu stayed open. Nothing on a lamp animates any more, `connecting`
+   included, which is also why the reduced-motion block that used to sit here is
+   gone: there is no motion left for it to switch off.
+
+   Written as a two-class selector rather than relying on source order, since
+   both it and `.conn-lamp-connected` are single-class rules and this one has to
+   win wherever a theme re-orders them. */
+.conn-lamp-connected.conn-lamp-idle {
+  background: transparent;
+  /* The ring and a dimmer halo in one declaration — an idle machine should be
+     findable in a row list without shouting over the ones doing work. */
+  box-shadow:
+    inset 0 0 0 2px var(--success),
+    0 0 4px color-mix(in srgb, var(--success) 45%, transparent);
+}
+/* Solid, and glowing a little harder than a plain `connected` lamp, so "which of
+   these machines is actually working" is answerable across a long list without
+   reading a label. Static: the emphasis is brightness, never movement. */
+.conn-lamp-busy {
+  box-shadow: 0 0 8px color-mix(in srgb, var(--success) 90%, transparent);
+}
+/* A status lamp aggregated over several hosts: the dot plus a small count of how
+   many hosts share that state (shown only when more than one). */
+.conn-lamp-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.conn-lamp-count-num {
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.local-model-default-tag {
+  font-size: 9px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: color-mix(in srgb, var(--warning) 22%, transparent);
+  color: var(--warning);
+}
+/* Tag chips sit just under the model name, indented past the lamp. */
+.local-model-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 10px 6px 25px;
+}
+.local-model-role-chip {
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color var(--transition), border-color var(--transition), color var(--transition);
+}
+.local-model-role-chip:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+.local-model-role-chip.on {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+/* The trailing action pair on a model row — "On start" plus the row's own verb
+   (Unload for a resident model, Load for an installed one). Grouped and pushed
+   right as a unit: before, each chip simply followed the model name, so the
+   "On start" chips landed at a different x on every row. Fixed minimum widths
+   keep them a column even as a label changes width with state ("Load" →
+   "Loading…") or with the UI language. */
+.local-model-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.local-model-autostart-chip,
+.local-model-role-chip.local-model-unload,
+.local-model-load-action {
+  min-width: 58px;
+  text-align: center;
+}
+.local-model-role-chip.local-model-unload:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.local-model-role-chip.local-model-unload:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ── Update checks ────────────────────────────────────────────────────────
+   A newer manifest was published for a model on disk. Emphasized (accent, not
+   the row chips' muted grey) because it appears only after the user asked and
+   only where there is something to do; every other row stays silent, so the
+   colour is carrying a real signal rather than decorating the list. */
+.local-model-role-chip.local-model-update-action {
+  min-width: 58px;
+  text-align: center;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--accent);
+}
+.local-model-role-chip.local-model-update-action:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* "couldn't check" — a fact about the *check*, not about the model, so it is
+   plain muted text and never a button: there is nothing here to click. */
+.local-model-update-note {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-secondary);
+  opacity: 0.75;
+  white-space: nowrap;
+}
+/* "Check for updates" plus the version pair — two controls in ONE menu row.
+   They are siblings because a button nested in a button is invalid markup and
+   one click would land on two actions, but they must still read as a single
+   row: so the ROW carries the menu item's chrome (background, border, radius,
+   padding) and the check button inside it is stripped bare. Without that the
+   version sat outside the item's box, on the menu background, and looked like
+   a stray label floating to the right of the row it belongs to. */
+.local-model-check-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  transition: background-color var(--transition);
+}
+.local-model-check-row:hover {
+  background-color: var(--control-hover-bg);
+}
+/* The check button keeps its own disabled dimming and its click target; every
+   other part of its chrome now belongs to the row above it. */
+/* Shrink-to-fit, NOT `flex: 1`: the version reads directly after the label,
+   as the answer to it, rather than pinned to the far edge of a row whose middle
+   is empty. The trailing space in the row is inert — the click target is the
+   label itself, which is where it is aimed anyway. */
+.local-model-check-row > .tab-new-menu-item {
+  flex: 0 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+}
+/* `:disabled:hover` in the base rules repaints the item's own background, which
+   here would be a solid patch inside the hovered row while a check runs. */
+.local-model-check-row > .tab-new-menu-item:hover,
+.local-model-check-row > .tab-new-menu-item:disabled:hover {
+  background: none;
+  border-color: transparent;
+}
+/* The installed Ollama version, beside "Check for updates" rather than inside
+   it, and directly after it rather than pushed to the row's right edge — the
+   version is what the row *reports*, so it belongs next to the label it answers
+   (and it must not move when a check turns it into the upgrade control). */
+.local-model-version-note {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 3px 4px;
+  border: 1px solid transparent;
+  background: none;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-secondary);
+  opacity: 0.75;
+  white-space: nowrap;
+}
+/* `v0.14.3 → v0.15.2` when a check found a newer server — and the whole thing
+   is the upgrade button, because the new number IS what you want when you read
+   it. The arrow and that number are green (the only green in this menu that is
+   not a running lamp): this is the one state where the version readout stops
+   being a fact about the machine and becomes something to act on, and the
+   installed half stays muted so the eye lands on what is being offered. It also
+   drops the note's dimming — a control is not a row that is faded out — and
+   takes a border on hover/focus, since a number that acts has to *say* it does
+   before it is clicked. */
+.local-model-version-note.has-update {
+  opacity: 1;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color var(--transition), border-color var(--transition);
+}
+.local-model-version-note.has-update:hover,
+.local-model-version-note.has-update:focus-visible {
+  border-color: color-mix(in srgb, var(--success) 55%, transparent);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+}
+.local-model-version-arrow {
+  color: var(--success);
+  font-weight: 700;
+}
+.local-model-version-new {
+  color: var(--success);
+  font-weight: 600;
+}
+
+/* The load-on-start notice at the top of the brain menu's Local Models group:
+   what the launch-time autoload did, or why it deliberately did nothing. The
+   Energy Saver skip (`.saver`) is warning-tinted because it is the case the
+   user has to be told about — the models they armed are not there. */
+.local-model-autostart-note {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 8px 6px;
+  padding: 7px 9px;
+  border: 1px solid var(--control-border);
+  /* Coloured left gutter — the app's existing "this is a notice" idiom
+     (`.ollama-install-cmd`), and what carries the phase at a glance. */
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--control-bg);
+}
+.local-model-autostart-note.saver {
+  border-color: color-mix(in srgb, var(--warning) 55%, var(--control-border));
+  border-left-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+/* A failed load looked exactly like a load in flight — the one phase where the
+   user has to act reading as the one where they need do nothing. */
+.local-model-autostart-note.failed {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--control-border));
+  border-left-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+/* Dismiss: an icon in the note's corner, not a third chip of equal weight in
+   the action row (where, while loading, it was also the row's only member). */
+.local-model-autostart-dismiss {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+.local-model-autostart-dismiss:hover {
+  background: var(--control-hover-bg);
+  color: var(--text-primary);
+}
+/* The `!` on the 🧠 button itself, pointing at the notice inside the menu. Amber
+   (the mail button's failed-check badge, same reasoning): something needs
+   attention, without claiming anything was loaded. */
+.local-model-autostart-flag {
+  position: absolute;
+  bottom: -3px;
+  left: -3px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--warning);
+  /* `--warning` is light in some themes and dark in others; near-black reads on both. */
+  color: #1c1300;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+.local-model-autostart-text {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  /* Clear of the corner ✕, so a sentence never runs under it. */
+  padding-right: 16px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+/* The sentence takes the line; the tag follows it and wraps rather than
+   squeezing it. A model name in the sentence can be long and unbreakable. */
+.local-model-autostart-sentence {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.local-model-autostart-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* Installed agent CLIs listed in the brain menu's Agents section: a green
+   "installed" lamp next to the agent label, matching a loaded-model row. */
+.local-model-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 4px 10px;
+}
+
+/* In-flight downloads shown at the top of the brain menu. */
+.local-model-downloads {
+  padding: 4px 10px 6px;
+  border-bottom: 1px solid var(--control-border);
+  margin-bottom: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.local-model-download-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.local-model-download-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.local-model-download-head {
+  /* Name grows; pct + action buttons hug the right edge. */
+}
+.local-model-download-head .local-model-loaded-name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.local-model-download-pct {
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+/* Pause / Resume / Delete control on a (paused) download row in the brain menu. */
+.local-model-download-action {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--control-border);
+  color: var(--text-secondary);
+  font-size: 10px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.local-model-download-action:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+.local-model-download-action.danger { color: var(--danger); }
+.local-model-download-action.danger:hover { border-color: var(--danger); }
+
+/* A "load into memory" card in the brain menu, built as the resident-model
+   card's twin (see `.local-model-row`): the model's name on its own line,
+   its chips on a second line indented past the leading glyph, and — while
+   the model is warming — an indeterminate bar under both (Ollama streams no
+   load %). The card chrome itself is declared with `.local-model-row`. */
+/* The name line. Mirrors `.local-model-pick`'s metrics so a name in this list
+   sits at the same height and indent as one in the resident list; it is a
+   plain div rather than a button because there is nothing to click here (a
+   model not in memory cannot be made the default). */
+.local-model-load-name-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 6px 10px 0;
+}
+/* The name takes the line's slack, which is what pins the parameter badge
+   after it to the card's right edge — the badge then sits at the same x on
+   every card regardless of how long the name is, and needs no width reserved
+   for it. `min-width: 0` is load-bearing: a flex item's automatic minimum is
+   its max-content width, so without it a long name refuses to shrink and
+   widens the whole menu instead of truncating. */
+.local-model-load-name-line .local-model-loaded-name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* The two corner groups: the model's dimensions at the end of line 1, its tags
+   at the start of line 2. Both are plain flex runs — the corner they sit in is
+   what aligns them, so neither needs a width reserved for it. */
+.local-model-load-facts,
+.local-model-load-caps {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.local-model-load-facts {
+  margin-left: auto;
+}
+/* One chip, used by both groups and by the resident row's badges. Its surface
+   is a wash of the text colour rather than `--control-bg`: the card underneath
+   IS `--control-bg` now, so a chip painted in it would be an invisible pill and
+   the facts would read as loose text. A wash also tracks any theme without a
+   second colour needing to be picked per theme. No border — a bordered pill
+   here reads as a button, which is exactly what the row beside it just had
+   removed. */
+.local-model-chip {
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+/* The caveat chip — "no tools", "embeddings only". Warning-toned rather than
+   danger: the model is perfectly good, it just cannot do the job this menu is
+   mostly about. It is the ONLY coloured chip on a card, which is what lets it
+   be found by scanning a column of otherwise grey ones. */
+.local-model-chip.local-model-notools-chip {
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
+  color: var(--warning);
+}
+/* The second line — the twin of `.local-model-roles`, down to the 25px indent
+   that clears the leading glyph above. Caveat tags at the left corner, the
+   verbs at the right (`.local-model-row-actions` carries the `margin-left:
+   auto` that puts them there).
+
+   Both corners are stable without a single width being declared, and that is
+   the point of splitting the card in two: the tags open the line, so nothing
+   of variable width can push them off the left edge, and the actions close
+   it. While the name shared a line with the badges no such guarantee existed
+   — a flex row places each item straight after the one before it, so every
+   badge inherited an offset from a name whose width differs on every row, and
+   no sizing applied to the badges themselves could undo it. */
+.local-model-load-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 0 10px 6px 25px;
+}
+/* The two badge cells. They are plain layout boxes and carry no pill styling
+   of their own — an empty one must occupy its column silently, not paint a
+   bare chip-shaped stripe on every row whose model has nothing to say there.
+   The pill look belongs to the badge inside (below). */
+.local-model-param-slot,
+.local-model-notools-slot {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.local-model-param-slot > span,
+.local-model-notools-slot > span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.local-model-notools-slot > span.local-model-notools-chip {
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
+  color: var(--warning);
+}
+.local-model-load-bar {
+  margin: 2px 12px 4px;
+}
+
+/* "Your GPU is there, and Ollama isn't using it." An amber notice rather than a
+   danger one: nothing is broken or lost — the models answer, just slowly — and
+   the fix rewrites a system service, which is not a thing to press in alarm. */
+.local-model-igpu-notice {
+  margin: 4px 10px 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--warning);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.local-model-igpu-text {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  /* The command names a variable and a path; neither may be truncated or
+     reflowed into something that reads as a different command. */
+  overflow-wrap: anywhere;
+}
+.local-model-igpu-fix {
+  align-self: flex-start;
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+/* ── Install flow (shown when Ollama is missing) ─────────────────────────── */
+.ollama-install-steps {
+  margin: 4px 0 12px;
+  padding-left: 20px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.ollama-install-steps li {
+  margin-bottom: 8px;
+}
+
+.ollama-install-cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+  /* A long install command must never widen the panel: the row wraps its
+     buttons onto a second line before anything overflows, and `min-width: 0`
+     lets it shrink inside its own flex/grid parents. */
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.ollama-install-cmd {
+  /* `min-width: 0` is load-bearing — without it a flex child's automatic
+     minimum is its max-content width, so an over-long command pushes the row
+     past the panel edge and the settings pane grows a horizontal scrollbar. */
+  flex: 1 1 200px;
+  min-width: 0;
+  padding: 4px 8px;
+  background: var(--bg-main);
+  border: 1px solid var(--control-border);
+  border-left: 2px solid var(--accent-secondary);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  /* Terminal command: monospace on the deeper window background with a coloured
+     gutter so it reads as a shell entry, not a button or a heading. */
+  color: var(--text-secondary);
+  /* Wrap rather than scroll: a nested horizontal scrollbar per command is worse
+     to read (and to copy from) than a two-line command. `anywhere` breaks the
+     unbreakable bits — long URLs and scoped npm package names. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ollama-install-cmd-row > .ollama-action-btn {
+  flex: 0 0 auto;
+}
+
+.ollama-pull-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-primary);
+}
+.ollama-pull-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.ollama-pull-input:disabled {
+  opacity: 0.5;
+}
+
+.ollama-catalog-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+.ollama-catalog-sort {
+  padding: 3px 6px;
+  font-size: 11px;
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.ollama-catalog-sort:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.ollama-sort-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.ollama-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin: 4px 0;
+}
+.ollama-filter-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-right: 2px;
+  min-width: 40px;
+}
+.ollama-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-lg);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-transform: capitalize;
+}
+.ollama-chip:hover {
+  border-color: var(--accent);
+}
+.ollama-chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.ollama-install-log {
+  margin: 8px 0 12px;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px;
+  /* Live installer output: same terminal treatment as the command snippet. */
+  background: var(--bg-main);
+  border: 1px solid var(--control-border);
+  border-left: 2px solid var(--accent-secondary);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* `.ollama-action-btn` is the settings button in its compact size — look,
+   hover, disabled and the .primary/.danger variants all come from the settings
+   button system (see "The settings button"), not from a block of its own. */
+
+.ollama-model-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--control-bg);
+}
+
+.ollama-model-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* One installed model in the "Load on Eldrun start" list: switch, name, size.
+   Rounded, with hover and armed states, like every other card list in Settings
+   (.archived-project-row, .remote-machine-card) — the whole label is the hit
+   target, so it has to look like one rather than like a bare bordered strip. */
+.ollama-autostart-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--control-bg);
+  cursor: pointer;
+  transition: background-color var(--transition), border-color var(--transition);
+}
+.ollama-autostart-row:hover {
+  border-color: var(--accent);
+  background: var(--control-hover-bg);
+}
+/* Armed for the next launch — readable from the row itself, not only from the
+   switch, which is what makes the list scannable at a glance. */
+.ollama-autostart-row.on {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-subtle));
+  background: color-mix(in srgb, var(--accent) 10%, var(--control-bg));
+}
+.ollama-autostart-row .ollama-model-name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ollama-autostart-row .ollama-badge {
+  flex-shrink: 0;
+}
+
+/* A machine with many installed models must not push the Energy Saver card
+   (and the registry browser under it) out of reach. */
+.ollama-autostart-list {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+/* Save + its "saved" feedback inside the Energy Saver card. Its own row rather
+   than the borrowed install-command row (which carries a command field's
+   margins): the action sits at the card's edge, the confirmation beside it. */
+.ollama-autostart-saver-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.ollama-autostart-saver-actions .ollama-status-text {
+  flex: 0 1 auto;
+  text-align: right;
+}
+
+.ollama-model-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: ui-monospace, monospace;
+  word-break: break-all;
+}
+
+.ollama-model-size {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.ollama-model-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.ollama-download-bar,
+.app-update-bar {
+  height: 5px;
+  border-radius: var(--radius-sm);
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+
+.ollama-download-bar-fill,
+.app-update-bar-fill {
+  height: 100%;
+  background: var(--accent, var(--text-primary));
+  transition: width var(--transition-slow);
+}
+
+.ollama-download-bar-fill.indeterminate,
+.app-update-bar-fill.indeterminate {
+  width: 35%;
+  border-radius: var(--radius-sm);
+  animation: ollama-download-indeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes ollama-download-indeterminate {
+  0% { margin-left: -35%; }
+  100% { margin-left: 100%; }
+}
+
+/* Settings → Updates. The progress bar itself is the Ollama pull bar's rules,
+   shared by selector above rather than restated here — one treatment, one
+   definition. What is left is the panel's own layout. */
+.app-update-version {
+  font-family: ui-monospace, monospace;
+  color: var(--text-secondary);
+}
+
+.app-update-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-left: 2px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-main);
+  margin-top: 6px;
+}
+.app-update-status.done {
+  border-left-color: var(--success);
+  color: var(--text-primary);
+}
+
+.app-update-error {
+  font-size: 12px;
+  color: var(--danger);
+  padding: 6px 8px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  background: var(--bg-main);
+  margin-top: 6px;
+  /* A backend error is one long sentence; wrap it rather than clip it. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.app-update-release {
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-main);
+}
+
+.app-update-release-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.app-update-release-title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.app-update-release-date {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: ui-monospace, monospace;
+}
+
+/* The release body is the workflow's markdown, rendered as the plain text it
+   is — no markdown parser is run over text fetched from the network. */
+.app-update-notes {
+  margin: 6px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, monospace;
+}
+
+.app-update-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.app-update-progress-text {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.app-update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.ollama-download-status {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* Indeterminate "loading into memory" strip under a model row in settings. */
+.ollama-load-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 6px;
+}
+
+.ollama-badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: var(--bg-main);
+  font-family: ui-monospace, monospace;
+}
+.ollama-badge.running {
+  border-color: var(--success);
+  color: var(--success);
+}
+.ollama-badge.running.gpu {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ollama-model-actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.ollama-catalog-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ollama-catalog-row:last-child { border-bottom: none; }
+
+.ollama-catalog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ollama-catalog-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.ollama-catalog-desc {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.3;
+}
+
+.ollama-catalog-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 1px;
+}
+
+.ollama-tag-btn {
+  font-size: 10px;
+  padding: 2px 7px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-family: ui-monospace, monospace;
+  line-height: 1.4;
+}
+.ollama-tag-btn:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+.ollama-tag-btn.installed {
+  border-color: var(--success);
+  color: var(--success);
+}
+.ollama-tag-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* ── Activity window (modal) ─────────────────────────────────────────── */
+.activity-window {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-3);
+  min-width: 320px;
+}
+
+.activity-window-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.activity-window-title {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.activity-window-body {
+  padding: 16px 20px 20px;
+}
+
+.activity-loading {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 12px 0;
+  text-align: center;
+}
+
+/* Compact reuse of the project-dialog chrome for the pill description editor. */
+.edit-description-window {
+  width: min(440px, calc(100vw - 32px));
+}
+.edit-description-window textarea {
+  width: 100%;
+  min-height: 90px;
+}
+
+/* ── Project-switch toast ──────────────────────────────────────────────── */
+@keyframes toast-fade {
+  0%   { opacity: 0; transform: translate(-50%, calc(-50% - 8px)); }
+  12%  { opacity: 1; transform: translate(-50%, -50%); }
+  72%  { opacity: 1; transform: translate(-50%, -50%); }
+  100% { opacity: 0; transform: translate(-50%, -50%); }
+}
+
+.project-switch-toast {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 500;
+  padding: 10px 20px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-3);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  font-family: monospace;
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: calc(100vw - 64px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: toast-fade 2.2s ease forwards;
+}
+
+/* Remote (SSH) projects show two lines — a local mirror path and the remote
+   user@host:remote_path target. Preserve the newline + label spacing and left-
+   align; single-line local/conn toasts keep their nowrap + ellipsis above. */
+.project-switch-toast.multiline {
+  white-space: pre;
+  text-align: left;
+  line-height: 1.5;
+}
+
+/* The connection toast ("VPN connected · proj") sits just below the switch toast
+   so the two never overlap, and lingers a touch longer (matches its 3.2s clear). */
+.conn-toast {
+  top: calc(50% + 46px);
+  animation: toast-fade 3.2s ease forwards;
+}
+
+/* ── Project-dialog remote step indicator + header connection lamps ────────── */
+.remote-steps {
+  display: flex;
+  gap: 12px;
+  margin: 2px 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+}
+.remote-step {
+  opacity: 0.55;
+}
+.remote-step.is-active {
+  opacity: 1;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+/* SSH-address label with its lamp inline. Explicit color — this dialog is
+   portaled into <body>, which sets no text color, so without this the plain
+   text child falls back to browser-default black. */
+.remote-field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+}
+/* A remote project's live SSH lamp, rendered as a button (clicking opens the
+   Connect modal), so reset the native button chrome and keep just the lamp. */
+.header-conn-menu {
+  position: relative;
+  display: inline-flex;
+  margin-left: 6px;
+}
+.header-conn-lamps {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 5px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+}
+.header-conn-lamps:hover {
+  background: color-mix(in srgb, var(--text-secondary) 16%, transparent);
+}
+
+/* The machine-wide scope, restated where the user is actually handing over the
+   passphrase — the last moment before the routing changes. */
+.vpn-prompt-scope {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+/* Success banner shown when the tunnel came up — the modal says so and offers Close,
+   instead of just vanishing (which read as "did it actually connect?"). */
+/* Why this prompt is on screen when the connect was meant to be silent (rejected
+   credentials, an unreadable keyring, none saved yet). Informational, not an error —
+   the modal is still perfectly usable, it just owes the user an explanation. */
+.vpn-prompt-reason {
+  margin: 4px 0 2px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+}
+.vpn-prompt-connected {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 2px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--success) 40%, transparent);
+}
+.vpn-connected-check {
+  font-weight: 700;
+}
+
+/* Auto-connect + VPN: the one combination that changes the machine's routing with
+   no prompt at all, so it gets said out loud rather than buried in a tooltip. */
+.remote-connect-vpn-warning {
+  margin: 2px 0 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+/* ── Header VPN indicator (VpnIndicator) ────────────────────────────────────
+   Machine-level, unlike every other VPN surface: it is up whenever a tunnel is,
+   no matter which project is active, because the tunnel reroutes the whole OS.
+   Rides the shared .global-apps-menu / .tab-new-menu chrome so it reads as one
+   of the header menus rather than a bespoke widget. */
+.vpn-indicator-btn,
+.machines-indicator-btn,
+.mobile-indicator-btn {
+  /* Unlike the other .global-apps-menu-btn siblings, this one reads as a
+     quiet status readout (lamp + label), not a button — so its inherited
+     button box (background/border) is stripped back to plain text/icon.
+     Height stays the shared 32px (matching the brain/local-model button
+     and every other .global-apps-menu-btn) so the header row's icons align.
+     The dropdowns line up regardless — they hang off the header's bottom edge
+     (`.global-apps-menu .tab-new-menu`), not off each button. */
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  height: 32px;
+  padding: 2px 4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+}
+
+/* Kept as an explicit marker on the right-cluster anchors (VPN, Machines,
+   Mobile), whose parent centers its children. `.global-apps-menu` now stretches
+   every header anchor for the same reason — all the hover menus have to begin
+   on one horizontal line, the bar's bottom edge — so this only restates it. */
+.header-status-menu-anchor {
+  align-self: stretch;
+}
+.vpn-indicator-btn:hover,
+.vpn-indicator-btn[aria-expanded="true"],
+.machines-indicator-btn:hover,
+.machines-indicator-btn[aria-expanded="true"],
+.mobile-indicator-btn:hover,
+.mobile-indicator-btn[aria-expanded="true"] {
+  /* Same accent-tinted highlight as .tab-new-btn:hover (the + button), so the
+     header's three "quiet until touched" controls (+, VPN, Machines) all light
+     up the same way instead of these two staying flat while the + brightens. */
+  background: var(--pill-hover-bg);
+  border-color: transparent;
+}
+.vpn-indicator-btn:hover .vpn-indicator-label,
+.vpn-indicator-btn[aria-expanded="true"] .vpn-indicator-label,
+.machines-indicator-btn:hover .vpn-indicator-label,
+.machines-indicator-btn[aria-expanded="true"] .vpn-indicator-label {
+  color: var(--text-primary);
+}
+.vpn-indicator-label {
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  transition: color var(--transition);
+}
+.mobile-indicator-btn {
+  justify-content: center;
+  width: 25px;
+  padding-inline: 3px;
+}
+.mobile-indicator-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--text-secondary);
+}
+.mobile-indicator-icon.connected { color: var(--success); }
+.mobile-indicator-icon.connecting { color: var(--warning); }
+.mobile-indicator-icon.error { color: var(--danger); }
+.mobile-indicator-icon-dot {
+  stroke: var(--bg);
+  stroke-width: 1px;
+}
+.mobile-indicator-menu {
+  width: 268px;
+  color: var(--text-primary);
+}
+.mobile-indicator-body {
+  padding: 10px;
+}
+.mobile-indicator-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.mobile-indicator-status > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.mobile-indicator-status span,
+.mobile-indicator-origin {
+  color: var(--text-secondary);
+}
+.mobile-indicator-origin,
+.mobile-indicator-error,
+.mobile-indicator-notice {
+  margin-top: 8px;
+  font-family: var(--mono-font, monospace);
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.mobile-indicator-error { color: var(--danger, var(--text-primary)); }
+.mobile-indicator-notice { color: var(--success, var(--text-primary)); }
+.mobile-indicator-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.mobile-indicator-actions .vpn-indicator-connect { margin-top: 0; }
+.mobile-indicator-actions .mobile-indicator-lockdown {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 60%, var(--control-border));
+}
+.mobile-indicator-actions .mobile-indicator-lockdown:hover {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+/* Title row carries the pinned "OpenVPN" label plus a top-right × (unified with the
+   other menus). The label keeps its accent styling; the row just lays the two out. */
+.vpn-indicator-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.vpn-indicator-menu {
+  width: 268px;
+  color: var(--text-primary);
+  /* Anchored flush under the header bar (top: 100%) — with enough
+     rows (many global machines, or many stored .ovpn configs) the menu would
+     otherwise grow past the bottom of the window. It is capped here, but the
+     menu ELEMENT does not scroll: its `.menu-scroll-region` child does, so the
+     accent title stays pinned and the scrollbar starts below the header (the
+     unified scrolling-menu shape — see `.menu-scroll-region`). */
+  max-height: calc(100vh - 72px);
+  overflow: visible;
+}
+.vpn-indicator-note {
+  padding: 6px 10px 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border, var(--bg-panel));
+}
+.vpn-indicator-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+}
+.vpn-indicator-row + .vpn-indicator-row {
+  border-top: 1px solid var(--border, var(--bg-panel));
+}
+.vpn-indicator-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* A machine row is two lines: the name (+ lamp, badges, expand toggle) on the
+   first, the action icons on a second below it — so a long machine name is not
+   crowded into the buttons in the narrow (280px) menu. `flex-wrap` + a
+   full-width `.machines-row-actions` is what breaks the icons onto their own
+   line; the expand toggle sits before the actions in the DOM so it stays up on
+   the first row with the name. */
+.machines-indicator-row .vpn-indicator-head {
+  flex-wrap: wrap;
+}
+.vpn-indicator-config {
+  font-family: var(--mono-font, monospace);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vpn-indicator-holders,
+.vpn-indicator-untracked {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+.vpn-indicator-disconnect {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 3px 9px;
+  border: 1px solid var(--border, var(--text-secondary));
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--danger, var(--text-primary));
+  font-size: 11px;
+  cursor: pointer;
+}
+.vpn-indicator-disconnect:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger, var(--text-secondary)) 14%, transparent);
+}
+.vpn-indicator-disconnect:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* Connect: the header can bring a tunnel *up*, not just take one down — a VPN is
+   something you use, not only a precondition for an SSH project. */
+.vpn-indicator-connect {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 3px 9px;
+  border: 1px solid var(--accent, var(--text-secondary));
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--accent, var(--text-primary));
+  font-size: 11px;
+  cursor: pointer;
+}
+.vpn-indicator-connect:hover {
+  background: color-mix(in srgb, var(--accent, var(--text-secondary)) 14%, transparent);
+}
+/* Connect + Remove share a stored config's row: side by side, not stacked. */
+.vpn-indicator-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+.vpn-indicator-actions .vpn-indicator-connect,
+.vpn-indicator-actions .vpn-indicator-remove {
+  margin-top: 0;
+}
+/* Remove: same danger-ghost as Disconnect — both take something away. */
+.vpn-indicator-remove {
+  align-self: flex-start;
+  padding: 3px 9px;
+  border: 1px solid var(--border, var(--text-secondary));
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--danger, var(--text-primary));
+  font-size: 11px;
+  cursor: pointer;
+}
+.vpn-indicator-remove:hover {
+  background: color-mix(in srgb, var(--danger, var(--text-secondary)) 14%, transparent);
+}
+/* "Connect on launch", per config: the machine-level twin of a project's
+   auto-connect. Sits under the row's action button because it is a property of the
+   tunnel, not of this click. */
+.vpn-indicator-auto {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.vpn-indicator-auto:has(input:disabled) {
+  cursor: default;
+  opacity: 0.6;
+}
+/* The Save-password toggle row sits inside a `.menu-form` (the add-machine form),
+   whose `label` rule would otherwise stack it into a column — keep it a row with
+   the switch beside its text, matching every other toggle row. */
+.menu-form .vpn-indicator-auto {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+/* The inline retry-password field shares its row with Retry/Cancel buttons — let
+   the password wrap take the remaining width so the field isn't shrunk to nothing. */
+.vpn-indicator-actions .password-input-wrap {
+  flex: 1;
+}
+.vpn-indicator-hint {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+.vpn-indicator-empty,
+.vpn-indicator-error {
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+.vpn-indicator-error {
+  color: var(--danger, var(--text-primary));
+  word-break: break-word;
+}
+/* The locked-keyring banner: a warning with one action, sitting above the tunnel
+   rows because it explains all of them at once (nothing saved can be read while it
+   is up). Toned like a warning, not an error — nothing is broken, it is just shut. */
+.vpn-indicator-locked {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 4px 8px 6px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+}
+
+/* ── Header Machines indicator (MachinesIndicator) ──────────────────────────
+   Rides the same .global-apps-menu / .tab-new-menu / .vpn-indicator-* chrome
+   as VpnIndicator — a global machine list is the same "machine-wide, not
+   project-scoped" shape as the VPN tunnel registry. Only what's genuinely
+   different (the draggable rows, the drop-zone highlight) gets its own class. */
+.machines-indicator-menu {
+  width: 280px;
+  /* This trigger lives in the header's right cluster. Grow the fixed-width
+     menu inward from its right edge so it cannot cross the window border. */
+  right: 0;
+  left: auto;
+}
+.machines-indicator-row {
+  cursor: grab;
+}
+.machines-indicator-row:active {
+  cursor: grabbing;
+}
+/* Per-row expand toggle: keeps a row to one line (lamp + label + actions) by
+   default, with address/system-monitor/auto-connect behind it — a long machine
+   list stays scannable instead of every row's full detail always being open. */
+.machines-row-expand-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.machines-row-expand-btn:hover {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
+}
+
+/* A row's steady-state actions are ICONS on a SECOND line, below the lamp, the
+   label and the ▸ expand toggle: four worded buttons ("Reconnect", "Disconnect",
+   "Edit…", "Remove") wrapped onto two lines in a 280px menu and cost too much
+   width beside a real machine name. The words survive as title/aria-label, so
+   nothing is lost to a hover or a screen reader — and the *armed* confirm states
+   (Remove / Disconnect / Retry / Edit) still replace them with worded buttons
+   below, because a destructive confirm must never be a glyph.
+   The label flexes so a long machine name ellipsizes rather than pushing the
+   expand toggle off the first row; the actions take a full row of their own
+   (`flex-basis: 100%` against the head's `flex-wrap`), so the name has the whole
+   first line to itself. */
+.vpn-indicator-head .vpn-indicator-config {
+  flex: 1;
+  min-width: 0;
+}
+.machines-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-basis: 100%;
+  flex-shrink: 0;
+  margin-top: 6px;
+}
+
+.machines-row-action {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border, var(--text-secondary));
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.machines-row-action:hover {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
+}
+.machines-row-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.machines-row-action.is-accent {
+  border-color: var(--accent, var(--text-secondary));
+  color: var(--accent, var(--text-primary));
+}
+.machines-row-action.is-accent:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent, var(--text-secondary)) 14%, transparent);
+}
+.machines-row-action.is-danger {
+  color: var(--danger, var(--text-primary));
+}
+.machines-row-action.is-danger:hover:not(:disabled) {
+  color: var(--danger, var(--text-primary));
+  background: color-mix(in srgb, var(--danger, var(--text-secondary)) 14%, transparent);
+}
+
+/* Reorder grip: the ONLY part of a machine row that starts a drag, so every
+   button beside it stays clickable. Pointer-driven (see MachinesIndicator) —
+   `touch-action: none` is what stops the menu from scrolling instead of
+   dragging, and `cursor: grab` is the whole affordance. */
+.machines-row-grip {
+  flex-shrink: 0;
+  width: 14px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin-right: 2px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.5;
+  cursor: grab;
+  touch-action: none;
+}
+.machines-row-grip:hover,
+.machines-row-grip:focus-visible {
+  opacity: 1;
+  color: var(--text-primary);
+}
+.machines-row-grip:active {
+  cursor: grabbing;
+}
+
+/* The row being dragged: it follows the cursor (an inline translateY set by
+   MachinesIndicator) as a dimmed copy, while the list under it holds still and
+   only the insertion marker below moves — so the rects measured at pointerdown
+   stay valid for the whole gesture. */
+.machines-indicator-row.reorder-dragging {
+  opacity: 0.55;
+  position: relative;
+  z-index: 2;
+  background: color-mix(in srgb, var(--accent, var(--text-secondary)) 12%, transparent);
+  border-radius: var(--radius-sm);
+}
+
+/* The rows the dragged one is NOT: they slide aside to open its landing slot
+   (the translate is set inline by MachinesIndicator). Only the transition lives
+   here — it is what makes the list *part* rather than jump, and it is scoped to
+   the drag so an ordinary row never animates. */
+.machines-indicator-row.reorder-parting {
+  transition: transform 140ms ease;
+}
+
+/* The row's "add this machine to a project" picker: one button per open
+   project, each naming which of the two ways the machine would join it. It
+   replaced the drag-onto-a-pill gesture, so it deliberately spells out the
+   outcome the drop could only imply. */
+.machines-attach-form .machines-attach-project {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+.machines-attach-kind {
+  color: var(--text-secondary);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+/* The expanded row's "System monitor…" button (opens
+   `GlobalMachineMonitorDialog`) — a full-width action, same button chrome as
+   the row's Connect/Disconnect/Remove actions, just left-aligned rather than
+   in the actions row. */
+.machines-monitor-btn {
+  margin-top: 2px;
+  align-self: flex-start;
+}
+
+/* ── Machines import / export panels (MachinesIndicator) ─────────────────────
+   Both reuse the .menu-form / .vpn-indicator-* chrome; these only add the bits
+   the flows need — a scrollable pick/preview list and a muted address line. */
+.machines-io-buttons {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+/* The row's buttons already carry `align-self: flex-start` for the column
+   layout — reset it so they sit centered on this one shared row. */
+.machines-io-buttons .vpn-indicator-connect {
+  align-self: auto;
+  margin-top: 0;
+}
+/* Fleet-wide actions (Retry all / Disconnect all): one shared row above the
+   machine list, separated from the note by a hairline so it reads as an action
+   bar, not part of the prose. The button row itself is `.vpn-indicator-actions`
+   (row flex) — the confirm variant stacks a hint above it, so this wrapper keeps
+   its own default direction and only owns the separator. */
+.machines-fleet-actions {
+  flex-wrap: wrap;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.25));
+}
+.machines-fleet-actions .vpn-indicator-connect,
+.machines-fleet-actions .vpn-indicator-remove {
+  align-self: auto;
+  margin-top: 0;
+}
+/* The icon bar is a ROW. It has to say so itself: `.vpn-indicator-row` sets
+   `flex-direction: column` and `.vpn-indicator-actions` only ever set
+   display/gap, never a direction — so the column wins on every element carrying
+   both, and the icons would stack. The confirm variant keeps the column (its
+   hint sits above its buttons), which is why this is its own class rather than
+   a rule on `.machines-fleet-actions`. */
+.machines-fleet-icons {
+  flex-direction: row;
+  align-items: center;
+  /* Centred, because this bar is not a cluster hanging off a machine's name —
+     it acts on the whole list, so it belongs to the menu's width rather than to
+     either edge. */
+  justify-content: center;
+  position: relative;
+}
+/* The untested tag is taken OUT of the centring flow: as an ordinary flex item
+   it would count toward the centred group's width and shove the icons left of
+   the true centre by half the tag. Absolute + `position: relative` above pins it
+   to the right edge and leaves the three icons centred on the menu. */
+.machines-fleet-icons .untested-tag {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+/* The fleet bar's own controls are icons in the row vocabulary (↻ / ⏻ / ▥), so
+   they reuse `.machines-row-action` — only slightly larger, since here they are
+   the row rather than a cluster hanging off the end of one. */
+.machines-fleet-actions .machines-row-action {
+  width: 24px;
+  height: 24px;
+  font-size: 13px;
+}
+/* Deliberately NOT its own scroll container. It used to be (`max-height: 320px;
+   overflow-y: auto`) and that cost twice: a second scrollbar nested inside the
+   menu's own — and one the tinted-track rule above doesn't reach, since that
+   targets `.tab-new-menu` itself, not its descendants, so it fell back to the
+   flat `--bg-panel` track and read as a mismatched stripe — plus, being a
+   `flex-shrink: 1` child of a height-capped column, it squeezed the imported-
+   machine list (`.machines-io-preview`) down to almost nothing. The menu
+   (`.vpn-indicator-menu`, capped at the viewport) already scrolls, so letting
+   this grow gives the panel ONE correctly-themed scrollbar. */
+.machines-io-panel {
+  min-height: 0;
+}
+/* One selectable machine in the export list: the toggle + label, with the host
+   address as a muted mono sub-line under the display name. */
+.machines-io-pick {
+  align-items: center;
+}
+/* The select-all/none row sits above the list and is separated from it — it
+   picks the rows rather than being one of them. */
+.machines-io-pick-all {
+  border-bottom: 1px solid var(--border, var(--bg-panel));
+  padding-bottom: 6px;
+  margin-bottom: 2px;
+  font-weight: 600;
+}
+.machines-io-addr {
+  display: block;
+  font-family: var(--mono-font, monospace);
+  font-size: 10px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+/* The read-back list of machines an import found / added. `flex-shrink: 0` is
+   load-bearing: as a flex child of the column panel it would otherwise be
+   squeezed to a sliver whenever the panel ran short of room, which is exactly
+   what hid the imported machines. Its own scrollbar gets the inset track it
+   actually sits on, so it matches the menu's rather than falling back to the
+   flat `--bg-panel` one. */
+.machines-io-preview,
+.machines-io-results {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex-shrink: 0;
+  min-height: 60px;
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+}
+.machines-io-result-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+/* Compact variant: the lamp embedded on a project pill instead of the header,
+   so every remote project's connection state is visible in the project bar at a
+   glance (not just the active one). */
+.header-conn-menu-compact {
+  margin-left: 0;
+  margin-right: 2px;
+}
+.header-conn-menu-compact .header-conn-lamps {
+  padding: 2px;
+}
+
+/* ── Connect modal (RemoteConnectDialog) ────────────────────────────────────
+   Connect-only sibling of the new-project SSH section; reuses the shared
+   .remote-reconnect-section / .dialog-connect* / .connection-log styles. */
+.remote-connect-dialog {
+  width: min(560px, 92vw);
+}
+.remote-connect-target {
+  margin: 2px 0 10px;
+  font-family: var(--mono-font, monospace);
+  font-size: 12px;
+  color: var(--text-secondary);
+  word-break: break-all;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+/* One row per location (Remote / Local): fixed-width label + path. */
+.remote-connect-location {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.remote-connect-location-label {
+  flex: 0 0 auto;
+  min-width: 44px;
+  font-family: var(--body-font, sans-serif);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.remote-connect-location-path {
+  flex: 1 1 auto;
+  word-break: break-all;
+}
+/* Headless password row: label + input + Connect button stacked in the section. */
+.remote-connect-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.remote-connect-field input {
+  width: 100%;
+}
+/* Opt-in "Save password" row under a Connect-modal password field. */
+.remote-connect-remember {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.remote-connect-remember input {
+  width: auto;
+  margin: 0;
+}

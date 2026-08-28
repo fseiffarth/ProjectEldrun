@@ -1,0 +1,761 @@
+/* subwindows.css — split from the old monolithic themes.css (order-preserving).
+   Tiling subwindows, 3D project blob, split preview, focused-subwindow frame.
+   IMPORT ORDER IS LOAD-BEARING: these files are @imported in sequence from
+   styles/index.css; equal-specificity rules rely on source order exactly as
+   they did in the monolith, so never reorder the imports or move rules
+   between files without checking the cascade. */
+
+/* ── Tiling subwindows ───────────────────────────────────────────────────── */
+
+/* A split node: a flex container of children with dividers between them. The
+   layout tree (subwindow frames) fills the panel; the pane layer overlays it. */
+.split {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.split-child {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+/* Children of a split need their own relative coordinate space so a nested
+   subwindow/split can fill them via absolute insets. The top-level layout node
+   (a direct child of the center panel) fills the panel the same way — otherwise
+   a single-group subwindow collapses to its tab-bar height and the pane layer
+   overlays the tabs. */
+.split-child > .subwindow,
+.split-child > .split,
+.center-panel > .subwindow,
+.center-panel > .split {
+  position: absolute;
+  inset: 0;
+}
+
+/* Resize divider between two split children. Wide hit area, thin visual line. */
+.split-divider {
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 4;
+  background: var(--control-border);
+  transition: background-color var(--transition);
+}
+.split-divider-row {
+  width: 5px;
+  cursor: col-resize;
+}
+.split-divider-column {
+  height: 5px;
+  cursor: row-resize;
+}
+.split-divider:hover,
+.split-divider:active {
+  background: var(--accent);
+}
+
+/* Scroll-link toggle straddling a divider between two viewer subwindows.
+   Absolutely centred so it works for both row (vertical) and column
+   (horizontal) dividers; lifted above the divider so its own pointer events
+   fire instead of starting a resize drag. */
+.split-scroll-link-btn {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: var(--radius);
+  border: 1px solid var(--control-border);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity var(--transition), color var(--transition), background-color var(--transition), border-color var(--transition);
+}
+.split-divider:hover .split-scroll-link-btn {
+  opacity: 1;
+}
+.split-scroll-link-btn:hover {
+  opacity: 1;
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+.split-scroll-link-btn.linked {
+  opacity: 1;
+  color: var(--accent-contrast, #fff);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* A subwindow: per-group tab bar over its pane region. */
+.subwindow {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: var(--bg-main);
+}
+/* The focused-subwindow frame + Shift-nav numbering are drawn by
+   FocusFrameOverlay above the pane layer (.focus-frame / .subwindow-number
+   below), not on .subwindow itself — an opaque pane (z-index:2) would paint
+   over an in-body frame. */
+
+.subwindow-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  /* Row: the measured pane region + (optionally) the docked file-viewer
+     column on the right. With no sidebar the region simply fills the body. */
+  display: flex;
+}
+
+/* The pane region: what the pane layer measures/overlays (main window) or
+   directly holds (popout). Shrinks when the group's file-viewer column is
+   open, so panes never cover the sidebar. */
+.subwindow-pane-region {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Empty measured slot the pane layer positions panes over. */
+.subwindow-pane-slot {
+  position: absolute;
+  inset: 0;
+}
+
+/* Per-subwindow right file viewer (◫): a docked column on the subwindow's
+   right edge hosting the shared ProjectFilesView (via ProjectFilesTab). Sits
+   BESIDE the measured pane region, so the main window's flat pane layer
+   (whose panes are sized to the region's rect) never paints over it. */
+.subwindow-files {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--border-color);
+  background: var(--bg-panel);
+}
+
+/* Left-edge resize handle of the file-viewer column. */
+.subwindow-files-resize {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+  z-index: 13;
+}
+.subwindow-files-resize:hover {
+  background: var(--accent);
+  opacity: 0.35;
+}
+
+/* Pane layer holds all PTYs (every scope), positioned over group bodies. The
+   wrapper is click-through; individual panes re-enable pointer events. While a
+   tab is being dragged the whole layer goes click-through so hit-testing falls
+   to the drop zones rendered in the subwindow bodies beneath. */
+.pane-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+/* During a tab drag, panes go click-through so elementFromPoint can reach the
+   tab bars / subwindow bodies underneath for the hit-test. */
+.center-panel.dragging .pane-layer,
+.center-panel.dragging .center-pane {
+  pointer-events: none;
+}
+
+/* Windows: while the whole window is moved by a native title-bar drag, take the
+   heavy pane content OUT of compositing so WebView2 only paints the cheap frame
+   (tab bars / empty bodies) and can keep up with the OS-moved window — otherwise
+   the terminal canvases lag/swim behind the frame. Mirrors `.detached-center.moving`
+   (#42). `visibility: hidden` (not display:none) keeps the layout intact, so no
+   xterm reflow/refit churn — the content reappears at the same size the instant
+   the move ends. */
+.center-panel.moving .pane-layer {
+  visibility: hidden;
+}
+
+/* Each pane is absolutely positioned by CenterPanel to a group's body rect.
+   Hidden panes keep their PTY mounted via display:none. */
+.center-pane {
+  position: absolute;
+  flex-direction: column;
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+/* ── 3D project blob (root "Projects" tab) ───────────────────────────────────
+   A navigable cloud of every project + box. The viewport owns the orbit/zoom
+   pointer surface; the scene is a preserve-3d space whose rotation/zoom is
+   written straight to the DOM by ProjectBlobPane's rAF loop. Nodes ride the
+   sphere via translate3d and counter-rotate to billboard toward the camera. */
+.blob-viewport {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--accent) 12%, transparent) 0%, transparent 60%),
+    var(--bg-main);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  perspective: 1100px;
+}
+.blob-viewport:active {
+  cursor: grabbing;
+}
+.blob-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.blob-empty-card {
+  padding: 16px 22px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+/* Clickable path bar shown while the spherical file viewer is open. */
+.blob-breadcrumb {
+  position: absolute;
+  left: 50%;
+  top: 12px;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 80%;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
+  border: 1px solid var(--border-subtle);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.blob-crumb {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.blob-crumb:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--text-primary);
+}
+.blob-crumb-exit {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.blob-crumb-sep {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.blob-crumb-loading {
+  flex-shrink: 0;
+  margin-left: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.blob-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--bg-panel) 75%, transparent);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 11px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+/* Sphere/Pie segmented toggle, top-right of the project cloud. */
+.blob-view-toggle {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
+  border: 1px solid var(--border-subtle);
+}
+.blob-view-toggle button {
+  padding: 3px 12px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+.blob-view-toggle button:hover {
+  color: var(--text-primary);
+}
+.blob-view-toggle button.is-active {
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+}
+/* Pie mode: flat chart, so drop the grab cursor + 3D perspective. */
+.blob-viewport-pie {
+  cursor: default;
+  perspective: none;
+}
+.blob-pie-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 56px 16px 48px;
+}
+.blob-pie-svg {
+  width: 100%;
+  height: 100%;
+  max-width: 560px;
+  max-height: 560px;
+  overflow: visible;
+}
+.blob-pie-slice path {
+  stroke: var(--bg-main);
+  stroke-width: 2;
+  cursor: pointer;
+  transition: opacity var(--transition);
+}
+.blob-pie-slice:hover path {
+  opacity: 0.82;
+}
+.blob-pie-slice.is-active path {
+  stroke: var(--text-primary);
+  stroke-width: 3;
+}
+.blob-pie-label {
+  fill: var(--bg-main);
+  font-size: 9px;
+  font-weight: 600;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: color-mix(in srgb, var(--text-primary) 35%, transparent);
+  stroke-width: 0.4;
+}
+.blob-pie-center {
+  fill: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+.blob-pie-center-sub {
+  fill: var(--text-muted);
+  font-size: 11px;
+}
+.blob-pie-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.blob-stage {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+}
+.blob-scene {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+.blob-node {
+  position: absolute;
+  /* Center each card on its sphere point (translate3d in the inline transform). */
+  left: -70px;
+  top: -16px;
+  width: 140px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  will-change: transform;
+  transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
+}
+.blob-node:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--bg-panel);
+}
+.blob-node-icon {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+}
+.blob-node-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.blob-node-sub {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--accent-secondary) 25%, transparent);
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+/* Status coloring of the leading dot/glyph + accents. */
+.blob-status-current .blob-node-icon { color: var(--accent); }
+.blob-status-active .blob-node-icon { color: var(--success); }
+.blob-status-inactive { opacity: 0.55; }
+.blob-status-inactive .blob-node-icon { color: var(--text-muted); }
+.blob-node-box .blob-node-icon { color: var(--accent-secondary); }
+.blob-node-box { border-style: dashed; }
+.blob-node-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent), 0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+/* The focused project, pinned at the center of the spherical file viewer. */
+.blob-node-center {
+  border-color: var(--accent);
+  background: var(--bg-panel);
+  font-weight: 600;
+  box-shadow: 0 0 0 2px var(--accent), 0 0 24px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.blob-node-center .blob-node-icon { color: var(--accent); }
+/* File/folder nodes orbiting the focused project. */
+.blob-file-dir .blob-node-icon,
+.blob-file-doc .blob-node-icon { font-size: 13px; }
+.blob-file-dir { border-color: color-mix(in srgb, var(--accent-secondary) 55%, var(--border-subtle)); }
+.blob-file-dir .blob-node-label { font-weight: 500; }
+/* A project node tinted by its primary category color (grouping in the cloud).
+   The leading dot + a left accent stripe take the category hue. */
+.blob-node-categorized {
+  border-color: color-mix(in srgb, var(--cat-color) 60%, var(--border-subtle));
+  box-shadow: inset 3px 0 0 var(--cat-color);
+}
+.blob-node-categorized .blob-node-icon { color: var(--cat-color); }
+.blob-node-categorized:hover {
+  border-color: var(--cat-color);
+  box-shadow: inset 3px 0 0 var(--cat-color),
+    0 0 0 2px color-mix(in srgb, var(--cat-color) 35%, transparent);
+}
+/* Category chips inside the hover info card. */
+.blob-hover-categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.blob-hover-category {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px 1px 5px;
+  border-radius: var(--radius-full);
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--cat-color) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cat-color) 45%, transparent);
+}
+.blob-hover-category-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--cat-color);
+}
+/* Pointer-anchored info card shown while hovering a node (project description /
+   box details). Rendered in a body portal so it's never clipped or scaled by
+   the 3D scene. */
+.blob-hover-card {
+  position: fixed;
+  z-index: 40;
+  width: max-content;
+  max-width: 760px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-3);
+  pointer-events: none;
+}
+.blob-hover-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.blob-hover-meta {
+  margin-top: 2px;
+  font-size: 11px;
+  text-transform: capitalize;
+  color: var(--accent);
+}
+.blob-hover-desc {
+  margin-top: 6px;
+  max-width: 360px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* The embedded GitHub-style activity heatmap inside the hover card. The card is
+   pointer-events:none, so the calendar reads as a static "how much I worked"
+   strip — its per-cell tooltips intentionally don't fire here. */
+.blob-hover-activity {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.blob-hover-hint {
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* ── Split preview (shown while a tab is being dragged over a subwindow) ──── */
+/* CenterPanel's hit-test sets the hovered group's edge; CenterPanel renders this
+   overlay (NOT the subwindow — it must paint above the pane layer) at the half
+   (or whole, for center) the drop would carve out, in panel-relative px. z-index
+   sits above the pane layer (z-index:2) so the opaque terminal doesn't hide it.
+   A plain rgba fill is used over color-mix (which doesn't render reliably on this
+   WebKitGTK build) so the darkening is always visible. The left/top/width/height
+   transition makes the preview glide as the targeted edge changes. */
+.split-preview {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.28);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  transition: left var(--transition), top var(--transition), width var(--transition), height var(--transition);
+}
+
+/* ── Focused-subwindow frame + Shift+↑/↓ subwindow numbering ──────────────── */
+/* FocusFrameOverlay draws both above the pane layer (z-index:2) in panel-
+   relative px — an in-body frame would be hidden by the opaque panes. The frame
+   is outline-only (no fill) so it reads as a light, theme-fitting marker rather
+   than the split preview's dark wash; it glides between subwindows as focus (or
+   the Shift preview) moves. */
+.focus-frame {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 2px;
+  transition: left var(--transition), top var(--transition), width var(--transition), height var(--transition);
+}
+.subwindow-number {
+  position: absolute;
+  z-index: 6;
+  pointer-events: none;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--bg-main);
+  background: var(--accent);
+  border-radius: var(--radius);
+}
+
+/* Floating label following the pointer during a tab drag. */
+.tab-drag-ghost {
+  position: fixed;
+  z-index: 9999;
+  transform: translate(8px, 8px);
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.tab-drag-ghost-label {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: var(--control-hover-bg);
+  border: 1px solid var(--accent);
+  color: var(--text-primary);
+  white-space: nowrap;
+  box-shadow: var(--shadow-2);
+}
+
+/* Options legend shown under the label during a file drag: lists what each
+   release / modifier does. The line matching the current modifier state gets
+   `.active` to stand out (see DragGhost). */
+.tab-drag-ghost-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle, var(--accent));
+  box-shadow: var(--shadow-2);
+}
+
+.tab-drag-ghost-opt {
+  font-size: 10px;
+  white-space: nowrap;
+  color: var(--text-secondary, var(--text-primary));
+  opacity: 0.6;
+}
+
+.tab-drag-ghost-opt.active {
+  color: var(--accent);
+  opacity: 1;
+  font-weight: 600;
+}
+
+/* Scaled clone of the dragged tab's pane. The clone inside is transform-scaled
+   to GHOST_THUMB_W (see DragGhost); this box clips it to the thumbnail size. */
+.tab-drag-ghost-thumb {
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent);
+  box-shadow: var(--shadow-2);
+  opacity: 0.9;
+}
+
+/* One-shot send-off when a tab/subwindow is dropped OUT to its own OS window
+   (see DetachFlourish / stores/detachAnim). A card at the exit point lifts,
+   scales, and slides toward the edge the content left through, then fades —
+   reading as the content being ejected into its own window. The fly direction
+   comes from CSS custom props set per play (--fly-dx / --fly-dy). */
+.tab-detach-flourish {
+  position: fixed;
+  z-index: 9998; /* just under the live drag ghost (.tab-drag-ghost: 9999) */
+  pointer-events: none;
+  display: flex;
+  align-items: flex-start;
+  background: var(--bg-panel);
+  border: 1px solid var(--accent);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--accent) inset;
+  overflow: hidden;
+  transform-origin: center center;
+  will-change: transform, opacity;
+  animation: tab-detach-fly 0.42s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+}
+
+.tab-detach-flourish-label {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: var(--control-hover-bg);
+  border-bottom: 1px solid var(--accent);
+  color: var(--text-primary);
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A pulse ring that expands out of the card to punctuate the launch. */
+.tab-detach-flourish::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--accent);
+  opacity: 0.6;
+  animation: tab-detach-ring 0.42s ease-out forwards;
+}
+
+@keyframes tab-detach-fly {
+  0% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0.96;
+  }
+  32% {
+    transform: translate(-50%, -50%) scale(1.06);
+    opacity: 0.92;
+  }
+  100% {
+    transform: translate(calc(-50% + var(--fly-dx, 0px)), calc(-50% + var(--fly-dy, -64px)))
+      scale(0.42);
+    opacity: 0;
+  }
+}
+
+@keyframes tab-detach-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+
+/* Respect reduced-motion: collapse the launch to a simple fade, no slide/zoom. */
+@media (prefers-reduced-motion: reduce) {
+  .tab-detach-flourish {
+    animation: tab-detach-fade 0.25s ease-out forwards;
+  }
+  .tab-detach-flourish::after {
+    animation: none;
+    opacity: 0;
+  }
+  @keyframes tab-detach-fade {
+    0% {
+      transform: translate(-50%, -50%);
+      opacity: 0.9;
+    }
+    100% {
+      transform: translate(-50%, -50%);
+      opacity: 0;
+    }
+  }
+}

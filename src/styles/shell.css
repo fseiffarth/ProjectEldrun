@@ -1,0 +1,579 @@
+/* shell.css — split from the old monolithic themes.css (order-preserving).
+   App layout shell, dropdown/focus-ring defaults, header bar + widgets (window controls, logo, version, clock, timer).
+   IMPORT ORDER IS LOAD-BEARING: these files are @imported in sequence from
+   styles/index.css; equal-specificity rules rely on source order exactly as
+   they did in the monolith, so never reorder the imports or move rules
+   between files without checking the cascade. */
+
+/* ── App layout shell ─────────────────────────────────────────────────── */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: var(--bg-main);
+  color: var(--text-primary);
+  font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+  font-size: 13px;
+}
+
+button,
+select,
+input {
+  font: inherit;
+}
+
+/* ── Default dropdown style ──────────────────────────────────────────────
+   One consistent look for every <select> (custom caret, themed surface,
+   readable option popup). Component-specific rules below can still override
+   sizing, but they no longer need to restate the base appearance. */
+select {
+  appearance: none;
+  background-color: var(--control-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  padding: 4px 28px 4px 9px;
+  cursor: pointer;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-primary) 50%),
+    linear-gradient(135deg, var(--text-primary) 50%, transparent 50%);
+  background-position:
+    calc(100% - 13px) 50%,
+    calc(100% - 9px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+select:hover,
+select:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* ── Standard focus ring ─────────────────────────────────────────────────
+   One keyboard-focus affordance for every interactive element: a soft accent
+   ring, offset so it never collides with the element's own border. More
+   specific per-component :focus-visible rules below still win where they set
+   their own treatment. The xterm helper textarea is excluded — it holds focus
+   whenever a terminal is active and must stay invisible. */
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+[tabindex]:focus-visible,
+textarea:focus-visible:not(.xterm-helper-textarea) {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 1px;
+}
+
+select option {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+
+.app-body {
+  flex: 1;
+  display: flex;
+  position: relative;
+  overflow: hidden;
+  transition: padding-right var(--transition-slow), padding-left var(--transition-slow);
+}
+
+/* When the panel is pinned it docks into layout: inset the body by the panel
+   width so the center panel reflows instead of being overlaid. The panel is
+   absolutely positioned against its edge, so it fills the freed padding region.
+   `left-docked` is the mirror for the left-side variant. */
+.app-body.right-docked {
+  padding-right: 280px;
+}
+
+.app-body.left-docked {
+  padding-left: 280px;
+}
+
+/* ── Header bar ─────────────────────────────────────────────────────── */
+.app-header {
+  height: 40px;
+  min-height: 40px;
+  background: var(--bg-header);
+  box-shadow: 0 1px 0 var(--border-color);
+  display: flex;
+  align-items: stretch;
+  position: relative;
+  z-index: 80;
+}
+
+/* A soft theme-accent wash over the header bar (lavender in light_lavender,
+   cyan-blue in fancy_dark, etc.) so the top bar reads as themed, not just a
+   neutral panel. A translucent overlay rather than recoloring --bg-header
+   directly, since that variable is a plain color in some themes and a
+   gradient in others (fancy_dark/fancy_light) — an overlay works over either
+   with no per-theme branching. Negative z-index keeps it under the header's
+   own (unpositioned, normal-flow) children within .app-header's own stacking
+   context. */
+.app-header::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  opacity: 0.32;
+  pointer-events: none;
+  z-index: -1;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 0 12px;
+  flex-shrink: 0;
+
+}
+
+/* Explicit window-move grip at the top-left of the header, mirroring the
+   subwindow `.tab-drag-grip`. The header is already a drag region, but this is
+   an always-present, obvious handle. */
+.app-drag-grip {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  user-select: none;
+  opacity: 0.6;
+  cursor: grab;
+  transition: opacity var(--transition), color var(--transition);
+}
+.app-drag-grip:hover {
+  opacity: 1;
+  color: var(--text-primary);
+}
+.app-drag-grip:active { cursor: grabbing; }
+
+.header-center {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  overflow: visible;
+  /* Equal spacing between the brain/global-apps buttons and the project
+     switcher's leading settings gear — .project-switcher supplies none of its
+     own left padding, so this gap is the only thing between any of the three. */
+  gap: 6px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  flex-shrink: 0;
+
+}
+
+/* macOS draws native traffic-light buttons over the top-left of the window
+   (Overlay title-bar style; see tauri.macos.conf.json). Reserve room so the
+   logo and version don't sit under them, and the custom `.wm-controls` are
+   hidden in WindowControls.tsx on macOS. */
+.app-header.is-mac .header-left {
+  padding-left: 78px;
+}
+
+/* ── Close / window controls (rectangular, colored glyphs) ──────────────
+   ONE close button for the whole app. The window's own close control and every
+   in-app dismiss — the header hover menus' ✕, every dialog's ✕ — are literally
+   the same rules rather than three lookalikes that drift: same 30×22 box, same
+   drawn glyph, same red-tinted hover. Markup still writes a "×" character
+   inside these buttons, which `font-size: 0` below hides in favour of the two
+   drawn bars, so no component had to change to join. */
+.wm-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.wm-btn,
+.vpn-indicator-close,
+.vpn-prompt-close,
+.dialog-close-btn {
+  position: relative;
+  width: 30px;
+  height: 22px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Hides the literal "×" the in-app buttons carry as a text child; the glyph
+     is drawn by the ::before/::after bars below, which have fixed pixel sizes
+     and so are untouched by it. */
+  font-size: 0;
+  transition: background-color var(--transition), border-color var(--transition),
+    transform var(--transition);
+}
+
+.wm-btn:active,
+.vpn-indicator-close:active,
+.vpn-prompt-close:active,
+.dialog-close-btn:active { transform: scale(0.92); }
+.wm-btn:focus-visible,
+.vpn-indicator-close:focus-visible,
+.vpn-prompt-close:focus-visible,
+.dialog-close-btn:focus-visible {
+  outline: 2px solid var(--accent, #58a6ff);
+  outline-offset: 2px;
+}
+
+.wm-minimize:hover {
+  background: color-mix(in srgb, var(--wm-minimize) 20%, transparent);
+  border-color: color-mix(in srgb, var(--wm-minimize) 45%, transparent);
+}
+.wm-maximize:hover {
+  background: color-mix(in srgb, var(--wm-maximize) 20%, transparent);
+  border-color: color-mix(in srgb, var(--wm-maximize) 45%, transparent);
+}
+.wm-close:hover,
+.vpn-indicator-close:hover,
+.vpn-prompt-close:hover,
+.dialog-close-btn:hover {
+  background: color-mix(in srgb, var(--wm-close) 26%, transparent);
+  border-color: color-mix(in srgb, var(--wm-close) 55%, transparent);
+}
+
+/* Minimize glyph: a single bar. */
+.wm-minimize::before {
+  content: "";
+  width: 10px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--wm-minimize);
+}
+
+/* Maximize glyph: a small window outline. */
+.wm-maximize::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  border: 1.5px solid var(--wm-maximize);
+}
+
+/* Close glyph: an × from two crossed bars. */
+.wm-close::before,
+.wm-close::after,
+.vpn-indicator-close::before,
+.vpn-indicator-close::after,
+.vpn-prompt-close::before,
+.vpn-prompt-close::after,
+.dialog-close-btn::before,
+.dialog-close-btn::after {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--wm-close);
+}
+.wm-close::before,
+.vpn-indicator-close::before,
+.vpn-prompt-close::before,
+.dialog-close-btn::before { transform: rotate(45deg); }
+.wm-close::after,
+.vpn-indicator-close::after,
+.vpn-prompt-close::after,
+.dialog-close-btn::after { transform: rotate(-45deg); }
+
+/* ── App logo ────────────────────────────────────────────────────────── */
+/* The star inside the root-terminal pill (the pill itself is .root-pill, down
+   with the project pills it is the first of). */
+.root-pill-star {
+  height: 20px;
+  width: 20px;
+  object-fit: contain;
+  flex-shrink: 0;
+  /* Ring/branch strokes use currentColor so the logo stays legible on every
+     theme (the dark-green original vanished on the dark background). Pure
+     black on light themes, pure white on dark, via the per-theme token. */
+  color: var(--logo-color, var(--text-primary));
+  /* HeaderBar mounts exactly once per app launch, so this plays once as a
+     startup flourish and never again (no infinite/repeat). */
+  animation: eldrun-logo-intro 1.1s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  transform-origin: 50% 50%;
+}
+
+@keyframes eldrun-logo-intro {
+  0% {
+    opacity: 0;
+    transform: scale(0.2) rotate(-135deg);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.15) rotate(10deg);
+  }
+  80% {
+    transform: scale(0.95) rotate(-4deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+/* The logo doubles as the root-terminal switch button. */
+/* The root terminal as the pill row's fixed first tab. Deliberately the
+   .project-pill box copied rather than a treatment of its own — same 40px
+   height, same reserved-transparent 3px top border, same accent line + side
+   shadow when it is the current scope — so the row reads as one strip of tabs
+   whose first one happens to wear the mark instead of a name. It sits outside
+   .project-pills-scroll, which is what keeps it put while the rest scroll. */
+.root-pill {
+  box-sizing: border-box;
+  /* Anchors the bottom status-bar strip (.pill-status-bars), exactly as
+     .project-pill does — the root terminal shows its working tabs like any
+     other scope. */
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  height: 40px;
+  padding: 0 10px;
+  border: none;
+  border-top: 3px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color var(--transition), border-color var(--transition);
+}
+
+/* The switch inside the box (the .pill-main of the root pill): bare, so the box
+   above keeps owning the border, the height and the hover/active colour, and the
+   status strip can sit beside it rather than inside a button. */
+.root-pill-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.root-pill:hover {
+  color: var(--text-primary);
+}
+
+.root-pill.active {
+  color: var(--text-primary);
+  border-top-color: var(--accent);
+  box-shadow: 3px 0 4.5px -2px rgba(0, 0, 0, 0.4), -3px 0 4.5px -2px rgba(0, 0, 0, 0.4);
+}
+
+/* ── Version / debug / conn-type ─────────────────────────────────────── */
+.app-version-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  line-height: 1;
+}
+
+/* The release label lives at the bottom of the docked file viewer rather than
+   competing with project controls in the top frame. */
+.right-panel-frame-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  min-height: 20px;
+  padding: 2px 10px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.app-version-label {
+  font-size: 10px;
+  color: var(--text-primary);
+  line-height: 1;
+}
+
+.debug-badge {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--warning);
+  letter-spacing: 0.4px;
+  line-height: 1;
+}
+
+.terminal-output-rate {
+  margin-right: auto;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.app-resource-display {
+  height: 32px;
+  min-width: 82px;
+  padding: 0 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.app-resource-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.app-resource-symbol {
+  min-width: 24px;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.app-resource-row.low {
+  color: var(--success);
+}
+
+.app-resource-row.medium {
+  color: var(--warning);
+}
+
+.app-resource-row.high {
+  color: var(--danger);
+}
+
+.conn-type-icon {
+  width: 15px;
+  height: 15px;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+
+.conn-type-icon.conn-offline {
+  color: var(--danger);
+}
+
+.battery-icon {
+  width: 15px;
+  height: 15px;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+
+.battery-icon.low {
+  color: var(--danger);
+}
+
+.battery-icon.medium {
+  color: var(--warning);
+}
+
+.battery-icon.plugged {
+  color: var(--success);
+}
+
+/* ── Clock ───────────────────────────────────────────────────────────── */
+.header-clock {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+/* The clock is a header hover-menu trigger, like the neighbouring top-bar
+   controls. Its width follows the rendered time rather than the standard icon
+   button's 32px minimum. */
+.clock-menu-btn {
+  min-width: 0;
+  padding: 0 5px;
+}
+.clock-menu-btn[aria-expanded="true"] .header-clock,
+.clock-menu-btn:hover .header-clock {
+  color: var(--text-primary);
+}
+.clock-menu-popover {
+  min-width: 104px;
+}
+
+/* ── App timer ───────────────────────────────────────────────────────── */
+.app-timer-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 5px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  transition: color var(--transition);
+}
+.app-timer-btn:hover {
+  background: var(--control-hover-bg);
+  color: var(--text-primary);
+}
+.app-timer-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+  transition: background var(--transition-slow);
+}
+.app-timer-btn.paused .app-timer-dot {
+  background: var(--text-muted);
+}
+.app-timer-btn.paused .app-timer-text {
+  color: var(--text-muted);
+}
+/* The clock's counter is a menu row, while retaining its pause/resume and
+   activity interactions from the former standalone header control. */
+.app-timer-menu-item {
+  width: 100%;
+  justify-content: flex-start;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.app-timer-menu-item.paused .app-timer-dot {
+  background: var(--text-muted);
+}
+.app-timer-menu-item.paused .app-timer-text {
+  color: var(--text-muted);
+}
+.project-pill.timer-paused .pill-folder-icon {
+  opacity: 0.7;
+}

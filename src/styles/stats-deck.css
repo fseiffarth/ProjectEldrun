@@ -1,0 +1,1567 @@
+/* stats-deck.css — split from the old monolithic themes.css (order-preserving).
+   Usage recap, native deck presenter.
+   IMPORT ORDER IS LOAD-BEARING: these files are @imported in sequence from
+   styles/index.css; equal-specificity rules rely on source order exactly as
+   they did in the monolith, so never reorder the imports or move rules
+   between files without checking the cascade. */
+
+/* ── Usage recap (StatsRecap) ───────────────────────────────────────────────
+   Shares the canonical dialog surface (see the .project-dialog/.settings-dialog
+   rule) and the canonical header/section-title/help classes; only its own
+   sizing, the period switch and the stat primitives live here.
+
+   The stat tile (.stats-metric) and the bar rows deliberately mirror
+   .network-metric — one visual language for "a number Eldrun measured". */
+.stats-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: min(860px, calc(100vh - 40px));
+  padding: 16px 18px 18px;
+  /* A portaled dialog inherits nothing from body, which has no color set — so
+     this must be explicit or the whole recap renders black-on-panel. */
+  color: var(--text-primary);
+}
+
+.stats-window-label {
+  margin: -4px 0 0;
+}
+
+/* Day / Week / Month, in the title row. */
+.stats-period-switch {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+.stats-period-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.stats-period-btn:hover {
+  background: var(--control-hover-bg);
+}
+.stats-period-btn.active {
+  color: var(--bg-main);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.stats-headline {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.stats-headline strong {
+  color: var(--text-primary);
+  font-weight: 650;
+}
+
+.stats-empty {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* Stat tiles — the .network-metric primitive, reused. */
+.stats-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+.stats-metric {
+  display: grid;
+  gap: 4px;
+  padding: 11px 13px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+}
+.stats-metric > span {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.stats-metric > strong {
+  font-size: 19px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+.stats-metric > small {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Ranked bars (agents by model, time by project). */
+.stats-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.stats-bar-row {
+  display: grid;
+  grid-template-columns: minmax(80px, 150px) 1fr auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.stats-bar-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+.stats-bar-track {
+  height: 8px;
+  background: var(--control-bg);
+  border-radius: var(--radius);
+}
+.stats-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--radius);
+}
+.stats-bar-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+/* Hour-of-day sparkline. */
+.stats-spark-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.stats-spark {
+  width: 100%;
+  height: 60px;
+}
+.stats-spark-bar {
+  fill: var(--accent-secondary);
+}
+.stats-spark-bar.busiest {
+  fill: var(--accent);
+}
+.stats-spark-legend {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.stats-auto-row {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ── Native presenter ("deck") ───────────────────────────────────────────────
+   The experimental presentation editor (docs/deck_presenter_plan.md). Objects
+   render as DOM/SVG over the base page canvas rather than into it, so selection
+   outlines, handles and z-order come from the browser.
+
+   Two constraints from this codebase are baked in below. Nothing here animates a
+   BLURRED box-shadow — under software rendering (DMABUF is off) that is a paint
+   killer, so the selection uses outlines and flat borders. And every gesture is
+   pointer-based, so the interactive bits set `touch-action: none` rather than
+   relying on drag events WebKitGTK does not deliver. */
+
+.deck-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+}
+
+.deck-toolbar-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.deck-save-state {
+  padding: 0 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.deck-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* --- slide rail --- */
+
+.deck-rail {
+  /* Width is set inline (user-resizable, persisted per tab) — no fixed value
+     here, just the flex behaviour that keeps it from stretching or shrinking
+     under the stage. */
+  flex: 0 0 auto;
+  overflow-y: auto;
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--bg-panel);
+}
+
+/* Drag handle between the rail and the stage. A flex sibling, not an overlay —
+   the rail's own width is exactly what it says, with nothing absolutely
+   positioned over its edge to get the hit-test wrong. */
+.deck-rail-resize {
+  flex: 0 0 auto;
+  width: 5px;
+  cursor: col-resize;
+  touch-action: none;
+  background: var(--border-color);
+}
+.deck-rail-resize:hover {
+  background: var(--accent);
+}
+
+.deck-rail-head {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  padding: 0 2px 2px;
+}
+
+.deck-rail-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 9; /* fallback before the deck's own page box is known; the
+                            rendered item overrides this inline per-deck */
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.deck-rail-item:hover {
+  background: var(--control-hover-bg);
+}
+
+.deck-rail-item.active {
+  border-color: var(--accent);
+  background: var(--pill-active-bg);
+  color: var(--text-primary);
+}
+
+/* The slide preview. Sits behind the number/badges (z-order = paint order, no
+   z-index needed since it's simply first in the DOM), filling the item box the
+   same way `.deck-stage-canvas` fills the stage. */
+.deck-rail-thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: var(--radius-sm);
+  background: #ffffff;
+}
+
+.deck-rail-num {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  padding: 0 3px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-header-solid) 75%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+
+.deck-rail-badge,
+.deck-rail-gif {
+  position: absolute;
+  bottom: 2px;
+  font-size: 9px;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  color: var(--bg-main);
+}
+
+.deck-rail-badge { right: 2px; }
+.deck-rail-gif { left: 2px; background: var(--accent-secondary); }
+
+.deck-rail-actions {
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+
+.deck-rail-item:hover .deck-rail-actions,
+.deck-rail-item.active .deck-rail-actions,
+.deck-rail-actions:focus-within {
+  opacity: 1;
+}
+
+.deck-rail-act-btn {
+  width: 16px;
+  height: 14px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  line-height: 1;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-header-solid);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.deck-rail-act-btn:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  color: var(--text-primary);
+}
+
+.deck-rail-act-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.deck-rail-act-btn.active {
+  background: var(--accent);
+  color: var(--bg-main);
+  border-color: var(--accent);
+}
+
+.deck-rail-act-btn.deck-rail-act-danger:hover:not(:disabled) {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+/* A slide kept in the deck but out of the talk. Toned rather than hidden: it is
+   still an authoring surface, and the whole point is that it stays editable
+   (TODO V #106). */
+.deck-rail-item.skipped {
+  opacity: 0.45;
+}
+
+.deck-rail-item.skipped::after {
+  content: "skipped";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 0 4px;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--bg-main);
+  background: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+}
+
+/* The one affordance that is not per-slide: growing the deck from its foot. */
+.deck-rail-add {
+  margin: 6px 4px 10px;
+  padding: 5px 4px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.deck-rail-add:hover {
+  color: var(--text-primary);
+  background: var(--control-hover-bg);
+  border-style: solid;
+}
+
+/* --- stage --- */
+
+.deck-stage {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--bg-main);
+}
+
+.deck-stage-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.deck-stage-page {
+  position: relative;
+  background: #ffffff;
+  box-shadow: var(--shadow-2);
+  touch-action: none;
+  user-select: none;
+}
+
+.deck-stage-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+/* The safe area. Deliberately faint: it is a snapping target and a hint, not a
+   frame anyone should be reading around. */
+.deck-stage-margin {
+  position: absolute;
+  border: 1px dashed color-mix(in srgb, var(--accent) 35%, transparent);
+  pointer-events: none;
+}
+
+/* --- objects --- */
+
+.deck-object {
+  pointer-events: auto;
+  cursor: move;
+}
+
+.deck-object.locked {
+  cursor: default;
+}
+
+.deck-object.selected {
+  /* Outline, not box-shadow: it needs no blur and costs no paint. */
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+
+.deck-object-missing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-muted);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px;
+}
+
+.deck-text-line {
+  display: flex;
+  gap: 0.4em;
+  align-items: baseline;
+}
+
+.deck-text-marker {
+  flex: 0 0 auto;
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- selection, handles, marquee --- */
+
+.deck-selection {
+  position: absolute;
+  border: 1px solid var(--accent);
+  pointer-events: none;
+}
+
+.deck-handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  background: var(--bg-main);
+  border: 1.5px solid var(--accent);
+  border-radius: 2px;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.deck-handle-nw { left: 0;    top: 0;    cursor: nwse-resize; }
+.deck-handle-n  { left: 50%;  top: 0;    cursor: ns-resize; }
+.deck-handle-ne { left: 100%; top: 0;    cursor: nesw-resize; }
+.deck-handle-e  { left: 100%; top: 50%;  cursor: ew-resize; }
+.deck-handle-se { left: 100%; top: 100%; cursor: nwse-resize; }
+.deck-handle-s  { left: 50%;  top: 100%; cursor: ns-resize; }
+.deck-handle-sw { left: 0;    top: 100%; cursor: nesw-resize; }
+.deck-handle-w  { left: 0;    top: 50%;  cursor: ew-resize; }
+
+.deck-rotate {
+  position: absolute;
+  left: 50%;
+  top: -22px;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  border: 1.5px solid var(--accent);
+  border-radius: var(--radius-full);
+  background: var(--bg-main);
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.deck-marquee {
+  position: absolute;
+  border: 1px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  pointer-events: none;
+}
+
+/* --- alignment guides ---
+   Colour-coded by WHY the snap fired, because a guide is evidence: a snap that
+   engages for the wrong reason should be visible, not merely felt. */
+
+.deck-guides {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.deck-guide {
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.deck-guide-page    { stroke: var(--accent); }
+.deck-guide-margin  { stroke: var(--accent); stroke-dasharray: 3 3; }
+.deck-guide-object  { stroke: var(--accent-secondary); }
+.deck-guide-spacing { stroke: var(--success); stroke-dasharray: 2 3; }
+.deck-guide-size    { stroke: var(--warning); stroke-dasharray: 4 2; }
+
+/* --- deck: inspector --- */
+
+.deck-inspector {
+  flex: 0 0 auto;
+  width: 232px;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border-color);
+  font-size: 11px;
+}
+
+.deck-inspector-empty {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.deck-inspector-head {
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: capitalize;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.deck-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.deck-field > span {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.deck-field input,
+.deck-field select,
+.deck-field textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 3px 5px;
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+}
+
+.deck-field textarea {
+  resize: vertical;
+  font-family: var(--font-sans);
+}
+
+.deck-field-row {
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.deck-field-narrow { flex: 0 1 68px; }
+.deck-field-wide { flex: 1 1 100%; }
+
+.deck-field-color { flex: 0 0 auto; }
+.deck-field-color input[type="color"] {
+  width: 28px;
+  height: 24px;
+  padding: 1px;
+  cursor: pointer;
+}
+
+.deck-toggle {
+  flex: 0 0 auto;
+  min-width: 26px;
+  height: 24px;
+  padding: 0 5px;
+  color: var(--text-secondary);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.deck-toggle:hover { background: var(--control-hover-bg); }
+
+.deck-toggle.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-main);
+}
+
+.deck-inspector-btn {
+  flex: 1;
+  padding: 4px 8px;
+  color: var(--text-primary);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.deck-inspector-btn:hover { background: var(--control-hover-bg); }
+.deck-inspector-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.deck-tex-field {
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* --- notes mode --- */
+
+.deck-notes {
+  width: 260px;
+}
+
+.deck-notes-textarea {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  padding: 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  resize: none;
+}
+
+/* --- TeX-figures list mode --- */
+
+.deck-tex-panel {
+  width: 260px;
+  gap: 4px;
+}
+
+.deck-tex-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.deck-tex-list-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.deck-tex-list-jump {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 0;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.deck-tex-list-slide {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.deck-tex-list-name {
+  font-size: 11px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.deck-tex-list-actions {
+  display: flex;
+  gap: 6px;
+}
+.deck-tex-list-actions .deck-inspector-btn {
+  font-size: 10px;
+  padding: 3px 6px;
+}
+
+/* A text box shorter than its text. A hairline, not a banner: it is an
+   authoring nudge, and the author is looking at the box already. */
+.deck-text-overflow {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--warning);
+  pointer-events: none;
+}
+
+/* --- deck: icon picker --- */
+
+.deck-icon-picker {
+  width: min(560px, 100vw - 32px);
+  max-height: min(70vh, 620px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.deck-icon-search {
+  width: 100%;
+  padding: 6px 10px;
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+}
+
+.deck-icon-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.deck-icon-cat {
+  padding: 3px 9px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--pill-bg);
+  border: 1px solid transparent;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.deck-icon-cat:hover { background: var(--pill-hover-bg); }
+
+.deck-icon-cat.active {
+  background: var(--pill-active-bg);
+  border-color: var(--pill-active-border);
+  color: var(--text-primary);
+}
+
+.deck-icon-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 4px;
+}
+
+.deck-icon-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 4px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.deck-icon-cell:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+.deck-icon-label {
+  font-size: 9px;
+  line-height: 1.2;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.deck-icon-empty {
+  grid-column: 1 / -1;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* --- deck: animate mode --- */
+
+.deck-animate .deck-inspector-head:not(:first-child) {
+  margin-top: 6px;
+}
+
+.deck-animate-file {
+  padding: 4px 6px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--control-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A numbered badge on every object with a build step. Without it the reveal
+   order is invisible and the mode is unusable. */
+.deck-build-badge {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--bg-main);
+  background: var(--accent-secondary);
+  border-radius: var(--radius-full);
+  pointer-events: none;
+}
+
+/* --- deck: the write-hold banner, the export warning, in-place text editing,
+       and the deck-wide theme panel --- */
+
+/* The deck is NOT being autosaved: it declared a newer version, carried an
+   object kind this build cannot model, or its layers were re-anchored by order
+   alone. Louder than the ordinary notice banner because the alternative to
+   reading it is losing part of the file (TODO V #94, #100). */
+.deck-hold-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  border-left: 3px solid var(--danger);
+}
+
+.deck-font-banner {
+  border-left: 3px solid var(--warning);
+}
+
+/* A "!" on the Export button when the deck contains characters the built-in PDF
+   fonts cannot write — the one thing that looks perfect on screen and is missing
+   from the export (TODO V #96). */
+.deck-export-warn {
+  margin-left: 4px;
+  font-weight: 700;
+  color: var(--warning);
+}
+
+/* The in-place text editor: a real textarea on the object's own box, sharing the
+   render's computed style so the caret sits on the same glyphs (TODO V #118). */
+.deck-text-edit {
+  position: absolute;
+  z-index: 40;
+  margin: 0;
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  background: var(--bg-main);
+  resize: none;
+  overflow: hidden;
+  outline: none;
+  box-sizing: border-box;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.25);
+}
+
+/* --- deck: the deck-wide theme panel (Deck mode) --- */
+
+.deck-theme-panel .deck-field-wide input[type="text"] {
+  width: 100%;
+  padding: 4px 6px;
+  font-size: 11px;
+  color: var(--text-primary);
+  background: var(--control-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+
+.deck-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.deck-check input[type="checkbox"] {
+  margin-top: 2px;
+  flex: 0 0 auto;
+}
+
+/* A colour swatch plus its own alpha slider. The model stores 8-digit hex and
+   `<input type="color">` accepts only 6 — feeding it the transparent default
+   showed opaque black and one interaction committed it (TODO V #119). */
+.deck-color-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.deck-alpha {
+  width: 46px;
+}
+
+/* --- deck: presenter --- */
+
+.deck-presenter {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  background: #000;
+  outline: none;
+}
+
+.deck-presenter-main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.deck-presenter-stage {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.deck-presenter-fit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.deck-presenter-page {
+  position: relative;
+  background: #fff;
+  overflow: hidden;
+}
+
+/* `renderPage` floors the canvas to whole DEVICE pixels while this box is sized
+   to the unrounded CSS value, so up to ~1px of the white background showed along
+   the right/bottom edge of a dark slide — invisible on a laptop, a bright line on
+   a projector. Stretching the canvas over the box closes it; the distortion is
+   under one pixel (TODO V #115). */
+.deck-presenter-page > .deck-stage-canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
+.deck-presenter-gif {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.deck-presenter-loading {
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 13px;
+}
+
+.deck-presenter-blank {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+}
+
+.deck-presenter-blank.is-black { background: #000; }
+.deck-presenter-blank.is-white { background: #fff; }
+
+.deck-presenter-goto {
+  position: absolute;
+  left: 50%;
+  bottom: 64px;
+  transform: translateX(-50%);
+  z-index: 70;
+  padding: 6px 14px;
+  font-size: 13px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.72);
+  border-radius: var(--radius-full);
+}
+
+/* --- presenter: overview grid --- */
+
+.deck-presenter-grid {
+  position: absolute;
+  inset: 0;
+  z-index: 65;
+  overflow-y: auto;
+  padding: 24px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+  align-content: start;
+  background: rgba(0, 0, 0, 0.88);
+}
+
+.deck-presenter-grid-cell {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.deck-presenter-grid-cell:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.deck-presenter-grid-cell.active {
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.deck-presenter-grid-note {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+
+/* The keyboard cursor, distinct from "the slide the room is on" (`.active`):
+   with the grid open, arrows browse it and Enter commits, so the two have to be
+   separately visible (TODO V #102). */
+.deck-presenter-grid-cell.picked {
+  outline: 2px solid var(--accent-secondary);
+  outline-offset: -2px;
+}
+
+.deck-presenter-grid-cell.skipped {
+  opacity: 0.45;
+}
+
+.deck-presenter-grid-thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: calc(var(--radius-sm) - 1px);
+}
+
+/* The number sits ON the thumbnail, so it needs its own contrast rather than
+   the tile's. */
+.deck-presenter-grid-num {
+  position: absolute;
+  left: 4px;
+  top: 3px;
+  z-index: 1;
+  padding: 0 4px;
+  font-size: 11px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: var(--radius-sm);
+}
+
+.deck-presenter-grid-skip {
+  position: absolute;
+  right: 4px;
+  top: 3px;
+  z-index: 1;
+  font-size: 11px;
+  color: var(--danger);
+}
+
+/* --- presenter: notes column --- */
+
+.deck-presenter-notes {
+  flex: 0 0 auto;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  color: var(--text-primary);
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border-color);
+}
+
+.deck-presenter-notes-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.deck-presenter-timer {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The elapsed clock earns its colour only once a target is set: an amber that
+   means nothing is an amber nobody reads when it does mean something. */
+.deck-presenter-timer.is-near { color: var(--warning); }
+.deck-presenter-timer.is-over { color: var(--danger); }
+.deck-presenter-timer.is-paused { color: var(--text-muted); }
+
+.deck-presenter-timer-btns {
+  display: flex;
+  gap: 3px;
+}
+
+.deck-presenter-timer-btns button {
+  min-width: 22px;
+  padding: 1px 4px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--control-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.deck-presenter-timer-btns button:hover {
+  color: var(--text-primary);
+  background: var(--control-hover-bg);
+}
+
+.deck-presenter-notes-body {
+  flex: 1;
+  overflow-y: auto;
+  /* Stepper-driven (`--deck-notes-size`), not a fixed 13px: notes read from
+     across a lectern in a fixed-width column need to be legible to the person
+     reading them, and nobody's eyes are the developer's (TODO V #126). */
+  font-size: var(--deck-notes-size, 13px);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  color: var(--text-primary);
+}
+
+.deck-presenter-notes-body em { color: var(--text-muted); }
+
+.deck-presenter-next {
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* --- presenter: control bar ---
+   Fades out until the pointer is near it: a talk should not be framed by
+   permanent chrome, and the keys are the real interface. */
+
+.deck-presenter-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 75;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: rgba(0, 0, 0, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--radius-full);
+  opacity: 0.18;
+  transition: opacity var(--transition);
+}
+
+.deck-presenter-bar:hover { opacity: 1; }
+
+.deck-presenter-bar button {
+  min-width: 26px;
+  height: 24px;
+  padding: 0 7px;
+  color: rgba(255, 255, 255, 0.85);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.deck-presenter-bar button:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
+.deck-presenter-bar button.active { background: var(--accent); color: var(--bg-main); }
+
+.deck-presenter-pos {
+  padding: 0 8px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.8);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- presenter: build entrances ---
+   Transform and opacity only. Nothing here animates a blurred shadow: under
+   software rendering that is a paint killer, and a stutter mid-talk is the one
+   place it would actually be noticed. */
+
+.deck-build { will-change: transform, opacity; }
+
+.deck-build-fade  { animation: deck-fade 260ms ease both; }
+.deck-build-rise  { animation: deck-rise 300ms ease both; }
+.deck-build-scale { animation: deck-scale 260ms ease both; }
+.deck-build-wipe  { animation: deck-wipe 320ms ease both; }
+.deck-build-draw  { animation: deck-draw 420ms ease both; }
+
+@keyframes deck-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes deck-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes deck-scale {
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: none; }
+}
+
+/* `clip-path` is NOT compositor-only in WebKit: animating it repaints the
+   clipped element every frame, in software, since DMABUF is disabled here. For a
+   build entrance the element is one object, so it is survivable — but it is the
+   one thing the section header above claims does not happen, so say what it
+   costs. The slide-level `wipe` transition, where the clipped element is the
+   whole slide INCLUDING the pdf.js canvas, is expressed as a transform below
+   instead (TODO V #115). */
+@keyframes deck-wipe {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+
+@keyframes deck-draw {
+  from { clip-path: inset(0 0 100% 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deck-build-fade,
+  .deck-build-rise,
+  .deck-build-scale,
+  .deck-build-wipe,
+  .deck-build-draw {
+    animation-duration: 1ms;
+  }
+}
+
+/* --- deck: slide transitions ---
+   Transform and opacity only, for the same paint-cost reason as the build
+   entrances. `push` and `wipe` are directionless on purpose: a deck can be
+   navigated backwards, and a push that always goes left reads as broken when
+   you step back through it. */
+
+.deck-trans-fade { animation: deck-trans-fade 240ms ease both; }
+.deck-trans-push { animation: deck-trans-push 280ms ease both; }
+.deck-trans-wipe { position: relative; }
+
+@keyframes deck-trans-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes deck-trans-push {
+  from { opacity: 0; transform: translateX(4%); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Wipe, as a MASK that slides off — not as an animated `clip-path` on the slide.
+   The clipped element here is the whole page including the pdf.js canvas, so a
+   `clip-path` animation was a full-slide software repaint at 60fps for 300ms on
+   every slide change, on a transition the deck ships as a choice and a machine
+   that may also be driving a second webview (TODO V #115). A pseudo-element
+   translating out of the way is transform-only, which the compositor can do. */
+.deck-trans-wipe::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  background: var(--bg-main, #000);
+  transform-origin: left center;
+  animation: deck-trans-wipe 300ms ease both;
+  pointer-events: none;
+}
+
+@keyframes deck-trans-wipe {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deck-trans-fade,
+  .deck-trans-push,
+  .deck-trans-wipe::after {
+    animation-duration: 1ms;
+  }
+}
+
+/* --- presenter: the dual-window (second display) mode ---
+   With the audience on its own screen, THIS window stops being a copy of the
+   projector and becomes the speaker's console: the notes column is permanent and
+   carries a still preview of the next slide. The audience window itself is the
+   plain `.deck-presenter` — no chrome at all, because everything on it is
+   something the room can see. */
+
+/* The audience window hides the pointer: an arrow parked in the middle of a
+   projected slide is the most-noticed artefact of presenting from a laptop. The
+   speaker's own window keeps its cursor (it is where they click).
+
+   Scoped to FULLSCREEN. A windowed audience window — a single-monitor setup, or
+   one the speaker dropped out of fullscreen after a display was unplugged —
+   needs a pointer to be moved or closed at all, and a window with no cursor and
+   no titlebar was unreachable by either. */
+.deck-audience.is-fullscreen {
+  cursor: none;
+}
+
+.deck-presenter.is-dual .deck-presenter-notes {
+  width: 340px;
+}
+
+.deck-presenter-audience-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+}
+
+.deck-presenter-audience-note.is-error {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: transparent;
+}
+
+.deck-presenter-audience-note kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 0 4px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+
+.deck-presenter-next-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.deck-presenter-next-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+/* A fixed-height frame: the preview must not resize as slides of different
+   aspect go by, or the notes below it would jump on every advance. */
+.deck-presenter-next-frame {
+  position: relative;
+  height: 150px;
+  display: flex;
+  background: #000;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.deck-presenter-wall {
+  float: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The set-aside-layers banner. Wraps to its own row of actions because the
+   count is unbounded — a base PDF that lost ten pages produces ten. */
+.deck-detached-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.deck-detached-banner .deck-inspector-btn {
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+
+/* First-contact host-key confirmation. Reuses the one dialog surface; only the
+   title takes the warning colour, because nothing has gone wrong yet — this is a
+   question asked before a password is sent, not a report of a failure. */
+.host-key-dialog {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.host-key-title {
+  color: var(--warning);
+}
+
+.host-key-lede {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.host-key-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.host-key-status-error {
+  color: var(--danger);
+}
+
+.host-key-error-detail {
+  margin-top: 6px;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+
+.host-key-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.host-key-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius);
+}
+
+.host-key-type {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* The fingerprint is the thing being compared character by character against
+   what an admin reads out, so it must never wrap mid-token or be re-flowed. */
+.host-key-fp {
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.host-key-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 0;
+}

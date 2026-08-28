@@ -1,0 +1,2195 @@
+/* projects-tabs.css — split from the old monolithic themes.css (order-preserving).
+   Project switcher + pills + boxes, tab bar, new-tab + scrolling menus, context menus, themed dropdown.
+   IMPORT ORDER IS LOAD-BEARING: these files are @imported in sequence from
+   styles/index.css; equal-specificity rules rely on source order exactly as
+   they did in the monolith, so never reorder the imports or move rules
+   between files without checking the cascade. */
+
+/* ── Project switcher bar (lives inside .header-center) ───────────────── */
+.project-switcher {
+  height: 100%;
+  background-color: transparent;
+  display: flex;
+  align-items: center;
+  /* No left padding: the leading settings gear's gap to .global-apps-menu is
+     supplied entirely by .header-center's gap, so it matches the brain/global-
+     apps gap instead of stacking on top of it. */
+  padding: 0 6px 0 0;
+  gap: 4px;
+  /* Fill the header-center track and stay shrinkable so the pill row can never
+     push past it into the right-side clock/controls. min-width:0 lets the
+     flex children (notably .project-pills-scroll) shrink below content size. */
+  flex: 1;
+  min-width: 0;
+  /* visible so the add/settings dropdown menus can spill below the header;
+     horizontal pill overflow is handled by .project-pills-scroll. */
+  overflow: visible;
+}
+
+/* ── Project pill ────────────────────────────────────────────────────── */
+.project-pill {
+  /* Anchors the bottom status-bar strip (.pill-status-bars). */
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 34px;
+  /* Fully transparent, no shadow — the pill melts into the header bar behind
+     it, so a pill and the bar are the SAME color and only the pill text (and,
+     for the current project, its top accent line) tells them apart. The 3px
+     TOP border is TRANSPARENT here and merely recolored to accent on .active —
+     reserving the space up front so activation changes only the color, never
+     the pill's size. Square corners (no radius) so the active pill's side
+     shadow runs straight down each edge with nothing curving below. */
+  box-sizing: border-box;
+  border-radius: 0;
+  border: none;
+  border-top: 3px solid transparent;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background-color: transparent;
+  transition: color var(--transition), border-color var(--transition);
+  flex-shrink: 0;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.project-pill:hover {
+  color: var(--text-primary);
+}
+
+.project-pill.dragging {
+  opacity: 0.45;
+  /* No transform transition here: the inline translateX follows the pointer
+     1:1 every move (see ProjectPill's startPillDrag) — animating it would lag
+     the pill behind the cursor. Only the dim fades in smoothly. */
+  transition: opacity var(--transition);
+  position: relative;
+  z-index: 2;
+}
+
+/* The pills the dragged one is NOT: they slide aside via an inline translateX
+   (ProjectSwitcher's `shiftPx`, mirroring MachinesIndicator's row-parting) to
+   open its landing slot. Only the transition lives here, scoped to an actual
+   drag in progress, so an ordinary pill never animates. */
+.project-pill.reorder-parting {
+  transition: transform 140ms ease;
+}
+
+/* A box pill under a project-pill drag (assign-to-box target, see
+   ProjectSwitcher's `forcedDragOver`): nudge + a pulsing insertion-style bar.
+   A plain project pill never gets this anymore — reordering past one is now
+   the parting slide above, not an insertion bar. */
+.project-pill.drag-over {
+  position: relative;
+  margin-left: 8px;
+  border-color: var(--accent);
+  transition: margin-left var(--transition);
+}
+
+.project-pill.drag-over::before {
+  content: "";
+  position: absolute;
+  left: -5px;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  animation: drag-insert-pulse 0.85s ease-in-out infinite;
+}
+
+/* The reorder insertion bar's pulse: the glow breathes and the bar grows a
+   touch so the drop point reads as live during a pill drag. The blurred glow
+   itself is the bar's static box-shadow — only opacity/transform animate
+   (WebKitGTK software-renders animated blurred box-shadows). */
+@keyframes drag-insert-pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+    transform: scaleY(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+}
+
+/* Alt-drag over a pill: the drop will box the two together (not reorder).
+   Suppress the reorder insertion bar and show a breathing "absorb" pulse that
+   reads as the target swelling to pull the dragged pill into a new box. */
+.project-pill.drag-group {
+  margin-left: 0;
+  border-color: var(--accent);
+  transform-origin: center;
+  animation: drag-group-absorb 0.7s ease-in-out infinite;
+}
+
+.project-pill.drag-group::before {
+  content: none;
+}
+
+@keyframes drag-group-absorb {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px var(--accent), 0 0 5px var(--accent);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 4px var(--accent), 0 0 18px var(--accent);
+    transform: scale(1.07);
+  }
+}
+
+.project-pill.active {
+  /* No size change — same box as every other pill (the 3px top border is
+     already reserved, transparent, on the base rule). Activation recolors that
+     top border to accent/bluish (same color as the add-project button): a
+     straight, un-rounded line across the top of the current project's pill.
+     The current pill is ALSO the only one with a side 3D shadow — a soft edge
+     on each side (vertical offset 0) so it reads as a raised chip lifted off
+     the flat, shadowless neighbours. */
+  color: var(--text-primary);
+  border-top-color: var(--accent);
+  box-shadow: 3px 0 4.5px -2px rgba(0, 0, 0, 0.4), -3px 0 4.5px -2px rgba(0, 0, 0, 0.4);
+}
+
+/* Category-tinted top bar: the project's primary category color replaces the
+   default status stripe so projects sharing a category read as a group. The
+   active pill keeps the accent stripe (its current-scope signal wins). */
+.project-pill.has-category:not(.active):not(.timer-paused) {
+  box-shadow: inset 0 -4px 0 var(--cat-color), 0 3px 6px -2px rgba(0, 0, 0, 0.28);
+}
+/* Small per-category swatches inside the pill (one dot per category). */
+.pill-category-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0 4px 0 -2px;
+  flex-shrink: 0;
+}
+.pill-category-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-main) 50%, transparent);
+}
+
+/* Category editor modal: toggle chips for known tags + an add field. */
+.category-editor .category-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 2px;
+}
+.category-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+}
+.category-chip:hover {
+  border-color: var(--cat-color);
+  color: var(--text-primary);
+}
+.category-chip.on {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--cat-color) 22%, transparent);
+  border-color: var(--cat-color);
+}
+.category-chip-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--cat-color);
+  flex-shrink: 0;
+}
+.category-chip-x {
+  margin-left: 1px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+}
+.category-add-row {
+  display: flex;
+  gap: 6px;
+}
+.category-add-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.pill-main {
+  display: flex;
+  align-items: center;
+  gap: inherit;
+  padding: 0 8px 0 12px;
+  height: 100%;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  flex: 1;
+  min-width: 0;
+}
+
+.pill-close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-right: 4px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  transition: opacity var(--transition), background-color var(--transition);
+  flex-shrink: 0;
+}
+
+.project-pill:hover .pill-close-btn {
+  opacity: 1;
+}
+
+.pill-close-btn:hover {
+  background-color: var(--control-hover-bg);
+  color: var(--text-primary);
+}
+
+/* ── Project-VM state glyph (docs/vm_projects_plan.md) ──────────────── */
+/* Always visible (unlike the hover-only close button): whether the VM is up
+   is standing state, not an affordance. Filled ▣ = running, hollow ▢ = off. */
+.pill-vm-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--transition), color var(--transition);
+  flex-shrink: 0;
+}
+
+.pill-vm-glyph:hover {
+  background-color: var(--control-hover-bg);
+  color: var(--text-primary);
+}
+
+/* ── Project box chip ───────────────────────────────────────────────── */
+/* A box groups member pills behind a labelled chip, visually distinct from a
+   plain project pill (accent-tinted frame + ▣ badge + member count). */
+.project-box-chip {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 4px;
+  padding: 0 4px;
+  height: 32px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background-color: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
+}
+
+.project-box-chip.drag-over {
+  border-color: var(--warning);
+  box-shadow: inset 0 0 0 1px var(--warning);
+}
+
+.project-box-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  padding-left: 4px;
+  white-space: nowrap;
+}
+
+.project-box-badge {
+  font-size: 12px;
+  color: var(--accent);
+  line-height: 1;
+}
+
+.project-box-name {
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.project-box-name:hover {
+  color: var(--accent);
+}
+
+.project-box-rename-input {
+  width: 90px;
+  font: inherit;
+  font-size: 12px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 1px 4px;
+}
+
+.project-box-member-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: var(--radius);
+}
+
+.project-box-caret {
+  font-size: 9px;
+  color: var(--accent);
+  margin-right: 1px;
+  line-height: 1;
+}
+
+/* Expanded member list: a downward dropdown portaled to the body so it escapes
+   the horizontally-scrolling pills row's vertical clipping. Members stack as a
+   vertical list, each pill spanning the dropdown width. */
+.project-box-dropdown {
+  position: fixed;
+  z-index: var(--z-menu);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+  padding: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent);
+  box-shadow: var(--shadow-3);
+}
+
+.project-box-dropdown .project-pill {
+  width: 100%;
+}
+
+.project-box-dropdown-hint {
+  padding: 3px 4px 1px;
+  font-size: 9px;
+  color: var(--text-secondary);
+  text-align: center;
+  opacity: 0.7;
+}
+
+/* Drop the reorder margin shift inside the vertical list (it would nudge pills
+   sideways); the insertion bar still marks the drop point. */
+.project-box-dropdown .project-pill.drag-over {
+  margin-left: 0;
+}
+
+/* Subtle cue that an expanded box's chip is the open dropdown's anchor. */
+.project-box-chip.expanded {
+  background-color: color-mix(in srgb, var(--accent) 20%, var(--control-bg));
+}
+
+/* A box rendered as a project-style pill: same base as .project-pill, with an
+   accent-tinted box icon and member-count badge. */
+.project-pill.is-box .pill-folder-icon {
+  color: var(--accent);
+}
+
+.project-pill.is-box .project-box-member-count {
+  margin-left: 4px;
+}
+
+/* An EMPTY box still renders (the overlay model never folds a box away —
+   dissolving is the editor's explicit action), just dimmed. */
+.project-pill.is-box.is-empty {
+  opacity: 0.55;
+}
+
+/* The small box badge on a MEMBER pill (overlay model: member pills always
+   render individually; the badge + its tooltip are what say "also in a box"). */
+.project-pill-boxdot {
+  margin-left: 4px;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--accent);
+  opacity: 0.85;
+}
+
+/* Multi-select ring (Ctrl/Cmd-click, 3b): the selection the "Box these…" menu
+   entry commits. Distinct from `.active` (the current scope's highlight). */
+.project-pill.is-selected {
+  outline: 1.5px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Checkbox-style rows in the pill menu's Boxes group (no flyout machinery —
+   the ☑/☐ glyph is the whole checkbox). */
+.context-menu-check .context-menu-checkmark {
+  display: inline-block;
+  width: 16px;
+  color: var(--accent);
+}
+
+/* Box editor dialog (canonical dialog chrome; see BoxEditorDialog). */
+.box-editor {
+  width: min(440px, 92vw);
+}
+
+.box-editor .box-editor-members {
+  max-height: 40vh;
+  overflow-y: auto;
+  border: 1px solid var(--border-color, color-mix(in srgb, var(--text-primary) 18%, transparent));
+  border-radius: 6px;
+  padding: 4px 6px;
+  margin: 6px 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.box-editor .box-editor-member-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.box-editor .box-editor-empty {
+  opacity: 0.7;
+  padding: 6px 4px;
+}
+
+.box-editor .box-editor-trust-note {
+  font-size: 12px;
+  opacity: 0.85;
+  border-left: 2px solid var(--accent);
+  padding: 4px 8px;
+  margin-bottom: 10px;
+}
+
+.box-editor .box-editor-dissolve {
+  margin-right: auto;
+}
+
+/* Member rows inside the box pill's hover dropdown: click to switch, × to
+   remove from the box. */
+.project-box-member-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.project-box-member-open {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.project-box-member-open:hover {
+  background: var(--control-hover-bg);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.project-box-member-remove {
+  flex-shrink: 0;
+  width: 20px;
+  height: 26px;
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  border: 1px solid var(--control-border);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.project-box-member-remove:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* Multi-root file view (box scope): one collapsible section per root, each set
+   off from the next with a header band, a left accent rail, and an indented
+   body so the boundaries between project roots read clearly. */
+.file-root {
+  --file-root-accent: var(--text-secondary);
+  margin-bottom: 8px;
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--file-root-accent);
+  background: var(--bg-panel);
+}
+
+.file-root:last-child {
+  margin-bottom: 0;
+}
+
+/* The box's own folder leads the list and is accent-tinted; member project
+   roots use a calmer neutral rail. */
+.file-root--box {
+  --file-root-accent: var(--accent);
+}
+
+.file-root-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 7px;
+  background: color-mix(in srgb, var(--file-root-accent) 10%, var(--bg-panel));
+  color: var(--text-primary);
+  border: none;
+  border-bottom: 1px solid var(--border-color);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  white-space: nowrap;
+}
+
+.file-root.is-collapsed .file-root-header {
+  border-bottom: none;
+}
+
+.file-root-header:hover {
+  background: color-mix(in srgb, var(--file-root-accent) 18%, var(--bg-panel));
+}
+
+.file-root-caret {
+  font-size: 9px;
+  color: var(--file-root-accent);
+  width: 9px;
+  flex-shrink: 0;
+}
+
+.file-root-icon {
+  flex-shrink: 0;
+}
+
+.file-root--box .file-root-icon {
+  color: var(--accent);
+}
+
+.file-root-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Small role tag (box / project) on the right of each header. */
+.file-root-kind {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--file-root-accent);
+  opacity: 0.8;
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--file-root-accent) 40%, transparent);
+  border-radius: var(--radius);
+}
+
+/* Indent the file list under its header so nested entries don't line up with
+   the section rails. */
+.file-root-body {
+  padding-left: 4px;
+}
+
+/* Box rows in the search popover: distinct from project rows. */
+.project-search-row.is-box {
+  border-left: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--control-bg));
+}
+
+.project-search-row.is-box .project-box-badge {
+  margin-right: 2px;
+}
+
+/* ── Project pill popup ─────────────────────────────────────────────── */
+.project-pill-popup {
+  position: fixed;
+  transform: translate(-50%, 6px);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 9999;
+  box-shadow: var(--shadow-2);
+}
+
+/* A project name in a left-docked file viewer sits at the outer window edge.
+   Keep its card under that name, but grow it inward (to the right) instead of
+   centering it across the window border. */
+.project-pill-popup.anchor-start {
+  transform: translate(0, 6px);
+}
+
+.pill-popup-path {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-secondary);
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.pill-popup-path-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 320px;
+  overflow: hidden;
+}
+
+.pill-popup-path-row .pill-popup-path {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pill-popup-path-label {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+.pill-popup-description {
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.35;
+  max-width: 320px;
+  white-space: normal;
+}
+
+.pill-popup-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 320px;
+}
+
+/* Same tag chips, inline beside the right panel's project-name header instead
+   of in the pill hover popup. */
+.right-panel-type-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.pill-popup-tag {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: var(--radius-full);
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+.pill-popup-status {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.pill-popup-status.active {
+  color: var(--accent, #89b4fa);
+}
+
+.pill-popup-status.inactive {
+  color: var(--text-muted);
+}
+
+.pill-popup-time {
+  font-size: 11px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+}
+
+.pill-popup-cpu {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* ── Tab hover card ───────────────────────────────────────────────────────────
+   Reuses `.project-pill-popup` (box + position) and the `.pill-popup-*` rows so
+   the tab hover looks identical to the project pill hover; only the header row
+   and the muted kind line are tab-specific. */
+.tab-popup-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tab-popup-dot {
+  font-size: 9px;
+  line-height: 1;
+}
+
+.tab-popup-label {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-popup-kind {
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.8;
+}
+
+/* Muted meta rows (activity / restart) — like .pill-popup-path but plain LTR
+   text, so it never gets the path row's RTL ellipsis treatment. */
+.tab-popup-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-popup-meta.working {
+  color: var(--success);
+}
+
+/* ── Project switcher action buttons ──────────────────────────────────────── */
+.project-switcher-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  border: none;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 16px;
+  transition: background-color var(--transition), color var(--transition);
+  flex-shrink: 0;
+}
+
+.project-switcher-action-btn:hover {
+  background-color: var(--pill-hover-bg);
+  color: var(--text-primary);
+}
+
+/* ── Settings panel ─────────────────────────────────────────────────── */
+.settings-overlay {
+  position: absolute;
+  bottom: 56px;
+  left: 8px;
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: 0;
+  padding: 12px;
+  min-width: 200px;
+  z-index: 20;
+  box-shadow: var(--shadow-2);
+}
+
+.settings-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+.theme-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  background: transparent;
+  color: var(--text-primary);
+  transition: background-color var(--transition);
+}
+
+.theme-btn:hover { background-color: var(--pill-hover-bg); }
+.theme-btn.selected { color: var(--accent); font-weight: 600; }
+
+/* ── Tab bar (lives inside .header-center) ───────────────────────────── */
+.tab-bar {
+  display: flex;
+  align-items: flex-end;
+  /* Small inset on the top + sides so the tab cards (top), the drag grip / first
+     tab (left) and the sticky close/hide/files cluster (right) all clear the
+     active subwindow's focus-frame outline (2px, drawn just inside the frame
+     edge) instead of colliding with it — notably the × button and the tab tops. */
+  padding: 4px 5px 0;
+  gap: 2px;
+  /* The bar itself no longer scrolls; only the inner `.tab-strip` does. The bar
+     stays a fixed row holding the scroll chevrons, the strip (including the +
+     button after its final tab), and the close/detach controls. */
+  overflow: hidden;
+  /* A fixed-height strip at the top of its subwindow. NOT flex:1 — the tab bar
+     lives inside the column-flex `.subwindow`, so growing would let it eat the
+     pane's vertical space and float the tabs to mid-window. */
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 32px;
+  /* Distinct from the pane (`--bg-main`) so the bar reads as its own strip; the
+     bottom border + the active tab's `--bg-main` blend keep the divide crisp. */
+  background-color: var(--bg-panel);
+  border-bottom: 1px solid var(--border-color);
+  position: relative;
+}
+
+/* Same accent wash family as the header bar / menus / dialogs, but dimmer —
+   a subwindow's tab bar is a secondary surface, not the window's own top
+   edge, so it echoes the theme rather than matching it at full strength.
+   Negative z-index (not a positive one on the children) so it stays under
+   the bar's existing content without touching every child's own stacking. */
+.tab-bar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  opacity: 0.12;
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* Explicit drag grip pinned at the far left of every subwindow bar. It sits
+   outside the scrolling `.tab-strip`, so it stays grabbable no matter how many
+   tabs fill (and overflow) the bar. Inherits the bar's grab cursor; brightens on
+   hover so it reads as an affordance. */
+.tab-drag-grip {
+  flex-shrink: 0;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 26px;
+  padding: 0 1px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  user-select: none;
+  opacity: 0.6;
+  cursor: grab;
+  transition: opacity var(--transition), color var(--transition);
+}
+.tab-drag-grip:hover {
+  opacity: 1;
+  color: var(--text-primary);
+}
+.tab-drag-grip:active { cursor: grabbing; }
+
+/* The horizontally-scrolling tab container. Grows to fill the bar between the
+   chevrons and close controls and carries the + directly after the final tab;
+   its scrollbar is hidden (chevrons + wheel drive the scroll instead). */
+.tab-strip {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  /* Scrolls, shows nothing — not even one of the app's own thumbs; overflow is
+     conveyed by the chevrons that flank the strip. */
+  --eldrun-scrollbar: none;
+}
+
+/* Chevron buttons that flank the strip when it overflows. */
+.tab-scroll-btn {
+  flex-shrink: 0;
+  align-self: center;
+  width: 20px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  z-index: 12;
+  transition: background-color var(--transition), color var(--transition);
+}
+.tab-scroll-btn:hover {
+  background: var(--pill-hover-bg);
+  color: var(--text-primary);
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  height: 30px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+  /* Tabs melt into the tab-bar behind them — transparent, no side/top border,
+     no card shadow — exactly as project pills melt into the header bar. Only
+     the tab text, and (for the current tab) its straight bottom accent line
+     plus side 3D shadow, tell a tab from the bar. The 3px BOTTOM border is
+     reserved transparent here and recoloured on .active; border-radius:0 keeps
+     that line a straight, un-rounded rule corner-to-corner. */
+  box-sizing: border-box;
+  border: none;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  margin-bottom: 0;
+  margin-top: 0;
+  transition: color var(--transition), border-color var(--transition), max-width var(--transition), padding var(--transition);
+  user-select: none;
+  /* Don't let the webview claim the pointer for a pan/select gesture — on
+     WebKitGTK that turns a drag's release into pointercancel, not pointerup. */
+  touch-action: none;
+}
+
+.tab:hover {
+  color: var(--text-primary);
+}
+
+.tab.active {
+  /* No background tint, no lift, no size change — same melt as every tab. The
+     current tab is marked by the bottom border recoloured to its accent (its
+     kind colour via --tab-accent, falling back to the theme accent): a straight
+     line across the bottom edge, mirroring the active project pill's top line.
+     It is ALSO the only tab with a side 3D shadow, so it reads as a raised chip
+     lifted off the flat, shadowless neighbours. */
+  color: var(--text-primary);
+  border-bottom-color: var(--tab-accent, var(--accent));
+  box-shadow: 2px 0 3px -2px rgba(0, 0, 0, 0.4), -2px 0 3px -2px rgba(0, 0, 0, 0.4);
+}
+
+.tab-label {
+  flex: 1;
+  min-width: 0;
+  /* Tab text is never accent-coloured — it takes the theme foreground (white in
+     dark themes, near-black in light, dark-lavender in the lavender theme). The
+     tab-group identity is carried by the top stripe, not the label. Inactive
+     tabs dim slightly so the active tab still reads as foremost. */
+  color: var(--text-primary);
+}
+
+.tab:not(.active):not(:hover) .tab-label {
+  opacity: 0.78;
+}
+
+/* #56: inline tab rename. The label is swapped for a borderless input that
+   inherits the tab's typography so the tab width doesn't jump while editing. */
+.tab-label-edit {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: inherit;
+  background: var(--bg-main, rgba(0, 0, 0, 0.25));
+  border: 1px solid var(--accent, #4aa3df);
+  border-radius: var(--radius-sm);
+  padding: 0 2px;
+  margin: 0;
+  outline: none;
+}
+
+/* ── Tab status ring ─────────────────────────────────────────────────────
+   A tab shows agent state as a RING, drawn on an `::after` overlay so it never
+   changes the tab's width and the text stays crisp. Three states from two
+   colours and a stroke style, nothing animated (`--status-*`):
+   - working        (green, DOTTED): PTY producing sustained output.
+   - finished       (green, solid): agent rang the bell having simply finished —
+     the same work as above, now complete, hence the same colour with the dots
+     closed up.
+   - needs-decision (amber, solid): agent gone quiet with a choice/permission
+     prompt on screen — shown on the viewed tab too, since an agent blocked on
+     you stays blocked while you look at it.
+   Working and finished clear the moment the tab is viewed; a pending decision
+   clears when it is ANSWERED.
+
+   This replaced a pulsing fill. The pulse was what told working from finished,
+   which made the animation the thing you had to read rather than decoration on
+   top of something already readable; a dotted ring says it at rest. The ring
+   also leaves the tab's own background alone, so it stacks with the active tab's
+   bottom accent instead of washing over it.
+
+   The overlay is inset to the PADDING box (a `position: absolute` child is), so
+   the 3px bottom border the active tab recolours stays visible underneath the
+   ring rather than being covered by it — a working tab you are looking at still
+   reads as the current one. `z-index: -1` inside the tab's own stacking context
+   puts the ring above the tab's (transparent) background and below its label. */
+.tab.working,
+.tab.needs-decision,
+.tab.finished {
+  position: relative;
+  z-index: 0;
+}
+
+.tab.working::after,
+.tab.needs-decision::after,
+.tab.finished::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  border: 2px var(--tab-status-stroke, solid) var(--tab-status-color);
+  border-radius: var(--radius-sm);
+  /* A whisper of fill behind the label, so the state still reads on a narrow
+     tab where the ring is mostly corner. Mixed once; nothing re-evaluates it.
+     Kept identical for working and finished — the fill is "this tab has
+     something to say", the ring is which of the two it is. */
+  background: color-mix(in srgb, var(--tab-status-color) 12%, transparent);
+}
+
+.tab.working {
+  --tab-status-color: var(--status-working);
+  --tab-status-stroke: dotted;
+}
+.tab.needs-decision { --tab-status-color: var(--status-decision); }
+.tab.finished { --tab-status-color: var(--status-done); }
+
+/* ── Project pill status bars ────────────────────────────────────────────
+   A strip of little bars along the pill's bottom edge — ONE PER NON-IDLE TAB of
+   that project, so the switcher shows both what a project's tabs are doing and
+   how many are doing it. Same three states, and the same reading, as the tab
+   status ring (`--status-*`), none of them animated:
+   - working        (green, BROKEN into dots): PTY producing sustained output.
+   - finished       (green, unbroken): agent finished, tab not yet seen.
+   - needs-decision (amber, unbroken): agent waiting on a decision.
+   A bar is a stroke rather than a box, so the tab ring's dotted border becomes a
+   row of dots along the BAR here — the same "unfinished" mark expressed in the
+   one dimension a 6px bar has. It is a background gradient rather than a
+   `border-style`, which a filled bar has nowhere to put.
+   The strip is the pill's only status signal — the pill body no longer tints, so
+   it can't fight the active gradient or the category top stripe.
+
+   Each bar is also the BUTTON that opens its own tab, which is what sets the
+   sizes: a 3px sliver reads fine but cannot be hit, so the bar is 6px tall with
+   a transparent ::after extending its target up into the pill's lower edge. The
+   strip itself keeps `pointer-events: none` so the GAPS between bars still fall
+   through to the pill body underneath — clicking beside a bar switches project,
+   as it always did. */
+.pill-status-bars {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 3px;
+  display: flex;
+  gap: 3px;
+  height: 6px;
+  pointer-events: none;
+}
+
+/* The root pill is only as wide as the star it holds — far narrower than a
+   named project's — so its strip runs closer to the edges, which is what lets a
+   full six bars fit at their minimum width instead of spilling out of it. */
+.root-pill .pill-status-bars {
+  left: 3px;
+  right: 3px;
+}
+
+.pill-status-bar {
+  /* Shrinks (never grows) so a full strip still fits a narrow pill. */
+  flex: 0 1 18px;
+  min-width: 6px;
+  border-radius: 2px;
+  position: relative;
+  /* Button reset — the element is a <button> so a bar can be clicked and
+     keyboard-focused; its look is entirely the strip's. */
+  appearance: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  /* Re-enable the pointer the strip switched off, for the bars only. */
+  pointer-events: auto;
+  transition: filter var(--transition);
+}
+
+/* The clickable area, larger than the paint: up into the pill's bottom edge and
+   a hair to each side, so a 6px bar is a target you can actually land on
+   without the strip growing into the pill's label. */
+.pill-status-bar::after {
+  content: "";
+  position: absolute;
+  inset: -6px -2px -3px;
+}
+
+.pill-status-bar:hover {
+  filter: brightness(1.35);
+}
+
+.pill-status-bar:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Dots along the bar's length — literally "· · ·", the ellipsis of a thing still
+   going. Round rather than square marks, because at 6px a square dash and a
+   solid bar are the same silhouette to a glance while a row of circles is not:
+   a radial-gradient tile 6px wide holding one ~3.5px dot, repeated across, which
+   at the bar's 18px preferred width is three dots and at its 6px minimum is one
+   — never a length that reads as solid. `background-color` stays unset so the
+   gaps are the pill behind them, and the 0.25px feather is what keeps the dots
+   from aliasing into diamonds. */
+.pill-status-bar.working {
+  background-image: radial-gradient(
+    circle,
+    var(--status-working) 1.75px,
+    transparent 2px
+  );
+  background-size: 6px 100%;
+  background-position: center;
+  background-repeat: repeat-x;
+}
+
+.pill-status-bar.needs-decision {
+  background-color: var(--status-decision);
+}
+
+.pill-status-bar.finished {
+  background-color: var(--status-done);
+}
+
+/* Nothing in the agent-status vocabulary animates any more (see the
+   `--status-*` block): the three states are three colours, at rest, so the
+   reduced-motion and Energy Saver collapses that used to exist here have
+   nothing left to switch off. Both settings still govern the rest of the app;
+   this is simply one fewer thing they have to. */
+:root[data-energy-saver="on"] .tab-new-btn.empty-hint {
+  animation: none;
+}
+
+/* Window blur: pause EVERY animation wholesale (typing-latency plan, step 3).
+   With DMABUF off the renderer rasterizes in software on one thread, so any
+   running animation keeps that thread permanently runnable — and a thread that
+   never sleeps is scheduled like a batch job, which is what makes typing slow
+   under machine load. A blurred window is the one state where nothing on it is
+   being watched, so a blanket pause is safe: paused animations stop ticking
+   (no repaints), the elements keep their mid-state visuals, and everything
+   resumes on focus. Driven by [data-blurred] on the document root, set per
+   window by startFocusTracking (stores/power.ts). The energy-saver collapse
+   above also engages on blur (AppShell/DetachedApp publish saver OR blurred),
+   so the known glows show their steady tints rather than a mid-frame freeze;
+   this rule catches every animation the collapse doesn't name. */
+:root[data-blurred] *,
+:root[data-blurred] *::before,
+:root[data-blurred] *::after {
+  animation-play-state: paused !important;
+}
+
+/* Fast mode: no animation, and no transition either — the deliberate
+   difference from the blur rule above, which only *pauses* what is running.
+   That is right for a window nobody is looking at, where the mid-state visual
+   is about to be resumed; it is wrong here, where the user is looking and has
+   asked for the interface to stop spending frames on movement. So an animation
+   is cancelled outright rather than frozen mid-way (`none`, not `paused`,
+   which would leave a half-drawn spinner on screen), and every transition is
+   collapsed to zero so a state change lands in the frame it was asked for.
+
+   `1ms` rather than `0s` for the durations: a zero-length transition fires no
+   `transitionend`, and a handful of surfaces here wait for that event to unmount
+   or clean up — a rule that quietly stops those callbacks would leak elements
+   rather than speed anything up. The delay is a true `0s`, which no callback
+   depends on. */
+:root[data-fast-mode] *,
+:root[data-fast-mode] *::before,
+:root[data-fast-mode] *::after {
+  animation: none !important;
+  transition-duration: 1ms !important;
+  transition-delay: 0s !important;
+}
+
+.tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--transition), background-color var(--transition);
+}
+
+.tab:hover .tab-close,
+.tab.active .tab-close { opacity: 1; }
+.tab-close:hover { background-color: var(--pill-hover-bg); color: var(--text-primary); }
+
+/* SSH-sync Phase 0: per-tab local/remote locality badge (remote projects only).
+   Always visible (unlike the close button) so the tab's locality is legible at a
+   glance; click toggles it. Local = mirror (warning hue), remote = host (info). */
+/* Unified local/remote tab marking. One visual language across both meanings —
+   ⌂ + green = local, ☁ + amber = remote — since the two never coexist on a tab:
+     - .tab-locality: agent/shell tabs, a clickable toggle for WHERE the process
+       runs (local mirror vs the host over SSH).
+     - .tab-source: viewer/file tabs, a non-interactive badge for WHERE the bytes
+       are read (local synced copy vs host-native over SFTP). */
+.tab-locality,
+.tab-source {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  font-size: 11px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: background-color var(--transition), color var(--transition);
+}
+.tab-locality { cursor: pointer; }
+.tab-source { cursor: default; }
+.tab-locality.local,
+.tab-source.local { color: var(--success); }
+.tab-locality.remote,
+.tab-source.remote { color: var(--warning); }
+.tab-locality:hover { background-color: var(--pill-hover-bg); }
+/* A file-source badge is a clickable toggle when the file exists on both sides
+   (the viewer published a Local/Remote switch); otherwise it stays the plain
+   read-only glyph above. `disabled` = the host has no counterpart to switch to. */
+.tab-source.clickable { cursor: pointer; }
+.tab-source.clickable:hover { background-color: var(--pill-hover-bg); }
+.tab-source.clickable.disabled { cursor: default; opacity: 0.45; }
+.tab-source.clickable.disabled:hover { background-color: transparent; }
+
+/* Planner/doer badge (experimental `agent_mode_toggle`) — same 16px badge box as
+   the locality toggle, sitting beside it on agent tabs. Three states, two of them
+   wired: `unset` (the agent's own ask-each-time default, muted so it reads as
+   "nothing imposed"), `plan` (restrained), `auto` (edits flow). */
+.tab-agent-mode {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  font-size: 11px;
+  line-height: 1;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: background-color var(--transition), color var(--transition);
+}
+.tab-agent-mode.unset { color: var(--text-muted); opacity: 0.6; }
+.tab-agent-mode.plan { color: var(--info, #4aa3df); }
+.tab-agent-mode.auto { color: var(--warning); }
+.tab-agent-mode:hover { background-color: var(--pill-hover-bg); opacity: 1; }
+
+/* Per-subwindow close (×), shown in the tab bar when >1 subwindow exists.
+   The bar scrolls horizontally when tabs overflow; pin this button to the right
+   edge (sticky + flex-shrink:0) so it never scrolls out of reach and stays
+   clickable regardless of how many tabs the group holds. The panel-colored
+   background keeps overflowing tabs from showing through behind it. */
+.subwindow-close {
+  margin-left: auto;
+  align-self: center;
+  position: sticky;
+  right: 0;
+  flex-shrink: 0;
+  z-index: 12;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+}
+.subwindow-close:hover {
+  background: var(--pill-hover-bg);
+  color: var(--danger);
+}
+
+/* Hide-subwindow button: parks the subwindow into the right-panel Hidden list.
+   Sits just left of the close button (both margin-left:auto stack at the right
+   end; when close is absent for a single subwindow, hide still pins right). */
+.subwindow-hide {
+  margin-left: auto;
+  align-self: center;
+  position: sticky;
+  right: 0;
+  flex-shrink: 0;
+  z-index: 12;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+}
+/* When both render, the close button owns the far-right slot; hide sits snug to
+   its left (its own auto-margin has no free space left to consume). */
+.subwindow-hide + .subwindow-close {
+  margin-left: 0;
+}
+.subwindow-hide:hover {
+  background: var(--pill-hover-bg);
+  color: var(--accent);
+}
+
+/* Per-subwindow file-viewer toggle (◫), left of the hide/close cluster. Same
+   sticky right-edge treatment as its companions; lit while the viewer is open. */
+.subwindow-files-toggle {
+  margin-left: auto;
+  align-self: center;
+  position: sticky;
+  right: 0;
+  flex-shrink: 0;
+  z-index: 12;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.subwindow-files-toggle + .subwindow-hide {
+  margin-left: 0;
+}
+.subwindow-files-toggle:hover {
+  background: var(--pill-hover-bg);
+  color: var(--accent);
+}
+.subwindow-files-toggle.open {
+  color: var(--accent);
+}
+
+/* Right-pinned cluster holding the ◫/hide/close controls. Sits after the
+   flex:1 tab strip, so it's always at the far right of the bar. When a file
+   viewer is docked below, TabBar sets an inline `width` equal to the viewer's
+   width: the cluster then spans the strip-edge→bar-edge band directly above the
+   viewer and right-aligns its buttons, which both keeps the controls flush with
+   the subwindow's right edge and forces the scrolling strip to stop at the pane
+   edge instead of running under the viewer. */
+.tab-controls {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+/* #42: detached ("pop out") window title-bar controls — the native
+   min/max/close cluster. Pinned to the right of the tab bar (sticky) so they
+   never scroll out when tabs overflow; the panel-colored backing keeps
+   overflowing tabs from showing through. (Dock-back is done by Ctrl+dragging the
+   tab bar onto the main window, #42.) */
+.detached-titlebar-controls {
+  margin-left: auto;
+  align-self: center;
+  position: sticky;
+  right: 0;
+  z-index: 12;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px;
+  background: var(--bg-panel);
+}
+
+/* The dragged tab collapses out of the row so its old slot closes and the only
+   opening is the gap that slides open at the drop target. */
+.tab.dragging {
+  max-width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  margin: 0;
+  border-color: transparent;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* ── Drop target feedback (dragging a tab over another bar) ───────────────
+   While a tab (or file) is dragged over a tab bar, that bar becomes the active
+   drop target: it gets a subtle accent wash + top accent line so it's obvious
+   WHICH bar will receive the drop, and a placeholder slot is rendered at the
+   insertion point previewing WHERE the tab will land (with its label). */
+.tab-bar.drop-target {
+  background-color: color-mix(in srgb, var(--accent) 12%, var(--bg-panel));
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.tab-drop-placeholder {
+  /* A dashed accent slot the dragged tab will drop into. Sized like a tab so the
+     surrounding tabs slide to make exactly the room it will occupy. */
+  flex-shrink: 0;
+  align-self: flex-end;
+  height: 30px;
+  min-width: 96px;
+  max-width: 160px;
+  border: 1px dashed var(--accent);
+  border-bottom: none;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  pointer-events: none;
+  overflow: hidden;
+  animation: tab-drop-slot 0.16s ease-out;
+}
+
+.tab-drop-placeholder-label {
+  display: block;
+  padding: 0 12px;
+  line-height: 30px;
+  font-size: 12px;
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Slot springs open from zero width so the insertion point reads as opening up
+   to receive the tab, not just appearing. */
+@keyframes tab-drop-slot {
+  0% {
+    min-width: 0;
+    max-width: 0;
+    opacity: 0;
+  }
+  100% {
+    min-width: 96px;
+    max-width: 160px;
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-drop-placeholder {
+    animation: none;
+  }
+}
+
+/* ── Drop-in landing flourish ─────────────────────────────────────────────
+   A tab dropped into a DIFFERENT tab bar (cross-group move / split) mounts
+   fresh in its destination bar and plays this one-shot "settle" so it's clear
+   where the dragged tab landed: it drops in from slightly above, overshoots,
+   and settles, ringed by a fading accent glow. The animation overrides the
+   active tab's inset shadow for its duration, then the inline style resumes. */
+.tab.landing {
+  animation: tab-land 0.34s cubic-bezier(0.2, 0.7, 0.3, 1);
+  /* Lift above neighbours so the overshoot/glow isn't clipped by adjacent tabs. */
+  position: relative;
+  z-index: 12;
+}
+
+@keyframes tab-land {
+  0% {
+    transform: translateY(-10px) scale(1.14);
+    opacity: 0;
+    box-shadow: 0 0 0 2px var(--accent);
+  }
+  55% {
+    transform: translateY(2px) scale(0.97);
+    opacity: 1;
+    box-shadow: 0 0 10px 1px color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+/* Respect reduced-motion: collapse the landing to a plain fade-in. */
+@media (prefers-reduced-motion: reduce) {
+  .tab.landing {
+    animation: tab-land-fade 0.2s ease-out;
+  }
+  @keyframes tab-land-fade {
+    0% { opacity: 0; }
+    100% { opacity: 1; }
+  }
+}
+
+/* ── New-tab button + dropdown ───────────────────────────────────────── */
+.tab-new-wrap {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  padding: 0;
+  margin-left: 0;
+  flex-shrink: 0;
+  align-self: flex-end;
+}
+
+.tab-new-btn {
+  width: 34px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  transition: background-color var(--transition), color var(--transition), border-color var(--transition);
+}
+
+.tab-new-btn:hover {
+  background: var(--pill-hover-bg);
+  color: var(--text-primary);
+  border-top-color: var(--accent);
+  border-left-color: var(--control-border);
+  border-right-color: var(--control-border);
+}
+
+/* No tabs in this group yet: the + is the sole entry point, so breathe it in
+   the accent colour to invite a first tab. Reuses the working-tab pulse so the
+   cue matches the rest of the tab bar. Hovering cancels the pulse so it settles
+   into the normal affordance once the user reaches for it. */
+.tab-new-btn.empty-hint {
+  color: var(--accent);
+  animation: tab-working-pulse 1.6s ease-in-out infinite;
+}
+
+.tab-new-btn.empty-hint:hover {
+  animation: none;
+}
+
+/* One popover/menu surface for the whole app: context menus, the generic
+   dropdown (via .context-menu), the tab "+" menu and the project-switcher add
+   menu all read this. The individual rules keep only positioning / padding /
+   min-width. */
+.context-menu,
+.tab-new-menu,
+.project-switcher-add-menu {
+  position: relative;
+  background: var(--bg-elevated);
+  /* No boxed outline: a 1px frame around a tinted popover reads as a stray
+     hairline ring drawn around the accent wash below, not as an edge. The
+     elevation shadow is what separates the menu from what it floats over; the
+     accent top rail — matching the header bar and the dialog chrome above — is
+     the only edge that carries meaning. */
+  border: 0;
+  border-top: 2px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-3);
+}
+
+/* Same accent wash as the header bar (.app-header::before) so every popover
+   menu reads as the same tinted color, not just an accent top rail. Layered
+   as an overlay (not folded into `background` above) so it works uniformly
+   whether the underlying surface is --bg-elevated or, in the glass themes,
+   --glass-elevated. */
+.context-menu::before,
+.tab-new-menu::before,
+.project-switcher-add-menu::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  opacity: 0.32;
+  pointer-events: none;
+  z-index: -1;
+  border-radius: inherit;
+}
+
+.tab-new-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 100;
+  padding: 4px;
+  min-width: 132px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* The compact Agents & CLIs menu keeps its quick picks put. “More…” opens this
+   neighbouring list instead, positioned in JS to the side with room. */
+.tab-new-menu-more {
+  z-index: 101;
+  min-width: 180px;
+  max-height: calc(100vh - 16px);
+}
+
+/* ── Unified scrolling-menu shape ───────────────────────────────────────────
+   A menu that can overflow must NOT scroll on its own element: that element
+   carries the rounded corners, the 2px accent top rail and the ::before accent
+   wash, and a native scrollbar on it runs straight over the corners/rail (looks
+   broken) while the absolutely-positioned wash only covers the visible box —
+   scrolling away and leaving the bottom untinted. Instead the menu keeps its
+   accent title (`.tab-new-menu-group-label`) PINNED as a direct child, and puts
+   everything else in a `.menu-scroll-region` that scrolls. The scrollbar then
+   starts BELOW the header and clears both rounded corners, and the wash (on the
+   non-scrolling menu) paints the full height behind it. This is the same split
+   the settings dialog makes with `.dialog-scroll`, generalised to every menu. */
+.menu-scroll-region {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+/* Keep the pinned title from shrinking when the menu hits its max-height — only
+   the scroll region below it should give. Direct-child + first, so a group
+   label INSIDE the scroll region (e.g. the machines menu's "Add a machine")
+   still scrolls with its section. */
+.tab-new-menu > .tab-new-menu-group-label:first-child {
+  flex-shrink: 0;
+}
+
+/* The add menu's search box: auto-focused so "click + and type" filters the
+   entries immediately. Enter picks the highlighted first match. */
+.tab-new-menu-search {
+  margin: 2px 2px 4px;
+  padding: 5px 8px;
+  background: var(--control-bg);
+  border: 1px solid var(--border-color);
+  border-radius: calc(var(--radius) / 2);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+}
+
+.tab-new-menu-search:focus {
+  border-color: var(--accent);
+}
+
+.tab-new-menu-search::placeholder {
+  color: var(--text-muted);
+}
+
+/* The entry Enter would pick while a query is live — shown in the hover style
+   so the shortcut is visible before it fires. */
+.tab-new-menu-item.enter-target {
+  background-color: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.tab-new-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+  transition: background-color var(--transition);
+}
+
+.tab-new-menu-item:hover {
+  background-color: var(--control-hover-bg);
+}
+
+.tab-new-menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.tab-new-menu-item:disabled:hover {
+  background: var(--control-bg);
+  border-color: transparent;
+}
+
+.tab-new-menu-dot { font-size: 8px; flex-shrink: 0; }
+
+/* A caution on a still-pickable add-tab row (a local-model agent whose harness
+   was built for a frontier model). Amber rather than the danger colour, and
+   right-aligned like .tab-menu-hint, because it qualifies the row rather than
+   disabling it — the sentence is the title/aria-label. */
+.tab-new-menu-caution {
+  margin-left: auto;
+  padding-left: 12px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--warning);
+  flex-shrink: 0;
+  cursor: help;
+}
+
+/* A muted, right-aligned note in a locality menu row — "choose machine ›" on the
+   Remote drill-in, "sync off" on a worker that can't run scripts. */
+.tab-menu-hint {
+  margin-left: auto;
+  padding-left: 12px;
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+/* The "‹ Run on machine" header row of the machine sub-picker: reads as a title,
+   not a target, and hosts the untested tag. */
+.tab-new-menu-item.tab-menu-back { color: var(--text-secondary); }
+.tab-new-menu-item.tab-menu-back .tab-new-menu-dot { font-size: 12px; }
+
+.tab-new-menu-group-label {
+  padding: 6px 10px 2px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  /* Menu section header: accent so the groups ("Local Models" / "Load into
+     memory" / "Agents") separate from the item rows instead of reading like a
+     dimmed, disabled entry. */
+  color: var(--accent);
+  user-select: none;
+}
+
+.tab-new-menu-hint {
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* #py right-click-Run "arguments" popover on a file-tree row. A transparent
+   full-window backdrop catches the outside click that closes it; the panel is
+   pinned at the cursor (clamped on-screen by useClampToViewport). Canonical
+   panel chrome + explicit colours (a portal child inherits none). */
+.file-run-args-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-menu);
+}
+.file-run-args {
+  position: fixed;
+  z-index: 1001;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 240px;
+  padding: 8px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-3);
+}
+.file-run-args-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-run-args-input {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+.file-run-args-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.file-run-args-row {
+  display: flex;
+  gap: 6px;
+}
+.file-run-args-btn {
+  flex: 1;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.file-run-args-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+/* ── Context menus ───────────────────────────────────────────────────── */
+.context-menu {
+  position: fixed;
+  z-index: var(--z-menu);
+  min-width: 150px;
+  padding: 4px;
+}
+
+/* ContextMenuPortal's two layers: the full-viewport dismiss catcher and the
+   menu itself. `.context-menu-portal` is added by the portal on top of the
+   caller's chrome class and owns position + z, so a chrome class with its own
+   in-flow positioning (e.g. .tab-new-menu) still layers correctly — call
+   sites must not inline a z-index. */
+.context-menu-catcher {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-menu-catcher);
+}
+
+.context-menu-portal {
+  position: fixed;
+  z-index: var(--z-menu);
+}
+
+/* Glowing frame that floats onto the right-clicked file-tree row so it's
+   obvious which entry a context menu belongs to, even after the menu's been
+   repositioned to stay on-screen (see useClampToViewport). Purely cosmetic:
+   fixed-position, no pointer events, unmounts with the menu. */
+.file-entry-highlight {
+  position: fixed;
+  z-index: 999;
+  pointer-events: none;
+  border-radius: var(--radius-sm);
+  border: 2px solid var(--accent);
+  box-sizing: border-box;
+  /* Static blurred glow; the pulse animates only opacity (WebKitGTK
+     software-renders animated blurred box-shadows). The pulse's opacity
+     takes over from the in-animation once its 200ms delay elapses. */
+  box-shadow: 0 0 9px 2px var(--accent);
+  animation:
+    file-entry-highlight-in 200ms cubic-bezier(0.16, 1, 0.3, 1) both,
+    file-entry-highlight-pulse 1.3s ease-in-out 200ms infinite;
+}
+
+@keyframes file-entry-highlight-in {
+  from {
+    opacity: 0;
+    transform: scale(1.18);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes file-entry-highlight-pulse {
+  0%, 100% {
+    opacity: 0.65;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* A row the CSV table viewer just gained on a disk reload: flash an accent tint
+   for 3s, then let the cell's own inline background (stripe/sorted) reassert.
+   The animation targets the cells, not the row, because each <td> paints its own
+   background — and an animated property overrides that inline style while it runs.
+   The mix is opaque (over --bg-panel, not transparent) so the flash can't let the
+   scrolling body bleed through the sticky row-number gutter. */
+.csv-row-flash > td {
+  animation: csv-row-flash 3s ease-out;
+}
+
+@keyframes csv-row-flash {
+  from {
+    background-color: color-mix(in srgb, var(--accent) 28%, var(--bg-panel));
+  }
+  to {
+    background-color: var(--bg-panel);
+  }
+}
+
+.context-menu button {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 5px 9px;
+  border: 1px solid transparent;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.context-menu button:hover {
+  background: var(--control-hover-bg);
+}
+
+.context-menu button.danger {
+  color: var(--danger);
+}
+
+/* A disabled item is how a menu says "you are already there" — the state IS the
+   information, so it stays visible rather than being hidden, and it must stop
+   looking clickable or it reads as a broken button. */
+.context-menu button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.context-menu button:disabled:hover {
+  background: var(--control-bg);
+}
+
+.context-menu hr {
+  height: 1px;
+  margin: 4px 0;
+  border: 0;
+  background: var(--border-subtle);
+}
+
+/* Grouped context menu: a small caption above each cluster of related items. */
+.context-menu-group + .context-menu-group,
+.context-menu-group + .context-menu-danger-zone {
+  margin-top: 6px;
+}
+
+.context-menu-group-label {
+  padding: 4px 9px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted, var(--text-secondary));
+  user-select: none;
+}
+
+/* A context-menu caption that quotes CONTENT rather than naming a section — a
+   message's subject over the actions that file it. Not the uppercase treatment
+   the ordinary label gets: this is the mail's own text, and shouting it would
+   both misrepresent it and lose the casing the sender chose. Truncated, because
+   a subject has no length limit and a menu does. */
+.mail-menu-subject {
+  max-width: 240px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A footnote inside a context menu: what the action above does NOT do. Not a
+   disabled button (it is not an action), and not a tooltip (a caveat nobody
+   hovers is a caveat nobody reads). Wraps, unlike every other row here, because
+   it is a sentence. */
+.context-menu-note {
+  max-width: 240px;
+  padding: 4px 9px 2px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-muted, var(--text-secondary));
+  white-space: normal;
+  user-select: none;
+}
+
+/* Danger zone: destructive actions fenced off in a red-tinted box. */
+.context-menu-danger-zone {
+  margin-top: 8px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+
+.context-menu-danger-zone .context-menu-group-label {
+  color: var(--danger);
+}
+
+.context-menu-danger-zone button {
+  color: var(--danger);
+  background: transparent;
+}
+
+.context-menu-danger-zone button:hover {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+
+/* "Untested" tag: marks a menu action (or any control) whose feature is
+   implemented but not yet live-verified in the running app. It stays until
+   that specific feature is confirmed working. A tagged context-menu button
+   lays its label and the tag out in a row, with the tag pushed to the right. */
+.context-menu button.untested {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.untested-tag {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  line-height: 1.35;
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  user-select: none;
+}
+
+/* ── Dropdown (the one custom themed dropdown; native <select> popups can't
+   be themed on WebKitGTK so we render trigger + menu ourselves) ─────────── */
+.dropdown {
+  position: relative;
+  display: inline-flex;
+}
+
+.dropdown-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dropdown-trigger:hover:not(:disabled),
+.dropdown-trigger:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.dropdown-trigger:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.dropdown-caret {
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  min-width: 120px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+/* Full-width variant: use when a Dropdown replaces a block form <select> so the
+   trigger fills its field width (label above, value left, caret right). */
+.dropdown.dropdown-block {
+  display: flex;
+  width: 100%;
+}
+
+.dropdown.dropdown-block .dropdown-trigger {
+  width: 100%;
+  justify-content: space-between;
+}
+
+.dropdown.dropdown-block .dropdown-menu {
+  right: 0;
+}
+
+/* Two-class specificity so per-toolbar `… button` rules (e.g. the file browser
+   actions row this menu lives inside) don't override the menu item look. */
+.dropdown .dropdown-menu button {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 5px 9px;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.dropdown .dropdown-menu button:hover {
+  background: var(--control-hover-bg);
+}
+
+.dropdown .dropdown-menu button.selected {
+  color: var(--accent);
+  border-color: var(--accent);
+}

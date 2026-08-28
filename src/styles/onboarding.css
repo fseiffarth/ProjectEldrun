@@ -1,0 +1,789 @@
+/* onboarding.css — split from the old monolithic themes.css (order-preserving).
+   Onboarding empty-state + hints, guided tour, fancy-theme button treatment.
+   IMPORT ORDER IS LOAD-BEARING: these files are @imported in sequence from
+   styles/index.css; equal-specificity rules rely on source order exactly as
+   they did in the monolith, so never reorder the imports or move rules
+   between files without checking the cascade. */
+
+/* ── Onboarding: empty-state card, "How to start" dialog, contextual hints ── */
+
+.center-placeholder-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  max-width: 360px;
+  padding: 0 16px;
+}
+
+/* Section divider inside the Connect modal (SSH / OpenVPN groups). */
+.remote-reconnect-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+}
+
+.center-placeholder-title {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.center-placeholder-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.center-placeholder-key {
+  display: inline-block;
+  min-width: 16px;
+  padding: 0 5px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* "How to start" reuses .modal-backdrop + .settings-dialog; just the step list. */
+.how-to-start-steps {
+  list-style: none;
+  margin: 8px 0 4px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.how-to-start-step {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.how-to-start-num {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.how-to-start-step-title {
+  color: var(--text-primary);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.how-to-start-got-it {
+  margin-left: auto;
+  border-color: var(--accent) !important;
+}
+
+/* Contextual hint coachmark/banner. z-index 90: above the header (80) so it can
+   point at chrome, but below true modals (.modal-backdrop, 100) so a dialog is
+   never pierced by a stray hint. Portaled to body (see HintBubble). */
+.hint-bubble {
+  position: fixed;
+  z-index: var(--z-hint);
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-3);
+  color: var(--text-primary);
+  font-size: 12px;
+  /* Fade in on appearance, then keep a slow accent breathing on the border so a
+     freshly-surfaced hint draws the eye without nagging. Opacity-only entry so it
+     never fights the inline/class positioning transforms (translateY/translateX).
+     Shares the pulse vocabulary of tab-working-pulse / right-panel-drop-pulse. */
+  animation: hint-bubble-in 0.24s ease-out,
+    hint-bubble-breathe 2.4s ease-in-out 0.24s infinite;
+}
+
+@keyframes hint-bubble-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes hint-bubble-breathe {
+  0%,
+  100% {
+    border-color: var(--border-color);
+    box-shadow: var(--shadow-3);
+  }
+  50% {
+    border-color: var(--accent);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45),
+      0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+}
+
+/* The chrome a hint points at (the + button, etc.): a pulsing accent fill + inset
+   ring so the eye lands on the thing to click, not just the bubble. HintHost
+   toggles this class on the anchored element while its hint is on screen. The
+   effect is kept *inside* the element bounds (inset ring, no outward glow) so it
+   survives an overflow:hidden ancestor like the .tab-bar that clips the + button. */
+.hint-target {
+  animation: hint-target-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes hint-target-pulse {
+  0%,
+  100% {
+    background: color-mix(in srgb, var(--accent) 0%, transparent);
+    box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+  50% {
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+    box-shadow: inset 0 0 0 1.5px var(--accent);
+  }
+}
+
+.hint-bubble--banner {
+  left: 50%;
+  top: 16px;
+  transform: translateX(-50%);
+  width: min(420px, calc(100vw - 32px));
+  /* Banners have no anchor element to pulse, so the bubble itself breathes with a
+     gentle scale alongside the shared border glow. The transform-animating
+     keyframes must carry the centering translateX(-50%); the entry runs first and
+     the scale pulse starts when it ends (matched delay), so they never overlap on
+     the transform property. */
+  animation: hint-banner-in 0.24s ease-out,
+    hint-bubble-breathe 2.4s ease-in-out 0.24s infinite,
+    hint-banner-pulse 1.8s ease-in-out 0.24s infinite;
+}
+
+@keyframes hint-banner-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes hint-banner-pulse {
+  0%,
+  100% {
+    transform: translateX(-50%) scale(1);
+  }
+  50% {
+    transform: translateX(-50%) scale(1.03);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hint-bubble,
+  .hint-bubble--banner,
+  .hint-target,
+  .tour-target {
+    animation: none;
+  }
+}
+
+.hint-bubble-close {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.hint-bubble-close:hover {
+  color: var(--text-primary);
+}
+
+.hint-bubble-title {
+  font-weight: 600;
+  margin: 0 16px 4px 0;
+}
+
+.hint-bubble-body {
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.hint-bubble-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.hint-bubble-link {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.hint-bubble-link:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+.hint-bubble-got-it {
+  margin-left: auto;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 11px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.hint-bubble-got-it:hover {
+  background: var(--accent-hover);
+}
+
+/* The element a tour step spotlights (TourHost) — an OUTWARD spread ring.
+   Deliberately a different class from .hint-target: the hint version keeps
+   its ring inset so it survives an overflow:hidden ancestor like .tab-bar,
+   and a shared name meant the later keyframes clobbered both consumers. */
+.tour-target {
+  animation: tour-target-pulse 1.6s ease-in-out infinite;
+  border-radius: var(--radius);
+}
+
+@keyframes tour-target-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 65%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+
+/* ── Guided tour ("Take a tour") ──────────────────────────────────────────── */
+
+/* Invisible anchor at the right-edge reveal band; gives the file-tree tour step
+   a stable element to spotlight without affecting layout or hit-testing. */
+.tour-edge-marker {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  width: 6px;
+  height: 120px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+/* Click affordance to open the closed, unpinned right file panel. The hover-only
+   right-edge reveal isn't reliable under WebView2 on Windows — the OS resize
+   border eats mousemove in the last few edge pixels, so the reveal band never
+   fires and the in-panel pin can't be reached. This tab sits just inside that
+   dead-zone and opens the panel on click (delivered even where mousemove isn't).
+   Unmounts as soon as the panel is open, so it never overlaps the panel. */
+.right-panel-reveal-handle {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-right: none;
+  border-radius: var(--radius) 0 0 var(--radius);
+  background-color: var(--bg-panel);
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+  z-index: 11;
+  transition: opacity var(--transition), color var(--transition), background-color var(--transition);
+}
+
+.right-panel-reveal-handle:hover {
+  opacity: 1;
+  color: var(--text-primary);
+  background-color: var(--bg-hover);
+}
+
+/* Mirror the reveal handle and tour marker to the left edge when the panel
+   docks there (open edge, border, and rounded corners all flip). */
+.right-panel-reveal-handle.left {
+  right: auto;
+  left: 0;
+  border-left: none;
+  border-right: 1px solid var(--border-color);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.tour-edge-marker.left {
+  right: auto;
+  left: 0;
+}
+
+/* Full-screen layer hosting the blocker, spotlight, and bubble. Above the hint
+   bubble (z 90) and most chrome; portaled to document.body. */
+.tour-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+}
+
+/* Transparent click-catcher: makes the tour narrated/can't-get-lost — every
+   pointer event over the app is swallowed so the user advances with Next. The
+   dim itself comes from the spotlight's box-shadow (or the banner backdrop). */
+.tour-blocker {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+}
+
+/* The cutout around the highlighted control: its huge box-shadow IS the dim, so
+   everything outside this rect darkens while the target stays clear. Visual
+   only (no pointer events) — the blocker beneath handles clicks. */
+.tour-spotlight {
+  position: fixed;
+  border-radius: var(--radius);
+  box-shadow:
+    0 0 0 9999px rgba(0, 0, 0, 0.58),
+    0 0 0 2px var(--accent),
+    0 0 0 6px color-mix(in srgb, var(--accent) 30%, transparent);
+  pointer-events: none;
+  animation: tour-spotlight-in 0.2s ease-out;
+}
+
+@keyframes tour-spotlight-in {
+  from {
+    box-shadow:
+      0 0 0 9999px rgba(0, 0, 0, 0);
+  }
+}
+
+.tour-bubble {
+  position: fixed;
+  z-index: 201;
+  pointer-events: auto;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent);
+  box-shadow: var(--shadow-3);
+  color: var(--text-primary);
+  font-size: 12px;
+  animation: hint-bubble-in 0.22s ease-out;
+}
+
+/* Centered card fallback when a step's target isn't on screen. */
+.tour-bubble--banner {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(420px, calc(100vw - 32px));
+}
+
+.tour-bubble-title {
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+
+.tour-bubble-body {
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.tour-bubble-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.tour-bubble-count {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tour-bubble-skip {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.tour-bubble-skip:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+.tour-bubble-back {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.tour-bubble-back:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.tour-bubble-next {
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 11px;
+  padding: 4px 14px;
+  cursor: pointer;
+}
+
+.tour-bubble-next:hover {
+  background: var(--accent-hover);
+}
+
+/* Interactive step: the click the task just asked for has to reach the real
+   control underneath, so BOTH layers stand aside — the blocker and the
+   full-screen overlay box it sits in. Turning off only the blocker changes
+   nothing: `.tour-overlay` is itself `inset: 0` and would keep swallowing
+   every click. The bubble sets `pointer-events: auto` back on for itself, so
+   Back/Next/Hint stay live inside a pass-through overlay. The dim and the
+   spotlight ring are unaffected — only the swallowing stops. */
+.tour-overlay--pass,
+.tour-blocker--pass {
+  pointer-events: none;
+}
+
+/* Solved: the ring goes green under the `:)`. Both layers stay unblurred (a
+   blurred box-shadow is software-rendered here), so this is a colour swap, not
+   a new effect. */
+.tour-spotlight--solved {
+  box-shadow:
+    0 0 0 9999px rgba(0, 0, 0, 0.58),
+    0 0 0 2px var(--success),
+    0 0 0 6px color-mix(in srgb, var(--success) 34%, transparent);
+}
+
+/* The task line: what the user has to do, set apart from the narration above
+   it by the accent rule rather than by another box. */
+.tour-task {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 10px;
+  padding-left: 9px;
+  border-left: 2px solid var(--accent);
+}
+
+.tour-task-label {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tour-task-text {
+  color: var(--text-primary);
+  line-height: 1.45;
+}
+
+/* The reward that replaces the task line the moment it's done. */
+.tour-reward {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 10px;
+  padding-left: 9px;
+  border-left: 2px solid var(--success);
+  animation: tour-reward-in 0.24s ease-out;
+}
+
+.tour-reward-face {
+  color: var(--success);
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1;
+  /* Left as typed, sideways — it's the smiley people write in a terminal, and
+     rotating it upright turns a two-glyph joke into a shape nobody reads. */
+  letter-spacing: -1px;
+}
+
+.tour-reward-text {
+  color: var(--success);
+  font-weight: 600;
+}
+
+@keyframes tour-reward-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+/* The unfolded hint. */
+.tour-hint {
+  margin-top: 9px;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  border: 1px dashed var(--border-color);
+  color: var(--text-secondary);
+  line-height: 1.45;
+  animation: tour-reward-in 0.2s ease-out;
+}
+
+.tour-hint-btn {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+
+.tour-hint-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+/* Unsolved for a while: the button asks. Opacity only — the border colour is
+   what pulses, nothing blurred moves. */
+.tour-hint-btn.nudge {
+  color: var(--accent);
+  border-color: var(--accent);
+  animation: tour-hint-nudge 1.6s ease-in-out infinite;
+}
+
+@keyframes tour-hint-nudge {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-spotlight,
+  .tour-bubble,
+  .tour-reward,
+  .tour-hint,
+  .tour-hint-btn.nudge {
+    animation: none;
+  }
+}
+
+/* Lesson picker (LessonsMenu): a vertical list of task walkthroughs. */
+.lessons-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.lessons-section-title {
+  margin: 10px 0 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.lessons-section-title:first-child {
+  margin-top: 0;
+}
+
+.lesson-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.lesson-item:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel));
+}
+
+.lesson-item-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.lesson-item-blurb {
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+/* ── Fancy themes: make the buttons live up to the name ──────────────────
+   The plain `dark`/`light` themes keep flat, utilitarian buttons. The
+   `fancy_*` themes earn their label here: the project pills get an
+   accent-tinted gradient surface, a soft glow border, and a hover lift +
+   glow. Scoped to `[data-theme="fancy_*"]` so the plain themes are
+   untouched. Only color/shadow/transform are themed — sizing and layout
+   stay owned by the base component rules above.
+   The header's icon buttons (Local Model, Global Apps, the settings gear,
+   the add-project +) are deliberately NOT themed here — they stay the same
+   flat, transparent-at-rest style in every theme, like the VPN/Machines
+   status readouts below. */
+
+/* The VPN and Machines indicators opt back out of the fancy gradient-button
+   treatment this section otherwise applies (they're status readouts, not
+   buttons — see the plain-theme rule on .vpn-indicator-btn/.machines-indicator-btn
+   for why): no glow border, lift or shadow. Their hover/expanded state still
+   gets the flat .pill-hover-bg tint (set above, same as .tab-new-btn:hover) —
+   only the rest state is forced transparent here, and only shadow/transform/
+   border stay suppressed on hover, so a future gradient rule added above can't
+   silently start theming them again. */
+[data-theme="fancy_dark"] .vpn-indicator-btn,
+[data-theme="fancy_light"] .vpn-indicator-btn,
+[data-theme="fancy_dark"] .machines-indicator-btn,
+[data-theme="fancy_light"] .machines-indicator-btn {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  transform: none;
+}
+
+[data-theme="fancy_dark"] .vpn-indicator-btn:hover,
+[data-theme="fancy_light"] .vpn-indicator-btn:hover,
+[data-theme="fancy_dark"] .vpn-indicator-btn[aria-expanded="true"],
+[data-theme="fancy_light"] .vpn-indicator-btn[aria-expanded="true"],
+[data-theme="fancy_dark"] .machines-indicator-btn:hover,
+[data-theme="fancy_light"] .machines-indicator-btn:hover,
+[data-theme="fancy_dark"] .machines-indicator-btn[aria-expanded="true"],
+[data-theme="fancy_light"] .machines-indicator-btn[aria-expanded="true"] {
+  background: var(--pill-hover-bg);
+  border-color: transparent;
+  box-shadow: none;
+  transform: none;
+}
+
+/* No generic bottom stripe on fancy-theme pills — the old --warning (yellow)
+   rail is gone; a non-active pill is bare (same color as the bar). Only the
+   category-tinted stripe (a deliberate grouping signal) remains, and the
+   active pill's accent frame (base rule) marks the current one. */
+
+[data-theme="fancy_dark"] .project-pill.has-category:not(.active):not(.timer-paused),
+[data-theme="fancy_light"] .project-pill.has-category:not(.active):not(.timer-paused) {
+  box-shadow: inset 0 -3px 0 var(--cat-color);
+}
+
+[data-theme="fancy_dark"] .project-pill.has-category:not(.active):not(.timer-paused):hover,
+[data-theme="fancy_light"] .project-pill.has-category:not(.active):not(.timer-paused):hover {
+  box-shadow:
+    inset 0 -3px 0 var(--cat-color),
+    0 0 10px -4px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* Tabs: fancy themes use borderless tabs with a bottom accent rail, keeping the
+   indicator beside the pane rather than above the label. The active tab also
+   gets an accent-tinted body, a bold label, and a soft glow; hovered tabs warm
+   into an accent wash. Plain themes keep the base tab treatment. */
+/* Fancy themes use the SAME melt + straight bottom accent line as every other
+   theme now — no gradient body, no glow, no inset stripe. Only the top/bottom
+   border colour is transparent by default (base rule) and the active tab's
+   bottom border is the accent line; nothing here needs to override that. */
+
+/* Tab text stays uncoloured in the fancy themes too — fancy_dark labels are
+   plain white (below), fancy_light labels fall through to the theme foreground.
+   (No accent gradient on the active tab; the top/bottom rail carries the kind.) */
+
+/* Keep project and tab names plain white in fancy dark mode. */
+[data-theme="fancy_dark"] .project-pill-label,
+[data-theme="fancy_dark"] .tab-label {
+  color: #fff;
+}
+
+[data-theme="fancy_dark"] .project-pill-label,
+[data-theme="fancy_dark"] .tab-label,
+[data-theme="fancy_light"] .project-pill-label,
+[data-theme="fancy_light"] .tab-label {
+  font-weight: 700;
+}
+
+[data-theme="fancy_dark"] .project-pill:not(.active):not(:hover) .project-pill-label,
+[data-theme="fancy_dark"] .tab:not(.active):not(:hover) .tab-label {
+  opacity: 1;
+}
+
+[data-theme="fancy_dark"] .tab.active .tab-label {
+  background: none;
+  -webkit-text-fill-color: #fff;
+  color: #fff;
+  font-weight: 700;
+}
+
+/* No fancy-mode active-tab glow or hover wash — tabs melt into the bar in every
+   theme, so their only shadow is the base side-edge 3D and their only active
+   marker is the straight bottom accent line. */
+
+[data-theme="fancy_dark"] .tab-new-btn:hover,
+[data-theme="fancy_light"] .tab-new-btn:hover {
+  background:
+    radial-gradient(120% 120% at 50% 0%,
+      color-mix(in srgb, var(--accent) 26%, transparent) 0%,
+      var(--pill-hover-bg) 75%);
+  color: var(--text-primary);
+  box-shadow: 0 0 10px -3px color-mix(in srgb, var(--accent) 65%, transparent);
+}
+
+/* Local-model (Ollama) autocomplete ghost suggestion: in fancy mode the
+   accepted-on-Tab proposal glows so it reads as a live AI suggestion rather
+   than dim inline text. `text-shadow` (not box-shadow) so the glow hugs the
+   glyphs of the suggestion span only. Brighter than the base accent tint. */
+[data-theme="fancy_dark"] .file-viewer-ghost-text {
+  color: var(--accent-hover, #5edcff);
+  opacity: 1;
+  text-shadow: 0 0 8px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+[data-theme="fancy_light"] .file-viewer-ghost-text {
+  color: var(--accent);
+  opacity: 1;
+  text-shadow: 0 0 7px color-mix(in srgb, var(--accent) 45%, transparent);
+}

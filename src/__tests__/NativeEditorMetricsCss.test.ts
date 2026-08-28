@@ -20,14 +20,12 @@
  * any future edit that desyncs one layer fails here instead of in the user's eye.
  */
 import { describe, it, expect } from "vitest";
-// Read the stylesheet at test time. A `?raw` import yields "" under the config's
-// `css: false`, so go through node's fs instead. The project has no @types/node,
-// so tsc can't see the builtin — suppress just that resolution error; vitest
-// resolves it fine at runtime. Vitest runs from the repo root → repo-relative path.
-// @ts-expect-error node:fs has no type declarations in this project (no @types/node)
-import { readFileSync } from "node:fs";
+// Read the stylesheet at test time — the whole split corpus in import order
+// (a `?raw` import yields "" under the config's `css: false`, so it goes
+// through node's fs; vitest runs from the repo root → repo-relative paths).
+import { readAppStylesheet } from "./cssCorpus";
 
-const CSS: string = readFileSync("src/styles/themes.css", "utf8");
+const CSS: string = readAppStylesheet();
 
 type Decls = Record<string, string>;
 interface Rule {

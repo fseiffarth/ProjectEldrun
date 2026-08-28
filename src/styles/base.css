@@ -1,0 +1,405 @@
+/* base.css — split from the old monolithic themes.css (order-preserving).
+   Base reset, launch splash, global + custom scrollbars, shared activity color levels.
+   IMPORT ORDER IS LOAD-BEARING: these files are @imported in sequence from
+   styles/index.css; equal-specificity rules rely on source order exactly as
+   they did in the monolith, so never reorder the imports or move rules
+   between files without checking the cascade. */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Base reset ────────────────────────────────────────────────────────── */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  user-select: none;
+  background: var(--bg-main, #101624);
+}
+
+/* #42: detached-subwindow seed-wait state. Explicit colors (not theme vars) so
+   it stays visible even before the detached window has applied a theme class —
+   otherwise an unseeded window reads as a blank black pane. */
+.detached-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  width: 100%;
+  background: #101624;
+  color: #9fb0d0;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+/* ── Launch splash ────────────────────────────────────────────────────── */
+/* The app shell mounts at once, but its initial settings/project reads are
+   asynchronous. Keep a light, branded curtain over that otherwise empty
+   interval so launching Eldrun always has visible feedback. */
+.startup-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  overflow: hidden;
+  color: var(--text-primary, #edf3ff);
+  background:
+    radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--accent, #6c8dff) 22%, transparent), transparent 32rem),
+    var(--bg-main, #101624);
+  transition: opacity 320ms ease, visibility 320ms step-end;
+}
+
+.startup-splash.leaving {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.startup-splash-mark {
+  position: relative;
+  display: grid;
+  width: 104px;
+  height: 104px;
+  place-items: center;
+  animation: startup-splash-arrive 600ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.startup-splash-mark svg {
+  position: relative;
+  z-index: 1;
+  width: 72px;
+  height: 72px;
+  color: var(--logo-color, var(--text-primary, #edf3ff));
+  filter: drop-shadow(0 0 16px color-mix(in srgb, var(--accent, #6c8dff) 55%, transparent));
+}
+
+.startup-splash-orbit {
+  position: absolute;
+  inset: 3px;
+  border: 1px solid color-mix(in srgb, var(--accent, #6c8dff) 52%, transparent);
+  border-radius: 50%;
+  animation: startup-splash-orbit 2.5s linear infinite;
+}
+
+.startup-splash-orbit-two {
+  inset: 14px;
+  border-color: color-mix(in srgb, #c79a45 60%, transparent);
+  animation-direction: reverse;
+  animation-duration: 1.8s;
+}
+
+.startup-splash-name {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: 0.3em;
+  padding-left: 0.3em;
+  animation: startup-splash-arrive 600ms 80ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.startup-splash-message {
+  min-height: 18px;
+  color: var(--text-muted);
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  animation: startup-splash-arrive 600ms 140ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.startup-splash-progress {
+  width: 148px;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border-color, #33415e) 80%, transparent);
+}
+
+.startup-splash-progress span {
+  display: block;
+  width: 48%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--accent, #6c8dff), #c79a45, transparent);
+  animation: startup-splash-progress 1.25s ease-in-out infinite;
+}
+
+@keyframes startup-splash-arrive {
+  from { opacity: 0; transform: translateY(10px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes startup-splash-orbit {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes startup-splash-progress {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(215%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .startup-splash,
+  .startup-splash-mark,
+  .startup-splash-name,
+  .startup-splash-message,
+  .startup-splash-orbit,
+  .startup-splash-progress span {
+    animation: none;
+    transition-duration: 0ms;
+  }
+}
+
+/* #42: detached ("pop out") window root. It renders straight into #root, which
+   is not a flex container, so `.center-panel`'s `flex: 1` has nothing to grow
+   into and the panel collapses around its absolutely-positioned subwindow,
+   pinning the content to the top. Give it the full window height so the
+   subwindow fills the frame and is vertically centred. */
+.detached-center {
+  height: 100%;
+}
+
+/* #42 (Windows): while the popout is moved by a native title-bar drag, take the
+   heavy pane content OUT of compositing so WebView2 only paints the cheap
+   placeholder and can keep up with the OS-moved frame (otherwise the terminal
+   canvases lag/swim behind the frame). `visibility: hidden` (not display:none)
+   keeps the layout intact, so no xterm reflow/refit churn on release — the
+   content reappears at the same size the instant the move ends. */
+.detached-center.moving .pane-layer {
+  visibility: hidden;
+}
+/* The placeholder shown in place of the hidden content during the move. Solid,
+   opaque, trivially cheap to composite. Fills the body (its positioning context,
+   `.detached-body { position: relative }`); sits above the panes but below nothing
+   that matters during a move. Click-through so it never swallows the gesture. */
+.detached-move-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+
+/* #42: the popout's own title bar — a full-width strip above the tab layout that
+   always hosts the min/max/close controls in the top-right corner. Before, the
+   controls lived in the root group's tab bar; once the popout was split the root
+   group became a narrow split child and the controls slid left with it. A
+   dedicated outer frame keeps them pinned regardless of splits. */
+.detached-titlebar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 30px;
+  padding: 0 4px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-color);
+}
+
+/* The star mark — the ONE place it renders outside the main window's header.
+   It marks the popout's frame (an undecorated window has no other identity),
+   which is why it is not on the tab bars inside it. Decorative: no pointer
+   events, so it never eats a titlebar drag started on top of it. */
+.detached-titlebar-logo {
+  flex-shrink: 0;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 26px;
+  pointer-events: none;
+  opacity: 0.8;
+}
+.detached-titlebar-logo svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* The layout tree lives below the title bar and is the positioning context for
+   the absolutely-inset split/subwindow nodes + the split-preview overlay. (In the
+   main window the panel itself plays this role; here the title bar sits above, so
+   the tree is wrapped one level deeper — these rules mirror the `.center-panel >`
+   ones for that wrapper.) */
+.detached-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.detached-body > .split,
+.detached-body > .subwindow {
+  position: absolute;
+  inset: 0;
+}
+
+/* #42: the detached window's tab bar doubles as a drag handle — its empty area
+   drags the whole popout back onto the main window (or repositions it). */
+.detached-drag-handle {
+  cursor: grab;
+}
+.detached-drag-handle:active {
+  cursor: grabbing;
+}
+
+/* #42: drop-target frame painted while a tab/file dragged out of the main window
+   hovers over this popout. Just a thin accent OUTLINE around the whole window so
+   it's clear which popout will receive the drop when several are open — the
+   per-pane split/merge preview (`.split-preview`, driven by the popout's own
+   resolveLocalTarget) shows WHERE inside it the drop lands, so no full-window dark
+   fill (which would muddy that preview and read as "drops anywhere"). z-index sits
+   below the preview (5) so the preview paints on top; pointer-events:none. */
+.detached-drop-target {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ── Global scrollbar baseline ───────────────────────────────────────────
+   Every native scrollbar is turned off here, statically, for the whole app;
+   `lib/customScrollbar.ts` paints a square themed thumb over each scroll
+   container instead. That module's header says why the app draws its own bars
+   at all. What matters HERE is why the hiding half cannot live in JS.
+
+   WebKitGTK 2.52 builds a scrollable area's bar once and never rebuilds it when
+   `scrollbar-width` changes afterwards (measured, not assumed). Set statically
+   the property works — 0px gutter. Set from JS on an element that already has a
+   bar it does nothing at all: the 21px native bar stays while `getComputedStyle`
+   reports `none`. So a takeover that hid the bar as it adopted a container could
+   never work; it painted our thumb beside a native bar that had never left,
+   which is exactly the two-scrollbars bug. Elements must be BORN bar-less, and
+   only a rule matching before their first layout does that.
+
+   Two consequences to know before editing anything below:
+     - `scrollbar-width: thin` is parsed but NOT honored on this engine — auto
+       and thin both measure 21px. Asking for a thin native bar gets a fat one.
+     - Any per-surface `scrollbar-width` or `::-webkit-scrollbar` SIZE rule below
+       re-creates a real native bar on that surface and brings the second
+       scrollbar back with it. Don't add one. To suppress the app's own thumb on
+       a strip, set `--eldrun-scrollbar: none` (see below) instead.
+
+   The ::-webkit-scrollbar half is inert on WebKitGTK whenever `scrollbar-width`
+   is non-auto; it is kept so engines that do implement the pseudo-elements
+   (Chromium/WebView2, older Safari) hide their bars too. */
+* {
+  scrollbar-width: none;
+}
+
+*::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* How the stylesheet tells `lib/customScrollbar.ts` "this strip scrolls and
+   shows nothing at all" — the tab strip, the project pill row, the address
+   display. It replaces the old signal, `scrollbar-width: none`, which stopped
+   distinguishing anything the moment the rule above made that the value
+   everywhere. Registered rather than used raw so it does NOT inherit: an
+   opted-out strip must not silently mute the thumb of a scroll container that
+   happens to sit inside it. */
+@property --eldrun-scrollbar {
+  syntax: "*";
+  inherits: false;
+  initial-value: auto;
+}
+
+/* xterm hardcodes `overflow-y: scroll` on its viewport, which on an engine that
+   reserves space for a bar pins one there even with no scrollback — the thumb
+   fills the whole track and reads as a solid bar down the right edge. Forcing
+   `auto` keeps the element scroll-capable only when there is something to
+   scroll, which is also what decides whether our own thumb appears. No
+   `scrollbar-width` here on purpose: naming one would re-create the native bar
+   this element is the worst place to have (see the baseline above). */
+.xterm-viewport {
+  overflow-y: auto !important;
+}
+
+/* ── Custom (square) scrollbars ─────────────────────────────────────────
+   The thumbs `lib/customScrollbar.ts` paints. Read that module's header for
+   why the app draws its own bars at all; the short of it is that WebKitGTK
+   honors only `scrollbar-width`/`scrollbar-color`, and neither can square a
+   corner. Everything here is positioning and colour — the module owns when a
+   thumb exists, how long it is and where it sits.
+
+   The layer spans the window and never eats a click; individual thumbs turn
+   `pointer-events` back on only while they are actually shown, so a hidden
+   thumb can't swallow a press meant for the content under it. */
+.eldrun-scrollbar-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  pointer-events: none;
+}
+
+.eldrun-scrollbar-thumb {
+  position: fixed;
+  top: 0;
+  left: 0;
+  box-sizing: border-box;
+  /* Same inset trick the native bar used: a transparent border plus
+     padding-box clipping paints a 4px bar inside an 8px hit target, so the
+     thumb stays easy to grab without reading as a heavy slab. */
+  border: 2px solid transparent;
+  background-color: var(--scrollbar-thumb);
+  background-clip: padding-box;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.eldrun-scrollbar-vertical {
+  width: 8px;
+}
+
+.eldrun-scrollbar-horizontal {
+  height: 8px;
+}
+
+.eldrun-scrollbar-thumb:hover,
+.eldrun-scrollbar-thumb.dragging {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
+/* A drag that starts on the thumb must not select the text it passes over. */
+body.eldrun-scrollbar-dragging {
+  user-select: none;
+}
+
+/* Set by the module on every container it has taken over. Belt and braces: the
+   baseline above already hides every native bar, so this changes nothing in the
+   normal case. It earns its place as the one rule that cannot be beaten — a
+   later rule of equal specificity wins over an earlier one, and that is how a
+   per-surface `::-webkit-scrollbar { width: 8px }` thousands of lines down used
+   to resurrect a bar under our thumb. `!important` closes that door for good,
+   on the containers we are actually painting.
+
+   It is not a substitute for the static baseline: by the time this attribute is
+   set the element already exists, and on WebKitGTK a scrollbar that exists is
+   never rebuilt. It hides nothing that was not already hidden. */
+[data-eldrun-scrollbar] {
+  scrollbar-width: none !important;
+}
+
+[data-eldrun-scrollbar]::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+}
+
+/* ── Activity calendar color levels (shared across themes) ──────────── */
+/* Override per-theme below where contrast requires it. */

@@ -1,0 +1,3081 @@
+/* mail-todo.css — split from the old monolithic themes.css (order-preserving).
+   Mail client, header global-app indicators + dropdowns, to-do board, CalDAV, mail dialogs/crypto/filters.
+   IMPORT ORDER IS LOAD-BEARING: these files are @imported in sequence from
+   styles/index.css; equal-specificity rules rely on source order exactly as
+   they did in the monolith, so never reorder the imports or move rules
+   between files without checking the cascade. */
+
+/* ── Mail client ─────────────────────────────────────────────────────────────
+   The embedded IMAP/SMTP tab (docs/mail_client_plan_a.md §1 row 13). Everything
+   here is built from the theme tokens (--text-primary / --bg-panel / --accent),
+   so the pane inherits every theme rather than carrying its own palette.
+
+   The two dialogs (.mail-account-dialog, .mail-compose-dialog) and the link
+   confirm (.mail-link-dialog) ride the shared .settings-dialog chrome and only
+   set their width and an explicit `color`. The color is not decoration: these
+   dialogs are portaled to <body>, which carries no color, so without it they
+   would inherit black. */
+
+.mail-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+/* ── Global apps in the header (MailIndicator, CalendarIndicator) ───────────
+   The ✉ and 🗓 buttons beside the brain button, and the overlays they open.
+   Both are the same kind of thing — an app you reach from anywhere, not a
+   per-project status readout like the right cluster — so they share one rule
+   set here rather than each carrying a copy that can drift apart.
+
+   Each button is a plain `.global-apps-menu-btn` inside a `.global-apps-menu`
+   wrapper: the brain button's exact chrome. Everything below is therefore
+   *additive* — a positioning context for the badge, and the pressed state the
+   shared rule spells for `aria-expanded` but not `aria-pressed`. Size, hover,
+   colours and transitions are all inherited. */
+.mail-indicator-btn,
+.calendar-indicator-btn,
+.todo-indicator-btn {
+  /* Positioning context for the badge. It must be the BUTTON and not the
+     `.global-apps-menu` wrapper: `.header-center` stretches that wrapper to the
+     full header height, so a badge anchored to it would float above the 32px
+     icon box rather than sit on its corner. */
+  position: relative;
+}
+.mail-indicator-btn[aria-pressed="true"],
+.todo-indicator-btn[aria-pressed="true"],
+.calendar-indicator-btn[aria-pressed="true"] {
+  background: var(--control-hover-bg);
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+.mail-indicator-icon,
+.calendar-indicator-icon,
+.todo-indicator-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* The count. Anchored to the button's corner rather than laid out in the row, so
+   the button's width does not jump when the number appears — a header that
+   reflows on an incoming message moves every control beside it under the user's
+   cursor. `--danger` because the dot is the alert; the rest of the header is
+   deliberately quiet.
+
+   It **overhangs** that corner (negative offsets) instead of sitting inside it,
+   which is what keeps the glyph itself readable: a 32px button holds a 15px icon
+   and a badge wide enough for "99+", and inside the box those two have to share
+   the same pixels — the count ends up lying across the ✉, and the icon reads as
+   pushed off-centre even though it is exactly centred. Hung outside, the glyph
+   stays clear and optically centred and the badge is still unmistakably its.
+   Safe because `.header-center` sets `overflow: visible` explicitly and leaves a
+   6px gap between these buttons, so a 3px overhang clips on nothing and touches
+   no neighbour — but that is the budget: a bigger one would reach the button
+   next door.
+
+   What the number *means* differs between the two, and the difference lives in
+   the components, not here: mail counts unread inbox messages and falls as they
+   are read, the calendar counts the events left today and falls to zero by
+   itself. Neither is dismissed by hand. */
+.mail-indicator-badge,
+.calendar-indicator-badge,
+.todo-indicator-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  pointer-events: none;
+}
+
+/* Mail that arrived while you were sitting here is the same number, said louder
+   for as long as it is still news: a ring in the button's own background colour
+   separates the dot from the icon it sits on, which is what reads as "this just
+   changed" without introducing a second count to reconcile against the first. */
+.mail-indicator-badge.fresh {
+  /* `--bg-header-solid`, never `--bg-header`: the latter is a gradient in the
+     fancy themes, and a gradient in a box-shadow drops the whole declaration. */
+  box-shadow: 0 0 0 2px var(--bg-header-solid);
+}
+
+/* "The last check failed" is not "you have mail", so it does not wear mail's
+   red: an amber `!` says something needs attention without claiming a delivery
+   the button never received. It sits on the *opposite* corner because it is
+   shown beside a count rather than instead of one — a stale reading and how
+   much unread mail that reading found are both worth saying, and stacking them
+   on one corner would have made the badge choose. */
+.mail-indicator-badge.failed {
+  top: auto;
+  right: auto;
+  bottom: -3px;
+  left: -3px;
+  background: var(--warning);
+  /* `--warning` is a light amber in some themes and a dark one in others, so the
+     count badge's white would vanish in half of them; near-black reads on both. */
+  color: #1c1300;
+}
+
+/* ── The ✉ button's accounts dropdown ──────────────────────────────────────
+   Revealed by hovering the button itself — no second control in the header, the
+   shape `.vpn-indicator-menu` and the local-model menu already have. The ✉ keeps
+   its one-click "open mail"; the hover offers the destinations (an account's
+   inbox, Important, Urgent) so the choice is part of the same gesture.
+
+   The menu is a child of the `.global-apps-menu` wrapper, which is what lets the
+   pointer walk down into it: `mouseleave` holds off for anything inside that
+   element, and the 250ms grace in the component covers the 4px gap. */
+.mail-indicator-menu {
+  min-width: 220px;
+  max-width: 320px;
+  /* Bounded so a fleet of accounts scrolls inside the menu instead of running
+     off the bottom of the window; the `.menu-scroll-region` inside is what
+     actually scrolls (the accent rail and wash live on this element). */
+  max-height: min(60vh, 460px);
+}
+
+/* One row = one destination. The name takes the width and truncates; the count
+   is pinned to the right so a column of rows lines up whatever the labels do. */
+.mail-menu-row {
+  justify-content: space-between;
+}
+.mail-menu-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-menu-badge {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--bg-panel);
+  font-size: 10px;
+  font-weight: 700;
+}
+/* The rail's rule, repeated because it is the same statement: the priority
+   badge counts everything filed, and the accent tint is the "some of it is
+   unread" signal — an all-read list still shows its size, muted, so it cannot be
+   mistaken for work outstanding. */
+.mail-menu-badge:not(.unread) {
+  background: color-mix(in srgb, var(--text-muted) 30%, transparent);
+  color: var(--text-primary);
+}
+/* What is on screen behind the menu. Marked, not hidden: the row is still a
+   destination (it is how you get back to that account's inbox from a priority
+   list), so it stays clickable and merely says where you already are. */
+.mail-menu-row.selected {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  font-weight: 600;
+}
+/* The rail's treatment, so Important and Urgent are recognisable as the same two
+   lists in both places: the `!`/`!!` mark, a heading that says the lists are
+   every account's, and rows carrying more weight than the account rows under
+   them. A coloured bar used to do the marking here and did too little — it is
+   scenery beside a row of text, and these two rows are the reason the menu is
+   opened at all. */
+.mail-menu-priority-label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.mail-menu-scope {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.mail-menu-priority {
+  gap: 7px;
+  font-weight: 600;
+}
+.mail-menu-priority-mark {
+  flex: 0 0 16px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.06em;
+  color: var(--warning);
+}
+.mail-menu-priority.urgent .mail-menu-priority-mark {
+  color: var(--danger);
+}
+
+/* ── The 🗓 button's day list ───────────────────────────────────────────────
+   `.mail-indicator-menu`'s twin, revealed the same way and for a reason the
+   badge cannot cover on its own: a count says how many appointments are left,
+   never whether one of them starts in five minutes — which is precisely what
+   sends someone opening the whole calendar. Same wrapper-hover mechanics (the
+   menu is a child of `.global-apps-menu`, so `mouseleave` holds off while the
+   pointer is inside it, and the component's 250ms grace covers the gap). */
+.calendar-indicator-menu {
+  min-width: 240px;
+  max-width: 360px;
+  /* A day with a dozen meetings scrolls inside the menu instead of running off
+     the bottom of the window; `.menu-scroll-region` is what actually scrolls
+     (the accent rail and wash live on this element). */
+  max-height: min(60vh, 460px);
+}
+
+/* A day's section — its label plus its rows. A wrapper element rather than a
+   flat run of siblings, because the menu is a flex column: without one, the
+   `.menu-scroll-region`'s gap is all that separates tomorrow's heading from
+   today's last row, and the two days read as one list. It has to re-declare the
+   column + gap for the same reason — it is a flex *item*, so the region's own
+   layout stops at its edge. */
+.cal-menu-day {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.cal-menu-day + .cal-menu-day {
+  margin-top: 6px;
+}
+
+/* An entry = the row plus, when the event has a video call, its Join. Siblings
+   rather than a button inside a button (invalid markup, and the two go to
+   genuinely different places: the calendar, and out of the app). */
+/* Row + Join are ONE white entry: no gap, a shared rounded outline the two
+   segments are clipped to, so the door reads as the right end of the same bar
+   rather than a chip floating beside it. */
+.cal-menu-entry {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.cal-menu-entry > .cal-menu-row {
+  flex: 1;
+  min-width: 0;
+  border-radius: 0;
+}
+/* Hovering either segment lights the whole entry, so the two never look like
+   two separately-hoverable things. */
+.cal-menu-entry:hover > .cal-menu-row,
+.cal-menu-entry:hover > .cal-menu-join {
+  background: var(--control-hover-bg);
+}
+
+/* Direct connection — the one control in the menu that *does* something rather
+   than navigating. It sits inside the white entry now (a hairline divides it
+   from the title), keeping only accent *text* + the 📹 as the affordance, since
+   the whole reason to read the day from the header is to reach this door. */
+.cal-menu-join {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  border: none;
+  border-left: 1px solid var(--border-color);
+  border-radius: 0;
+  background: var(--control-bg);
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background-color var(--transition);
+}
+.cal-menu-join:hover {
+  background: color-mix(in srgb, var(--accent) 20%, var(--control-hover-bg));
+}
+/* The label is what a narrow menu drops first — the 📹 plus the tooltip (which
+   names the service) still say what the button is, and the row's title is worth
+   more pixels than the word "Join". */
+@media (max-width: 720px) {
+  .cal-menu-join-text {
+    display: none;
+  }
+}
+
+/* The dialog's field: the input takes the width, Join sits on its right. */
+.cal-conference-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.cal-conference-row .cal-input {
+  flex: 1;
+  min-width: 0;
+}
+.cal-conference-join:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* One row = one occurrence: colour · time · title. The time is a fixed column
+   rather than part of the text flow, so a column of rows reads down the clock
+   even when a title above it is long enough to truncate. */
+.cal-menu-row {
+  gap: 7px;
+}
+.cal-menu-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.cal-menu-time {
+  flex: 0 0 auto;
+  min-width: 46px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+.cal-menu-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Already over. Dimmed rather than dropped — the agenda rail's rule, so the two
+   surfaces cannot disagree about what today held, and "what have I already
+   done" is half of what a glance at the day is for. Deliberately not struck
+   through: an appointment that happened is not one that was cancelled. */
+.cal-menu-row.past {
+  opacity: 0.5;
+}
+
+/* Both overlays ride the shared `.project-dialog.dialog-framed` chrome (accent
+   top rail, accent-washed `.settings-title-row` band, `.dialog-close-btn`), so
+   all that is left here is their size — exactly the split `.sysmon-dialog`
+   makes, and for the same reason: a whole pane hosted in a dialog needs a
+   definite height, because the pane fills it and scrolls its own regions. */
+/* ONE size for all three, deliberately. They are opened from three buttons a few
+   pixels apart in the same header and are switched between constantly, so a
+   window that jumps and resizes on every switch is the thing you notice instead
+   of the content. The board used to claim its own larger box because its columns
+   tile sideways and every extra pixel is another column — which is true, and is
+   why the shared size is the *board's* rather than a compromise between the two:
+   mail's three panes and the calendar's week grid have nothing to lose from the
+   extra room either. */
+.mail-overlay,
+.calendar-overlay,
+.todo-overlay,
+.skills-overlay {
+  width: min(1680px, calc(100vw - 24px));
+  height: min(93vh, calc(100vh - 24px));
+  max-height: min(93vh, calc(100vh - 24px));
+}
+.mail-overlay-body,
+.calendar-overlay-body,
+.todo-overlay-body,
+.skills-overlay-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  /* Clips rather than scrolls: the pane scrolls its own regions, and a scrollbar
+     here would be a second one around them. */
+  overflow: hidden;
+}
+/* The dialog's title band already names this surface, so the pane's own toolbar
+   title would be the word "Mail" twice, one line apart. Hidden only inside the
+   overlay — in a tab the toolbar title is the only label there is. The calendar
+   needs no equivalent: `.cal-toolbar-title` is the visible date range, not the
+   app's name, so it says something the band does not. The skills library has the
+   same duplication as mail, and the same fix. */
+.mail-overlay .mail-toolbar-title,
+.skills-overlay .skills-title {
+  display: none;
+}
+
+/* ── The to-do board ──────────────────────────────────────────────────────
+   The cards are `calendar.json`'s tasks seen as a board; the chrome around them
+   is the calendar's (`.cal-input`, `.cal-btn`, `.cal-link-btn`) so the two
+   surfaces look like one feature, which they are.
+
+   One rule runs through the whole block: **no blurred box-shadow is ever
+   animated**. Under WebKitGTK with DMABUF off a blurred shadow is software-
+   rendered and costs whole frames — during a drag, which is exactly when the
+   lift would be wanted. Every hover/drag emphasis here is therefore a static
+   shadow on a pseudo-element with only its `opacity` transitioning. */
+
+/* ── The ☑ button's urgent list ──────────────────────────────────────────────
+   `.calendar-indicator-menu`'s twin, revealed the same way and for the reason
+   that badge has one too: a count says how many cards today demands, never
+   whether one of them was due a fortnight ago. Same wrapper-hover mechanics (a
+   child of `.global-apps-menu`, so `mouseleave` holds off while the pointer is
+   inside it) and the same shape — pinned title, `.menu-scroll-region` below. */
+.todo-indicator-menu {
+  min-width: 250px;
+  max-width: 380px;
+  max-height: min(60vh, 460px);
+}
+
+/* One section = one deadline horizon. A wrapper element rather than a flat run
+   of siblings for `.cal-menu-day`'s reason: the menu is a flex column, so
+   without one the region's gap is all that separates tomorrow's heading from
+   today's last row and the two read as a single list. It re-declares the column
+   + gap because it is a flex *item* — the region's layout stops at its edge. */
+.todo-menu-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.todo-menu-section + .todo-menu-section {
+  margin-top: 6px;
+}
+
+/* One row = one card: colour · title · how late · priority. The two trailing
+   chips are fixed-size and sit at the end, so a long title truncates rather
+   than pushing the thing that says the row is three weeks old off the menu. */
+.todo-menu-row {
+  gap: 7px;
+}
+.todo-menu-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.todo-menu-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.todo-menu-late {
+  flex: 0 0 auto;
+  color: var(--danger);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+/* The deadline's hour on a card that has one and is not late yet. Same slot as
+   the "3 d late" chip, deliberately muted rather than red: it is a fact about
+   the card, not a complaint about it. */
+.todo-menu-time {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+/* High priority, as a mark rather than a word: the row already carries a date
+   and a title, and "High" spelled out would be the widest thing on it. */
+.todo-menu-prio {
+  flex: 0 0 auto;
+  color: var(--warning);
+  font-weight: 700;
+}
+
+.todo-indicator-badge.overdue {
+  /* Same number, said louder — a ring in the header's own background colour,
+     the trick `.mail-indicator-badge.fresh` uses. `--bg-header-solid`, never
+     `--bg-header`: the latter is a gradient in the fancy themes, and a gradient
+     inside a box-shadow drops the whole declaration. */
+  box-shadow: 0 0 0 2px var(--bg-header-solid);
+}
+
+.todo-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  color: var(--text-primary);
+}
+
+.todo-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex: 0 0 auto;
+}
+.todo-search {
+  flex: 1 1 220px;
+  min-width: 120px;
+}
+.todo-filter {
+  flex: 0 0 auto;
+  max-width: 180px;
+}
+.todo-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.todo-error-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+}
+
+/* The board across the full width, the rails beneath it in the bottom-right
+   corner; each scrolls its own region, which is why the overlay body clips
+   instead of scrolling. Stacked rather than side by side because the board's
+   columns tile horizontally: a rail column took 300px off every column count,
+   permanently, to show two short lists that are a glance, not a workspace. */
+.todo-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.todo-board {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* A fixed-width column set commonly exceeds the overlay's width (5 seeded
+     columns + the add-column tile run past ~1600px), so a right-hand column
+     like Archived routinely sits off screen and the board has to SHOW that.
+     This once forced a classic native bar, because WebKitGTK's own is an
+     invisible overlay that appears only on hover. The app's thumbs replaced
+     both: `lib/customScrollbar.ts` paints this scroller's horizontal thumb
+     whenever it overflows and keeps it visible, so the affordance is back
+     without a native bar to double up with. */
+}
+/* While a card is in flight the cards stop answering `elementFromPoint`, so the
+   hit-test reaches the `.todo-column` underneath — the same trick
+   `.center-panel.dragging` plays for tab drags. */
+.todo-board.dragging .todo-card {
+  pointer-events: none;
+}
+
+.todo-column {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 268px;
+  max-height: 100%;
+  min-height: 0;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+}
+.todo-column-add {
+  flex: 0 0 180px;
+  background: transparent;
+  border-style: dashed;
+}
+.todo-add-column {
+  all: unset;
+  cursor: pointer;
+  padding: 10px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.todo-add-column:hover {
+  color: var(--text-primary);
+}
+
+.todo-column-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  border-top: 3px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: var(--radius) var(--radius) 0 0;
+  flex: 0 0 auto;
+}
+.todo-column-name,
+.todo-column-name-input {
+  all: unset;
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: text;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.todo-column-name-input {
+  border-bottom: 1px solid var(--accent);
+}
+.todo-column-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+/* Over a WIP cap is a colour and nothing else: the backend never refuses a move
+   for it, because a drag that reports success and snaps back is
+   indistinguishable from a broken drag. */
+.todo-column-over {
+  color: var(--warning);
+  font-weight: 700;
+}
+.todo-column-actions {
+  display: inline-flex;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.todo-column-head:hover .todo-column-actions,
+.todo-column-head:focus-within .todo-column-actions {
+  opacity: 1;
+}
+.todo-column-btn {
+  all: unset;
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+}
+.todo-column-btn:hover {
+  color: var(--text-primary);
+  background: var(--control-hover-bg);
+}
+.todo-column-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.todo-column-btn-danger:hover {
+  color: var(--danger);
+}
+
+.todo-column-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 40px;
+}
+.todo-column-empty,
+.todo-rail-muted {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 4px 2px;
+}
+
+.todo-column-foot {
+  padding: 6px 8px 8px;
+  flex: 0 0 auto;
+}
+.todo-add-card {
+  all: unset;
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  cursor: pointer;
+  padding: 5px 7px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.todo-add-card:hover {
+  background: var(--control-hover-bg);
+  color: var(--text-primary);
+}
+
+/* ── Cards ──────────────────────────────────────────────────────────────── */
+
+.todo-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 8px;
+  border-radius: var(--radius);
+  background: var(--bg-elevated, var(--bg-panel));
+  border: 1px solid var(--border-subtle);
+  cursor: grab;
+  /* Or a WebKitGTK press-and-hold turns the gesture into a text selection and
+     the pointer stream ends in a cancel halfway through the drag. */
+  user-select: none;
+}
+/* The hover lift: a STATIC shadow on a pseudo-element, faded in. Animating the
+   shadow itself would animate a blur — see the block header. */
+.todo-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+}
+.todo-card:hover::after {
+  opacity: 1;
+}
+.todo-card-done .todo-card-title {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+.todo-card-overdue {
+  border-left: 3px solid var(--danger);
+}
+
+.todo-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.todo-card-check {
+  margin-top: 2px;
+  flex: 0 0 auto;
+}
+.todo-card-title {
+  all: unset;
+  flex: 1;
+  min-width: 0;
+  cursor: text;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.todo-card-title-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--accent);
+  color: var(--text-primary);
+  outline: none;
+}
+/* The two head buttons (add a step, edit the card) are revealed by opacity, not
+by being taken out of flow: appearing on hover must not resize the card, or the
+column reflows under the pointer that is about to click. */
+.todo-card-edit,
+.todo-card-add-step {
+  all: unset;
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.todo-card:hover .todo-card-edit,
+.todo-card:focus-within .todo-card-edit,
+.todo-card:hover .todo-card-add-step,
+.todo-card:focus-within .todo-card-add-step {
+  opacity: 1;
+}
+.todo-card-edit:hover,
+.todo-card-add-step:hover {
+  color: var(--text-primary);
+}
+
+.todo-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.todo-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 1.5;
+  background: var(--control-hover-bg);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.todo-chip-overdue {
+  background: color-mix(in srgb, var(--danger) 22%, transparent);
+  color: var(--danger);
+  font-weight: 600;
+}
+.todo-chip-today {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--text-primary);
+}
+/* The countdown inside the due chip ("· in 2h"). It inherits the chip's colour
+   rather than carrying its own, so the overdue chip's red covers both halves of
+   one sentence; only the weight separates the measurement from the date. */
+.todo-chip-delta {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.todo-chip-prio-high {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+.todo-chip-prio-low {
+  opacity: 0.75;
+}
+.todo-chip-x {
+  all: unset;
+  cursor: pointer;
+  padding-left: 2px;
+  font-size: 11px;
+}
+
+/* The progress bar is the checklist's disclosure control, so it is a button —
+`all: unset` first, then the row it used to be as a div. */
+.todo-card-steps {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.todo-card-steps-bar {
+  flex: 1;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+.todo-card-steps-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.todo-card-steps-text {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+/* The fold state, drawn: with checklists open by default, the bar's job is to
+   put them away, and a folded card must not read as one whose steps failed to
+   load. */
+.todo-card-steps-caret {
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+/* The inline checklist. Text selection is re-enabled inside it: the card turns
+it off so a press-and-hold cannot end the drag gesture in a cancel, but a step's
+title is ordinary text somebody may want to copy, and the panel is not a drag
+handle — it swallows the pointer before the card ever sees it. */
+.todo-card-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 0 1px;
+  border-top: 1px solid var(--border-subtle);
+  cursor: default;
+  user-select: text;
+}
+.todo-card-step-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.todo-card-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+}
+.todo-card-step-check {
+  margin: 2px 0 0;
+  flex: none;
+}
+
+/* ── Reordering a step ──────────────────────────────────────────────────────
+   One set of rules for BOTH checklists (the board card's `.todo-card-step` and
+   the dialog's `.todo-step`), because it is one gesture — `useStepReorder`.
+   `touch-action: none` is what makes a pointer drag possible at all on a touch
+   screen: without it the browser claims the gesture as a scroll. The parting
+   rows animate their `transform` only, which changes no layout — the rects
+   measured at pointerdown have to stay true for the whole drag. */
+.todo-step-grip {
+  all: unset;
+  flex: none;
+  width: 12px;
+  align-self: flex-start;
+  margin-top: 1px;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-muted);
+  opacity: 0;
+  cursor: grab;
+  touch-action: none;
+  transition: opacity 0.12s ease;
+}
+.todo-card-step:hover .todo-step-grip,
+.todo-card-step:focus-within .todo-step-grip,
+.todo-step:hover .todo-step-grip,
+.todo-step:focus-within .todo-step-grip {
+  opacity: 1;
+}
+/* The dialog's rows are a text field tall, so its grip centres instead of
+   hanging off the first line the way a wrapped board step's does. */
+.todo-step .todo-step-grip {
+  align-self: center;
+  margin-top: 0;
+  font-size: 12px;
+}
+.todo-step-grip:focus-visible {
+  opacity: 1;
+  color: var(--text-primary);
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+.todo-step-grip:active {
+  cursor: grabbing;
+}
+/* The dragged row rides above its neighbours and keeps its grip visible — it is
+   under the cursor for the whole gesture. */
+.todo-step-dragging {
+  position: relative;
+  z-index: 2;
+  opacity: 0.85;
+}
+.todo-step-dragging .todo-step-grip {
+  opacity: 1;
+  cursor: grabbing;
+}
+.todo-step-parting {
+  transition: transform 0.12s ease;
+}
+.todo-card-step-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.todo-card-step-title-done {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+.todo-card-step-x {
+  all: unset;
+  cursor: pointer;
+  flex: none;
+  padding: 0 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.todo-card-step:hover .todo-card-step-x,
+.todo-card-step:focus-within .todo-card-step-x {
+  opacity: 1;
+}
+.todo-card-step-x:hover {
+  color: var(--danger);
+}
+.todo-card-step-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 0;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  outline: none;
+}
+.todo-card-step-input:focus {
+  border-bottom-color: var(--accent);
+}
+
+.todo-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.todo-card-project {
+  all: unset;
+  cursor: pointer;
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.todo-card-project:hover {
+  color: var(--text-primary);
+}
+/* A project id that resolves to nothing is dimmed, never dropped: the card
+   still filters by it, and clearing the field would destroy the association
+   permanently for a project that is merely on another machine. */
+.todo-card-project-unknown {
+  opacity: 0.55;
+  cursor: default;
+  font-style: italic;
+}
+.todo-card-mail {
+  all: unset;
+  cursor: pointer;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.todo-card-mail:hover {
+  color: var(--accent);
+}
+
+/* The drop target and the thing under the cursor. */
+
+/* The landing slot — and, since the dragged card is rendered *out* of its
+   column, the thing standing in for it, at the height it was measured at. Hence
+   `flex: 0 0 auto`: the column body is a flex column, so without it a full
+   column would shrink the one row whose height is the whole point. */
+.todo-card-placeholder {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+/* Which column the drop is aimed at, said on the column itself. The placeholder
+   alone cannot say it: it is drawn inside a scrollable body, so a drop aimed
+   near the bottom of a long column can put it off screen. Border and background
+   only — no shadow, which under WebKitGTK's software rendering is the one
+   property that must never appear on something repainting per pointermove. */
+.todo-column-drop {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-panel));
+}
+
+.todo-drag-ghost {
+  position: fixed;
+  z-index: 200;
+  /* Or the ghost becomes `elementFromPoint`'s answer and the drop targets
+     itself instead of the column beneath. */
+  pointer-events: none;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 8px;
+  border-radius: var(--radius);
+  background: var(--bg-elevated, var(--bg-panel));
+  border: 1px solid var(--accent);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+  color: var(--text-primary);
+  opacity: 0.94;
+  overflow: hidden;
+}
+.todo-drag-ghost-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The second line: where this is going, or that it is going nowhere. */
+.todo-drag-ghost-to {
+  font-size: 11px;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Released here, nothing happens — said outright, because "the card snapped
+   back" and "the drag is broken" look identical after the fact. */
+.todo-drag-ghost-nodrop {
+  border-color: var(--border-subtle);
+  opacity: 0.7;
+}
+.todo-drag-ghost-nodrop .todo-drag-ghost-to {
+  color: var(--text-muted);
+}
+
+/* ── The rails ──────────────────────────────────────────────────────────── */
+
+/* Bottom-right: the two lists sit side by side under the board, pushed to the
+   right edge by `align-self`. Height is capped as a *fraction* rather than in
+   pixels — the strip is the board's guest, so a long agenda scrolls inside it
+   instead of eating the columns' rows. */
+.todo-rails {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  align-self: flex-end;
+  gap: 10px;
+  flex: 0 0 auto;
+  max-width: 100%;
+  min-width: 0;
+  max-height: 38%;
+  padding: 0 12px 12px;
+  overflow: hidden;
+}
+.todo-rail {
+  flex: 0 1 300px;
+  min-width: 0;
+  min-height: 0;
+  /* Each rail scrolls itself: one scrollbar around both would move the mail list
+     because the agenda is long. */
+  overflow-y: auto;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  padding: 8px 10px 10px;
+}
+.todo-rail-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.todo-rail-refresh {
+  all: unset;
+  cursor: pointer;
+  font-size: 12px;
+}
+.todo-rail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.todo-agenda-day {
+  margin: 8px 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.todo-agenda-row {
+  display: flex;
+  gap: 7px;
+  font-size: 12px;
+}
+.todo-agenda-time {
+  flex: 0 0 52px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.todo-agenda-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Dimmed, not hidden: hiding what has already happened would make this rail
+   disagree with the header's calendar badge, which counts what has not ENDED. */
+.todo-agenda-past {
+  opacity: 0.45;
+}
+.todo-agenda-open {
+  margin-top: 8px;
+}
+/* The convert action, revealed on hover like the mail rail's — a rail read at a
+   glance must not carry a control per row at full weight. The already-carded
+   mark is NOT hidden, because it is a fact about the day rather than an action:
+   it says why this row has no ＋. */
+.todo-agenda-make {
+  flex: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.todo-agenda-row:hover .todo-agenda-make,
+.todo-agenda-row:focus-within .todo-agenda-make {
+  opacity: 1;
+}
+.todo-agenda-carded {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.todo-mail-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+.todo-mail-dot.urgent {
+  color: var(--danger);
+}
+.todo-mail-dot.important {
+  color: var(--warning);
+}
+.todo-mail-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.todo-mail-from {
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.todo-mail-subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.todo-mail-actions {
+  display: inline-flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.todo-mail-row:hover .todo-mail-actions,
+.todo-mail-row:focus-within .todo-mail-actions {
+  opacity: 1;
+}
+
+/* ── The card editor ────────────────────────────────────────────────────── */
+
+.todo-card-dialog {
+  width: min(600px, calc(100vw - 48px));
+  max-height: min(84vh, calc(100vh - 48px));
+}
+.todo-card-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.todo-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+}
+.todo-field > span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.todo-field-row {
+  display: flex;
+  gap: 10px;
+}
+/* The due date and its optional hour are laid out with the **same** container
+   the calendar's event dialog uses (`.cal-datetime`), so the date input and the
+   `common/TimeField` clock share the row equally and look identical to the
+   calendar's start/end fields — one deadline, two inputs, one visual treatment.
+
+   The due field holds two controls where the priority beside it holds one, so
+   it takes the larger share of the row rather than half of it. */
+.todo-field-due {
+  flex: 2;
+}
+.todo-tag-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.todo-tag-input {
+  flex: 1 1 140px;
+  min-width: 100px;
+}
+.todo-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.todo-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.todo-step .cal-input {
+  flex: 1;
+  min-width: 0;
+}
+.todo-step-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+}
+.todo-step-add .cal-input {
+  flex: 1;
+  min-width: 0;
+}
+.todo-mail-link-body {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  padding: 7px 9px;
+}
+.todo-mail-link-subject {
+  font-size: 12px;
+}
+.todo-mail-link-from {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.todo-mail-link-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 5px;
+}
+.todo-mail-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.todo-card-dialog-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+.todo-spacer {
+  flex: 1;
+}
+
+/* Centred over the board itself. `right: 0` now that the rails are below rather
+   than beside it — the old 300px inset was the rail column's width, and left in
+   place it would push this message off-centre. */
+.todo-empty {
+  position: absolute;
+  top: 30%;
+  left: 0;
+  right: 0;
+  text-align: center;
+  pointer-events: none;
+  z-index: 1;
+}
+.todo-empty-title {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.todo-empty-hint {
+  margin: 4px auto 0;
+  max-width: 380px;
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.8;
+}
+
+.mail-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.mail-toolbar-title {
+  font-weight: 650;
+  color: var(--accent);
+  margin-right: 4px;
+}
+
+.mail-toolbar-spacer {
+  flex: 1;
+}
+
+.mail-input {
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-color);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 12px;
+  min-width: 0;
+}
+.mail-search {
+  width: 220px;
+}
+.mail-textarea,
+.mail-compose-body {
+  resize: vertical;
+  font-family: inherit;
+  width: 100%;
+}
+.mail-compose-body {
+  font-family: var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+  line-height: 1.5;
+}
+
+.mail-error-strip,
+.mail-note-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.mail-error-strip {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--text-primary);
+}
+.mail-note-strip {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.mail-error-strip span,
+.mail-note-strip span {
+  flex: 1;
+  word-break: break-word;
+}
+
+/* ── The header band ───────────────────────────────────────────────────────
+   Above the action row: which mailbox am I looking at (accounts), and the two
+   lists that belong to none of them (Important/Urgent + the rules that fill
+   them). Both are switchers with few entries and no hierarchy, so they are rows
+   of chips rather than a rail column — stacked in the rail they were read as a
+   tree, which is exactly what made the cross-account lists look like they
+   belonged to the account underneath them.
+
+   Modern here means quiet: one soft surface, pill controls, colour used only to
+   mean something (selection, and the two marks). Transitions are on colour and
+   border only — never on a blurred shadow, which is software-rendered under
+   WebKitGTK with DMABUF off and is this app's known way to make a hover janky. */
+.mail-headerband {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 8px 10px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--accent) 4%, var(--bg-panel)),
+    var(--bg-panel)
+  );
+  border-bottom: 1px solid var(--border-subtle);
+}
+/* Two groups on one line — accounts left, the cross-account lists right. Each
+   keeps its own chips together under its own label, so the band has two centres
+   of gravity rather than one long undifferentiated row of pills. */
+.mail-headerband-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+}
+/* Takes the slack so the right-hand group sits at the right edge — and collapses
+   to nothing when the band wraps, where "pushed right" would only strand the
+   group on a line of its own. */
+.mail-headerband-spacer {
+  flex: 1 1 12px;
+}
+/* The divider belongs to the right-hand group rather than to the spacer: when
+   the band wraps, the two groups end up on separate lines and a floating rule
+   between them would be a stray mark. */
+.mail-headerband-group-global {
+  padding-left: 10px;
+  border-left: 1px solid var(--border-subtle);
+}
+.mail-headerband-label {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  line-height: 1.3;
+}
+.mail-headerband-scope {
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  opacity: 0.8;
+}
+
+/* One pill shape for both groups, so "switch" always looks the same. */
+.mail-account-chip,
+.mail-priority-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  /* One box for both kinds. They sit on the same line, so a chip whose content
+     happens to be a pixel taller (the priority ones carry a 13px mark and a
+     heavier label) draws an outline that no longer lines up with its
+     neighbours — which reads as a misdrawn border rather than as a font
+     difference. Fixing the height, and letting the mark inherit the line box
+     instead of setting its own, makes every outline in the band identical. */
+  box-sizing: border-box;
+  min-height: 26px;
+  padding: 3px 11px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+.mail-account-chip:hover {
+  border-color: var(--accent);
+}
+.mail-account-chip.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  font-weight: 600;
+}
+/* Both chip kinds' labels. This is the rule that keeps a badge inside its pill:
+   the label is the one part allowed to shrink, so the chip's content can never
+   be wider than the chip. The priority chips used to put their label in as a
+   bare text node, which cannot shrink — and the count ended up outside the
+   border. Same span, same behaviour, one rule. */
+.mail-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The two priority chips.
+
+   **Mix with `transparent`, never with `--border-color`.** That is the whole
+   lesson of the first two attempts. Mixing a saturated amber 42% into a neutral
+   grey does not give "a quieter amber", it gives olive — a muddy line that read
+   as a rendering fault; and taking the colour away entirely to escape that took
+   the categories with it, since amber-vs-red *is* how Important and Urgent are
+   told apart at a glance. Mixing with `transparent` keeps the hue exactly and
+   only lowers its strength against whatever is behind it.
+
+   Colour therefore says *which list* at every state, and **strength** says
+   whether it is open: a resting chip wears its colour at about half, a selected
+   one at full with a deeper fill. The `!`/`!!` mark stays full strength in both
+   — it is the same glyph `MailList` prints on a filed row, and it is what makes
+   the two ends of the feature recognisably one thing. */
+.mail-priority-chip {
+  font-weight: 600;
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+}
+.mail-priority-chip.urgent {
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+.mail-priority-chip:hover {
+  border-color: var(--warning);
+}
+.mail-priority-chip.urgent:hover {
+  border-color: var(--danger);
+}
+.mail-priority-chip.selected {
+  border-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 24%, transparent);
+}
+.mail-priority-chip.urgent.selected {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 24%, transparent);
+}
+
+/* Three panes: rail, list, message. The list is fixed-ish so the message pane
+   takes the slack; both scroll independently. */
+.mail-body-row {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.mail-rail {
+  flex: 0 0 190px;
+  min-width: 150px;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border-right: 1px solid var(--border-subtle);
+}
+.mail-rail-title {
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 8px 0 2px;
+}
+.mail-rail-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.mail-rail-folder {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.mail-rail-folder:hover {
+  background: var(--bg-hover);
+}
+.mail-rail-folder.selected {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  font-weight: 600;
+}
+.mail-rail-folder-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-rail-badge {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--bg-panel);
+  font-size: 10px;
+  font-weight: 700;
+}
+.mail-filters-add {
+  margin-top: 4px;
+  align-self: flex-start;
+}
+
+/* Priority (Important / Urgent) — the two cross-account lists. They live in the
+   header band now, not in the rail: stacked in a rail column they read as a
+   *tree*, so two lists that belong to no account sat above the account list
+   looking like they might belong to its first entry. Horizontal chips in a
+   labelled row say "switcher", which is what they are. What survives here is
+   the `!`/`!!` mark — the same glyph `MailList` prints on a filed row, which is
+   what makes the two ends of the feature recognisably one thing. */
+.mail-rail-priority-mark {
+  flex: 0 0 auto;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 800;
+  /* `inherit`, not `1`: a line-height smaller than the chip's own made this
+     glyph's box shorter than the text beside it, so the two were centred on
+     different baselines inside one pill. */
+  line-height: inherit;
+  letter-spacing: -0.06em;
+  color: var(--warning);
+}
+.mail-priority-chip.urgent .mail-rail-priority-mark {
+  color: var(--danger);
+}
+/* The badge counts EVERYTHING filed, and the accent tint is the "some of it is
+   unread" signal — so an all-read list still shows its size, muted. Without the
+   muted variant the badge would look like an inbox count and read as work
+   outstanding on a list that has none. */
+.mail-rail-badge:not(.unread) {
+  background: color-mix(in srgb, var(--text-muted) 30%, transparent);
+  color: var(--text-primary);
+}
+
+.mail-list {
+  flex: 0 0 360px;
+  min-width: 260px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--border-subtle);
+
+  /* THE column template, declared once and used by both the header row and
+     every message row — that shared declaration is the whole reason the two
+     line up, and splitting it into two matching lists is how they drift apart
+     the first time a column is added.
+
+     Star · read-dot · clip · sender · size · date. Every column but the sender
+     is a FIXED width, and that is load-bearing rather than lazy: each row is
+     its own grid container, so `auto` columns are sized per row — a row reading
+     "1.2 KB" and one reading "12.4 MB" would each pick their own width and the
+     "columns" would be a staircase. Fixed tracks (plus one `1fr` that resolves
+     identically because every row is the same width) are what actually make
+     them line up, header included. */
+  --mail-cols: 16px 14px 16px minmax(0, 1fr) 54px 78px;
+  --mail-col-gap: 6px;
+  /* Where the sender column starts — the three glyph cells plus their gaps.
+     The subject/preview lines are indented by exactly this, so they hang under
+     the sender rather than under the stars. */
+  --mail-row-indent: 64px;
+}
+
+/* The header row: the sort controls, each above the column it orders. It is
+   `.mail-list`'s child rather than the scroll area's, so it stays put while the
+   rows scroll under it — a column header that scrolls away stops being one. */
+.mail-list-sort {
+  display: grid;
+  grid-template-columns: var(--mail-cols);
+  align-items: center;
+  gap: var(--mail-col-gap);
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+}
+.mail-sort-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 2px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+}
+.mail-sort-header:hover {
+  color: var(--text-primary);
+}
+/* The two right-aligned columns' headers align with their cells — a header
+   hugging the left of a column of right-aligned numbers reads as belonging to
+   the column before it. */
+.mail-sort-header.numeric {
+  justify-content: flex-end;
+}
+/* The sorted column, and only it: the arrow says which way, the accent says
+   which column, and together they are the answer to "why is this list in this
+   order" without a tooltip. */
+.mail-sort-header.active {
+  color: var(--accent);
+}
+.mail-sort-header-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-sort-arrow {
+  flex: 0 0 auto;
+  font-size: 8px;
+}
+.mail-sort-from {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+.mail-list-rows {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.mail-row {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+.mail-row:hover {
+  background: var(--bg-hover);
+}
+.mail-row.selected {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.mail-row.unread .mail-row-subject,
+.mail-row.unread .mail-row-from {
+  font-weight: 700;
+}
+/* The row's first line IS the column grid — same template as the header, so a
+   column's cells are one vertical line all the way down the list. */
+.mail-row-top {
+  display: grid;
+  grid-template-columns: var(--mail-cols);
+  align-items: center;
+  gap: var(--mail-col-gap);
+}
+.mail-flag-btn {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+}
+.mail-flag-btn.on {
+  color: var(--warning);
+}
+/* Read ⇄ unread, beside the star: the same shape of control, so it inherits the
+   star's rule outright and states only what differs. `on` here means *unread* —
+   the filled dot — which is the direction that has to be visible from across the
+   row, and it wears the accent rather than the star's amber because unread is a
+   state of the message, not a mark the user put on it. */
+.mail-seen-btn {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+  font-size: 10px;
+}
+.mail-seen-btn.on {
+  color: var(--accent, #5edcff);
+}
+.mail-row-from {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.mail-row-date {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Tabular figures because a column of sizes is only comparable at a glance when
+   the digits line up — which is the entire reason it is a column. */
+.mail-row-size {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+/* Indented to the sender column: the subject belongs to the same row, and
+   starting it under the stars would make the glyph columns look like a margin
+   the text had escaped. */
+.mail-row-subject {
+  margin-top: 2px;
+  padding-left: var(--mail-row-indent);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A grid cell now, not a marker in front of the subject — fixed width and
+   centred so the column reads as a column even on the rows where it is empty. */
+.mail-row-clip {
+  font-size: 11px;
+  text-align: center;
+  line-height: 1;
+}
+/* The mark, on the row, in every list it appears in — the only place the user
+   can see that filing a message worked. `!`/`!!` rather than a coloured dot so
+   it survives a monochrome theme and is legible to anyone who cannot tell the
+   two colours apart; the colour is emphasis on top of a glyph that already
+   says it. */
+.mail-row-priority {
+  margin-right: 4px;
+  font-weight: 800;
+  font-size: 11px;
+  color: var(--warning);
+}
+.mail-row-priority.urgent {
+  color: var(--danger);
+}
+/* Which mailbox a row came from — rendered only in a cross-account list, where
+   the rail no longer answers it. Deliberately the quietest line in the row: it
+   is context, not content. */
+.mail-row-account {
+  margin-top: 2px;
+  padding-left: var(--mail-row-indent);
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-row-preview {
+  margin-top: 1px;
+  padding-left: var(--mail-row-indent);
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-row-warning {
+  margin-top: 3px;
+  padding-left: var(--mail-row-indent);
+  font-size: 11px;
+  color: var(--warning);
+}
+.mail-list-paging {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 5px 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.mail-paging-range {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.mail-message {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mail-message-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.mail-message-subject {
+  font-size: 15px;
+  font-weight: 650;
+  word-break: break-word;
+}
+.mail-message-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+}
+.mail-meta-label {
+  flex: 0 0 60px;
+  color: var(--text-muted);
+}
+.mail-meta-value {
+  flex: 1;
+  word-break: break-word;
+}
+.mail-message-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.mail-warning-strip {
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+}
+/* ── Authentication-Results panel ──────────────────────────────────────────
+   Toned by the *worst* verdict shown, and neutral whenever the results may not
+   be believed at all — an unchecked header must never borrow the appearance of
+   a verified one. */
+.mail-auth {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+}
+.mail-auth-good {
+  border-left-color: var(--success);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
+}
+.mail-auth-warn {
+  border-left-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+.mail-auth-bad {
+  border-left-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+.mail-auth-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.mail-auth-summary {
+  font-size: 12px;
+  font-weight: 600;
+}
+.mail-auth-rows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.mail-auth-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 2px 6px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-subtle);
+  font-size: 11px;
+}
+.mail-auth-chip .mail-auth-method {
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+.mail-auth-chip .mail-auth-result {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+.mail-auth-chip .mail-auth-identity {
+  color: var(--text-muted);
+}
+.mail-auth-chip.tone-good {
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+}
+.mail-auth-chip.tone-warn {
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+}
+.mail-auth-chip.tone-bad {
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+}
+.mail-auth-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.mail-remote-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font-size: 12px;
+}
+.mail-remote-banner span {
+  flex: 1;
+}
+.mail-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* ── Local-model mail assistant (Group Q #204–#208) ─────────────────────────
+   On-device summarize / extract / classify surfaces. Toned with --accent-secondary
+   so the "runs on a local model" affordances read as one distinct family, apart
+   from the sender/crypto panels above them. */
+.mail-ai-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.mail-ai-actions-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mail-ai-summary,
+.mail-ai-task-review,
+.mail-ai-report {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--accent-secondary, var(--accent));
+  background: color-mix(in srgb, var(--accent-secondary, var(--accent)) 8%, transparent);
+}
+.mail-ai-summary-head,
+.mail-ai-report-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.mail-ai-summary-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.mail-ai-summary-close:hover {
+  color: var(--text-primary);
+}
+.mail-ai-summary-list {
+  margin: 2px 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.mail-ai-summary-list li {
+  margin: 2px 0;
+}
+.mail-ai-task-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.mail-ai-task-actions,
+.mail-ai-notes-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mail-ai-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.mail-field-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.mail-field-inline .mail-input {
+  width: auto;
+}
+.mail-ai-provenance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--accent-secondary, var(--accent));
+  background: color-mix(in srgb, var(--accent-secondary, var(--accent)) 8%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.mail-ai-provenance-lead {
+  font-weight: 600;
+}
+.mail-ai-provenance-reason {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.mail-ai-report-list {
+  margin: 2px 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mail-ai-report-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+.mail-ai-report-mark {
+  flex: none;
+  font-weight: 700;
+}
+.mail-ai-report-mark.urgent {
+  color: var(--danger);
+}
+.mail-ai-report-mark.important {
+  color: var(--warning);
+}
+.mail-ai-report-reason {
+  color: var(--text-secondary);
+}
+.mail-ai-unavailable {
+  font-style: italic;
+}
+.mail-ai-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+
+/* The Mail AI (local) toolbar group: a bordered cluster holding the global
+   master switch and, when it is on, the per-account quick-toggle tags + the ✨
+   settings button. The border makes it read as one control rather than three
+   loose buttons scattered along the toolbar. */
+.mail-ai-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+}
+
+.mail-ai-allow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.mail-ai-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* A quick-toggle "tag": click to activate, click to deactivate. Off is a muted
+   outline chip; on fills with the accent so the active set reads at a glance. */
+.mail-ai-tag {
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mail-ai-tag:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.mail-ai-tag.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+.mail-ai-tag:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mail-unsafe-card {
+  padding: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+.mail-unsafe-card p {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* The sandboxed message frame. It is a white sheet on purpose: a message brings
+   its own colors and would be unreadable composited onto a dark app surface. */
+.mail-body-frame {
+  width: 100%;
+  min-height: 320px;
+  flex: 1 0 320px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
+.mail-links {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mail-links-toggle {
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.mail-links-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mail-link-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+.mail-link-row.warn {
+  border-left: 3px solid var(--warning);
+}
+.mail-link-host {
+  font-family: var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 12px;
+  font-weight: 650;
+  word-break: break-all;
+}
+.mail-link-flag {
+  font-size: 11px;
+  color: var(--warning);
+}
+
+.mail-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.mail-attachments-title {
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.mail-attachment-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+}
+.mail-attachment-name {
+  flex: 1;
+  min-width: 120px;
+  word-break: break-all;
+  font-size: 12px;
+}
+.mail-attachment-size {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.mail-attachment-preview {
+  flex: 1 0 100%;
+  margin-top: 4px;
+}
+.mail-attachment-image {
+  max-width: 100%;
+  max-height: 340px;
+  border-radius: var(--radius);
+}
+.mail-attachment-text {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: 6px 8px;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mail-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+.mail-empty-wide p {
+  margin: 0;
+  max-width: 46ch;
+  line-height: 1.6;
+}
+
+/* ── CalDAV accounts (docs/caldav_plan.md) ─────────────────────────────────
+   The account dialog rides the shared `.settings-dialog` chrome and — being
+   portaled to <body>, which carries no colour — sets an explicit `color`, the
+   same rule the mail dialogs follow. Its controls are the *calendar's*
+   (`.cal-input`, `.cal-btn`, `.cal-link-btn`), so CalDAV reads as part of the
+   calendar rather than as a second feature bolted beside it. */
+
+.caldav-dialog {
+  width: min(620px, calc(100vw - 32px));
+  color: var(--text-primary);
+}
+
+.caldav-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 10px;
+}
+.caldav-field-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.caldav-field-hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  opacity: 0.85;
+}
+.caldav-warning-strip {
+  padding: 5px 8px;
+  margin-bottom: 10px;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.caldav-discover-row {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+}
+.caldav-collections {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  max-height: 220px;
+  overflow-y: auto;
+}
+.caldav-collection-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 2px;
+  cursor: pointer;
+}
+.caldav-collection-name {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+/* The URL is the collection's real identity — two calendars can share a display
+   name — so it is shown, dimmed, and allowed to ellipsis rather than wrap the
+   row into two lines. */
+.caldav-collection-href {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.caldav-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 6px 0;
+}
+.caldav-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  padding-top: 6px;
+}
+.caldav-confirm-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  font-size: 12px;
+}
+.caldav-confirm-strip span {
+  flex: 1;
+}
+
+/* The push opt-in (Phase 3). A checkbox row inside the field stack, so the
+   switch and the sentence explaining both of its positions read as one thing. */
+.caldav-field-check .caldav-check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+/* ── The conflict question ──────────────────────────────────────────────────
+   Sized like the host-key dialog and for the same reason: it is a decision with
+   consequences on another machine, so it gets room for a sentence rather than a
+   title and two buttons. */
+.caldav-conflict-dialog {
+  max-width: 460px;
+}
+.caldav-conflict-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.caldav-conflict-lede {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+.caldav-conflict-detail {
+  margin: 0 0 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.caldav-conflict-error {
+  margin-bottom: 10px;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.caldav-conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.caldav-conflict-more {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+/* ── The ICS import review ──────────────────────────────────────────────────
+   A report, not an alarm: no danger tint on the dialog itself, because a
+   calendar file cannot do anything and a red frame would say otherwise. Only
+   the individual row that is *kept* rather than ignored carries emphasis. */
+.ics-review-dialog {
+  max-width: 520px;
+}
+.ics-review-title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.ics-review-file {
+  margin: 0 0 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.ics-review-counts {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.ics-review-notice {
+  margin: 0 0 10px;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ics-review-notice-bad {
+  border-left: 3px solid var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+}
+.ics-review-list {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.ics-review-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 2px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.ics-review-row:last-child {
+  border-bottom: none;
+}
+.ics-review-what {
+  flex: 1;
+  min-width: 180px;
+}
+/* "ignored on import" vs "kept" — the whole point of the list, so it is a word
+   in its own column and never only a colour. */
+.ics-review-effect {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.ics-review-row-kept .ics-review-effect {
+  color: var(--warning);
+}
+.ics-review-sample {
+  flex-basis: 100%;
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.ics-review-footnote {
+  margin: 0 0 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.ics-review-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* A failed unattended sync on the sidebar row — the calendar's answer to the
+   mail button's amber `!`, and here for the same reason: the dialog that would
+   otherwise carry the message is exactly the surface nobody has open when the
+   timer fires, and a quietly stale calendar looks just like one with nothing
+   new in it. The error itself is the button's tooltip. */
+.cal-list-sync-error {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+/* ── Mail dialogs ────────────────────────────────────────────────────────── */
+
+/* `.pdf-link-dialog` is the PDF viewer's link confirm (#pdf-links). It is the
+   same question as mail's about the same kind of content, so it rides the same
+   width and the same `.mail-link-detail*` rows rather than growing a second look
+   for it. */
+.mail-account-dialog,
+.mail-compose-dialog,
+.mail-link-dialog,
+.pdf-link-dialog {
+  width: min(600px, calc(100vw - 32px));
+  color: var(--text-primary);
+}
+
+.mail-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mail-field-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.mail-field-hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  opacity: 0.85;
+}
+.mail-field-row {
+  display: flex;
+  gap: 10px;
+}
+.mail-field-row .mail-field {
+  flex: 1;
+}
+.mail-server-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+}
+/* .mail-dialog-actions: layout comes from the shared dialog-footer rule. */
+/* ── Encryption at rest (docs/mail_encryption_plan.md) ─────────────────────
+   No colour of its own. The dialog is mostly prose about what encryption does
+   and does not buy, and a green "secure" chrome around that prose would be the
+   overstatement the copy is written to avoid. The only tinted element in the
+   whole feature is `.mail-warning-strip`, which is reserved for the two states
+   that genuinely need interrupting: a locked store, and a memory-only one. */
+.mail-encryption-dialog {
+  max-width: 560px;
+}
+.mail-encryption-dialog .mail-note {
+  margin: 0 0 8px;
+}
+/* A radio and its label+hint, laid out as a row rather than the stacked
+   label-over-input every other `.mail-field` here is. */
+.mail-field-row {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+}
+.mail-field-row small {
+  display: block;
+}
+/* The "searched the most recent N" note, directly above the pager, because it
+   is a qualification of the count the pager is about to state. */
+.mail-list-scan-note {
+  padding: 4px 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ── OpenPGP keys ──────────────────────────────────────────────────────────
+   The crypto panel deliberately has no styles of its own: it reuses
+   `.mail-auth` and its four tones wholesale, because it is the same kind of
+   claim as the sender checks and rendering it differently would suggest the two
+   are answering the same question at different confidences. */
+.mail-keys-dialog {
+  max-width: 660px;
+}
+.mail-key-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  margin-bottom: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+}
+.mail-key-identity {
+  flex: 1 1 180px;
+  min-width: 0;
+  word-break: break-word;
+}
+/* Monospace, wrapping, and NEVER truncated. This string is the whole trust
+   model of OpenPGP — an abbreviated fingerprint is worse than none, because it
+   still looks like something that was checked. */
+.mail-key-fingerprint {
+  flex: 1 1 100%;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  word-break: break-all;
+  color: var(--text-primary);
+}
+.mail-key-verified {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.mail-key-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+.mail-keys-paste {
+  width: 100%;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  resize: vertical;
+}
+
+/* ── Keyword filters ───────────────────────────────────────────────────────
+   The rules that file arriving mail into the two Priority lists. The dialog is
+   wider than the other mail dialogs because it is genuinely two panes — the
+   ordered rule list (order is data: first match wins) and the editor for the
+   selected one — and stacking them would hide the ordering the list exists to
+   show. Below ~700px it stacks anyway; a two-column layout in a 400px overlay
+   is two unusable columns. */
+.mail-filters-dialog {
+  max-width: 820px;
+}
+.mail-filters-limits {
+  margin: 4px 0 10px;
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+.mail-filters-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+}
+.mail-filters-list {
+  flex: 1 1 260px;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mail-filter-editor {
+  flex: 1 1 340px;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+}
+.mail-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.mail-filter-row.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+/* The same glyphs the rail and every filed row use, so a rule's target is read
+   off the mark rather than off a word that has to be translated. */
+.mail-filter-mark {
+  font-weight: 700;
+  font-size: 12px;
+  min-width: 16px;
+  text-align: center;
+  color: var(--warning);
+}
+.mail-filter-mark.urgent {
+  color: var(--danger);
+}
+.mail-filter-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.mail-filter-row-actions {
+  display: flex;
+  gap: 2px;
+}
+.mail-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.mail-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  font-size: 12px;
+  /* A term is the user's own text and is printed verbatim; it must wrap rather
+     than stretch the dialog, and it is never truncated — a shortened word would
+     misrepresent what the rule matches on. */
+  max-width: 100%;
+  word-break: break-word;
+}
+.mail-filter-chip-x {
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.mail-filter-chip-x:hover {
+  color: var(--danger);
+}
+.mail-filters-term-add {
+  display: flex;
+  gap: 6px;
+}
+.mail-filters-term-add .mail-input {
+  flex: 1;
+  min-width: 0;
+}
+.mail-filter-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.mail-filter-field-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+}
+.mail-filter-report {
+  margin-top: 10px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+}
+.mail-filter-sample {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 4px 0;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 12px;
+}
+.mail-filter-sample-subject {
+  flex: 1 1 200px;
+  min-width: 0;
+  word-break: break-word;
+}
+/* The addr-spec, in the same muted monospace the list uses for one: this panel
+   is full of mail from strangers, and a display name is not identity. */
+.mail-filter-sample-from {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+.mail-filter-sample-why {
+  flex: 1 1 100%;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+/* A hairline between the toolbar's account actions and its mailbox-wide ones. */
+.mail-toolbar-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 2px;
+  background: var(--border-subtle);
+}
+
+
+/* "N messages were filed for you" — informational, so it borrows the accent
+   rather than the warning tone. Nothing went wrong; something happened. */
+.mail-filter-strip {
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  font-size: 12px;
+}
+/* The composer's two checkboxes, grouped so they read as one decision about
+   this message rather than as two unrelated switches. */
+.mail-compose-crypto {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  margin-top: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+}
+.mail-confirm-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  font-size: 12px;
+}
+.mail-confirm-strip span {
+  flex: 1;
+  min-width: 200px;
+}
+
+.mail-link-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mail-link-detail-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+/* The host is on its own line at a larger size because the host is the only part
+   of a URL that decides where the click goes. */
+.mail-link-detail-host {
+  font-family: var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 15px;
+  font-weight: 700;
+  word-break: break-all;
+  margin-bottom: 6px;
+}
+/* NEVER truncated with an ellipsis — truncation is itself the attack
+   (`https://bank.example.evil.tld/…` reads as `https://bank.example…`). */
+.mail-link-detail-url {
+  font-family: var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 12px;
+  word-break: break-all;
+  color: var(--text-primary);
+}
+
+.mail-attach-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.mail-staged {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mail-staged-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  font-size: 11px;
+}
+.mail-staged-size {
+  color: var(--text-muted);
+}
+.mail-staged-remove {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 13px;
+  line-height: 1;
+}
+.mail-staged-remove:hover {
+  color: var(--danger);
+}
