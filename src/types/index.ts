@@ -167,7 +167,7 @@ export interface Settings {
    *  — and `experimental()` additionally means "on in debug", which would put a
    *  third header button in every developer's window unasked. */
   todo_board?: boolean;
-  /** Right panel: the **Alerts** group in the file viewer — urgent mail, the
+  /** Side panel: the **Alerts** group in the file viewer — urgent mail, the
    *  calendar entries about to start, and the to-do cards whose due date is here
    *  or past, merged into one time-ordered strip. **Default true.**
    *
@@ -180,7 +180,7 @@ export interface Settings {
    *  separate shown/hidden state, and that is what makes the default safe to
    *  invert: the toolbar's 🔔 writes this key, so closing the group persists and
    *  survives a relaunch instead of coming back at the next remount — and this
-   *  viewer is mounted many times over at once (the right panel, every Files
+   *  viewer is mounted many times over at once (the side panel, every Files
    *  tab, every subwindow's docked column, every popout), so a per-surface flag
    *  would have to be dismissed once per surface. The button is deliberately
    *  rendered whether or not the group is on: it is the way back, and gating it
@@ -468,14 +468,25 @@ export interface Settings {
    *  off a *standing preference*, and one merged control could not say "plugged
    *  in, still want it lean" — which is the case that asks for this. */
   fast_mode?: boolean;
-  /** When true, the right panel is docked open (reflows layout) instead of hover-revealed. */
-  right_panel_pinned?: boolean;
-  /** Width of the right (file/git) panel in px. Set by dragging the panel's left
-   *  border; unset falls back to the default 280px. */
-  right_panel_width?: number;
-  /** Which edge the file panel docks against. Unset falls back to "right". Flipped
+  /** When true, the side panel is docked open (reflows layout) instead of hover-revealed. */
+  side_panel_pinned?: boolean;
+  /** Width of the side (files/git/search/sessions) panel in px. Set by dragging the
+   *  panel's inner border; unset falls back to the default 280px. */
+  side_panel_width?: number;
+  /** Which edge the side panel docks against. Unset falls back to "right". Flipped
    *  by the ⇄ button in the panel header; round-trips through the settings `extra`
    *  catch-all, so no backend field is needed. */
+  side_panel_edge?: "left" | "right";
+  /** Pre-rename spellings of the three keys above, from when the panel was fixed to
+   *  the right edge and named for it. Read-only fallbacks: settings.json written by
+   *  an older build still carries them, and every read below is
+   *  `side_panel_* ?? right_panel_*`. Nothing writes them any more, and they ride in
+   *  the backend's `extra` catch-all, so an untouched install keeps its width, pin
+   *  state and edge across the upgrade. @deprecated use the `side_panel_*` keys. */
+  right_panel_pinned?: boolean;
+  /** @deprecated use {@link Settings.side_panel_width}. */
+  right_panel_width?: number;
+  /** @deprecated use {@link Settings.side_panel_edge}. */
   right_panel_side?: "left" | "right";
   /** Minimum subwindow (split pane) width in px a divider drag may shrink to.
    *  Unset falls back to DEFAULT_MIN_SUBWINDOW_PX. */
@@ -499,7 +510,7 @@ export interface Settings {
    * original hard-coded behaviour.
    */
   keyboard_shortcuts?: Record<string, KeyboardChord>;
-  /** Download *source* folders scanned by the right-panel Downloads section
+  /** Download *source* folders scanned by the side-panel Downloads section
    *  (fast-copy of freshly downloaded files into a project). Machine-wide,
    *  read-only. Unset/empty → the frontend falls back to the OS Downloads dir. */
   download_sources?: string[];

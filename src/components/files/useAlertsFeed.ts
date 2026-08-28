@@ -23,7 +23,7 @@ import {
 } from "../../stores/todo";
 
 /**
- * **The data feed behind the right panel's opt-in "Alerts" group.**
+ * **The data feed behind the side panel's opt-in "Alerts" group.**
  *
  * It owns the *reads*; `lib/alerts`' `selectAlerts` owns the merging, and the
  * two stores that already hold this data (`stores/calendar` for events and
@@ -155,7 +155,7 @@ export function useAlertsFeed(options?: AlertsFeedOptions): AlertsFeed {
   const mailClient = useExperimental("mail_client");
   // The muted ids live in `settings.json` rather than in this hook, and that is
   // load-bearing twice over: the file viewer is mounted many times at once (the
-  // right panel plus every Files tab), so per-instance state would silence a row
+  // side panel plus every Files tab), so per-instance state would silence a row
   // in one and leave it shouting in the next — and a mute that came back at the
   // next launch would be a control that doesn't work, the same trap `files_alerts`
   // itself avoids by being the visibility rather than a preference above one.

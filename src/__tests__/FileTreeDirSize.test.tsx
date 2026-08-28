@@ -1,5 +1,5 @@
 /**
- * Regression test for the folder-size holes in the right-panel file tree.
+ * Regression test for the folder-size holes in the side-panel file tree.
  *
  * `load()` sets rawEntries, which fires the size-fetch effects, and only THEN
  * awaits `git_file_statuses` — whose result changes `sections`' identity. When
@@ -25,7 +25,7 @@ vi.mock("../stores/windows", () => ({
 vi.mock("../stores/settings", () => ({ useSettingsStore: () => null }));
 
 import { useProjectsStore } from "../stores/projects";
-import { RightPanel } from "../components/layout/RightPanel";
+import { SidePanel } from "../components/layout/SidePanel";
 
 const mockUseProjectsStore = vi.mocked(useProjectsStore);
 
@@ -54,8 +54,8 @@ describe("file tree folder sizes", () => {
     const state = {
       projects: [ACTIVE_PROJECT],
       activeId: "proj-1",
-      rightPanelFolderByProject: {},
-      setRightPanelFolder: vi.fn(),
+      sidePanelFolderByProject: {},
+      setSidePanelFolder: vi.fn(),
     } as unknown as ReturnType<typeof useProjectsStore>;
     mockUseProjectsStore.mockImplementation(((selector?: (s: typeof state) => unknown) =>
       selector ? selector(state) : state) as typeof useProjectsStore);
@@ -91,7 +91,7 @@ describe("file tree folder sizes", () => {
 
     // 1. The listing lands and renders; the size effect dispatches the walk.
     await act(async () => {
-      render(<RightPanel open={true} />);
+      render(<SidePanel open={true} />);
     });
     expect(await screen.findByText("results")).toBeTruthy();
     expect(mockInvoke).toHaveBeenCalledWith(
@@ -134,7 +134,7 @@ describe("file tree folder sizes", () => {
     });
 
     await act(async () => {
-      render(<RightPanel open={true} />);
+      render(<SidePanel open={true} />);
     });
     expect(await screen.findByText("venv")).toBeTruthy();
 
@@ -168,7 +168,7 @@ describe("file tree folder sizes", () => {
     });
 
     await act(async () => {
-      render(<RightPanel open={true} />);
+      render(<SidePanel open={true} />);
     });
 
     expect(await screen.findByText("gitignored (1)")).toBeTruthy();

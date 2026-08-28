@@ -104,7 +104,7 @@ export function fileDropGoesToNewWindow(opts: {
  *    image), open it in its OWN standalone detached Eldrun window at those bounds
  *    (detachNewTab). If instead it opens in an EXTERNAL app, just launch that app
  *    directly — don't wrap an external-app file in a detached Eldrun subwindow.
- *  - Dropped anywhere else (right panel, empty space, no resolved target) → do
+ *  - Dropped anywhere else (side panel, empty space, no resolved target) → do
  *    nothing. A drag is purely a drag-to-tab gesture; opening a file is reserved
  *    for double-click in the FileTree, so a stray drop must never open it.
  *
@@ -247,7 +247,7 @@ export function commitFileDrop(
   // full-panel placeholder subwindow (its tab bar resolves to EMPTY_GROUP_ID as
   // reorderGroup; its body as overGroup). A drop anywhere over the main window
   // therefore becomes the FIRST tab — addTab with no layout builds the root
-  // group. A drop with no resolved target (e.g. released over the right panel)
+  // group. A drop with no resolved target (e.g. released over the side panel)
   // falls through and does nothing, so files never leak out as external opens.
   if (!useTabsStore.getState().layout) {
     if (d.reorderGroup === EMPTY_GROUP_ID || d.overGroup === EMPTY_GROUP_ID) {
@@ -284,7 +284,7 @@ export function commitFileDrop(
     return;
   }
 
-  // No valid drop target (released over the right panel, an empty area, etc.):
+  // No valid drop target (released over the side panel, an empty area, etc.):
   // do nothing. A drag is only ever a drag-to-tab gesture; opening a file is
   // reserved for double-click in the FileTree, so a stray drop must NOT open it.
 }

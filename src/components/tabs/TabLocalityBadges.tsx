@@ -260,7 +260,7 @@ export function RunHostPicker({
     <>
       <button
         type="button"
-        className="right-panel-run-host"
+        className="side-panel-run-host"
         // The label ellipsizes in a narrow (docked subwindow) row, so the full
         // machine name has to survive somewhere — the tooltip names it.
         title={`${t("tabLocality.runHostTitle", { label })}\n${t("tabLocality.runHostSubtitle")}`}

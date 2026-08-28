@@ -3,7 +3,7 @@
  * - STATUS_COLOR mapping (untracked/modified=danger, staged=warning,
  *   unpushed=success, ignored=muted — theme TOKENS, never hardcoded hexes,
  *   so the light themes' own palettes apply; see lib/gitColors)
- * - RightPanel git action buttons have correct color bars
+ * - SidePanel git action buttons have correct color bars
  * - Hovering a button shows the relevant staged/unpushed list
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -25,7 +25,7 @@ vi.mock("../stores/settings", () => ({
 }));
 
 import { useProjectsStore } from "../stores/projects";
-import { RightPanel } from "../components/layout/RightPanel";
+import { SidePanel } from "../components/layout/SidePanel";
 
 const mockUseProjectsStore = vi.mocked(useProjectsStore);
 
@@ -97,7 +97,7 @@ describe("git action button bars", () => {
   async function renderOpenPanel() {
     let result: ReturnType<typeof render>;
     await act(async () => {
-      result = render(<RightPanel open={true} />);
+      result = render(<SidePanel open={true} />);
     });
     return result!;
   }
@@ -157,7 +157,7 @@ describe("git change tree", () => {
   async function renderOpenPanel() {
     let result: ReturnType<typeof render>;
     await act(async () => {
-      result = render(<RightPanel open={true} />);
+      result = render(<SidePanel open={true} />);
     });
     return result!;
   }

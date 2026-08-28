@@ -8,7 +8,7 @@ import { useT } from "../../lib/i18n";
 
 /**
  * Importing OS files into a project by dropping them onto a file view — shared
- * by the right panel and the "Files (Project)" tab, which must import
+ * by the side panel and the "Files (Project)" tab, which must import
  * identically (same collision prompt, same destination folder rule).
  */
 

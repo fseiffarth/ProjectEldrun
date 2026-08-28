@@ -36,11 +36,6 @@ import { openConnectionInRoot } from "./remoteConnect";
  * which is exactly what activating a VPN-gated project does in that mode.
  */
 
-/** Whether a tunnel is armed to come up on launch. */
-export function isVpnAutoConnect(config: string): boolean {
-  return useSettingsStore.getState().settings?.vpn_auto_connect === config;
-}
-
 /**
  * Arm `config` to connect on launch, or disarm it. Arming is exclusive: a tunnel owns
  * the machine's routing, so two armed configs would just be two tunnels fighting over

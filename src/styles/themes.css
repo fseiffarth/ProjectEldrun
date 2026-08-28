@@ -384,8 +384,8 @@
    names with theme-appropriate values. */
 [data-theme="fancy_dark"] .app-header,
 [data-theme="light_lavender"] .app-header,
-[data-theme="fancy_dark"] .right-panel,
-[data-theme="light_lavender"] .right-panel,
+[data-theme="fancy_dark"] .side-panel,
+[data-theme="light_lavender"] .side-panel,
 [data-theme="fancy_dark"] .tab-bar,
 [data-theme="light_lavender"] .tab-bar,
 [data-theme="fancy_dark"] .subwindow-files,
@@ -423,8 +423,8 @@
 /* The right-side file panel is fully opaque even in the glass themes: it floats
    over live terminal/code content, and a translucent tree is hard to read. It
    opts out of the shared frosted-glass rule above (opaque fill ⇒ blur is moot). */
-[data-theme="fancy_dark"] .right-panel,
-[data-theme="light_lavender"] .right-panel {
+[data-theme="fancy_dark"] .side-panel,
+[data-theme="light_lavender"] .side-panel {
   background-color: var(--bg-panel);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;

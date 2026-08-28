@@ -132,7 +132,7 @@ pub fn list_dir_local(project_dir: &str, rel_path: &str) -> Result<Vec<FileEntry
 }
 
 /// Scan one or more download *source* folders and return their recently-modified
-/// entries, merged and sorted newest-first. Backs the right-panel Downloads
+/// entries, merged and sorted newest-first. Backs the side-panel Downloads
 /// section (fast-copy of freshly downloaded files into a project).
 ///
 /// Unlike [`list_dir`], the `paths` are user-chosen source folders that live
@@ -1077,7 +1077,7 @@ pub fn move_path_blocking(
     remove.map_err(|e| e.to_string())
 }
 
-/// Import an external file or directory (dropped onto the right panel from the
+/// Import an external file or directory (dropped onto the side panel from the
 /// OS file manager) into the project. Unlike [`copy_path`], the SOURCE is an
 /// arbitrary absolute path outside the project, so it is not confined; only the
 /// DESTINATION is confined to the project root. `dest_rel` is the project-
@@ -1790,7 +1790,7 @@ fn compute_allowed_roots(
     root_work: &Path,
 ) -> Vec<PathBuf> {
     // The ROOT scope — a viewer with no owning project (`scope_id: None`), i.e.
-    // the right panel's root view and any root-scope tab — browses the root
+    // the side panel's root view and any root-scope tab — browses the root
     // terminal folder `~/eldrun/root`. Its *listing* passes confinement because
     // `list_dir` confines against the project_dir argument, but every absolute-
     // path read a viewer then makes (`read_file_bytes`, `file_mtime`, …) lands
@@ -2572,6 +2572,34 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("sub/b.txt")).unwrap(),
             "hello"
+        );
+    }
+
+    /// Two DIFFERENT roots — the box view's cross-project drag-and-drop (and a
+    /// side-panel → other project's Files tab drop) depend on this shape: the
+    /// frontend routes the drop to `dest_project_dir = <target tree's root>`.
+    /// Locks that a folder moves wholesale into the other root and leaves
+    /// nothing behind in the source project.
+    #[test]
+    fn move_path_moves_a_folder_between_roots() {
+        let src = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        std::fs::create_dir(src.path().join("data")).unwrap();
+        std::fs::write(src.path().join("data/x.txt"), "payload").unwrap();
+        std::fs::create_dir(dest.path().join("incoming")).unwrap();
+
+        move_path_blocking(
+            src.path().to_string_lossy().to_string(),
+            "data".into(),
+            dest.path().to_string_lossy().to_string(),
+            "incoming/data".into(),
+        )
+        .unwrap();
+
+        assert!(!src.path().join("data").exists());
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join("incoming/data/x.txt")).unwrap(),
+            "payload"
         );
     }
 

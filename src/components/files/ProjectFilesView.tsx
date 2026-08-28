@@ -86,7 +86,7 @@ interface MobileHostStatus {
 function MobileAccessIcon({ on }: { on: boolean }) {
   return (
     <svg
-      className="right-panel-mobile-btn-icon"
+      className="side-panel-mobile-btn-icon"
       viewBox="0 0 16 16"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
@@ -235,7 +235,7 @@ type View = "files" | "windows" | "git" | "search" | "orange" | "sessions" | "jo
 const EMPTY_SCOPE_TABS: TabEntry[] = [];
 
 /**
- * The shared file view rendered by BOTH the right panel (`RightPanel`) and the
+ * The shared file view rendered by BOTH the side panel (`SidePanel`) and the
  * Files (Project) tab (`ProjectFilesTab`) — the view switcher (Files / Git /
  * Search / Apps / Orange), the inline git action bar, the git history, search,
  * the tracked-windows list, the diverged (orange) list, the type tags, hover
@@ -284,7 +284,7 @@ export interface ProjectFilesViewProps {
    *  render identically to the full chrome. The sync + sort rows
    *  (`ProjectFilesPane`) are still stripped, so the tree's find-files search
    *  stays topmost there. Set only by the docked subwindow viewer
-   *  (`SubwindowFilesSidebar`); the right panel and the Files (Project) tab
+   *  (`SubwindowFilesSidebar`); the side panel and the Files (Project) tab
    *  leave it unset and keep the full chrome. */
   compact?: boolean;
 
@@ -350,7 +350,7 @@ export function ProjectFilesView({
   // would be repeated once per open subwindow. Its 🔔 goes with it: a toggle
   // that writes a setting whose group can never appear here is a dead control
   // (and would silently arm the group in the panel and every Files tab).
-  // The right panel and the Files (Project) tab are unaffected.
+  // The side panel and the Files (Project) tab are unaffected.
   const alertsHere = alertsEnabled && !compact;
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const setProjectMobileAccess = useProjectsStore((s) => s.setProjectMobileAccess);
@@ -434,7 +434,7 @@ export function ProjectFilesView({
   // project is connected. Local projects are never blocked.
   const { remoteSshState, remoteBlocked } = useRemoteBlocked(projectId, !!project?.remote);
   // Which endings/paths the tree hides, from the project's own project.json —
-  // shared with the right panel, so both views hide the same files.
+  // shared with the side panel, so both views hide the same files.
   const filters = useProjectFileFilters({ localFile, projectDir, remoteBlocked });
 
   // Run both git probes concurrently (Eff #9): they hit independent
@@ -559,7 +559,7 @@ export function ProjectFilesView({
   // each host's pooled ControlMaster). An absent tmux / no server yields nothing.
   //
   // The list, its poll and its toggle all live in `stores/hostSessions`, NOT
-  // here: this component is rendered by the right panel, by every Files (Project)
+  // here: this component is rendered by the side panel, by every Files (Project)
   // tab and by every subwindow's docked column at once, and a per-instance poll
   // meant one `tmux ls` per host per surface every 7s — and, worse, that a
   // session killed in one surface sat on in the others until their own interval
@@ -997,7 +997,7 @@ export function ProjectFilesView({
   // Same hover card as the project pill, shown when hovering the project name
   // here — minus the type tags, which already sit beside the name below.
   const nameHover = useProjectHoverCard(project ?? undefined);
-  const leftDockedPanel = containerClassName.includes("right-panel left");
+  const leftDockedPanel = containerClassName.includes("side-panel left");
 
   // A box scope shows a multi-root file view (the box folder + every member
   // project's root) instead of one project tree; the pane renders it.
@@ -1124,10 +1124,10 @@ export function ProjectFilesView({
           switch/git-bar header is stripped — the tree's find-files search stays
           topmost. The Files/Git/Search/Apps toolbar (± diverged, sessions, jobs,
           import, open-in-OS, downloads, settings) renders in both modes, so a
-          subwindow file viewer behaves identically to the right panel / Files
+          subwindow file viewer behaves identically to the side panel / Files
           (Project) tab except for that header row. */}
       {!compact && (
-      <div className="right-panel-header">
+      <div className="side-panel-header">
         {pin}
         <span
           style={{
@@ -1168,7 +1168,7 @@ export function ProjectFilesView({
             labels only — no interactivity — so they deliberately look nothing
             like the source switch below. */}
         {!activeBox && typeTags.length > 0 && (
-          <span className="right-panel-type-tags">
+          <span className="side-panel-type-tags">
             {typeTags.map((tag) => {
               // The SSH tag carries a right-click menu (connect / manage · remote
               // machines); the rest stay pure labels.
@@ -1212,7 +1212,7 @@ export function ProjectFilesView({
         {mobileHostConnected && mobileEligible && (
           <button
             type="button"
-            className={`right-panel-mobile-btn${mobileAccessOn ? " on" : ""}`}
+            className={`side-panel-mobile-btn${mobileAccessOn ? " on" : ""}`}
             disabled={mobileAccessBusy}
             aria-pressed={mobileAccessOn}
             aria-label={t("projectFilesView.mobileAccessAria", { name: project?.name ?? "" })}
@@ -1227,7 +1227,7 @@ export function ProjectFilesView({
           </button>
         )}
         {mobileAccessError && (
-          <div className="right-panel-mobile-access-error" role="alert">{mobileAccessError}</div>
+          <div className="side-panel-mobile-access-error" role="alert">{mobileAccessError}</div>
         )}
         {sshTagMenu && projectId && (
           <ContextMenuPortal
@@ -1285,7 +1285,7 @@ export function ProjectFilesView({
           {remoteSshState === "connected" && (
             <button
               type="button"
-              className="right-panel-conn-logout"
+              className="side-panel-conn-logout"
               aria-label={t("projectFilesView.logoutAriaLabel", { host: project.remote.host })}
               title={t("projectFilesView.logoutTitle", {
                 host: project.remote.host,
@@ -1435,12 +1435,12 @@ export function ProjectFilesView({
           project still needs it here to flip the tree between host and mirror.
           It gets its own row in the header's place: ABOVE the Files/Git/Search/
           Apps toolbar, so the compact viewer stacks source-switch → view row →
-          content in the same order the right panel does. Deliberately NOT gated
-          on the files view — the right panel's switch is always up, and a row
+          content in the same order the side panel does. Deliberately NOT gated
+          on the files view — the side panel's switch is always up, and a row
           that appeared only under "Files" would shove the toolbar up and down on
           every view change. */}
       {compact && !activeBox && project?.remote && projectId && (
-        <div className="right-panel-source right-panel-source--compact">
+        <div className="side-panel-source side-panel-source--compact">
           <FileSourceSwitch source={source} onChange={setSource} />
           {/* Remote side only, same reason as the full header's copy above — and
               this is the compact (docked subwindow) viewer, where the switch and
@@ -1456,7 +1456,7 @@ export function ProjectFilesView({
         </div>
       )}
 
-      <div className="right-panel-toolbar">
+      <div className="side-panel-toolbar">
         {(["files", "git", "search", "windows"] as View[]).map((v) => (
           <button
             key={v}
@@ -1484,7 +1484,7 @@ export function ProjectFilesView({
             first shows up at all. */}
         {!activeBox && project?.remote && projectId && (
           <button
-            className={`toolbar-btn right-panel-orange-btn${view === "orange" ? " active" : ""}`}
+            className={`toolbar-btn side-panel-orange-btn${view === "orange" ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "orange"}
             onClick={() => setView((v) => (v === "orange" ? "files" : "orange"))}
@@ -1493,7 +1493,7 @@ export function ProjectFilesView({
             })}
           >
             ± {orangeFiles.length + newLocalFiles.length > 0 && (
-              <span className="right-panel-orange-count">
+              <span className="side-panel-orange-count">
                 {orangeFiles.length + newLocalFiles.length}
               </span>
             )}
@@ -1504,26 +1504,26 @@ export function ProjectFilesView({
             click from being reattached. */}
         {!activeBox && project?.remote && projectId && (
           <button
-            className={`toolbar-btn right-panel-orange-btn${view === "sessions" ? " active" : ""}`}
+            className={`toolbar-btn side-panel-orange-btn${view === "sessions" ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "sessions"}
             onClick={() => setView((v) => (v === "sessions" ? "files" : "sessions"))}
             title={t("projectFilesView.persistentSessionsTitle", { count: sessionRows.length })}
           >
-            ☰ {sessionRows.length > 0 && <span className="right-panel-orange-count">{sessionRows.length}</span>}
+            ☰ {sessionRows.length > 0 && <span className="side-panel-orange-count">{sessionRows.length}</span>}
           </button>
         )}
         {/* SLURM jobs (HPC): shown only when the host actually has SLURM, so the
             toggle never appears off-cluster. Badged with the live queue count. */}
         {!activeBox && slurmSupported && projectId && (
           <button
-            className={`toolbar-btn right-panel-orange-btn${view === "jobs" ? " active" : ""}`}
+            className={`toolbar-btn side-panel-orange-btn${view === "jobs" ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "jobs"}
             onClick={() => setView((v) => (v === "jobs" ? "files" : "jobs"))}
             title={t("projectFilesView.slurmJobsTitle", { count: jobRows.length })}
           >
-            ⚙ {jobRows.length > 0 && <span className="right-panel-orange-count">{jobRows.length}</span>}
+            ⚙ {jobRows.length > 0 && <span className="side-panel-orange-count">{jobRows.length}</span>}
           </button>
         )}
         {importDrop.canImport && (
@@ -1682,7 +1682,7 @@ export function ProjectFilesView({
       )}
 
       {view === "git" && (
-        <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
+        <div className="side-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
           {nestedRoot && (
             <div className="nested-repo-toggle" role="group" aria-label={t("projectFilesView.gitRepositoryAriaLabel")}>
               <button
@@ -1717,9 +1717,9 @@ export function ProjectFilesView({
       )}
 
       {view === "orange" && (
-        <div className="right-panel-scroll right-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
+        <div className="side-panel-scroll side-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
           {orangeFiles.length === 0 && newLocalFiles.length === 0 ? (
-            <div className="right-panel-orange-empty">{t("projectFilesView.noDivergedFiles")}</div>
+            <div className="side-panel-orange-empty">{t("projectFilesView.noDivergedFiles")}</div>
           ) : (
             <>
               {/* Bulk "…for all" resolution: take one side for every diverged
@@ -2084,7 +2084,7 @@ export function ProjectFilesView({
       )}
 
       {view === "sessions" && (
-        <div className="right-panel-scroll right-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
+        <div className="side-panel-scroll side-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
           {!remoteBlocked && (
             <label
               className="tmux-scope-toggle"
@@ -2099,7 +2099,7 @@ export function ProjectFilesView({
             </label>
           )}
           {sessionRows.length === 0 ? (
-            <div className="right-panel-orange-empty">
+            <div className="side-panel-orange-empty">
               {t(
                 remoteBlocked
                   ? "projectFilesView.connectToListSessions"
@@ -2236,13 +2236,13 @@ export function ProjectFilesView({
       })()}
 
       {view === "jobs" && (
-        <div className="right-panel-scroll right-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
-          <div className="right-panel-jobs-head">
+        <div className="side-panel-scroll side-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
+          <div className="side-panel-jobs-head">
             <UntestedTag />
           </div>
           {wsRows.length > 0 && (
             <>
-              <div className="right-panel-orange-note">
+              <div className="side-panel-orange-note">
                 {t("projectFilesView.workspacesNote")}
                 {project?.hpc?.logs_dir && (
                   <button
@@ -2299,7 +2299,7 @@ export function ProjectFilesView({
             </>
           )}
           {jobRows.length === 0 ? (
-            <div className="right-panel-orange-empty">
+            <div className="side-panel-orange-empty">
               {t(
                 remoteBlocked
                   ? "projectFilesView.connectToListJobs"
@@ -2385,7 +2385,7 @@ export function ProjectFilesView({
       )}
 
       {view === "windows" && (
-        <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto", padding: 4 }}>
+        <div className="side-panel-scroll" style={{ flex: 1, overflowY: "auto", padding: 4 }}>
           {windows.length === 0 ? (
             <div className="file-tree-empty">{t("projectFilesView.noOpenedWindows")}</div>
           ) : (

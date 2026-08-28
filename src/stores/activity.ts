@@ -629,7 +629,7 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
 
 // App-lifetime listener: clears the run animation when a detached script
 // finishes (run_id is the script's absolute path). Lives in the store rather
-// than in FileTree so the run state survives right-panel hide/show, which
+// than in FileTree so the run state survives side-panel hide/show, which
 // unmounts the tree — see TODO group R #34. Guarded so non-Tauri contexts
 // (e.g. unit tests, where the IPC bridge is absent) don't throw on import.
 if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {

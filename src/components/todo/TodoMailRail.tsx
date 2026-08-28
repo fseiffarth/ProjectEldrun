@@ -45,7 +45,7 @@ export function TodoMailRail({ tasks, defaultCalendarId, firstColumnId }: Props)
     if (!mailClient || !overlayOpen) return;
     // The 60 s re-read (and the re-read on a `mail:new` arrival) is the ONE
     // shared refcounted poll in `stores/todo` — `useAlertsFeed` rides the same
-    // one, so the board beside an open right panel costs no second interval.
+    // one, so the board beside an open side panel costs no second interval.
     retainUrgentMailPoll();
     return releaseUrgentMailPoll;
   }, [mailClient, overlayOpen]);

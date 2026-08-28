@@ -1,5 +1,5 @@
 /**
- * The right panel in the ROOT scope: the scope that belongs to no project gets
+ * The side panel in the ROOT scope: the scope that belongs to no project gets
  * the same file viewer, rooted at `~/eldrun/root` (`rootDir`) — the staging area
  * for data that is only being looked at, or has no project to belong to yet.
  *
@@ -21,7 +21,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 
-import { RightPanel } from "../components/layout/RightPanel";
+import { SidePanel } from "../components/layout/SidePanel";
 import { useProjectsStore } from "../stores/projects";
 import { useBoxesStore } from "../stores/boxes";
 import { useTabsStore, ROOT_SCOPE } from "../stores/tabs";
@@ -42,11 +42,11 @@ beforeEach(() => {
   useTabsStore.setState({ scope: ROOT_SCOPE });
 });
 
-describe("RightPanel at the root scope", () => {
+describe("SidePanel at the root scope", () => {
   it("roots the tree at rootDir and names the scope", async () => {
     let container!: HTMLElement;
     await act(async () => {
-      ({ container } = render(<RightPanel open={true} />));
+      ({ container } = render(<SidePanel open={true} />));
     });
 
     expect(listedDirs().map((a) => a.projectDir)).toContain(ROOT_DIR);
@@ -62,7 +62,7 @@ describe("RightPanel at the root scope", () => {
 
     let container!: HTMLElement;
     await act(async () => {
-      ({ container } = render(<RightPanel open={true} />));
+      ({ container } = render(<SidePanel open={true} />));
     });
 
     expect(listedDirs().map((a) => a.projectDir)).not.toContain(ROOT_DIR);

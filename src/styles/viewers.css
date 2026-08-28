@@ -511,7 +511,7 @@
   color: var(--text-muted);
 }
 /* Header row for the Jobs (SLURM) view — just carries the untested tag. */
-.right-panel-jobs-head {
+.side-panel-jobs-head {
   display: flex;
   justify-content: flex-end;
   padding: 4px 6px 0;

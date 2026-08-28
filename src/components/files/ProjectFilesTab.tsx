@@ -9,7 +9,7 @@ import { useT, type TranslationKey } from "../../lib/i18n";
 
 /**
  * Open a Files (Project) tab on a folder — what the file tree's "Open in a new
- * tab" does, from the right panel and from another Files (Project) tab alike.
+ * tab" does, from the side panel and from another Files (Project) tab alike.
  * The tab lands in the store's current scope, i.e. the project the tree belongs
  * to. Always labelled "Files (Project)" so it reads as this tab kind (not the
  * plain "Files" explorer) at a glance; the browsed folder shows in the tab's
@@ -32,11 +32,11 @@ export function openProjectFilesTab(
 }
 
 /**
- * The "Files (Project)" tab: the right panel's file viewer, hosted in a tab.
+ * The "Files (Project)" tab: the side panel's file viewer, hosted in a tab.
  * Everything visible — the view switcher, git bar + history, search, apps,
  * orange list, tree, drag-and-drop, sync overlay, type tags, source switch and
  * settings — comes from the shared `ProjectFilesView`, the same component
- * `RightPanel` renders, so the tab can never drift from the panel. This host
+ * `SidePanel` renders, so the tab can never drift from the panel. This host
  * owns only what must differ: it resolves the project from its own `scope`
  * (rather than the active project) and keeps the browsed folder on the *tab*
  * (`TabEntry.folder`, persisted), which is what makes "Open in a new tab" on a

@@ -65,27 +65,41 @@ fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(BINARY_SNIFF_BYTES).any(|&b| b == 0)
 }
 
+/// Per-char lower-casing, matching how `first_match_col` builds its lowered
+/// haystack. `str::to_lowercase` is context-sensitive for Greek final sigma
+/// (Σ → ς at a word end, σ elsewhere); the per-char form always yields σ, and
+/// needle and haystack must agree or a trailing Σ in the query never matches.
+fn lowercase_chars(s: &str) -> String {
+    s.chars().flat_map(char::to_lowercase).collect()
+}
+
 /// Find the 1-based char column of the first occurrence of `needle` in `hay`.
-/// For a case-insensitive search the caller passes the already-lower-cased
-/// needle in `needle_lower` (computed once per file, not once per line);
-/// `None` there means a case-sensitive search. Returns `None` when absent.
+/// For a case-insensitive search the caller passes the needle already
+/// lower-cased via `lowercase_chars` in `needle_lower` (computed once per
+/// file, not once per line); `None` there means a case-sensitive search.
+/// Returns `None` when absent.
 fn first_match_col(hay: &str, needle: &str, needle_lower: Option<&str>) -> Option<u32> {
     let byte_idx = if let Some(needle_l) = needle_lower {
-        // Case-insensitive: lower-case the haystack. The byte index into the
-        // lower-cased haystack maps back to a char column because lower-casing
-        // is done per the original char order; we recompute the column by
-        // counting chars of the original string up to the matched char count.
-        let hay_l = hay.to_lowercase();
+        // Case-insensitive: lower-case the haystack per char, keeping a map
+        // from each lowered char back to the byte index of the original char
+        // that produced it. Counting chars is NOT enough — lower-casing can
+        // expand one char into several ('İ' → "i\u{307}"), which would drift
+        // the column right past every such char before the match.
+        let mut hay_l = String::with_capacity(hay.len());
+        let mut orig_byte_of_lowered_char: Vec<usize> = Vec::new();
+        for (orig_byte, c) in hay.char_indices() {
+            for lc in c.to_lowercase() {
+                orig_byte_of_lowered_char.push(orig_byte);
+                hay_l.push(lc);
+            }
+        }
         hay_l.find(needle_l).map(|lower_idx| {
-            // Count chars in the lower-cased prefix; that char count is also the
-            // char count of the original prefix (lower-casing preserves char
-            // order, though not necessarily byte length per char).
-            let char_count = hay_l[..lower_idx].chars().count();
-            // Convert that char count back to a byte index into the ORIGINAL
-            // string so the shared mapping below works uniformly.
-            hay.char_indices()
-                .nth(char_count)
-                .map(|(b, _)| b)
+            // A match starting inside an expansion still maps to the original
+            // char that produced it, which is the honest column to report.
+            let lowered_char_count = hay_l[..lower_idx].chars().count();
+            orig_byte_of_lowered_char
+                .get(lowered_char_count)
+                .copied()
                 .unwrap_or(hay.len())
         })
     } else {
@@ -123,7 +137,7 @@ fn scan_file(
     let content = String::from_utf8_lossy(&bytes);
     let path_str = path.to_string_lossy().to_string();
     // Lower-case the needle once per file rather than once per line.
-    let needle_lower = (!case_sensitive).then(|| query.to_lowercase());
+    let needle_lower = (!case_sensitive).then(|| lowercase_chars(query));
     for (i, raw_line) in content.lines().enumerate() {
         if out.len() >= max_results {
             return;
@@ -306,6 +320,24 @@ mod tests {
         let b = matches.iter().find(|m| m.rel == "b.rs").unwrap();
         assert_eq!(b.col, 5);
         assert_eq!(b.line, 1);
+    }
+
+    #[test]
+    fn case_insensitive_col_survives_expanding_lowercase() {
+        // 'İ' (U+0130) lower-cases to TWO chars ("i\u{307}"); a char-count
+        // mapping drifts the column right past every such char (11.1).
+        // "İİ NEEDLE": İ, İ, space = 3 chars, so NEEDLE is at char column 4.
+        assert_eq!(first_match_col("İİ NEEDLE", "needle", Some("needle")), Some(4));
+        // Sanity: no expanding chars before the match stays exact.
+        assert_eq!(first_match_col("ab NEEDLE", "needle", Some("needle")), Some(4));
+        // Expanding char INSIDE the needle: query "İx" must find "İX".
+        let needle_l = lowercase_chars("İx");
+        assert_eq!(first_match_col("zz İX", "İx", Some(&needle_l)), Some(4));
+        // Greek capital sigma at a word end: per-char lowering on both sides
+        // keeps needle and haystack in agreement (always σ, never ς).
+        let sigma_l = lowercase_chars("ΑΣ");
+        assert_eq!(first_match_col("x ΑΣ y", "ΑΣ", Some(&sigma_l)), Some(3));
+        assert_eq!(first_match_col("nope", "needle", Some("needle")), None);
     }
 
     #[test]

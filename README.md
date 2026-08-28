@@ -105,7 +105,7 @@ See [VISION.md](docs/VISION.md) for the full strategy and platform rationale.
 desktop swaps to it. **②** inside, a tiling tab layout hosts agent terminals
 (26 built-in CLIs plus your own, resumable, with a per-tab Plan/Auto mode),
 shells, native file viewers, and the app tabs Eldrun renders itself instead of
-sending you to another window. Alongside them sit the right panel (Files · Git
+sending you to another window. Alongside them sit the side panel (Files · Git
 · Search · Apps) and the header, where mail, the calendar, the to-do board, the
 machine hub, and the VPN live next to the global app toolbar. **③** the
 project-desktop layer — window parking, default-app mapping, time tracking and
@@ -232,7 +232,7 @@ update-desktop-database ~/.local/share/applications/
   visible across all project switches.
 - **External window tracking**: file opens use `xdg-open` (Linux) / the shell
   open verb (Windows); launched windows are tracked by PID — found via
-  `EnumWindows` on Windows — and shown in the right panel instead of embedded in
+  `EnumWindows` on Windows — and shown in the side panel instead of embedded in
   the UI.
 - **Default app mapping**: file extensions use per-project overrides, global
   defaults, system MIME defaults, or a manual "Open With" picker.
@@ -389,7 +389,7 @@ without an sshfs/FUSE mount anywhere.
   catalog install, update, unload, and delete controls.
 - **Hover-revealed panels**: the global app bar and right file panel appear on
   pointer hover and disappear when the pointer leaves, keeping the center
-  terminal unobstructed; the right panel can also be pinned permanently open.
+  terminal unobstructed; the side panel can also be pinned permanently open.
 
 ### Isolation tiers: container, VM, and the Trash workspace
 

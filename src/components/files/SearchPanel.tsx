@@ -101,7 +101,7 @@ export function SearchPanel({
 
   if (!projectDir) {
     return (
-      <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto", padding: 8 }}>
+      <div className="side-panel-scroll" style={{ flex: 1, overflowY: "auto", padding: 8 }}>
         <div className="file-tree-empty">{t("search.openProjectToSearch")}</div>
       </div>
     );
@@ -157,7 +157,7 @@ export function SearchPanel({
         </label>
       </div>
 
-      <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
+      <div className="side-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
         {error ? (
           <div
             style={{

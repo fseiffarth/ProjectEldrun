@@ -20,7 +20,7 @@ export interface EmbedCap {
  *
  * Two drag kinds share this state:
  *  - "tab"  — an existing tab being reordered / moved / split (TabBar source).
- *  - "file" — a file row dragged from the right-panel FileTree to open as an
+ *  - "file" — a file row dragged from the side-panel FileTree to open as an
  *             embedded tab (TODO Group K #40). A tab-bar drop adds the embed tab
  *             to that group; a subwindow-body edge drop carves out a NEW
  *             subwindow holding it (overGroup/edge, like tab drags). Capability

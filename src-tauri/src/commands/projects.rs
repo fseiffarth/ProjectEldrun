@@ -382,6 +382,39 @@ pub(crate) fn patch_project_entry<R>(
     })
 }
 
+/// [`patch_project_entry`] plus the mirror write every per-field setter used to
+/// open-code: after the registry patch lands, apply `patch_project` to the
+/// entry's own `project.json` and write it back atomically. The mirror closure
+/// receives the registry patch's result, so a value computed under the registry
+/// lock (e.g. the merged host list) can be mirrored without a second read. A
+/// missing `project.json` is fine — the registry is the source of truth and the
+/// file is display/export data (a remote project's copy may simply not exist
+/// locally). An *existing* file that fails to parse is an error, not a silent
+/// skip: the registry write has already landed by then, so skipping quietly is
+/// exactly how the two copies diverge with no signal.
+pub(crate) fn patch_project_entry_mirrored<R>(
+    project_id: &str,
+    patch_entry: impl FnOnce(&mut ProjectEntry) -> Result<R, String>,
+    patch_project: impl FnOnce(&mut Project, &R),
+) -> Result<R, String> {
+    let (result, local_file) = patch_project_entry(project_id, |entry| {
+        let result = patch_entry(entry)?;
+        Ok((result, entry.local_file.clone()))
+    })?;
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        let mut project: Project = storage::read_json(&proj_path).map_err(|e| {
+            format!(
+                "the registry was updated, but the project's own project.json \
+                 could not be read to mirror the change (it is now stale): {e}"
+            )
+        })?;
+        patch_project(&mut project, &result);
+        storage::write_json_atomic(&proj_path, &project).map_err(|e| e.to_string())?;
+    }
+    Ok(result)
+}
+
 /// The built-in Trash workspace is deliberately a project rather than a second
 /// root scope: it gives disposable agents a trusted, always-on containment
 /// record. Its state-dir entry is authoritative; its in-folder `project.json`
@@ -663,7 +696,9 @@ fn entry_is_remote(entry: &ProjectEntry) -> bool {
 
 /// Move a directory tree from `src` to `dst`, creating `dst`'s parent. Tries a
 /// fast `rename` first and falls back to recursive copy + remove when that fails
-/// (e.g. a cross-filesystem move). No-op when `src` does not exist.
+/// (e.g. a cross-filesystem move). No-op when `src` does not exist. `src` is
+/// only removed after the whole copy succeeded, so a failed fallback leaves the
+/// source intact and the move retryable.
 fn move_tree(src: &Path, dst: &Path) -> Result<(), String> {
     if !src.exists() {
         return Ok(());
@@ -674,24 +709,79 @@ fn move_tree(src: &Path, dst: &Path) -> Result<(), String> {
     if fs::rename(src, dst).is_ok() {
         return Ok(());
     }
-    copy_tree(src, dst).map_err(|e| e.to_string())?;
+    copy_tree_core(src, dst, true)?;
     fs::remove_dir_all(src).map_err(|e| e.to_string())?;
     Ok(())
 }
 
-fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
+/// The ONE recursive tree-copy core behind both copiers ([`move_tree`]'s
+/// cross-device fallback and [`copy_dir_all`]).
+///
+/// `keep_git` says whose copy this is: an archive/restore/mirror **move**
+/// carries `.git` verbatim — the tree *is* the project, history included —
+/// while the duplicate/import path leaves git's administrative state behind
+/// (and skips any directory holding a `.git` of either kind, see
+/// [`copy_dir_all`]'s doc for why the *file* form matters).
+///
+/// Symlinks are **recreated as links, never followed**. Following them
+/// (`fs::copy` on the link path, as both copiers used to) has two failure
+/// modes: a *dangling* link — a stale venv/node `bin` pointer is the ordinary
+/// case — errored out a cross-device `archive_project` halfway through the
+/// move, and a link to a large tree silently duplicated it. A dangling link is
+/// therefore fine here: the link itself is copied, pointing at the same target.
+fn copy_tree_core(src: &Path, dst: &Path, keep_git: bool) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+        if !keep_git && entry.file_name() == ".git" {
+            continue;
+        }
         let from = entry.path();
         let to = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_tree(&from, &to)?;
+        if file_type.is_symlink() {
+            copy_symlink(&from, &to)?;
+        } else if file_type.is_dir() {
+            if !keep_git && fs::symlink_metadata(from.join(".git")).is_ok() {
+                continue;
+            }
+            copy_tree_core(&from, &to, keep_git)?;
         } else {
-            fs::copy(&from, &to)?;
+            fs::copy(&from, &to).map_err(|e| e.to_string())?;
         }
     }
     Ok(())
+}
+
+/// Recreate one symlink at `to`, replacing whatever an interrupted earlier copy
+/// may have left there (that is what makes a resumed `archive_project` pass
+/// idempotent). On Windows creating a symlink needs a privilege most users
+/// lack, so a refused link degrades to copying what it resolves to — and a
+/// dangling one is skipped, since it pointed at nothing to lose.
+fn copy_symlink(from: &Path, to: &Path) -> Result<(), String> {
+    let target = fs::read_link(from).map_err(|e| e.to_string())?;
+    if fs::symlink_metadata(to).is_ok() {
+        let _ = fs::remove_file(to);
+    }
+    #[cfg(unix)]
+    return std::os::unix::fs::symlink(&target, to).map_err(|e| e.to_string());
+    #[cfg(windows)]
+    {
+        let is_dir = fs::metadata(from).map(|m| m.is_dir()).unwrap_or(false);
+        let made = if is_dir {
+            std::os::windows::fs::symlink_dir(&target, to)
+        } else {
+            std::os::windows::fs::symlink_file(&target, to)
+        };
+        if made.is_err() {
+            if let Ok(meta) = fs::metadata(from) {
+                if meta.is_file() {
+                    fs::copy(from, to).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The original path if free, else a collision-safe sibling, so restoring never
@@ -777,7 +867,13 @@ pub fn archive_project_blocking(project_id: String, archived_at: String) -> Resu
     let remote = entry_is_remote(&entry);
 
     let dest = paths::archive_root().join(&project_id);
-    if dest.exists() {
+    // The manifest is written LAST, so its presence is what "already archived"
+    // means. A dest without one is a previous attempt that failed partway
+    // (e.g. a cross-device move erroring mid-copy): resume into it — move_tree
+    // no-ops for trees already moved and re-copies over any partial copy —
+    // rather than refusing with no path forward (the project is still
+    // registered, its folders half here, and retry used to be blocked).
+    if dest.join("entry.json").exists() {
         return Err(format!(
             "an archived project with id '{project_id}' already exists"
         ));
@@ -1084,30 +1180,23 @@ pub fn set_project_description(
 ) -> Result<Option<String>, String> {
     let cleaned = clean_description(description);
 
-    // projects.json — find the entry and update its flattened `description`.
-    let local_file = patch_project_entry(&project_id, |entry| {
-        match &cleaned {
-            Some(d) => {
-                entry
-                    .extra
-                    .insert("description".to_string(), Value::String(d.clone()));
+    patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            match &cleaned {
+                Some(d) => {
+                    entry
+                        .extra
+                        .insert("description".to_string(), Value::String(d.clone()));
+                }
+                None => {
+                    entry.extra.remove("description");
+                }
             }
-            None => {
-                entry.extra.remove("description");
-            }
-        }
-        Ok(entry.local_file.clone())
-    })?;
-
-    // project.json — keep the per-project file consistent (best effort: a
-    // missing file is not fatal since the list is the source of truth for pills).
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.description = cleaned.clone();
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
+            Ok(())
+        },
+        |project, ()| project.description = cleaned.clone(),
+    )?;
 
     Ok(cleaned)
 }
@@ -1126,21 +1215,14 @@ pub fn set_project_name(project_id: String, name: String) -> Result<String, Stri
         return Err("project name cannot be empty".to_string());
     }
 
-    // projects.json — find the entry and update its `name`.
-    let local_file = patch_project_entry(&project_id, |entry| {
-        entry.name = cleaned.clone();
-        Ok(entry.local_file.clone())
-    })?;
-
-    // project.json — keep the per-project file consistent (best effort: a
-    // missing file is not fatal since the list is the source of truth for pills).
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.name = cleaned.clone();
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
+    patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            entry.name = cleaned.clone();
+            Ok(())
+        },
+        |project, ()| project.name = cleaned.clone(),
+    )?;
 
     Ok(cleaned)
 }
@@ -1341,27 +1423,23 @@ pub fn set_project_remote_control(
     project_id: String,
     remote_control: Option<bool>,
 ) -> Result<Option<bool>, String> {
-    let local_file = patch_project_entry(&project_id, |entry| {
-        match remote_control {
-            Some(v) => {
-                entry
-                    .extra
-                    .insert("remote_control".into(), serde_json::Value::Bool(v));
+    patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            match remote_control {
+                Some(v) => {
+                    entry
+                        .extra
+                        .insert("remote_control".into(), serde_json::Value::Bool(v));
+                }
+                None => {
+                    entry.extra.remove("remote_control");
+                }
             }
-            None => {
-                entry.extra.remove("remote_control");
-            }
-        }
-        Ok(entry.local_file.clone())
-    })?;
-
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.remote_control = remote_control;
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
+            Ok(())
+        },
+        |project, ()| project.remote_control = remote_control,
+    )?;
     Ok(remote_control)
 }
 
@@ -1370,19 +1448,14 @@ pub fn set_project_remote_control(
 /// project's own `project.json` (best effort — the list is the source of truth).
 fn write_project_sandbox_spec(project_id: &str, spec: &SandboxSpec) -> Result<(), String> {
     let value = serde_json::to_value(spec).map_err(|e| e.to_string())?;
-    let local_file = patch_project_entry(project_id, |entry| {
-        entry.extra.insert("sandbox".to_string(), value);
-        Ok(entry.local_file.clone())
-    })?;
-
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.sandbox = Some(spec.clone());
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
+    patch_project_entry_mirrored(
+        project_id,
+        |entry| {
+            entry.extra.insert("sandbox".to_string(), value);
+            Ok(())
+        },
+        |project, ()| project.sandbox = Some(spec.clone()),
+    )
 }
 
 /// Toggle-time container preflight: is docker installed, is the daemon up, does
@@ -1435,28 +1508,25 @@ pub fn set_project_openvpn(
 /// `project.json` (best effort — a remote project's copy may be unreachable).
 /// Errors if the project is unknown or not remote.
 fn patch_remote_spec(project_id: &str, patch: impl Fn(&mut RemoteSpec)) -> Result<(), String> {
-    let local_file = patch_project_entry(project_id, |entry| {
-        let remote_val = entry
-            .extra
-            .get_mut("remote")
-            .ok_or_else(|| "project is not remote".to_string())?;
-        let mut remote: RemoteSpec =
-            serde_json::from_value(remote_val.clone()).map_err(|e| e.to_string())?;
-        patch(&mut remote);
-        *remote_val = serde_json::to_value(&remote).map_err(|e| e.to_string())?;
-        Ok(entry.local_file.clone())
-    })?;
-
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+    patch_project_entry_mirrored(
+        project_id,
+        |entry| {
+            let remote_val = entry
+                .extra
+                .get_mut("remote")
+                .ok_or_else(|| "project is not remote".to_string())?;
+            let mut remote: RemoteSpec =
+                serde_json::from_value(remote_val.clone()).map_err(|e| e.to_string())?;
+            patch(&mut remote);
+            *remote_val = serde_json::to_value(&remote).map_err(|e| e.to_string())?;
+            Ok(())
+        },
+        |project, ()| {
             if let Some(r) = project.remote.as_mut() {
                 patch(r);
-                storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
             }
-        }
-    }
-    Ok(())
+        },
+    )
 }
 
 /// Opt a **remote** project in/out of auto-connect (launch + activation bring the
@@ -1715,30 +1785,25 @@ fn patch_compute_hosts(
     project_id: &str,
     patch: impl Fn(&mut Vec<ComputeHost>),
 ) -> Result<Vec<ComputeHost>, String> {
-    let (hosts, local_file) = patch_project_entry(project_id, |entry| {
-        let mut hosts: Vec<ComputeHost> = entry
-            .extra
-            .get("compute_hosts")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-        patch(&mut hosts);
-        let value = serde_json::to_value(&hosts).map_err(|e| e.to_string())?;
-        if hosts.is_empty() {
-            entry.extra.remove("compute_hosts");
-        } else {
-            entry.extra.insert("compute_hosts".to_string(), value);
-        }
-        Ok((hosts, entry.local_file.clone()))
-    })?;
-
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.compute_hosts = hosts.clone();
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(hosts)
+    patch_project_entry_mirrored(
+        project_id,
+        |entry| {
+            let mut hosts: Vec<ComputeHost> = entry
+                .extra
+                .get("compute_hosts")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            patch(&mut hosts);
+            let value = serde_json::to_value(&hosts).map_err(|e| e.to_string())?;
+            if hosts.is_empty() {
+                entry.extra.remove("compute_hosts");
+            } else {
+                entry.extra.insert("compute_hosts".to_string(), value);
+            }
+            Ok(hosts)
+        },
+        |project, hosts| project.compute_hosts = hosts.clone(),
+    )
 }
 
 /// Persist which machine shells launched from this project run on — the choice
@@ -1757,27 +1822,23 @@ pub fn set_project_run_host(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    let local_file = patch_project_entry(&project_id, |entry| {
-        match &value {
-            Some(v) => {
-                entry
-                    .extra
-                    .insert("run_host".into(), serde_json::Value::String(v.clone()));
+    patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            match &value {
+                Some(v) => {
+                    entry
+                        .extra
+                        .insert("run_host".into(), serde_json::Value::String(v.clone()));
+                }
+                None => {
+                    entry.extra.remove("run_host");
+                }
             }
-            None => {
-                entry.extra.remove("run_host");
-            }
-        }
-        Ok(entry.local_file.clone())
-    })?;
-
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.run_host = value.clone();
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
+            Ok(())
+        },
+        |project, ()| project.run_host = value.clone(),
+    )?;
     Ok(value)
 }
 
@@ -1899,30 +1960,33 @@ pub fn set_project_categories(
 ) -> Result<Vec<String>, String> {
     let cleaned = clean_categories(categories);
 
-    // projects.json — mirror into the entry's flattened `categories`.
-    let local_file = patch_project_entry(&project_id, |entry| {
-        if cleaned.is_empty() {
-            entry.extra.remove("categories");
-        } else {
-            let value = serde_json::to_value(&cleaned).map_err(|e| e.to_string())?;
-            entry.extra.insert("categories".to_string(), value);
-        }
-        Ok(entry.local_file.clone())
-    })?;
-
-    // project.json — keep the per-project file consistent (best effort).
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            if cleaned.is_empty() {
-                project.extra.remove("categories");
-            } else {
-                let value = serde_json::to_value(&cleaned).map_err(|e| e.to_string())?;
-                project.extra.insert("categories".to_string(), value);
+    let value = if cleaned.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_value(&cleaned).map_err(|e| e.to_string())?)
+    };
+    patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            match &value {
+                Some(v) => {
+                    entry.extra.insert("categories".to_string(), v.clone());
+                }
+                None => {
+                    entry.extra.remove("categories");
+                }
             }
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
+            Ok(())
+        },
+        |project, ()| match &value {
+            Some(v) => {
+                project.extra.insert("categories".to_string(), v.clone());
+            }
+            None => {
+                project.extra.remove("categories");
+            }
+        },
+    )?;
 
     Ok(cleaned)
 }
@@ -1948,7 +2012,6 @@ pub fn set_project_git_disabled(project_id: String, disabled: bool) -> Result<St
         .iter()
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("project '{project_id}' not found"))?;
-    let local_file = entry.local_file.clone();
     let directory = entry
         .extra
         .get("directory")
@@ -1987,22 +2050,17 @@ pub fn set_project_git_disabled(project_id: String, disabled: bool) -> Result<St
         "local".to_string()
     };
 
-    // projects.json — mirror the new push-axis type into the flattened entry.
-    patch_project_entry(&project_id, |entry| {
-        entry
-            .extra
-            .insert("git_type".to_string(), Value::String(new_git_type.clone()));
-        Ok(())
-    })?;
-
-    // project.json — keep the per-project file consistent (best effort).
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.git_type = Some(new_git_type.clone());
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
+    // Mirror the new push-axis type into the flattened entry + project.json.
+    patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            entry
+                .extra
+                .insert("git_type".to_string(), Value::String(new_git_type.clone()));
+            Ok(())
+        },
+        |project, ()| project.git_type = Some(new_git_type.clone()),
+    )?;
 
     Ok(new_git_type)
 }
@@ -2084,7 +2142,7 @@ pub fn save_tab_layout(
 }
 
 /// `~/eldrun/root` — the working directory of everything that belongs to no
-/// project (the root control terminal, and now the right panel's file tree over
+/// project (the root control terminal, and now the side panel's file tree over
 /// the same folder, which is where data lands while it is only being looked at
 /// or before it has a project to belong to).
 ///
@@ -2177,24 +2235,16 @@ pub fn set_remote_mirror_dir(project_id: String, path: String) -> Result<String,
 /// reads) and the project's `project.json` (best effort). Shared by
 /// `set_remote_mirror_dir` and `move_remote_mirror`.
 fn persist_mirror_dir(project_id: &str, resolved: &str) -> Result<(), String> {
-    // projects.json — the always-local source of truth.
-    let local_file = patch_project_entry(project_id, |entry| {
-        entry
-            .extra
-            .insert("mirror".to_string(), Value::String(resolved.to_string()));
-        Ok(entry.local_file.clone())
-    })?;
-
-    // project.json — keep the per-project file consistent (best effort).
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.mirror = Some(resolved.to_string());
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
-
-    Ok(())
+    patch_project_entry_mirrored(
+        project_id,
+        |entry| {
+            entry
+                .extra
+                .insert("mirror".to_string(), Value::String(resolved.to_string()));
+            Ok(())
+        },
+        |project, ()| project.mirror = Some(resolved.to_string()),
+    )
 }
 
 /// Move a remote (SSH) project's local mirror folder to a new location: the user
@@ -3761,24 +3811,7 @@ pub(crate) fn sanitize_name(name: &str) -> String {
 /// into the original's index and HEAD. A directory holding one is likewise not copied
 /// into: a nested repo or worktree is not this tree's content to duplicate.
 fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
-    fs::create_dir_all(dst).map_err(|e| e.to_string())?;
-    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let file_type = entry.file_type().map_err(|e| e.to_string())?;
-        if entry.file_name() == ".git" {
-            continue;
-        }
-        let target = dst.join(entry.file_name());
-        if file_type.is_dir() {
-            if fs::symlink_metadata(entry.path().join(".git")).is_ok() {
-                continue;
-            }
-            copy_dir_all(&entry.path(), &target)?;
-        } else {
-            fs::copy(entry.path(), target).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
+    copy_tree_core(src, dst, false)
 }
 
 /// Mint a pseudo-UUID without an external dep. Time-based (nanos), so callers
@@ -3835,6 +3868,55 @@ mod tests {
             !dst.join("wt").exists(),
             "a directory holding a .git of either kind is not this tree's content"
         );
+    }
+
+    /// §9.4: the archive/move copy (`keep_git: true`) carries `.git` verbatim —
+    /// the tree IS the project, history included — where the duplicate path
+    /// (`copy_dir_all`) leaves it behind.
+    #[test]
+    fn the_move_copy_carries_git_state_verbatim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join(".git")).unwrap();
+        std::fs::write(src.join(".git/HEAD"), b"ref: refs/heads/main").unwrap();
+        std::fs::write(src.join("a.txt"), b"x").unwrap();
+
+        let dst = tmp.path().join("dst");
+        copy_tree_core(&src, &dst, true).unwrap();
+        assert!(dst.join("a.txt").exists());
+        assert!(dst.join(".git/HEAD").exists());
+    }
+
+    /// §9.4: symlinks are recreated as links (never followed), and a DANGLING
+    /// one — a stale venv/node `bin` pointer is the ordinary case — is copied
+    /// rather than erroring out the whole move partway, which used to strand a
+    /// cross-device `archive_project` in an unretryable half-moved state.
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_are_preserved_and_a_dangling_one_is_tolerated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("real.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink("real.txt", src.join("live-link")).unwrap();
+        std::os::unix::fs::symlink("/nonexistent/python", src.join("dangling")).unwrap();
+
+        let dst = tmp.path().join("dst");
+        copy_tree_core(&src, &dst, true).unwrap();
+
+        assert_eq!(
+            std::fs::read_link(dst.join("live-link")).unwrap(),
+            std::path::PathBuf::from("real.txt"),
+            "a live link must stay a link, not become a second copy"
+        );
+        assert_eq!(
+            std::fs::read_link(dst.join("dangling")).unwrap(),
+            std::path::PathBuf::from("/nonexistent/python"),
+            "a dangling link is carried, not an error"
+        );
+        // Re-run over the same destination: a resumed archive pass must be
+        // idempotent, including replacing the links it already made.
+        copy_tree_core(&src, &dst, true).unwrap();
     }
 
     /// A worktree copied as a bare directory would be worse than useless — but a

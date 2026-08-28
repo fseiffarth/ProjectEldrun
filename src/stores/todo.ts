@@ -233,9 +233,9 @@ export const useTodoStore = create<TodoStore>((set, get) => ({
 // The 60 s re-read behind `urgentMail`/`importantMail`, refcounted at module
 // level — `stores/hostSessions`' retain/release pattern. It exists because the
 // consumers are mounted many times at once (`useAlertsFeed` rides the file
-// viewer, which renders in the right panel plus every Files tab, and
+// viewer, which renders in the side panel plus every Files tab, and
 // `TodoMailRail` is a third copy): each used to arm its own interval keyed on
-// `newCount`, so one mail delivery re-armed N timers and a right panel plus a
+// `newCount`, so one mail delivery re-armed N timers and a side panel plus a
 // few Files tabs cost N identical local queries per minute, forever. One poll
 // serves them all; the shared `useTodoStore` rows they already read from are
 // the shared answer.

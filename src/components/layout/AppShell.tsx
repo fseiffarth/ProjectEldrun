@@ -26,7 +26,7 @@ import { useOllamaAutoloadOnLaunch } from "../../stores/ollamaAutoload";
 import { useRendererWatchdog } from "../../lib/rendererWatchdog";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
-import { RightPanel } from "./RightPanel";
+import { SidePanel } from "./SidePanel";
 import { LogoIcon } from "./LogoIcon";
 import { MobileBridgeHost } from "../mobile/MobileBridgeHost";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
@@ -89,7 +89,7 @@ const DevPerfHost = import.meta.env.DEV
   ? lazy(() => import("../../dev/DevPerfHost").then((m) => ({ default: m.DevPerfHost })))
   : null;
 
-// Width of the right-edge band that reveals the (unpinned) right panel on hover.
+// Width of the right-edge band that reveals the (unpinned) side panel on hover.
 // Kept wide because on Windows/WebView2 the window often isn't true-fullscreen
 // (the Windows platform backend is a stub, so setFullscreen may not take) and
 // the OS resize border swallows mousemove events for the last few edge pixels —
@@ -97,14 +97,14 @@ const DevPerfHost = import.meta.env.DEV
 // crossed on the way to the edge, so the reveal fires before the dead-zone.
 const REVEAL_EDGE_PX = 8;
 
-// Right-panel width bounds. The default matches the historical fixed 280px so
+// Side-panel width bounds. The default matches the historical fixed 280px so
 // existing installs (no stored width) look unchanged; the max is capped against
 // the live window so the panel can never swallow the whole workspace.
-const RIGHT_PANEL_MIN = 220;
-const RIGHT_PANEL_DEFAULT = 280;
-function clampRightWidth(px: number): number {
-  const max = Math.max(RIGHT_PANEL_MIN, Math.min(900, window.innerWidth - 240));
-  return Math.round(Math.max(RIGHT_PANEL_MIN, Math.min(max, px)));
+const SIDE_PANEL_MIN = 220;
+const SIDE_PANEL_DEFAULT = 280;
+function clampPanelWidth(px: number): number {
+  const max = Math.max(SIDE_PANEL_MIN, Math.min(900, window.innerWidth - 240));
+  return Math.round(Math.max(SIDE_PANEL_MIN, Math.min(max, px)));
 }
 
 /**
@@ -184,9 +184,18 @@ export function AppShell() {
   const t = useT();
   const loadSettings = useSettingsStore((s) => s.load);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
-  const pinnedSetting = useSettingsStore((s) => s.settings?.right_panel_pinned ?? false);
-  const widthSetting = useSettingsStore((s) => s.settings?.right_panel_width ?? RIGHT_PANEL_DEFAULT);
-  const panelSide = useSettingsStore((s) => s.settings?.right_panel_side ?? "right");
+  // Each read falls back to the pre-rename `right_panel_*` spelling so an install
+  // that last wrote settings.json under the old name keeps its pin state, width
+  // and edge. Only the `side_panel_*` keys are ever written back.
+  const pinnedSetting = useSettingsStore(
+    (s) => s.settings?.side_panel_pinned ?? s.settings?.right_panel_pinned ?? false,
+  );
+  const widthSetting = useSettingsStore(
+    (s) => s.settings?.side_panel_width ?? s.settings?.right_panel_width ?? SIDE_PANEL_DEFAULT,
+  );
+  const panelSide = useSettingsStore(
+    (s) => s.settings?.side_panel_edge ?? s.settings?.right_panel_side ?? "right",
+  );
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const loadProjects = useProjectsStore((s) => s.load);
   const projectsLoaded = useProjectsStore((s) => s.loaded);
@@ -199,7 +208,7 @@ export function AppShell() {
   const activeId = useProjectsStore((s) => s.activeId);
   const rootDir = useProjectsStore((s) => s.rootDir);
   const scope = useTabsStore((s) => s.scope);
-  // The right panel also opens for an active box scope (multi-root file view),
+  // The side panel also opens for an active box scope (multi-root file view),
   // even when no project is the current activeId — and for the ROOT scope, whose
   // `~/eldrun/root` is the app's unfiled/scratch area: the place data lands while
   // it is only being looked at, or before it belongs to any one project. That
@@ -223,11 +232,11 @@ export function AppShell() {
   // webview (a 44 GB leak was observed 2026-07-31). See lib/rendererWatchdog.
   useRendererWatchdog();
   const [panelsHidden, setPanelsHidden] = useState(false);
-  const [rightOpen, setRightOpen] = useState(false);
-  const [rightPinned, setRightPinned] = useState(false);
-  const [rightWidth, setRightWidth] = useState(RIGHT_PANEL_DEFAULT);
-  const [resizingRight, setResizingRight] = useState(false);
-  const latestRightWidth = useRef(RIGHT_PANEL_DEFAULT);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [panelPinned, setRightPinned] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(SIDE_PANEL_DEFAULT);
+  const [resizingPanel, setResizingPanel] = useState(false);
+  const latestPanelWidth = useRef(SIDE_PANEL_DEFAULT);
   const [showHowToStart, setShowHowToStart] = useState(false);
   const [showRemoteFeaturesPrompt, setShowRemoteFeaturesPrompt] = useState(false);
   // Set only on the fresh-install path, where HowToStart takes the screen
@@ -235,7 +244,7 @@ export function AppShell() {
   // instead of stacking two modals on the very first launch.
   const [pendingRemoteFeaturesPrompt, setPendingRemoteFeaturesPrompt] = useState(false);
   const [showLessons, setShowLessons] = useState(false);
-  const rightCloseTimer = useRef<number | null>(null);
+  const panelCloseTimer = useRef<number | null>(null);
 
   useEffect(() => {
     loadSettings();
@@ -333,9 +342,9 @@ export function AppShell() {
   // window so a width saved on a wider monitor can't strand the panel off-screen).
   useEffect(() => {
     if (settingsLoaded) {
-      const w = clampRightWidth(widthSetting);
-      latestRightWidth.current = w;
-      setRightWidth(w);
+      const w = clampPanelWidth(widthSetting);
+      latestPanelWidth.current = w;
+      setPanelWidth(w);
     }
   }, [settingsLoaded, widthSetting]);
 
@@ -388,17 +397,17 @@ export function AppShell() {
   useEffect(() => {
     const openLessons = () => setShowLessons(true);
     const revealPanel = () => {
-      if (rightCloseTimer.current !== null) {
-        window.clearTimeout(rightCloseTimer.current);
-        rightCloseTimer.current = null;
+      if (panelCloseTimer.current !== null) {
+        window.clearTimeout(panelCloseTimer.current);
+        panelCloseTimer.current = null;
       }
-      setRightOpen(true);
+      setPanelOpen(true);
     };
     window.addEventListener("eldrun:open-lessons", openLessons);
-    window.addEventListener("eldrun:reveal-right-panel", revealPanel);
+    window.addEventListener("eldrun:reveal-side-panel", revealPanel);
     return () => {
       window.removeEventListener("eldrun:open-lessons", openLessons);
-      window.removeEventListener("eldrun:reveal-right-panel", revealPanel);
+      window.removeEventListener("eldrun:reveal-side-panel", revealPanel);
     };
   }, []);
 
@@ -434,7 +443,7 @@ export function AppShell() {
   const togglePin = () => {
     setRightPinned((v) => {
       const next = !v;
-      void updateSettings({ right_panel_pinned: next });
+      void updateSettings({ side_panel_pinned: next });
       return next;
     });
   };
@@ -443,7 +452,7 @@ export function AppShell() {
   // inset, slide direction, resize math, reveal edge) reads `panelSide`, so no
   // local mirror state is needed.
   const toggleSide = () => {
-    void updateSettings({ right_panel_side: panelSide === "left" ? "right" : "left" });
+    void updateSettings({ side_panel_edge: panelSide === "left" ? "right" : "left" });
   };
 
   // Drag the panel's left border to resize. The panel is absolutely positioned
@@ -458,34 +467,34 @@ export function AppShell() {
     } catch {
       /* capture is best-effort */
     }
-    setResizingRight(true);
+    setResizingPanel(true);
   };
 
   const onResizeMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!resizingRight) return;
+    if (!resizingPanel) return;
     // The grip straddles the panel's inner edge — on the right that's the left
     // border (width = innerWidth - cursorX); flipped to the left it's the right
     // border (width = cursorX).
-    const w = clampRightWidth(panelSide === "left" ? e.clientX : window.innerWidth - e.clientX);
-    latestRightWidth.current = w;
-    setRightWidth(w);
+    const w = clampPanelWidth(panelSide === "left" ? e.clientX : window.innerWidth - e.clientX);
+    latestPanelWidth.current = w;
+    setPanelWidth(w);
   };
 
   const onResizeEnd = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!resizingRight) return;
-    setResizingRight(false);
+    if (!resizingPanel) return;
+    setResizingPanel(false);
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {
       /* ignore */
     }
-    void updateSettings({ right_panel_width: latestRightWidth.current });
+    void updateSettings({ side_panel_width: latestPanelWidth.current });
     // Terminals and other panes refit off the DOM resize event; the docked body
     // inset just changed, so nudge them to remeasure at the new width.
     window.dispatchEvent(new Event("resize"));
   };
 
-  // Apply tab layout / right-panel restores emitted by the backend's
+  // Apply tab layout / side-panel restores emitted by the backend's
   // project-runtime switch (which runs off the UI thread).
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -592,7 +601,7 @@ export function AppShell() {
       // Flush the active scope's tab layout for the same reason: CenterPanel
       // debounces its persistScope by 300ms, so a quit right after navigating a
       // Files (Project) tab into a subfolder (or any tab/split change) would drop
-      // it and the tab would reopen at the project root. The right-panel folder
+      // it and the tab would reopen at the project root. The side-panel folder
       // is saved eagerly and needs no flush; only the tab layout is debounced.
       const { activeId, projects } = useProjectsStore.getState();
       const localFile = activeId
@@ -720,7 +729,7 @@ export function AppShell() {
       // The chunk itself rides along: the store classifies a quiet agent tab —
       // finished vs blocked on a prompt — off its tail.
       notePtyOutput(ev.payload.id, ev.payload.data);
-      // Development-only transport-rate readout in the right-panel footer.
+      // Development-only transport-rate readout in the side-panel footer.
       // Count here because this is already the one app-wide listener: adding a
       // second listener just for profiling would add dispatch work to the hot
       // path being measured. Vite folds this branch away in production.
@@ -830,17 +839,17 @@ export function AppShell() {
     },
   });
 
-  const revealRight = panelTarget && !panelsHidden && (rightOpen || rightPinned);
+  const revealPanel = panelTarget && !panelsHidden && (panelOpen || panelPinned);
 
   const handleBodyMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
-    if (!panelTarget || panelsHidden || rightOpen) return;
+    if (!panelTarget || panelsHidden || panelOpen) return;
     const nearEdge =
       panelSide === "left"
         ? event.clientX <= REVEAL_EDGE_PX
         : window.innerWidth - event.clientX <= REVEAL_EDGE_PX;
     if (nearEdge) {
       useHintsStore.getState().markSeen("file-tree");
-      reveal(rightCloseTimer, setRightOpen);
+      reveal(panelCloseTimer, setPanelOpen);
     }
   };
 
@@ -859,31 +868,31 @@ export function AppShell() {
         <div key={connToast} className="project-switch-toast conn-toast">{connToast}</div>
       )}
       <div
-        className={`app-body${revealRight && rightPinned ? (panelSide === "left" ? " left-docked" : " right-docked") : ""}${resizingRight ? " resizing" : ""}`}
+        className={`app-body${revealPanel && panelPinned ? (panelSide === "left" ? " left-docked" : " right-docked") : ""}${resizingPanel ? " resizing" : ""}`}
         style={
-          revealRight && rightPinned
+          revealPanel && panelPinned
             ? panelSide === "left"
-              ? { paddingLeft: rightWidth }
-              : { paddingRight: rightWidth }
+              ? { paddingLeft: panelWidth }
+              : { paddingRight: panelWidth }
             : undefined
         }
         onMouseMove={handleBodyMouseMove}
       >
         <CenterPanel />
         {panelTarget && !panelsHidden && (
-          <RightPanel
-            open={revealRight}
-            pinned={rightPinned}
+          <SidePanel
+            open={revealPanel}
+            pinned={panelPinned}
             side={panelSide}
-            width={rightWidth}
-            resizing={resizingRight}
+            width={panelWidth}
+            resizing={resizingPanel}
             onResizeStart={onResizeStart}
             onResizeMove={onResizeMove}
             onResizeEnd={onResizeEnd}
             onTogglePin={togglePin}
             onToggleSide={toggleSide}
-            onMouseEnter={() => reveal(rightCloseTimer, setRightOpen)}
-            onMouseLeave={() => !rightPinned && scheduleClose(rightCloseTimer, setRightOpen)}
+            onMouseEnter={() => reveal(panelCloseTimer, setPanelOpen)}
+            onMouseLeave={() => !panelPinned && scheduleClose(panelCloseTimer, setPanelOpen)}
           />
         )}
         {/* Invisible marker at the reveal band so the guided tour has a stable
@@ -903,15 +912,15 @@ export function AppShell() {
             border swallows them. That left no way to open the panel at all, and so
             no way to reach the pin that lives inside it. A click is delivered even
             where the mousemove stream isn't, so this is the reliable path; it
-            unmounts the moment the panel is open (revealRight). */}
-        {panelTarget && !panelsHidden && !revealRight && (
+            unmounts the moment the panel is open (revealPanel). */}
+        {panelTarget && !panelsHidden && !revealPanel && (
           <button
             type="button"
-            className={`right-panel-reveal-handle${panelSide === "left" ? " left" : ""}`}
+            className={`side-panel-reveal-handle${panelSide === "left" ? " left" : ""}`}
             aria-label={t("appShell.showFilesPanel")}
             title={t("appShell.showFilesPanel")}
-            onClick={() => reveal(rightCloseTimer, setRightOpen)}
-            onMouseEnter={() => reveal(rightCloseTimer, setRightOpen)}
+            onClick={() => reveal(panelCloseTimer, setPanelOpen)}
+            onMouseEnter={() => reveal(panelCloseTimer, setPanelOpen)}
           >
             <span aria-hidden="true">{panelSide === "left" ? "›" : "‹"}</span>
           </button>

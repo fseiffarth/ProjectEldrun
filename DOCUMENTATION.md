@@ -1170,7 +1170,7 @@ When a file is opened:
 1. Backend resolves the app command (per-project → global → MIME → `xdg-open`).
 2. Backend launches the process via `xdg-open` or the resolved command.
 3. The opened window is tracked by PID in `project.json["open_apps"]` and shown
-   in the right panel's Windows view.
+   in the side panel's Windows view.
 
 There is no X11 window embedding in the Tauri WebView. All file-opened apps run
 as external processes tracked by PID.

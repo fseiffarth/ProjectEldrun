@@ -618,12 +618,9 @@ export function stringMapsEqual(
   return true;
 }
 
-export function fmtSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
-}
+// The canonical implementation moved to `lib/formatBytes` (§9.1); the name
+// stays for this module's many importers.
+export { formatBytes as fmtSize } from "../formatBytes";
 
 export function fmtModified(seconds?: number | null): string {
   if (!seconds) return "";

@@ -121,5 +121,34 @@
     - [ ] 🖐️ Manual test
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+    > **Phase 6 — box file-view fixes + per-member line (2026-08-28, 🤖
+    > covered, untested live).** Two live-found bugs fixed: (1) cross-project
+    > drag-and-drop in the multi-root view moved files *within the source
+    > project* to the other project's rel path ("strangely moved" folders) —
+    > every `[data-move-rel]` target now carries its tree's identity
+    > (`data-move-root`/`data-move-remote`), `lib/fileMove.ts`'s
+    > `resolveMoveTarget` routes the drop (cross-root local↔local only; remote
+    > either side refuses the target up front), and `move_path` is called with
+    > the TARGET root — this also fixes a right-panel drag into another
+    > project's Files tab. (2) A remote member had no Remote/Local switch (the
+    > "remote-member mirror fallback" deferred above): `BoxRootSection` now
+    > shares the project-wide side (`useFileSource`), lists the mirror on
+    > Local (browsable while disconnected), and gates only the SFTP side
+    > behind the connect prompt. Plus each member root gained its own
+    > **Files/Git/Search + ⧉/⚙ + source-switch line** (member-scoped
+    > `GitHistory`/`SearchPanel`, per-member `ProjectFilesSettingsDialog`, and
+    > the member's own hidden-endings/paths filters now apply in the box view).
+    - [x] 🤖 Automated test — vitest `FileMove` (resolveMoveTarget table,
+      dest-rel/abs builders, `remoteMemberTreeDir`, source tripwires: every
+      `data-move-rel` stamps identity attrs, move commit routes to
+      `target.root`, member tree keyed on `treeDir` + `syncSource`); updated
+      `SidePanelBox` (Remote side gated + switch stays up while disconnected,
+      Local mirror browsable offline); cargo `commands::fs`
+      `move_path_moves_a_folder_between_roots`.
+    - [ ] 🖐️ Manual test (drag member→member file + folder both directions;
+      drag onto a member's breadcrumb; remote member: flip Local/Remote while
+      disconnected; per-member Git/Search/⚙ line)
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---

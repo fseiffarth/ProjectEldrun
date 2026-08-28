@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
 import { SettingsCard, SettingsHeader, SettingsList, SettingsSection } from "./settingsUi";
+import { formatBytes as fmtBytes } from "../../lib/formatBytes";
 import { UntestedTag } from "../common/UntestedTag";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -455,11 +456,6 @@ export function RemoteHostsSettings({ onBack, onClose }: SubPanelProps) {
   );
 }
 
-function fmtBytes(n: number): string {
-  if (n === 0) return "0 B";
-  if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(0) + " MB";
-  return (n / (1024 * 1024 * 1024)).toFixed(1) + " GB";
-}
 
 /**
  * Parameter count (in billions) parsed from a catalog tag like "1b", "0.5b",

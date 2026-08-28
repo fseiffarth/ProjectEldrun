@@ -35,7 +35,7 @@ function serve(projects: ProjectEntry[]) {
         return Promise.resolve(projects);
       case "root_work_dir":
         return Promise.resolve("/home/u/eldrun/root");
-      case "load_right_panel_folder":
+      case "load_side_panel_folder":
         return Promise.resolve(null);
       case "detect_git_providers":
         return Promise.resolve({});

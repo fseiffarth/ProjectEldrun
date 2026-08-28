@@ -1,5 +1,5 @@
 /**
- * A file dragged from the right panel and released OVER an open popout must dock
+ * A file dragged from the side panel and released OVER an open popout must dock
  * into it as an embed tab — mirroring a tab dragged onto a popout — instead of
  * spawning a new standalone window. commitFileDrop's `detachedTarget` branch
  * creates the embed tab in the scope, moves it into the popout's subtree

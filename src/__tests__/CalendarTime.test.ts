@@ -10,7 +10,6 @@ import {
   daysBetween,
   daySlice,
   formatTime,
-  isMultiDay,
   layoutOverlaps,
   minutesBetween,
   minutesIntoDay,
@@ -232,18 +231,15 @@ describe("span coverage (exclusive ends)", () => {
     expect(spanCoversDate(allDayOneDay, "2026-07-09")).toBe(false);
     expect(spanCoversDate(allDayOneDay, "2026-07-07")).toBe(false);
     expect(spanDates(allDayOneDay)).toEqual(["2026-07-08"]);
-    expect(isMultiDay(allDayOneDay)).toBe(false);
   });
 
   it("covers every day of a multi-day all-day event but not the end day", () => {
     expect(spanDates(allDayThreeDay)).toEqual(["2026-07-08", "2026-07-09", "2026-07-10"]);
     expect(spanCoversDate(allDayThreeDay, "2026-07-11")).toBe(false);
-    expect(isMultiDay(allDayThreeDay)).toBe(true);
   });
 
   it("covers a single day for a timed event", () => {
     expect(spanDates(timed)).toEqual(["2026-07-08"]);
-    expect(isMultiDay(timed)).toBe(false);
   });
 
   it("does not let a timed event ending at midnight claim the next day", () => {
@@ -256,7 +252,6 @@ describe("span coverage (exclusive ends)", () => {
   it("spans both days for a timed event crossing midnight", () => {
     const overnight = { start: "2026-07-08T22:00", end: "2026-07-09T02:00", allDay: false };
     expect(spanDates(overnight)).toEqual(["2026-07-08", "2026-07-09"]);
-    expect(isMultiDay(overnight)).toBe(true);
   });
 });
 

@@ -99,7 +99,7 @@ pub struct Settings {
     /// `mail_client`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub todo_board: Option<bool>,
-    /// Right panel: the opt-in **Alerts** group in the file viewer — urgent
+    /// Side panel: the opt-in **Alerts** group in the file viewer — urgent
     /// mail, the calendar entries about to start, and the to-do cards whose due
     /// date is here or past, in one time-ordered strip.
     ///
@@ -259,7 +259,7 @@ pub struct Settings {
     /// list intentionally leaves every agent behind the menu's search field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_tab_agents: Option<Vec<String>>,
-    /// When true (the default), running a `.sh` from the right panel spawns it
+    /// When true (the default), running a `.sh` from the side panel spawns it
     /// as a detached background process instead of opening a terminal tab.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_scripts_in_background: Option<bool>,
@@ -547,7 +547,7 @@ pub struct Settings {
     /// fall back to the built-in defaults in the frontend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keyboard_shortcuts: Option<HashMap<String, ChordDescriptor>>,
-    /// Download *source* folders scanned by the right-panel Downloads section
+    /// Download *source* folders scanned by the side-panel Downloads section
     /// (fast-copy of freshly downloaded files into a project). A machine-wide
     /// list, read-only — Eldrun never changes any browser's download path.
     /// Unset/empty → the frontend falls back to the user's `~/Downloads`.

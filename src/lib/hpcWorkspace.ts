@@ -107,12 +107,6 @@ export function wsExtend(
   return invoke<HpcWorkspace>("hpc_ws_extend", { target, id, days, filesystem });
 }
 
-/** Release a workspace (the directory goes away; sites keep the data for a grace
- *  period). Confirm before calling. */
-export function wsRelease(target: HpcWsTarget, id: string, filesystem?: string): Promise<void> {
-  return invoke("hpc_ws_release", { target, id, filesystem });
-}
-
 /** Symlink a workspace into a project's remote root as `<linkName>`. Returns the
  *  created link's absolute host path. See `linkedWorkspaceCaveat`. */
 export function wsLink(

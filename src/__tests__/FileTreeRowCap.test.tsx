@@ -1,5 +1,5 @@
 /**
- * Regression test for the render cap on the right-panel file tree.
+ * Regression test for the render cap on the side-panel file tree.
  *
  * The tree renders its rows unvirtualized, and each row is ~16 elements with
  * ~11 handlers that are rebuilt on every render of the component. A folder with
@@ -27,7 +27,7 @@ vi.mock("../stores/windows", () => ({
 vi.mock("../stores/settings", () => ({ useSettingsStore: () => null }));
 
 import { useProjectsStore } from "../stores/projects";
-import { RightPanel } from "../components/layout/RightPanel";
+import { SidePanel } from "../components/layout/SidePanel";
 
 const mockUseProjectsStore = vi.mocked(useProjectsStore);
 
@@ -82,8 +82,8 @@ describe("file tree render cap", () => {
     const state = {
       projects: [ACTIVE_PROJECT],
       activeId: "proj-1",
-      rightPanelFolderByProject: {},
-      setRightPanelFolder: vi.fn(),
+      sidePanelFolderByProject: {},
+      setSidePanelFolder: vi.fn(),
     } as unknown as ReturnType<typeof useProjectsStore>;
     mockUseProjectsStore.mockImplementation(((selector?: (s: typeof state) => unknown) =>
       selector ? selector(state) : state) as typeof useProjectsStore);
@@ -94,7 +94,7 @@ describe("file tree render cap", () => {
 
   it("renders one page of a huge folder instead of all of it", async () => {
     await act(async () => {
-      render(<RightPanel open={true} />);
+      render(<SidePanel open={true} />);
     });
     expect(await screen.findByText("run_00000.csv")).toBeTruthy();
 
@@ -107,7 +107,7 @@ describe("file tree render cap", () => {
 
   it("reveals another page per click, and says how many are held back", async () => {
     await act(async () => {
-      render(<RightPanel open={true} />);
+      render(<SidePanel open={true} />);
     });
     await screen.findByText("run_00000.csv");
 
@@ -140,7 +140,7 @@ describe("file tree render cap", () => {
     );
 
     await act(async () => {
-      render(<RightPanel open={true} />);
+      render(<SidePanel open={true} />);
     });
     expect(await screen.findByText("a_0.csv")).toBeTruthy();
 

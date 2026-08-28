@@ -70,30 +70,25 @@ pub fn set_project_git_hosting(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    // projects.json — always-local source of truth for the pill and the
-    // serialization boundary shared with background project writers.
-    let local_file = crate::commands::projects::patch_project_entry(&project_id, |entry| {
-        match &cleaned_url {
-            Some(url) => {
-                entry
-                    .extra
-                    .insert("git_profile_url".to_string(), Value::String(url.clone()));
+    // projects.json (always-local source of truth for the pill) + the
+    // project.json descriptive/export mirror, in one serialized patch.
+    crate::commands::projects::patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            match &cleaned_url {
+                Some(url) => {
+                    entry
+                        .extra
+                        .insert("git_profile_url".to_string(), Value::String(url.clone()));
+                }
+                None => {
+                    entry.extra.remove("git_profile_url");
+                }
             }
-            None => {
-                entry.extra.remove("git_profile_url");
-            }
-        }
-        Ok(entry.local_file.clone())
-    })?;
-
-    // project.json — descriptive/export mirror.
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.git_profile_url = cleaned_url.clone();
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
+            Ok(())
+        },
+        |project, ()| project.git_profile_url = cleaned_url.clone(),
+    )?;
 
     // Token → keyring. Only touch it when explicitly provided/cleared.
     if clear_token {

@@ -476,7 +476,7 @@ findings are the divergences.
 
 Rule: all display text goes through `src/lib/i18n.ts`.
 
-- [ ] **8.1 HIGH (×2)** — The entire Eldrun Mobile desktop surface is
+- [x] **8.1 HIGH (×2)** — The entire Eldrun Mobile desktop surface is
   hardcoded English: `src/components/mobile/MobileSettings.tsx` (no `useT`
   import at all — "Lock down now" :419, "Set up Tailscale Serve" :440,
   "Computer name" :475, the whole status paragraph :520-531, search
@@ -487,28 +487,40 @@ Rule: all display text goes through `src/lib/i18n.ts`.
   (`MobileSettings.tsx:360` / `MobileIndicator.tsx:181`). Fix: add a
   `mobile.*` namespace to i18n.ts, share the lockdown-confirm text (or the
   whole action), convert to SettingRow/ToggleRow.
-- [ ] **8.2 LOW** — Print-preview strip labels built in DOM without
+  *(Resolved: full `mobile.*` namespace ×5 languages, lockdown confirm is one
+  shared key. The input rows stay raw `settings-card-row`s inside the one
+  `SettingsCard` — that is the same multi-row-card pattern `SettingsPanel`
+  itself uses, and `SettingRow` would wrap each row in its own card.)*
+- [x] **8.2 LOW** — Print-preview strip labels built in DOM without
   `translate()` (`lib/viewers/print.ts:443,445,448,451,452,481` — "Page
   range", "Backgrounds", "Grayscale", …; `translate` from `lib/i18n` works
   outside React).
-- [ ] **8.3 LOW** — Stragglers in files that otherwise use `t()`: CenterPanel
+- [x] **8.3 LOW** — Stragglers in files that otherwise use `t()`: CenterPanel
   drag-ghost hints ("Drop on a folder → move file there", ⇧/⌃ lines,
   `:1467-1476`) and scroll-link title (`:1505`); `RightPanel.tsx:91` long
   English tooltip *(×2)*.
 
 ## 9. Duplicated helpers (cross-cutting)
 
-- [ ] **9.1 LOW (×2)** — Byte-size formatter implemented **seven** times:
+- [x] **9.1 LOW (×2)** — Byte-size formatter implemented **seven** times:
   `lib/viewers/fileUtils.ts:621` (`fmtSize`, plausible canonical),
   `NetworkTrafficPane.tsx:213`, `lib/gpu.ts:104`,
   `RemoteMachinesWindow.tsx:1174`, `lib/mail.ts:903`,
   `SettingsSubPanels.tsx:458`, `dev/perfStats.ts:129` (dev-only, may stay).
   Divergent rounding/units guaranteed over time — consolidate in `lib/`.
-- [ ] **9.2 LOW** — `escapeHtml` ×4: `lib/viewers/highlight.ts:37` (canonical),
+  *Done 2026-08-28: canonical `lib/formatBytes.ts` (fmtSize's convention +
+  guard + TB rung); `fmtSize` re-exports it, RemoteMachinesWindow /
+  SettingsSubPanels / NetworkTrafficPane (KiB→KB display change) fold into it,
+  `mail.formatSize` keeps only its ""-for-invalid chip guard. Three deliberate
+  variants stay and are named in the module doc: `gpu.ts` (MB-under-a-GiB GPU
+  convention), `diskUsage.ts` (compact single-letter, tested), `perfStats`.*
+- [x] **9.2 LOW** — `escapeHtml` ×4: `lib/viewers/highlight.ts:37` (canonical),
   `lib/viewers/markdown.ts:21`, `FileViewerPane.tsx:1413`,
   `markdownEnrich.ts:44` (`escapeText`). `lib/mail.ts:786` stays — security
   boundary with its own tests.
-- [ ] **9.3 MED** — ~20 hand-rolled backend blocks of "load projects.json →
+  *Done 2026-08-28: all three fold into highlight's; `escapeHtmlText` stays as
+  a documented alias for its odt/notebook importers.*
+- [x] **9.3 MED** — ~20 hand-rolled backend blocks of "load projects.json →
   find entry → mutate `extra[key]` → write list → mirror into project.json"
   (`set_project_run_host` `projects.rs:1742-1786`, `set_project_python`,
   `set_project_hpc` `hpc_ws.rs:869-905`, `set_project_git_disabled`,
@@ -520,7 +532,14 @@ Rule: all display text goes through `src/lib/i18n.ts`.
   (`projects.rs:1726-1730`, `services/vm.rs:853-855`) → the two spec copies
   diverge with no signal. **This helper is the natural single place to land the
   §2.1 mutex/atomic fix.**
-- [ ] **9.4 MED** — Two divergent recursive tree-copiers in one file:
+  *Done 2026-08-28 (the registry half landed with §2.1's `patch_project_entry`):
+  `patch_project_entry_mirrored(id, patch_entry, patch_project)` now owns the
+  project.json mirror too — atomic write, and a parse failure on an existing
+  project.json is an error naming the stale mirror, never a silent skip. All
+  ~17 remaining mirror blocks converted (projects.rs, python.rs, vm.rs,
+  services/vm.rs, hpc_ws.rs, git_hosting.rs, git_publish.rs ×3);
+  `patch_remote_spec`/`patch_compute_hosts` are thin wrappers over it.*
+- [x] **9.4 MED** — Two divergent recursive tree-copiers in one file:
   `copy_tree` (`commands/projects.rs:645` — follows symlinks, keeps `.git`) vs
   `copy_dir_all` (`:3757` — skips `.git`, documented). Concrete bug:
   `copy_tree` `fs::copy`s a **dangling** symlink (stale venv/node bin links)
@@ -530,13 +549,22 @@ Rule: all display text goes through `src/lib/i18n.ts`.
   path forward. Fix: one shared core with `keep_git: bool` + explicit symlink
   policy (preserve links, tolerate dangling), plus rollback-or-resume for
   `archive_project`.
-- [ ] **9.5 LOW** — `stores/projects.ts:1630-1780`: ~15 per-field project
+  *Done 2026-08-28: one `copy_tree_core(src, dst, keep_git)` — symlinks
+  recreated as links (dangling tolerated; Windows degrades to copy/skip when
+  link creation is unprivileged), `.git`-of-either-kind rules kept for the
+  `keep_git: false` path, tests added. `archive_project` went the resume route:
+  the manifest (written last) is the "already archived" marker, so a dest
+  without one is a failed partial archive and the pass re-enters it (move_tree
+  no-ops on already-moved trees, never deletes src before a full copy).*
+- [x] **9.5 LOW** — `stores/projects.ts:1630-1780`: ~15 per-field project
   setters repeating the same invoke-then-map-and-patch body → a
   `patchProject(id, fn)` / `patchProjectRemote(id, fn)` helper.
+  *Done 2026-08-28: both helpers added above the store; 22 map-and-patch
+  bodies (including the two whole-entry replaces) route through them.*
 
 ## 10. Dead code
 
-- [ ] **10.1 LOW** — Nine exported frontend functions with zero production and
+- [x] **10.1 LOW** — Nine exported frontend functions with zero production and
   zero test references (verified full-tree incl. `__tests__`):
   `lib/browser.ts:408` `hasUserinfo`, `lib/caldavPush.ts:115` `isPushable`,
   `lib/calendarTime.ts:237` `dateInRange`, `lib/hpcHost.ts:99`
@@ -548,9 +576,14 @@ Rule: all display text goes through `src/lib/i18n.ts`.
   `neighborGroup` (`:1545`, superseded by the document-order Shift+↑/↓ cycle in
   `hooks/useKeyboard.ts:236-253`), `detachedTabKeys`, `hiddenTabKeys` — delete
   with their tests or mark deliberately test-only.
-- [ ] **10.2 LOW** — `schema/active_session.rs` defined and re-exported
+  *Done 2026-08-28: all fourteen deleted (test-only five removed with their
+  test usages; `neighborGroup` took its private `axisOf`/`pathToGroup` helpers
+  and the `NavDirection` type with it).*
+- [x] **10.2 LOW** — `schema/active_session.rs` defined and re-exported
   (`schema/mod.rs:1,18`) but nothing reads or writes it; self-documented as
   TODO #24 (Group F) — land the read/write path or drop the export until then.
+  *Done 2026-08-28: dropped — schema file, `mod.rs` lines, both schema tests
+  and the fixture deleted; #24's TODO entry now points at git history.*
 - [x] **10.3** — Dead `sync_now` pair → §1.9.
 
 Negative results worth recording: **no** unused npm/cargo dependencies (all
@@ -561,12 +594,12 @@ commands (every `#[tauri::command]` is registered), **no** dead scripts in
 
 ## 11. Smaller correctness fixes
 
-- [ ] **11.1 LOW** — Case-insensitive search column mapping is wrong for chars
+- [x] **11.1 LOW** — Case-insensitive search column mapping is wrong for chars
   whose lowercase expands (`commands/search.rs:62-80` — lowering preserves
   order but not char *count*: `İ` → 2 chars), so jump-to-column drifts right in
   Turkish/German text. Fix: map through char-index pairs instead of counts.
-- [ ] **11.2** — Worker-output quotepath/stat portability → §1.6; VM proxy port
-  restriction → §1.12; local_loss lock → §1.8.
+- [x] **11.2** — Worker-output quotepath/stat portability → §1.6; VM proxy port
+  restriction → §1.12; local_loss lock → §1.8. (All three landed under §1.)
 
 ## 12. Verified clean (negative results)
 

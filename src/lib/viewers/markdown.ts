@@ -16,16 +16,7 @@
  * escape-first invariant. Keep this invariant if extending.
  */
 
-import { highlight, type Lang } from "./highlight";
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+import { escapeHtml, highlight, type Lang } from "./highlight";
 
 function safeHref(url: string): string | null {
   const trimmed = url.trim();

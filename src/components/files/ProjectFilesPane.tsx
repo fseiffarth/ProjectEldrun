@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { FileTree } from "./FileTree";
 import { AlertsSection } from "./AlertsSection";
 import { DownloadsSection } from "./DownloadsSection";
+import { GitHistory } from "./GitHistory";
+import { SearchPanel } from "./SearchPanel";
+import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFilesSettings";
+import { remoteMemberTreeDir } from "../../lib/fileMove";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSyncStore } from "../../stores/sync";
@@ -32,7 +37,7 @@ const SORT_KEY_LABEL: Record<SortKey, TranslationKey> = {
 
 /**
  * THE project file view — the tree, its sort row, the remote sync row and the
- * Downloads section. Rendered twice: by the right panel, and by the "Files
+ * Downloads section. Rendered twice: by the side panel, and by the "Files
  * (Project)" tab (`ProjectFilesTab`). One component, so the two can never drift
  * into two different file views of the same project.
  *
@@ -96,7 +101,7 @@ export function useFileSource(projectId: string | null, isRemote: boolean) {
  * Like `useFileSource`, but for a viewer that owns its own switch instead of
  * following the project-wide one. Every `ProjectFilesTab` instance (the
  * standalone Files (Project) tab, and every per-subwindow ◫ sidebar) used to
- * share `useFileSourcePrefStore` with the right panel, so flipping Local/Remote
+ * share `useFileSourcePrefStore` with the side panel, so flipping Local/Remote
  * *anywhere* flipped it *everywhere* for that project — one shared toggle
  * wearing many faces instead of each viewer owning its own. This takes the
  * project-wide side as a starting point, latches it, and from then on the two
@@ -163,7 +168,7 @@ export function FileSourceSwitch({
   // its own read error; the escape hatch there is switching TO Local.)
   const disableRemote = remoteDisabled && source !== "remote";
   return (
-    <span className="right-panel-source-switch" role="group" aria-label={t("fileSourceSwitch.ariaLabel")}>
+    <span className="side-panel-source-switch" role="group" aria-label={t("fileSourceSwitch.ariaLabel")}>
       <button
         type="button"
         className={`source-seg${source === "local" ? " active" : ""}`}
@@ -244,7 +249,16 @@ export function useBoxRoots(scope: string): { activeBox: ProjectBox | null; boxR
 
 /** One collapsible root inside the box multi-root file view. Reuses `FileTree`
  *  as-is for a single directory; per-root navigation persists via the projects
- *  store's `rightPanelFolderByProject` map keyed by the root's id. */
+ *  store's `sidePanelFolderByProject` map keyed by the root's id.
+ *
+ *  A MEMBER root also carries its own per-project line under the header — the
+ *  same Files/Git/Search + ⧉/⚙ controls (and, for a remote member, the same
+ *  Remote/Local source switch) the single-project view has, acting on THIS
+ *  member. The switch shares the project-wide side (`useFileSource`), so the
+ *  box view and the project's own side panel never disagree about which side
+ *  is shown; it also stays reachable while disconnected, so a remote member's
+ *  mirror is browsable offline (the switch used to not exist here at all, which
+ *  stranded remote members on the host tree). */
 function BoxRootSection({
   rootId,
   label,
@@ -259,11 +273,32 @@ function BoxRootSection({
 }: BoxRoot & { sortKey: SortKey; descending: boolean; active?: boolean }) {
   const t = useT();
   const [collapsed, setCollapsed] = useState(false);
-  const rel = useProjectsStore((s) => s.rightPanelFolderByProject[rootId] ?? "");
-  const setRightPanelFolder = useProjectsStore((s) => s.setRightPanelFolder);
-  // A disconnected remote member must not mount `FileTree` (its synchronous
-  // SFTP list_dir would freeze the window) — same gate as the single-root view.
-  const { remoteSshState, remoteBlocked } = useRemoteBlocked(remote ? rootId : null, remote);
+  const [view, setView] = useState<"files" | "git" | "search">("files");
+  const [showSettings, setShowSettings] = useState(false);
+  const rel = useProjectsStore((s) => s.sidePanelFolderByProject[rootId] ?? "");
+  const setSidePanelFolder = useProjectsStore((s) => s.setSidePanelFolder);
+  const project = useProjectsStore((s) =>
+    variant === "member" ? s.projects.find((p) => p.id === rootId) ?? null : null,
+  );
+  // Which side of a remote member the tree shows — the PROJECT-WIDE side, the
+  // same latch/choice the side panel's single view reads.
+  const [source, setSource] = useFileSource(remote ? rootId : null, remote);
+  const { remoteSshState, remoteBlocked: sshDown } = useRemoteBlocked(remote ? rootId : null, remote);
+  // "Local" lists the mirror — a plain local tree, never gated on the pool.
+  const treeDir = remote
+    ? remoteMemberTreeDir(dir, project ? resolveLocalMirror(project) : null, source)
+    : dir;
+  // A disconnected remote member must not mount an SFTP-backed surface (its
+  // synchronous list_dir/git would freeze the window) — same gate as the
+  // single-root view. Git always runs against the host for a remote project,
+  // so the git view is blocked regardless of the file-source side.
+  const remoteBlocked = remote && sshDown && (source === "remote" || view === "git");
+  const filters = useProjectFileFilters({
+    localFile: localFile ?? undefined,
+    projectDir: treeDir,
+    remoteBlocked,
+  });
+  const toolbarBtnStyle = { fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 } as const;
   return (
     <div className={`file-root file-root--${variant}${collapsed ? " is-collapsed" : ""}`}>
       <button
@@ -283,6 +318,57 @@ function BoxRootSection({
           {t(variant === "box" ? "fileRoot.kindBox" : "fileRoot.kindProject")}
         </span>
       </button>
+      {!collapsed && variant === "member" && (
+        <div className="side-panel-toolbar side-panel-toolbar--box-root">
+          {(["files", "git", "search"] as const).map((v) => (
+            <button
+              key={v}
+              className={`toolbar-btn${view === v ? " active" : ""}`}
+              style={{ ...toolbarBtnStyle, marginLeft: v === "files" ? 0 : 2 }}
+              aria-pressed={view === v}
+              onClick={() => setView(v)}
+            >
+              {t(
+                v === "files"
+                  ? "projectFilesView.tabFiles"
+                  : v === "git"
+                    ? "projectFilesView.tabGit"
+                    : "projectFilesView.tabSearch",
+              )}
+            </button>
+          ))}
+          <button
+            className="toolbar-btn"
+            style={toolbarBtnStyle}
+            onClick={() => {
+              const sub = rel.replace(/^\/+|\/+$/g, "");
+              const path = sub ? `${treeDir.replace(/\/+$/, "")}/${sub}` : treeDir;
+              invoke("open_in_file_manager", { path }).catch((e) =>
+                console.error("open_in_file_manager", e),
+              );
+            }}
+            title={t("projectFilesView.openInFileManagerTitle")}
+          >
+            ⧉
+          </button>
+          {localFile && project && (
+            <button
+              className="toolbar-btn"
+              style={toolbarBtnStyle}
+              onClick={() => setShowSettings(true)}
+              title={t("projectFilesView.projectSettingsTitle")}
+            >
+              ⚙
+            </button>
+          )}
+          <UntestedTag />
+          {remote && (
+            <span style={{ marginLeft: "auto" }}>
+              <FileSourceSwitch source={source} onChange={setSource} />
+            </span>
+          )}
+        </div>
+      )}
       {!collapsed && remoteBlocked && (
         <div className="file-tree-empty" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
           <div>
@@ -301,26 +387,54 @@ function BoxRootSection({
           )}
         </div>
       )}
-      {!collapsed && !remoteBlocked && (
+      {!collapsed && !remoteBlocked && view === "files" && (
         <div className="file-root-body">
           <FileTree
             // Same invariant as the single-root tree: (project, root dir) is the
-            // tree's identity, so a root whose directory moves remounts rather
-            // than repainting the old one's entries under the new path.
-            key={`${rootId}|${dir}`}
-            projectDir={dir}
+            // tree's identity, so a root whose directory moves — including the
+            // Remote/Local source flip — remounts rather than repainting the old
+            // one's entries under the new path.
+            key={`${rootId}|${treeDir}`}
+            projectDir={treeDir}
             projectId={rootId}
             localFile={localFile}
             sortKey={sortKey}
             descending={descending}
-            hiddenEndings={[]}
-            hiddenPaths={[]}
-            shownPaths={[]}
+            hiddenEndings={filters.hiddenEndings}
+            hiddenPaths={filters.hiddenPaths}
+            shownPaths={filters.shownPaths}
+            scanExcluded={filters.scanExcluded}
+            onToggleScanExcluded={filters.toggleScanExcluded}
             initialRelPath={rel}
-            onRelPathChange={(folder) => setRightPanelFolder(rootId, folder)}
+            onRelPathChange={(folder) => setSidePanelFolder(rootId, folder)}
+            syncSource={remote ? source : undefined}
+            remoteProbeDir={remote ? dir : undefined}
             active={active}
           />
         </div>
+      )}
+      {!collapsed && !remoteBlocked && view === "git" && (
+        <div className="file-root-body">
+          <GitHistory
+            projectDir={dir}
+            projectId={remote ? rootId : undefined}
+            remote={remote}
+            onChanged={() => {}}
+          />
+        </div>
+      )}
+      {!collapsed && !remoteBlocked && view === "search" && (
+        <div className="file-root-body">
+          <SearchPanel projectDir={treeDir} linkingTabKey={undefined} />
+        </div>
+      )}
+      {showSettings && project && localFile && (
+        <ProjectFilesSettingsDialog
+          localFile={localFile}
+          project={project}
+          filters={filters}
+          onClose={() => setShowSettings(false)}
+        />
       )}
     </div>
   );
@@ -346,7 +460,7 @@ interface Props {
    *  view), which simply don't offer the action. */
   scanExcluded?: string[];
   onToggleScanExcluded?: (relPath: string, excluded: boolean) => void;
-  /** Sort is the host's, not the pane's: the right panel unmounts this pane when
+  /** Sort is the host's, not the pane's: the side panel unmounts this pane when
    *  it shows Git/Search, and a sort order that reset itself on the way back
    *  would be a worse view than the one the user chose. */
   sortKey: SortKey;
@@ -361,7 +475,7 @@ interface Props {
   /** Offers the tree's "Open in a new tab" action (see FileTree). Omitted where
    *  the host can't own a tab — a box's multi-root view, a detached window. */
   onOpenFolderTab?: (relPath: string) => void;
-  /** False keeps the tree unmounted (the right panel does this while closed, so
+  /** False keeps the tree unmounted (the side panel does this while closed, so
    *  a hidden panel costs no fs-watch). */
   mountTree?: boolean;
   /** Whether this surface is on screen. A mounted-but-hidden tree (a background
@@ -475,7 +589,7 @@ export function ProjectFilesPane({
           host-diverged/orange files). Both need a live connection, so the row is
           gated on !remoteBlocked. */}
       {!compact && !activeBox && isRemoteProject && projectId && !remoteBlocked && (
-        <div className="right-panel-source">
+        <div className="side-panel-source">
           {/* Project-wide auto-sync toggle: the root "" marker. When on, the
               whole tree bidirectionally auto-syncs; individual files/folders
               can still be carved out (or opted in) from their own context
@@ -578,7 +692,7 @@ export function ProjectFilesPane({
         </div>
       )}
       {!compact && (
-      <div className="right-panel-sort">
+      <div className="side-panel-sort">
         {(["name", "size", "type", "created", "modified"] as SortKey[]).map((key) => (
           <button
             key={key}
@@ -603,7 +717,7 @@ export function ProjectFilesPane({
         ))}
       </div>
       )}
-      <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
+      <div className="side-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
         {mountTree && activeBox ? (
           boxRoots.length === 0 ? (
             <div className="file-tree-empty">{t("projectFilesPane.noMemberFolders")}</div>

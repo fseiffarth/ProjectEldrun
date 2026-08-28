@@ -1,5 +1,5 @@
 /**
- * Render tests for the right-panel file tree navigation:
+ * Render tests for the side-panel file tree navigation:
  * - #2 (Group D.1): a file's full name is readable on hover via the existing
  *   custom `.file-tooltip` popup (not a native `title` attribute — that used
  *   to render as an unthemed OS tooltip instead of the app's own hover UI).
@@ -20,7 +20,7 @@ vi.mock("../stores/windows", () => ({
 vi.mock("../stores/settings", () => ({ useSettingsStore: () => null }));
 
 import { useProjectsStore } from "../stores/projects";
-import { RightPanel } from "../components/layout/RightPanel";
+import { SidePanel } from "../components/layout/SidePanel";
 
 const mockUseProjectsStore = vi.mocked(useProjectsStore);
 
@@ -66,7 +66,7 @@ function setupInvoke() {
 
 async function renderPanel() {
   await act(async () => {
-    render(<RightPanel open={true} />);
+    render(<SidePanel open={true} />);
   });
 }
 
@@ -82,8 +82,8 @@ describe("file tree navigation", () => {
     const state = {
       projects: [ACTIVE_PROJECT],
       activeId: "proj-1",
-      rightPanelFolderByProject: {},
-      setRightPanelFolder: vi.fn(),
+      sidePanelFolderByProject: {},
+      setSidePanelFolder: vi.fn(),
     } as unknown as ReturnType<typeof useProjectsStore>;
     mockUseProjectsStore.mockImplementation(((selector?: (s: typeof state) => unknown) =>
       selector ? selector(state) : state) as typeof useProjectsStore);
@@ -129,8 +129,8 @@ describe("file tree navigation", () => {
     const state = {
       projects: [ACTIVE_PROJECT],
       activeId: "proj-1",
-      rightPanelFolderByProject: { "proj-1": "sub" },
-      setRightPanelFolder: vi.fn(),
+      sidePanelFolderByProject: { "proj-1": "sub" },
+      setSidePanelFolder: vi.fn(),
     } as unknown as ReturnType<typeof useProjectsStore>;
     mockUseProjectsStore.mockImplementation(((selector?: (s: typeof state) => unknown) =>
       selector ? selector(state) : state) as typeof useProjectsStore);
@@ -141,7 +141,7 @@ describe("file tree navigation", () => {
     // `relPath`, not the entry listing) is on screen on the first commit. The old
     // `useState("")` would render root here and only reach `sub` after the load
     // resolved — the "flash root" this test guards against.
-    render(<RightPanel open={true} />);
+    render(<SidePanel open={true} />);
     expect(document.querySelector(".file-tree-breadcrumb")).not.toBeNull();
     expect(document.querySelector(".file-tree-crumb[title='Project root']")).toBeTruthy();
   });

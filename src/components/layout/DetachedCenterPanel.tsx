@@ -238,7 +238,7 @@ interface Props {
   remoteInfo?: DetachedRemoteInfo;
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
-  /** Hide the WHOLE popout into the main window's right-panel "Hidden subwindows"
+  /** Hide the WHOLE popout into the main window's side-panel "Hidden subwindows"
    *  list (the detached twin of a main-window subwindow's "–" hide). Closes this
    *  OS window; the group is parked with its tabs mounted and restored from there.
    *  Undefined ⇒ no hide affordance. */
@@ -273,7 +273,7 @@ interface Props {
 /**
  * #42 / multi-pane: the detached window's center surface. A stripped CenterPanel
  * that renders the popout's layout TREE — each group as a tab bar + pane layer,
- * splits as flex rows/columns — with no project switcher, right panel, or
+ * splits as flex rows/columns — with no project switcher, side panel, or
  * project-switch effects. Terminals run ATTACH-ONLY (the PTY is owned by the main
  * window's pane), so they never spawn or kill a PTY. Each group keeps every tab
  * mounted; only the active one shows.
@@ -1422,7 +1422,7 @@ export function DetachedCenterPanel({
             >
               ◫
             </button>
-            {/* Hide the WHOLE popout into the main window's right-panel Hidden
+            {/* Hide the WHOLE popout into the main window's side-panel Hidden
                 list — the detached twin of the main-window bar's "–". Rendered
                 per bar (like ◫); for a multi-pane popout every bar's "–" hides
                 the whole window as one hidden entry. stopPropagation keeps the

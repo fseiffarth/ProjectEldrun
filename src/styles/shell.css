@@ -390,7 +390,7 @@ select option {
 
 /* The release label lives at the bottom of the docked file viewer rather than
    competing with project controls in the top frame. */
-.right-panel-frame-footer {
+.side-panel-frame-footer {
   display: flex;
   align-items: center;
   justify-content: flex-end;

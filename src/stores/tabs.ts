@@ -179,7 +179,7 @@ export function workerRunnable(h: LocalityHost): boolean {
 /**
  * The scope that belongs to no project: the root control terminal's, and the
  * scope every tab opened outside a project lands in. Its working directory is
- * `~/eldrun/root` (`root_work_dir`), which the right panel browses as the app's
+ * `~/eldrun/root` (`root_work_dir`), which the side panel browses as the app's
  * unfiled/scratch area.
  */
 export const ROOT_SCOPE = "root";
@@ -674,7 +674,7 @@ export interface DetachedGroup {
  * `layoutByScope[scope]` while its tab PAYLOADS stay in `tabsByScope` (so PTYs
  * never unmount — `CenterPanel`'s flat pane layer keeps them mounted but
  * `display:none`, since no live layout node references their keys). The user
- * brings it back from the right-panel Hidden list (`unhideGroup`). Unlike a
+ * brings it back from the side-panel Hidden list (`unhideGroup`). Unlike a
  * detached popout there is no OS window and thus no `bounds`/`label` handoff.
  */
 export interface HiddenGroup {
@@ -877,7 +877,7 @@ interface TabsStore {
   // Per-scope groups the user has HIDDEN (parked out of the tiled layout while
   // keeping their tabs/PTYs alive — detach minus the OS window). Like the
   // detached map, the payloads stay in `tabsByScope[scope]`; only the layout
-  // node lives here. Surfaced by the right-panel Hidden list; restored via
+  // node lives here. Surfaced by the side-panel Hidden list; restored via
   // `unhideGroup`. Persists across restart via the SavedLayoutTree `hidden` tag.
   hiddenGroupsByScope: Record<string, HiddenGroup[]>;
   // #42: per-scope groups that were detached when the scope was last saved and
@@ -1016,7 +1016,7 @@ interface TabsStore {
   splitWithTab: (key: string, targetGroupId: string, edge: DropEdge) => void;
   // Create a brand-new tab in a fresh group split off the target at `edge`
   // (or, for "center", added into the target group). Used by file drops from the
-  // right panel to spawn a new subwindow holding the file directly. Returns the
+  // side panel to spawn a new subwindow holding the file directly. Returns the
   // created tab, or null if the target group no longer exists.
   splitWithNewTab: (
     tab: Omit<TabEntry, "key">,
@@ -1253,7 +1253,7 @@ interface TabsStore {
   // gone — persist the scope afterwards (persistScope) so disk agrees and they
   // don't restore on next launch. Closes the OS window via `attach_subwindow`.
   closeDetachedGroup: (scope: string, groupId: string) => void;
-  // #42: hide a popout into the right-panel "Hidden subwindows" list instead of
+  // #42: hide a popout into the side-panel "Hidden subwindows" list instead of
   // docking it live or closing it — the detached twin of `hideGroup`. Moves the
   // popout's subtree from `detachedGroupsByScope` into `hiddenGroupsByScope[scope]`
   // (its tab payloads never left `tabsByScope`, so the flat pane layer keeps their
@@ -1562,62 +1562,11 @@ export function splitSubtree(
   return insertAdjacent(cleaned, targetGroupId, newGroup, dir, before);
 }
 
-export type NavDirection = "left" | "right" | "up" | "down";
-
-/** The split axis a direction navigates along ("row" = horizontal). */
-function axisOf(dir: NavDirection): SplitDir {
-  return dir === "left" || dir === "right" ? "row" : "column";
-}
-
-/**
- * Build the path of nodes from the root down to (and including) the group `id`.
- * Returns null if the group isn't in the tree.
- */
-function pathToGroup(node: LayoutNode, id: string): LayoutNode[] | null {
-  if (node.type === "group") return node.id === id ? [node] : null;
-  for (const child of node.children) {
-    const sub = pathToGroup(child, id);
-    if (sub) return [node, ...sub];
-  }
-  return null;
-}
-
 /** The first group reached by descending `node` (depth-first, left-to-right). */
 function firstGroup(node: LayoutNode): GroupNode {
   let cur = node;
   while (cur.type === "split") cur = cur.children[0];
   return cur;
-}
-
-/**
- * #62: the id of the subwindow (group) lying in `dir` from `fromGroupId`, by
- * walking the layout TREE (not pixel geometry) — find the nearest ancestor split
- * whose axis matches `dir`, then step to the adjacent child on that side and
- * descend to its first group. Returns null at an edge (no neighbour that way).
- * Pure: takes the tree, returns an id or null.
- */
-export function neighborGroup(
-  layout: LayoutNode | null,
-  fromGroupId: string,
-  dir: NavDirection,
-): string | null {
-  if (!layout) return null;
-  const path = pathToGroup(layout, fromGroupId);
-  if (!path) return null;
-  const wantAxis = axisOf(dir);
-  const towardNext = dir === "right" || dir === "down";
-  // Walk up from the group: at each split ancestor on the matching axis, try to
-  // step to the adjacent child in the requested direction.
-  for (let i = path.length - 2; i >= 0; i--) {
-    const split = path[i];
-    if (split.type !== "split" || split.dir !== wantAxis) continue;
-    const childIdx = split.children.indexOf(path[i + 1]);
-    const nextIdx = towardNext ? childIdx + 1 : childIdx - 1;
-    if (nextIdx >= 0 && nextIdx < split.children.length) {
-      return firstGroup(split.children[nextIdx]).id;
-    }
-  }
-  return null;
 }
 
 /**
@@ -4704,11 +4653,6 @@ export function withDetachedDocked(
   };
 }
 
-/** #42: the tab keys held by a scope's detached groups (for owned-keys unions). */
-export function detachedTabKeys(detached: DetachedGroup[] | undefined): string[] {
-  return (detached ?? []).flatMap((d) => orderedTabKeys(d.subtree));
-}
-
 /**
  * Fold a scope's HIDDEN groups back into its serialized tree, each tagged
  * `hidden: true`, so a restart persists them (their tabs survive) and restore
@@ -4734,11 +4678,6 @@ export function withHiddenDocked(
     children: all,
     sizes: all.map(() => 1 / all.length),
   };
-}
-
-/** The tab keys held by a scope's hidden groups (for owned-keys unions). */
-export function hiddenTabKeys(hidden: HiddenGroup[] | undefined): string[] {
-  return (hidden ?? []).flatMap((h) => orderedTabKeys(h.subtree));
 }
 
 // Re-export the id regeneration helper so consumers / tests that build trees

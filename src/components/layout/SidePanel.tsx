@@ -76,6 +76,7 @@ function rollUpStatus(
  * keeps terminal chunks off React's render path; the hot listener only bumps
  * counters in `dev/terminalOutputRate`. */
 function TerminalOutputRate({ ptyIds }: { ptyIds: readonly string[] }) {
+  const t = useT();
   const [rate, setRate] = useState(() => terminalCharsPerSecond(ptyIds));
 
   useEffect(() => {
@@ -88,7 +89,7 @@ function TerminalOutputRate({ ptyIds }: { ptyIds: readonly string[] }) {
   return (
     <span
       className="terminal-output-rate"
-      title="Raw output from visible terminals in this project over the last second (ANSI/control sequences included)"
+      title={t("sidePanel.ttyRateTitle")}
     >
       TTY {rate.toLocaleString()} chars/s
     </span>
@@ -104,7 +105,7 @@ function TerminalOutputRate({ ptyIds }: { ptyIds: readonly string[] }) {
  * store, and the three window-chrome fragments (pin, resize border, the "Hidden
  * subwindows" list) it injects as slots — none of which a tab has.
  */
-export function RightPanel({
+export function SidePanel({
   open,
   pinned,
   side = "right",
@@ -120,8 +121,8 @@ export function RightPanel({
 }: Props) {
   const t = useT();
   const { projects, activeId } = useProjectsStore();
-  const rightPanelFolderByProject = useProjectsStore((s) => s.rightPanelFolderByProject);
-  const setRightPanelFolder = useProjectsStore((s) => s.setRightPanelFolder);
+  const sidePanelFolderByProject = useProjectsStore((s) => s.sidePanelFolderByProject);
+  const setSidePanelFolder = useProjectsStore((s) => s.setSidePanelFolder);
   const rootDir = useProjectsStore((s) => s.rootDir);
 
   // When a box scope is open, the shared view shows a multi-root file view. It
@@ -141,10 +142,10 @@ export function RightPanel({
   const [fileSource, setFileSource] = useFileSource(activeId, !!activeProject?.remote);
   // The browsed folder is kept per scope, the root's under the scope's own name
   // (project ids are UUIDs, so it can't collide with one). Unlike a project's, it
-  // is session-only: `setRightPanelFolder` persists through the owning project's
+  // is session-only: `setSidePanelFolder` persists through the owning project's
   // `project.json`, and the root folder has none.
   const folderKey = activeId ?? (isRootScope ? ROOT_SCOPE : null);
-  const rightPanelFolder = folderKey ? rightPanelFolderByProject[folderKey] ?? "" : "";
+  const sidePanelFolder = folderKey ? sidePanelFolderByProject[folderKey] ?? "" : "";
   // Subwindows the user has hidden in the current scope, surfaced as an
   // auto-pinned section above the toolbar. Their tabs still live in
   // `tabsByScope[scope]` (PTYs mounted, hidden), so the chips resolve labels
@@ -189,11 +190,11 @@ export function RightPanel({
   // leaves this thin strip.
   const resizeHandle = onResizeStart ? (
     <div
-      className="right-panel-resize"
+      className="side-panel-resize"
       onPointerDown={onResizeStart}
       onPointerMove={onResizeMove}
       onPointerUp={onResizeEnd}
-      title={t("rightPanel.resizeTitle")}
+      title={t("sidePanel.resizeTitle")}
       aria-hidden
     />
   ) : null;
@@ -206,20 +207,20 @@ export function RightPanel({
       <>
         {onToggleSide && (
           <button
-            className="right-panel-pin right-panel-flip"
+            className="side-panel-pin side-panel-flip"
             onClick={onToggleSide}
-            title={t(side === "left" ? "rightPanel.moveRight" : "rightPanel.moveLeft")}
-            aria-label={t(side === "left" ? "rightPanel.moveRight" : "rightPanel.moveLeft")}
+            title={t(side === "left" ? "sidePanel.moveRight" : "sidePanel.moveLeft")}
+            aria-label={t(side === "left" ? "sidePanel.moveRight" : "sidePanel.moveLeft")}
           >
             ⇄
           </button>
         )}
         {onTogglePin && (
           <button
-            className={`right-panel-pin${pinned ? " pinned" : ""}`}
+            className={`side-panel-pin${pinned ? " pinned" : ""}`}
             aria-pressed={pinned}
             onClick={onTogglePin}
-            title={t(pinned ? "rightPanel.unpinTitle" : "rightPanel.pinTitle")}
+            title={t(pinned ? "sidePanel.unpinTitle" : "sidePanel.pinTitle")}
           >
             📌
           </button>
@@ -234,19 +235,19 @@ export function RightPanel({
           type="button"
           className="hidden-sw-header"
           onClick={() => setHiddenCollapsed((c) => !c)}
-          title={t(hiddenCollapsed ? "rightPanel.showHidden" : "rightPanel.collapse")}
+          title={t(hiddenCollapsed ? "sidePanel.showHidden" : "sidePanel.collapse")}
         >
           <span className="hidden-sw-caret">{hiddenCollapsed ? "▸" : "▾"}</span>
-          {t("rightPanel.hiddenCount", { count: hiddenGroups.length })}
+          {t("sidePanel.hiddenCount", { count: hiddenGroups.length })}
           {hiddenStatus.overall && (
             <span
               className={`hidden-sw-status-dot ${hiddenStatus.overall}`}
               title={t(
                 hiddenStatus.overall === "needs-decision"
-                  ? "rightPanel.hiddenWaiting"
+                  ? "sidePanel.hiddenWaiting"
                   : hiddenStatus.overall === "working"
-                    ? "rightPanel.hiddenWorking"
-                    : "rightPanel.hiddenFinished",
+                    ? "sidePanel.hiddenWorking"
+                    : "sidePanel.hiddenFinished",
               )}
             />
           )}
@@ -268,7 +269,7 @@ export function RightPanel({
                           key={k}
                           type="button"
                           className={`hidden-sw-chip${status ? ` ${status}` : ""}`}
-                          title={t("rightPanel.restoreFocusedOn", { label })}
+                          title={t("sidePanel.restoreFocusedOn", { label })}
                           onClick={() => unhideGroup(h.id, { activeKey: k })}
                         >
                           {label}
@@ -279,7 +280,7 @@ export function RightPanel({
                   <button
                     type="button"
                     className="hidden-sw-btn"
-                    title={t("rightPanel.restoreSubwindow")}
+                    title={t("sidePanel.restoreSubwindow")}
                     onClick={() => unhideGroup(h.id)}
                   >
                     ↩
@@ -287,7 +288,7 @@ export function RightPanel({
                   <button
                     type="button"
                     className="hidden-sw-btn hidden-sw-close"
-                    title={t("rightPanel.closeSubwindow")}
+                    title={t("sidePanel.closeSubwindow")}
                     onClick={() => closeHiddenGroup(h.id)}
                   >
                     ×
@@ -301,7 +302,7 @@ export function RightPanel({
     ) : null;
 
   const versionFooter = (
-    <div className="right-panel-frame-footer">
+    <div className="side-panel-frame-footer">
       {import.meta.env.DEV && (
         <>
           <TerminalOutputRate ptyIds={scopePtyIds} />
@@ -327,9 +328,9 @@ export function RightPanel({
       projectId={activeId ?? null}
       project={activeProject}
       projectDir={projectDir}
-      folder={rightPanelFolder}
+      folder={sidePanelFolder}
       onFolderChange={(folder) => {
-        if (folderKey) setRightPanelFolder(folderKey, folder);
+        if (folderKey) setSidePanelFolder(folderKey, folder);
       }}
       source={fileSource}
       setSource={setFileSource}
@@ -340,7 +341,7 @@ export function RightPanel({
       // Right-click → "Open in a new tab": the same file view, on that folder,
       // as a Files (Project) tab in this project's scope.
       onOpenFolderTab={(rel) => openProjectFilesTab(t, projectDir, rel)}
-      containerClassName={`right-panel${side === "left" ? " left" : ""} ${open ? "open" : ""}${resizing ? " resizing" : ""}`}
+      containerClassName={`side-panel${side === "left" ? " left" : ""} ${open ? "open" : ""}${resizing ? " resizing" : ""}`}
       containerStyle={width ? { width } : undefined}
       containerProps={{ onMouseEnter, onMouseLeave }}
       resizeHandle={resizeHandle}

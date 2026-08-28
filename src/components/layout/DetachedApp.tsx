@@ -451,7 +451,7 @@ export function DetachedApp({ param }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings, tabs, group, param.scope, param.groupId]);
 
-  // Hide the WHOLE popout into the main window's right-panel "Hidden subwindows"
+  // Hide the WHOLE popout into the main window's side-panel "Hidden subwindows"
   // list. Like handleClose it closes THIS OS window, but the main window PARKS the
   // group (tabs stay mounted, PTYs alive) instead of discarding it — restorable
   // from the panel. Hides the whole window (every pane of a multi-pane popout) as

@@ -21,7 +21,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 
-import { RightPanel } from "../components/layout/RightPanel";
+import { SidePanel } from "../components/layout/SidePanel";
 import { useProjectsStore } from "../stores/projects";
 import { useBoxesStore } from "../stores/boxes";
 import { useTabsStore } from "../stores/tabs";
@@ -46,7 +46,7 @@ describe("ProjectFilesView with no tabs for the scope", () => {
     // unstable `tabsByScope[scope] ?? []` selector; the mount should now be quiet.
     let container!: HTMLElement;
     await act(async () => {
-      ({ container } = render(<RightPanel open={true} />));
+      ({ container } = render(<SidePanel open={true} />));
     });
 
     expect(container.querySelector(".project-files-view, .file-tree, .project-files")).toBeTruthy();

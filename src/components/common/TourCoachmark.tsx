@@ -16,7 +16,7 @@ const EDGE = 8;
  * Bubble position for an anchored step: the requested side when it fits, the
  * opposite side when it doesn't, clamped to the window either way. The flip is
  * load-bearing, not a nicety — the file panel docks to *either* edge
- * (`right_panel_side`), so the "find your files" steps point at a marker that
+ * (`side_panel_edge`), so the "find your files" steps point at a marker that
  * can sit at x=0, where a left-placed bubble would hang 300px off-screen.
  *
  * Positions are plain left/top with no negative transform: the bubble's real
@@ -85,7 +85,7 @@ export function bubbleStyle(
  * none`, the app underneath is live, and the bubble carries the instruction, a
  * Hint the user can unfold, and the `:)` reward that `TourHost` shows before it
  * advances by itself. Both keep Next as an escape hatch. Portaled to
- * `document.body` to escape the right panel's transform/overflow stacking, the
+ * `document.body` to escape the side panel's transform/overflow stacking, the
  * same trick `HintBubble` uses. When `rect` is null (target absent / intro), it
  * renders as a centered card over a plain dim instead.
  */

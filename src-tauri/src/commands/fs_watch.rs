@@ -1,4 +1,4 @@
-//! Filesystem watcher for the right-panel file tree.
+//! Filesystem watcher for the side-panel file tree.
 //!
 //! The tree renders one directory level at a time, so we watch exactly that
 //! directory (non-recursively) and emit `fs-change` whenever it changes. The

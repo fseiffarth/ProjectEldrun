@@ -64,7 +64,7 @@ export interface Lesson {
 
 /** Reveal the right-side file panel so a step's anchor exists to spotlight.
  *  AppShell listens for this (the panel is otherwise hover-revealed). */
-const revealFilePanel = () => window.dispatchEvent(new Event("eldrun:reveal-right-panel"));
+const revealFilePanel = () => window.dispatchEvent(new Event("eldrun:reveal-side-panel"));
 
 export const LESSONS: Lesson[] = [
   // ── Basics ──────────────────────────────────────────────────────────────
@@ -244,12 +244,12 @@ export const LESSONS: Lesson[] = [
         task: {
           promptKey: "lessons.nativeViewer.revealTreeTask",
           hintKey: "lessons.nativeViewer.revealTreeTaskHint",
-          appear: ".right-panel.open",
+          appear: ".side-panel.open",
         },
       },
       {
         id: "pin-panel",
-        anchor: ".right-panel-pin",
+        anchor: ".side-panel-pin",
         placement: "left",
         titleKey: "lessons.nativeViewer.pinPanelTitle",
         bodyKey: "lessons.nativeViewer.pinPanelBody",
@@ -633,7 +633,7 @@ export const LESSONS: Lesson[] = [
         task: {
           promptKey: "lessons.fileSearch.revealTreeTask",
           hintKey: "lessons.fileSearch.revealTreeTaskHint",
-          appear: ".right-panel.open",
+          appear: ".side-panel.open",
         },
       },
       {
@@ -1630,7 +1630,7 @@ export const LESSONS: Lesson[] = [
         task: {
           promptKey: "lessons.persistentSessions.sessionsViewTask",
           hintKey: "lessons.persistentSessions.sessionsViewTaskHint",
-          appear: ".right-panel-orange-btn.active",
+          appear: ".side-panel-orange-btn.active",
         },
       },
       {

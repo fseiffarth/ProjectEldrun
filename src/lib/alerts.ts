@@ -15,7 +15,7 @@ import { stripFormatControls } from "./textSafety";
 import { selectUrgentMail } from "./todoBoard";
 
 /**
- * **The alert feed behind the right panel's opt-in "Alerts" group.**
+ * **The alert feed behind the side panel's opt-in "Alerts" group.**
  *
  * One merged, time-ordered list of the three things that can need the user
  * *now*: mail they marked urgent/important, calendar entries about to start,

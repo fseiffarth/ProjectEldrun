@@ -1,5 +1,5 @@
 /**
- * Regression: a file dragged from the right panel and released INSIDE the main
+ * Regression: a file dragged from the side panel and released INSIDE the main
  * window must split in-window even when an OCCLUDED popout (one behind the main
  * window) happens to sit under the cursor. Previously FileTree folded
  * `overDetached` into its "outside the window" test, so an occluded popout — which

@@ -287,14 +287,5 @@ export function boxMembersOfScope(
     .filter((m) => m.dir.length > 0);
 }
 
-/** Convenience: resolve a member project's directory for box surfacing. */
-export function memberDirectories(box: ProjectBox): string[] {
-  const projects = useProjectsStore.getState().projects;
-  return box.member_ids
-    .map((id) => projects.find((p) => p.id === id))
-    .map((p) => resolveProjectDirectory(p))
-    .filter((d) => d.length > 0);
-}
-
 // Re-export so consumers building box agent tabs can derive kinds consistently.
 export { cmdToKind };

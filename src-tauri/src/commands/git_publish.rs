@@ -394,25 +394,23 @@ pub fn publish_project(
 
     // Reflect the new push target + provider in both projects.json and project.json.
     let new_git_type = normalize_git_type(&format!("remote-{visibility}"));
-    crate::commands::projects::patch_project_entry(&project_id, |entry| {
-        entry
-            .extra
-            .insert("git_type".to_string(), Value::String(new_git_type.clone()));
-        entry.extra.insert(
-            "git_provider".to_string(),
-            Value::String(provider.as_str().to_string()),
-        );
-        Ok(())
-    })?;
-
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut p) = storage::read_json::<Project>(&proj_path) {
-            p.git_type = Some(new_git_type);
+    crate::commands::projects::patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            entry
+                .extra
+                .insert("git_type".to_string(), Value::String(new_git_type.clone()));
+            entry.extra.insert(
+                "git_provider".to_string(),
+                Value::String(provider.as_str().to_string()),
+            );
+            Ok(())
+        },
+        |p, ()| {
+            p.git_type = Some(new_git_type.clone());
             p.git_provider = Some(provider.as_str().to_string());
-            let _ = storage::write_json(&proj_path, &p);
-        }
-    }
+        },
+    )?;
 
     Ok(stdout.trim().to_string())
 }
@@ -497,22 +495,20 @@ pub fn unpublish_project(project_id: String) -> Result<(), String> {
         }
     }
 
-    crate::commands::projects::patch_project_entry(&project_id, |entry| {
-        entry
-            .extra
-            .insert("git_type".to_string(), Value::String("local".to_string()));
-        entry.extra.remove("git_provider");
-        Ok(())
-    })?;
-
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut p) = storage::read_json::<Project>(&proj_path) {
+    crate::commands::projects::patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            entry
+                .extra
+                .insert("git_type".to_string(), Value::String("local".to_string()));
+            entry.extra.remove("git_provider");
+            Ok(())
+        },
+        |p, ()| {
             p.git_type = Some("local".to_string());
             p.git_provider = None;
-            let _ = storage::write_json(&proj_path, &p);
-        }
-    }
+        },
+    )?;
     Ok(())
 }
 
@@ -574,20 +570,16 @@ pub fn set_project_visibility(project_id: String, visibility: String) -> Result<
     };
 
     let new_git_type = normalize_git_type(&format!("remote-{visibility}"));
-    crate::commands::projects::patch_project_entry(&project_id, |entry| {
-        entry
-            .extra
-            .insert("git_type".to_string(), Value::String(new_git_type.clone()));
-        Ok(())
-    })?;
-
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut p) = storage::read_json::<Project>(&proj_path) {
-            p.git_type = Some(new_git_type);
-            let _ = storage::write_json(&proj_path, &p);
-        }
-    }
+    crate::commands::projects::patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            entry
+                .extra
+                .insert("git_type".to_string(), Value::String(new_git_type.clone()));
+            Ok(())
+        },
+        |p, ()| p.git_type = Some(new_git_type.clone()),
+    )?;
     Ok(stdout.trim().to_string())
 }
 

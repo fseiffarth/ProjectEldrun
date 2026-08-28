@@ -482,7 +482,7 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, visible = true
   const openExternally = () => {
     useWindowsStore
       .getState()
-      .openFile(effectivePath, undefined, projectId, "right_file_tree")
+      .openFile(effectivePath, undefined, projectId, "side_file_tree")
       .catch((e) => console.error(e));
   };
 
@@ -1410,19 +1410,9 @@ export function applyIndent(
   };
 }
 
-/**
- * The reusable code-editor body: a monospace textarea with a scroll-synced
- * line-number gutter, Tab/Shift+Tab indentation, and Ctrl/Cmd+S to save. Shared
- * by the plain-text viewer ("text") and the LaTeX viewer's source pane ("tex")
- * so the indent/scroll/save behaviour stays identical between them. Renders the
- * load/error states itself; the caller wires it to a `useEditableFile` instance.
- */
-export function escapeHtmlText(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
+/** The one HTML escaper (`lib/viewers/highlight`, §9.2), under the name this
+ *  file's overlay builders and their importers (odt, notebook) already use. */
+export const escapeHtmlText = escapeHtml;
 
 /**
  * Read-only sibling of `useEditableFile` for the table/notebook/diff viewers

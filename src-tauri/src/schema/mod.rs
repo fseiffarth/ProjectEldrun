@@ -1,4 +1,3 @@
-pub mod active_session;
 pub mod boxes;
 pub mod browser;
 pub mod caldav;
@@ -15,7 +14,6 @@ pub mod skills;
 pub mod time_log;
 pub mod usage_stats;
 
-pub use active_session::ActiveSession;
 pub use boxes::{BoxRelation, BoxesList, ProjectBox};
 pub use browser::{
     BlockedNavigation, BrowserCapabilities, DownloadOutcome, DownloadRequest, LiveWindowClosed,

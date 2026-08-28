@@ -8,7 +8,7 @@
  *    (`list_project_paths`, ranked by the shared `fuzzy.ts`). Fetched lazily on
  *    the first keystroke and cached per project dir.
  *  - **content**: literal line search inside files (`project_search`, the same
- *    backend the right panel's Search view uses), debounced.
+ *    backend the side panel's Search view uses), debounced.
  *
  * Every result offers BOTH of the actions the feature asks for: **jump to this
  * path** (reveal + select the entry in the tree, via `onReveal`) and **open**
@@ -242,7 +242,7 @@ export function FileTreeSearch({
       entry,
       projectDir,
       projectId,
-      origin: "right_file_tree",
+      origin: "side_file_tree",
       external: false,
       disabled: disabledViewerSet,
     });

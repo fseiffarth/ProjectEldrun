@@ -96,7 +96,7 @@ vi.mock("../stores/timer", () => ({
 vi.mock("../components/layout/HeaderBar", () => ({ HeaderBar: () => null }));
 vi.mock("../components/layout/CenterPanel", () => ({ CenterPanel: () => null }));
 vi.mock("../components/layout/ProjectSwitcher", () => ({ ProjectSwitcher: () => null }));
-vi.mock("../components/layout/RightPanel", () => ({ RightPanel: () => null }));
+vi.mock("../components/layout/SidePanel", () => ({ SidePanel: () => null }));
 vi.mock("../components/layout/GlobalAppBar", () => ({ GlobalAppBar: () => null }));
 vi.mock("../hooks/useKeyboard", () => ({ useKeyboard: vi.fn() }));
 

@@ -79,7 +79,7 @@ export const DETACHED_DOCK = "detached-dock";
  */
 export const DETACHED_CLOSE = "detached-close";
 /**
- * Detached → main: hide this popout into the main window's right-panel "Hidden
+ * Detached → main: hide this popout into the main window's side-panel "Hidden
  * subwindows" list instead of docking it live (DETACHED_DOCK) or discarding it
  * (DETACHED_CLOSE). The group's tabs stay mounted (PTYs alive); the main window
  * parks its subtree in `hiddenGroupsByScope`, from which it is restored or closed
@@ -676,7 +676,7 @@ export async function listenDetachedHost(): Promise<() => void> {
     const { scope, groupId } = ev.payload;
     const store = useTabsStore.getState();
     // Park the popout in the scope's Hidden list (tabs stay mounted). Works for
-    // the active scope (shows in the right panel now) and an inactive one (shows
+    // the active scope (shows in the side panel now) and an inactive one (shows
     // when that project is next activated) — `hiddenGroupsByScope` is per-scope.
     store.hideDetachedGroup(scope, groupId);
     // Persist so the group is saved as HIDDEN (not detached) and restores into the

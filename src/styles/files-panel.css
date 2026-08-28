@@ -1,12 +1,12 @@
 /* files-panel.css — split from the old monolithic themes.css (order-preserving).
-   Right panel overlay + git action bar / history / worktrees.
+   Side panel overlay + git action bar / history / worktrees.
    IMPORT ORDER IS LOAD-BEARING: these files are @imported in sequence from
    styles/index.css; equal-specificity rules rely on source order exactly as
    they did in the monolith, so never reorder the imports or move rules
    between files without checking the cascade. */
 
-/* ── Right panel overlay ──────────────────────────────────────────────── */
-.right-panel {
+/* ── Side panel overlay ──────────────────────────────────────────────── */
+.side-panel {
   position: absolute;
   top: 0;
   right: 0;
@@ -26,20 +26,20 @@
   z-index: 15;
 }
 
-.right-panel:not(.open) {
+.side-panel:not(.open) {
   transform: translateX(calc(100% + 2px));
   border-left-color: transparent;
 }
 
-.right-panel.open {
+.side-panel.open {
   transform: translateX(0);
 }
 
 /* ── Left-docked variant ──────────────────────────────────────────────────
    The same panel mirrored to the opposite edge: pinned to left:0, its border
    and closed-slide direction flipped, and the resize grip moved to the right
-   (inner) edge. Two-class selectors beat the base `.right-panel` rules. */
-.right-panel.left {
+   (inner) edge. Two-class selectors beat the base `.side-panel` rules. */
+.side-panel.left {
   right: auto;
   left: 0;
   border-left: none;
@@ -47,29 +47,29 @@
   transform: translateX(calc(-100% - 2px));
 }
 
-.right-panel.left:not(.open) {
+.side-panel.left:not(.open) {
   transform: translateX(calc(-100% - 2px));
   border-right-color: transparent;
 }
 
-.right-panel.left.open {
+.side-panel.left.open {
   transform: translateX(0);
 }
 
-.right-panel.left .right-panel-resize {
+.side-panel.left .side-panel-resize {
   left: auto;
   right: -3px;
 }
 
 /* Side-flip button in the header — shares the pin's box; the ⇄ is a plain glyph
    (not a color emoji), so it's unaffected by the pin's filter caveat. */
-.right-panel-flip {
+.side-panel-flip {
   font-size: 14px;
 }
 
 /* While dragging the resize handle, kill the open/close transition so the panel
    tracks the cursor 1:1 instead of easing toward each intermediate width. */
-.right-panel.resizing {
+.side-panel.resizing {
   transition: none;
 }
 
@@ -80,7 +80,7 @@
 /* Left-border resize grip. Sits just outside the panel's left edge (straddling
    the border) so it's easy to grab; widened beyond the visible border for a
    comfortable hit target. Only tinted on hover / during the drag. */
-.right-panel-resize {
+.side-panel-resize {
   position: absolute;
   top: 0;
   bottom: 0;
@@ -91,8 +91,8 @@
   touch-action: none;
 }
 
-.right-panel-resize:hover,
-.right-panel.resizing .right-panel-resize {
+.side-panel-resize:hover,
+.side-panel.resizing .side-panel-resize {
   background: linear-gradient(
     to right,
     transparent,
@@ -107,7 +107,7 @@
    WebKitGTK software-renders animated blurred box-shadows (see the repo
    rule); the dash-in's own opacity is overridden by the pulse, which starts
    low anyway. */
-.right-panel.drop-active::before {
+.side-panel.drop-active::before {
   content: "";
   position: absolute;
   inset: 3px;
@@ -117,11 +117,11 @@
   z-index: 20;
   box-shadow: inset 0 0 22px 0 color-mix(in srgb, var(--accent) 32%, transparent);
   animation:
-    right-panel-drop-dash 0.4s ease-out,
-    right-panel-drop-pulse 1.1s ease-in-out infinite;
+    side-panel-drop-dash 0.4s ease-out,
+    side-panel-drop-pulse 1.1s ease-in-out infinite;
 }
 
-.right-panel.drop-active::after {
+.side-panel.drop-active::after {
   content: "＋ Drop to copy into project";
   position: absolute;
   top: 0;
@@ -135,15 +135,15 @@
   background: var(--accent);
   pointer-events: none;
   z-index: 21;
-  animation: right-panel-drop-banner 0.18s ease-out;
+  animation: side-panel-drop-banner 0.18s ease-out;
 }
 
 /* One-shot confirmation when the drop lands. */
-.right-panel.drop-flash {
-  animation: right-panel-drop-flash 0.5s ease-out;
+.side-panel.drop-flash {
+  animation: side-panel-drop-flash 0.5s ease-out;
 }
 
-@keyframes right-panel-drop-pulse {
+@keyframes side-panel-drop-pulse {
   0%,
   100% {
     opacity: 0.45;
@@ -153,7 +153,7 @@
   }
 }
 
-@keyframes right-panel-drop-dash {
+@keyframes side-panel-drop-dash {
   from {
     opacity: 0;
     transform: scale(1.04);
@@ -164,7 +164,7 @@
   }
 }
 
-@keyframes right-panel-drop-banner {
+@keyframes side-panel-drop-banner {
   from {
     transform: translateY(-100%);
     opacity: 0;
@@ -175,7 +175,7 @@
   }
 }
 
-@keyframes right-panel-drop-flash {
+@keyframes side-panel-drop-flash {
   0% {
     box-shadow: inset 0 0 0 9999px color-mix(in srgb, var(--accent) 38%, transparent);
   }
@@ -298,7 +298,7 @@
   border-color: var(--accent);
 }
 
-/* "Set default app" dialog (right-panel file context menu) */
+/* "Set default app" dialog (side-panel file context menu) */
 .set-default-app-dialog {
   width: 460px;
   max-width: 90vw;
@@ -601,7 +601,7 @@
   font-weight: 600;
 }
 
-.right-panel-header {
+.side-panel-header {
   display: flex;
   align-items: center;
   /* Wrap so the git action bar drops to its own row instead of overflowing the
@@ -620,7 +620,7 @@
 
 /* Buttons keep their size; the title span (min-width:0) truncates instead, so
    the rightmost actions never get pushed off the panel's right edge. */
-.right-panel-header > button {
+.side-panel-header > button {
   flex-shrink: 0;
 }
 
@@ -631,7 +631,7 @@
    this is a switch, so it takes the square icon-button shape the header's
    other actions use. Off draws a slash through the phone; on lights it green,
    the same language as the header's Mobile host indicator. */
-.right-panel-mobile-btn {
+.side-panel-mobile-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -649,32 +649,32 @@
   transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
 }
 
-.right-panel-mobile-btn:hover:not(:disabled) {
+.side-panel-mobile-btn:hover:not(:disabled) {
   opacity: 1;
   color: var(--accent, #89b4fa);
   border-color: var(--border-subtle);
   background: var(--bg-hover);
 }
 
-.right-panel-mobile-btn:disabled {
+.side-panel-mobile-btn:disabled {
   opacity: 0.4;
   cursor: default;
 }
 
-.right-panel-mobile-btn.on {
+.side-panel-mobile-btn.on {
   opacity: 1;
   color: var(--success);
   border-color: color-mix(in srgb, var(--success) 45%, transparent);
   background: color-mix(in srgb, var(--success) 16%, transparent);
 }
 
-.right-panel-mobile-btn-icon {
+.side-panel-mobile-btn-icon {
   width: 13px;
   height: 13px;
   display: block;
 }
 
-.right-panel-mobile-access-error {
+.side-panel-mobile-access-error {
   flex-basis: 100%;
   color: var(--danger);
   font-size: 11px;
@@ -685,7 +685,7 @@
 
 /* Second header row: view switch (Files/Git/Search/Apps) + import/open/settings,
    moved below the project-name row so git status can share the name's row. */
-.right-panel-toolbar {
+.side-panel-toolbar {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -866,7 +866,7 @@
 /* Inline variant of the git action bar when it lives in the header row, on its
    own row below the project name: drop the full-width strip styling so it
    hugs its buttons, left-aligned under the name. */
-.right-panel-header .git-action-bar--inline {
+.side-panel-header .git-action-bar--inline {
   flex: 0 1 auto;
   min-width: 0;
   /* Wrap the buttons among themselves (left-aligned) so a single action never
@@ -878,13 +878,13 @@
   border-bottom: none;
 }
 
-.right-panel-header .git-action-bar--inline .git-action-btn {
+.side-panel-header .git-action-bar--inline .git-action-btn {
   flex: 0 0 auto;
   padding: 3px 8px;
   font-size: 12px;
 }
 
-.right-panel-pin {
+.side-panel-pin {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -908,19 +908,19 @@
   transition: opacity var(--transition), background var(--transition), border-color var(--transition);
 }
 
-.right-panel-pin:hover {
+.side-panel-pin:hover {
   opacity: 1;
   border-color: var(--accent, #58a6ff);
 }
 
-.right-panel-pin.pinned {
+.side-panel-pin.pinned {
   opacity: 1;
   background: var(--accent, #58a6ff);
   border-color: var(--accent, #58a6ff);
   box-shadow: 0 0 0 1px var(--accent, #58a6ff);
 }
 
-.right-panel-sort {
+.side-panel-sort {
   display: flex;
   align-items: center;
   gap: 1px;
@@ -929,7 +929,7 @@
   flex-shrink: 0;
 }
 
-/* The Files (Project) tab: the right panel's file view hosted in a pane. The
+/* The Files (Project) tab: the side panel's file view hosted in a pane. The
    rows inside it (sort / source / scroll / tree) are the panel's own classes —
    only the shell differs, since a tab has no fixed width, no pin and no slide-in
    transform. */
@@ -986,8 +986,8 @@
   z-index: 20;
   box-shadow: inset 0 0 22px 0 color-mix(in srgb, var(--accent) 32%, transparent);
   animation:
-    right-panel-drop-dash 0.4s ease-out,
-    right-panel-drop-pulse 1.1s ease-in-out infinite;
+    side-panel-drop-dash 0.4s ease-out,
+    side-panel-drop-pulse 1.1s ease-in-out infinite;
 }
 
 .project-files-tab.drop-active::after {
@@ -1004,11 +1004,11 @@
   background: var(--accent);
   pointer-events: none;
   z-index: 21;
-  animation: right-panel-drop-banner 0.18s ease-out;
+  animation: side-panel-drop-banner 0.18s ease-out;
 }
 
 .project-files-tab.drop-flash {
-  animation: right-panel-drop-flash 0.5s ease-out;
+  animation: side-panel-drop-flash 0.5s ease-out;
 }
 
 .sort-key-btn {

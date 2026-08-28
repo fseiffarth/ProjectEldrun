@@ -3,6 +3,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settings";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { UntestedTag } from "../common/UntestedTag";
+import { translate, useI18nStore, useT } from "../../lib/i18n";
+
+/** `translate` at the live language, for the async callbacks below (component
+ *  `t` inside them would churn their identity on a language switch). */
+function tr(
+  key: Parameters<typeof translate>[1],
+  params?: Parameters<typeof translate>[2],
+): string {
+  return translate(useI18nStore.getState().lang, key, params);
+}
 
 const MENU_ID = "mobile";
 const POLL_MS = 15_000;
@@ -61,6 +71,7 @@ function MobileIcon({ tone }: { tone: StatusTone }) {
  * not merely that the setting says it ought to be running.
  */
 export function MobileIndicator() {
+  const t = useT();
   const mobileHost = useSettingsStore((s) => s.settings?.eldrun_mobile_host);
   const mobileEnabled = useSettingsStore((s) => s.settings?.eldrun_mobile_host?.enabled ?? false);
   const visible = useSettingsStore((s) => s.settings?.mobile_indicator ?? true);
@@ -167,9 +178,9 @@ export function MobileIndicator() {
     try {
       await invoke("mobile_host_apply", { enabled: true });
       await refresh(true);
-      setUploadNotice("The current Eldrun Mobile version is ready. Refresh the app on your phone to install it.");
+      setUploadNotice(tr("mobile.indUploadReady"));
     } catch (reason) {
-      setError(`Could not publish the Mobile version: ${String(reason)}`);
+      setError(tr("mobile.indUploadError", { reason: String(reason) }));
     } finally {
       reconnectingRef.current = false;
       setUploadingVersion(false);
@@ -178,17 +189,17 @@ export function MobileIndicator() {
 
   const lockDownNow = async () => {
     if (!mobileHost) return;
-    if (!window.confirm("Lock down Eldrun Mobile now? This immediately revokes every paired phone, closes their terminal connections, and stops the Mobile host. Every phone will need to pair again.")) return;
+    if (!window.confirm(tr("mobile.lockdownConfirm"))) return;
     setLockingDown(true);
     setError(null);
     try {
       const response = await invoke<{ status: string; message?: string }>("mobile_admin", { request: { type: "forget_all" } });
-      if (response.status === "error") throw new Error(response.message ?? "Could not revoke paired devices");
+      if (response.status === "error") throw new Error(response.message ?? tr("mobile.indRevokeError"));
       await updateSettings({ eldrun_mobile_host: { ...mobileHost, enabled: false } });
       await invoke("mobile_host_apply", { enabled: false });
       closeMenu(MENU_ID);
     } catch (reason) {
-      setError(`Lockdown was only partially completed: ${String(reason)}`);
+      setError(tr("mobile.lockdownPartial", { reason: String(reason) }));
     } finally {
       setLockingDown(false);
     }
@@ -198,12 +209,12 @@ export function MobileIndicator() {
 
   const tone = statusTone(status, refreshing || reconnecting);
   const title = tone === "connected"
-    ? "Eldrun Mobile connected"
+    ? t("mobile.indConnectedTitle")
     : tone === "connecting"
-      ? "Checking Eldrun Mobile connection"
+      ? t("mobile.indCheckingTitle")
       : tone === "error"
-        ? "Eldrun Mobile connection unavailable"
-        : "Eldrun Mobile host stopped";
+        ? t("mobile.indErrorTitle")
+        : t("mobile.indStoppedTitle");
 
   return (
     <div
@@ -226,12 +237,12 @@ export function MobileIndicator() {
       {open && (
         <div className="tab-new-menu mobile-indicator-menu" role="menu">
           <div className="tab-new-menu-group-label vpn-indicator-title">
-            <span>Eldrun Mobile <UntestedTag /></span>
+            <span>{t("mobile.title")} <UntestedTag /></span>
             <button
               type="button"
               className="vpn-indicator-close"
-              aria-label="Close"
-              title="Close"
+              aria-label={t("common.close")}
+              title={t("common.close")}
               onClick={() => closeMenu(MENU_ID)}
             >
               ×
@@ -242,14 +253,14 @@ export function MobileIndicator() {
               <MobileIcon tone={tone} />
               <div>
                 <strong>
-                  {tone === "connected" ? "Connected" : tone === "connecting" ? "Checking…" : "Disconnected"}
+                  {tone === "connected" ? t("mobile.indConnected") : tone === "connecting" ? t("mobile.indChecking") : t("mobile.indDisconnected")}
                 </strong>
                 <span>
                   {tone === "connecting"
-                    ? "Starting the Mobile host…"
+                    ? t("mobile.indStarting")
                     : status?.running
-                    ? `Host listening on 127.0.0.1:${status.port ?? "?"}.`
-                    : status?.error ?? "The Mobile host is not running."}
+                    ? t("mobile.indListening", { port: status.port ?? "?" })
+                    : status?.error ?? t("mobile.indNotRunning")}
                 </span>
               </div>
             </div>
@@ -258,10 +269,10 @@ export function MobileIndicator() {
             {uploadNotice && <div className="mobile-indicator-notice" role="status">{uploadNotice}</div>}
             <div className="mobile-indicator-actions">
               <button type="button" className="vpn-indicator-connect" disabled={refreshing || reconnecting || uploadingVersion || lockingDown} onClick={() => void refresh()}>
-                {refreshing ? "Refreshing…" : "Refresh"}
+                {refreshing ? t("mobile.refreshing") : t("mobile.indRefresh")}
               </button>
               <button type="button" className="vpn-indicator-connect" disabled={refreshing || reconnecting || uploadingVersion || lockingDown} onClick={() => void reconnect()}>
-                {reconnecting ? "Reconnecting…" : "Reconnect"}
+                {reconnecting ? t("mobile.indReconnecting") : t("mobile.indReconnect")}
               </button>
               {status?.running && hasPairedPhone && (
                 <button
@@ -270,11 +281,11 @@ export function MobileIndicator() {
                   disabled={refreshing || reconnecting || uploadingVersion || lockingDown}
                   onClick={() => void uploadMobileVersion()}
                 >
-                  {uploadingVersion ? "Uploading…" : "Upload mobile version"}
+                  {uploadingVersion ? t("mobile.indUploading") : t("mobile.indUpload")}
                 </button>
               )}
               <button type="button" className="vpn-indicator-connect mobile-indicator-lockdown" disabled={refreshing || reconnecting || uploadingVersion || lockingDown || !status?.running} onClick={() => void lockDownNow()}>
-                {lockingDown ? "Locking…" : "Lock down"}
+                {lockingDown ? t("mobile.indLocking") : t("mobile.indLock")}
               </button>
             </div>
           </div>

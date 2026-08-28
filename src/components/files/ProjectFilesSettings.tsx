@@ -20,7 +20,7 @@ import type { ProjectEntry, Settings, ViewerPref } from "../../types";
 
 /**
  * The file-view filters (which endings/paths a project's tree hides) and the
- * Project Settings dialog that edits them. Shared by the right panel and the
+ * Project Settings dialog that edits them. Shared by the side panel and the
  * "Files (Project)" tab so the two views hide the same files: the lists live in
  * the project's own `project.json`, not in either host's state.
  */
@@ -412,7 +412,7 @@ export function ProjectFilesSettingsDialog({
           })}
         </SettingsList>
 
-        {/* The right panel's opt-in Alerts group (global, not per-project).
+        {/* The side panel's opt-in Alerts group (global, not per-project).
             Off by default on purpose — the file viewer is a work surface, and an
             alert strip nobody asked for is an interruption in the one panel that
             stays open all day. The per-source rows are greyed while the master

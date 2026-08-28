@@ -6,6 +6,17 @@ import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { SettingsCard, SettingsList, ToggleRow } from "../layout/settingsUi";
 import { isTrashProject } from "../../lib/trashProject";
 import { IS_WINDOWS } from "../../lib/platform";
+import { translate, useI18nStore, useT } from "../../lib/i18n";
+
+/** `translate` at the live language, for code that runs outside a render: the
+ *  module-level parser below and the async callbacks, whose `useCallback`
+ *  identity must not churn on a language switch (their effect re-invokes). */
+function tr(
+  key: Parameters<typeof translate>[1],
+  params?: Parameters<typeof translate>[2],
+): string {
+  return translate(useI18nStore.getState().lang, key, params);
+}
 
 interface RuntimeStatus {
   configured: boolean;
@@ -103,12 +114,13 @@ function detectServeSettingsFromJson(value: unknown): DetectedServeSettings {
   ])).values()];
   if (unique.length === 1) return unique[0];
   if (unique.length === 0) {
-    throw new Error("No private HTTPS root handler proxies to http://127.0.0.1:<port>.");
+    throw new Error(tr("mobile.errNoServeMapping"));
   }
-  throw new Error("Multiple eligible Tailscale Serve mappings were found; keep only the Eldrun root mapping before detecting settings.");
+  throw new Error(tr("mobile.errMultiServeMappings"));
 }
 
 export function MobileSettings() {
+  const t = useT();
   const settings = useSettingsStore((state) => state.settings);
   const updateSettings = useSettingsStore((state) => state.updateSettings);
   const projects = useProjectsStore((state) => state.projects);
@@ -183,10 +195,10 @@ export function MobileSettings() {
       .filter((result): result is PromiseRejectedResult => result.status === "rejected")
       .map((result) => String(result.reason));
     if (statusReasons.some((reason) => /command .* not found/i.test(reason))) {
-      failures.push("The running Eldrun backend predates Mobile status support. Restart Eldrun to load the current backend.");
+      failures.push(tr("mobile.errBackendOld"));
     } else {
-      if (runtimeResult.status === "rejected") failures.push(`Host status: ${String(runtimeResult.reason)}`);
-      if (serveResult.status === "rejected") failures.push(`Tailscale status: ${String(serveResult.reason)}`);
+      if (runtimeResult.status === "rejected") failures.push(tr("mobile.errHostStatus", { reason: String(runtimeResult.reason) }));
+      if (serveResult.status === "rejected") failures.push(tr("mobile.errTailscaleStatus", { reason: String(serveResult.reason) }));
     }
 
     const enteredOrigin = originRef.current.trim();
@@ -230,10 +242,10 @@ export function MobileSettings() {
     try {
       const parsedPort = Number(port);
       if (enabled && (!Number.isInteger(parsedPort) || parsedPort < 1024 || parsedPort > 65535)) {
-        throw new Error("Port must be between 1024 and 65535.");
+        throw new Error(tr("mobile.errPortRange"));
       }
       if (enabled && !origin.startsWith("https://")) {
-        throw new Error("Enter the exact verified Tailscale Serve HTTPS origin first.");
+        throw new Error(tr("mobile.errOriginFirst"));
       }
       if (enabled) {
         await invoke("mobile_verify_tailscale_serve", {
@@ -261,13 +273,11 @@ export function MobileSettings() {
 
   const setUpInTerminal = () => {
     const command = `tailscale serve --bg http://127.0.0.1:${guidePort}`;
-    if (!window.confirm(
-      `This will open a root terminal and run:\n\n${command}\n\nIt updates Tailscale Serve's HTTPS root handler and can replace a service currently mounted at /. Continue?`,
-    )) return;
+    if (!window.confirm(tr("mobile.setUpConfirm", { command }))) return;
     const tabs = useTabsStore.getState();
     tabs.setScope(ROOT_SCOPE);
     tabs.addTab({
-      label: "Set up Tailscale Serve",
+      label: tr("mobile.guideSummary"),
       cmd: "",
       args: [],
       env: {},
@@ -287,17 +297,17 @@ export function MobileSettings() {
       const scriptPath = await invoke<string>("mobile_prepare_phone_install_script");
       const tabs = useTabsStore.getState();
       tabs.addTabToScope(ROOT_SCOPE, {
-        label: "Install Eldrun Mobile on phone",
+        label: tr("mobile.phoneInstallTab"),
         cmd: "/bin/bash",
         cwd: rootDir ?? "",
         kind: "shell",
         initialInput: `bash "${scriptPath.replace(/(["\\$`])/g, "\\$1")}"`,
       });
       useProjectsStore.setState({
-        switchToast: "Phone installation handoff is running in the root terminal",
+        switchToast: tr("mobile.phoneInstallToast"),
       });
     } catch (reason) {
-      setError(`Could not open the phone installation handoff: ${String(reason)}`);
+      setError(tr("mobile.phoneInstallError", { reason: String(reason) }));
     }
   };
 
@@ -308,7 +318,7 @@ export function MobileSettings() {
     try {
       const result = await invoke<ServeStatus>("mobile_tailscale_serve_status");
       setServeStatus(result);
-      if (!result.installed) throw new Error("Tailscale is not installed.");
+      if (!result.installed) throw new Error(tr("mobile.errNoTailscale"));
       if (result.error) throw new Error(result.error);
       const detected = result.detected ?? detectServeSettingsFromJson(result.json);
       await invoke("mobile_verify_tailscale_serve", {
@@ -342,12 +352,12 @@ export function MobileSettings() {
       const currentStatus = await invoke<RuntimeStatus>("mobile_host_status");
       setStatus(currentStatus);
       if (!currentStatus.running) {
-        throw new Error("Start the mobile host before creating a pairing code.");
+        throw new Error(tr("mobile.errStartHostFirst"));
       }
       const response = await invoke<AdminResponse>("mobile_admin", {
         request: { type: "pairing_code" },
       });
-      if (response.status !== "pairing_code") throw new Error(response.status === "error" ? response.message : "Pairing is unavailable");
+      if (response.status !== "pairing_code") throw new Error(response.status === "error" ? response.message : tr("mobile.errPairingUnavailable"));
       setPairCode(response.code);
     } catch (reason) {
       setError(String(reason));
@@ -357,7 +367,7 @@ export function MobileSettings() {
   };
 
   const lockDownNow = async () => {
-    if (!window.confirm("Lock down Eldrun Mobile now? This immediately revokes every paired phone, closes their terminal connections, and stops the Mobile host. Every phone will need to pair again.")) return;
+    if (!window.confirm(tr("mobile.lockdownConfirm"))) return;
     setBusy(true);
     setError(null);
     try {
@@ -375,7 +385,7 @@ export function MobileSettings() {
       setPairCode(null);
       await refresh();
     } catch (reason) {
-      setError(`Lockdown was only partially completed: ${String(reason)}`);
+      setError(tr("mobile.lockdownPartial", { reason: String(reason) }));
     } finally {
       setBusy(false);
     }
@@ -387,23 +397,23 @@ export function MobileSettings() {
     ? eligible.filter((project) => project.name.toLocaleLowerCase().includes(normalizedProjectSearch))
     : eligible;
   const securityHealth = !stored?.enabled
-    ? { tone: "off", title: "Mobile is off", detail: "No Eldrun Mobile host is currently published." }
+    ? { tone: "off", title: t("mobile.healthOffTitle"), detail: t("mobile.healthOffDetail") }
     : !status?.running
-      ? { tone: "danger", title: "Host is stopped", detail: "Mobile is enabled in settings but not serving; start it only after checking the private Serve mapping." }
+      ? { tone: "danger", title: t("mobile.healthStoppedTitle"), detail: t("mobile.healthStoppedDetail") }
       : !serveVerification?.verified
-        ? { tone: "danger", title: "Serve mapping needs attention", detail: "Eldrun cannot currently verify its exact private loopback HTTPS mapping." }
-        : { tone: "good", title: "Private publication verified", detail: "Host is loopback-only and the configured Tailscale Serve route is private HTTPS." };
+        ? { tone: "danger", title: t("mobile.healthServeTitle"), detail: t("mobile.healthServeDetail") }
+        : { tone: "good", title: t("mobile.healthGoodTitle"), detail: t("mobile.healthGoodDetail") };
 
   return (
     <SettingsCard>
       <ToggleRow
-        label="Eldrun Mobile"
+        label={t("mobile.title")}
         checked={stored?.enabled ?? false}
         disabled={busy}
         onChange={(event) => void apply(event.target.checked)}
       />
       <p className="settings-help">
-        Private project terminal access through Tailscale Serve. The host listens on loopback only and every browser must be paired.
+        {t("mobile.settingsHelp")}
       </p>
       <div className={`mobile-security-health ${securityHealth.tone}`} role="status">
         <div>
@@ -414,65 +424,67 @@ export function MobileSettings() {
           type="button"
           className="settings-btn sm danger"
           disabled={busy || !status?.running}
-          title={status?.running ? "Revoke every paired device and stop the host" : "The host is already stopped"}
+          title={status?.running ? t("mobile.lockdownTitle") : t("mobile.lockdownTitleStopped")}
           onClick={() => void lockDownNow()}
-        >Lock down now</button>
+        >{t("mobile.lockdownNow")}</button>
       </div>
       <p className="settings-help">
-        This checks Eldrun’s publication shape, not your tailnet ACLs, account MFA, Tailnet Lock, or the phone’s screen lock. Configure those in Tailscale and on the phone.
+        {t("mobile.scopeHelp")}
       </p>
       {/* The handoff is a bash+jq script; on Windows the trusted URL is
           still visible in the status row above, so hide only the QR flow. */}
       {!IS_WINDOWS && (
         <div className="mobile-phone-install">
           <div>
-            <strong>Install Eldrun Mobile on your phone</strong>
+            <strong>{t("mobile.phoneInstallTitle")}</strong>
             <p>
-              Verifies the private Tailscale Serve mapping, then shows the trusted URL and a scannable QR code in a root terminal. It does not enable Mobile or change your Tailscale configuration.
+              {t("mobile.phoneInstallHelp")}
             </p>
           </div>
           <button type="button" className="settings-btn sm primary mobile-phone-install-button" onClick={() => void installOnPhone()}>
-            Show install QR
+            {t("mobile.phoneInstallButton")}
           </button>
         </div>
       )}
       <details className="mobile-settings-guide" open>
-        <summary>Set up Tailscale Serve</summary>
+        <summary>{t("mobile.guideSummary")}</summary>
         <div className="mobile-settings-guide-body">
           <p>
-            Do this on this computer before turning on Eldrun Mobile. Install Tailscale and sign in here, then install and sign in to the same tailnet on the phone or tablet that will use Mobile.
+            {t("mobile.guideIntro")}
           </p>
           <ol>
             <li>
-              In a terminal on this computer, inspect its existing publication with <code>tailscale serve status</code>. Eldrun Mobile needs the HTTPS <code>/</code> (root) handler, so do not replace an existing root handler unless you mean to move that service.
+              {t("mobile.guideStep1a")} <code>tailscale serve status</code>{t("mobile.guideStep1b")}
             </li>
             <li>
-              Configure the private, persistent reverse proxy. Use Serve—not Funnel:
+              {t("mobile.guideStep2a")}
               <code className="mobile-settings-guide-command">tailscale serve --bg http://127.0.0.1:{guidePort}</code>
-              If Tailscale asks for approval or HTTPS setup, complete it in the browser it opens.
+              {t("mobile.guideStep2b")}
             </li>
             <li>
-              Run <code>tailscale serve status</code> again, then use <em>Detect Tailscale Serve settings</em> below. Eldrun fills the computer name, loopback port, and verified origin from the private root mapping.
+              {t("mobile.guideStep3a")} <code>tailscale serve status</code> {t("mobile.guideStep3b")}{" "}
+              <em>{t("mobile.detectServe")}</em> {t("mobile.guideStep3c")}
             </li>
             <li>
-              Turn on Eldrun Mobile. Eldrun verifies that the origin's root handler proxies exactly to <code>http://127.0.0.1:{guidePort}</code>; use <em>Refresh status</em> if you changed Tailscale in another terminal.
+              {t("mobile.guideStep4a")} <code>http://127.0.0.1:{guidePort}</code>{t("mobile.guideStep4b")}{" "}
+              <em>{t("mobile.refreshStatus")}</em> {t("mobile.guideStep4c")}
             </li>
             <li>
-              Enable the local projects you want to expose, create a pairing code, then open the verified origin on the phone or tablet and enter that code.
+              {t("mobile.guideStep5")}
             </li>
           </ol>
           <p>
-            The address is reachable only by devices allowed in your tailnet, and Mobile still requires its own device pairing. Do not use Tailscale Funnel: it makes the service public and Eldrun will refuse to start.
+            {t("mobile.guideOutro")}
           </p>
           <div className="mobile-settings-guide-actions">
-            <button type="button" className="settings-btn sm" onClick={setUpInTerminal}>Set up in terminal</button>
-            <span>Opens a root terminal and runs the command above after confirmation.</span>
+            <button type="button" className="settings-btn sm" onClick={setUpInTerminal}>{t("mobile.setUpInTerminal")}</button>
+            <span>{t("mobile.setUpInTerminalHelp")}</span>
           </div>
-          <a href="https://tailscale.com/docs/features/tailscale-serve" target="_blank" rel="noreferrer">Tailscale Serve documentation</a>
+          <a href="https://tailscale.com/docs/features/tailscale-serve" target="_blank" rel="noreferrer">{t("mobile.serveDocs")}</a>
         </div>
       </details>
       <div className="settings-card-row">
-        <label className="settings-card-label" htmlFor="mobile-display-name">Computer name</label>
+        <label className="settings-card-label" htmlFor="mobile-display-name">{t("mobile.displayName")}</label>
         <input
           id="mobile-display-name"
           value={displayName}
@@ -481,7 +493,7 @@ export function MobileSettings() {
         />
       </div>
       <div className="settings-card-row">
-        <label className="settings-card-label" htmlFor="mobile-loopback-port">Loopback port</label>
+        <label className="settings-card-label" htmlFor="mobile-loopback-port">{t("mobile.loopbackPort")}</label>
         <input
           id="mobile-loopback-port"
           value={port}
@@ -493,7 +505,7 @@ export function MobileSettings() {
         />
       </div>
       <div className="settings-card-row">
-        <label className="settings-card-label" htmlFor="mobile-serve-origin">Verified Serve origin</label>
+        <label className="settings-card-label" htmlFor="mobile-serve-origin">{t("mobile.serveOrigin")}</label>
         <input
           id="mobile-serve-origin"
           value={origin}
@@ -506,41 +518,41 @@ export function MobileSettings() {
       </div>
       <div className="settings-link-row">
         <button type="button" className="settings-btn sm" disabled={busy || detectingServe} onClick={() => void detectServeSettings()}>
-          {detectingServe ? "Detecting…" : "Detect Tailscale Serve settings"}
+          {detectingServe ? t("mobile.detecting") : t("mobile.detectServe")}
         </button>
         <button type="button" className="settings-btn sm" disabled={busy || pairingBusy} onClick={() => void createPairing()}>
-          {pairingBusy ? "Creating code…" : "New pairing code"}
+          {pairingBusy ? t("mobile.creatingCode") : t("mobile.newPairingCode")}
         </button>
-        {stored?.enabled && !status?.running && <button type="button" className="settings-btn sm" disabled={busy} onClick={() => void apply(true)}>Start mobile host</button>}
-        {status?.update_available && <button type="button" className="settings-btn sm" disabled={busy} onClick={() => void apply(true)}>Update mobile host</button>}
+        {stored?.enabled && !status?.running && <button type="button" className="settings-btn sm" disabled={busy} onClick={() => void apply(true)}>{t("mobile.startHost")}</button>}
+        {status?.update_available && <button type="button" className="settings-btn sm" disabled={busy} onClick={() => void apply(true)}>{t("mobile.updateHost")}</button>}
         <button type="button" className="settings-btn sm" disabled={busy || refreshing} onClick={() => void refresh()}>
-          {refreshing ? "Refreshing…" : "Refresh status"}
+          {refreshing ? t("mobile.refreshing") : t("mobile.refreshStatus")}
         </button>
       </div>
       <p className="settings-help" aria-live="polite">
-        {status?.running ? `Host running on 127.0.0.1:${status.port}.` : "Host stopped."}
-        {status?.installed_version ? ` Sidecar ${status.installed_version}.` : ""}
+        {status?.running ? t("mobile.statusRunning", { port: status.port ?? "?" }) : t("mobile.statusStopped")}
+        {status?.installed_version ? ` ${t("mobile.statusSidecar", { version: status.installed_version })}` : ""}
         {serveVerification?.verified
-          ? ` Tailscale Serve routes the verified origin to 127.0.0.1:${port}.`
+          ? ` ${t("mobile.statusServeVerified", { port })}`
           : serveStatus?.installed
-            ? " Tailscale Serve configuration is readable."
-            : " Tailscale Serve is unavailable."}
+            ? ` ${t("mobile.statusServeReadable")}`
+            : ` ${t("mobile.statusServeUnavailable")}`}
         {serveStatus?.error ? ` ${serveStatus.error}` : ""}
         {serveVerification && !serveVerification.verified ? ` ${serveVerification.error}` : ""}
-        {pairCode ? ` Pairing code: ${pairCode} (valid for five minutes).` : ""}
+        {pairCode ? ` ${t("mobile.statusPairCode", { code: pairCode })}` : ""}
       </p>
       {refreshError && <div className="project-dialog-error">{refreshError}</div>}
       {error && <div className="project-dialog-error">{error}</div>}
 
-      <div className="settings-subheader">Project access</div>
+      <div className="settings-subheader">{t("mobile.projectAccess")}</div>
       <p className="settings-help">
-        Access is off per project. Enabling it does not restart a live agent; that agent becomes attachable after its next normal reopen.
+        {t("mobile.projectAccessHelp")}
       </p>
       {eligible.length > 0 && <input
         className="mobile-project-access-search"
         value={projectSearch}
-        placeholder="Search projects…"
-        aria-label="Search projects with Mobile access"
+        placeholder={t("mobile.searchProjects")}
+        aria-label={t("mobile.searchProjectsAria")}
         onChange={(event) => setProjectSearch(event.target.value)}
       />}
       <div className="mobile-project-access-list">
@@ -556,11 +568,11 @@ export function MobileSettings() {
             }}
           />
         ))}
-        {eligible.length === 0 && <p className="settings-help">No local, non-container projects are available.</p>}
-        {eligible.length > 0 && matchingEligible.length === 0 && <p className="settings-help">No projects match “{projectSearch.trim()}”.</p>}
+        {eligible.length === 0 && <p className="settings-help">{t("mobile.noEligibleProjects")}</p>}
+        {eligible.length > 0 && matchingEligible.length === 0 && <p className="settings-help">{t("mobile.noProjectsMatch", { query: projectSearch.trim() })}</p>}
       </div>
 
-      {devices.length > 0 && <div className="settings-subheader">Paired devices</div>}
+      {devices.length > 0 && <div className="settings-subheader">{t("mobile.pairedDevices")}</div>}
       {devices.length > 0 && (
         <SettingsList boxed>
           {devices.map((device) => (
@@ -570,7 +582,7 @@ export function MobileSettings() {
                 type="button"
                 className="settings-btn sm danger"
                 onClick={() => void invoke<AdminResponse>("mobile_admin", { request: { type: "revoke", device_id: device.id } }).then(refresh)}
-              >Revoke</button>
+              >{t("mobile.revoke")}</button>
             </div>
           ))}
         </SettingsList>
@@ -579,7 +591,7 @@ export function MobileSettings() {
         type="button"
         className="settings-btn sm danger"
         onClick={() => {
-          if (!window.confirm("Forget every paired Mobile device and rotate all opaque IDs?")) return;
+          if (!window.confirm(tr("mobile.forgetAllConfirm"))) return;
           void invoke<AdminResponse>("mobile_admin", { request: { type: "forget_all" } })
             .then((response) => {
               if (response.status === "error") throw new Error(response.message);
@@ -588,7 +600,7 @@ export function MobileSettings() {
             })
             .catch((reason) => setError(String(reason)));
         }}
-      >Forget all devices</button>}
+      >{t("mobile.forgetAll")}</button>}
     </SettingsCard>
   );
 }

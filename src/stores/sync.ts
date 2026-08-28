@@ -352,7 +352,7 @@ export function dirSyncAggregate(
 
 /**
  * All project-relative paths currently diverged (amber/orange) for a project,
- * from the cached status. Backs the right-panel "orange files" list and the
+ * from the cached status. Backs the side-panel "orange files" list and the
  * toolbar count badge. Reads the passed-in map so callers subscribe to it.
  */
 export function amberPaths(

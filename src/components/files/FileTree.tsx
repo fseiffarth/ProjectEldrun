@@ -34,6 +34,12 @@ import { useFileClipboardStore } from "../../stores/fileClipboard";
 import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, visibleEntries, isHiddenByEnding, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
 import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
 import { basename, dirname, relativePathWithin, resolvePath } from "../../lib/paths";
+import {
+  moveDestRel,
+  movedEntryAbs,
+  resolveMoveTarget,
+  type ResolvedMoveTarget,
+} from "../../lib/fileMove";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import { DirSizeUnavailable, guardedDirSize, isHostTimeout } from "../../lib/dirSizeGuard";
 import { useFastMode } from "../../lib/fastMode";
@@ -62,7 +68,7 @@ import { UntestedTag } from "../common/UntestedTag";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 // Persist whether the collapsed "gitignored" files section is expanded, so the
-// choice survives right-panel hide/show and remounts (FileTree remounts each
+// choice survives side-panel hide/show and remounts (FileTree remounts each
 // time the panel reopens). Mirrors GitHistory's localStorage view pref.
 const GITIGNORED_EXPANDED_KEY = "eldrun.fileTree.gitignoredExpanded";
 // Same idea, for the collapsed "hidden by extension" group (the project's own
@@ -396,7 +402,7 @@ export function FileTree({
   const [tooltip, setTooltip] = useState<{ rect: DOMRect; entry: FileEntry } | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   // Vertical-only correction: a row near the bottom of a short docked viewer
-  // (the right panel, a subwindow's file sidebar) still measures its anchor
+  // (the side panel, a subwindow's file sidebar) still measures its anchor
   // against the WHOLE app window, so an unclamped `top: tooltip.rect.top`
   // could push the tooltip's body past the window's bottom edge. Horizontal
   // placement already picks a side with room (see the style below), so only
@@ -440,12 +446,16 @@ export function FileTree({
   // A pending "reveal in tree" (jump-to-path) request from a search result: the
   // parent folder to navigate to and the entry name to select once it lists.
   const [pendingReveal, setPendingReveal] = useState<{ parent: string; name: string } | null>(null);
-  // Drag-to-move: the rel path of the folder / breadcrumb under the cursor while
-  // a file is being dragged (null = none). The ref carries the live value into
-  // the drag's window-bound release handler (which captured an earlier closure);
-  // the state drives the drop-target highlight and only changes when the hovered
-  // target changes (not every pointermove), so the tree re-renders rarely.
-  const moveTargetRef = useRef<string | null>(null);
+  // Drag-to-move: the resolved drop target under the cursor while a file is
+  // being dragged (null = none). The ref carries the live value into the drag's
+  // window-bound release handler (which captured an earlier closure); the state
+  // drives THIS tree's drop-target highlight and only changes when the hovered
+  // target changes (not every pointermove), so the tree re-renders rarely. A
+  // target in ANOTHER tree (a box member root, a Files tab of a different
+  // project) can't be highlighted through this tree's state — its element is
+  // classed imperatively instead (`moveTargetElRef`).
+  const moveTargetRef = useRef<ResolvedMoveTarget | null>(null);
+  const moveTargetElRef = useRef<HTMLElement | null>(null);
   const [moveTargetRel, setMoveTargetRel] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<EntryContextMenu>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
@@ -507,7 +517,7 @@ export function FileTree({
   // Same shared, persisted map the open-editor's Run/Debug toolbar reads/writes
   // (`FileViewerPane.tsx`'s `pyArgs`/`setPyArgs`) — keyed by absolute path in
   // global settings, not local component state, so it survives this tree
-  // unmounting (right-panel hide/close) and an Eldrun restart.
+  // unmounting (side-panel hide/close) and an Eldrun restart.
   const pyArgsByPath = useSettingsStore((s) => s.settings?.python_run_args ?? EMPTY_PY_ARGS);
   const setPyArgs = useCallback((path: string, v: string) => {
     void useSettingsStore.getState().setPythonRunArgs(path, v);
@@ -1458,7 +1468,7 @@ export function FileTree({
       entry,
       projectDir,
       projectId,
-      origin: "right_file_tree",
+      origin: "side_file_tree",
       external,
       disabled: disabledViewerSet,
       // In a detached popout, stream the viewer tab into that window rather than
@@ -1854,12 +1864,27 @@ export function FileTree({
       useDragStore.getState().move(ev.clientX, ev.clientY);
       // Drag-to-move: highlight the folder row / breadcrumb / up button under the
       // cursor as the destination. The drag ghost is pointer-events:none, so
-      // elementFromPoint reaches the rows beneath it. A target whose rel matches
-      // the file's current folder is a no-op and is ignored.
+      // elementFromPoint reaches the rows beneath it — including rows of OTHER
+      // mounted trees (a box member root, a Files tab of another project), so
+      // every target carries its own tree's identity and `resolveMoveTarget`
+      // decides what a drop there means: a same-tree move (dropping onto the
+      // file's current folder is a no-op), a cross-project move (local↔local
+      // only), or nothing.
       const overEl = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
       const moveEl = overEl?.closest<HTMLElement>("[data-move-rel]") ?? null;
-      const moveRel = moveEl?.getAttribute("data-move-rel") ?? null;
-      setMoveTarget(moveRel != null && moveRel !== relPath ? moveRel : null);
+      const target = moveEl
+        ? {
+            rel: moveEl.getAttribute("data-move-rel") ?? "",
+            root: moveEl.getAttribute("data-move-root") ?? projectDir,
+            remote: moveEl.getAttribute("data-move-remote") === "1",
+          }
+        : null;
+      const resolved = resolveMoveTarget(target, {
+        root: projectDir,
+        folderRel: relPath,
+        remote: remoteListing,
+      });
+      setMoveTarget(resolved, resolved?.crossRoot ? moveEl : null);
       // Inside a detached popout, CenterPanel's window-wide drop authority isn't
       // there to resolve the pane under the cursor — do it here so the popout's
       // split/merge preview lights up and the release has a target to commit to.
@@ -1901,9 +1926,11 @@ export function FileTree({
       // afterwards always saw null and silently dropped every drag-to-move (the
       // file just stayed put). See git dfcb6e0, which introduced the read below
       // the cleanup() call.
-      const moveRel = moveTargetRef.current;
+      const moveTarget = moveTargetRef.current;
       // TEMPORARY drag QA
-      dragDbg(`commit shift=${shiftKey} dragging=${dragging} moveRel=${moveRel ?? "null"} canDrop=${canDrop}`);
+      dragDbg(
+        `commit shift=${shiftKey} dragging=${dragging} moveRel=${moveTarget?.rel ?? "null"} cross=${moveTarget?.crossRoot ?? false} canDrop=${canDrop}`,
+      );
       cleanup();
       if (!dragging) {
         // Never moved → a plain click does NOT open. Opening a file is a
@@ -1914,11 +1941,14 @@ export function FileTree({
       // Drag-to-move takes precedence: released over a folder / breadcrumb in the
       // tree → relocate the file(s) there. This is the one gesture available to
       // ALL files (even those with no tab/viewer target). When a multi-selection
-      // is being dragged, every selected file moves.
-      if (moveRel != null) {
+      // is being dragged, every selected file moves. A cross-root target
+      // (another project's tree in a box view, or another project's Files tab)
+      // moves INTO that project — `move_path` confines each side to its own
+      // root, so the two-root call is the supported shape.
+      if (moveTarget != null) {
         useDragStore.getState().end();
         for (const de of dragEntries) {
-          await moveEntryToFolder(relForEntry(de), de.name, moveRel, de.path);
+          await moveEntryToFolder(relForEntry(de), de.name, moveTarget, de.path);
         }
         return;
       }
@@ -2041,33 +2071,59 @@ export function FileTree({
     return relPath ? `${relPath}/${entry.name}` : entry.name;
   }
 
-  // Set the current drag-to-move drop target (a folder rel path, "" = project
-  // root, null = none). Keeps the ref (read by the release handler) and the
-  // highlight state in sync; the setter is a no-op when unchanged so dragging
-  // over the same folder doesn't churn renders.
-  function setMoveTarget(rel: string | null) {
-    moveTargetRef.current = rel;
-    setMoveTargetRel((prev) => (prev === rel ? prev : rel));
+  // Set the current drag-to-move drop target (null = none). Keeps the ref (read
+  // by the release handler) and the highlight in sync; the setter is a no-op
+  // when unchanged so dragging over the same folder doesn't churn renders.
+  // A same-tree target highlights through this tree's own render state; a
+  // cross-tree target's element (`crossEl`) belongs to another tree whose state
+  // this drag can't reach, so its `move-drop-target` class is applied
+  // imperatively — re-applied every pointermove, which also survives that
+  // tree re-rendering mid-drag and recomputing its className without it.
+  function setMoveTarget(target: ResolvedMoveTarget | null, crossEl: HTMLElement | null = null) {
+    moveTargetRef.current = target;
+    if (moveTargetElRef.current && moveTargetElRef.current !== crossEl) {
+      moveTargetElRef.current.classList.remove("move-drop-target");
+    }
+    moveTargetElRef.current = crossEl;
+    crossEl?.classList.add("move-drop-target");
+    const ownRel = target && !crossEl ? target.rel : null;
+    setMoveTargetRel((prev) => (prev === ownRel ? prev : ownRel));
   }
 
-  // Relocate a dragged file into a folder shown in the tree (drag-to-move). The
-  // backend `move_path` works the same for local and remote (SFTP) projects. A
-  // name collision in the destination aborts with an error rather than silently
-  // clobbering — moving is meant to be safe.
-  async function moveEntryToFolder(sourceRel: string, name: string, destFolderRel: string, sourceAbs: string) {
-    const destRel = destFolderRel ? `${destFolderRel}/${name}` : name;
+  // Identity stamped on every `data-move-rel` drop target, so a drag that
+  // started in a DIFFERENT tree (box member roots, another project's Files tab)
+  // knows which root — and which side, local or remote — a drop here lands in.
+  // Every `data-move-rel` site must spread this; `FileMove.test.ts` enforces it.
+  const moveTargetAttrs = {
+    "data-move-root": projectDir,
+    "data-move-remote": remoteListing ? "1" : undefined,
+  };
+
+  // Relocate a dragged file into a folder shown in a tree (drag-to-move). The
+  // target may belong to THIS tree or — cross-root — to another project's tree
+  // (`resolveMoveTarget` already vetted it: local↔local only). `move_path`
+  // confines each side to its own passed root, so the destination root goes
+  // through verbatim. A name collision in the destination aborts with an error
+  // rather than silently clobbering — moving is meant to be safe.
+  async function moveEntryToFolder(
+    sourceRel: string,
+    name: string,
+    target: ResolvedMoveTarget,
+    sourceAbs: string,
+  ) {
+    const destRel = moveDestRel(target.rel, name);
     setLoading(true);
     setError(null);
     try {
       const exists = await invoke<boolean>("project_path_exists", {
-        projectDir,
+        projectDir: target.root,
         relPath: destRel,
       }).catch(() => false);
       if (exists) {
         setError(
           t("fileTree.alreadyExistsIn", {
             name,
-            folder: destFolderRel || t("fileTree.projectRootFolder"),
+            folder: target.rel || t("fileTree.projectRootFolder"),
           }),
         );
         setLoading(false);
@@ -2076,14 +2132,20 @@ export function FileTree({
       await invoke("move_path", {
         srcProjectDir: projectDir,
         srcRel: sourceRel,
-        destProjectDir: projectDir,
+        destProjectDir: target.root,
         destRel,
       });
       // Retarget any open viewer tab of the moved file/folder (main + detached).
-      // `sourceAbs` ends with `sourceRel`, so swapping that tail for `destRel`
-      // yields the new absolute path without rebuilding it from `projectDir`.
-      const newAbs = `${sourceAbs.slice(0, sourceAbs.length - sourceRel.length)}${destRel}`;
+      const newAbs = movedEntryAbs({
+        sourceAbs,
+        sourceRel,
+        destRel,
+        destRoot: target.root,
+        crossRoot: target.crossRoot,
+      });
       retargetTabsForRenamedPath(sourceAbs, newAbs);
+      // This tree re-lists (the entry left it); a cross-root destination tree
+      // catches up through its own fs-watch.
       await load(relPath);
     } catch (err) {
       setError(String(err));
@@ -2704,7 +2766,7 @@ export function FileTree({
     if (runInBackground && !remoteForegroundOnly) {
       // Detached spawn: no tab, no captured output. The activity store tracks
       // the run (and the app-lifetime `script-finished` listener clears it) so
-      // the spinner survives right-panel hide/show — see TODO group R #34.
+      // the spinner survives side-panel hide/show — see TODO group R #34.
       runScript(entry.path, projectDir, projectId);
       return;
     }
@@ -3042,7 +3104,7 @@ export function FileTree({
           row lives above the scroll container and is already fixed). They share
           ONE sticky wrapper so they stack instead of each pinning to top:0 and
           colliding — which is what hid the path line behind the search box.
-          Shared by the right panel and the Files (Project) tab (both render
+          Shared by the side panel and the Files (Project) tab (both render
           FileTree), so both get the fixed path line. */}
       <div className="file-tree-head">
       {remoteListing && (
@@ -3232,6 +3294,7 @@ export function FileTree({
           <button
             className={`file-tree-up${moveTargetRel === parentRel ? " move-drop-target" : ""}`}
             data-move-rel={parentRel}
+            {...moveTargetAttrs}
             onClick={goUp}
             title={t("fileTree.goUp")}
           >
@@ -3240,6 +3303,7 @@ export function FileTree({
           <button
             className={`file-tree-crumb${moveTargetRel === "" ? " move-drop-target" : ""}`}
             data-move-rel=""
+            {...moveTargetAttrs}
             onClick={() => load("")}
             title={t("fileTree.projectRootTitle")}
           >
@@ -3261,6 +3325,7 @@ export function FileTree({
                 <button
                   className={`file-tree-crumb${isLast ? " current" : ""}${moveTargetRel === target ? " move-drop-target" : ""}${missing ? " crumb-missing" : ""}${onHost ? " crumb-on-host" : ""}`}
                   data-move-rel={target}
+                  {...moveTargetAttrs}
                   onClick={() => { if (!isLast) load(target); }}
                   title={
                     missing
@@ -3447,6 +3512,7 @@ export function FileTree({
               // Folders are drag-to-move destinations: dropping a dragged file
               // here relocates it (hit-tested by data-move-rel in the drag).
               data-move-rel={e.is_dir ? relForEntry(e) : undefined}
+              {...(e.is_dir ? moveTargetAttrs : undefined)}
               // Dirs: single-click navigates + native DnD (file export).
               // Files, plain drag: pointer-based drag onto a tab bar for
               // drag-to-tab files (built-in viewer OR embeddable handler); R6 —

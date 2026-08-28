@@ -94,7 +94,17 @@ pub struct WindowRegistry {
 
 pub type WindowRegistryState = Arc<Mutex<WindowRegistry>>;
 
-pub const ORIGIN_RIGHT_FILE_TREE: &str = "right_file_tree";
+/// Opened from the side panel's file tree (or a viewer reached from it).
+///
+/// Renamed from `right_file_tree` along with the panel, which no value on disk
+/// depends on: the registry is `WindowRegistry::default()`ed at every startup
+/// (`lib.rs`) and the one persisted window record, [`schema::project::OpenApp`],
+/// carries no origin — so the token only ever travels in memory and over IPC
+/// between the two halves of one build. The one skew that exists is the ordinary
+/// `src/` hot-reload one: a frontend sending the new spelling to a backend that
+/// predates it leaves the window unrecognized (and so unparked on a project
+/// switch) until `src-tauri/` is rebuilt.
+pub const ORIGIN_SIDE_FILE_TREE: &str = "side_file_tree";
 pub const ORIGIN_MIDDLE_FILE_BROWSER: &str = "middle_file_browser";
 pub const ORIGIN_GLOBAL_APP: &str = "global_app";
 pub const ORIGIN_MANUAL_LAUNCH: &str = "manual_launch";
@@ -111,7 +121,7 @@ fn default_window_origin() -> String {
 pub fn is_project_opened_window(window: &TrackedWindow) -> bool {
     matches!(
         window.origin.as_str(),
-        ORIGIN_RIGHT_FILE_TREE | ORIGIN_MIDDLE_FILE_BROWSER
+        ORIGIN_SIDE_FILE_TREE | ORIGIN_MIDDLE_FILE_BROWSER
     )
 }
 
@@ -468,7 +478,7 @@ fn open_file_blocking(
 
 /// Run a shell script as a fire-and-forget detached process.
 ///
-/// Used by the right-panel "run in background" mode: the script is spawned with
+/// Used by the side-panel "run in background" mode: the script is spawned with
 /// stdio fully detached, and is not tracked as a window or tab. No output is
 /// surfaced — callers that want to watch a script should open a terminal tab
 /// instead. When a `run_id` is supplied, a background thread waits for the
@@ -2039,12 +2049,12 @@ mod tests {
     #[test]
     fn opened_windows_are_only_project_file_ui_windows() {
         let windows = [
-            tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+            tracked(Some("p1"), ORIGIN_SIDE_FILE_TREE, Some(10)),
             tracked(Some("p1"), ORIGIN_MIDDLE_FILE_BROWSER, Some(11)),
             tracked(Some("p1"), ORIGIN_GLOBAL_APP, Some(12)),
             tracked(Some("p1"), ORIGIN_MANUAL_LAUNCH, Some(13)),
-            tracked(Some("p2"), ORIGIN_RIGHT_FILE_TREE, Some(20)),
-            tracked(None, ORIGIN_RIGHT_FILE_TREE, Some(30)),
+            tracked(Some("p2"), ORIGIN_SIDE_FILE_TREE, Some(20)),
+            tracked(None, ORIGIN_SIDE_FILE_TREE, Some(30)),
         ];
 
         let opened = opened_windows_for_project(windows.iter(), Some("p1"));
@@ -2060,7 +2070,7 @@ mod tests {
     fn project_opened_window_predicate_matches_file_ui_origins() {
         assert!(is_project_opened_window(&tracked(
             Some("p1"),
-            ORIGIN_RIGHT_FILE_TREE,
+            ORIGIN_SIDE_FILE_TREE,
             Some(1),
         )));
         assert!(is_project_opened_window(&tracked(
@@ -2169,7 +2179,7 @@ mod tests {
     #[test]
     fn opened_windows_returns_empty_for_wrong_project() {
         let windows = [
-            tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+            tracked(Some("p1"), ORIGIN_SIDE_FILE_TREE, Some(10)),
             tracked(Some("p1"), ORIGIN_MIDDLE_FILE_BROWSER, Some(11)),
         ];
         let opened = opened_windows_for_project(windows.iter(), Some("p2"));
@@ -2178,7 +2188,7 @@ mod tests {
 
     #[test]
     fn opened_windows_returns_empty_for_root_scope_when_all_in_project() {
-        let windows = [tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10))];
+        let windows = [tracked(Some("p1"), ORIGIN_SIDE_FILE_TREE, Some(10))];
         let opened = opened_windows_for_project(windows.iter(), None);
         assert!(
             opened.is_empty(),

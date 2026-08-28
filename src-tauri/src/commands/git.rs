@@ -517,7 +517,7 @@ pub async fn git_dirty_probe(project_dir: String) -> Result<GitDirtyProbe, Strin
 
 /// Resolve the git top-level enclosing `project_dir`/`rel_path` (the folder the
 /// user is currently browsing in the file tree). Returns the absolute repo root
-/// path, or `None` when the folder isn't inside any git repo. The right panel
+/// path, or `None` when the folder isn't inside any git repo. The side panel
 /// uses this to detect a **nested** repo — a subfolder that is its own git repo
 /// distinct from the project's repo — and re-root its git section at it.
 ///
@@ -2389,7 +2389,7 @@ pub struct DetectedOrigin {
 /// Returns `{ project_id -> { provider, url } }` only for projects whose origin
 /// resolves to a recognized provider. Published (`remote-*`) local projects are
 /// included too, so their git address shows in the hover even though their badge
-/// already rides on `git_type`. Used to decorate pill/right-panel hovers for
+/// already rides on `git_type`. Used to decorate pill/side-panel hovers for
 /// repos pushed to a host — including ones published outside Eldrun's own
 /// Publish flow (the sole writer of the `remote-*` `git_type`).
 #[tauri::command]

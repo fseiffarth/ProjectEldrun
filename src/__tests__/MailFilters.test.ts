@@ -10,7 +10,6 @@ import {
   moveRule,
   parseTermInput,
   removeTerm,
-  ruleIsUsable,
   ruleLabel,
   ruleProblems,
   toggleField,
@@ -94,7 +93,7 @@ describe("a rule that would never fire is an error", () => {
     expect(ruleProblems(rule({ terms: [], fields: ["subject"] }))).toEqual(["noTerms"]);
     expect(ruleProblems(rule({ terms: ["x"], fields: [] }))).toEqual(["noFields"]);
     expect(ruleProblems(rule({ terms: ["  "], fields: ["subject"] }))).toEqual(["noTerms"]);
-    expect(ruleIsUsable(rule({ terms: ["x"], fields: ["subject"] }))).toBe(true);
+    expect(ruleProblems(rule({ terms: ["x"], fields: ["subject"] }))).toEqual([]);
   });
 });
 

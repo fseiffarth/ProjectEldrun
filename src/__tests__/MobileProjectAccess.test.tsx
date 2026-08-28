@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 
-import { RightPanel } from "../components/layout/RightPanel";
+import { SidePanel } from "../components/layout/SidePanel";
 import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore } from "../stores/settings";
 import { useTabsStore } from "../stores/tabs";
@@ -48,7 +48,7 @@ describe("Mobile project access in the file viewer", () => {
 
   it("offers the per-project toggle while the Mobile host is connected", async () => {
     const user = userEvent.setup();
-    render(<RightPanel open />);
+    render(<SidePanel open />);
 
     // The opt-in is a tag chip, not a switch: an unpressed "Mobile · Off"
     // button that turns accent-filled once access is on.

@@ -1369,6 +1369,7 @@ export function FocusFrameOverlay({
 const GHOST_THUMB_W = 280; // px; the thumbnail's on-screen width.
 
 export function DragGhost() {
+  const t = useT();
   // Eff #14: subscribe to COARSE PRIMITIVE selectors (mirroring
   // SplitPreviewOverlay / stores/drag.ts), not the whole `drag` object. The
   // ghost still re-renders each frame to follow the pointer (pointerX/Y change),
@@ -1437,15 +1438,15 @@ export function DragGhost() {
               matching the drag itself: once the cursor leaves the window with
               Ctrl held, the OS drag owns the drop and the in-app targets are
               out of the picture. */}
-          <div className="tab-drag-ghost-opt">Drop on a folder → move file there</div>
+          <div className="tab-drag-ghost-opt">{t("tabDrag.dropFolder")}</div>
           <div className={`tab-drag-ghost-opt${!shiftHeld && !ctrlHeld ? " active" : ""}`}>
-            Drop → open in new window / dock into popout
+            {t("tabDrag.dropOpen")}
           </div>
           <div className={`tab-drag-ghost-opt${shiftHeld && !ctrlHeld ? " active" : ""}`}>
-            ⇧ Shift → force a new window
+            {t("tabDrag.shiftNewWindow")}
           </div>
           <div className={`tab-drag-ghost-opt${ctrlHeld ? " active" : ""}`}>
-            ⌃ Ctrl → copy out to another app
+            {t("tabDrag.ctrlCopyOut")}
           </div>
         </div>
       ) : null}
@@ -1469,13 +1470,14 @@ export function DragGhost() {
  * propagation so toggling never starts a divider resize drag.
  */
 function ScrollLinkButton({ a, b }: { a: string; b: string }) {
+  const t = useT();
   const linked = useScrollSyncStore((s) => s.links[a] === b);
   const toggleLink = useScrollSyncStore((s) => s.toggleLink);
   return (
     <button
       type="button"
       className={`split-scroll-link-btn${linked ? " linked" : ""}`}
-      title={linked ? "Unlink scrolling" : "Link scrolling of these subwindows"}
+      title={linked ? t("scrollLink.unlink") : t("scrollLink.link")}
       aria-pressed={linked}
       onPointerDown={(e) => e.stopPropagation()}
       onClick={(e) => {

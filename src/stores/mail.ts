@@ -627,16 +627,6 @@ export const useMailStore = create<MailStore>((set, get) => ({
   },
 }));
 
-/** The account a mail tab should open on: the configured default when it still
- *  exists, else the first. Kept here so the pane and any later surface agree. */
-export function preferredAccountId(
-  accounts: MailAccount[],
-  defaultId: string | undefined,
-): string | null {
-  if (defaultId && accounts.some((a) => a.id === defaultId)) return defaultId;
-  return accounts[0]?.id ?? null;
-}
-
 /** Total unread across an account's folders, for the rail's badge. */
 export function unreadTotal(folders: MailFolder[] | undefined): number {
   return (folders ?? []).reduce((sum, f) => sum + (f.unread || 0), 0);

@@ -20,7 +20,7 @@ import { useT, type TranslationKey } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 
 /**
- * The right-panel **Alerts** group: urgent mail, the next appointments, and the
+ * The side-panel **Alerts** group: urgent mail, the next appointments, and the
  * to-do cards whose due date is here or past — one time-ordered strip, rendered
  * directly BELOW the project file tree, the same slot `DownloadsSection` uses.
  *

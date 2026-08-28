@@ -23,6 +23,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { stripFormatControls } from "./textSafety";
+import { formatBytes } from "./formatBytes";
 import type { TranslationKey } from "./i18n";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../stores/settings";
@@ -899,18 +900,12 @@ export function formatAddress(addr: { name?: string; address: string }): string 
  *  every mail call site below still imports it from here. */
 export { stripFormatControls };
 
-/** A byte count for an attachment chip. */
+/** A byte count for an attachment chip. The ladder is the one canonical
+ *  formatter (§9.1); what stays here is the ""-for-invalid guard — a chip with
+ *  no size renders nothing rather than "0 B". */
 export function formatSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "";
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB"];
-  let value = bytes / 1024;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+  return formatBytes(bytes);
 }
 
 /**

@@ -110,7 +110,7 @@ export interface TourStep {
 
 /** Force the hover-revealed file panel open so a step has the whole panel to
  *  spotlight (same event the lessons use). */
-const revealFilePanel = () => window.dispatchEvent(new Event("eldrun:reveal-right-panel"));
+const revealFilePanel = () => window.dispatchEvent(new Event("eldrun:reveal-side-panel"));
 
 /**
  * The files steps spotlight the *whole* panel, not the 6px reveal marker: a
@@ -123,7 +123,7 @@ const revealFilePanel = () => window.dispatchEvent(new Event("eldrun:reveal-righ
  * match in *document* order, and `AppShell` renders the panel before the
  * marker, so an open panel always wins.
  */
-const FILE_PANEL_ANCHOR = '.right-panel.open, [data-hint-anchor="file-tree-edge"]';
+const FILE_PANEL_ANCHOR = '.side-panel.open, [data-hint-anchor="file-tree-edge"]';
 
 export const TOUR_STEPS: TourStep[] = [
   {

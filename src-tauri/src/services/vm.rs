@@ -43,7 +43,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::schema::project::{Project, RemoteSpec, VmEgress, VmSpec};
+use crate::schema::project::{RemoteSpec, VmEgress, VmSpec};
 use crate::schema::projects::ProjectsList;
 use crate::storage;
 
@@ -827,28 +827,26 @@ fn ensure_seed(
 /// the project's own `project.json` — before anything connects. Ports are
 /// per-boot; this is the one writer.
 fn record_vm_endpoint(project_id: &str, ssh_port: u16) -> Result<(), String> {
-    let (spec, local_file) = crate::commands::projects::patch_project_entry(project_id, |entry| {
-        let mut spec: RemoteSpec = entry
-            .extra
-            .get("remote")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .ok_or_else(|| format!("VM project '{project_id}' has no remote spec"))?;
-        spec.host = "127.0.0.1".to_string();
-        spec.port = Some(ssh_port);
-        spec.key_auth = Some(true);
-        spec.vm = Some(true);
-        entry.extra.insert(
-            "remote".to_string(),
-            serde_json::to_value(&spec).map_err(|e| e.to_string())?,
-        );
-        Ok((spec, entry.local_file.clone()))
-    })?;
-
-    let proj_path = PathBuf::from(local_file);
-    if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-        project.remote = Some(spec);
-        let _ = storage::write_json(&proj_path, &project);
-    }
+    crate::commands::projects::patch_project_entry_mirrored(
+        project_id,
+        |entry| {
+            let mut spec: RemoteSpec = entry
+                .extra
+                .get("remote")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .ok_or_else(|| format!("VM project '{project_id}' has no remote spec"))?;
+            spec.host = "127.0.0.1".to_string();
+            spec.port = Some(ssh_port);
+            spec.key_auth = Some(true);
+            spec.vm = Some(true);
+            entry.extra.insert(
+                "remote".to_string(),
+                serde_json::to_value(&spec).map_err(|e| e.to_string())?,
+            );
+            Ok(spec)
+        },
+        |project, spec| project.remote = Some(spec.clone()),
+    )?;
     Ok(())
 }
 

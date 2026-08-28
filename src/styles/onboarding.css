@@ -107,7 +107,7 @@
   /* Fade in on appearance, then keep a slow accent breathing on the border so a
      freshly-surfaced hint draws the eye without nagging. Opacity-only entry so it
      never fights the inline/class positioning transforms (translateY/translateX).
-     Shares the pulse vocabulary of tab-working-pulse / right-panel-drop-pulse. */
+     Shares the pulse vocabulary of tab-working-pulse / side-panel-drop-pulse. */
   animation: hint-bubble-in 0.24s ease-out,
     hint-bubble-breathe 2.4s ease-in-out 0.24s infinite;
 }
@@ -295,13 +295,13 @@
   pointer-events: none;
 }
 
-/* Click affordance to open the closed, unpinned right file panel. The hover-only
+/* Click affordance to open the closed, unpinned side file panel. The hover-only
    right-edge reveal isn't reliable under WebView2 on Windows — the OS resize
    border eats mousemove in the last few edge pixels, so the reveal band never
    fires and the in-panel pin can't be reached. This tab sits just inside that
    dead-zone and opens the panel on click (delivered even where mousemove isn't).
    Unmounts as soon as the panel is open, so it never overlaps the panel. */
-.right-panel-reveal-handle {
+.side-panel-reveal-handle {
   position: fixed;
   top: 50%;
   right: 0;
@@ -325,7 +325,7 @@
   transition: opacity var(--transition), color var(--transition), background-color var(--transition);
 }
 
-.right-panel-reveal-handle:hover {
+.side-panel-reveal-handle:hover {
   opacity: 1;
   color: var(--text-primary);
   background-color: var(--bg-hover);
@@ -333,7 +333,7 @@
 
 /* Mirror the reveal handle and tour marker to the left edge when the panel
    docks there (open edge, border, and rounded corners all flip). */
-.right-panel-reveal-handle.left {
+.side-panel-reveal-handle.left {
   right: auto;
   left: 0;
   border-left: none;

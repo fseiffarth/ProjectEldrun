@@ -24,7 +24,7 @@ pub struct PreviousProjectSnapshot {
     pub tab_groups: Option<serde_json::Value>,
     #[serde(default)]
     pub file_tabs: Vec<serde_json::Value>,
-    pub right_panel_folder: Option<String>,
+    pub side_panel_folder: Option<String>,
     #[serde(default)]
     pub active_layout_metadata: Option<serde_json::Value>,
     /// Elapsed project seconds to flush atomically with the switch.
@@ -42,7 +42,7 @@ pub struct ProjectRuntimeSwitchedPayload {
     /// Opaque split/group layout tree for the next project (None → legacy).
     pub tab_groups: Option<serde_json::Value>,
     pub file_tabs: Vec<serde_json::Value>,
-    pub right_panel_folder: Option<String>,
+    pub side_panel_folder: Option<String>,
     /// Registry IDs of all project-owned tracked windows after the switch.
     pub opened_window_ids: Vec<String>,
 }
@@ -102,7 +102,7 @@ pub fn switch(
     let next_open_apps = project_id
         .map(terminal_service::load_open_apps)
         .unwrap_or_default();
-    let (next_file_tabs, next_right_panel_folder) = next_local_file
+    let (next_file_tabs, next_side_panel_folder) = next_local_file
         .map(load_file_tab_session)
         .unwrap_or_default();
 
@@ -118,7 +118,7 @@ pub fn switch(
         active_tab_index: next_terminal_session.active_tab_index,
         tab_groups: next_terminal_session.tab_groups,
         file_tabs: next_file_tabs,
-        right_panel_folder: next_right_panel_folder,
+        side_panel_folder: next_side_panel_folder,
         opened_window_ids: vec![],
     };
     let _ = app.emit("project-runtime-switched", payload.clone());
@@ -322,7 +322,7 @@ fn save_previous_sessions(
 
     let file_tab_session = FileTabSession {
         file_tabs: snapshot.file_tabs.clone(),
-        right_panel_folder: snapshot.right_panel_folder.clone(),
+        side_panel_folder: snapshot.side_panel_folder.clone(),
         extra: Default::default(),
     };
     if let Err(e) = storage::write_json(&sessions_dir.join("filetabs.json"), &file_tab_session) {
@@ -353,16 +353,16 @@ fn save_previous_sessions(
     }
 }
 
-/// Load just the right-panel subfolder for a project from its session file.
+/// Load just the side-panel subfolder for a project from its session file.
 /// Used to restore the panel view at startup, before any project switch occurs.
-pub fn load_right_panel_folder(local_file: &str) -> Option<String> {
+pub fn load_side_panel_folder(local_file: &str) -> Option<String> {
     load_file_tab_session(local_file).1
 }
 
-/// Persist the right-panel subfolder for a project, preserving any other
+/// Persist the side-panel subfolder for a project, preserving any other
 /// fields already stored in `.eldrun/sessions/filetabs.json`. Lets the active
 /// project's panel view survive a restart even without a project switch.
-pub fn save_right_panel_folder(local_file: &str, folder: Option<String>) -> Result<(), String> {
+pub fn save_side_panel_folder(local_file: &str, folder: Option<String>) -> Result<(), String> {
     let Some(sessions_dir) = eldrun_sessions_dir(local_file) else {
         return Err("cannot resolve project sessions directory".into());
     };
@@ -372,18 +372,18 @@ pub fn save_right_panel_folder(local_file: &str, folder: Option<String>) -> Resu
     } else {
         FileTabSession::default()
     };
-    session.right_panel_folder = folder;
+    session.side_panel_folder = folder;
     storage::write_json(&path, &session).map_err(|e| e.to_string())
 }
 
-/// Load file tabs and right-panel folder from `.eldrun/sessions/filetabs.json`.
-/// Returns (file_tabs, right_panel_folder).
+/// Load file tabs and side-panel folder from `.eldrun/sessions/filetabs.json`.
+/// Returns (file_tabs, side_panel_folder).
 fn load_file_tab_session(local_file: &str) -> (Vec<serde_json::Value>, Option<String>) {
     if let Some(sessions_dir) = eldrun_sessions_dir(local_file) {
         let path = sessions_dir.join("filetabs.json");
         if path.exists() {
             if let Ok(session) = storage::read_json::<FileTabSession>(&path) {
-                return (session.file_tabs, session.right_panel_folder);
+                return (session.file_tabs, session.side_panel_folder);
             }
         }
     }

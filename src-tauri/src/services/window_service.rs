@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::commands::apps::{
     TrackedWindow, ORIGIN_DETACHED_SUBWINDOW, ORIGIN_MIDDLE_FILE_BROWSER, ORIGIN_RESTORED,
-    ORIGIN_RIGHT_FILE_TREE,
+    ORIGIN_SIDE_FILE_TREE,
 };
 use crate::platform::WorkspaceBackend;
 use crate::schema::session::WindowSession;
@@ -150,7 +150,7 @@ pub fn resolve_missing_window_ids(
 fn is_project_owned(origin: &str) -> bool {
     matches!(
         origin,
-        ORIGIN_RIGHT_FILE_TREE
+        ORIGIN_SIDE_FILE_TREE
             | ORIGIN_MIDDLE_FILE_BROWSER
             | ORIGIN_RESTORED
             | ORIGIN_DETACHED_SUBWINDOW
@@ -171,7 +171,7 @@ fn project_owned_windows<'a, 'b>(
 mod tests {
     use super::*;
     use crate::commands::apps::{
-        ORIGIN_DETACHED_SUBWINDOW, ORIGIN_GLOBAL_APP, ORIGIN_RIGHT_FILE_TREE,
+        ORIGIN_DETACHED_SUBWINDOW, ORIGIN_GLOBAL_APP, ORIGIN_SIDE_FILE_TREE,
     };
 
     fn tracked(id: &str, project: Option<&str>, origin: &str, wid: Option<u64>) -> TrackedWindow {
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn detached_subwindow_origin_is_project_owned() {
         assert!(is_project_owned(ORIGIN_DETACHED_SUBWINDOW));
-        assert!(is_project_owned(ORIGIN_RIGHT_FILE_TREE));
+        assert!(is_project_owned(ORIGIN_SIDE_FILE_TREE));
         assert!(!is_project_owned(ORIGIN_GLOBAL_APP));
     }
 
@@ -235,10 +235,10 @@ mod tests {
     #[test]
     fn resolve_missing_window_ids_back_populates_only_unresolved_project_owned() {
         let mut wins = registry(vec![
-            tracked("a", Some("p1"), ORIGIN_RIGHT_FILE_TREE, None), // pid 10
-            tracked("b", Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(5)), // pid 11
+            tracked("a", Some("p1"), ORIGIN_SIDE_FILE_TREE, None), // pid 10
+            tracked("b", Some("p1"), ORIGIN_SIDE_FILE_TREE, Some(5)), // pid 11
             tracked("c", Some("p1"), ORIGIN_GLOBAL_APP, None),      // pid 12
-            tracked("d", Some("p2"), ORIGIN_RIGHT_FILE_TREE, None), // pid 13
+            tracked("d", Some("p2"), ORIGIN_SIDE_FILE_TREE, None), // pid 13
         ]);
         // Give each a distinct pid so the fake resolver can be asserted per-window.
         wins.get_mut("a").unwrap().pid = 10;
@@ -260,7 +260,7 @@ mod tests {
 
     #[test]
     fn resolve_missing_window_ids_leaves_none_when_resolver_fails() {
-        let mut wins = registry(vec![tracked("a", Some("p1"), ORIGIN_RIGHT_FILE_TREE, None)]);
+        let mut wins = registry(vec![tracked("a", Some("p1"), ORIGIN_SIDE_FILE_TREE, None)]);
         // A window the OS could not map (e.g. opener::open pid=0) stays unparked.
         resolve_missing_window_ids(&mut wins, Some("p1"), |_pid| None);
         assert_eq!(wins["a"].window_id, None);
@@ -305,7 +305,7 @@ mod tests {
                 ORIGIN_DETACHED_SUBWINDOW,
                 Some(202),
             ),
-            tracked("file-p1", Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(303)),
+            tracked("file-p1", Some("p1"), ORIGIN_SIDE_FILE_TREE, Some(303)),
         ]);
         let p1 = project_detached_labels(&wins, Some("p1"));
         assert_eq!(p1, vec!["detached-p1-g3".to_string()]);

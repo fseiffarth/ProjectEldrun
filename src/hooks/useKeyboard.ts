@@ -77,7 +77,7 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         return;
       }
 
-      // Super key — toggle right panel. Linux only: on macOS Cmd reports as
+      // Super key — toggle side panel. Linux only: on macOS Cmd reports as
       // "Meta" and is the platform-primary shortcut modifier (see
       // shortcuts.chordMatches), so a lone-key toggle would fire on every Cmd+key
       // chord. On Windows the lone Win key belongs to the OS — the Start menu
@@ -167,7 +167,7 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         return;
       }
 
-      // Hide the focused subwindow (park it in the right-panel Hidden list,
+      // Hide the focused subwindow (park it in the side-panel Hidden list,
       // keeping its tabs/PTYs alive). Unlike closeSubwindow this is allowed even
       // for the last remaining subwindow — hiding it just shows the +-placeholder.
       if (is("hideSubwindow")) {
