@@ -16,6 +16,7 @@ import { MachinesIndicator } from "../header/MachinesIndicator";
 import { MailIndicator } from "../header/MailIndicator";
 import { CalendarIndicator } from "../header/CalendarIndicator";
 import { TodoIndicator } from "../header/TodoIndicator";
+import { SettingsMenu } from "../header/SettingsMenu";
 import { WindowControls } from "../header/WindowControls";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { GlobalAppMenu } from "./GlobalAppMenu";
@@ -128,6 +129,12 @@ export function HeaderBar() {
         <CalendarIndicator />
         <TodoIndicator />
         <GlobalAppMenu />
+        {/* Settings belong to the machine, not to a project — so the gear sits
+            with the other global buttons rather than at the head of the project
+            strip, where it put the switcher's own controls on both sides of a
+            scrolling row. Everything left of the strip is now a global app;
+            everything right of it (+ and the search) acts on the projects. */}
+        <SettingsMenu />
         <ProjectSwitcher open />
       </div>
       <div className="header-right no-drag">

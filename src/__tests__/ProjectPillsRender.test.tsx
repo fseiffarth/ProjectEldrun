@@ -20,6 +20,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 import { ProjectSwitcher } from "../components/layout/ProjectSwitcher";
 import { useProjectsStore } from "../stores/projects";
 import { useBoxesStore } from "../stores/boxes";
+import { usePillDragStore } from "../stores/pillDrag";
 import type { ProjectEntry } from "../types";
 
 function proj(id: string, position: number, extra: Partial<ProjectEntry> = {}): ProjectEntry {
@@ -121,5 +122,72 @@ describe("project switcher pill rendering", () => {
     // name — the Trash pill shows no name and gets no hover card.
     const main = pill.querySelector(".pill-main") as HTMLElement;
     expect(main.getAttribute("aria-label")).toMatch(/^Trash project —/);
+  });
+
+  it("pins the Trash pill outside the scrolling strip", async () => {
+    // Trash is always present and cannot be closed, so it belongs in the row's
+    // FIXED leading segment (beside ★ and the box chip) rather than as the
+    // first pill of a strip that scrolls it out of reach.
+    useProjectsStore.setState({
+      projects: [proj("eldrun-trash", 0, { name: "Trash" }), proj("a", 1), proj("b", 2)],
+      activeId: "a",
+      loaded: true,
+    });
+
+    let container: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<ProjectSwitcher open />));
+    });
+
+    const strip = container!.querySelector(".project-pills-scroll") as HTMLElement;
+    expect(strip.querySelector(".trash-project-pill")).toBeNull();
+    // …and the strip holds the two real projects, not three.
+    expect(strip.querySelectorAll(".project-pill").length).toBe(2);
+    // It is still in the pills region, right of the pinned root pill.
+    const region = container!.querySelector(".project-pills-region") as HTMLElement;
+    expect(region.querySelector(":scope > .trash-project-pill")).toBeTruthy();
+  });
+
+  it("does not let the pinned Trash pill start a drag", async () => {
+    // Nothing to drag it into: it lives outside the strip and the backend
+    // rewrites its position before every save.
+    useProjectsStore.setState({
+      projects: [proj("eldrun-trash", 0, { name: "Trash" }), proj("a", 1)],
+      activeId: "a",
+      loaded: true,
+    });
+
+    let container: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<ProjectSwitcher open />));
+    });
+
+    const pill = container!.querySelector(".trash-project-pill") as HTMLElement;
+    for (const [type, target] of [
+      ["pointerdown", pill],
+      ["pointermove", window],
+      ["pointerup", window],
+    ] as const) {
+      const ev = new Event(type, { bubbles: true, cancelable: true });
+      Object.assign(ev, { clientX: type === "pointerdown" ? 10 : 400, clientY: 10, button: 0, pointerId: 1 });
+      act(() => {
+        (target as EventTarget).dispatchEvent(ev);
+      });
+    }
+    expect(usePillDragStore.getState().drag).toBeNull();
+  });
+
+  it("no longer carries the settings gear — it lives in the header cluster", async () => {
+    useProjectsStore.setState({ projects: [proj("a", 0)], activeId: "a", loaded: true });
+
+    let container: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<ProjectSwitcher open />));
+    });
+
+    // The switcher's own controls are all on ONE side of the strip now: the
+    // gear moved to `header/SettingsMenu`, leaving + and the search.
+    expect(container!.querySelector('[data-hint-anchor="settings"]')).toBeNull();
+    expect(container!.querySelector('[data-hint-anchor="add-project"]')).toBeTruthy();
   });
 });

@@ -17,7 +17,7 @@ import { useT } from "../../lib/i18n";
  * never deleted, and the member projects are untouched.
  *
  * Mounted once in `AppShell` (`BoxEditorHost`, the RemoteMachines host
- * pattern), driven by `stores/boxEditor`; opened from a BoxPill's menu, a
+ * pattern), driven by `stores/boxEditor`; opened from the box chip's menu, a
  * pill's Boxes group, the multi-select "Box these…" action, and the switcher's
  * "+" menu. A box selector at the top switches between existing boxes and
  * create mode without closing the dialog.

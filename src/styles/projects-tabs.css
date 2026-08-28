@@ -11,9 +11,9 @@
   background-color: transparent;
   display: flex;
   align-items: center;
-  /* No left padding: the leading settings gear's gap to .global-apps-menu is
-     supplied entirely by .header-center's gap, so it matches the brain/global-
-     apps gap instead of stacking on top of it. */
+  /* No left padding: the gap between the header's global cluster and this bar's
+     leading divider is supplied entirely by .header-center's gap, so it matches
+     the brain/global-apps gap instead of stacking on top of it. */
   padding: 0 6px 0 0;
   gap: 4px;
   /* Fill the header-center track and stay shrinkable so the pill row can never
@@ -295,54 +295,150 @@
   color: var(--text-primary);
 }
 
-/* ── Project box chip ───────────────────────────────────────────────── */
-/* A box groups member pills behind a labelled chip, visually distinct from a
-   plain project pill (accent-tinted frame + ▣ badge + member count). */
-.project-box-chip {
+/* ── Box scope chip ─────────────────────────────────────────────────── */
+/* The ONE boxes control (components/projects/BoxScopeChip.tsx), pinned beside
+   the root pill and outside the scrolling strip. Deliberately the .root-pill
+   box copied rather than a treatment of its own — same 40px height, same
+   reserved-transparent 3px top border, same accent line when its scope is the
+   current one — so the row's leading segment reads as one piece: the mark, then
+   which box you are looking at, then the projects. */
+.box-chip {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   flex-shrink: 0;
-  gap: 4px;
-  padding: 0 4px;
-  height: 32px;
-  border: 1px solid var(--accent);
-  border-radius: var(--radius);
-  background-color: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
+  height: 40px;
+  padding: 0 8px;
+  border: none;
+  border-top: 3px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  transition: color var(--transition), border-color var(--transition);
 }
 
-.project-box-chip.drag-over {
-  border-color: var(--warning);
-  box-shadow: inset 0 0 0 1px var(--warning);
-}
-
-.project-box-header {
+.box-chip-main {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   height: 100%;
-  padding-left: 4px;
+  max-width: 160px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.box-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.project-box-badge {
+.box-chip-icon {
   font-size: 12px;
+  line-height: 1;
   color: var(--accent);
+}
+
+.box-chip-caret {
+  font-size: 9px;
+  line-height: 1;
+  opacity: 0.75;
+}
+
+.box-chip:hover {
+  color: var(--text-primary);
+}
+
+/* A slice is selected: the chip names a box even when that box's tabs are not
+   what is on screen (clicking a member keeps the slice and moves the scope). */
+.box-chip.filtering {
+  color: var(--text-primary);
+}
+
+/* The box's own scope IS the current one — the pill row's active treatment. */
+.box-chip.active {
+  color: var(--text-primary);
+  border-top-color: var(--accent);
+  box-shadow: 3px 0 4.5px -2px rgba(0, 0, 0, 0.4), -3px 0 4.5px -2px rgba(0, 0, 0, 0.4);
+}
+
+/* A project pill is being dragged over the chip: dropping adds it to this box. */
+.box-chip.drag-over {
+  color: var(--text-primary);
+  background-color: color-mix(in srgb, var(--accent) 20%, transparent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* The chip's dropdown — the only place boxes are listed. Portaled to the body
+   so it escapes the header's clipping, and wearing the switcher's own menu
+   chrome (.project-switcher-add-menu's shape) rather than a second look. */
+.box-chip-menu {
+  position: fixed;
+  z-index: var(--z-menu);
+  display: flex;
+  flex-direction: column;
+  min-width: 170px;
+  padding: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-3);
+}
+
+.box-chip-menu button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.box-chip-menu button:hover {
+  background-color: var(--control-hover-bg);
+}
+
+.box-chip-menu button.is-current {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* The row a dragged pill is currently over — dropping adds it to that box. */
+.box-chip-menu button.drag-over {
+  background-color: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.box-chip-menu-icon {
+  color: var(--accent);
+  font-size: 11px;
   line-height: 1;
 }
 
-.project-box-name {
-  background: none;
-  border: none;
-  color: var(--text-primary);
-  font: inherit;
-  font-weight: 600;
-  font-size: 12px;
-  cursor: pointer;
-  padding: 0;
+.box-chip-menu-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.project-box-name:hover {
-  color: var(--accent);
+.box-chip-menu-count {
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.box-chip-menu-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border-subtle);
 }
 
 .project-box-rename-input {
@@ -368,68 +464,6 @@
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 22%, transparent);
   border-radius: var(--radius);
-}
-
-.project-box-caret {
-  font-size: 9px;
-  color: var(--accent);
-  margin-right: 1px;
-  line-height: 1;
-}
-
-/* Expanded member list: a downward dropdown portaled to the body so it escapes
-   the horizontally-scrolling pills row's vertical clipping. Members stack as a
-   vertical list, each pill spanning the dropdown width. */
-.project-box-dropdown {
-  position: fixed;
-  z-index: var(--z-menu);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 2px;
-  padding: 4px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--accent);
-  box-shadow: var(--shadow-3);
-}
-
-.project-box-dropdown .project-pill {
-  width: 100%;
-}
-
-.project-box-dropdown-hint {
-  padding: 3px 4px 1px;
-  font-size: 9px;
-  color: var(--text-secondary);
-  text-align: center;
-  opacity: 0.7;
-}
-
-/* Drop the reorder margin shift inside the vertical list (it would nudge pills
-   sideways); the insertion bar still marks the drop point. */
-.project-box-dropdown .project-pill.drag-over {
-  margin-left: 0;
-}
-
-/* Subtle cue that an expanded box's chip is the open dropdown's anchor. */
-.project-box-chip.expanded {
-  background-color: color-mix(in srgb, var(--accent) 20%, var(--control-bg));
-}
-
-/* A box rendered as a project-style pill: same base as .project-pill, with an
-   accent-tinted box icon and member-count badge. */
-.project-pill.is-box .pill-folder-icon {
-  color: var(--accent);
-}
-
-.project-pill.is-box .project-box-member-count {
-  margin-left: 4px;
-}
-
-/* An EMPTY box still renders (the overlay model never folds a box away —
-   dissolving is the editor's explicit action), just dimmed. */
-.project-pill.is-box.is-empty {
-  opacity: 0.55;
 }
 
 /* The small box badge on a MEMBER pill (overlay model: member pills always
@@ -719,9 +753,9 @@
   max-width: 320px;
 }
 
-/* Same tag chips, inline beside the right panel's project-name header instead
+/* Same tag chips, inline beside the side panel's project-name header instead
    of in the pill hover popup. */
-.right-panel-type-tags {
+.side-panel-type-tags {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -808,28 +842,6 @@
 
 .tab-popup-meta.working {
   color: var(--success);
-}
-
-/* ── Project switcher action buttons ──────────────────────────────────────── */
-.project-switcher-action-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-sm);
-  border: none;
-  cursor: pointer;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 16px;
-  transition: background-color var(--transition), color var(--transition);
-  flex-shrink: 0;
-}
-
-.project-switcher-action-btn:hover {
-  background-color: var(--pill-hover-bg);
-  color: var(--text-primary);
 }
 
 /* ── Settings panel ─────────────────────────────────────────────────── */
@@ -1376,7 +1388,7 @@
   color: var(--danger);
 }
 
-/* Hide-subwindow button: parks the subwindow into the right-panel Hidden list.
+/* Hide-subwindow button: parks the subwindow into the side-panel Hidden list.
    Sits just left of the close button (both margin-left:auto stack at the right
    end; when close is absent for a single subwindow, hide still pins right). */
 .subwindow-hide {

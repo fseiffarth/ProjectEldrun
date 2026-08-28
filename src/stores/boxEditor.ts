@@ -3,7 +3,7 @@ import { create } from "zustand";
 /**
  * Open/closed state for the Box editor dialog (`BoxEditorDialog`), mounted once
  * in `AppShell` (the RemoteMachines host pattern) so it can be opened from any
- * of its four doors — a BoxPill's menu, a pill's Boxes group, the multi-select
+ * of its four doors — the box chip's menu, a pill's Boxes group, the multi-select
  * "Box these…" action, and the switcher's "+" menu — without prop-drilling.
  *
  * `boxId: null` is CREATE mode (a new box, `initialMemberIds` pre-checked);

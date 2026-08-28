@@ -1603,7 +1603,7 @@ export function ProjectPill({
    *
    * Sibling rects are measured ONCE, at the moment the drag threshold is
    * crossed — the DOM order is frozen for the gesture (only `transform`
-   * changes, via `shiftPx`/`groupHintActive`/BoxPill's forced hover, all read
+   * changes, via `shiftPx`/`groupHintActive`/the box chip's forced hover, all read
    * from `usePillDragStore` by ProjectSwitcher), so the rects stay valid for
    * its whole duration. `onClick` is never wired natively on `pill-main` for
    * the mouse path — `e.preventDefault()` below suppresses the compatibility
@@ -1614,6 +1614,13 @@ export function ProjectPill({
    */
   const startPillDrag = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
+    // The Trash workspace is PINNED (ProjectSwitcher renders it outside the
+    // scrolling strip, in the row's fixed leading segment): there is no slot
+    // for it to be dragged into, its position is rewritten by the backend
+    // before every save, and boxing or multi-selecting a workspace that cannot
+    // be closed buys nothing. Returning before `preventDefault` leaves the
+    // native click intact, so `pill-main`'s own onClick still activates it.
+    if (trashProject) return;
     const pressed = e.target as HTMLElement;
     if (pressed.closest(".pill-close-btn, .header-conn-lamps")) return;
     // Ctrl/Cmd-click toggles the multi-selection (3b): no drag, no activation —
@@ -1642,6 +1649,34 @@ export function ProjectPill({
     const dropSlot = (clientX: number) =>
       projectRects.filter((r) => clientX > r.left + r.width / 2).length;
 
+    /**
+     * Box drop targets, swept from the whole DOCUMENT rather than from the
+     * pills strip: boxes left the strip for the pinned chip beside the root
+     * pill, and the chip springs its list open for the duration of this drag
+     * (BoxScopeChip) — that list is portaled to <body>, so every box stays
+     * droppable even though none of them is in the row.
+     *
+     * Unlike the sibling pill rects, these are NOT frozen at drag-start: the
+     * list appears *because* the drag started, one render after the rects
+     * would have been taken. The re-measure is gated on the target count
+     * changing, so a steady-state move costs one `querySelectorAll` and no
+     * layout read at all.
+     */
+    const measureBoxes = () => {
+      const els = document.querySelectorAll<HTMLElement>("[data-box-id]");
+      if (els.length === boxRects.length) return;
+      boxRects = Array.from(els).map((el) => {
+        const r = el.getBoundingClientRect();
+        return {
+          id: el.dataset.boxId!,
+          left: r.left,
+          top: r.top,
+          right: r.right,
+          bottom: r.bottom,
+        };
+      });
+    };
+
     const onMove = (ev: PointerEvent) => {
       if (!dragging) {
         if (Math.abs(ev.clientX - startX) < 5) return;
@@ -1660,18 +1695,6 @@ export function ProjectPill({
               })
           : [];
         fromIdx = projectRects.filter((r) => r.left < selfLeft).length;
-        boxRects = container
-          ? Array.from(container.querySelectorAll<HTMLElement>("[data-box-id]")).map((el) => {
-              const r = el.getBoundingClientRect();
-              return {
-                id: el.dataset.boxId!,
-                left: r.left,
-                top: r.top,
-                right: r.right,
-                bottom: r.bottom,
-              };
-            })
-          : [];
         if (dragPlatform.needsPointerCapture) {
           try {
             captureEl.setPointerCapture(pointerId);
@@ -1681,6 +1704,7 @@ export function ProjectPill({
         }
         usePillDragStore.getState().start(project.id, width, dropSlot(ev.clientX));
       }
+      measureBoxes();
       const overBoxId =
         boxRects.find(
           (r) =>
